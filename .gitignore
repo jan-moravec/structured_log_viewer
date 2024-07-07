@@ -75,3 +75,6 @@ CMakeLists.txt.user*
 *.dll
 *.exe
 
+# Build
+/build/
+

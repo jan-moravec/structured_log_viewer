@@ -3,7 +3,13 @@ cmake_minimum_required(VERSION 3.19)
 project(library VERSION 0.1 LANGUAGES CXX)
 
 add_library(${PROJECT_NAME} STATIC
-  src/log_message.cpp
+  src/json_line.cpp
+  src/json_parser.cpp
+  src/log_data.cpp
+  include/log_table.hpp
+  include/log_time.hpp
+  include/log_configuration.hpp
+  src/log_configuration.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC ./include)

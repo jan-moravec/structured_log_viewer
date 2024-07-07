@@ -4,8 +4,10 @@
 #include <QTableView>
 #include <QTimer>
 #include <QStandardItemModel>
-
-#include "log_model.hpp"
+#include <QHeaderView>
+#include <QVBoxLayout>
+#include <QFileDialog>
+#include <QMessageBox>
 
 #include <chrono>
 #include <filesystem>
@@ -14,6 +16,8 @@
 #include <date/date.h>
 #include <date/tz.h>
 
+#include <json_parser.hpp>
+#include <log_time.hpp>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -38,30 +42,18 @@ MainWindow::MainWindow(QWidget *parent)
     date::zoned_time local_time{tz, tp};
     std::string formatted_local_time_with_timezone = date::format("%FT%T%Ez", local_time);
 
+    mTableView = new LogTableView(this);
 
-    // Example log data
-    LogMessage log1;
-    log1.timestamp = 3;
-    log1.message = "ABC";
-    log1.severity = "ERROR";
-    LogMessage log2;
-    log2.timestamp = 2;
-    log2.message = "DEF";
-    log2.severity = "INFO";
-    LogMessage log3;
-    log3.timestamp = 4;
-    log3.message = "GHJ";
-    log3.severity = "DEBUG";
+    setCentralWidget(mTableView);
 
-    LogSet logs;
-    logs.insert(log1);
-    logs.insert(log2);
-    logs.insert(log3);
+    //QVBoxLayout *layout = new QVBoxLayout(ui->centralWidget);
+
+    //layout->addWidget(tableView);
 
     // Create the model
-    LogModel *model = new LogModel(ui->tableView);
+    mModel = new LogModel(mTableView);
 
-    ui->tableView->horizontalHeader()->setStyleSheet(
+    mTableView->horizontalHeader()->setStyleSheet(
         "QHeaderView::section {"
         "background-color: lightgray;"
         //"color: blue;"
@@ -72,33 +64,41 @@ MainWindow::MainWindow(QWidget *parent)
         "}"
         );
 
-    // Set header labels
-    QStringList headerLabels;
-    headerLabels << "Timestamp" << "Severity" << "Message";
-
-    model->setLogData(logs, headerLabels);
 
     // Create the view
-    ui->tableView->setModel(model);
+    mTableView->setModel(mModel);
 
     // Set selection behavior
-    ui->tableView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
+
+    // Set selection mode to allow multiple selection
+    mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
+
+    // Disable editing of individual cells
+    mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     // Set alternating row colors
-    ui->tableView->setAlternatingRowColors(true);
+    mTableView->setAlternatingRowColors(true);
 
     // TODO: Implement QSortFilterProxyModel
     // Enable sorting
-    //ui->tableView->setSortingEnabled(true);
+    mSortFilterProxyModel = new QSortFilterProxyModel(this);
+    mSortFilterProxyModel->setSourceModel(mModel);
+    mSortFilterProxyModel->setSortRole(SortRole);
+    mTableView->setModel(mSortFilterProxyModel);
+    mTableView->setSortingEnabled(true);
 
     // Resize columns to fit contents
-    ui->tableView->resizeColumnsToContents();
+    mTableView->resizeColumnsToContents();
 
     // Set header customization
-    ui->tableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    ui->tableView->horizontalHeader()->stretchLastSection();  // Stretch to fill the view
-    ui->tableView->horizontalHeader()->setHighlightSections(false);  // No highlight on header click
-    ui->tableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);  // Align headers
+    mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
+    mTableView->horizontalHeader()->setStretchLastSection(true);
+
+    mTableView->horizontalHeader()->setHighlightSections(false);  // No highlight on header click
+    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);  // Align headers
+
 
     // Set cell alignment
     /*for (int row = 0; row < model->rowCount(); ++row) {
@@ -108,17 +108,73 @@ MainWindow::MainWindow(QWidget *parent)
     }*/
 
     // Adjust row height
-    ui->tableView->verticalHeader()->setDefaultSectionSize(25);
+    mTableView->verticalHeader()->setDefaultSectionSize(25);
 
     // Enable grid lines
-    ui->tableView->setShowGrid(true);
+    mTableView->setShowGrid(true);
 
-    QTimer::singleShot(0, [header = ui->tableView->horizontalHeader()] {
-        header->setSectionResizeMode(QHeaderView::Interactive);
+    connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFile);
+    connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
+
+    QTimer::singleShot(0, [=] {
+        mTableView->resizeColumnsToContents();
+        //tableView->horizontalHeader()->stretchLastSection();  // Stretch to fill the view
+        //tableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+        //tableView->resizeRowsToContents();
     });
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::OpenFile()
+{
+    QStringList files = QFileDialog::getOpenFileNames(this,
+                                                      "Select Files",
+                                                      QString(),
+                                                      "All Files (*.*)");
+
+    if (!files.isEmpty()) {
+        for (const QString &file : files) {
+            OpenFileInternal(file);
+        }
+    }
+}
+
+void MainWindow::dropEvent(QDropEvent *event) {
+    const QMimeData *mimeData = event->mimeData();
+
+    if (mimeData->hasUrls()) {
+        QList<QUrl> urlList = mimeData->urls();
+
+        for (int i = 0; i < urlList.size(); ++i) {
+            OpenFileInternal(urlList.at(i).toLocalFile());
+        }
+
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::OpenFileInternal(const QString &file)
+{
+    ParseResult result = JsonParser().Parse(file.toStdString());
+
+    //LogConfiguration configuration;
+    //configuration.columns[0] = LogConfiguration::Column{"Timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez"}};
+    //configuration.columns[1] = LogConfiguration::Column{"Status", {"status"}, "{}"};
+    //configuration.columns[2] = LogConfiguration::Column{"ID", {"id"}, "{}"};
+    //configuration.columns[3] = LogConfiguration::Column{"Body", {"body"}, "{}"};
+
+    UpdateConfiguration(mConfiguration, result.data);
+    ParseTimestamps(result.data, mConfiguration);
+
+    mModel->AddData(std::move(result.data), mConfiguration);
+    if (!result.error.empty())
+    {
+        QMessageBox::warning(this, "Error parsing " + file, QString::fromStdString(result.error));
+    }
+
+    //mTableView->sortByColumn(0, Qt::SortOrder::AscendingOrder);
 }

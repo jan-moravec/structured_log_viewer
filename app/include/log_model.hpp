@@ -1,72 +1,152 @@
 #pragma once
 
-#include <log_message.hpp>
+#include <log_data.hpp>
+#include <log_table.hpp>
+
 #include <QAbstractTableModel>
 #include <QModelIndex>
 #include <QVariant>
 #include <QString>
 #include <QDateTime>
 
-#include <set>
+#include <memory>
 
-using LogSet = std::multiset<LogMessage, LogMessageComparator>;
+using namespace loglib;
+
+enum LogModelItemDataRole
+{
+    UserRole = Qt::UserRole,
+    SortRole,
+    CopyLine
+};
 
 class LogModel : public QAbstractTableModel
 {
 public:
     explicit LogModel(QObject *parent = nullptr);
 
-    void setLogData(const LogSet &logData, const QStringList &headerLabels) {
+    void AddData(LogData &&logData, const LogConfiguration &configuration)
+    {
         beginResetModel();
-        this->logData = logData;
-        this->headerLabels = headerLabels;
+
+        mLogData.Merge(std::move(logData));
+
+        mLogTable = std::make_unique<LogTable>(mLogData, configuration);
+
         endResetModel();
     }
 
-    int rowCount(const QModelIndex &parent = QModelIndex()) const override {
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override
+    {
         Q_UNUSED(parent);
-        return static_cast<int>(logData.size());
+        if (mLogTable != nullptr)
+        {
+            return static_cast<int>(mLogTable->RowCount());
+        }
+        return 0;
+        //return static_cast<int>(mLogData.GetLines().size());
     }
 
-    int columnCount(const QModelIndex &parent = QModelIndex()) const override {
+    int columnCount(const QModelIndex &parent = QModelIndex()) const override
+    {
         Q_UNUSED(parent);
-        return static_cast<int>(headerLabels.size());
+        if (mLogTable != nullptr)
+        {
+            return static_cast<int>(mLogTable->ColumnCount());
+        }
+        return 0;
+        //return static_cast<int>(mLogData.GetKeys().size());
     }
 
-    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override {
+    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override
+    {
         if (role != Qt::DisplayRole)
+        {
             return QVariant();
+        }
 
-        if (orientation == Qt::Horizontal && section >= 0 && section < headerLabels.size()) {
-            return headerLabels[section];
+        if (orientation == Qt::Horizontal && section >= 0 && section < mLogData.GetKeys().size())
+        {
+            if (mLogTable != nullptr)
+            {
+                return QString::fromStdString(mLogTable->GetHeader(static_cast<size_t>(section)));
+            }
+            //return QString::fromStdString(mLogData.GetKeys()[static_cast<size_t>(section)]);
         }
 
         return QVariant();
     }
 
-    QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
-        if (!index.isValid() || index.row() >= static_cast<int>(logData.size()) || index.column() >= columnCount()) {
+    static QString ConvertToSingleLineCompactQString(const std::string &string)
+    {
+        QString qString = QString::fromStdString(string);
+        qString.replace("\n", " ");
+        qString.replace("\r", " ");
+        return qString.simplified();
+    }
+
+    QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override
+    {
+        if (!index.isValid() || index.row() >= rowCount() || index.column() >= columnCount() || mLogTable == nullptr)
+        {
             return QVariant();
         }
 
-        if (role == Qt::DisplayRole) {
-            auto it = logData.begin();
-            std::advance(it, index.row());
-            const LogMessage &log = *it;
+        if (role == Qt::DisplayRole)
+        {
+            //LogValue value = mLogData.GetLines()[static_cast<size_t>(index.row())]->GetValue(mLogData.GetKeys()[static_cast<size_t>(index.column())]);
 
-            switch (index.column()) {
-            case 0: return log.timestamp;
-            case 1: return QString::fromStdString(log.severity);
-            case 2: return QString::fromStdString(log.message);
-            default: return QVariant();
-            }
+
+            return ConvertToSingleLineCompactQString(mLogTable->GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column())));
+        }
+        else if (role == LogModelItemDataRole::SortRole)
+        {
+            LogValue value = mLogTable->GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
+            return std::visit(
+                [](auto &&arg)
+                {
+                    using T = std::decay_t<decltype(arg)>;
+                    if constexpr (std::is_same_v<T, std::string>)
+                    {
+                        return QVariant(ConvertToSingleLineCompactQString(arg));
+                    }
+                    else if constexpr (std::is_same_v<T, int64_t>)
+                    {
+                        return QVariant(arg);
+                    }
+                    else if constexpr (std::is_same_v<T, double>)
+                    {
+                        return QVariant(arg);
+                    }
+                    else if constexpr (std::is_same_v<T, bool>)
+                    {
+                        return QVariant(arg);
+                    }
+                    else if constexpr (std::is_same_v<T, TimeStamp>)
+                    {
+                        return QVariant(arg.time_since_epoch().count());
+                    }
+                    else if constexpr (std::is_same_v<T, std::monostate>)
+                    {
+                        return QVariant();
+                    }
+                    else
+                    {
+                        static_assert(false, "non-exhaustive visitor!");
+                    }
+                },
+                value);
+        }
+        else if (role == LogModelItemDataRole::CopyLine)
+        {
+            return QVariant(QString::fromStdString(mLogData.GetLines()[static_cast<size_t>(index.row())]->GetLine()));
         }
 
         return QVariant();
     }
 
 private:
-    LogSet logData;
-    QStringList headerLabels;
-    LogMessage mLogMessage;
+    // JsonLogs mLogs;
+    LogData mLogData;
+    std::unique_ptr<LogTable> mLogTable;
 };

@@ -19,6 +19,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(app
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
+        include/log_table_view.hpp src/log_table_view.cpp
     )
 
 # Define target properties for Android with Qt 6 as:
@@ -70,7 +71,7 @@ if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(${PROJECT_NAME})
 endif()
 
-# Copy the contents of SOURCE_DIR to DESTINATION_DIR
+# Copy the timezone data next to the binary
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_CURRENT_BINARY_DIR}/${TZDATA}
     COMMAND_ERROR_IS_FATAL ANY

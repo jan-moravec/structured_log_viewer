@@ -1,7 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
 
-#set(CMAKE_TOOLCHAIN_FILE C:/code/vcpkg/scripts/buildsystems/vcpkg.cmake)
-
 project(structured_log_viewer VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_AUTOUIC ON)
@@ -21,7 +19,6 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/nlohmann/json.git
   GIT_TAG v3.11.3
 )
-FetchContent_MakeAvailable(nlohmann_json)
 
 FetchContent_Declare(
   date
@@ -30,14 +27,14 @@ FetchContent_Declare(
 )
 set(BUILD_TZ_LIB ON) # Enable building the time zone library
 set(MANUAL_TZ_DB ON) # Provide time zone database manually
-FetchContent_MakeAvailable(date)
 
 FetchContent_Declare(
   fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git
   GIT_TAG 10.2.1
 )
-FetchContent_MakeAvailable(fmt)
+
+FetchContent_MakeAvailable(nlohmann_json date fmt)
 
 # Directories to store tzdata and windowsZones.xml in
 set(TZDATA tzdata)
