@@ -1,14 +1,15 @@
 #include "log_configuration.hpp"
 
 #include <algorithm>
+#include <fstream>
 
 namespace loglib
 {
 
-bool IsKeyInAnyColumn(const std::string& key, const std::unordered_map<size_t, LogConfiguration::Column> &columns) {
+bool IsKeyInAnyColumn(const std::string& key, const std::vector<LogConfiguration::Column> &columns) {
     for (const auto &column: columns)
     {
-        if (std::find(column.second.keys.begin(), column.second.keys.end(), key) != column.second.keys.end())
+        if (std::find(column.keys.begin(), column.keys.end(), key) != column.keys.end())
         {
             return true;
         }
@@ -40,20 +41,49 @@ void UpdateConfiguration(LogConfiguration &configuration, const LogData &logData
         {
             if (IsTimestampKey(key))
             {
-                const size_t size = configuration.columns.size();
-                configuration.columns[size] = LogConfiguration::Column{key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}};
+                configuration.columns.push_back(LogConfiguration::Column{key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}});
                 // Timestamp should be the first column, all the others will be shifted
-                for (size_t i = size; i > 0; --i)
+                for (size_t i = configuration.columns.size() - 1; i > 0; --i)
                 {
                     std::swap(configuration.columns[i], configuration.columns[i - 1]);
                 }
             }
             else
             {
-                configuration.columns[configuration.columns.size()] = LogConfiguration::Column{key, {key}, "{}"};
+                configuration.columns.push_back(LogConfiguration::Column{key, {key}, "{}"});
             }
         }
     }
+}
+
+void SerializeConfiguration(const std::filesystem::path &path, const LogConfiguration &configuration)
+{
+    nlohmann::json json = configuration;
+    std::ofstream file(path);
+    if (file.is_open())
+    {
+        file <<  json.dump(4);
+    }
+    else
+    {
+        throw std::runtime_error("Failed to open file " + path.string());
+    }
+}
+
+LogConfiguration DeserializeConfiguration(const std::filesystem::path &path)
+{
+    nlohmann::json json;
+    std::ifstream file(path);
+    if (file.is_open())
+    {
+        file >>  json;
+    }
+    else
+    {
+        throw std::runtime_error("Failed to open file " + path.string());
+    }
+
+    return json.get<LogConfiguration>();
 }
 
 }

@@ -65,7 +65,7 @@ public:
             return QVariant();
         }
 
-        if (orientation == Qt::Horizontal && section >= 0 && section < mLogData.GetKeys().size())
+        if (orientation == Qt::Horizontal && section >= 0 && section < columnCount())
         {
             if (mLogTable != nullptr)
             {

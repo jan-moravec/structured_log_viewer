@@ -44,6 +44,8 @@ public:
 
 private slots:
     void OpenFile();
+    void SaveConfiguration();
+    void LoadConfiguration();
 
 private:
     void OpenFileInternal(const QString &file);

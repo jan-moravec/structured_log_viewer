@@ -2,9 +2,6 @@
 
 #include "log_parser.hpp"
 
-//using UtcTimeStamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>;
-//using LogValue = std::variant<std::string, int64_t, double, bool, std::monostate>;
-
 namespace loglib
 {
 

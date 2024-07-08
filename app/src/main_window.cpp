@@ -114,6 +114,8 @@ MainWindow::MainWindow(QWidget *parent)
     mTableView->setShowGrid(true);
 
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFile);
+    connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
+    connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
 
     QTimer::singleShot(0, [=] {
@@ -141,6 +143,25 @@ void MainWindow::OpenFile()
             OpenFileInternal(file);
         }
     }
+}
+
+void MainWindow::SaveConfiguration()
+{
+    QString file = QFileDialog::getSaveFileName(this,
+                                                      "Save Configuration",
+                                                      QString(),
+                                                      "JSON (*.json);;All Files (*)");
+    SerializeConfiguration(file.toStdString(), mConfiguration);
+}
+
+void MainWindow::LoadConfiguration()
+{
+    QString file = QFileDialog::getOpenFileName(this,
+                                                "Save Configuration",
+                                                QString(),
+                                                "JSON (*.json);;All Files (*)");
+    mConfiguration = DeserializeConfiguration(file.toStdString());
+    mModel->AddData(LogData{}, mConfiguration);
 }
 
 void MainWindow::dropEvent(QDropEvent *event) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "log_table.hpp"
+#include "log_configuration.hpp"
 #include "log_line.hpp"
 
 #include <date/date.h>
@@ -32,17 +32,17 @@ bool ParseTimestampsLineKey(LogLine &line, const std::string &key,  const std::v
     return false;
 }
 
-std::string ParseTimestampsLine(LogLine &line, const std::unordered_map<size_t, LogConfiguration::Column> &columns)
+std::string ParseTimestampsLine(LogLine &line, const std::vector<LogConfiguration::Column> &columns)
 {
     std::string errors;
 
     for (const auto &column: columns)
     {
-        if (column.second.type == LogConfiguration::Type::Time)
+        if (column.type == LogConfiguration::Type::Time)
         {
-            for (const std::string &key: column.second.keys)
+            for (const std::string &key: column.keys)
             {
-                if (ParseTimestampsLineKey(line, key, column.second.parseFormats))
+                if (ParseTimestampsLineKey(line, key, column.parseFormats))
                 {
                     return "";
                 }

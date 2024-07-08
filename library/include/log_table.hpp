@@ -20,7 +20,7 @@ public:
 
     std::string GetHeader(size_t column) const
     {
-        return mConfiguration.columns.at(column).header;
+        return mConfiguration.columns[column].header;
     }
 
     size_t ColumnCount() const
