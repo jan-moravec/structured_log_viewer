@@ -64,7 +64,7 @@ public:
 private:
     static std::string formatLogValue(const std::string &format, const LogValue& value) {
         return std::visit(
-            [&format](auto &&arg)
+            [&format](const auto &arg)
             {
                 using T = std::decay_t<decltype(arg)>;
                 if constexpr (std::is_same_v<T, std::string>)
@@ -73,21 +73,20 @@ private:
                 }
                 else if constexpr (std::is_same_v<T, int64_t>)
                 {
-                    return fmt::format(format, arg);
+                    return fmt::vformat(format, fmt::make_format_args(arg));
                 }
                 else if constexpr (std::is_same_v<T, double>)
                 {
-                    return fmt::format(format, arg);
+                    return fmt::vformat(format, fmt::make_format_args(arg));
                 }
                 else if constexpr (std::is_same_v<T, bool>)
                 {
-                    return fmt::format(format, arg);
+                    return fmt::vformat(format, fmt::make_format_args(arg));
                 }
                 else if constexpr (std::is_same_v<T, TimeStamp>)
                 {
-                    auto tz = date::current_zone();
+                    static auto tz = date::current_zone();
                     date::zoned_time local_time{tz, std::chrono::round<std::chrono::milliseconds>(arg)};
-                    //return date::format("%FT%T%Ez", local_time);
                     return date::format(format, local_time);
                 }
                 else if constexpr (std::is_same_v<T, std::monostate>)

@@ -15,16 +15,22 @@ public:
 
     void keyPressEvent(QKeyEvent *event) override {
         if (event->matches(QKeySequence::Copy)) {
-            QString text;
-            for (const QModelIndex &rowIndex : this->selectionModel()->selectedRows()) {
-                QVariant data = this->model()->data(rowIndex, LogModelItemDataRole::CopyLine);
-                text += data.toString() + "\n";
-            }
-            text.removeLast();
-            QClipboard *clipboard = QApplication::clipboard();
-            clipboard->setText(text);
+            CopySelectedRowsToClipboard();
             return;
         }
         QTableView::keyPressEvent(event);
     }
+
+public slots:
+    void CopySelectedRowsToClipboard()
+    {
+        QString text;
+        for (const QModelIndex &rowIndex : this->selectionModel()->selectedRows()) {
+            QVariant data = this->model()->data(rowIndex, LogModelItemDataRole::CopyLine);
+            text += data.toString() + "\n";
+        }
+        text.removeLast();
+        QClipboard *clipboard = QApplication::clipboard();
+        clipboard->setText(text);
+            }
 };

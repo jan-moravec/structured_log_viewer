@@ -10,6 +10,8 @@ add_library(${PROJECT_NAME} STATIC
   include/log_time.hpp
   include/log_configuration.hpp
   src/log_configuration.cpp
+  src/log_factory.cpp
+  include/log_factory.hpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC ./include)

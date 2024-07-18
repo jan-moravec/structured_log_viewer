@@ -19,6 +19,7 @@ class LogParser
 public:
     virtual ~LogParser() = default;
 
+    virtual bool IsValid(const std::filesystem::path &file) const = 0;
     virtual ParseResult Parse(const std::filesystem::path &file) const = 0;
 };
 

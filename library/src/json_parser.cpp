@@ -8,6 +8,34 @@
 namespace loglib
 {
 
+bool JsonParser::IsValid(const std::filesystem::path &file) const
+{
+    std::ifstream stream(file);
+    if (!stream.is_open())
+    {
+        return false;
+    }
+
+    std::string line;
+    if (std::getline(stream, line))
+    {
+        try
+        {
+            nlohmann::json json = nlohmann::json::parse(line);
+            if (json.is_object())
+            {
+                return true;
+            }
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    return false;
+}
+
 ParseResult JsonParser::Parse(const std::filesystem::path &file) const
 {
     std::ifstream stream(file);

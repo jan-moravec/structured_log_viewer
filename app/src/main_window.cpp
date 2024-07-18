@@ -8,15 +8,15 @@
 #include <QVBoxLayout>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QLineEdit>
+#include <QCheckBox>
 
-#include <chrono>
 #include <filesystem>
-#include <sstream>
 
 #include <date/date.h>
 #include <date/tz.h>
 
-#include <json_parser.hpp>
+#include <log_factory.hpp>
 #include <log_time.hpp>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -24,27 +24,24 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-
-    auto dataPath = std::filesystem::current_path() / std::filesystem::path("tzdata");
-    date::set_install(dataPath.string());
-
-    std::istringstream in{"2024-05-21T10:06:57.933+02:00"};
-    std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> tp;
-    in >> date::parse("%FT%T%Ez", tp);
-
-    // Create a zoned_time in local time zone from the parsed time_point
-    // auto local_zone = std::chrono::current_zone(); // Get the current local time zone
-    // std::chrono::zoned_time<std::chrono::microseconds> local_time{local_zone, tp};
-    // std::string formatted_local_time_with_timezone = std::format("current time: {:%Y-%m-%d %H:%M:%S.%z}\n", local_time);
-    
-    // Convert the time_point to zoned_time with the local time zone
-    auto tz = date::current_zone();
-    date::zoned_time local_time{tz, tp};
-    std::string formatted_local_time_with_timezone = date::format("%FT%T%Ez", local_time);
+    this->setWindowTitle("Structured Log Viewer");
 
     mTableView = new LogTableView(this);
 
-    setCentralWidget(mTableView);
+    //setCentralWidget(mTableView);
+
+    mLayout = new QVBoxLayout(ui->centralWidget);
+    //hLayout->setContentsMargins(0, 0, 0, 0);
+    //hLayout->setSpacing(0);
+
+    mLayout->addWidget(mTableView, 1);
+    mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
+
+
+    //customWindow->show();
+
+    //customWindow->close();
 
     //QVBoxLayout *layout = new QVBoxLayout(ui->centralWidget);
 
@@ -52,6 +49,27 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Create the model
     mModel = new LogModel(mTableView);
+
+    //mTableView->setStyleSheet("QTableView::item:selected { background-color: lightblue; }");
+
+//    QTableView::item:focus { background-color: lightblue; }
+//    QTableView::item:focus:!active { background-color: lightblue; }
+    // QTableView::item:selected:focus { outline: none; border: none; }
+    // QTableView::item {outline: none; border: none; background: transparent; }
+    // QTableView::item:focus:pressed { outline: none; border: none; background: transparent; }
+    //  background: transparent;
+    //QTableView::item:focus { outline: none; border: none; background: transparent; color: #000000; }
+
+    mTableView->setStyleSheet(R"(
+
+
+QTableView::item:selected { background-color: lightblue; }
+QTableView::item:selected:!active { background-color: lightblue; }
+
+
+
+
+)");
 
     mTableView->horizontalHeader()->setStyleSheet(
         "QHeaderView::section {"
@@ -113,13 +131,26 @@ MainWindow::MainWindow(QWidget *parent)
     // Enable grid lines
     mTableView->setShowGrid(true);
 
-    connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFile);
+    connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
+    connect(ui->actionOpenJsonLogs, &QAction::triggered, this, &MainWindow::OpenJsonLogs);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
 
-    QTimer::singleShot(0, [=] {
-        mTableView->resizeColumnsToContents();
+    connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    connect(ui->actionFind, &QAction::triggered,  this, &MainWindow::Find);
+
+    QTimer::singleShot(0, [this] {
+        try
+        {
+            loglib::Initialize();
+        }
+        catch (std::exception &e)
+        {
+            QMessageBox::critical(this, "Fatal Error", QString("An unrecoverable error occurred:\n") + e.what() + "\n\nApplication will exit.");
+            QApplication::exit(1);
+        }
+        //mTableView->resizeColumnsToContents();
         //tableView->horizontalHeader()->stretchLastSection();  // Stretch to fill the view
         //tableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
         //tableView->resizeRowsToContents();
@@ -131,7 +162,7 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-void MainWindow::OpenFile()
+void MainWindow::OpenFiles()
 {
     QStringList files = QFileDialog::getOpenFileNames(this,
                                                       "Select Files",
@@ -141,6 +172,33 @@ void MainWindow::OpenFile()
     if (!files.isEmpty()) {
         for (const QString &file : files) {
             OpenFileInternal(file);
+        }
+    }
+}
+
+void MainWindow::OpenJsonLogs()
+{
+    QStringList files = QFileDialog::getOpenFileNames(this,
+                                                      "Select Files",
+                                                      QString(),
+                                                      "All Files (*.*)");
+
+    std::unique_ptr<LogParser> jsonParser = LogFactory::Create(LogFactory::Parser::Json);
+    for (const QString &file : files)
+    {
+        if (!files.isEmpty()) {
+
+            ParseResult result = jsonParser->Parse(file.toStdString());
+            UpdateConfiguration(mConfiguration, result.data);
+            ParseTimestamps(result.data, mConfiguration);
+
+            mModel->AddData(std::move(result.data), mConfiguration);
+            if (!result.error.empty())
+            {
+                QMessageBox::warning(this, "Error Parsing JSON Logs", QString::fromStdString(result.error));
+            }
+
+            UpdateUi();
         }
     }
 }
@@ -160,8 +218,88 @@ void MainWindow::LoadConfiguration()
                                                 "Save Configuration",
                                                 QString(),
                                                 "JSON (*.json);;All Files (*)");
-    mConfiguration = DeserializeConfiguration(file.toStdString());
-    mModel->AddData(LogData{}, mConfiguration);
+    if (!file.isEmpty())
+    {
+        try
+        {
+            mConfiguration = DeserializeConfiguration(file.toStdString());
+            mModel->AddData(LogData{}, mConfiguration);
+            UpdateUi();
+        }
+        catch (std::exception &e)
+        {
+            QMessageBox::warning(this, "Error Parsing Configuration", e.what());
+        }
+    }
+}
+
+void MainWindow::Find()
+{
+    if (mFindRecord == nullptr)
+    {
+        mFindRecord = new FindRecordWidget(this);
+        connect(mFindRecord, &FindRecordWidget::FindRecords,  this, &MainWindow::FindRecords);
+        connect(mFindRecord, &FindRecordWidget::Closed,  this, &MainWindow::FindRecordsWidgedClosed);
+        mLayout->addWidget(mFindRecord);
+        mFindRecord->setFocus();
+    }
+    else
+    {
+        mFindRecord->setFocus();
+    }
+
+    mFindRecord->SetEditFocus();
+}
+
+void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions)
+{
+    QModelIndex searchStartIndex;
+    if(!mTableView->currentIndex().isValid())
+    {
+        searchStartIndex = mTableView->model()->index(0,0);
+    }
+    else
+    {
+        searchStartIndex = mTableView->currentIndex();
+    }
+    Qt::MatchFlags flags = Qt::MatchContains | Qt::MatchWrap | Qt::MatchRecursive;
+    if (wildcards)
+    {
+        flags |= Qt::MatchWildcard;
+    }
+    if (regularExpressions)
+    {
+        flags |= Qt::MatchRegularExpression;
+    }
+    int skipFirstN = 0;
+    if (mTableView->selectionModel()->isRowSelected(searchStartIndex.row()))
+    {
+        skipFirstN = 1;
+    }
+
+    const QVariant value = QVariant::fromValue(text);
+    QModelIndexList matches = mModel->MatchRow(
+        mModel->index(searchStartIndex.row(), 0),
+        Qt::DisplayRole,
+        value,
+        1,
+        flags,
+        next,
+        skipFirstN
+        );
+
+    if (!matches.isEmpty())
+    {
+        mTableView->clearSelection();
+        mTableView->scrollTo(matches[0]);
+        mTableView->selectionModel()->select(matches[0], QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        mTableView->selectionModel()->setCurrentIndex(matches[0], QItemSelectionModel::NoUpdate);
+    }
+}
+
+void MainWindow::FindRecordsWidgedClosed()
+{
+    mFindRecord = nullptr;
 }
 
 void MainWindow::dropEvent(QDropEvent *event) {
@@ -180,22 +318,29 @@ void MainWindow::dropEvent(QDropEvent *event) {
 
 void MainWindow::OpenFileInternal(const QString &file)
 {
-    ParseResult result = JsonParser().Parse(file.toStdString());
-
-    //LogConfiguration configuration;
-    //configuration.columns[0] = LogConfiguration::Column{"Timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez"}};
-    //configuration.columns[1] = LogConfiguration::Column{"Status", {"status"}, "{}"};
-    //configuration.columns[2] = LogConfiguration::Column{"ID", {"id"}, "{}"};
-    //configuration.columns[3] = LogConfiguration::Column{"Body", {"body"}, "{}"};
-
-    UpdateConfiguration(mConfiguration, result.data);
-    ParseTimestamps(result.data, mConfiguration);
-
-    mModel->AddData(std::move(result.data), mConfiguration);
-    if (!result.error.empty())
+    bool isConfiguration = true;
+    try
     {
-        QMessageBox::warning(this, "Error parsing " + file, QString::fromStdString(result.error));
+        mConfiguration = DeserializeConfiguration(file.toStdString());
+    } catch (...)
+    {
+        isConfiguration = false;
     }
 
+    if (!isConfiguration)
+    {
+        ParseResult result = LogFactory::Parse(file.toStdString());
+
+        UpdateConfiguration(mConfiguration, result.data);
+        ParseTimestamps(result.data, mConfiguration);
+
+        mModel->AddData(std::move(result.data), mConfiguration);
+        if (!result.error.empty())
+        {
+            QMessageBox::warning(this, "Error Opening File", QString::fromStdString(result.error));
+        }
+    }
+
+    UpdateUi();
     //mTableView->sortByColumn(0, Qt::SortOrder::AscendingOrder);
 }

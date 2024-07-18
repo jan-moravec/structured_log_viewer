@@ -10,6 +10,13 @@
 namespace loglib
 {
 
+void Initialize()
+{
+    std::filesystem::path dataPath = std::filesystem::current_path() / std::filesystem::path("tzdata");
+    date::set_install(dataPath.string());
+    static_cast<void>(date::current_zone()); // Test the database
+}
+
 bool ParseTimestampsLineKey(LogLine &line, const std::string &key,  const std::vector<std::string> &formats)
 {
     LogValue value = line.GetValue(key);
