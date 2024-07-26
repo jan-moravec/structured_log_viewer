@@ -4,6 +4,7 @@
 #include <QLineEdit>
 #include <QCheckBox>
 #include <QPushButton>
+#include <QToolButton>
 
 class FindRecordWidget : public QWidget
 {
@@ -31,4 +32,5 @@ private:
     QCheckBox *mCheckBoxRegularExpressions;
     QPushButton *mButtonNext;
     QPushButton *mButtonPrevious;
+    QToolButton *mButtonClose;
 };

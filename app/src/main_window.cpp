@@ -60,23 +60,17 @@ MainWindow::MainWindow(QWidget *parent)
     //  background: transparent;
     //QTableView::item:focus { outline: none; border: none; background: transparent; color: #000000; }
 
-    mTableView->setStyleSheet(R"(
-
-
+    /*mTableView->setStyleSheet(R"(
 QTableView::item:selected { background-color: lightblue; }
 QTableView::item:selected:!active { background-color: lightblue; }
-
-
-
-
-)");
+)");*/
 
     mTableView->horizontalHeader()->setStyleSheet(
         "QHeaderView::section {"
-        "background-color: lightgray;"
+        //"background-color: lightgray;"
         //"color: blue;"
         "padding: 5px;"
-        "border: 1px solid #6c6c6c;"
+        //"border: 1px solid #6c6c6c;"
         "font-weight: bold;"
         //"font-size: 12pt;"
         "}"
@@ -245,6 +239,7 @@ void MainWindow::Find()
     }
     else
     {
+        mFindRecord->show();
         mFindRecord->setFocus();
     }
 

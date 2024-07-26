@@ -38,6 +38,9 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mButtonPrevious = new QPushButton("Previous", this);
     hLayout->addWidget(mButtonPrevious);
     //buttonLayout->addWidget(mButtonPrevious);
+    mButtonClose = new QToolButton(this);
+    mButtonClose->setText("X");
+    hLayout->addWidget(mButtonClose);
 
     this->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
     mEdit->setFocus();
@@ -46,6 +49,7 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
 
     connect(mButtonNext, &QPushButton::clicked, this, &FindRecordWidget::FindNext);
     connect(mButtonPrevious, &QPushButton::clicked, this, &FindRecordWidget::FindPrevious);
+    connect(mButtonClose, &QPushButton::clicked, this, &FindRecordWidget::hide);
 }
 
 void FindRecordWidget::SetEditFocus()

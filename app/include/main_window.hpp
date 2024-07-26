@@ -4,9 +4,8 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "find_record_widget.hpp"
-#include <log_filter_model.h>
-
-#include <log_configuration.hpp>
+#include "log_filter_model.hpp"
+#include "log_configuration.hpp"
 
 #include <QMainWindow>
 #include <QDragEnterEvent>

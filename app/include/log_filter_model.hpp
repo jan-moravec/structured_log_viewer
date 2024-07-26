@@ -1,5 +1,4 @@
-#ifndef LOG_FILTER_MODEL_H
-#define LOG_FILTER_MODEL_H
+#pragma once
 
 #include <QSortFilterProxyModel>
 
@@ -12,7 +11,7 @@ public:
         const QModelIndex &start, int role,
         const QVariant &value, int hits = 1,
         Qt::MatchFlags flags = Qt::MatchFlags(Qt::MatchStartsWith | Qt::MatchWrap),
-        bool forwad = true,
+        bool forward = true,
         int skipFirstN = 0) const
     {
         QList<QModelIndex> result;
@@ -23,7 +22,7 @@ public:
         const int startRow = start.row();
         const int startColumn = start.column();
 
-        if (forwad)
+        if (forward)
         {
             for (int row = skipFirstN; row < rowCount; ++row) {
                 int actualRow = (startRow + row) % rowCount;
@@ -104,5 +103,3 @@ private:
         return false;
     }
 };
-
-#endif // LOG_FILTER_MODEL_H
