@@ -4,11 +4,11 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "find_record_widget.hpp"
+#include <log_filter_model.h>
 
 #include <log_configuration.hpp>
 
 #include <QMainWindow>
-#include <QSortFilterProxyModel>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -67,7 +67,7 @@ private:
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
-    QSortFilterProxyModel *mSortFilterProxyModel;
+    LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
     FindRecordWidget *mFindRecord = nullptr;

@@ -21,6 +21,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         ${PROJECT_SOURCES}
         include/log_table_view.hpp src/log_table_view.cpp
         include/find_record_widget.hpp src/find_record_widget.cpp
+        include/log_filter_model.h src/log_filter_model.cpp
     )
 
 # Define target properties for Android with Qt 6 as:

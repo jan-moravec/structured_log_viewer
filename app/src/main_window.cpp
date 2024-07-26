@@ -100,7 +100,7 @@ QTableView::item:selected:!active { background-color: lightblue; }
 
     // TODO: Implement QSortFilterProxyModel
     // Enable sorting
-    mSortFilterProxyModel = new QSortFilterProxyModel(this);
+    mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
@@ -278,7 +278,7 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 
     const QVariant value = QVariant::fromValue(text);
-    QModelIndexList matches = mModel->MatchRow(
+    QModelIndexList matches = mSortFilterProxyModel->MatchRow(
         mModel->index(searchStartIndex.row(), 0),
         Qt::DisplayRole,
         value,
