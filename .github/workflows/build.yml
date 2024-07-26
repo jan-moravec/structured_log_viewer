@@ -40,7 +40,7 @@ jobs:
 
       - name: Package application
         run: |
-          cd build/app/Release
+          cd build/app/Debug
           ../linuxdeployqt-continuous-x86_64.AppImage app -appimage
 
       - name: Upload artifact
@@ -75,7 +75,7 @@ jobs:
 
       - name: Package application
         run: |
-          cd build/app/Release
+          cd build/app/Debug
           windeployqt app.exe
           powershell Compress-Archive -Path * -DestinationPath myapp-windows.zip
 
