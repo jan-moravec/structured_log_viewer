@@ -64,7 +64,7 @@ public:
 private:
     static std::string formatLogValue(const std::string &format, const LogValue& value) {
         return std::visit(
-            [&format](const auto &arg)
+            [&format](const auto &arg) -> std::string
             {
                 using T = std::decay_t<decltype(arg)>;
                 if constexpr (std::is_same_v<T, std::string>)
@@ -95,7 +95,7 @@ private:
                 }
                 else
                 {
-                    static_assert(false, "non-exhaustive visitor!");
+                    static_assert(std::is_same_v<T, void>, "non-exhaustive visitor!");
                 }
             },
             value);
