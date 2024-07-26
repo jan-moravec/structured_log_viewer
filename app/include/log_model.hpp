@@ -105,7 +105,7 @@ public:
         {
             LogValue value = mLogTable->GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
             return std::visit(
-                [](auto &&arg)
+                [](auto &&arg) -> QVariant
                 {
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, std::string>)
@@ -114,7 +114,7 @@ public:
                     }
                     else if constexpr (std::is_same_v<T, int64_t>)
                     {
-                        return QVariant(arg);
+                        return QVariant::fromValue<qlonglong>(arg);
                     }
                     else if constexpr (std::is_same_v<T, double>)
                     {
@@ -126,7 +126,7 @@ public:
                     }
                     else if constexpr (std::is_same_v<T, TimeStamp>)
                     {
-                        return QVariant(static_cast<int64_t>(arg.time_since_epoch().count()));
+                        return QVariant::fromValue<qlonglong>(arg.time_since_epoch().count());
                     }
                     else if constexpr (std::is_same_v<T, std::monostate>)
                     {
@@ -134,7 +134,7 @@ public:
                     }
                     else
                     {
-                        static_assert(false, "non-exhaustive visitor!");
+                        static_assert(std::is_same_v<T, void>, "non-exhaustive visitor!");
                     }
                 },
                 value);
