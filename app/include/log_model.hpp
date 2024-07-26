@@ -126,7 +126,7 @@ public:
                     }
                     else if constexpr (std::is_same_v<T, TimeStamp>)
                     {
-                        return QVariant(arg.time_since_epoch().count());
+                        return QVariant(static_cast<int64_t>(arg.time_since_epoch().count()));
                     }
                     else if constexpr (std::is_same_v<T, std::monostate>)
                     {
