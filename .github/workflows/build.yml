@@ -24,14 +24,14 @@ jobs:
           arch: "gcc_64"
 
       - name: Install CMake
-        run: sudo apt-get install -y cmake
+        run: sudo apt-get install -y cmake libfuse2
 
       - name: Build
         run: |
           mkdir build
           cd build
-          cmake ..
-          make
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build .
 
       - name: Install linuxdeployqt
         run: |
@@ -40,8 +40,8 @@ jobs:
 
       - name: Package application
         run: |
-          cd build
-          ../linuxdeployqt-continuous-x86_64.AppImage myapp -appimage
+          cd build/app/Release
+          ../linuxdeployqt-continuous-x86_64.AppImage app -appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v2
@@ -70,13 +70,13 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake ..
+          cmake -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 
       - name: Package application
         run: |
-          cd build
-          windeployqt myapp.exe
+          cd build/app/Release
+          windeployqt app.exe
           powershell Compress-Archive -Path * -DestinationPath myapp-windows.zip
 
       - name: Upload artifact
