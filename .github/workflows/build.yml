@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v2
+        uses: jurplel/install-qt-action@v4
         with:
           version: "6.6.3"
           host: "linux"
@@ -44,19 +44,19 @@ jobs:
           ../linuxdeployqt-continuous-x86_64.AppImage StructuredLogViewer -appimage
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: myapp-linux
+          name: StructuredLogViewer-linux
           path: build/*.AppImage
 
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v2
+        uses: jurplel/install-qt-action@v4
         with:
           version: "6.6.3"
           host: "windows"
@@ -70,8 +70,8 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          cmake --build .
+          cmake ..
+          cmake --build . --config Release
 
       - name: Package application
         run: |
@@ -80,7 +80,7 @@ jobs:
           powershell Compress-Archive -Path * -DestinationPath myapp-windows.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: myapp-windows
+          name: StructuredLogViewer-windows
           path: build/myapp-windows.zip
