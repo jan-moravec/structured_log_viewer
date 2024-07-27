@@ -40,8 +40,8 @@ jobs:
 
       - name: Package application
         run: |
-          cd build/app/Debug
-          ../linuxdeployqt-continuous-x86_64.AppImage app -appimage
+          cd build/bin/Release
+          ../linuxdeployqt-continuous-x86_64.AppImage StructuredLogViewer -appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v2
@@ -75,8 +75,8 @@ jobs:
 
       - name: Package application
         run: |
-          cd build/app/Debug
-          windeployqt app.exe
+          cd build/bin/Release
+          windeployqt StructuredLogViewer.exe
           powershell Compress-Archive -Path * -DestinationPath myapp-windows.zip
 
       - name: Upload artifact

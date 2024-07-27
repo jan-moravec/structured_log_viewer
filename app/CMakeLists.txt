@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(app VERSION 0.1 LANGUAGES CXX)
+project(StructuredLogViewer VERSION 0.1 LANGUAGES CXX)
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
@@ -16,7 +16,7 @@ set(PROJECT_SOURCES
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
-    qt_add_executable(app
+    qt_add_executable(${PROJECT_NAME}
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
         include/log_table_view.hpp src/log_table_view.cpp
@@ -46,7 +46,7 @@ endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC ./include)
 
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt${QT_VERSION_MAJOR}::Widgets library)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt${QT_VERSION_MAJOR}::Widgets loglib)
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an
@@ -76,6 +76,6 @@ endif()
 
 # Copy the timezone data next to the binary
 execute_process(
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_CURRENT_BINARY_DIR}/${TZDATA}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
     COMMAND_ERROR_IS_FATAL ANY
 )

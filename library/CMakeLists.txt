@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(library VERSION 0.1 LANGUAGES CXX)
+project(loglib VERSION 0.1 LANGUAGES CXX)
 
 add_library(${PROJECT_NAME} STATIC
   src/json_line.cpp

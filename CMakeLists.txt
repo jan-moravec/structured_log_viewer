@@ -9,6 +9,18 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/")
+
+# Set output directories for specific configurations
+foreach(CONFIGURATION ${CMAKE_CONFIGURATION_TYPES})
+  string(TOUPPER ${CONFIGURATION} CONFIGURATION_UPPER)
+
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CONFIGURATION_UPPER} ${CMAKE_BINARY_DIR}/bin/${CONFIGURATION})
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${CONFIGURATION_UPPER} ${CMAKE_BINARY_DIR}/lib/${CONFIGURATION})
+  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${CONFIGURATION_UPPER} ${CMAKE_BINARY_DIR}/lib/${CONFIGURATION})
+endforeach()
 
 # Fetch nlohmann/json, HowardHinnant/date and fmt
 cmake_policy(SET CMP0135 NEW)
@@ -54,16 +66,16 @@ file(DOWNLOAD
 
 # Download the latest tzdata
 file(DOWNLOAD
-  https://www.iana.org/time-zones/repository/tzdata-latest.tar.gz 
+  https://www.iana.org/time-zones/repository/tzdata-latest.tar.gz
   ${TZDATA_DIR}/${TZDATA_FILE}
   SHOW_PROGRESS
 )
 
 # Extract the latest tzdata
 execute_process(
-    COMMAND ${CMAKE_COMMAND} -E tar xzf ${TZDATA_DIR}/${TZDATA_FILE}
-    WORKING_DIRECTORY ${TZDATA_DIR}
-    COMMAND_ERROR_IS_FATAL ANY
+  COMMAND ${CMAKE_COMMAND} -E tar xzf ${TZDATA_DIR}/${TZDATA_FILE}
+  WORKING_DIRECTORY ${TZDATA_DIR}
+  COMMAND_ERROR_IS_FATAL ANY
 )
 
 add_subdirectory(library)
