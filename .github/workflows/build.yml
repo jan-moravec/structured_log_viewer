@@ -41,13 +41,13 @@ jobs:
       - name: Package application
         run: |
           cd build/bin/Release
-          ../linuxdeployqt-continuous-x86_64.AppImage StructuredLogViewer -appimage
+          ../../../linuxdeployqt-continuous-x86_64.AppImage StructuredLogViewer -appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: StructuredLogViewer-linux
-          path: build/*.AppImage
+          path: build/bin/Release/*.AppImage
 
   build-windows:
     runs-on: windows-latest
@@ -77,10 +77,10 @@ jobs:
         run: |
           cd build/bin/Release
           windeployqt StructuredLogViewer.exe
-          powershell Compress-Archive -Path * -DestinationPath myapp-windows.zip
+          powershell Compress-Archive -Path * -DestinationPath StructuredLogViewer-windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: StructuredLogViewer-windows
-          path: build/myapp-windows.zip
+          path: build/bin/Release/StructuredLogViewer-windows.zip
