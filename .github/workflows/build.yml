@@ -22,7 +22,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: $QT_VERSION
+          version: ${{ env.QT_VERSION }}
           host: "linux"
           target: "desktop"
           arch: "gcc_64"
@@ -44,20 +44,20 @@ jobs:
 
       - name: Package application
         run: |
-          APP_DIR="$APP_NAME.AppDir"
+          APP_DIR="${{ env.APP_NAME }}.AppDir"
           mkdir -p $APP_DIR/usr/bin
           mkdir -p $APP_DIR/usr/lib
           mkdir -p $APP_DIR/usr/share/applications
           mkdir -p $APP_DIR/usr/share/icons/hicolor/256x256/apps
           cp -r build/bin/Release/* $APP_DIR/usr/bin
-          cp deploy/icon.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/$APP_NAME.png
-          cp deploy/app.desktop $APP_DIR/usr/share/applications/$APP_NAME.desktop
-          ./linuxdeployqt-continuous-x86_64.AppImage $APP_DIR/usr/share/applications/$APP_NAME.desktop -appimage -qt=$QT_VERSION
+          cp deploy/icon.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
+          cp deploy/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
+          ./linuxdeployqt-continuous-x86_64.AppImage $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop -appimage -qt=${{ env.QT_VERSION }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: $APP_NAME-linux
+          name: ${{ env.APP_NAME }}-linux
           path: ./*.AppImage
 
   build-windows:
@@ -69,7 +69,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: $QT_VERSION
+          version: ${{ env.QT_VERSION }}
           host: "windows"
           target: "desktop"
           arch: "win64_msvc2019_64"
@@ -87,10 +87,10 @@ jobs:
       - name: Package application
         run: |
           cd build/bin/Release
-          windeployqt --release $APP_NAME.exe
+          windeployqt --release ${{ env.APP_NAME }}.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: $APP_NAME-windows
+          name: ${{ env.APP_NAME }}-windows
           path: build/bin/Release/*
