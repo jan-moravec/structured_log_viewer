@@ -19,6 +19,13 @@
 #include <log_factory.hpp>
 #include <log_time.hpp>
 
+
+bool IsDarkTheme() {
+    QColor bgColor = qApp->palette().color(QPalette::Window);
+    int brightness = (bgColor.red() * 299 + bgColor.green() * 587 + bgColor.blue() * 114) / 1000;
+    return brightness < 128;
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -91,6 +98,21 @@ QTableView::item:selected:!active { background-color: lightblue; }
 
     // Set alternating row colors
     mTableView->setAlternatingRowColors(true);
+
+    if (IsDarkTheme()) {
+        mTableView->setStyleSheet(R"(
+QTableView { background-color: #222222; alternate-background-color: #333333; }
+QTableView::item:selected { background-color: #00518F; }
+QTableView::item:selected:!active { background-color: #00518F; }
+)");
+    } else {
+        mTableView->setStyleSheet(R"(
+QTableView { background-color: #FFFFFF; alternate-background-color: #F0F0F0; }
+QTableView::item:selected { background-color: #ADD4FF; color: black; }
+QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
+)");
+    }
+
 
     // TODO: Implement QSortFilterProxyModel
     // Enable sorting
