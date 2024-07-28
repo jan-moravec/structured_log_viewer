@@ -52,7 +52,7 @@ jobs:
           cp -r build/bin/Release/* $APP_DIR/usr/bin
           cp deploy/icon.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp deploy/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
-          ./linuxdeployqt-continuous-x86_64.AppImage $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop -appimage -qt=${{ env.QT_VERSION }}
+          ./linuxdeployqt-continuous-x86_64.AppImage $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop -appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
