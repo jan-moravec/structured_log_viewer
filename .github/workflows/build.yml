@@ -34,6 +34,7 @@ jobs:
         run: |
           mkdir build
           cd build
+          export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
           cmake -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 
@@ -75,14 +76,17 @@ jobs:
           arch: "win64_msvc2019_64"
 
       - name: Install CMake
-        run: choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          choco install ninja -y
 
       - name: Build
         run: |
           mkdir build
           cd build
-          cmake ..
-          cmake --build . --config Release
+          $env:CMAKE_BUILD_PARALLEL_LEVEL = (Get-WmiObject -Class Win32_ComputerSystem).NumberOfLogicalProcessors
+          cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build .
 
       - name: Package application
         run: |

@@ -6,4 +6,4 @@ Comment=GUI application for viewing structured logs
 Exec=/usr/bin/StructuredLogViewer
 Icon=StructuredLogViewer
 Terminal=false
-Categories=Utility;Application;Logs;Documents;
+Categories=Utility;
