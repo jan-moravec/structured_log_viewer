@@ -74,8 +74,19 @@ if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(${PROJECT_NAME})
 endif()
 
-# Copy the timezone data next to the binary
-execute_process(
+# Define a custom command to copy the timezone data directory
+add_custom_command(
+    OUTPUT ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
-    COMMAND_ERROR_IS_FATAL ANY
+    DEPENDS ${TZDATA_DIR}
+    COMMENT "Copying timezone data directory"
 )
+
+# Add a custom target that uses the custom command
+add_custom_target(copy_tzdata ALL DEPENDS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA})
+
+# Ensure the custom target runs before the executable is built
+add_dependencies(${PROJECT_NAME} copy_tzdata)
+
+# Ensure the clean_tzdata target is run during the clean process
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA})
