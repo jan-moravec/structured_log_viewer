@@ -86,8 +86,12 @@ jobs:
 
       - name: Package application
         run: |
+          dir build
+          dir build/bin
+          dir build/bin/Release
           cd build/bin/Release
           windeployqt --release ${{ env.APP_NAME }}.exe
+          dir
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
