@@ -27,7 +27,7 @@ jobs:
           target: "desktop"
           arch: "gcc_64"
 
-      - name: Install CMake
+      - name: Install build tools
         run: sudo apt-get install -y cmake libfuse2
 
       - name: Build
@@ -75,7 +75,7 @@ jobs:
           target: "desktop"
           arch: "win64_msvc2019_64"
 
-      - name: Install CMake
+      - name: Install build tools
         run: |
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
           choco install ninja -y
@@ -85,12 +85,6 @@ jobs:
         run: |
           mkdir build
           cd build
-          dir "C:\Program Files\Microsoft Visual Studio\"
-          dir "C:\Program Files\Microsoft Visual Studio\2022\"
-          dir "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\"
-          dir "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\"
-          dir "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\"
-          dir "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\"
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
           set CMAKE_BUILD_PARALLEL_LEVEL=%NUMBER_OF_PROCESSORS%
           cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
@@ -98,12 +92,8 @@ jobs:
 
       - name: Package application
         run: |
-          dir build
-          dir build/bin
-          dir build/bin/Release
           cd build/bin/Release
           windeployqt --release ${{ env.APP_NAME }}.exe
-          dir
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
