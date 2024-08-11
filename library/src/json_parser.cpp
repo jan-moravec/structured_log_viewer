@@ -77,8 +77,10 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
 
     std::vector<std::string> finalKeys;
     finalKeys.reserve(keys.size());
-    std::move(std::make_move_iterator(keys.begin()), std::make_move_iterator(keys.end()), std::back_inserter(finalKeys));
+    std::move(
+        std::make_move_iterator(keys.begin()), std::make_move_iterator(keys.end()), std::back_inserter(finalKeys)
+    );
     return ParseResult{LogData(std::move(lines), std::move(finalKeys)), error};
 }
 
-}
+} // namespace loglib

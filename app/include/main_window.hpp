@@ -1,21 +1,21 @@
-#ifndef MAIN_WINDOW_H
-#define MAIN_WINDOW_H
+#pragma once
 
+#include "find_record_widget.hpp"
+#include "log_configuration.hpp"
+#include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
-#include "find_record_widget.hpp"
-#include "log_filter_model.hpp"
-#include "log_configuration.hpp"
 
-#include <QMainWindow>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QMainWindow>
 #include <QMimeData>
-#include <QVBoxLayout>
 #include <QPushButton>
+#include <QVBoxLayout>
 
 QT_BEGIN_NAMESPACE
-namespace Ui {
+namespace Ui
+{
 class MainWindow;
 }
 QT_END_NAMESPACE
@@ -28,28 +28,11 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-    void dragEnterEvent(QDragEnterEvent* event) override
-    {
-        if (event->mimeData()->hasUrls()) {
-            event->acceptProposedAction();
-        }
-    }
-
-    void dragMoveEvent(QDragMoveEvent* event) override
-    {
-        if (event->mimeData()->hasUrls()) {
-            event->acceptProposedAction();
-        }
-    }
-
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
 
-    void UpdateUi()
-    {
-        for (int i = 0; i < mTableView->model()->columnCount() - 1; ++i) {
-            mTableView->resizeColumnToContents(i);
-        }
-    }
+    void UpdateUi();
 
 private slots:
     void OpenFiles();
@@ -59,7 +42,6 @@ private slots:
 
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
-    void FindRecordsWidgedClosed();
 
 private:
     void OpenFileInternal(const QString &file);
@@ -69,7 +51,6 @@ private:
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
-    FindRecordWidget *mFindRecord = nullptr;
+    FindRecordWidget *mFindRecord;
     loglib::LogConfiguration mConfiguration;
 };
-#endif // MAIN_WINDOW_H

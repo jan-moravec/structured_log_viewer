@@ -1,43 +1,25 @@
 #include "find_record_widget.hpp"
 
+#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLineEdit>
-#include <QCheckBox>
 #include <QPushButton>
 #include <QTimer>
 
-FindRecordWidget::FindRecordWidget(QWidget *parent)
-    : QWidget{parent}
+FindRecordWidget::FindRecordWidget(QWidget *parent) : QWidget{parent}
 {
-    //this->setWindowTitle("Find");
-    //this->setWindowFlags(Qt::WindowStaysOnTopHint | Qt::Tool); // Qt::FramelessWindowHint |
-
     QHBoxLayout *hLayout = new QHBoxLayout(this);
 
-    //QVBoxLayout *inputLayout = new QVBoxLayout();
-    //hLayout->addLayout(inputLayout);
     mEdit = new QLineEdit(this);
     hLayout->addWidget(mEdit);
-    //inputLayout->addWidget(mEdit);
-
-    //QHBoxLayout *configLayout = new QHBoxLayout();
-    //inputLayout->addLayout(configLayout);
     mCheckBoxWildcards = new QCheckBox("Wildcards", this);
     hLayout->addWidget(mCheckBoxWildcards);
-    //configLayout->addWidget(mCheckBoxWildcards);
     mCheckBoxRegularExpressions = new QCheckBox("Regular Expressions", this);
     hLayout->addWidget(mCheckBoxRegularExpressions);
-    //configLayout->addWidget(mCheckBoxRegularExpressions);
-
-    //QVBoxLayout *buttonLayout = new QVBoxLayout();
-    //hLayout->addLayout(buttonLayout);
-
     mButtonNext = new QPushButton("Next", this);
     hLayout->addWidget(mButtonNext);
-    //buttonLayout->addWidget(mButtonNext);
     mButtonPrevious = new QPushButton("Previous", this);
     hLayout->addWidget(mButtonPrevious);
-    //buttonLayout->addWidget(mButtonPrevious);
     mButtonClose = new QToolButton(this);
     mButtonClose->setText("X");
     hLayout->addWidget(mButtonClose);

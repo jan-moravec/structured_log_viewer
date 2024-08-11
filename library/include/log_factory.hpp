@@ -2,8 +2,8 @@
 
 #include "log_parser.hpp"
 
-#include <memory>
 #include <filesystem>
+#include <memory>
 
 namespace loglib
 {
@@ -22,4 +22,4 @@ public:
     static std::unique_ptr<LogParser> Create(Parser parser);
 };
 
-}
+} // namespace loglib

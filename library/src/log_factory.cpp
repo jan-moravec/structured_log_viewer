@@ -9,7 +9,8 @@ namespace loglib
 
 ParseResult LogFactory::Parse(const std::filesystem::path &file)
 {
-    for (int i = 0; i < static_cast<int>(Parser::Count); ++i) {
+    for (int i = 0; i < static_cast<int>(Parser::Count); ++i)
+    {
         Parser parserType = static_cast<Parser>(i);
         const std::unique_ptr<LogParser> parser = Create(parserType);
         if (parser->IsValid(file))
@@ -23,7 +24,8 @@ ParseResult LogFactory::Parse(const std::filesystem::path &file)
 
 std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
 {
-    switch (parser) {
+    switch (parser)
+    {
     case Parser::Json:
         return std::make_unique<JsonParser>();
         break;
@@ -32,5 +34,4 @@ std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
     }
 }
 
-
-}
+} // namespace loglib

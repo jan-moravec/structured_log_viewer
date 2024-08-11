@@ -3,11 +3,12 @@
 #include <algorithm>
 #include <fstream>
 
-namespace loglib
+namespace
 {
 
-bool IsKeyInAnyColumn(const std::string& key, const std::vector<LogConfiguration::Column> &columns) {
-    for (const auto &column: columns)
+bool IsKeyInAnyColumn(const std::string &key, const std::vector<loglib::LogConfiguration::Column> &columns)
+{
+    for (const auto &column : columns)
     {
         if (std::find(column.keys.begin(), column.keys.end(), key) != column.keys.end())
         {
@@ -18,30 +19,40 @@ bool IsKeyInAnyColumn(const std::string& key, const std::vector<LogConfiguration
     return false;
 }
 
-std::string ToLower(const std::string& str) {
+std::string ToLower(const std::string &str)
+{
     std::string lower = str;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     return lower;
 }
 
-bool IsTimestampKey(const std::string& key)
+bool IsTimestampKey(const std::string &key)
 {
     static const std::vector<std::string> TIMESTAMP_KEYS = {"timestamp", "time", "t"};
-    return std::any_of(TIMESTAMP_KEYS.begin(), TIMESTAMP_KEYS.end(), [lowerKey = ToLower(key)](const std::string& value) {
-        return (lowerKey == value);
-    });
+    return std::any_of(
+        TIMESTAMP_KEYS.begin(),
+        TIMESTAMP_KEYS.end(),
+        [lowerKey = ToLower(key)](const std::string &value) { return (lowerKey == value); }
+    );
 }
+
+} // namespace
+
+namespace loglib
+{
 
 void UpdateConfiguration(LogConfiguration &configuration, const LogData &logData)
 {
     // Update configuration columns with new keys
-    for (const std::string &key: logData.GetKeys())
+    for (const std::string &key : logData.GetKeys())
     {
         if (!IsKeyInAnyColumn(key, configuration.columns))
         {
             if (IsTimestampKey(key))
             {
-                configuration.columns.push_back(LogConfiguration::Column{key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}});
+                configuration.columns.push_back(LogConfiguration::Column{
+                    key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                });
                 // Timestamp should be the first column, all the others will be shifted
                 for (size_t i = configuration.columns.size() - 1; i > 0; --i)
                 {
@@ -62,7 +73,7 @@ void SerializeConfiguration(const std::filesystem::path &path, const LogConfigur
     std::ofstream file(path);
     if (file.is_open())
     {
-        file <<  json.dump(4);
+        file << json.dump(4);
     }
     else
     {
@@ -76,7 +87,7 @@ LogConfiguration DeserializeConfiguration(const std::filesystem::path &path)
     std::ifstream file(path);
     if (file.is_open())
     {
-        file >>  json;
+        file >> json;
     }
     else
     {
@@ -86,4 +97,4 @@ LogConfiguration DeserializeConfiguration(const std::filesystem::path &path)
     return json.get<LogConfiguration>();
 }
 
-}
+} // namespace loglib

@@ -1,10 +1,10 @@
 #pragma once
 
-#include <QWidget>
-#include <QLineEdit>
 #include <QCheckBox>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QToolButton>
+#include <QWidget>
 
 class FindRecordWidget : public QWidget
 {

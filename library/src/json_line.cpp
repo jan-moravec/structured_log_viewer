@@ -3,7 +3,7 @@
 namespace loglib
 {
 
-JsonLine::JsonLine(nlohmann::json &&line): mLine(std::move(line))
+JsonLine::JsonLine(nlohmann::json &&line) : mLine(std::move(line))
 {
 }
 
@@ -47,4 +47,4 @@ std::string JsonLine::GetLine() const
     return mLine.dump();
 }
 
-}
+} // namespace loglib

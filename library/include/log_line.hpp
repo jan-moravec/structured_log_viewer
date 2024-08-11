@@ -1,9 +1,9 @@
 #pragma once
 
-#include <string>
-#include <variant>
 #include <chrono>
+#include <string>
 #include <unordered_map>
+#include <variant>
 
 namespace loglib
 {
@@ -19,29 +19,11 @@ public:
     virtual LogValue GetRawValue(const std::string &key) const = 0;
     virtual std::string GetLine() const = 0;
 
-    virtual LogValue GetValue(const std::string &key) const
-    {
-        if (key.empty())
-        {
-            return std::monostate();
-        }
-
-        const auto extraValueInterator = mExtraValues.find(key);
-        if (extraValueInterator != mExtraValues.end())
-        {
-            return extraValueInterator->second;
-        }
-
-        return GetRawValue(key);
-    }
-
-    virtual void SetExtraValue(const std::string &key, const LogValue &value)
-    {
-        mExtraValues[key] = value;
-    }
+    virtual LogValue GetValue(const std::string &key) const;
+    virtual void SetExtraValue(const std::string &key, const LogValue &value);
 
 private:
     std::unordered_map<std::string, LogValue> mExtraValues;
 };
 
-}
+} // namespace loglib

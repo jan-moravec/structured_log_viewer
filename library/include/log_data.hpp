@@ -2,8 +2,8 @@
 
 #include "log_line.hpp"
 
-#include <string>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace loglib
@@ -24,4 +24,4 @@ private:
     std::vector<std::string> mKeys;
 };
 
-}
+} // namespace loglib

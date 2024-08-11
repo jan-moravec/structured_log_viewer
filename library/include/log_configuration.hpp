@@ -13,7 +13,8 @@ namespace loglib
 
 struct LogConfiguration
 {
-    enum class Type {
+    enum class Type
+    {
         Any,
         Time
     };
@@ -34,13 +35,12 @@ struct LogConfiguration
     NLOHMANN_DEFINE_TYPE_INTRUSIVE(LogConfiguration, columns)
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(LogConfiguration::Type, {
-    {LogConfiguration::Type::Any, "any"},
-    {LogConfiguration::Type::Time, "time"}
-})
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    LogConfiguration::Type, {{LogConfiguration::Type::Any, "any"}, {LogConfiguration::Type::Time, "time"}}
+)
 
 void UpdateConfiguration(LogConfiguration &configuration, const LogData &logData);
 void SerializeConfiguration(const std::filesystem::path &path, const LogConfiguration &configuration);
 LogConfiguration DeserializeConfiguration(const std::filesystem::path &path);
 
-}
+} // namespace loglib

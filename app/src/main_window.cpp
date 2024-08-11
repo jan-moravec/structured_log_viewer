@@ -1,88 +1,38 @@
 #include "main_window.hpp"
 #include "./ui_main_window.h"
 
+#include <QCheckBox>
+#include <QFileDialog>
+#include <QHeaderView>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QStandardItemModel>
 #include <QTableView>
 #include <QTimer>
-#include <QStandardItemModel>
-#include <QHeaderView>
 #include <QVBoxLayout>
-#include <QFileDialog>
-#include <QMessageBox>
-#include <QLineEdit>
-#include <QCheckBox>
-
-#include <filesystem>
-
-#include <date/date.h>
-#include <date/tz.h>
 
 #include <log_factory.hpp>
-#include <log_time.hpp>
+#include <log_processing.hpp>
 
-
-bool IsDarkTheme() {
+bool IsDarkTheme()
+{
     QColor bgColor = qApp->palette().color(QPalette::Window);
     int brightness = (bgColor.red() * 299 + bgColor.green() * 587 + bgColor.blue() * 114) / 1000;
     return brightness < 128;
 }
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-    , ui(new Ui::MainWindow)
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
 
     mTableView = new LogTableView(this);
-
-    //setCentralWidget(mTableView);
-
     mLayout = new QVBoxLayout(ui->centralWidget);
-    //hLayout->setContentsMargins(0, 0, 0, 0);
-    //hLayout->setSpacing(0);
-
     mLayout->addWidget(mTableView, 1);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-
-
-    //customWindow->show();
-
-    //customWindow->close();
-
-    //QVBoxLayout *layout = new QVBoxLayout(ui->centralWidget);
-
-    //layout->addWidget(tableView);
-
     // Create the model
     mModel = new LogModel(mTableView);
-
-    //mTableView->setStyleSheet("QTableView::item:selected { background-color: lightblue; }");
-
-//    QTableView::item:focus { background-color: lightblue; }
-//    QTableView::item:focus:!active { background-color: lightblue; }
-    // QTableView::item:selected:focus { outline: none; border: none; }
-    // QTableView::item {outline: none; border: none; background: transparent; }
-    // QTableView::item:focus:pressed { outline: none; border: none; background: transparent; }
-    //  background: transparent;
-    //QTableView::item:focus { outline: none; border: none; background: transparent; color: #000000; }
-
-    /*mTableView->setStyleSheet(R"(
-QTableView::item:selected { background-color: lightblue; }
-QTableView::item:selected:!active { background-color: lightblue; }
-)");*/
-
-    mTableView->horizontalHeader()->setStyleSheet(
-        "QHeaderView::section {"
-        //"background-color: lightgray;"
-        //"color: blue;"
-        "padding: 5px;"
-        //"border: 1px solid #6c6c6c;"
-        "font-weight: bold;"
-        //"font-size: 12pt;"
-        "}"
-        );
-
 
     // Create the view
     mTableView->setModel(mModel);
@@ -99,13 +49,16 @@ QTableView::item:selected:!active { background-color: lightblue; }
     // Set alternating row colors
     mTableView->setAlternatingRowColors(true);
 
-    if (IsDarkTheme()) {
+    if (IsDarkTheme())
+    {
         mTableView->setStyleSheet(R"(
 QTableView { background-color: #222222; alternate-background-color: #333333; }
 QTableView::item:selected { background-color: #00518F; }
 QTableView::item:selected:!active { background-color: #00518F; }
 )");
-    } else {
+    }
+    else
+    {
         mTableView->setStyleSheet(R"(
 QTableView { background-color: #FFFFFF; alternate-background-color: #F0F0F0; }
 QTableView::item:selected { background-color: #ADD4FF; color: black; }
@@ -113,8 +66,6 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
 )");
     }
 
-
-    // TODO: Implement QSortFilterProxyModel
     // Enable sorting
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mModel);
@@ -126,23 +77,13 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     mTableView->resizeColumnsToContents();
 
     // Set header customization
+    mTableView->horizontalHeader()->setStyleSheet(R"(QHeaderView::section { padding: 8px; font-weight: bold; })");
     mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
     mTableView->horizontalHeader()->setStretchLastSection(true);
 
-    mTableView->horizontalHeader()->setHighlightSections(false);  // No highlight on header click
-    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);  // Align headers
-
-
-    // Set cell alignment
-    /*for (int row = 0; row < model->rowCount(); ++row) {
-        for (int column = 0; column < model->columnCount(); ++column) {
-            model->item(row, column)->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        }
-    }*/
-
-    // Adjust row height
-    mTableView->verticalHeader()->setDefaultSectionSize(25);
+    mTableView->horizontalHeader()->setHighlightSections(false); // No highlight on header click
+    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter); // Align headers
 
     // Enable grid lines
     mTableView->setShowGrid(true);
@@ -154,7 +95,12 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
-    connect(ui->actionFind, &QAction::triggered,  this, &MainWindow::Find);
+    connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
+
+    mFindRecord = new FindRecordWidget(this);
+    connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
+    mLayout->addWidget(mFindRecord);
+    mFindRecord->hide();
 
     QTimer::singleShot(0, [this] {
         try
@@ -163,13 +109,13 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
         }
         catch (std::exception &e)
         {
-            QMessageBox::critical(this, "Fatal Error", QString("An unrecoverable error occurred:\n") + e.what() + "\n\nApplication will exit.");
+            QMessageBox::critical(
+                this,
+                "Fatal Error",
+                QString("An unrecoverable error occurred:\n") + e.what() + "\n\nApplication will exit."
+            );
             QApplication::exit(1);
         }
-        //mTableView->resizeColumnsToContents();
-        //tableView->horizontalHeader()->stretchLastSection();  // Stretch to fill the view
-        //tableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-        //tableView->resizeRowsToContents();
     });
 }
 
@@ -178,15 +124,55 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasUrls())
+    {
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent *event)
+{
+    if (event->mimeData()->hasUrls())
+    {
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    const QMimeData *mimeData = event->mimeData();
+
+    if (mimeData->hasUrls())
+    {
+        QList<QUrl> urlList = mimeData->urls();
+
+        for (int i = 0; i < urlList.size(); ++i)
+        {
+            OpenFileInternal(urlList.at(i).toLocalFile());
+        }
+
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::UpdateUi()
+{
+    for (int i = 0; i < mTableView->model()->columnCount() - 1; ++i)
+    {
+        mTableView->resizeColumnToContents(i);
+    }
+}
+
 void MainWindow::OpenFiles()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this,
-                                                      "Select Files",
-                                                      QString(),
-                                                      "All Files (*.*)");
+    QStringList files = QFileDialog::getOpenFileNames(this, "Select Files", QString(), "All Files (*.*)");
 
-    if (!files.isEmpty()) {
-        for (const QString &file : files) {
+    if (!files.isEmpty())
+    {
+        for (const QString &file : files)
+        {
             OpenFileInternal(file);
         }
     }
@@ -194,15 +180,13 @@ void MainWindow::OpenFiles()
 
 void MainWindow::OpenJsonLogs()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this,
-                                                      "Select Files",
-                                                      QString(),
-                                                      "All Files (*.*)");
+    QStringList files = QFileDialog::getOpenFileNames(this, "Select Files", QString(), "All Files (*.*)");
 
     std::unique_ptr<LogParser> jsonParser = LogFactory::Create(LogFactory::Parser::Json);
     for (const QString &file : files)
     {
-        if (!files.isEmpty()) {
+        if (!files.isEmpty())
+        {
 
             ParseResult result = jsonParser->Parse(file.toStdString());
             UpdateConfiguration(mConfiguration, result.data);
@@ -221,19 +205,13 @@ void MainWindow::OpenJsonLogs()
 
 void MainWindow::SaveConfiguration()
 {
-    QString file = QFileDialog::getSaveFileName(this,
-                                                      "Save Configuration",
-                                                      QString(),
-                                                      "JSON (*.json);;All Files (*)");
+    QString file = QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
     SerializeConfiguration(file.toStdString(), mConfiguration);
 }
 
 void MainWindow::LoadConfiguration()
 {
-    QString file = QFileDialog::getOpenFileName(this,
-                                                "Save Configuration",
-                                                QString(),
-                                                "JSON (*.json);;All Files (*)");
+    QString file = QFileDialog::getOpenFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
     if (!file.isEmpty())
     {
         try
@@ -251,29 +229,17 @@ void MainWindow::LoadConfiguration()
 
 void MainWindow::Find()
 {
-    if (mFindRecord == nullptr)
-    {
-        mFindRecord = new FindRecordWidget(this);
-        connect(mFindRecord, &FindRecordWidget::FindRecords,  this, &MainWindow::FindRecords);
-        connect(mFindRecord, &FindRecordWidget::Closed,  this, &MainWindow::FindRecordsWidgedClosed);
-        mLayout->addWidget(mFindRecord);
-        mFindRecord->setFocus();
-    }
-    else
-    {
-        mFindRecord->show();
-        mFindRecord->setFocus();
-    }
-
+    mFindRecord->show();
+    mFindRecord->setFocus();
     mFindRecord->SetEditFocus();
 }
 
 void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions)
 {
     QModelIndex searchStartIndex;
-    if(!mTableView->currentIndex().isValid())
+    if (!mTableView->currentIndex().isValid())
     {
-        searchStartIndex = mTableView->model()->index(0,0);
+        searchStartIndex = mTableView->model()->index(0, 0);
     }
     else
     {
@@ -296,14 +262,8 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 
     const QVariant value = QVariant::fromValue(text);
     QModelIndexList matches = mSortFilterProxyModel->MatchRow(
-        mModel->index(searchStartIndex.row(), 0),
-        Qt::DisplayRole,
-        value,
-        1,
-        flags,
-        next,
-        skipFirstN
-        );
+        mModel->index(searchStartIndex.row(), 0), Qt::DisplayRole, value, 1, flags, next, skipFirstN
+    );
 
     if (!matches.isEmpty())
     {
@@ -314,32 +274,14 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 }
 
-void MainWindow::FindRecordsWidgedClosed()
-{
-    mFindRecord = nullptr;
-}
-
-void MainWindow::dropEvent(QDropEvent *event) {
-    const QMimeData *mimeData = event->mimeData();
-
-    if (mimeData->hasUrls()) {
-        QList<QUrl> urlList = mimeData->urls();
-
-        for (int i = 0; i < urlList.size(); ++i) {
-            OpenFileInternal(urlList.at(i).toLocalFile());
-        }
-
-        event->acceptProposedAction();
-    }
-}
-
 void MainWindow::OpenFileInternal(const QString &file)
 {
     bool isConfiguration = true;
     try
     {
         mConfiguration = DeserializeConfiguration(file.toStdString());
-    } catch (...)
+    }
+    catch (...)
     {
         isConfiguration = false;
     }
@@ -359,5 +301,4 @@ void MainWindow::OpenFileInternal(const QString &file)
     }
 
     UpdateUi();
-    //mTableView->sortByColumn(0, Qt::SortOrder::AscendingOrder);
 }

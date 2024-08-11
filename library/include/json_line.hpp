@@ -21,4 +21,4 @@ private:
     nlohmann::json mLine;
 };
 
-}
+} // namespace loglib

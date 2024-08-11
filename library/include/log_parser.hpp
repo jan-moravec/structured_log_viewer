@@ -2,8 +2,8 @@
 
 #include "log_data.hpp"
 
-#include <string>
 #include <filesystem>
+#include <string>
 
 namespace loglib
 {
@@ -23,4 +23,4 @@ public:
     virtual ParseResult Parse(const std::filesystem::path &file) const = 0;
 };
 
-}
+} // namespace loglib
