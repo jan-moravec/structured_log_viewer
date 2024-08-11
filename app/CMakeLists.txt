@@ -15,10 +15,13 @@ set(PROJECT_SOURCES
     src/log_model.cpp
 )
 
+qt_add_resources(RESOURCES ../resources/resources.qrc)
+
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(${PROJECT_NAME}
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
+        ${RESOURCES}
         include/log_table_view.hpp src/log_table_view.cpp
         include/find_record_widget.hpp src/find_record_widget.cpp
         include/log_filter_model.hpp src/log_filter_model.cpp

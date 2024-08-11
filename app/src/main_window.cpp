@@ -10,6 +10,7 @@
 #include <QTableView>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QLabel>
 
 #include <log_factory.hpp>
 #include <log_processing.hpp>
@@ -25,6 +26,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
+    this->setWindowIcon(QIcon(":/icon-white.png"));
 
     mTableView = new LogTableView(this);
     mLayout = new QVBoxLayout(ui->centralWidget);
