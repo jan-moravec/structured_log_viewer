@@ -75,6 +75,7 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
+    mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder); // Do not sort automatically
 
     // Resize columns to fit contents
     mTableView->resizeColumnsToContents();
