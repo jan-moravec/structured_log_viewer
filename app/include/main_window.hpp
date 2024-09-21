@@ -43,6 +43,9 @@ private slots:
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
+    void AddFilter();
+    void FilterSubmitted(const QString &filterID, int row, const QString &filterString, Qt::MatchFlags matchType);
+
 private:
     void OpenFileInternal(const QString &file);
 

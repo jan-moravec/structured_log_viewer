@@ -123,6 +123,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     return QVariant();
 }
 
+const LogConfiguration &LogModel::Configuration() const
+{
+    return mLogTable->Configuration();
+}
+
 QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)
 {
     QString qString = QString::fromStdString(string);

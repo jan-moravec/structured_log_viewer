@@ -27,7 +27,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     date
     GIT_REPOSITORY https://github.com/HowardHinnant/date.git
-    GIT_TAG 1ead6715dec030d340a316c927c877a3c4e5a00c
+    GIT_TAG 51ce7e131079c061533d741be5fe7cca57f2faac
 )
 set(BUILD_TZ_LIB ON) # Enable building the time zone library
 set(MANUAL_TZ_DB ON) # Provide time zone database manually

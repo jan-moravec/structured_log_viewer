@@ -22,6 +22,7 @@ public:
     LogValue GetValue(size_t row, size_t column) const;
     std::string GetFormattedValue(size_t row, size_t column) const;
     size_t RowCount() const;
+    const LogConfiguration &Configuration() const;
 
 private:
     static std::string FormatLogValue(const std::string &format, const LogValue &value);

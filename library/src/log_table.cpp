@@ -51,6 +51,11 @@ size_t LogTable::RowCount() const
     return mData.GetLines().size();
 }
 
+const LogConfiguration &LogTable::Configuration() const
+{
+    return mConfiguration;
+}
+
 std::string LogTable::FormatLogValue(const std::string &format, const LogValue &value)
 {
     return std::visit(

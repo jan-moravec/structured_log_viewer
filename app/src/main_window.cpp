@@ -12,6 +12,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 
+#include <filter_editor.hpp>
 #include <log_factory.hpp>
 #include <log_processing.hpp>
 
@@ -90,6 +91,10 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     // Enable grid lines
     mTableView->setShowGrid(true);
 
+    // Set smooth scrolling (scroll per pixel)
+    mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenJsonLogs, &QAction::triggered, this, &MainWindow::OpenJsonLogs);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
@@ -98,6 +103,8 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
+
+    connect(ui->actionAdd, &QAction::triggered, this, &MainWindow::AddFilter);
 
     mFindRecord = new FindRecordWidget(this);
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
@@ -274,6 +281,22 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
         mTableView->selectionModel()->select(matches[0], QItemSelectionModel::Select | QItemSelectionModel::Rows);
         mTableView->selectionModel()->setCurrentIndex(matches[0], QItemSelectionModel::NoUpdate);
     }
+}
+
+void MainWindow::AddFilter()
+{
+    auto filterEditor = new FilterEditor(mModel->Configuration().columns, this);
+    connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+    filterEditor->show();
+}
+
+void MainWindow::FilterSubmitted(
+    const QString &filterID, int row, const QString &filterString, Qt::MatchFlags matchType
+)
+{
+    std::vector<std::unique_ptr<FilterRule>> rules;
+    rules.push_back(std::make_unique<TextFilterRule>(row, filterString, matchType));
+    mSortFilterProxyModel->SetFilterRules(std::move(rules));
 }
 
 void MainWindow::OpenFileInternal(const QString &file)
