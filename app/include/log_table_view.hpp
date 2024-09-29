@@ -1,7 +1,5 @@
 #pragma once
 
-#include "log_model.hpp"
-
 #include <QTableView>
 
 class LogTableView : public QTableView

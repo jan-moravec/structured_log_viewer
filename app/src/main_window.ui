@@ -46,10 +46,9 @@
     <property name="title">
      <string>Filters</string>
     </property>
-    <addaction name="actionAdd"/>
-    <addaction name="actionShow"/>
-    <addaction name="actionDisable"/>
-    <addaction name="actionClear"/>
+    <addaction name="actionAddFilter"/>
+    <addaction name="actionClearAllFilters"/>
+    <addaction name="separator"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
@@ -112,7 +111,7 @@
     <string>Ctrl+F</string>
    </property>
   </action>
-  <action name="actionAdd">
+  <action name="actionAddFilter">
    <property name="text">
     <string>Add</string>
    </property>
@@ -127,9 +126,9 @@
     <string>Disable</string>
    </property>
   </action>
-  <action name="actionClear">
+  <action name="actionClearAllFilters">
    <property name="text">
-    <string>Clear</string>
+    <string> Clear All</string>
    </property>
   </action>
  </widget>

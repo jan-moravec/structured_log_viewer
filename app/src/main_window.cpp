@@ -105,7 +105,8 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
 
-    connect(ui->actionAdd, &QAction::triggered, this, &MainWindow::AddFilter);
+    connect(ui->actionAddFilter, &QAction::triggered, this, &MainWindow::AddFilter);
+    connect(ui->actionAddFilter, &QAction::triggered, this, &MainWindow::AddFilter);
 
     mFindRecord = new FindRecordWidget(this);
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
@@ -291,13 +292,29 @@ void MainWindow::AddFilter()
     filterEditor->show();
 }
 
-void MainWindow::FilterSubmitted(
-    const QString &filterID, int row, const QString &filterString, Qt::MatchFlags matchType
-)
+void MainWindow::ClearAllFilters()
 {
+    mFilters.clear();
+    mSortFilterProxyModel->SetFilterRules({});
+}
+
+void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
+{
+    mFilters[filterID.toStdString()] = LogConfiguration::LogFilter{
+        LogConfiguration::LogFilter::Type::String,
+        row,
+        filterString.toStdString(),
+        static_cast<LogConfiguration::LogFilter::Match>(matchType)
+    };
     std::vector<std::unique_ptr<FilterRule>> rules;
-    rules.push_back(std::make_unique<TextFilterRule>(row, filterString, matchType));
+    for (const auto &filter : mFilters)
+    {
+        rules.push_back(std::make_unique<TextFilterRule>(
+            filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
+        ));
+    }
     mSortFilterProxyModel->SetFilterRules(std::move(rules));
+    ui->menuFilters->addMenu(filterString);
 }
 
 void MainWindow::OpenFileInternal(const QString &file)

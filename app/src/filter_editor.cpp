@@ -4,6 +4,8 @@
 #include <QMessageBox>
 #include <QUuid>
 
+using namespace loglib;
+
 FilterEditor::FilterEditor(const std::vector<loglib::LogConfiguration::Column> &columns, QWidget *parent)
     : QDialog(parent)
 {
@@ -14,16 +16,18 @@ FilterEditor::FilterEditor(const std::vector<loglib::LogConfiguration::Column> &
     okButton = new QPushButton("Ok", this);
     cancelButton = new QPushButton("Cancel", this);
 
-    for (const auto column : columns)
+    for (const auto &column : columns)
     {
         rowComboBox->addItem(QString::fromStdString(column.header));
     }
 
     // Add match types
-    matchTypeComboBox->addItem("Match Exactly", Qt::MatchExactly);
-    matchTypeComboBox->addItem("Match Contains", Qt::MatchContains);
-    matchTypeComboBox->addItem("Match Regular Expression", Qt::MatchRegularExpression);
-    matchTypeComboBox->addItem("Match Wildcard", Qt::MatchWildcard);
+    matchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::Exactly));
+    matchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::Contains));
+    matchTypeComboBox->addItem(
+        "Regular Expression", static_cast<int>(LogConfiguration::LogFilter::Match::RegularExpression)
+    );
+    matchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::Wildcard));
 
     // Setup layout
     SetupLayout();
@@ -43,9 +47,9 @@ QString FilterEditor::GetStringToFilter() const
     return stringLineEdit->text();
 }
 
-Qt::MatchFlags FilterEditor::GetMatchType() const
+int FilterEditor::GetMatchType() const
 {
-    return static_cast<Qt::MatchFlags>(matchTypeComboBox->currentData().toInt());
+    return matchTypeComboBox->currentData().toInt();
 }
 
 void FilterEditor::SetupLayout()

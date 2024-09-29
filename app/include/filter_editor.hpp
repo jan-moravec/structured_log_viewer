@@ -20,10 +20,10 @@ public:
 
     int GetRowToFilter() const;
     QString GetStringToFilter() const;
-    Qt::MatchFlags GetMatchType() const;
+    int GetMatchType() const;
 
 signals:
-    void FilterSubmitted(const QString &filterID, int row, const QString &filterString, Qt::MatchFlags matchType);
+    void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
 
 private:
     QComboBox *rowComboBox;

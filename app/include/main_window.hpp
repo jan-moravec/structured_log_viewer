@@ -44,7 +44,8 @@ private slots:
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
     void AddFilter();
-    void FilterSubmitted(const QString &filterID, int row, const QString &filterString, Qt::MatchFlags matchType);
+    void ClearAllFilters();
+    void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
 
 private:
     void OpenFileInternal(const QString &file);
@@ -56,4 +57,5 @@ private:
     LogModel *mModel;
     FindRecordWidget *mFindRecord;
     loglib::LogConfiguration mConfiguration;
+    std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 };

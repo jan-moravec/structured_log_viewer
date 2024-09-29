@@ -1,5 +1,7 @@
 #include "log_table_view.hpp"
 
+#include <log_model.hpp>
+
 #include <QApplication>
 #include <QClipboard>
 #include <QItemSelectionModel>
