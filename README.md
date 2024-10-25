@@ -1,5 +1,15 @@
-cmake -DCMAKE_PREFIX_PATH=C:\Qt\6.7.1\msvc2019_64 -S . -B my-build
+# Structured Log Viewer
 
-cmake.exe --build .\my-build\ --config Release
+GUI application for work with JSON logs. Supports viewing, sorting, filtering with custom configuration.
+
+## Usage
+
+Download the latest release build binaries. For Windows, unzip the archive and start the `StructuredLogViewer` executable. For Linux, add execution rights to the `StructuredLogViewer.AppImage` and run it directly.
+
+## Development
+
+The application is written in C++ (required standard 20) with Qt.
+
+## Acknowledgments
 
 <a href="https://www.freepik.com/search">Icon by HAJICON</a>
