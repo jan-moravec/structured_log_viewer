@@ -9,6 +9,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <optional>
 #include <vector>
 
 class FilterEditor : public QDialog
@@ -17,6 +18,8 @@ class FilterEditor : public QDialog
 
 public:
     FilterEditor(const std::vector<loglib::LogConfiguration::Column> &columns, QWidget *parent = nullptr);
+
+    void Load(const QString &filterID, int row, const QString &filterString, int matchType);
 
     int GetRowToFilter() const;
     QString GetStringToFilter() const;
@@ -31,6 +34,7 @@ private:
     QComboBox *matchTypeComboBox;
     QPushButton *okButton;
     QPushButton *cancelButton;
+    std::optional<QString> mFilterID;
 
     void SetupLayout();
 

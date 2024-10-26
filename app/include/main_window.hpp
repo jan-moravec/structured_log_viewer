@@ -45,6 +45,7 @@ private slots:
 
     void AddFilter();
     void ClearAllFilters();
+    void ClearFilter(const QString &filterID);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
 
 private:

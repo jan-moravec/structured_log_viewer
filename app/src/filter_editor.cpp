@@ -37,6 +37,14 @@ FilterEditor::FilterEditor(const std::vector<loglib::LogConfiguration::Column> &
     connect(cancelButton, &QPushButton::clicked, this, &FilterEditor::reject);
 }
 
+void FilterEditor::Load(const QString &filterID, int row, const QString &filterString, int matchType)
+{
+    mFilterID = filterID;
+    rowComboBox->setCurrentIndex(row);
+    stringLineEdit->setText(filterString);
+    matchTypeComboBox->setCurrentIndex(matchTypeComboBox->findData(QVariant(matchType)));
+}
+
 int FilterEditor::GetRowToFilter() const
 {
     return rowComboBox->currentIndex();
@@ -90,10 +98,13 @@ void FilterEditor::OnOkClicked()
     }
     else
     {
-        const QString filterID = QUuid::createUuid().toString();
+        if (!mFilterID.has_value())
+        {
+            mFilterID = QUuid::createUuid().toString();
+        }
 
         // Emit the filterSubmitted signal with all input data
-        emit FilterSubmitted(filterID, GetRowToFilter(), GetStringToFilter(), GetMatchType());
+        emit FilterSubmitted(*mFilterID, GetRowToFilter(), GetStringToFilter(), GetMatchType());
 
         // Close the dialog with an "accepted" result
         accept();

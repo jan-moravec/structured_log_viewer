@@ -22,6 +22,16 @@ void LogModel::AddData(LogData &&logData, const LogConfiguration &configuration)
     endResetModel();
 }
 
+void LogModel::Clear()
+{
+    beginResetModel();
+
+    mLogData = LogData();
+    mLogTable.reset();
+
+    endResetModel();
+}
+
 int LogModel::rowCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent);

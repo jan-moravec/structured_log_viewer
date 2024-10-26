@@ -22,6 +22,7 @@ public:
     explicit LogModel(QObject *parent = nullptr);
 
     void AddData(LogData &&logData, const LogConfiguration &configuration);
+    void Clear();
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     int columnCount(const QModelIndex &parent = QModelIndex()) const override;

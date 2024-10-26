@@ -2,15 +2,16 @@
 #include "./ui_main_window.h"
 
 #include <QCheckBox>
+#include <QDebug>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QLabel>
 
 #include <filter_editor.hpp>
 #include <log_factory.hpp>
@@ -106,7 +107,8 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
 
     connect(ui->actionAddFilter, &QAction::triggered, this, &MainWindow::AddFilter);
-    connect(ui->actionAddFilter, &QAction::triggered, this, &MainWindow::AddFilter);
+    connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
+    ui->actionClearAllFilters->setDisabled(true);
 
     mFindRecord = new FindRecordWidget(this);
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
@@ -161,6 +163,8 @@ void MainWindow::dropEvent(QDropEvent *event)
 
         for (int i = 0; i < urlList.size(); ++i)
         {
+            mModel->Clear();
+            ClearAllFilters();
             OpenFileInternal(urlList.at(i).toLocalFile());
         }
 
@@ -182,6 +186,8 @@ void MainWindow::OpenFiles()
 
     if (!files.isEmpty())
     {
+        mModel->Clear();
+        ClearAllFilters();
         for (const QString &file : files)
         {
             OpenFileInternal(file);
@@ -193,12 +199,13 @@ void MainWindow::OpenJsonLogs()
 {
     QStringList files = QFileDialog::getOpenFileNames(this, "Select Files", QString(), "All Files (*.*)");
 
-    std::unique_ptr<LogParser> jsonParser = LogFactory::Create(LogFactory::Parser::Json);
-    for (const QString &file : files)
+    if (!files.isEmpty())
     {
-        if (!files.isEmpty())
+        mModel->Clear();
+        ClearAllFilters();
+        std::unique_ptr<LogParser> jsonParser = LogFactory::Create(LogFactory::Parser::Json);
+        for (const QString &file : files)
         {
-
             ParseResult result = jsonParser->Parse(file.toStdString());
             UpdateConfiguration(mConfiguration, result.data);
             ParseTimestamps(result.data, mConfiguration);
@@ -287,19 +294,70 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 
 void MainWindow::AddFilter()
 {
-    auto filterEditor = new FilterEditor(mModel->Configuration().columns, this);
-    connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
-    filterEditor->show();
+    if (mModel->rowCount() > 0)
+    {
+        auto filterEditor = new FilterEditor(mModel->Configuration().columns, this);
+        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+        filterEditor->show();
+    }
 }
 
 void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
     mSortFilterProxyModel->SetFilterRules({});
+
+    for (QAction *action : ui->menuFilters->actions())
+    {
+        if (!action->data().toString().isNull())
+        {
+            ui->menuFilters->removeAction(action);
+            delete action;
+        }
+    }
+
+    ui->actionClearAllFilters->setDisabled(true);
+}
+
+void MainWindow::ClearFilter(const QString &filterID)
+{
+    mFilters.erase(filterID.toStdString());
+
+    std::vector<std::unique_ptr<FilterRule>> rules;
+    for (const auto &filter : mFilters)
+    {
+        rules.push_back(std::make_unique<TextFilterRule>(
+            filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
+        ));
+    }
+    mSortFilterProxyModel->SetFilterRules(std::move(rules));
+
+    unsigned filters = 0;
+    for (QAction *action : ui->menuFilters->actions())
+    {
+        if (!action->data().toString().isNull())
+        {
+            if (action->data().toString() == filterID)
+            {
+                ui->menuFilters->removeAction(action);
+                delete action;
+            }
+            else
+            {
+                filters++;
+            }
+        }
+    }
+
+    if (filters == 0)
+    {
+        ui->actionClearAllFilters->setDisabled(true);
+    }
 }
 
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
+    ClearFilter(filterID);
     mFilters[filterID.toStdString()] = LogConfiguration::LogFilter{
         LogConfiguration::LogFilter::Type::String,
         row,
@@ -314,7 +372,21 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
         ));
     }
     mSortFilterProxyModel->SetFilterRules(std::move(rules));
-    ui->menuFilters->addMenu(filterString);
+
+    QMenu *menuItem = ui->menuFilters->addMenu("String: " + filterString);
+    menuItem->menuAction()->setData(QVariant(filterID));
+
+    QAction *editAction = menuItem->addAction("Edit");
+    connect(editAction, &QAction::triggered, this, [this, filterID, row, filterString, matchType]() {
+        auto filterEditor = new FilterEditor(mModel->Configuration().columns, this);
+        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+        filterEditor->Load(filterID, row, filterString, matchType);
+        filterEditor->show();
+    });
+
+    QAction *clearAction = menuItem->addAction("Clear");
+    connect(clearAction, &QAction::triggered, this, [this, filterID]() { ClearFilter(filterID); });
+    ui->actionClearAllFilters->setDisabled(false);
 }
 
 void MainWindow::OpenFileInternal(const QString &file)
