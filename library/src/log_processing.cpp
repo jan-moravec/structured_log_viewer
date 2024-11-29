@@ -5,7 +5,7 @@ namespace
 
 using namespace loglib;
 
-std::optional<TimeStamp> ParseTimestampLine(LogLine &line, const LogConfiguration::Column &column)
+bool ParseTimestampLine(LogLine &line, const LogConfiguration::Column &column)
 {
     std::string errors;
 
@@ -22,7 +22,7 @@ std::optional<TimeStamp> ParseTimestampLine(LogLine &line, const LogConfiguratio
                     TimeStamp timestamp;
                     stream >> date::parse(format, timestamp);
                     line.SetExtraValue(key, timestamp);
-                    return timestamp;
+                    return true;
                 }
                 catch (const std::exception &)
                 {
@@ -32,7 +32,7 @@ std::optional<TimeStamp> ParseTimestampLine(LogLine &line, const LogConfiguratio
         }
     }
 
-    return std::nullopt;
+    return false;
 }
 } // namespace
 
@@ -57,12 +57,7 @@ std::string ParseTimestamps(LogData &logData, const LogConfiguration &configurat
         {
             for (auto &line : logData.GetLines())
             {
-                const std::optional<TimeStamp> timestamp = ParseTimestampLine(*line, column);
-                if (timestamp.has_value())
-                {
-                    logData.UpdateColumnMinMaxTimestamp(i, *timestamp);
-                }
-                else
+                if (!ParseTimestampLine(*line, column))
                 {
                     errors += "Failed to parse a timestamp for column " + std::to_string(i) + " '" + column.header +
                               "' from line: " + line->GetLine() + "\n";
@@ -85,6 +80,16 @@ int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp)
     const auto zonedTime = date::zoned_time{tz, timeStamp};
     const auto localTime = zonedTime.get_local_time();
     return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.time_since_epoch()).count();
+}
+
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds)
+{
+    static auto tz = date::current_zone();
+    std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
+        std::chrono::microseconds{microseconds}
+    };
+    const date::zoned_time localTime{tz, utcTime};
+    return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.get_local_time().time_since_epoch()).count();
 }
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)

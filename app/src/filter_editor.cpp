@@ -4,28 +4,17 @@
 #include <QMessageBox>
 #include <QUuid>
 
-#include <chrono>
-
 #include "log_processing.hpp"
 
 using namespace loglib;
 
-FilterEditor::FilterEditor(
-    const std::vector<loglib::LogConfiguration::Column> &columns,
-    const std::unordered_map<size_t, std::pair<loglib::TimeStamp, loglib::TimeStamp>> &columnMinMaxTimeStamps,
-    QWidget *parent
-)
-    : QDialog(parent), mColumns(columns), mColumnMinMaxTimeStamps(columnMinMaxTimeStamps)
+FilterEditor::FilterEditor(const LogModel &model, QWidget *parent) : QDialog(parent), mModel(model)
 {
     // Create widgets
     mRowComboBox = new QComboBox(this);
 
     mStringLineEdit = new QLineEdit(this);
     mMatchTypeComboBox = new QComboBox(this);
-
-    // Datetime filter
-    // mDateTimeEdit = new QDateTimeEdit(this);
-    // mDateTimeEdit->setCalendarPopup(true);
 
     // Date editor
     mBeginDateEdit = new QDateEdit(this);
@@ -38,7 +27,7 @@ FilterEditor::FilterEditor(
     mOkButton = new QPushButton("Ok", this);
     mCancelButton = new QPushButton("Cancel", this);
 
-    for (const auto &column : mColumns)
+    for (const auto &column : mModel.Configuration().columns)
     {
         mRowComboBox->addItem(QString::fromStdString(column.header));
     }
@@ -154,11 +143,9 @@ void FilterEditor::SetupLayout()
     mainLayout->addLayout(buttonLayout);
 }
 
-QDateTime FilterEditor::ConvertToQDateTime(loglib::TimeStamp timestamp)
+QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp)
 {
-    return QDateTime::fromMSecsSinceEpoch(
-        TimeStampToLocalMillisecondsSinceEpoch(timestamp), QTimeZone::systemTimeZone()
-    );
+    return QDateTime::fromMSecsSinceEpoch(UtcMicrosecondsToLocalMilliseconds(timestamp), QTimeZone::systemTimeZone());
 }
 
 qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
@@ -170,12 +157,12 @@ qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
 void FilterEditor::OnOkClicked()
 {
     const int index = mRowComboBox->currentIndex();
-    if (index < 0 && index >= mColumns.size())
+    if (index < 0 && index >= mModel.Configuration().columns.size())
     {
         return;
     }
 
-    if (mColumns[index].type != LogConfiguration::Type::Time && mStringLineEdit->text().isEmpty())
+    if (mModel.Configuration().columns[index].type != LogConfiguration::Type::Time && mStringLineEdit->text().isEmpty())
     {
         // Validation: Don't allow empty filter string
         mStringLineEdit->setStyleSheet("border: 1px solid red");
@@ -187,7 +174,7 @@ void FilterEditor::OnOkClicked()
         mFilterID = QUuid::createUuid().toString();
     }
 
-    if (mColumns[index].type == LogConfiguration::Type::Time)
+    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::Time)
     {
         emit FilterTimeStampSubmitted(
             *mFilterID,
@@ -208,16 +195,17 @@ void FilterEditor::OnOkClicked()
 
 void FilterEditor::UpdateSelectedColumn(int index)
 {
-    if (index < 0 && index >= mColumns.size())
+    if (index < 0 && index >= mModel.Configuration().columns.size())
     {
         return;
     }
-    if (mColumns[index].type == LogConfiguration::Type::Time)
+    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::Time)
     {
         mStackedWidget->setCurrentIndex(1);
 
-        const QDateTime beginDateTime = ConvertToQDateTime(mColumnMinMaxTimeStamps[index].first);
-        const QDateTime endDateTime = ConvertToQDateTime(mColumnMinMaxTimeStamps[index].second);
+        std::optional<std::pair<qint64, qint64>> minMax = mModel.GetMinMaxValues<qint64>(index).value();
+        const QDateTime beginDateTime = ConvertToQDateTime(minMax->first);
+        const QDateTime endDateTime = ConvertToQDateTime(minMax->second);
 
         mBeginDateEdit->setDateTime(beginDateTime);
         mBeginDateEdit->setMinimumDateTime(beginDateTime);

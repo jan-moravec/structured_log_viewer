@@ -12,6 +12,7 @@ namespace loglib
 void Initialize();
 std::string ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);
+int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
 } // namespace loglib

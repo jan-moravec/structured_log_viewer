@@ -1,5 +1,7 @@
 #pragma once
 
+#include "log_model.hpp"
+
 #include <log_configuration.hpp>
 
 #include <QComboBox>
@@ -14,20 +16,13 @@
 #include <QVBoxLayout>
 
 #include <optional>
-#include <unordered_map>
-#include <utility>
-#include <vector>
 
 class FilterEditor : public QDialog
 {
     Q_OBJECT
 
 public:
-    FilterEditor(
-        const std::vector<loglib::LogConfiguration::Column> &columns,
-        const std::unordered_map<size_t, std::pair<loglib::TimeStamp, loglib::TimeStamp>> &columnMinMaxTimeStamps,
-        QWidget *parent = nullptr
-    );
+    FilterEditor(const LogModel &model, QWidget *parent = nullptr);
 
     void Load(const QString &filterID, int row, const QString &filterString, int matchType);
 
@@ -40,8 +35,7 @@ signals:
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
 
 private:
-    std::vector<loglib::LogConfiguration::Column> mColumns;
-    std::unordered_map<size_t, std::pair<loglib::TimeStamp, loglib::TimeStamp>> mColumnMinMaxTimeStamps;
+    const LogModel &mModel;
 
     QStackedWidget *mStackedWidget;
     QComboBox *mRowComboBox;
@@ -58,7 +52,7 @@ private:
     std::optional<QString> mFilterID;
 
     void SetupLayout();
-    static QDateTime ConvertToQDateTime(loglib::TimeStamp timestamp);
+    static QDateTime ConvertToQDateTime(qint64 timestamp);
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);
 
 private slots:

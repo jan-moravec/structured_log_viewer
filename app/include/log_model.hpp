@@ -6,6 +6,7 @@
 #include <QAbstractTableModel>
 
 #include <memory>
+#include <optional>
 
 using namespace loglib;
 
@@ -28,6 +29,7 @@ public:
     int columnCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
+    template <typename T> std::optional<std::pair<T, T>> GetMinMaxValues(int column) const;
 
     const loglib::LogData &LogData() const;
     const LogConfiguration &Configuration() const;

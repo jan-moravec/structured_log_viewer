@@ -133,6 +133,44 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     return QVariant();
 }
 
+template <typename T> std::optional<std::pair<T, T>> LogModel::GetMinMaxValues(int column) const
+{
+    if (column < 0 || column >= columnCount() || rowCount() <= 0)
+    {
+        return std::nullopt;
+    }
+
+    const QVariant initialValue = data(index(0, column), LogModelItemDataRole::SortRole);
+    if (!initialValue.isValid())
+    {
+        return std::nullopt;
+    }
+
+    auto minVal = initialValue.value<T>();
+    auto maxVal = initialValue.value<T>();
+
+    for (int row = 1; row < rowCount(); ++row)
+    {
+        const QVariant valueVariant = data(index(row, column), LogModelItemDataRole::SortRole);
+        if (valueVariant.isValid())
+        {
+            const auto value = valueVariant.value<T>();
+            if (value < minVal)
+            {
+                minVal = value;
+            }
+            if (value > maxVal)
+            {
+                maxVal = value;
+            }
+        }
+    }
+
+    return std::make_pair(minVal, maxVal);
+}
+
+template std::optional<std::pair<qint64, qint64>> LogModel::GetMinMaxValues<qint64>(int column) const;
+
 const LogData &LogModel::LogData() const
 {
     return mLogData;

@@ -297,8 +297,7 @@ void MainWindow::AddFilter()
 {
     if (mModel->rowCount() > 0)
     {
-        auto filterEditor =
-            new FilterEditor(mModel->Configuration().columns, mModel->LogData().GetColumnMinMaxTimeStamps(), this);
+        auto filterEditor = new FilterEditor(*mModel, this);
         connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
         connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
         filterEditor->show();
@@ -450,8 +449,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
 
     QAction *editAction = menuItem->addAction("Edit");
     connect(editAction, &QAction::triggered, this, [this, id, filter]() {
-        auto filterEditor =
-            new FilterEditor(mModel->Configuration().columns, mModel->LogData().GetColumnMinMaxTimeStamps(), this);
+        auto filterEditor = new FilterEditor(*mModel, this);
         connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
         filterEditor->Load(
             id, filter.row, QString::fromStdString(*filter.filterString), static_cast<int>(*filter.matchType)
