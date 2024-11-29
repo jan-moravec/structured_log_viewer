@@ -1,7 +1,9 @@
 #include "filter_editor.hpp"
 
+#include <QDateTime>
 #include <QLabel>
 #include <QMessageBox>
+#include <QTimeZone>
 #include <QUuid>
 
 #include "log_processing.hpp"
