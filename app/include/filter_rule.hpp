@@ -55,3 +55,27 @@ private:
     QString mValue;
     loglib::LogConfiguration::LogFilter::Match mMatch;
 };
+
+class TimeStampFilterRule : public FilterRule
+{
+public:
+    TimeStampFilterRule(int filteredColumn, qint64 begin, qint64 end)
+        : FilterRule(filteredColumn), mBegin(begin), mEnd(end)
+    {
+    }
+
+    bool Matches(const QVariant &data) const override
+    {
+        bool ok = false;
+        qint64 timeStamp = data.toLongLong(&ok);
+        if (ok && timeStamp >= mBegin && timeStamp <= mEnd)
+        {
+            return true;
+        }
+        return false;
+    }
+
+private:
+    qint64 mBegin;
+    qint64 mEnd;
+};

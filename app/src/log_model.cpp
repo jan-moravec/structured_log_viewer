@@ -11,7 +11,7 @@ LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
 }
 
-void LogModel::AddData(LogData &&logData, const LogConfiguration &configuration)
+void LogModel::AddData(loglib::LogData &&logData, const LogConfiguration &configuration)
 {
     beginResetModel();
 
@@ -26,7 +26,7 @@ void LogModel::Clear()
 {
     beginResetModel();
 
-    mLogData = LogData();
+    mLogData = loglib::LogData();
     mLogTable.reset();
 
     endResetModel();
@@ -107,7 +107,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
                 else if constexpr (std::is_same_v<T, TimeStamp>)
                 {
-                    return QVariant::fromValue<qlonglong>(arg.time_since_epoch().count());
+                    return QVariant::fromValue<qint64>(arg.time_since_epoch().count());
                 }
                 else if constexpr (std::is_same_v<T, std::monostate>)
                 {
@@ -131,6 +131,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
 
     return QVariant();
+}
+
+const LogData &LogModel::LogData() const
+{
+    return mLogData;
 }
 
 const LogConfiguration &LogModel::Configuration() const

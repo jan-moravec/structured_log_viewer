@@ -1,6 +1,7 @@
 #pragma once
 
 #include "filter_rule.hpp"
+#include "log_model.hpp"
 
 #include <QSortFilterProxyModel>
 
@@ -33,7 +34,7 @@ protected:
             QModelIndex index = sourceModel()->index(sourceRow, rule->FilteredColumn(), sourceParent);
             if (index.isValid())
             {
-                if (!rule->Matches(sourceModel()->data(index)))
+                if (!rule->Matches(sourceModel()->data(index, LogModelItemDataRole::SortRole)))
                 {
                     return false;
                 }

@@ -114,6 +114,7 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
     mLayout->addWidget(mFindRecord);
     mFindRecord->hide();
+    loglib::Initialize();
 
     QTimer::singleShot(0, [this] {
         try
@@ -296,8 +297,10 @@ void MainWindow::AddFilter()
 {
     if (mModel->rowCount() > 0)
     {
-        auto filterEditor = new FilterEditor(mModel->Configuration().columns, this);
+        auto filterEditor =
+            new FilterEditor(mModel->Configuration().columns, mModel->LogData().GetColumnMinMaxTimeStamps(), this);
         connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+        connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
         filterEditor->show();
     }
 }
@@ -358,35 +361,27 @@ void MainWindow::ClearFilter(const QString &filterID)
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
     ClearFilter(filterID);
-    mFilters[filterID.toStdString()] = LogConfiguration::LogFilter{
-        LogConfiguration::LogFilter::Type::String,
-        row,
-        filterString.toStdString(),
-        static_cast<LogConfiguration::LogFilter::Match>(matchType)
-    };
-    std::vector<std::unique_ptr<FilterRule>> rules;
-    for (const auto &filter : mFilters)
-    {
-        rules.push_back(std::make_unique<TextFilterRule>(
-            filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
-        ));
-    }
-    mSortFilterProxyModel->SetFilterRules(std::move(rules));
 
-    QMenu *menuItem = ui->menuFilters->addMenu("String: " + filterString);
-    menuItem->menuAction()->setData(QVariant(filterID));
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::String;
+    filter.row = row;
+    filter.filterString = filterString.toStdString();
+    filter.matchType = static_cast<LogConfiguration::LogFilter::Match>(matchType);
 
-    QAction *editAction = menuItem->addAction("Edit");
-    connect(editAction, &QAction::triggered, this, [this, filterID, row, filterString, matchType]() {
-        auto filterEditor = new FilterEditor(mModel->Configuration().columns, this);
-        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
-        filterEditor->Load(filterID, row, filterString, matchType);
-        filterEditor->show();
-    });
+    AddLogFilter(filterID, filter);
+}
 
-    QAction *clearAction = menuItem->addAction("Clear");
-    connect(clearAction, &QAction::triggered, this, [this, filterID]() { ClearFilter(filterID); });
-    ui->actionClearAllFilters->setDisabled(false);
+void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp)
+{
+    ClearFilter(filterID);
+
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::Time;
+    filter.row = row;
+    filter.filterBegin = beginTimeStamp;
+    filter.filterEnd = endTimeStamp;
+
+    AddLogFilter(filterID, filter);
 }
 
 void MainWindow::OpenFileInternal(const QString &file)
@@ -416,4 +411,55 @@ void MainWindow::OpenFileInternal(const QString &file)
     }
 
     UpdateUi();
+}
+
+void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter)
+{
+    mFilters[id.toStdString()] = filter;
+
+    std::vector<std::unique_ptr<FilterRule>> rules;
+    for (const auto &filter : mFilters)
+    {
+        if (filter.second.type == LogConfiguration::LogFilter::Type::Time)
+        {
+            rules.push_back(std::make_unique<TimeStampFilterRule>(
+                filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd
+            ));
+        }
+        else
+        {
+            rules.push_back(std::make_unique<TextFilterRule>(
+                filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
+            ));
+        }
+    }
+    mSortFilterProxyModel->SetFilterRules(std::move(rules));
+
+    QString title;
+    if (filter.type == LogConfiguration::LogFilter::Type::Time)
+    {
+        title = "Timestamp";
+    }
+    else
+    {
+        title = "String: " + QString::fromStdString(*filter.filterString);
+    }
+
+    QMenu *menuItem = ui->menuFilters->addMenu(title);
+    menuItem->menuAction()->setData(QVariant(id));
+
+    QAction *editAction = menuItem->addAction("Edit");
+    connect(editAction, &QAction::triggered, this, [this, id, filter]() {
+        auto filterEditor =
+            new FilterEditor(mModel->Configuration().columns, mModel->LogData().GetColumnMinMaxTimeStamps(), this);
+        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+        filterEditor->Load(
+            id, filter.row, QString::fromStdString(*filter.filterString), static_cast<int>(*filter.matchType)
+        );
+        filterEditor->show();
+    });
+
+    QAction *clearAction = menuItem->addAction("Clear");
+    connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
+    ui->actionClearAllFilters->setDisabled(false);
 }

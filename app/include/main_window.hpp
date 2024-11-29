@@ -47,9 +47,11 @@ private slots:
     void ClearAllFilters();
     void ClearFilter(const QString &filterID);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
+    void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
 
 private:
     void OpenFileInternal(const QString &file);
+    void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;

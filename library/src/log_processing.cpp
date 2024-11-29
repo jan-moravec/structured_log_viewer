@@ -3,52 +3,36 @@
 namespace
 {
 
-bool ParseTimestampsLineKey(loglib::LogLine &line, const std::string &key, const std::vector<std::string> &formats)
-{
-    loglib::LogValue value = line.GetValue(key);
-    if (std::holds_alternative<std::string>(value))
-    {
-        for (const std::string &format : formats)
-        {
-            try
-            {
-                std::istringstream stream{std::get<std::string>(value)};
-                loglib::TimeStamp timestamp;
-                stream >> date::parse(format, timestamp);
-                line.SetExtraValue(key, timestamp);
-                return true;
-            }
-            catch (const std::exception &e)
-            {
-                // Error parsing the timestamp, let's try another format or key if available
-            }
-        }
-    }
+using namespace loglib;
 
-    return false;
-}
-
-std::string ParseTimestampsLine(loglib::LogLine &line, const std::vector<loglib::LogConfiguration::Column> &columns)
+std::optional<TimeStamp> ParseTimestampLine(LogLine &line, const LogConfiguration::Column &column)
 {
     std::string errors;
 
-    for (const auto &column : columns)
+    for (const std::string &key : column.keys)
     {
-        if (column.type == loglib::LogConfiguration::Type::Time)
+        LogValue value = line.GetValue(key);
+        if (std::holds_alternative<std::string>(value))
         {
-            for (const std::string &key : column.keys)
+            for (const std::string &format : column.parseFormats)
             {
-                if (ParseTimestampsLineKey(line, key, column.parseFormats))
+                try
                 {
-                    return "";
+                    std::istringstream stream{std::get<std::string>(value)};
+                    TimeStamp timestamp;
+                    stream >> date::parse(format, timestamp);
+                    line.SetExtraValue(key, timestamp);
+                    return timestamp;
+                }
+                catch (const std::exception &)
+                {
+                    // Error parsing the timestamp, let's try another format or key if available
                 }
             }
-
-            errors += "Failed to parse a timestamp from line :" + line.GetLine() + "\n";
         }
     }
 
-    return errors;
+    return std::nullopt;
 }
 } // namespace
 
@@ -66,9 +50,25 @@ std::string ParseTimestamps(LogData &logData, const LogConfiguration &configurat
 {
     std::string errors;
 
-    for (const auto &line : logData.GetLines())
+    for (size_t i = 0; i < configuration.columns.size(); ++i)
     {
-        errors += ParseTimestampsLine(*line, configuration.columns);
+        const LogConfiguration::Column &column = configuration.columns[i];
+        if (column.type == LogConfiguration::Type::Time)
+        {
+            for (auto &line : logData.GetLines())
+            {
+                const std::optional<TimeStamp> timestamp = ParseTimestampLine(*line, column);
+                if (timestamp.has_value())
+                {
+                    logData.UpdateColumnMinMaxTimestamp(i, *timestamp);
+                }
+                else
+                {
+                    errors += "Failed to parse a timestamp for column " + std::to_string(i) + " '" + column.header +
+                              "' from line: " + line->GetLine() + "\n";
+                }
+            }
+        }
     }
 
     if (!errors.empty())
@@ -77,6 +77,24 @@ std::string ParseTimestamps(LogData &logData, const LogConfiguration &configurat
     }
 
     return errors;
+}
+
+int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp)
+{
+    static auto tz = date::current_zone(); // Get the current time zone
+    const auto zonedTime = date::zoned_time{tz, timeStamp};
+    const auto localTime = zonedTime.get_local_time();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.time_since_epoch()).count();
+}
+
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
+{
+    static auto tz = date::current_zone(); // Get the current time zone
+    const auto localTime = date::local_time<std::chrono::microseconds>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(milliseconds))
+    );
+    const auto systemTime = tz->to_sys(localTime); // Convert local time to system time
+    return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
 }
 
 } // namespace loglib

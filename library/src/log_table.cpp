@@ -22,7 +22,7 @@ LogValue LogTable::GetValue(size_t row, size_t column) const
 {
     for (const std::string &key : mConfiguration.columns.at(column).keys)
     {
-        LogValue value = mData.GetLines()[row]->GetRawValue(key);
+        LogValue value = mData.GetLines()[row]->GetValue(key);
         if (!std::holds_alternative<std::monostate>(value))
         {
             return value;

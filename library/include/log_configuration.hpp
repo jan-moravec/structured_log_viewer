@@ -51,6 +51,8 @@ struct LogConfiguration
         int row;
         std::optional<std::string> filterString;
         std::optional<Match> matchType;
+        std::optional<int64_t> filterBegin;
+        std::optional<int64_t> filterEnd;
 
         // Custom serialization functions for LogFilter
         friend void to_json(nlohmann::json &j, const LogFilter &lf)
@@ -60,13 +62,21 @@ struct LogConfiguration
                 {"row", lf.row}
             };
 
-            // Handle std::optional<std::string>
             if (lf.filterString)
             {
                 j["filterString"] = lf.filterString.value();
             }
 
-            // Handle std::optional<Match>
+            if (lf.filterBegin)
+            {
+                j["filterBegin"] = lf.filterBegin.value();
+            }
+
+            if (lf.filterEnd)
+            {
+                j["filterEnd"] = lf.filterEnd.value();
+            }
+
             if (lf.matchType)
             {
                 j["matchType"] = lf.matchType.value(); // Match enum handled by NLOHMANN_JSON_SERIALIZE_ENUM
@@ -79,7 +89,6 @@ struct LogConfiguration
             j.at("type").get_to(lf.type); // Type enum handled by NLOHMANN_JSON_SERIALIZE_ENUM
             j.at("row").get_to(lf.row);
 
-            // Handle std::optional<std::string>
             if (j.contains("filterString") && !j.at("filterString").is_null())
             {
                 lf.filterString = j.at("filterString").get<std::string>();
@@ -89,7 +98,6 @@ struct LogConfiguration
                 lf.filterString = std::nullopt;
             }
 
-            // Handle std::optional<Match>
             if (j.contains("matchType") && !j.at("matchType").is_null())
             {
                 lf.matchType = j.at("matchType").get<LogFilter::Match>();
@@ -97,6 +105,24 @@ struct LogConfiguration
             else
             {
                 lf.matchType = std::nullopt;
+            }
+
+            if (j.contains("filterBegin") && !j.at("filterBegin").is_null())
+            {
+                lf.filterBegin = j.at("filterBegin").get<int64_t>();
+            }
+            else
+            {
+                lf.filterBegin = std::nullopt;
+            }
+
+            if (j.contains("filterEnd") && !j.at("filterEnd").is_null())
+            {
+                lf.filterEnd = j.at("filterEnd").get<int64_t>();
+            }
+            else
+            {
+                lf.filterEnd = std::nullopt;
             }
         }
     };

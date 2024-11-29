@@ -5,12 +5,13 @@
 
 #include <date/date.h>
 #include <date/tz.h>
-#include <sstream>
 
 namespace loglib
 {
 
 void Initialize();
 std::string ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
+int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);
+TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
 } // namespace loglib
