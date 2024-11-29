@@ -1,6 +1,5 @@
 #include "filter_editor.hpp"
 
-#include <QDateTime>
 #include <QLabel>
 #include <QMessageBox>
 #include <QTimeZone>

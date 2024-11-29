@@ -5,6 +5,7 @@
 #include <log_configuration.hpp>
 
 #include <QComboBox>
+#include <QDate>
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QDialog>
@@ -12,6 +13,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QTime>
 #include <QTimeEdit>
 #include <QVBoxLayout>
 
