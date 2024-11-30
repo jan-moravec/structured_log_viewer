@@ -17,16 +17,15 @@
 #include <QTimeEdit>
 #include <QVBoxLayout>
 
-#include <optional>
-
 class FilterEditor : public QDialog
 {
     Q_OBJECT
 
 public:
-    FilterEditor(const LogModel &model, QWidget *parent = nullptr);
+    FilterEditor(const LogModel &model, QString filterID, QWidget *parent = nullptr);
 
-    void Load(const QString &filterID, int row, const QString &filterString, int matchType);
+    void Load(int row, const QString &filterString, int matchType);
+    void Load(int row, qint64 begin, qint64 end);
 
     int GetRowToFilter() const;
     QString GetStringToFilter() const;
@@ -38,6 +37,7 @@ signals:
 
 private:
     const LogModel &mModel;
+    const QString mFilterID;
 
     QStackedWidget *mStackedWidget;
     QComboBox *mRowComboBox;
@@ -51,9 +51,9 @@ private:
 
     QPushButton *mOkButton;
     QPushButton *mCancelButton;
-    std::optional<QString> mFilterID;
 
     void SetupLayout();
+    void SetBeginEnd(qint64 begin, qint64 end);
     static QDateTime ConvertToQDateTime(qint64 timestamp);
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);
 

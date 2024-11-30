@@ -3,13 +3,13 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QTimeZone>
-#include <QUuid>
 
 #include "log_processing.hpp"
 
 using namespace loglib;
 
-FilterEditor::FilterEditor(const LogModel &model, QWidget *parent) : QDialog(parent), mModel(model)
+FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
+    : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
 {
     // Create widgets
     mRowComboBox = new QComboBox(this);
@@ -66,12 +66,17 @@ FilterEditor::FilterEditor(const LogModel &model, QWidget *parent) : QDialog(par
     UpdateSelectedColumn(0);
 }
 
-void FilterEditor::Load(const QString &filterID, int row, const QString &filterString, int matchType)
+void FilterEditor::Load(int row, const QString &filterString, int matchType)
 {
-    mFilterID = filterID;
     mRowComboBox->setCurrentIndex(row);
     mStringLineEdit->setText(filterString);
     mMatchTypeComboBox->setCurrentIndex(mMatchTypeComboBox->findData(QVariant(matchType)));
+}
+
+void FilterEditor::Load(int row, const qint64 begin, qint64 end)
+{
+    mRowComboBox->setCurrentIndex(row);
+    SetBeginEnd(begin, end);
 }
 
 int FilterEditor::GetRowToFilter() const
@@ -144,6 +149,22 @@ void FilterEditor::SetupLayout()
     mainLayout->addLayout(buttonLayout);
 }
 
+void FilterEditor::SetBeginEnd(qint64 begin, qint64 end)
+{
+    const QDateTime beginDateTime = ConvertToQDateTime(begin);
+    const QDateTime endDateTime = ConvertToQDateTime(end);
+
+    mBeginDateEdit->setDateTime(beginDateTime);
+    mBeginDateEdit->setMinimumDateTime(beginDateTime);
+    mBeginTimeEdit->setDateTime(beginDateTime);
+    mBeginTimeEdit->setMinimumDateTime(beginDateTime);
+
+    mEndDateEdit->setDateTime(endDateTime);
+    mEndDateEdit->setMaximumDateTime(endDateTime);
+    mEndTimeEdit->setDateTime(endDateTime);
+    mEndTimeEdit->setMaximumDateTime(endDateTime);
+}
+
 QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp)
 {
     return QDateTime::fromMSecsSinceEpoch(UtcMicrosecondsToLocalMilliseconds(timestamp), QTimeZone::systemTimeZone());
@@ -170,15 +191,10 @@ void FilterEditor::OnOkClicked()
         return;
     }
 
-    if (!mFilterID.has_value())
-    {
-        mFilterID = QUuid::createUuid().toString();
-    }
-
     if (mModel.Configuration().columns[index].type == LogConfiguration::Type::Time)
     {
         emit FilterTimeStampSubmitted(
-            *mFilterID,
+            mFilterID,
             index,
             ConvertToTimeStamp(mBeginDateEdit->date(), mBeginTimeEdit->time()),
             ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())
@@ -187,7 +203,7 @@ void FilterEditor::OnOkClicked()
     else
     {
         // Emit the filterSubmitted signal with all input data
-        emit FilterSubmitted(*mFilterID, index, GetStringToFilter(), GetMatchType());
+        emit FilterSubmitted(mFilterID, index, GetStringToFilter(), GetMatchType());
     }
 
     // Close the dialog with an "accepted" result
@@ -205,18 +221,7 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(1);
 
         std::optional<std::pair<qint64, qint64>> minMax = mModel.GetMinMaxValues<qint64>(index).value();
-        const QDateTime beginDateTime = ConvertToQDateTime(minMax->first);
-        const QDateTime endDateTime = ConvertToQDateTime(minMax->second);
-
-        mBeginDateEdit->setDateTime(beginDateTime);
-        mBeginDateEdit->setMinimumDateTime(beginDateTime);
-        mBeginTimeEdit->setDateTime(beginDateTime);
-        mBeginTimeEdit->setMinimumDateTime(beginDateTime);
-
-        mEndDateEdit->setDateTime(endDateTime);
-        mEndDateEdit->setMaximumDateTime(endDateTime);
-        mEndTimeEdit->setDateTime(endDateTime);
-        mEndTimeEdit->setMaximumDateTime(endDateTime);
+        SetBeginEnd(minMax->first, minMax->second);
     }
     else
     {

@@ -94,12 +94,22 @@ int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds)
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
 {
-    static auto tz = date::current_zone(); // Get the current time zone
+    static auto tz = date::current_zone();
     const auto localTime = date::local_time<std::chrono::microseconds>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(milliseconds))
     );
-    const auto systemTime = tz->to_sys(localTime); // Convert local time to system time
+    const auto systemTime = tz->to_sys(localTime);
     return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
+}
+
+std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
+{
+    static auto tz = date::current_zone();
+    std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
+        std::chrono::microseconds{microseconds}
+    };
+    const date::zoned_time localTime{tz, std::chrono::round<std::chrono::milliseconds>(utcTime)};
+    return date::format("%F %T", localTime);
 }
 
 } // namespace loglib

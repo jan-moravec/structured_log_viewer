@@ -13,6 +13,10 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <optional>
+#include <string>
+#include <unordered_map>
+
 QT_BEGIN_NAMESPACE
 namespace Ui
 {
@@ -43,7 +47,9 @@ private slots:
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
-    void AddFilter();
+    void AddFilter(
+        const QString filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt
+    );
     void ClearAllFilters();
     void ClearFilter(const QString &filterID);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
@@ -52,6 +58,7 @@ private slots:
 private:
     void OpenFileInternal(const QString &file);
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
+    void UpdateFilters();
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;

@@ -11,6 +11,7 @@
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTimer>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include <filter_editor.hpp>
@@ -106,7 +107,7 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
 
-    connect(ui->actionAddFilter, &QAction::triggered, this, &MainWindow::AddFilter);
+    connect(ui->actionAddFilter, &QAction::triggered, this, [this]() { AddFilter(QUuid::createUuid().toString()); });
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
@@ -293,13 +294,26 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 }
 
-void MainWindow::AddFilter()
+void MainWindow::AddFilter(const QString filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter)
 {
     if (mModel->rowCount() > 0)
     {
-        auto filterEditor = new FilterEditor(*mModel, this);
+        auto filterEditor = new FilterEditor(*mModel, filterId, this);
         connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
         connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
+        if (filter.has_value())
+        {
+            if (filter->type == LogConfiguration::LogFilter::Type::Time)
+            {
+                filterEditor->Load(filter->row, *filter->filterBegin, *filter->filterEnd);
+            }
+            else
+            {
+                filterEditor->Load(
+                    filter->row, QString::fromStdString(*filter->filterString), static_cast<int>(*filter->matchType)
+                );
+            }
+        }
         filterEditor->show();
     }
 }
@@ -324,15 +338,7 @@ void MainWindow::ClearAllFilters()
 void MainWindow::ClearFilter(const QString &filterID)
 {
     mFilters.erase(filterID.toStdString());
-
-    std::vector<std::unique_ptr<FilterRule>> rules;
-    for (const auto &filter : mFilters)
-    {
-        rules.push_back(std::make_unique<TextFilterRule>(
-            filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
-        ));
-    }
-    mSortFilterProxyModel->SetFilterRules(std::move(rules));
+    UpdateFilters();
 
     unsigned filters = 0;
     for (QAction *action : ui->menuFilters->actions())
@@ -415,6 +421,34 @@ void MainWindow::OpenFileInternal(const QString &file)
 void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter)
 {
     mFilters[id.toStdString()] = filter;
+    UpdateFilters();
+
+    QString title;
+    if (filter.type == LogConfiguration::LogFilter::Type::Time)
+    {
+        title = QString::fromStdString(
+            UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
+            UtcMicrosecondsToDateTimeString(*filter.filterEnd)
+        );
+    }
+    else
+    {
+        title = QString::fromStdString(*filter.filterString);
+    }
+
+    QMenu *menuItem = ui->menuFilters->addMenu(title);
+    menuItem->menuAction()->setData(QVariant(id));
+
+    QAction *editAction = menuItem->addAction("Edit");
+    connect(editAction, &QAction::triggered, this, [this, id, filter]() { AddFilter(id, filter); });
+
+    QAction *clearAction = menuItem->addAction("Clear");
+    connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
+    ui->actionClearAllFilters->setDisabled(false);
+}
+
+void MainWindow::UpdateFilters()
+{
 
     std::vector<std::unique_ptr<FilterRule>> rules;
     for (const auto &filter : mFilters)
@@ -433,31 +467,4 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         }
     }
     mSortFilterProxyModel->SetFilterRules(std::move(rules));
-
-    QString title;
-    if (filter.type == LogConfiguration::LogFilter::Type::Time)
-    {
-        title = "Timestamp";
-    }
-    else
-    {
-        title = "String: " + QString::fromStdString(*filter.filterString);
-    }
-
-    QMenu *menuItem = ui->menuFilters->addMenu(title);
-    menuItem->menuAction()->setData(QVariant(id));
-
-    QAction *editAction = menuItem->addAction("Edit");
-    connect(editAction, &QAction::triggered, this, [this, id, filter]() {
-        auto filterEditor = new FilterEditor(*mModel, this);
-        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
-        filterEditor->Load(
-            id, filter.row, QString::fromStdString(*filter.filterString), static_cast<int>(*filter.matchType)
-        );
-        filterEditor->show();
-    });
-
-    QAction *clearAction = menuItem->addAction("Clear");
-    connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
-    ui->actionClearAllFilters->setDisabled(false);
 }
