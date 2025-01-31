@@ -106,6 +106,25 @@ On Windows, use the Developer PowerShell or Command Prompt.
 
 Contributions are welcome! Please fork the repository and submit pull requests with your changes.
 
+### Developer Tools
+
+All code is automatically formatted. The C/C++ code is formatted with clang-format, the Python code is formatted with black formatter.
+
+Please install pre-commit for this repository:
+
+```sh
+pip install pre-commit
+pre-commit install
+```
+
+To manually format the code with pre-commit, run:
+
+```sh
+pre-commit run --all-files
+```
+
+The versions of formatting tools are in [.pre-commit-config.yaml](.pre-commit-config.yaml).
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
@@ -115,4 +134,4 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - <https://github.com/nlohmann/json>
 - <https://github.com/HowardHinnant/date>
 - <https://github.com/fmtlib/fmt>
-- <a href="https://www.freepik.com/icon/file_5392654">Icon by Ilham Fitrotul Hayat</a>
+- [Icon by Ilham Fitrotul Hayat](https://www.freepik.com/icon/file_5392654)

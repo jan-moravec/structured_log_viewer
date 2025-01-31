@@ -1,6 +1,9 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(version 3.19)
 
-project(structured_log_viewer VERSION 0.1 LANGUAGES CXX)
+project(
+    structured_log_viewer
+    version 0.5
+    languages CXX)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
