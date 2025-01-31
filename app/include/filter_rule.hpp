@@ -1,9 +1,9 @@
 #pragma once
 
+#include <loglib/log_configuration.hpp>
+
 #include <QRegularExpression>
 #include <QVariant>
-
-#include <log_configuration.hpp>
 
 class FilterRule
 {

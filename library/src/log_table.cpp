@@ -1,4 +1,4 @@
-#include "log_table.hpp"
+#include "loglib/log_table.hpp"
 
 namespace loglib
 {

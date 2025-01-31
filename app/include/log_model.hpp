@@ -1,7 +1,7 @@
 #pragma once
 
-#include <log_data.hpp>
-#include <log_table.hpp>
+#include <loglib/log_data.hpp>
+#include <loglib/log_table.hpp>
 
 #include <QAbstractTableModel>
 

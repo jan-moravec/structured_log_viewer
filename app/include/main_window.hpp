@@ -1,10 +1,12 @@
 #pragma once
 
 #include "find_record_widget.hpp"
-#include "log_configuration.hpp"
+
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
+
+#include <loglib/log_configuration.hpp>
 
 #include <QDragEnterEvent>
 #include <QDropEvent>

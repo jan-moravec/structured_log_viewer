@@ -1,4 +1,4 @@
-#include "log_line.hpp"
+#include "loglib/log_line.hpp"
 
 namespace loglib
 {
@@ -10,10 +10,10 @@ LogValue LogLine::GetValue(const std::string &key) const
         return std::monostate();
     }
 
-    const auto extraValueInterator = mExtraValues.find(key);
-    if (extraValueInterator != mExtraValues.end())
+    const auto extraValueIterator = mExtraValues.find(key);
+    if (extraValueIterator != mExtraValues.end())
     {
-        return extraValueInterator->second;
+        return extraValueIterator->second;
     }
 
     return GetRawValue(key);

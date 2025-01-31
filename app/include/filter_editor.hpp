@@ -2,7 +2,7 @@
 
 #include "log_model.hpp"
 
-#include <log_configuration.hpp>
+#include <loglib/log_configuration.hpp>
 
 #include <QComboBox>
 #include <QDate>

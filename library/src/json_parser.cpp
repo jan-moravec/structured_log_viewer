@@ -1,6 +1,6 @@
-#include "json_parser.hpp"
+#include "loglib/json_parser.hpp"
 
-#include "json_line.hpp"
+#include "loglib/json_line.hpp"
 
 #include <fstream>
 #include <set>

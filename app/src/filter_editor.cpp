@@ -1,10 +1,10 @@
 #include "filter_editor.hpp"
 
+#include <loglib/log_processing.hpp>
+
 #include <QLabel>
 #include <QMessageBox>
 #include <QTimeZone>
-
-#include "log_processing.hpp"
 
 using namespace loglib;
 

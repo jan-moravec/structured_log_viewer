@@ -1,4 +1,4 @@
-#include "log_configuration.hpp"
+#include "loglib/log_configuration.hpp"
 
 #include <algorithm>
 #include <fstream>

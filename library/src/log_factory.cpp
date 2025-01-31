@@ -1,6 +1,6 @@
-#include "log_factory.hpp"
+#include "loglib/log_factory.hpp"
 
-#include "json_parser.hpp"
+#include "loglib/json_parser.hpp"
 
 #include <stdexcept>
 

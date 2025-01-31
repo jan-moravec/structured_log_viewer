@@ -1,4 +1,4 @@
-#include "json_line.hpp"
+#include "loglib/json_line.hpp"
 
 namespace loglib
 {

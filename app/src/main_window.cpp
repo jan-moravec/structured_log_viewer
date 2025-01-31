@@ -1,6 +1,11 @@
 #include "main_window.hpp"
 #include "./ui_main_window.h"
 
+#include "filter_editor.hpp"
+
+#include <loglib/log_factory.hpp>
+#include <loglib/log_processing.hpp>
+
 #include <QCheckBox>
 #include <QDebug>
 #include <QFileDialog>
@@ -13,10 +18,6 @@
 #include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
-
-#include <filter_editor.hpp>
-#include <log_factory.hpp>
-#include <log_processing.hpp>
 
 bool IsDarkTheme()
 {
