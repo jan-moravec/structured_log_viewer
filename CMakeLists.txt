@@ -1,9 +1,9 @@
-cmake_minimum_required(version 3.19)
+cmake_minimum_required(VERSION 3.19)
 
 project(
     structured_log_viewer
-    version 0.5
-    languages CXX)
+    VERSION 0.5
+    LANGUAGES CXX)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
@@ -23,3 +23,5 @@ include(cmake/FetchDependencies.cmake)
 # Add subdirectories
 add_subdirectory(library)
 add_subdirectory(app)
+
+add_subdirectory(test)

@@ -11,8 +11,8 @@ separate_fn_name_with_space = False   # No space after function/macro names
 # ---------------------------------------------
 # Command-specific formatting
 # ---------------------------------------------
-keyword_case = 'lower'       # Keep CMake keywords lowercase (e.g., `set`, `if`)
-command_case = 'lower'       # Keep CMake commands lowercase (e.g., `add_executable`)
+keyword_case = 'upper'       # Keep CMake keywords lowercase
+command_case = 'lower'       # Keep CMake commands lowercase
 always_wrap = []             # List of commands that should always be wrapped
 enable_sort = True           # Sort lists where possible
 autosort = True              # Automatically sort variable assignments

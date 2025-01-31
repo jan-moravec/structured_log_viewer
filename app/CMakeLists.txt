@@ -1,18 +1,18 @@
-cmake_minimum_required(version 3.19)
+cmake_minimum_required(VERSION 3.19)
 
 project(
     StructuredLogViewer
-    version 0.1
-    languages CXX)
+    VERSION 0.1
+    LANGUAGES CXX)
 
 find_package(
     QT
     NAMES
     Qt6
     Qt5
-    required
-    components Widgets)
-find_package(Qt${QT_VERSION_MAJOR} required components Widgets)
+    REQUIRED
+    COMPONENTS Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
 set(PROJECT_SOURCES
     src/main.cpp
@@ -45,7 +45,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     # https://doc.qt.io/qt-6/qt-add-executable.html#target-creation
 else()
     if(ANDROID)
-        add_library(${PROJECT_NAME} shared ${PROJECT_SOURCES})
+        add_library(${PROJECT_NAME} SHARED ${PROJECT_SOURCES})
 
         # Define properties for Android with Qt 5 after find_package() calls as: set(ANDROID_PACKAGE_SOURCE_DIR
         # "${CMAKE_CURRENT_SOURCE_DIR}/android")
@@ -54,19 +54,19 @@ else()
     endif()
 endif()
 
-target_include_directories(${PROJECT_NAME} public ./include)
+target_include_directories(${PROJECT_NAME} PUBLIC ./include)
 
-target_link_libraries(${PROJECT_NAME} private Qt${QT_VERSION_MAJOR}::Widgets loglib)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt${QT_VERSION_MAJOR}::Widgets loglib)
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1. If you are developing for iOS or macOS you
 # should consider setting an explicit, fixed bundle identifier manually though.
-if(${QT_VERSION} version_less 6.1.0)
+if(${QT_VERSION} VERSION_LESS 6.1.0)
     set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.${PROJECT_NAME})
 endif()
 
 set_target_properties(
     ${PROJECT_NAME}
-    properties ${BUNDLE_ID_OPTION} MACOSX_BUNDLE_BUNDLE_VERSION
+    PROPERTIES ${BUNDLE_ID_OPTION} MACOSX_BUNDLE_BUNDLE_VERSION
                ${PROJECT_VERSION} MACOSX_BUNDLE_SHORT_VERSION_STRING
                ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} MACOSX_BUNDLE
                TRUE WIN32_EXECUTABLE
@@ -74,15 +74,15 @@ set_target_properties(
 
 include(GNUInstallDirs)
 install(
-    targets ${PROJECT_NAME}
-    bundle destination .
-    library destination ${CMAKE_INSTALL_LIBDIR}
-    runtime destination ${CMAKE_INSTALL_BINDIR})
+    TARGETS ${PROJECT_NAME}
+    BUNDLE DESTINATION .
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-if(QT_VERSION_MAJOR equal 6)
+if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(${PROJECT_NAME})
 endif()
 
 # Copy the timezone data next to the binary
-execute_process(command ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
                         COMMAND_ERROR_IS_FATAL ANY)

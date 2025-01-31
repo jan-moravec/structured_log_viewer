@@ -4,22 +4,23 @@ include(FetchContent)
 option(USE_SYSTEM_NLOHMANN_JSON "Use system nlohmann_json" OFF)
 option(USE_SYSTEM_DATE "Use system date" OFF)
 option(USE_SYSTEM_FMT "Use system fmt" OFF)
+option(USE_SYSTEM_CATCH2 "Use system Catch2" OFF)
 
-if(not USE_SYSTEM_NLOHMANN_JSON)
+if(NOT USE_SYSTEM_NLOHMANN_JSON)
     fetchcontent_declare(
         nlohmann_json
-        git_repository https://github.com/nlohmann/json.git
-        git_tag v3.11.3)
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3)
     fetchcontent_makeavailable(nlohmann_json)
 else()
-    find_package(nlohmann_json required)
+    find_package(nlohmann_json REQUIRED)
 endif()
 
-if(not USE_SYSTEM_DATE)
+if(NOT USE_SYSTEM_DATE)
     fetchcontent_declare(
         date
-        git_repository https://github.com/HowardHinnant/date.git
-        git_tag 1a4f424659d39c2a222729bd2b1ccd8f857b3221)
+        GIT_REPOSITORY https://github.com/HowardHinnant/date.git
+        GIT_TAG 1a4f424659d39c2a222729bd2b1ccd8f857b3221)
     set(BUILD_TZ_LIB ON) # Enable building the time zone library
     set(MANUAL_TZ_DB ON) # Provide time zone database manually
     fetchcontent_makeavailable(date)
@@ -31,29 +32,39 @@ if(not USE_SYSTEM_DATE)
     set(WINDOWS_ZONES_FILE windowsZones.xml)
 
     # Create the directories if they don't exist
-    file(make_directory ${TZDATA_DIR})
+    file(MAKE_DIRECTORY ${TZDATA_DIR})
 
     # Download the latest windowsZones.xml
-    file(download https://raw.githubusercontent.com/unicode-org/cldr/master/common/supplemental/windowsZones.xml
+    file(DOWNLOAD https://raw.githubusercontent.com/unicode-org/cldr/master/common/supplemental/windowsZones.xml
          ${TZDATA_DIR}/${WINDOWS_ZONES_FILE} SHOW_PROGRESS)
 
     # Download the latest tzdata
-    file(download https://www.iana.org/time-zones/repository/tzdata-latest.tar.gz ${TZDATA_DIR}/${TZDATA_FILE}
+    file(DOWNLOAD https://www.iana.org/time-zones/repository/tzdata-latest.tar.gz ${TZDATA_DIR}/${TZDATA_FILE}
          SHOW_PROGRESS)
 
     # Extract the latest tzdata
-    execute_process(command ${CMAKE_COMMAND} -E tar xzf ${TZDATA_DIR}/${TZDATA_FILE}
-                    working_directory ${TZDATA_DIR} COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf ${TZDATA_DIR}/${TZDATA_FILE}
+                    WORKING_DIRECTORY ${TZDATA_DIR} COMMAND_ERROR_IS_FATAL ANY)
 else()
-    find_package(date required)
+    find_package(date REQUIRED)
 endif()
 
-if(not USE_SYSTEM_FMT)
+if(NOT USE_SYSTEM_FMT)
     fetchcontent_declare(
         fmt
-        git_repository https://github.com/fmtlib/fmt.git
-        git_tag 11.0.1)
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_TAG 11.0.1)
     fetchcontent_makeavailable(fmt)
 else()
-    find_package(fmt required)
+    find_package(fmt REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_CATCH2)
+    fetchcontent_declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.8.0)
+    fetchcontent_makeavailable(Catch2)
+else()
+    find_package(Catch2 REQUIRED)
 endif()
