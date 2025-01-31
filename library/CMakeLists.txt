@@ -18,4 +18,10 @@ add_library(
 
 target_include_directories(${PROJECT_NAME} PUBLIC ./include)
 
-target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json date::date date::date-tz fmt::fmt)
+target_link_libraries(
+    ${PROJECT_NAME}
+    PUBLIC nlohmann_json::nlohmann_json
+           date::date
+           date::date-tz
+           fmt::fmt
+           project_warnings)

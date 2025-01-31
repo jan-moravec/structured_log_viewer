@@ -16,6 +16,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/${CMAKE_BUILD_TYPE})
 # Include the FetchDependencies script
 include(cmake/FetchDependencies.cmake)
 
+include(cmake/CompilerWarnings.cmake)
+add_library(project_warnings INTERFACE)
+set_project_warnings(project_warnings False)
+
 # Add subdirectories
 add_subdirectory(library)
 add_subdirectory(app)

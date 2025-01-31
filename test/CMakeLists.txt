@@ -9,7 +9,7 @@ file(GLOB TEST_SOURCES "src/*.cpp")
 add_executable(tests ${TEST_SOURCES})
 
 # Link libraries
-target_link_libraries(tests PRIVATE loglib Catch2::Catch2WithMain)
+target_link_libraries(tests PRIVATE loglib Catch2::Catch2WithMain project_warnings)
 
 # Enable CTest
 include(CTest)

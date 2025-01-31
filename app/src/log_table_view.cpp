@@ -27,8 +27,8 @@ void LogTableView::CopySelectedRowsToClipboard()
     QString text;
     for (const QModelIndex &rowIndex : this->selectionModel()->selectedRows())
     {
-        QVariant data = this->model()->data(rowIndex, LogModelItemDataRole::CopyLine);
-        text += data.toString() + "\n";
+        const QVariant modelData = this->model()->data(rowIndex, LogModelItemDataRole::CopyLine);
+        text += modelData.toString() + "\n";
     }
     text.removeLast();
     QClipboard *clipboard = QApplication::clipboard();

@@ -22,7 +22,9 @@ bool IsKeyInAnyColumn(const std::string &key, const std::vector<loglib::LogConfi
 std::string ToLower(const std::string &str)
 {
     std::string lower = str;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](auto c) {
+        return static_cast<unsigned char>(std::tolower(c));
+    });
     return lower;
 }
 
@@ -61,7 +63,9 @@ void UpdateConfiguration(LogConfiguration &configuration, const LogData &logData
             }
             else
             {
-                configuration.columns.push_back(LogConfiguration::Column{key, {key}, "{}"});
+                configuration.columns.push_back(
+                    LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::Any, {}}
+                );
             }
         }
     }
