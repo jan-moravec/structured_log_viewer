@@ -21,28 +21,27 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 set(PROJECT_SOURCES
     src/main.cpp
     src/main_window.cpp
+    src/main_window.cpp
     include/main_window.hpp
-    src/main_window.ui
+    src/log_model.cpp
     include/log_model.hpp
-    src/log_model.cpp)
+    src/log_table_view.cpp
+    include/log_table_view.hpp
+    src/find_record_widget.cpp
+    include/find_record_widget.hpp
+    src/log_filter_model.cpp
+    include/log_filter_model.hpp
+    src/filter_editor.cpp
+    include/filter_editor.hpp
+    src/preferences_editor.cpp
+    include/preferences_editor.hpp
+    src/appearance_control.cpp
+    include/appearance_control.hpp)
 
 qt_add_resources(RESOURCES ../resources/resources.qrc)
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
-    qt_add_executable(
-        ${PROJECT_NAME}
-        MANUAL_FINALIZATION
-        ${PROJECT_SOURCES}
-        ${RESOURCES}
-        include/log_table_view.hpp
-        src/log_table_view.cpp
-        include/find_record_widget.hpp
-        src/find_record_widget.cpp
-        include/log_filter_model.hpp
-        src/log_filter_model.cpp
-        include/filter_rule.hpp
-        include/filter_editor.hpp
-        src/filter_editor.cpp)
+    qt_add_executable(${PROJECT_NAME} MANUAL_FINALIZATION ${PROJECT_SOURCES} ${RESOURCES})
 
     # Define target properties for Android with Qt 6 as: set_property(TARGET app APPEND PROPERTY
     # QT_ANDROID_PACKAGE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/android) For more information, see

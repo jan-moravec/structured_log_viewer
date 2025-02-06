@@ -1,6 +1,7 @@
 #include "main_window.hpp"
 #include "./ui_main_window.h"
 
+#include "appearance_control.hpp"
 #include "filter_editor.hpp"
 
 #include <loglib/log_factory.hpp>
@@ -18,13 +19,6 @@
 #include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
-
-bool IsDarkTheme()
-{
-    QColor bgColor = qApp->palette().color(QPalette::Window);
-    int brightness = (bgColor.red() * 299 + bgColor.green() * 587 + bgColor.blue() * 114) / 1000;
-    return brightness < 128;
-}
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -55,7 +49,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Set alternating row colors
     mTableView->setAlternatingRowColors(true);
 
-    if (IsDarkTheme())
+    if (AppearanceControl::IsDarkTheme())
     {
         mTableView->setStyleSheet(R"(
 QTableView { background-color: #222222; alternate-background-color: #333333; }
@@ -116,6 +110,15 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
     mLayout->addWidget(mFindRecord);
     mFindRecord->hide();
+
+    mPreferencesEditor = new PreferencesEditor(this);
+    connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
+        mPreferencesEditor->UpdateFields();
+        mPreferencesEditor->show();
+        mPreferencesEditor->raise();
+        mPreferencesEditor->activateWindow();
+    });
+
     loglib::Initialize();
 
     QTimer::singleShot(0, [this] {
@@ -183,9 +186,22 @@ void MainWindow::UpdateUi()
     }
 }
 
+bool MainWindow::event(QEvent *event)
+{
+    if (event->type() == QEvent::ApplicationFontChange)
+    {
+        QFont applicatioFont = qApp->font();
+        mTableView->setFont(applicatioFont);
+        applicatioFont.setBold(true);
+        mTableView->horizontalHeader()->setFont(applicatioFont);
+        return true;
+    }
+    return QMainWindow::event(event); // Handle other events normally
+}
+
 void MainWindow::OpenFiles()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this, "Select Files", QString(), "All Files (*.*)");
+    QStringList files = QFileDialog::getOpenFileNames(this, "Select Log Files", QString(), "All Files (*.*)");
 
     if (!files.isEmpty())
     {
@@ -200,7 +216,7 @@ void MainWindow::OpenFiles()
 
 void MainWindow::OpenJsonLogs()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this, "Select Files", QString(), "All Files (*.*)");
+    QStringList files = QFileDialog::getOpenFileNames(this, "Select JSON Log Files", QString(), "All Files (*.*)");
 
     if (!files.isEmpty())
     {
@@ -227,12 +243,15 @@ void MainWindow::OpenJsonLogs()
 void MainWindow::SaveConfiguration()
 {
     QString file = QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
-    SerializeConfiguration(file.toStdString(), mConfiguration);
+    if (!file.isEmpty())
+    {
+        SerializeConfiguration(file.toStdString(), mConfiguration);
+    }
 }
 
 void MainWindow::LoadConfiguration()
 {
-    QString file = QFileDialog::getOpenFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
+    QString file = QFileDialog::getOpenFileName(this, "Load Configuration", QString(), "JSON (*.json);;All Files (*)");
     if (!file.isEmpty())
     {
         try

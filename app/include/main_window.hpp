@@ -1,10 +1,10 @@
 #pragma once
 
 #include "find_record_widget.hpp"
-
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
+#include "preferences_editor.hpp"
 
 #include <loglib/log_configuration.hpp>
 
@@ -40,6 +40,9 @@ public:
 
     void UpdateUi();
 
+protected:
+    bool event(QEvent *event) override;
+
 private slots:
     void OpenFiles();
     void OpenJsonLogs();
@@ -68,6 +71,7 @@ private:
     LogTableView *mTableView;
     LogModel *mModel;
     FindRecordWidget *mFindRecord;
+    PreferencesEditor *mPreferencesEditor;
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 };

@@ -11,6 +11,7 @@ using namespace loglib;
 FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
 {
+    setWindowTitle("Filter Editor");
     // Create widgets
     mRowComboBox = new QComboBox(this);
 
@@ -146,6 +147,7 @@ void FilterEditor::SetupLayout()
     QHBoxLayout *buttonLayout = new QHBoxLayout();
     buttonLayout->addWidget(mOkButton);
     buttonLayout->addWidget(mCancelButton);
+    mainLayout->addStretch(1);
     mainLayout->addLayout(buttonLayout);
 }
 
