@@ -3,7 +3,14 @@
 
 TEST_CASE("LogProcessing Initialize and ParseTimestamps", "[log_processing]")
 {
-    loglib::Initialize();
+#ifdef _WIN32
+    const auto tzdata = std::filesystem::current_path() / std::filesystem::path("tzdata");
+#else
+    const char *appDir = std::getenv("APPDIR");
+    const auto tzdata = appDir ? std::filesystem::path(appDir) / std::filesystem::path("usr/share/tzdata")
+                               : std::filesystem::current_path() + std::filesystem::path("tzdata");
+#endif
+    loglib::Initialize(tzdata);
 
     loglib::LogData data({}, {});
     loglib::LogConfiguration config;
