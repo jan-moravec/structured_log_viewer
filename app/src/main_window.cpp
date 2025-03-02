@@ -119,12 +119,17 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
         mPreferencesEditor->activateWindow();
     });
 
-    loglib::Initialize();
-
     QTimer::singleShot(0, [this] {
         try
         {
-            loglib::Initialize();
+#ifdef _WIN32
+            const auto tzdata = std::filesystem::current_path() / std::filesystem::path("tzdata");
+#else
+            const char *appDir = std::getenv("APPDIR");
+            const auto tzdata = appDir ? std::filesystem::path(appDir) / std::filesystem::path("usr/share/tzdata")
+                                       : std::filesystem::current_path() + std::filesystem::path("tzdata");
+#endif
+            loglib::Initialize(tzdata);
         }
         catch (std::exception &e)
         {

@@ -39,10 +39,9 @@ bool ParseTimestampLine(LogLine &line, const LogConfiguration::Column &column)
 namespace loglib
 {
 
-void Initialize()
+void Initialize(const std::filesystem::path &tzdata)
 {
-    std::filesystem::path dataPath = std::filesystem::current_path() / std::filesystem::path("tzdata");
-    date::set_install(dataPath.string());
+    date::set_install(tzdata.string());
     static_cast<void>(date::current_zone()); // Test the database
 }
 
