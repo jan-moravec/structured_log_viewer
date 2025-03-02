@@ -127,7 +127,7 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
 #else
             const char *appDir = std::getenv("APPDIR");
             const auto tzdata = appDir ? std::filesystem::path(appDir) / std::filesystem::path("usr/share/tzdata")
-                                       : std::filesystem::current_path() + std::filesystem::path("tzdata");
+                                       : std::filesystem::current_path() / std::filesystem::path("tzdata");
 #endif
             loglib::Initialize(tzdata);
         }
