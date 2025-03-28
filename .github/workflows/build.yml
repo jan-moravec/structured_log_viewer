@@ -58,7 +58,7 @@ jobs:
           cp -r build/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
-          ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt
+          ./linuxdeploy-x86_64.AppImage --executable=build/bin/Release/${{ env.APP_NAME }} --appdir=$APP_DIR --plugin qt
           mv ${{ env.APP_NAME }}*.AppImage ${{ env.APP_NAME }}.AppImage
 
       - name: Upload artifact
