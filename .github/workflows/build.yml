@@ -54,7 +54,7 @@ jobs:
           mkdir -p $APP_DIR/usr/lib
           mkdir -p $APP_DIR/usr/share/applications
           mkdir -p $APP_DIR/usr/share/icons/hicolor/256x256/apps
-          cp build/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/${{ env.APP_NAME }}
+          cp build/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/
           cp -r build/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
