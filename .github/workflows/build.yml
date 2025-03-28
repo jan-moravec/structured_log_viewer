@@ -17,6 +17,8 @@ env:
 jobs:
   build-linux:
     runs-on: ubuntu-22.04
+    env:
+      EXTRA_PLATFORM_PLUGINS: "wayland"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
