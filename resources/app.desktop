@@ -1,9 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=StructuredLogViewer
-GenericName=StructuredLogViewer
-Comment=GUI application for viewing structured logs
-Exec=/usr/bin/StructuredLogViewer
+GenericName=Log Viewer
+Comment=GUI application for viewing and analyzing structured log files.
+Exec=StructuredLogViewer
 Icon=StructuredLogViewer
 Terminal=false
-Categories=Utility;
+Categories=Utility;Development;
+Keywords=log;viewer;structured;analysis;
+StartupNotify=true

@@ -16,7 +16,7 @@ env:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,10 +40,12 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 
-      - name: Install linuxdeployqt
+      - name: Install linuxdeploy and plugin
         run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-          chmod +x linuxdeployqt-continuous-x86_64.AppImage
+          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          wget https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-plugin-qt-x86_64.AppImage
 
       - name: Package application
         run: |
@@ -52,15 +54,15 @@ jobs:
           mkdir -p $APP_DIR/usr/lib
           mkdir -p $APP_DIR/usr/share/applications
           mkdir -p $APP_DIR/usr/share/icons/hicolor/256x256/apps
-          cp build/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin
+          cp build/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/
           cp -r build/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
-          ./linuxdeployqt-continuous-x86_64.AppImage $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop -appimage
-          mv ${{ env.APP_NAME }}*.AppImage ${{ env.APP_NAME }}.AppImage
+          ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ${{ env.APP_NAME }}-linux
           path: ./*
@@ -69,7 +71,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: ${{ env.APP_NAME }}.AppImage
+          files: ${{ env.APP_NAME }}-x86_64.AppImage
 
   build-windows:
     runs-on: windows-latest
