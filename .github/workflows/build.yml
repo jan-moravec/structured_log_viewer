@@ -18,7 +18,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-22.04
     env:
-      EXTRA_PLATFORM_PLUGINS: "wayland"
+      EXTRA_PLATFORM_PLUGINS: "xcb;wayland-egl;wayland-xcomposite-egl;wayland-generic"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -51,6 +51,7 @@ jobs:
 
       - name: Package application
         run: |
+          ls /home/runner/work/structured_log_viewer/Qt/6.6.3/gcc_64/plugins/platforms/
           APP_DIR="${{ env.APP_NAME }}.AppDir"
           mkdir -p $APP_DIR/usr/bin
           mkdir -p $APP_DIR/usr/lib
