@@ -51,7 +51,6 @@ jobs:
 
       - name: Package application
         run: |
-          ls /home/runner/work/structured_log_viewer/Qt/6.6.3/gcc_64/plugins/platforms/
           APP_DIR="${{ env.APP_NAME }}.AppDir"
           mkdir -p $APP_DIR/usr/bin
           mkdir -p $APP_DIR/usr/lib
