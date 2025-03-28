@@ -18,7 +18,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-22.04
     env:
-      EXTRA_PLATFORM_PLUGINS: "xcb;wayland-egl;wayland-xcomposite-egl;wayland-generic"
+      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
