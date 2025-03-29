@@ -107,13 +107,16 @@ jobs:
       - name: Package application
         shell: powershell
         run: |
-          mv build/bin/Release ${{ env.APP_NAME }}
+          mkdir ${{ env.APP_NAME }}
           cd ${{ env.APP_NAME }}
+          mv ../build/bin/Release/${{ env.APP_NAME }} .
+          mv ../build/bin/Release/tzdata .
           windeployqt --release ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ${{ env.APP_NAME }}-windows
           path: ./*
