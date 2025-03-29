@@ -109,7 +109,7 @@ jobs:
         run: |
           mkdir ${{ env.APP_NAME }}
           cd ${{ env.APP_NAME }}
-          mv ../build/bin/Release/${{ env.APP_NAME }} .
+          mv ../build/bin/Release/${{ env.APP_NAME }}.exe .
           mv ../build/bin/Release/tzdata .
           windeployqt --release ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
