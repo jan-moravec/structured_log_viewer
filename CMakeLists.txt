@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.19)
 
 project(
     structured_log_viewer
-    VERSION 0.7.0
+    VERSION 0.6.0
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
