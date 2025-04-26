@@ -30,6 +30,7 @@ jobs:
           host: "linux"
           target: "desktop"
           arch: "linux_gcc_64"
+          cache: true
 
       - name: Install build tools
         run: sudo apt-get install -y cmake libfuse2
@@ -93,6 +94,7 @@ jobs:
           host: "windows"
           target: "desktop"
           arch: "win64_msvc2022_64"
+          cache: true
 
       - name: Install build tools
         run: |
