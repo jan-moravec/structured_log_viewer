@@ -135,5 +135,4 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - <https://github.com/HowardHinnant/date>
 - <https://github.com/fmtlib/fmt>
 - <https://github.com/catchorg/Catch2.git>
-- <https://github.com/TartanLlama/expected.git>
 - [Icon by Ilham Fitrotul Hayat](https://www.freepik.com/icon/file_5392654)

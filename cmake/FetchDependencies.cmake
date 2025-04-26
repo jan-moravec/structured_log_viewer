@@ -76,15 +76,3 @@ if(NOT USE_SYSTEM_CATCH2)
 else()
     find_package(Catch2 REQUIRED)
 endif()
-
-if(NOT USE_SYSTEM_TL_EXPECTED)
-    fetchcontent_declare(
-        tl_expected
-        GIT_REPOSITORY https://github.com/TartanLlama/expected.git
-        GIT_TAG v1.1.0)
-    set(EXPECTED_BUILD_PACKAGE OFF)
-    set(EXPECTED_BUILD_TESTS OFF)
-    fetchcontent_makeavailable(tl_expected)
-else()
-    find_package(tl_expected REQUIRED)
-endif()

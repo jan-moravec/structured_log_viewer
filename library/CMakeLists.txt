@@ -24,5 +24,4 @@ target_link_libraries(
            date::date
            date::date-tz
            fmt::fmt
-           tl::expected
            project_warnings)
