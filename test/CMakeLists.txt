@@ -12,7 +12,8 @@ add_executable(
     "src/test_log_factory.cpp"
     "src/test_log_file.cpp"
     "src/test_log_line.cpp"
-    "src/test_log_processing.cpp")
+    "src/test_log_processing.cpp"
+    "src/test_log_table.cpp")
 
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 

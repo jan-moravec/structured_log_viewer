@@ -68,9 +68,15 @@ std::string LogFile::GetLine(size_t lineNumber)
 LogFileReference LogFile::CreateReference(std::streampos position)
 {
     LogFileReference reference(*this, mLineOffsets.size());
-    if (position - mLineOffsets.back() <= 2)
+    if (position == std::streampos(-1))
     {
-        throw std::runtime_error("Cannot create reference to a position with empty line: " + std::to_string(position));
+        // Invalid position can mean the end of the file, so convert it to the end stream position
+        mFile.seekg(0, std::ios::end);
+        position = std::streampos(static_cast<std::streamoff>(mFile.tellg()) + 1);
+    }
+    if (position - mLineOffsets.back() <= 0)
+    {
+        throw std::runtime_error("Invalid position to create reference: " + std::to_string(position));
     }
     mLineOffsets.push_back(std::move(position));
     return reference;
