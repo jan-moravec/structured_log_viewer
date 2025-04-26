@@ -6,23 +6,51 @@
 namespace loglib
 {
 
-LogData::LogData(std::vector<std::unique_ptr<LogLine>> lines, std::vector<std::string> keys)
+LogData::LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, std::vector<std::string> keys)
     : mLines(std::move(lines)), mKeys(std::move(keys))
 {
+    mFiles.push_back(std::move(file));
 }
 
-const std::vector<std::unique_ptr<LogLine>> &LogData::GetLines() const
+const std::vector<std::unique_ptr<LogFile>> &LogData::Files() const
+{
+    return mFiles;
+}
+
+std::vector<std::unique_ptr<LogFile>> &LogData::Files()
+{
+    return mFiles;
+}
+
+const std::vector<LogLine> &LogData::Lines() const
 {
     return mLines;
 }
 
-const std::vector<std::string> &LogData::GetKeys() const
+std::vector<LogLine> &LogData::Lines()
+{
+    return mLines;
+}
+
+const std::vector<std::string> &LogData::Keys() const
+{
+    return mKeys;
+}
+
+std::vector<std::string> &LogData::Keys()
 {
     return mKeys;
 }
 
 void LogData::Merge(LogData &&other)
 {
+    mFiles.reserve(mFiles.size() + other.mFiles.size());
+    std::move(
+        std::make_move_iterator(other.mFiles.begin()),
+        std::make_move_iterator(other.mFiles.end()),
+        std::back_inserter(mFiles)
+    );
+
     mLines.reserve(mLines.size() + other.mLines.size());
     std::move(
         std::make_move_iterator(other.mLines.begin()),

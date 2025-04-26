@@ -11,13 +11,11 @@ LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
 }
 
-void LogModel::AddData(loglib::LogData &&logData, const LogConfiguration &configuration)
+void LogModel::AddData(loglib::LogData &&logData)
 {
     beginResetModel();
 
-    mLogData.Merge(std::move(logData));
-
-    mLogTable = std::make_unique<LogTable>(mLogData, configuration);
+    mLogTable.Update(std::move(logData));
 
     endResetModel();
 }
@@ -26,8 +24,7 @@ void LogModel::Clear()
 {
     beginResetModel();
 
-    mLogData = loglib::LogData();
-    mLogTable.reset();
+    mLogTable = loglib::LogTable();
 
     endResetModel();
 }
@@ -35,21 +32,13 @@ void LogModel::Clear()
 int LogModel::rowCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent);
-    if (mLogTable != nullptr)
-    {
-        return static_cast<int>(mLogTable->RowCount());
-    }
-    return 0;
+    return static_cast<int>(mLogTable.RowCount());
 }
 
 int LogModel::columnCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent);
-    if (mLogTable != nullptr)
-    {
-        return static_cast<int>(mLogTable->ColumnCount());
-    }
-    return 0;
+    return static_cast<int>(mLogTable.ColumnCount());
 }
 
 QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role) const
@@ -61,10 +50,7 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
 
     if (orientation == Qt::Horizontal && section >= 0 && section < columnCount())
     {
-        if (mLogTable != nullptr)
-        {
-            return QString::fromStdString(mLogTable->GetHeader(static_cast<size_t>(section)));
-        }
+        return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
     }
 
     return QVariant();
@@ -72,7 +58,7 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
 
 QVariant LogModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || index.row() >= rowCount() || index.column() >= columnCount() || mLogTable == nullptr)
+    if (!index.isValid() || index.row() >= rowCount() || index.column() >= columnCount())
     {
         return QVariant();
     }
@@ -80,12 +66,13 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     if (role == Qt::DisplayRole)
     {
         return ConvertToSingleLineCompactQString(
-            mLogTable->GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()))
+            mLogTable.GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()))
         );
     }
     else if (role == LogModelItemDataRole::SortRole)
     {
-        LogValue value = mLogTable->GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
+        loglib::LogValue value =
+            mLogTable.GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
         return std::visit(
             [](auto &&arg) -> QVariant {
                 using T = std::decay_t<decltype(arg)>;
@@ -97,6 +84,10 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 {
                     return QVariant::fromValue<qlonglong>(arg);
                 }
+                else if constexpr (std::is_same_v<T, uint64_t>)
+                {
+                    return QVariant::fromValue<qulonglong>(arg);
+                }
                 else if constexpr (std::is_same_v<T, double>)
                 {
                     return QVariant(arg);
@@ -105,7 +96,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 {
                     return QVariant(arg);
                 }
-                else if constexpr (std::is_same_v<T, TimeStamp>)
+                else if constexpr (std::is_same_v<T, loglib::TimeStamp>)
                 {
                     return QVariant::fromValue<qint64>(arg.time_since_epoch().count());
                 }
@@ -123,7 +114,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
     else if (role == LogModelItemDataRole::CopyLine)
     {
-        return QVariant(QString::fromStdString(mLogData.GetLines()[static_cast<size_t>(index.row())]->GetLine()));
+        return QVariant(
+            QString::fromStdString(mLogTable.Data().Lines()[static_cast<size_t>(index.row())].FileReference().GetLine())
+        );
     }
     else if (role == Qt::BackgroundRole)
     {
@@ -171,14 +164,24 @@ template <typename T> std::optional<std::pair<T, T>> LogModel::GetMinMaxValues(i
 
 template std::optional<std::pair<qint64, qint64>> LogModel::GetMinMaxValues<qint64>(int column) const;
 
-const LogData &LogModel::LogData() const
+const loglib::LogTable &LogModel::Table() const
 {
-    return mLogData;
+    return mLogTable;
 }
 
-const LogConfiguration &LogModel::Configuration() const
+const loglib::LogData &LogModel::Data() const
 {
-    return mLogTable->Configuration();
+    return mLogTable.Data();
+}
+
+const loglib::LogConfiguration &LogModel::Configuration() const
+{
+    return mLogTable.Configuration().Configuration();
+}
+
+loglib::LogConfigurationManager &LogModel::ConfigurationManager()
+{
+    return mLogTable.Configuration();
 }
 
 QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)

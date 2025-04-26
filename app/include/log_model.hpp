@@ -5,10 +5,7 @@
 
 #include <QAbstractTableModel>
 
-#include <memory>
 #include <optional>
-
-using namespace loglib;
 
 enum LogModelItemDataRole
 {
@@ -22,7 +19,7 @@ class LogModel : public QAbstractTableModel
 public:
     explicit LogModel(QObject *parent = nullptr);
 
-    void AddData(loglib::LogData &&logData, const LogConfiguration &configuration);
+    void AddData(loglib::LogData &&logData);
     void Clear();
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
@@ -31,12 +28,13 @@ public:
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
     template <typename T> std::optional<std::pair<T, T>> GetMinMaxValues(int column) const;
 
-    const loglib::LogData &LogData() const;
-    const LogConfiguration &Configuration() const;
+    const loglib::LogTable &Table() const;
+    const loglib::LogData &Data() const;
+    const loglib::LogConfiguration &Configuration() const;
+    loglib::LogConfigurationManager &ConfigurationManager();
 
 private:
-    loglib::LogData mLogData;
-    std::unique_ptr<LogTable> mLogTable;
+    loglib::LogTable mLogTable;
 
     static QString ConvertToSingleLineCompactQString(const std::string &string);
 };

@@ -15,20 +15,36 @@ namespace loglib
 class LogTable
 {
 public:
-    LogTable(const LogData &data, LogConfiguration configuration);
+    LogTable() = default;
+    LogTable(LogData data, LogConfigurationManager configuration);
+
+    // Deleted copy constructor and copy assignment operator for efficiency.
+    LogTable(LogTable &) = delete;
+    LogTable &operator=(LogTable &) = delete;
+
+    // Defaulted move constructor and move assignment operator.
+    LogTable(LogTable &&) = default;
+    LogTable &operator=(LogTable &&) = default;
+
+    void Update(LogData &&data);
 
     std::string GetHeader(size_t column) const;
     size_t ColumnCount() const;
     LogValue GetValue(size_t row, size_t column) const;
     std::string GetFormattedValue(size_t row, size_t column) const;
     size_t RowCount() const;
-    const LogConfiguration &Configuration() const;
+
+    const LogData &Data() const;
+    LogData &Data();
+
+    const LogConfigurationManager &Configuration() const;
+    LogConfigurationManager &Configuration();
 
 private:
     static std::string FormatLogValue(const std::string &format, const LogValue &value);
 
-    const LogData &mData;
-    const LogConfiguration mConfiguration;
+    LogData mData;
+    LogConfigurationManager mConfiguration;
 };
 
 } // namespace loglib
