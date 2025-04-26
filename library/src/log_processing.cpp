@@ -1,5 +1,8 @@
 #include "loglib/log_processing.hpp"
 
+#include <date/date.h>
+#include <date/tz.h>
+
 namespace
 {
 

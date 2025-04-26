@@ -3,9 +3,6 @@
 #include "log_configuration.hpp"
 #include "log_line.hpp"
 
-#include <date/date.h>
-#include <date/tz.h>
-
 #include <filesystem>
 
 namespace loglib

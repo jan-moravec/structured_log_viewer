@@ -72,3 +72,5 @@ private:
     static constexpr char FILE_PATH[] = "test_file.json";
     std::string mFilePath;
 };
+
+void InitializeTimezoneData();

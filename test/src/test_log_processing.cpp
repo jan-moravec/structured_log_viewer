@@ -3,6 +3,9 @@
 #include <loglib/log_processing.hpp>
 
 #include <catch2/catch_all.hpp>
+#include <date/tz.h>
+
+#include <chrono>
 #include <regex>
 
 using namespace loglib;
@@ -23,7 +26,6 @@ TEST_CASE("Initialize function should correctly set up timezone database with a 
         tzdataPath = std::filesystem::current_path().parent_path() / TZ_DATA;
     }
 
-    // Note: we have to successfully initialize only once
     Initialize(tzdataPath);
 }
 
@@ -102,6 +104,8 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 
 TEST_CASE("TimeStampToLocalMillisecondsSinceEpoch", "[log_processing]")
 {
+    InitializeTimezoneData();
+
     // Create a known UTC timestamp (2023-01-01 00:00:00 UTC)
     auto utcMicroseconds = date::sys_days{date::year{2023} / 1 / 1}.time_since_epoch();
     TimeStamp timestamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
@@ -125,6 +129,8 @@ TEST_CASE("TimeStampToLocalMillisecondsSinceEpoch", "[log_processing]")
 
 TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
 {
+    InitializeTimezoneData();
+
     // Get the timezone for verification
     static auto tz = date::current_zone();
 
@@ -154,6 +160,8 @@ TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
 
 TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 {
+    InitializeTimezoneData();
+
     // Create known test timestamps at different ranges
     std::vector<TimeStamp> testTimestamps = {
         // Recent time
@@ -189,6 +197,8 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 
 TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
 {
+    InitializeTimezoneData();
+
     // Test with a specific known timestamp: 2023-05-15 10:30:45 UTC
     // 1684146645000000 microseconds since epoch
     int64_t testMicroseconds = 1684146645000000;
@@ -215,6 +225,8 @@ TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
 
 TEST_CASE("TimeStampToDateTimeString", "[log_processing]")
 {
+    InitializeTimezoneData();
+
     // Test with extreme past date: 1900-01-01 00:00:00 UTC
     // -2208988800000000 microseconds (approximately 70 years before Unix epoch)
     TimeStamp pastDate{std::chrono::microseconds{-2208988800000000}};
