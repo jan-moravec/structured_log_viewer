@@ -42,6 +42,11 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 
+      - name: Run unit tests
+        run: |
+          cd build
+          ctest --output-on-failure -C Release
+
       - name: Install linuxdeploy and plugin
         run: |
           wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
@@ -104,6 +109,13 @@ jobs:
           cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 
+      - name: Run unit tests
+        shell: cmd
+        run: |
+          cd build
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
+          ctest --output-on-failure -C Release
+
       - name: Package application
         shell: powershell
         run: |
@@ -114,6 +126,7 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ${{ env.APP_NAME }}-windows
           path: ./*
