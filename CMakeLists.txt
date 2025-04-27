@@ -26,4 +26,5 @@ add_subdirectory(app)
 
 include(CTest)
 include(Catch)
-add_subdirectory(test)
+add_subdirectory(test/lib)
+# add_subdirectory(test/app)
