@@ -2,16 +2,23 @@ cmake_minimum_required(VERSION 3.19)
 
 project(tests)
 
-# Add test files
-file(GLOB TEST_SOURCES "src/*.cpp")
-
 # Create test executable
-add_executable(tests ${TEST_SOURCES})
+add_executable(
+    ${PROJECT_NAME}
+    "src/common.cpp"
+    "src/test_json_parser.cpp"
+    "src/test_log_configuration.cpp"
+    "src/test_log_data.cpp"
+    "src/test_log_factory.cpp"
+    "src/test_log_file.cpp"
+    "src/test_log_line.cpp"
+    "src/test_log_processing.cpp"
+    "src/test_log_table.cpp")
+
+target_include_directories(${PROJECT_NAME} PRIVATE include)
 
 # Link libraries
-target_link_libraries(tests PRIVATE loglib Catch2::Catch2WithMain project_warnings)
+target_link_libraries(${PROJECT_NAME} PRIVATE loglib Catch2::Catch2WithMain project_warnings)
 
-# Enable CTest
-include(CTest)
-include(Catch)
-catch_discover_tests(tests)
+# Discover tests
+catch_discover_tests(${PROJECT_NAME})

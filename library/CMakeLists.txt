@@ -7,11 +7,11 @@ project(
 
 add_library(
     ${PROJECT_NAME} STATIC
-    src/json_line.cpp
     src/json_parser.cpp
     src/log_configuration.cpp
     src/log_data.cpp
     src/log_factory.cpp
+    src/log_file.cpp
     src/log_line.cpp
     src/log_processing.cpp
     src/log_table.cpp)

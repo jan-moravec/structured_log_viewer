@@ -43,49 +43,7 @@ bool IsTimestampKey(const std::string &key)
 namespace loglib
 {
 
-void UpdateConfiguration(LogConfiguration &configuration, const LogData &logData)
-{
-    // Update configuration columns with new keys
-    for (const std::string &key : logData.GetKeys())
-    {
-        if (!IsKeyInAnyColumn(key, configuration.columns))
-        {
-            if (IsTimestampKey(key))
-            {
-                configuration.columns.push_back(LogConfiguration::Column{
-                    key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
-                });
-                // Timestamp should be the first column, all the others will be shifted
-                for (size_t i = configuration.columns.size() - 1; i > 0; --i)
-                {
-                    std::swap(configuration.columns[i], configuration.columns[i - 1]);
-                }
-            }
-            else
-            {
-                configuration.columns.push_back(
-                    LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::Any, {}}
-                );
-            }
-        }
-    }
-}
-
-void SerializeConfiguration(const std::filesystem::path &path, const LogConfiguration &configuration)
-{
-    nlohmann::json json = configuration;
-    std::ofstream file(path);
-    if (file.is_open())
-    {
-        file << json.dump(4);
-    }
-    else
-    {
-        throw std::runtime_error("Failed to open file " + path.string());
-    }
-}
-
-LogConfiguration DeserializeConfiguration(const std::filesystem::path &path)
+void LogConfigurationManager::Load(const std::filesystem::path &path)
 {
     nlohmann::json json;
     std::ifstream file(path);
@@ -95,10 +53,57 @@ LogConfiguration DeserializeConfiguration(const std::filesystem::path &path)
     }
     else
     {
-        throw std::runtime_error("Failed to open file " + path.string());
+        throw std::runtime_error("Failed to open file '" + path.string() + "'.");
     }
 
-    return json.get<LogConfiguration>();
+    mConfiguration = json.get<LogConfiguration>();
+}
+
+void LogConfigurationManager::Save(const std::filesystem::path &path) const
+{
+    nlohmann::json json = mConfiguration;
+    std::ofstream file(path);
+    if (file.is_open())
+    {
+        file << json.dump(4);
+    }
+    else
+    {
+        throw std::runtime_error("Failed to open file '" + path.string() + "'.");
+    }
+}
+
+void LogConfigurationManager::Update(const LogData &logData)
+{
+    // Update configuration columns with new keys
+    for (const std::string &key : logData.Keys())
+    {
+        if (!IsKeyInAnyColumn(key, mConfiguration.columns))
+        {
+            if (IsTimestampKey(key))
+            {
+                mConfiguration.columns.push_back(LogConfiguration::Column{
+                    key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                });
+                // Timestamp should be the first column, all the others will be shifted
+                for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
+                {
+                    std::swap(mConfiguration.columns[i], mConfiguration.columns[i - 1]);
+                }
+            }
+            else
+            {
+                mConfiguration.columns.push_back(
+                    LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::Any, {}}
+                );
+            }
+        }
+    }
+}
+
+const LogConfiguration &LogConfigurationManager::Configuration() const
+{
+    return mConfiguration;
 }
 
 } // namespace loglib

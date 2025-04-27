@@ -227,17 +227,15 @@ void MainWindow::OpenJsonLogs()
     {
         mModel->Clear();
         ClearAllFilters();
-        std::unique_ptr<LogParser> jsonParser = LogFactory::Create(LogFactory::Parser::Json);
+        std::unique_ptr<loglib::LogParser> jsonParser = loglib::LogFactory::Create(loglib::LogFactory::Parser::Json);
         for (const QString &file : files)
         {
-            ParseResult result = jsonParser->Parse(file.toStdString());
-            UpdateConfiguration(mConfiguration, result.data);
-            ParseTimestamps(result.data, mConfiguration);
+            loglib::ParseResult result = jsonParser->Parse(file.toStdString());
+            mModel->AddData(std::move(result.data));
 
-            mModel->AddData(std::move(result.data), mConfiguration);
-            if (!result.error.empty())
+            if (!result.errors.empty())
             {
-                QMessageBox::warning(this, "Error Parsing JSON Logs", QString::fromStdString(result.error));
+                QMessageBox::warning(this, "Error Parsing JSON Logs", QString::fromStdString(result.errors[0]));
             }
 
             UpdateUi();
@@ -250,7 +248,7 @@ void MainWindow::SaveConfiguration()
     QString file = QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
     if (!file.isEmpty())
     {
-        SerializeConfiguration(file.toStdString(), mConfiguration);
+        mModel->ConfigurationManager().Save(file.toStdString());
     }
 }
 
@@ -261,8 +259,8 @@ void MainWindow::LoadConfiguration()
     {
         try
         {
-            mConfiguration = DeserializeConfiguration(file.toStdString());
-            mModel->AddData(LogData{}, mConfiguration);
+            mModel->Clear();
+            mModel->ConfigurationManager().Load(file.toStdString());
             UpdateUi();
         }
         catch (std::exception &e)
@@ -328,7 +326,7 @@ void MainWindow::AddFilter(const QString filterId, const std::optional<loglib::L
         connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
         if (filter.has_value())
         {
-            if (filter->type == LogConfiguration::LogFilter::Type::Time)
+            if (filter->type == loglib::LogConfiguration::LogFilter::Type::Time)
             {
                 filterEditor->Load(filter->row, *filter->filterBegin, *filter->filterEnd);
             }
@@ -392,11 +390,11 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
 {
     ClearFilter(filterID);
 
-    LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::String;
+    loglib::LogConfiguration::LogFilter filter;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::String;
     filter.row = row;
     filter.filterString = filterString.toStdString();
-    filter.matchType = static_cast<LogConfiguration::LogFilter::Match>(matchType);
+    filter.matchType = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
 
     AddLogFilter(filterID, filter);
 }
@@ -405,8 +403,8 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
 {
     ClearFilter(filterID);
 
-    LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::Time;
+    loglib::LogConfiguration::LogFilter filter;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Time;
     filter.row = row;
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
@@ -419,7 +417,7 @@ void MainWindow::OpenFileInternal(const QString &file)
     bool isConfiguration = true;
     try
     {
-        mConfiguration = DeserializeConfiguration(file.toStdString());
+        mModel->ConfigurationManager().Load(file.toStdString());
     }
     catch (...)
     {
@@ -428,15 +426,13 @@ void MainWindow::OpenFileInternal(const QString &file)
 
     if (!isConfiguration)
     {
-        ParseResult result = LogFactory::Parse(file.toStdString());
+        loglib::ParseResult result = loglib::LogFactory::Parse(file.toStdString());
 
-        UpdateConfiguration(mConfiguration, result.data);
-        ParseTimestamps(result.data, mConfiguration);
+        mModel->AddData(std::move(result.data));
 
-        mModel->AddData(std::move(result.data), mConfiguration);
-        if (!result.error.empty())
+        if (!result.errors.empty())
         {
-            QMessageBox::warning(this, "Error Opening File", QString::fromStdString(result.error));
+            QMessageBox::warning(this, "Error Opening File", QString::fromStdString(result.errors[0]));
         }
     }
 
@@ -449,11 +445,11 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     UpdateFilters();
 
     QString title;
-    if (filter.type == LogConfiguration::LogFilter::Type::Time)
+    if (filter.type == loglib::LogConfiguration::LogFilter::Type::Time)
     {
         title = QString::fromStdString(
-            UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
-            UtcMicrosecondsToDateTimeString(*filter.filterEnd)
+            loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
+            loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
     }
     else
@@ -478,7 +474,7 @@ void MainWindow::UpdateFilters()
     std::vector<std::unique_ptr<FilterRule>> rules;
     for (const auto &filter : mFilters)
     {
-        if (filter.second.type == LogConfiguration::LogFilter::Type::Time)
+        if (filter.second.type == loglib::LogConfiguration::LogFilter::Type::Time)
         {
             rules.push_back(std::make_unique<TimeStampFilterRule>(
                 filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd

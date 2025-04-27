@@ -1,5 +1,8 @@
 #include "loglib/log_processing.hpp"
 
+#include <date/date.h>
+#include <date/tz.h>
+
 namespace
 {
 
@@ -14,15 +17,19 @@ bool ParseTimestampLine(LogLine &line, const LogConfiguration::Column &column)
         LogValue value = line.GetValue(key);
         if (std::holds_alternative<std::string>(value))
         {
+            const auto timeStampString = std::get<std::string>(value);
             for (const std::string &format : column.parseFormats)
             {
                 try
                 {
-                    std::istringstream stream{std::get<std::string>(value)};
+                    std::istringstream stream{timeStampString};
                     TimeStamp timestamp;
                     stream >> date::parse(format, timestamp);
-                    line.SetExtraValue(key, timestamp);
-                    return true;
+                    if (timestamp.time_since_epoch().count() > 0)
+                    {
+                        line.SetValue(key, timestamp);
+                        return true;
+                    }
                 }
                 catch (const std::exception &)
                 {
@@ -45,29 +52,26 @@ void Initialize(const std::filesystem::path &tzdata)
     static_cast<void>(date::current_zone()); // Test the database
 }
 
-std::string ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
+std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
 {
-    std::string errors;
+    std::vector<std::string> errors;
 
     for (size_t i = 0; i < configuration.columns.size(); ++i)
     {
         const LogConfiguration::Column &column = configuration.columns[i];
         if (column.type == LogConfiguration::Type::Time)
         {
-            for (auto &line : logData.GetLines())
+            for (auto &line : logData.Lines())
             {
-                if (!ParseTimestampLine(*line, column))
+                if (!ParseTimestampLine(line, column))
                 {
-                    errors += "Failed to parse a timestamp for column " + std::to_string(i) + " '" + column.header +
-                              "' from line: " + line->GetLine() + "\n";
+                    errors.emplace_back(
+                        "Failed to parse a timestamp for column '" + column.header + "' from line number " +
+                        std::to_string(line.FileReference().GetLineNumber())
+                    );
                 }
             }
         }
-    }
-
-    if (!errors.empty())
-    {
-        errors.pop_back(); // Last endline
     }
 
     return errors;
@@ -75,7 +79,7 @@ std::string ParseTimestamps(LogData &logData, const LogConfiguration &configurat
 
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp)
 {
-    static auto tz = date::current_zone(); // Get the current time zone
+    static auto tz = date::current_zone();
     const auto zonedTime = date::zoned_time{tz, timeStamp};
     const auto localTime = zonedTime.get_local_time();
     return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.time_since_epoch()).count();
@@ -108,6 +112,13 @@ std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
         std::chrono::microseconds{microseconds}
     };
     const date::zoned_time localTime{tz, std::chrono::round<std::chrono::milliseconds>(utcTime)};
+    return date::format("%F %T", localTime);
+}
+
+std::string TimeStampToDateTimeString(TimeStamp timeStamp)
+{
+    static auto tz = date::current_zone();
+    const date::zoned_time localTime{tz, std::chrono::round<std::chrono::milliseconds>(timeStamp)};
     return date::format("%F %T", localTime);
 }
 

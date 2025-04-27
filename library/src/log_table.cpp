@@ -1,28 +1,37 @@
 #include "loglib/log_table.hpp"
 
+#include "loglib/log_processing.hpp"
+
 namespace loglib
 {
 
-LogTable::LogTable(const LogData &data, LogConfiguration configuration)
-    : mData(data), mConfiguration(std::move(configuration))
+LogTable::LogTable(LogData data, LogConfigurationManager configuration)
+    : mData(std::move(data)), mConfiguration(std::move(configuration))
 {
+}
+
+void LogTable::Update(LogData &&data)
+{
+    Configuration().Update(data);
+    ParseTimestamps(data, Configuration().Configuration());
+    Data().Merge(std::move(data));
 }
 
 std::string LogTable::GetHeader(size_t column) const
 {
-    return mConfiguration.columns[column].header;
+    return mConfiguration.Configuration().columns[column].header;
 }
 
 size_t LogTable::ColumnCount() const
 {
-    return mConfiguration.columns.size();
+    return mConfiguration.Configuration().columns.size();
 }
 
 LogValue LogTable::GetValue(size_t row, size_t column) const
 {
-    for (const std::string &key : mConfiguration.columns.at(column).keys)
+    for (const std::string &key : mConfiguration.Configuration().columns.at(column).keys)
     {
-        LogValue value = mData.GetLines()[row]->GetValue(key);
+        LogValue value = mData.Lines()[row].GetValue(key);
         if (!std::holds_alternative<std::monostate>(value))
         {
             return value;
@@ -34,12 +43,12 @@ LogValue LogTable::GetValue(size_t row, size_t column) const
 
 std::string LogTable::GetFormattedValue(size_t row, size_t column) const
 {
-    for (const auto &key : mConfiguration.columns.at(column).keys)
+    for (const auto &key : mConfiguration.Configuration().columns.at(column).keys)
     {
-        LogValue value = mData.GetLines()[row]->GetValue(key);
+        LogValue value = mData.Lines()[row].GetValue(key);
         if (!std::holds_alternative<std::monostate>(value))
         {
-            return FormatLogValue(mConfiguration.columns.at(column).printFormat, value);
+            return FormatLogValue(mConfiguration.Configuration().columns.at(column).printFormat, value);
         }
     }
 
@@ -48,10 +57,25 @@ std::string LogTable::GetFormattedValue(size_t row, size_t column) const
 
 size_t LogTable::RowCount() const
 {
-    return mData.GetLines().size();
+    return mData.Lines().size();
 }
 
-const LogConfiguration &LogTable::Configuration() const
+const LogData &LogTable::Data() const
+{
+    return mData;
+}
+
+LogData &LogTable::Data()
+{
+    return mData;
+}
+
+const LogConfigurationManager &LogTable::Configuration() const
+{
+    return mConfiguration;
+}
+
+LogConfigurationManager &LogTable::Configuration()
 {
     return mConfiguration;
 }
@@ -66,6 +90,10 @@ std::string LogTable::FormatLogValue(const std::string &format, const LogValue &
                 return arg;
             }
             else if constexpr (std::is_same_v<T, int64_t>)
+            {
+                return fmt::vformat(format, fmt::make_format_args(arg));
+            }
+            else if constexpr (std::is_same_v<T, uint64_t>)
             {
                 return fmt::vformat(format, fmt::make_format_args(arg));
             }

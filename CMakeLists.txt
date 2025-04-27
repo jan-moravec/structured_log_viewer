@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.19)
 
 project(
     structured_log_viewer
-    VERSION 0.5
+    VERSION 0.6.0
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -24,4 +24,6 @@ set_project_warnings(project_warnings False)
 add_subdirectory(library)
 add_subdirectory(app)
 
+include(CTest)
+include(Catch)
 add_subdirectory(test)

@@ -19,7 +19,7 @@ ParseResult LogFactory::Parse(const std::filesystem::path &file)
         }
     }
 
-    return ParseResult{{}, "Input file '" + file.string() + "' could not be parsed."};
+    throw std::runtime_error("Input file '" + file.string() + "' could not be parsed.");
 }
 
 std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
@@ -28,7 +28,6 @@ std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
     {
     case Parser::Json:
         return std::make_unique<JsonParser>();
-        break;
     default:
         throw std::runtime_error("Ivalid parser " + std::to_string(static_cast<int>(parser)));
     }

@@ -85,7 +85,3 @@ install(
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(${PROJECT_NAME})
 endif()
-
-# Copy the timezone data next to the binary
-execute_process(COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
-                        COMMAND_ERROR_IS_FATAL ANY)
