@@ -1,5 +1,7 @@
 #include "common.hpp"
 
+#include <loglib/log_processing.hpp>
+
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 #include <nlohmann/json.hpp>
@@ -147,12 +149,16 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 void InitializeTimezoneData()
 {
     static const auto TZ_DATA = std::filesystem::path("tzdata");
-    auto tzdataPath = std::filesystem::current_path() / TZ_DATA;
-    if (!std::filesystem::exists(tzdataPath))
+    std::filesystem::path path = std::filesystem::current_path();
+    while (true)
     {
-        // For Visual studio generator which does not provide the complete path to binaries before build
-        tzdataPath = std::filesystem::current_path().parent_path() / TZ_DATA;
+        const auto tzdataPath = path / TZ_DATA;
+        if (std::filesystem::exists(tzdataPath))
+        {
+            loglib::Initialize(tzdataPath);
+            break;
+        }
+        path = path.parent_path();
+        REQUIRE(!path.empty());
     }
-
-    date::set_install(tzdataPath.string());
 }
