@@ -18,15 +18,7 @@ TEST_CASE("Initialize function should throw an exception when an invalid path is
 
 TEST_CASE("Initialize function should correctly set up timezone database with a valid path", "[log_processing]")
 {
-    static const auto TZ_DATA = std::filesystem::path("tzdata");
-    auto tzdataPath = std::filesystem::current_path() / TZ_DATA;
-    if (!std::filesystem::exists(tzdataPath))
-    {
-        // For Visual studio generator which does not provide the complete path to binaries before build
-        tzdataPath = std::filesystem::current_path().parent_path() / TZ_DATA;
-    }
-
-    Initialize(tzdataPath);
+    InitializeTimezoneData();
 }
 
 TEST_CASE("ParseTimestamps errors", "[log_processing]")
