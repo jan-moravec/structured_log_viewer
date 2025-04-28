@@ -13,6 +13,9 @@ private slots:
     {
         // Called before the first test function
         qDebug() << "Starting MainWindow tests";
+
+        // Set the platform to offscreen
+        qputenv("QT_QPA_PLATFORM", "offscreen");
     }
 
     void cleanupTestCase()
