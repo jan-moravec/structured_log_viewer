@@ -5,6 +5,7 @@ project(tests)
 # Create test executable
 add_executable(
     ${PROJECT_NAME}
+    "src/benchmark_json.cpp"
     "src/common.cpp"
     "src/test_json_parser.cpp"
     "src/test_log_configuration.cpp"
