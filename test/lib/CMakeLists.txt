@@ -1,10 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(tests)
-
 # Create test executable
 add_executable(
-    ${PROJECT_NAME}
+    tests
     "src/benchmark_json.cpp"
     "src/common.cpp"
     "src/test_json_parser.cpp"
@@ -16,10 +14,10 @@ add_executable(
     "src/test_log_processing.cpp"
     "src/test_log_table.cpp")
 
-target_include_directories(${PROJECT_NAME} PRIVATE include)
+target_include_directories(tests PRIVATE include)
 
 # Link libraries
-target_link_libraries(${PROJECT_NAME} PRIVATE loglib Catch2::Catch2WithMain project_warnings)
+target_link_libraries(tests PRIVATE loglib Catch2::Catch2WithMain project_warnings)
 
 # Discover tests
-catch_discover_tests(${PROJECT_NAME})
+catch_discover_tests(tests)

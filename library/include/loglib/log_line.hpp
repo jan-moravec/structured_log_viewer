@@ -91,6 +91,7 @@ public:
      * @return const LogMap& The map of key-value pairs for this log line.
      */
     const LogMap &Values() const;
+    LogMap &Values();
 
 private:
     LogMap mValues;

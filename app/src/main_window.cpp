@@ -326,7 +326,7 @@ void MainWindow::AddFilter(const QString filterId, const std::optional<loglib::L
         connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
         if (filter.has_value())
         {
-            if (filter->type == loglib::LogConfiguration::LogFilter::Type::Time)
+            if (filter->type == loglib::LogConfiguration::LogFilter::Type::time)
             {
                 filterEditor->Load(filter->row, *filter->filterBegin, *filter->filterEnd);
             }
@@ -391,7 +391,7 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::String;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::string;
     filter.row = row;
     filter.filterString = filterString.toStdString();
     filter.matchType = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
@@ -404,7 +404,7 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::Time;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::time;
     filter.row = row;
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
@@ -445,7 +445,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     UpdateFilters();
 
     QString title;
-    if (filter.type == loglib::LogConfiguration::LogFilter::Type::Time)
+    if (filter.type == loglib::LogConfiguration::LogFilter::Type::time)
     {
         title = QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
@@ -474,7 +474,7 @@ void MainWindow::UpdateFilters()
     std::vector<std::unique_ptr<FilterRule>> rules;
     for (const auto &filter : mFilters)
     {
-        if (filter.second.type == loglib::LogConfiguration::LogFilter::Type::Time)
+        if (filter.second.type == loglib::LogConfiguration::LogFilter::Type::time)
         {
             rules.push_back(std::make_unique<TimeStampFilterRule>(
                 filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd

@@ -4,7 +4,7 @@
 #include <loglib/log_data.hpp>
 
 #include <catch2/catch_all.hpp>
-#include <nlohmann/json.hpp>
+#include <glaze/glaze.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -44,7 +44,7 @@ TEST_CASE("Handle empty file", "[LogConfigurationManager]")
     TestLogConfiguration testConfiguration;
     LogConfigurationManager manager;
 
-    CHECK_THROWS_AS(manager.Load(testConfiguration.GetFilePath()), nlohmann::json::parse_error);
+    CHECK_THROWS_AS(manager.Load(testConfiguration.GetFilePath()), std::runtime_error);
 }
 
 TEST_CASE("Update with empty LogData should not modify configuration", "[LogConfigurationManager]")
@@ -53,7 +53,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
     TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
-    const LogConfiguration::Column defaultColumn = {"test", {"test"}, "{}", LogConfiguration::Type::Any, {}};
+    const LogConfiguration::Column defaultColumn = {"test", {"test"}, "{}", LogConfiguration::Type::any, {}};
     logConfiguration.columns.push_back(defaultColumn);
     testLogConfiguration.Write(logConfiguration);
 
@@ -85,7 +85,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"regular", {"regular"}, "{}", LogConfiguration::Type::Any, {}});
+    logConfiguration.columns.push_back({"regular", {"regular"}, "{}", LogConfiguration::Type::any, {}});
     testLogConfiguration.Write(logConfiguration);
 
     // Load the configuration
@@ -112,7 +112,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     // First column should be the timestamp
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::time);
 
     // The other columns should follow
     CHECK(manager.Configuration().columns[1].header == "regular");

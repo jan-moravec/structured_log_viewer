@@ -1,5 +1,7 @@
 #include "loglib/log_configuration.hpp"
 
+#include <glaze/glaze.hpp>
+
 #include <algorithm>
 #include <fstream>
 
@@ -45,27 +47,35 @@ namespace loglib
 
 void LogConfigurationManager::Load(const std::filesystem::path &path)
 {
-    nlohmann::json json;
     std::ifstream file(path);
     if (file.is_open())
     {
-        file >> json;
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        const auto error = glz::read_json(mConfiguration, content);
+        if (error)
+        {
+            throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
+        }
     }
     else
     {
         throw std::runtime_error("Failed to open file '" + path.string() + "'.");
     }
-
-    mConfiguration = json.get<LogConfiguration>();
 }
 
 void LogConfigurationManager::Save(const std::filesystem::path &path) const
 {
-    nlohmann::json json = mConfiguration;
+    std::string json;
+    const auto error = glz::write<glz::opts{.prettify = true, .indentation_width = 4}>(mConfiguration, json);
+    if (error)
+    {
+        throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+    }
+
     std::ofstream file(path);
     if (file.is_open())
     {
-        file << json.dump(4);
+        file << json;
     }
     else
     {
@@ -83,7 +93,7 @@ void LogConfigurationManager::Update(const LogData &logData)
             if (IsTimestampKey(key))
             {
                 mConfiguration.columns.push_back(LogConfiguration::Column{
-                    key, {key}, "%F %H:%M:%S", LogConfiguration::Type::Time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                    key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
                 // Timestamp should be the first column, all the others will be shifted
                 for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
@@ -94,7 +104,7 @@ void LogConfigurationManager::Update(const LogData &logData)
             else
             {
                 mConfiguration.columns.push_back(
-                    LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::Any, {}}
+                    LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
                 );
             }
         }

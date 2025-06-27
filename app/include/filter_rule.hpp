@@ -34,15 +34,15 @@ public:
     {
         switch (mMatch)
         {
-        case loglib::LogConfiguration::LogFilter::Match::Exactly:
+        case loglib::LogConfiguration::LogFilter::Match::exactly:
             return data == mValue;
-        case loglib::LogConfiguration::LogFilter::Match::Contains:
+        case loglib::LogConfiguration::LogFilter::Match::contains:
             return data.toString().contains(mValue);
-        case loglib::LogConfiguration::LogFilter::Match::RegularExpression: {
+        case loglib::LogConfiguration::LogFilter::Match::regularExpression: {
             QRegularExpression regex(mValue);
             return regex.match(data.toString()).hasMatch();
         }
-        case loglib::LogConfiguration::LogFilter::Match::Wildcard: {
+        case loglib::LogConfiguration::LogFilter::Match::wildcard: {
             QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(mValue));
             return regex.match(data.toString()).hasMatch();
         }

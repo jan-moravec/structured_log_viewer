@@ -49,4 +49,9 @@ const LogMap &LogLine::Values() const
     return mValues;
 }
 
+LogMap &LogLine::Values()
+{
+    return mValues;
+}
+
 } // namespace loglib

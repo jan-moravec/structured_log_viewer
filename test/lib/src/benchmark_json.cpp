@@ -6,7 +6,7 @@
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
-#include <nlohmann/json.hpp>
+#include <glaze/glaze.hpp>
 
 #include <chrono>
 #include <random>
@@ -49,18 +49,14 @@ std::vector<TestJsonLogFile::Line> GenerateRandomJsonLogs(size_t count)
             message += WORDS[word_dist(gen)];
         }
 
-        // Create JSON object with consistent structure but varying values
-        nlohmann::json log = {
-            {"timestamp",
-             date::format("%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now()))},
-            {"level", LEVELS[level_dist(gen)]},
-            {"message", message},
-            {"thread_id", i % 16},
-            {"component", COMPONENTS[component_dist(gen)]},
-            {"counter", i}
-        };
-
-        logs.emplace_back(log);
+        glz::json_t json;
+        json["timestamp"] =
+            date::format("%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now()));
+        json["level"] = LEVELS[level_dist(gen)];
+        json["message"] = message;
+        json["thread_id"] = i % 16;
+        json["component"] = COMPONENTS[component_dist(gen)];
+        logs.emplace_back(json);
     }
 
     return logs;
@@ -70,14 +66,16 @@ TEST_CASE("Parse and load JSON log", "[benchmark][json_parser]")
 {
     BENCHMARK_ADVANCED("Parse 10'000 JSON log entries")(Catch::Benchmark::Chronometer meter)
     {
-        // 2 MB per 10'000 lines of data
+        // 1.7 MB per 10'000 lines of data
         auto logs = GenerateRandomJsonLogs(10'000);
         const TestJsonLogFile testFile(logs);
         const JsonParser parser;
 
         meter.measure([&]() {
             LogTable table;
-            ParseResult result = parser.Parse(TestJsonLogFile::GetFilePath());
+            ParseResult result = parser.Parse(testFile.GetFilePath());
+            REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+            REQUIRE(result.errors.empty());
             table.Update(std::move(result.data));
             return table;
         });

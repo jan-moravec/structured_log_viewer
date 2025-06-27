@@ -2,10 +2,10 @@
 
 #include "log_parser.hpp"
 
+#include <simdjson.h>
+
 #include <set>
 #include <unordered_map>
-
-#include <nlohmann/json_fwd.hpp>
 
 namespace loglib
 {
@@ -48,11 +48,11 @@ private:
     /**
      * @brief Parses JSON data object.
      *
-     * @param json The JSON object representing the line.
+     * @param element The simdjson DOM element representing the line.
      * @param keys A set to store unique keys encountered during parsing.
      * @return A map of key-value pairs extracted from the JSON line.
      */
-    static LogMap ParseLine(const nlohmann::json &json, std::set<std::string> &keys);
+    static LogMap ParseLine(const simdjson::dom::element &element, std::set<std::string> &keys);
 };
 
 } // namespace loglib

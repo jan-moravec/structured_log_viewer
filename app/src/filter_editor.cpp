@@ -35,12 +35,12 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     }
 
     // Add match types
-    mMatchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::Exactly));
-    mMatchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::Contains));
+    mMatchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::exactly));
+    mMatchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::contains));
     mMatchTypeComboBox->addItem(
-        "Regular Expression", static_cast<int>(LogConfiguration::LogFilter::Match::RegularExpression)
+        "Regular Expression", static_cast<int>(LogConfiguration::LogFilter::Match::regularExpression)
     );
-    mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::Wildcard));
+    mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::wildcard));
 
     // Setup layout
     SetupLayout();
@@ -186,14 +186,14 @@ void FilterEditor::OnOkClicked()
         return;
     }
 
-    if (mModel.Configuration().columns[index].type != LogConfiguration::Type::Time && mStringLineEdit->text().isEmpty())
+    if (mModel.Configuration().columns[index].type != LogConfiguration::Type::time && mStringLineEdit->text().isEmpty())
     {
         // Validation: Don't allow empty filter string
         mStringLineEdit->setStyleSheet("border: 1px solid red");
         return;
     }
 
-    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::Time)
+    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::time)
     {
         emit FilterTimeStampSubmitted(
             mFilterID,
@@ -218,7 +218,7 @@ void FilterEditor::UpdateSelectedColumn(int index)
     {
         return;
     }
-    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::Time)
+    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::time)
     {
         mStackedWidget->setCurrentIndex(1);
 

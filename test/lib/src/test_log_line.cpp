@@ -4,7 +4,6 @@
 #include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
-#include <nlohmann/json.hpp>
 
 using namespace loglib;
 
