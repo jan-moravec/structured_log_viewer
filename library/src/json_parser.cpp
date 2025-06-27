@@ -42,11 +42,15 @@ bool JsonParser::IsValid(const std::filesystem::path &file) const
 
 ParseResult JsonParser::Parse(const std::filesystem::path &file) const
 {
-    std::set<std::string> keys;
-    std::vector<LogLine> lines;
-    std::vector<std::string> errors;
-
-    auto logFile = std::make_unique<LogFile>(file);
+    // Check if file exists and is not empty
+    if (!std::filesystem::exists(file))
+    {
+        throw std::runtime_error("File '" + file.string() + "' does not exist.");
+    }
+    if (std::filesystem::file_size(file) == 0)
+    {
+        throw std::runtime_error("File '" + file.string() + "' is empty.");
+    }
 
     // Memory map the file
     std::error_code errorMap;
@@ -55,6 +59,11 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
     {
         throw std::runtime_error("Failed to memory map file '" + file.string() + "': " + errorMap.message());
     }
+
+    std::set<std::string> keys;
+    std::vector<LogLine> lines;
+    std::vector<std::string> errors;
+    auto logFile = std::make_unique<LogFile>(file);
 
     // Get file content as string view
     std::string_view fileContent(static_cast<const char *>(mmap.data()), mmap.size());
