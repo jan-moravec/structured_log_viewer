@@ -84,7 +84,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
         const char *newline = static_cast<const char *>(memchr(start, '\n', end - start));
 
         const size_t lineEnd = newline ? (newline - fileContent.data()) : fileContent.size();
-        auto fileReference = logFile->CreateReference(lineEnd);
+        auto fileReference = logFile->CreateReference(lineEnd + 1);
         std::string_view line(start, lineEnd - currentPos);
 
         // Move to the next line
