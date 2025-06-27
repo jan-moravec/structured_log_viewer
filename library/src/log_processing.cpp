@@ -2,6 +2,7 @@
 
 #include <date/date.h>
 #include <date/tz.h>
+#include <fmt/format.h>
 
 namespace
 {
@@ -85,10 +86,11 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
             {
                 if (!ParseTimestampLine(line, column, lastValid))
                 {
-                    errors.emplace_back(
-                        "Failed to parse a timestamp for column '" + column.header + "' from line number " +
-                        std::to_string(line.FileReference().GetLineNumber())
-                    );
+                    errors.emplace_back(fmt::format(
+                        "Failed to parse a timestamp for column '{}' from line number {}",
+                        column.header,
+                        line.FileReference().GetLineNumber()
+                    ));
                 }
             }
         }

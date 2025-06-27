@@ -48,7 +48,7 @@ public:
 
     // Deleted copy constructor and copy assignment operator for efficiency.
     LogLine(LogLine &) = delete;
-    LogLine &operator=(LogLine &) = delete;
+    LogLine &operator=(const LogLine &) = delete;
 
     // Defaulted move constructor and move assignment operator.
     LogLine(LogLine &&) = default;

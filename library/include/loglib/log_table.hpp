@@ -30,7 +30,7 @@ public:
 
     // Deleted copy constructor and copy assignment operator for efficiency.
     LogTable(LogTable &) = delete;
-    LogTable &operator=(LogTable &) = delete;
+    LogTable &operator=(const LogTable &) = delete;
 
     // Defaulted move constructor and move assignment operator.
     LogTable(LogTable &&) = default;

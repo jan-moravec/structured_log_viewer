@@ -4,6 +4,7 @@
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
 
+#include <fmt/format.h>
 #include <glaze/glaze.hpp>
 #include <mio/mmap.hpp>
 #include <simdjson.h>
@@ -45,11 +46,11 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
     // Check if file exists and is not empty
     if (!std::filesystem::exists(file))
     {
-        throw std::runtime_error("File '" + file.string() + "' does not exist.");
+        throw std::runtime_error(fmt::format("File '{}' does not exist.", file.string()));
     }
     if (std::filesystem::file_size(file) == 0)
     {
-        throw std::runtime_error("File '" + file.string() + "' is empty.");
+        throw std::runtime_error(fmt::format("File '{}' is empty.", file.string()));
     }
 
     // Memory map the file
@@ -57,17 +58,17 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
     mio::mmap_source mmap = mio::make_mmap_source(file.string(), errorMap);
     if (errorMap)
     {
-        throw std::runtime_error("Failed to memory map file '" + file.string() + "': " + errorMap.message());
+        throw std::runtime_error(fmt::format("Failed to memory map file '{}': {}", file.string(), errorMap.message()));
     }
 
-    std::set<std::string> keys;
+    std::unordered_set<std::string> keys;
     std::vector<LogLine> lines;
     std::vector<std::string> errors;
     auto logFile = std::make_unique<LogFile>(file);
 
     // Get file content as string view
     std::string_view fileContent(static_cast<const char *>(mmap.data()), mmap.size());
-    // lines.reserve(std::min(size_t(10000), fileContent.size() / 200)); // Estimate based on average line length
+    lines.reserve(2000);
 
     simdjson::dom::parser parser;
     size_t currentPos = 0;
@@ -90,6 +91,15 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
         // Move to the next line
         currentPos = lineEnd + 1;
 
+        // Adjust reservation after processing some lines to get a better estimate
+        if (lineNumber == 1000)
+        {
+            double avgLineLength = static_cast<double>(currentPos) / lineNumber;
+            size_t estimatedLines = static_cast<size_t>(fileContent.size() * 1.5 / avgLineLength);
+            // Re-reserve with better estimate, still capping at a reasonable maximum
+            lines.reserve(estimatedLines);
+        }
+
         // Remove carriage return if present
         if (!line.empty() && line.back() == '\r')
         {
@@ -108,7 +118,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
                 if (result.error())
                 {
                     errors.push_back(
-                        "Error on line " + std::to_string(lineNumber) + ": " + simdjson::error_message(result.error())
+                        fmt::format("Error on line {}: {}", lineNumber, simdjson::error_message(result.error()))
                     );
                     continue;
                 }
@@ -116,7 +126,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
                 simdjson::dom::element element = result.value();
                 if (!element.is_object())
                 {
-                    errors.push_back("Error on line " + std::to_string(lineNumber) + ": Not a JSON object.");
+                    errors.push_back(fmt::format("Error on line {}: Not a JSON object.", lineNumber));
                     continue;
                 }
 
@@ -126,7 +136,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
             }
             catch (const std::exception &e)
             {
-                errors.push_back("Error on line " + std::to_string(lineNumber) + ": " + e.what());
+                errors.push_back(fmt::format("Error on line {}: {}", lineNumber, e.what()));
                 continue;
             }
         }
@@ -141,6 +151,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
     std::vector<std::string> finalKeys;
     finalKeys.reserve(keys.size());
     std::move(keys.begin(), keys.end(), std::back_inserter(finalKeys));
+    std::sort(finalKeys.begin(), finalKeys.end());
 
     return ParseResult{LogData(std::move(logFile), std::move(lines), std::move(finalKeys)), std::move(errors)};
 }
@@ -183,17 +194,17 @@ std::string JsonParser::ToString(const LogMap &values) const
     const auto error = glz::write_json(json, result);
     if (error)
     {
-        throw std::runtime_error("Failed to serialize JSON: " + glz::format_error(error));
+        throw std::runtime_error(fmt::format("Failed to serialize JSON: {}", glz::format_error(error)));
     }
 
     return result;
 }
 
-LogMap JsonParser::ParseLine(const simdjson::dom::element &element, std::set<std::string> &keys)
+LogMap JsonParser::ParseLine(const simdjson::dom::element &element, std::unordered_set<std::string> &keys)
 {
     auto object = element.get_object();
     LogMap result;
-    result.reserve(object.size());
+    result.reserve(std::ceil(object.size() / result.max_load_factor()));
 
     // Iterate through all key-value pairs in the JSON object
     for (auto [key_view, value] : object)

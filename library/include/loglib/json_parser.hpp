@@ -4,8 +4,8 @@
 
 #include <simdjson.h>
 
-#include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace loglib
 {
@@ -52,7 +52,7 @@ private:
      * @param keys A set to store unique keys encountered during parsing.
      * @return A map of key-value pairs extracted from the JSON line.
      */
-    static LogMap ParseLine(const simdjson::dom::element &element, std::set<std::string> &keys);
+    static LogMap ParseLine(const simdjson::dom::element &element, std::unordered_set<std::string> &keys);
 };
 
 } // namespace loglib

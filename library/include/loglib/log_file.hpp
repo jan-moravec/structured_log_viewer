@@ -68,7 +68,7 @@ public:
 
     // Deleted copy constructor and copy assignment operator for efficiency.
     LogFile(LogFile &) = delete;
-    LogFile &operator=(LogFile &) = delete;
+    LogFile &operator=(const LogFile &) = delete;
 
     // Defaulted move constructor and move assignment operator.
     LogFile(LogFile &&) = default;
