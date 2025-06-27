@@ -1,5 +1,6 @@
 #include "loglib/log_file.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>

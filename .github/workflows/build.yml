@@ -30,8 +30,6 @@ jobs:
           sudo apt-get install -y gcc-13 g++-13
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
-          gcc --version
-          g++ --version
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
