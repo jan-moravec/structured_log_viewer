@@ -1,10 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(
-    StructuredLogViewer
-    VERSION 0.1
-    LANGUAGES CXX)
-
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -50,12 +45,12 @@ target_include_directories(logapp PUBLIC ./include)
 target_link_libraries(logapp PUBLIC Qt${QT_VERSION_MAJOR}::Widgets loglib project_warnings)
 
 qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../resources/resources.qrc)
-qt_add_executable(${PROJECT_NAME} MANUAL_FINALIZATION src/main.cpp ${RESOURCES})
+qt_add_executable(StructuredLogViewer MANUAL_FINALIZATION src/main.cpp ${RESOURCES})
 
-target_link_libraries(${PROJECT_NAME} PUBLIC logapp)
+target_link_libraries(StructuredLogViewer PUBLIC logapp)
 
 set_target_properties(
-    ${PROJECT_NAME}
+    StructuredLogViewer
     PROPERTIES ${BUNDLE_ID_OPTION} MACOSX_BUNDLE_BUNDLE_VERSION
                ${PROJECT_VERSION} MACOSX_BUNDLE_SHORT_VERSION_STRING
                ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} MACOSX_BUNDLE
@@ -64,9 +59,9 @@ set_target_properties(
 
 include(GNUInstallDirs)
 install(
-    TARGETS ${PROJECT_NAME}
+    TARGETS StructuredLogViewer
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-qt_finalize_executable(${PROJECT_NAME})
+qt_finalize_executable(StructuredLogViewer)

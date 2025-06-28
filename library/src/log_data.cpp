@@ -2,6 +2,7 @@
 
 #include <iterator>
 #include <set>
+#include <unordered_set>
 
 namespace loglib
 {
@@ -58,12 +59,12 @@ void LogData::Merge(LogData &&other)
         std::back_inserter(mLines)
     );
 
-    std::set<std::string> set(mKeys.begin(), mKeys.end());
-    for (auto &&otherKey : other.mKeys)
+    std::unordered_set<std::string> existingKeys(mKeys.begin(), mKeys.end());
+    for (auto &&key : other.mKeys)
     {
-        if (set.insert(otherKey).second)
+        if (existingKeys.find(key) == existingKeys.end())
         {
-            mKeys.push_back(std::move(otherKey));
+            mKeys.push_back(std::move(key));
         }
     }
 }

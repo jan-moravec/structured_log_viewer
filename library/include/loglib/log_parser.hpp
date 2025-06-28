@@ -12,7 +12,7 @@ namespace loglib
 /**
  * @brief Result of parsing a log file.
  *
- * This structure contains the parsed log data and any errors that occurred during parsing.
+ * This structure contains the parsed log data and errors that occurred during parsing.
  *
  */
 struct ParseResult

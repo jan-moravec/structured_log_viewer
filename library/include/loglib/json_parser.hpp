@@ -2,10 +2,10 @@
 
 #include "log_parser.hpp"
 
-#include <set>
-#include <unordered_map>
+#include <simdjson.h>
 
-#include <nlohmann/json_fwd.hpp>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace loglib
 {
@@ -46,13 +46,22 @@ public:
 
 private:
     /**
+     * @brief Speed parsing with cached type information for keys.
+     */
+    struct ParseCache
+    {
+        std::unordered_map<std::string, simdjson::ondemand::json_type> keyTypes;
+        std::unordered_map<std::string, simdjson::ondemand::number_type> numberTypes;
+    };
+
+    /**
      * @brief Parses JSON data object.
      *
-     * @param json The JSON object representing the line.
+     * @param element The simdjson DOM element representing the line.
      * @param keys A set to store unique keys encountered during parsing.
      * @return A map of key-value pairs extracted from the JSON line.
      */
-    static LogMap ParseLine(const nlohmann::json &json, std::set<std::string> &keys);
+    static LogMap ParseLine(simdjson::ondemand::object &object, ParseCache &cache);
 };
 
 } // namespace loglib

@@ -68,7 +68,7 @@ public:
 
     // Deleted copy constructor and copy assignment operator for efficiency.
     LogFile(LogFile &) = delete;
-    LogFile &operator=(LogFile &) = delete;
+    LogFile &operator=(const LogFile &) = delete;
 
     // Defaulted move constructor and move assignment operator.
     LogFile(LogFile &&) = default;
@@ -90,12 +90,20 @@ public:
     std::string GetLine(uint64_t lineNumber);
 
     /**
+     * @brief Gets the total number of lines in the log file.
+     *
+     * @return size_t The total number of log lines.
+     */
+    size_t GetLineCount() const;
+
+    /**
      * @brief Creates a reference to a specific line in the log file.
      *
      * @param position Stream position of the line in the log file.
      * @return LogFileReference Reference to the specified log line.
      */
     LogFileReference CreateReference(std::streampos position);
+    LogFileReference CreateReference(size_t position);
 
 private:
     const std::filesystem::path mPath;

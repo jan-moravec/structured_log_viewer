@@ -28,8 +28,8 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
 
     // Create test configuration
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"Header1", {"key1"}, "{}", LogConfiguration::Type::Any, {}});
-    logConfiguration.columns.push_back({"Header2", {"key2"}, "{}", LogConfiguration::Type::Any, {}});
+    logConfiguration.columns.push_back({"Header1", {"key1"}, "{}", LogConfiguration::Type::any, {}});
+    logConfiguration.columns.push_back({"Header2", {"key2"}, "{}", LogConfiguration::Type::any, {}});
     TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
     LogConfigurationManager manager;
@@ -76,7 +76,7 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
 
     // Create initial configuration
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"Header1", {"key1"}, "{}", LogConfiguration::Type::Any, {}});
+    logConfiguration.columns.push_back({"Header1", {"key1"}, "{}", LogConfiguration::Type::any, {}});
     TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
     LogConfigurationManager manager;

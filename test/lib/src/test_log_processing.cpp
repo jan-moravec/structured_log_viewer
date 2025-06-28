@@ -50,7 +50,7 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     // Verify no errors were returned since no timestamp columns exist
     CHECK(errors.empty());
 
-    configuration.columns[0].type = LogConfiguration::Type::Time;
+    configuration.columns[0].type = LogConfiguration::Type::time;
     errors = ParseTimestamps(logData, configuration);
 
     // All lines failed to parse the timestamp
@@ -76,7 +76,7 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     LogConfiguration::Column column;
     column.header = "key";
     column.keys = {"key"};
-    column.type = LogConfiguration::Type::Time;
+    column.type = LogConfiguration::Type::time;
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 

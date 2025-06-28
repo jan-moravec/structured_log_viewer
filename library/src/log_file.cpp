@@ -1,9 +1,31 @@
 #include "loglib/log_file.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+
+namespace
+{
+
+inline void ltrim(std::string &s)
+{
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+}
+
+inline void rtrim(std::string &s)
+{
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), s.end());
+}
+
+inline void trim(std::string &s)
+{
+    rtrim(s);
+    ltrim(s);
+}
+
+} // namespace
 
 namespace loglib
 {
@@ -54,20 +76,17 @@ std::string LogFile::GetLine(size_t lineNumber)
     std::string buffer(stopOffset - startOffset - 1, '\0');
     mFile.seekg(startOffset);
     mFile.read(&buffer[0], buffer.size()); // Read directly into the string
-    if (!buffer.empty() && buffer.back() == '\n')
-    {
-        buffer.pop_back(); // Remove newline character
-        if (!buffer.empty() && buffer.back() == '\r')
-        {
-            buffer.pop_back(); // Remove carriage return character
-        }
-    }
+    trim(buffer);
     return buffer;
+}
+
+size_t LogFile::GetLineCount() const
+{
+    return mLineOffsets.size() - 1;
 }
 
 LogFileReference LogFile::CreateReference(std::streampos position)
 {
-    LogFileReference reference(*this, mLineOffsets.size());
     if (position == std::streampos(-1))
     {
         // Invalid position can mean the end of the file, so convert it to the end stream position
@@ -78,8 +97,14 @@ LogFileReference LogFile::CreateReference(std::streampos position)
     {
         throw std::runtime_error("Invalid position to create reference: " + std::to_string(position));
     }
+    LogFileReference reference(*this, mLineOffsets.size() - 1);
     mLineOffsets.push_back(std::move(position));
     return reference;
+}
+
+LogFileReference LogFile::CreateReference(size_t position)
+{
+    return CreateReference(static_cast<std::streampos>(position));
 }
 
 } // namespace loglib

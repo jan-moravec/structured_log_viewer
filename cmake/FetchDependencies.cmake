@@ -1,27 +1,18 @@
 include(FetchContent)
 
 # Option to use system libraries
-option(USE_SYSTEM_NLOHMANN_JSON "Use system nlohmann_json" OFF)
-option(USE_SYSTEM_DATE "Use system date" OFF)
-option(USE_SYSTEM_FMT "Use system fmt" OFF)
-option(USE_SYSTEM_CATCH2 "Use system Catch2" OFF)
-option(USE_SYSTEM_TL_EXPECTED "Use system TartanLlama expected" OFF)
-
-if(NOT USE_SYSTEM_NLOHMANN_JSON)
-    fetchcontent_declare(
-        nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.3)
-    fetchcontent_makeavailable(nlohmann_json)
-else()
-    find_package(nlohmann_json REQUIRED)
-endif()
+option(USE_SYSTEM_DATE "Use system HowardHinnant date library" OFF)
+option(USE_SYSTEM_FMT "Use system fmtlib fmt library" OFF)
+option(USE_SYSTEM_CATCH2 "Use system catchorg Catch2 library" OFF)
+option(USE_SYSTEM_MIO "Use system mandreyel mio library" OFF)
+option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
+option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     fetchcontent_declare(
         date
         GIT_REPOSITORY https://github.com/HowardHinnant/date.git
-        GIT_TAG 1a4f424659d39c2a222729bd2b1ccd8f857b3221)
+        GIT_TAG v3.0.4)
     set(BUILD_TZ_LIB ON) # Enable building the time zone library
     set(MANUAL_TZ_DB ON) # Provide time zone database manually
     fetchcontent_makeavailable(date)
@@ -61,7 +52,7 @@ if(NOT USE_SYSTEM_FMT)
     fetchcontent_declare(
         fmt
         GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-        GIT_TAG 11.0.1)
+        GIT_TAG 11.2.0)
     fetchcontent_makeavailable(fmt)
 else()
     find_package(fmt REQUIRED)
@@ -71,8 +62,40 @@ if(NOT USE_SYSTEM_CATCH2)
     fetchcontent_declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.8.0)
+        GIT_TAG v3.8.1)
     fetchcontent_makeavailable(Catch2)
 else()
     find_package(Catch2 REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_MIO)
+    fetchcontent_declare(
+        mio
+        GIT_REPOSITORY https://github.com/mandreyel/mio.git
+        GIT_TAG 8b6b7d8)
+    fetchcontent_makeavailable(mio)
+else()
+    find_package(mio REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_GLAZE)
+    fetchcontent_declare(
+        glaze
+        GIT_REPOSITORY https://github.com/stephenberry/glaze.git
+        GIT_TAG v5.5.2)
+    fetchcontent_makeavailable(glaze)
+else()
+    find_package(glaze REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_SIMDJSON)
+    fetchcontent_declare(
+        simdjson
+        GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+        GIT_TAG v3.13.0)
+    set(SIMDJSON_BUILD_STATIC ON)
+    set(SIMDJSON_ENABLE_THREADS ON)
+    fetchcontent_makeavailable(simdjson)
+else()
+    find_package(simdjson REQUIRED)
 endif()

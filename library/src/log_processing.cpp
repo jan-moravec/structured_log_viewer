@@ -2,45 +2,65 @@
 
 #include <date/date.h>
 #include <date/tz.h>
+#include <fmt/format.h>
 
 namespace
 {
 
 using namespace loglib;
 
-bool ParseTimestampLine(LogLine &line, const LogConfiguration::Column &column)
+bool ParseTimestampLine(LogLine &line, const std::string &key, const std::string &format)
 {
-    std::string errors;
+    LogValue value = line.GetValue(key);
+    if (std::holds_alternative<std::string>(value))
+    {
+        const auto timeStampString = std::get<std::string>(value);
+        std::istringstream stream{timeStampString};
+        TimeStamp timestamp;
+        stream >> date::parse(format, timestamp);
+        if (stream && timestamp.time_since_epoch().count() > 0)
+        {
+            line.SetValue(key, timestamp);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+struct LastValidTimestampParse
+{
+    std::string key;
+    std::string format;
+};
+
+bool ParseTimestampLine(
+    LogLine &line, const LogConfiguration::Column &column, std::optional<LastValidTimestampParse> &lastValid
+)
+{
+    if (lastValid.has_value())
+    {
+        if (ParseTimestampLine(line, lastValid->key, lastValid->format))
+        {
+            return true;
+        }
+    }
 
     for (const std::string &key : column.keys)
     {
-        LogValue value = line.GetValue(key);
-        if (std::holds_alternative<std::string>(value))
+        for (const std::string &format : column.parseFormats)
         {
-            const auto timeStampString = std::get<std::string>(value);
-            for (const std::string &format : column.parseFormats)
+            if (ParseTimestampLine(line, key, format))
             {
-                try
-                {
-                    std::istringstream stream{timeStampString};
-                    TimeStamp timestamp;
-                    stream >> date::parse(format, timestamp);
-                    if (timestamp.time_since_epoch().count() > 0)
-                    {
-                        line.SetValue(key, timestamp);
-                        return true;
-                    }
-                }
-                catch (const std::exception &)
-                {
-                    // Error parsing the timestamp, let's try another format or key if available
-                }
+                lastValid = {key, format};
+                return true;
             }
         }
     }
 
     return false;
 }
+
 } // namespace
 
 namespace loglib
@@ -59,16 +79,18 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
     for (size_t i = 0; i < configuration.columns.size(); ++i)
     {
         const LogConfiguration::Column &column = configuration.columns[i];
-        if (column.type == LogConfiguration::Type::Time)
+        if (column.type == LogConfiguration::Type::time)
         {
+            std::optional<LastValidTimestampParse> lastValid;
             for (auto &line : logData.Lines())
             {
-                if (!ParseTimestampLine(line, column))
+                if (!ParseTimestampLine(line, column, lastValid))
                 {
-                    errors.emplace_back(
-                        "Failed to parse a timestamp for column '" + column.header + "' from line number " +
-                        std::to_string(line.FileReference().GetLineNumber())
-                    );
+                    errors.emplace_back(fmt::format(
+                        "Failed to parse a timestamp for column '{}' from line number {}",
+                        column.header,
+                        line.FileReference().GetLineNumber()
+                    ));
                 }
             }
         }
