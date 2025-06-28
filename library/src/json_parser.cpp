@@ -61,7 +61,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
         throw std::runtime_error(fmt::format("Failed to memory map file '{}': {}", file.string(), errorMap.message()));
     }
 
-    std::unordered_set<std::string> keys;
+    ParseCache cache;
     std::vector<LogLine> lines;
     std::vector<std::string> errors;
     auto logFile = std::make_unique<LogFile>(file);
@@ -69,8 +69,9 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
     // Get file content as string view
     std::string_view fileContent(static_cast<const char *>(mmap.data()), mmap.size());
     lines.reserve(2000);
+    std::string linePadded;
 
-    simdjson::dom::parser parser;
+    simdjson::ondemand::parser parser;
     size_t currentPos = 0;
     size_t lineNumber = 0;
 
@@ -113,8 +114,9 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
             try
             {
                 const size_t remaining = fileContent.size() - lineEnd;
-                auto result = remaining >= simdjson::SIMDJSON_PADDING ? parser.parse(line.data(), line.size(), false)
-                                                                      : parser.parse(line);
+                auto result = remaining >= simdjson::SIMDJSON_PADDING
+                                  ? parser.iterate(line.data(), line.size(), line.size() + remaining)
+                                  : parser.iterate(simdjson::pad(linePadded.assign(line)));
                 if (result.error())
                 {
                     errors.push_back(
@@ -123,15 +125,16 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
                     continue;
                 }
 
-                simdjson::dom::element element = result.value();
-                if (!element.is_object())
+                auto object = result.get_object();
+                if (object.error())
                 {
                     errors.push_back(fmt::format("Error on line {}: Not a JSON object.", lineNumber));
                     continue;
                 }
 
+                auto objectValue = object.value();
                 // Parse the line and add it to our results
-                auto parsedLine = ParseLine(element, keys);
+                auto parsedLine = ParseLine(objectValue, cache);
                 lines.emplace_back(std::move(parsedLine), std::move(fileReference));
             }
             catch (const std::exception &e)
@@ -149,8 +152,11 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
 
     // Prepare the keys for the result
     std::vector<std::string> finalKeys;
-    finalKeys.reserve(keys.size());
-    std::move(keys.begin(), keys.end(), std::back_inserter(finalKeys));
+    finalKeys.reserve(cache.keyTypes.size());
+    for (const auto &keyType : cache.keyTypes)
+    {
+        finalKeys.push_back(keyType.first);
+    }
     std::sort(finalKeys.begin(), finalKeys.end());
 
     return ParseResult{LogData(std::move(logFile), std::move(lines), std::move(finalKeys)), std::move(errors)};
@@ -200,45 +206,246 @@ std::string JsonParser::ToString(const LogMap &values) const
     return result;
 }
 
-LogMap JsonParser::ParseLine(const simdjson::dom::element &element, std::unordered_set<std::string> &keys)
+LogMap JsonParser::ParseLine(simdjson::ondemand::object &object, ParseCache &cache)
 {
-    auto object = element.get_object();
     LogMap result;
-    result.reserve(std::ceil(object.size() / result.max_load_factor()));
+
+    auto countFieldsResult = object.count_fields();
+    if (countFieldsResult.error())
+    {
+        throw std::runtime_error(
+            fmt::format("Error counting fields: {}", simdjson::error_message(countFieldsResult.error()))
+        );
+    }
+    if (countFieldsResult.value() == 0)
+    {
+        return result;
+    }
+    result.reserve(std::ceil(countFieldsResult.value() / result.max_load_factor()));
 
     // Iterate through all key-value pairs in the JSON object
-    for (auto [key_view, value] : object)
+    for (auto field : object)
     {
-        keys.emplace(key_view.data(), key_view.length());
-
-        // Handle different value types based on the simdjson type
-        switch (value.type())
+        auto key_result = field.unescaped_key();
+        if (key_result.error())
         {
-        case simdjson::dom::element_type::NULL_VALUE:
-            result.emplace(std::string(key_view), std::monostate());
-            break;
-        case simdjson::dom::element_type::BOOL:
-            result.emplace(std::string(key_view), bool(value));
-            break;
-        case simdjson::dom::element_type::INT64:
-            result.emplace(std::string(key_view), int64_t(value));
-            break;
-        case simdjson::dom::element_type::UINT64:
-            result.emplace(std::string(key_view), uint64_t(value));
-            break;
-        case simdjson::dom::element_type::DOUBLE:
-            result.emplace(std::string(key_view), double(value));
-            break;
-        case simdjson::dom::element_type::STRING:
-            result.emplace(std::string(key_view), std::string(std::string_view(value)));
-            break;
-        case simdjson::dom::element_type::ARRAY:
-        case simdjson::dom::element_type::OBJECT: {
-            result.emplace(std::string(key_view), simdjson::minify(value));
+            continue; // Skip fields with invalid keys
+        }
+
+        std::string_view key_view = key_result.value();
+        std::string key_str(key_view);
+
+        // Handle different value types
+        auto value = field.value();
+
+        // Check if we have cached type information
+        auto typeIt = cache.keyTypes.find(key_str);
+        if (typeIt != cache.keyTypes.end())
+        {
+            bool cacheValid = false;
+
+            // Use cached type information
+            auto type = typeIt->second;
+            switch (type)
+            {
+            case simdjson::ondemand::json_type::boolean: {
+                bool bool_value;
+                if (!value.get(bool_value))
+                {
+                    result.emplace(std::move(key_str), bool_value);
+                    cacheValid = true;
+                }
+                break;
+            }
+            case simdjson::ondemand::json_type::number: {
+                // Use cached number type if available
+                auto numTypeIt = cache.numberTypes.find(key_str);
+                if (numTypeIt != cache.numberTypes.end())
+                {
+                    switch (numTypeIt->second)
+                    {
+                    case simdjson::ondemand::number_type::signed_integer: {
+                        int64_t int_value;
+                        if (!value.get(int_value))
+                        {
+                            result.emplace(std::move(key_str), int_value);
+                            cacheValid = true;
+                        }
+                        break;
+                    }
+                    case simdjson::ondemand::number_type::unsigned_integer: {
+                        uint64_t uint_value;
+                        if (!value.get(uint_value))
+                        {
+                            result.emplace(std::move(key_str), uint_value);
+                            cacheValid = true;
+                        }
+                        break;
+                    }
+                    case simdjson::ondemand::number_type::floating_point_number: {
+                        double double_value;
+                        if (!value.get(double_value))
+                        {
+                            result.emplace(std::move(key_str), double_value);
+                            cacheValid = true;
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                    }
+                }
+                break;
+            }
+            case simdjson::ondemand::json_type::string: {
+                std::string_view string_view;
+                if (!value.get(string_view))
+                {
+                    result.emplace(std::move(key_str), std::string(string_view));
+                    cacheValid = true;
+                }
+                break;
+            }
+            case simdjson::ondemand::json_type::array:
+            case simdjson::ondemand::json_type::object: {
+                // For objects and arrays, we'll use the raw JSON string
+                std::string_view json_view;
+                if (!value.raw_json().get(json_view))
+                {
+                    result.emplace(std::move(key_str), std::string(json_view));
+                    cacheValid = true;
+                }
+                break;
+            }
+            case simdjson::ondemand::json_type::null:
+                if (value.is_null())
+                {
+                    result.emplace(std::move(key_str), std::monostate());
+                    cacheValid = true;
+                }
+                break;
+            default:
+                break;
+            }
+
+            if (cacheValid)
+            {
+                continue;
+            }
+        }
+
+        // Get the type of the value and cache it
+        auto type_result = value.type();
+        if (type_result.error())
+        {
+            result.emplace(std::move(key_str), std::monostate());
+            continue;
+        }
+
+        auto type = type_result.value();
+        cache.keyTypes[key_str] = type;
+
+        switch (type)
+        {
+        case simdjson::ondemand::json_type::boolean: {
+            bool bool_value;
+            if (!value.get(bool_value))
+            {
+                result.emplace(std::move(key_str), bool_value);
+            }
+            else
+            {
+                result.emplace(std::move(key_str), std::monostate());
+            }
             break;
         }
+        case simdjson::ondemand::json_type::number: {
+            // Check the number type
+            auto number_type = value.get_number_type();
+            if (number_type.error())
+            {
+                result.emplace(std::move(key_str), std::monostate());
+                break;
+            }
+
+            // Cache the number type
+            cache.numberTypes[key_str] = number_type.value();
+
+            switch (number_type.value())
+            {
+            case simdjson::ondemand::number_type::signed_integer: {
+                int64_t int_value;
+                if (!value.get(int_value))
+                {
+                    result.emplace(std::move(key_str), int_value);
+                }
+                else
+                {
+                    result.emplace(std::move(key_str), std::monostate());
+                }
+                break;
+            }
+            case simdjson::ondemand::number_type::unsigned_integer: {
+                uint64_t uint_value;
+                if (!value.get(uint_value))
+                {
+                    result.emplace(std::move(key_str), uint_value);
+                }
+                else
+                {
+                    result.emplace(std::move(key_str), std::monostate());
+                }
+                break;
+            }
+            case simdjson::ondemand::number_type::floating_point_number: {
+                double double_value;
+                if (!value.get(double_value))
+                {
+                    result.emplace(std::move(key_str), double_value);
+                }
+                else
+                {
+                    result.emplace(std::move(key_str), std::monostate());
+                }
+                break;
+            }
+            default:
+                result.emplace(std::move(key_str), std::monostate());
+                break;
+            }
+            break;
+        }
+        case simdjson::ondemand::json_type::string: {
+            std::string_view string_view;
+            if (!value.get(string_view))
+            {
+                result.emplace(std::move(key_str), std::string(string_view));
+            }
+            else
+            {
+                result.emplace(std::move(key_str), std::monostate());
+            }
+            break;
+        }
+        case simdjson::ondemand::json_type::array:
+        case simdjson::ondemand::json_type::object: {
+            // For objects and arrays, we'll use the raw JSON string
+            std::string_view json_view;
+            if (!value.raw_json().get(json_view))
+            {
+                result.emplace(std::move(key_str), std::string(json_view));
+            }
+            else
+            {
+                result.emplace(std::move(key_str), std::monostate());
+            }
+            break;
+        }
+        case simdjson::ondemand::json_type::null:
+            result.emplace(std::move(key_str), std::monostate());
+            break;
         default:
-            result.emplace(std::string(key_view), std::monostate());
+            result.emplace(std::move(key_str), std::monostate());
             break;
         }
     }

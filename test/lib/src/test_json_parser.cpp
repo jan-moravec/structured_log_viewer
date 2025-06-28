@@ -255,6 +255,56 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
     );
 }
 
+TEST_CASE("Parse different key types on different lines", "[json_parser]")
+{
+    // This test should validate caching
+    loglib::JsonParser parser;
+    TestJsonLogFile testFile(
+        {glz::json_t{{"1", nullptr}, {"2", "value"}, {"3", 10000000000000000000}, {"4", -12}, {"5", 3.14}, {"6", true}},
+         glz::json_t{{"6", nullptr}, {"1", "value"}, {"2", 10000000000000000000}, {"3", -12}, {"4", 3.14}, {"5", true}},
+         glz::json_t{{"5", nullptr}, {"6", "value"}, {"1", 10000000000000000000}, {"2", -12}, {"3", 3.14}, {"4", true}}}
+    );
+
+    auto result = parser.Parse(testFile.GetFilePath());
+    CHECK(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+
+    const auto &values = result.data.Lines()[0].Values();
+    CHECK(std::holds_alternative<std::monostate>(values.at("1")));
+    CHECK(std::get<std::string>(values.at("2")) == "value");
+    CHECK(std::get<uint64_t>(values.at("3")) == 10000000000000000000);
+    CHECK(std::get<int64_t>(values.at("4")) == -12);
+    CHECK(std::get<double>(values.at("5")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(values.at("6")) == true);
+
+    const auto &values1 = result.data.Lines()[1].Values();
+    CHECK(std::holds_alternative<std::monostate>(values1.at("6")));
+    CHECK(std::get<std::string>(values1.at("1")) == "value");
+    CHECK(std::get<uint64_t>(values1.at("2")) == 10000000000000000000);
+    CHECK(std::get<int64_t>(values1.at("3")) == -12);
+    CHECK(std::get<double>(values1.at("4")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(values1.at("5")) == true);
+
+    const auto &values2 = result.data.Lines()[2].Values();
+    CHECK(std::holds_alternative<std::monostate>(values2.at("5")));
+    CHECK(std::get<std::string>(values2.at("6")) == "value");
+    CHECK(std::get<uint64_t>(values2.at("1")) == 10000000000000000000);
+    CHECK(std::get<int64_t>(values2.at("2")) == -12);
+    CHECK(std::get<double>(values2.at("3")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(values2.at("4")) == true);
+
+    REQUIRE(result.data.Keys().size() == 6);
+    CHECK(result.data.Keys()[0] == "1");
+    CHECK(result.data.Keys()[1] == "2");
+    CHECK(result.data.Keys()[2] == "3");
+    CHECK(result.data.Keys()[3] == "4");
+    CHECK(result.data.Keys()[4] == "5");
+    CHECK(result.data.Keys()[5] == "6");
+
+    REQUIRE(result.data.Files().size() == 1);
+    CHECK(result.data.Files()[0]->GetPath() == testFile.GetFilePath());
+}
+
 TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
 {
     loglib::JsonParser parser;
