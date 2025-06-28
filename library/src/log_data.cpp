@@ -2,7 +2,7 @@
 
 #include <iterator>
 #include <set>
-#include <unordered_set>
+#include <tsl/robin_set.h>
 
 namespace loglib
 {
@@ -59,7 +59,7 @@ void LogData::Merge(LogData &&other)
         std::back_inserter(mLines)
     );
 
-    std::unordered_set<std::string> existingKeys(mKeys.begin(), mKeys.end());
+    tsl::robin_set<std::string> existingKeys(mKeys.begin(), mKeys.end());
     for (auto &&key : other.mKeys)
     {
         if (existingKeys.find(key) == existingKeys.end())

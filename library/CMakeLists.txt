@@ -15,7 +15,8 @@ target_include_directories(loglib PUBLIC ./include)
 
 target_link_libraries(
     loglib
-    PUBLIC mio
+    PUBLIC robin_map
+           mio
            simdjson::simdjson
            glaze::glaze
            date::date

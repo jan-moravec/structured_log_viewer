@@ -221,7 +221,7 @@ LogMap JsonParser::ParseLine(simdjson::ondemand::object &object, ParseCache &cac
     {
         return result;
     }
-    result.reserve(std::ceil(countFieldsResult.value() / result.max_load_factor()));
+    result.rehash(countFieldsResult.value());
 
     // Iterate through all key-value pairs in the JSON object
     for (auto field : object)
