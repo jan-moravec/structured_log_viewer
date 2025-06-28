@@ -2,9 +2,10 @@
 
 #include "loglib/log_file.hpp"
 
+#include <tsl/robin_map.h>
+
 #include <chrono>
 #include <string>
-#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -31,7 +32,7 @@ using LogValue = std::variant<std::string, int64_t, uint64_t, double, bool, Time
  * @brief Map of string keys to their corresponding log values.
  *
  */
-using LogMap = std::unordered_map<std::string, LogValue>;
+using LogMap = tsl::robin_map<std::string, LogValue>;
 
 /**
  * @brief Represents a single line in a log or a single log record, consisting of key-value pairs.

@@ -7,6 +7,7 @@ option(USE_SYSTEM_CATCH2 "Use system catchorg Catch2 library" OFF)
 option(USE_SYSTEM_MIO "Use system mandreyel mio library" OFF)
 option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
 option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
+option(USE_SYSTEM_ROBIN_MAP "Use system Tessil robin-map library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     fetchcontent_declare(
@@ -98,4 +99,14 @@ if(NOT USE_SYSTEM_SIMDJSON)
     fetchcontent_makeavailable(simdjson)
 else()
     find_package(simdjson REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_ROBIN_MAP)
+    fetchcontent_declare(
+        robin_map
+        GIT_REPOSITORY https://github.com/Tessil/robin-map.git
+        GIT_TAG v1.4.0)
+    fetchcontent_makeavailable(robin_map)
+else()
+    find_package(robin_map REQUIRED)
 endif()

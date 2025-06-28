@@ -3,9 +3,7 @@
 #include "log_parser.hpp"
 
 #include <simdjson.h>
-
-#include <unordered_map>
-#include <unordered_set>
+#include <tsl/robin_map.h>
 
 namespace loglib
 {
@@ -50,8 +48,8 @@ private:
      */
     struct ParseCache
     {
-        std::unordered_map<std::string, simdjson::ondemand::json_type> keyTypes;
-        std::unordered_map<std::string, simdjson::ondemand::number_type> numberTypes;
+        tsl::robin_map<std::string, simdjson::ondemand::json_type> keyTypes;
+        tsl::robin_map<std::string, simdjson::ondemand::number_type> numberTypes;
     };
 
     /**
