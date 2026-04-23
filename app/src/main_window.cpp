@@ -20,6 +20,9 @@
 #include <QUuid>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <iterator>
+
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
@@ -170,14 +173,21 @@ void MainWindow::dropEvent(QDropEvent *event)
 
     if (mimeData->hasUrls())
     {
-        QList<QUrl> urlList = mimeData->urls();
-
-        for (int i = 0; i < urlList.size(); ++i)
+        const QList<QUrl> urlList = mimeData->urls();
+        if (urlList.isEmpty())
         {
-            mModel->Clear();
-            ClearAllFilters();
-            OpenFileInternal(urlList.at(i).toLocalFile());
+            return;
         }
+
+        mModel->Clear();
+        ClearAllFilters();
+
+        std::vector<std::string> errors;
+        for (const QUrl &url : urlList)
+        {
+            OpenFileInternal(url.toLocalFile(), errors);
+        }
+        ShowParseErrors("Error Opening File", errors);
 
         event->acceptProposedAction();
     }
@@ -206,41 +216,75 @@ bool MainWindow::event(QEvent *event)
 
 void MainWindow::OpenFiles()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this, "Select Log Files", QString(), "All Files (*.*)");
-
-    if (!files.isEmpty())
-    {
-        mModel->Clear();
-        ClearAllFilters();
-        for (const QString &file : files)
-        {
-            OpenFileInternal(file);
-        }
-    }
+    OpenFilesWithParser("Select Log Files", nullptr);
 }
 
 void MainWindow::OpenJsonLogs()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this, "Select JSON Log Files", QString(), "All Files (*.*)");
+    OpenFilesWithParser("Select JSON Log Files", loglib::LogFactory::Create(loglib::LogFactory::Parser::Json));
+}
 
-    if (!files.isEmpty())
+void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr<loglib::LogParser> parser)
+{
+    const QStringList files = QFileDialog::getOpenFileNames(this, dialogTitle, QString(), "All Files (*.*)");
+    if (files.isEmpty())
     {
-        mModel->Clear();
-        ClearAllFilters();
-        std::unique_ptr<loglib::LogParser> jsonParser = loglib::LogFactory::Create(loglib::LogFactory::Parser::Json);
-        for (const QString &file : files)
+        return;
+    }
+
+    mModel->Clear();
+    ClearAllFilters();
+
+    std::vector<std::string> errors;
+    for (const QString &file : files)
+    {
+        if (parser)
         {
-            loglib::ParseResult result = jsonParser->Parse(file.toStdString());
-            mModel->AddData(std::move(result.data));
-
-            if (!result.errors.empty())
+            try
             {
-                QMessageBox::warning(this, "Error Parsing JSON Logs", QString::fromStdString(result.errors[0]));
+                loglib::ParseResult result = parser->Parse(file.toStdString());
+                mModel->AddData(std::move(result.data));
+                errors.insert(
+                    errors.end(),
+                    std::make_move_iterator(result.errors.begin()),
+                    std::make_move_iterator(result.errors.end())
+                );
             }
-
-            UpdateUi();
+            catch (const std::exception &e)
+            {
+                errors.push_back(std::string("Failed to parse '") + file.toStdString() + "': " + e.what());
+            }
+        }
+        else
+        {
+            OpenFileInternal(file, errors);
         }
     }
+
+    UpdateUi();
+    ShowParseErrors("Error Parsing Logs", errors);
+}
+
+void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)
+{
+    if (errors.empty())
+    {
+        return;
+    }
+
+    constexpr size_t kMaxErrorsShown = 20;
+    QString message;
+    const size_t shown = std::min(errors.size(), kMaxErrorsShown);
+    for (size_t i = 0; i < shown; ++i)
+    {
+        message += QString::fromStdString(errors[i]) + QLatin1Char('\n');
+    }
+    if (errors.size() > kMaxErrorsShown)
+    {
+        message += QString("... and %1 more error(s).").arg(errors.size() - kMaxErrorsShown);
+    }
+
+    QMessageBox::warning(this, title, message);
 }
 
 void MainWindow::SaveConfiguration()
@@ -412,8 +456,9 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     AddLogFilter(filterID, filter);
 }
 
-void MainWindow::OpenFileInternal(const QString &file)
+void MainWindow::OpenFileInternal(const QString &file, std::vector<std::string> &errors)
 {
+    // Attempt to load the file as a configuration first; if it fails, fall back to log parsing.
     bool isConfiguration = true;
     try
     {
@@ -426,13 +471,19 @@ void MainWindow::OpenFileInternal(const QString &file)
 
     if (!isConfiguration)
     {
-        loglib::ParseResult result = loglib::LogFactory::Parse(file.toStdString());
-
-        mModel->AddData(std::move(result.data));
-
-        if (!result.errors.empty())
+        try
         {
-            QMessageBox::warning(this, "Error Opening File", QString::fromStdString(result.errors[0]));
+            loglib::ParseResult result = loglib::LogFactory::Parse(file.toStdString());
+            mModel->AddData(std::move(result.data));
+            errors.insert(
+                errors.end(),
+                std::make_move_iterator(result.errors.begin()),
+                std::make_move_iterator(result.errors.end())
+            );
+        }
+        catch (const std::exception &e)
+        {
+            errors.push_back(std::string("Failed to open '") + file.toStdString() + "': " + e.what());
         }
     }
 

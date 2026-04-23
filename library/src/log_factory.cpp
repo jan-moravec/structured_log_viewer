@@ -29,7 +29,7 @@ std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
     case Parser::Json:
         return std::make_unique<JsonParser>();
     default:
-        throw std::runtime_error("Ivalid parser " + std::to_string(static_cast<int>(parser)));
+        throw std::runtime_error("Invalid parser " + std::to_string(static_cast<int>(parser)));
     }
 }
 

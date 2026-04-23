@@ -43,7 +43,7 @@ Currently, only JSON logs are supported.
 
 For information regarding using the application, see [README](doc/README.md).
 
-## Develolment
+## Development
 
 ### Project Structure
 
