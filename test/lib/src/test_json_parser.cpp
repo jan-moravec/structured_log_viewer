@@ -7,9 +7,15 @@
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
+
+namespace
+{
+constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
+} // namespace
 
 TEST_CASE("Validate non-existent file", "[json_parser]")
 {
@@ -166,7 +172,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         auto result = parser.Parse(testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
-        CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue("key")) == 10000000000000000000);
+        CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue("key")) == LARGE_UINT);
         REQUIRE(result.data.Keys().size() == 1);
         CHECK(result.data.Keys()[0] == "key");
         REQUIRE(result.data.Files().size() == 1);
@@ -220,10 +226,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 TEST_CASE("Parse file with single JSON object containing all possible JSON elements", "[json_parser]")
 {
     loglib::JsonParser parser;
-    TestJsonLogFile testFile(glz::generic{
+    TestJsonLogFile testFile(glz::generic_sorted_u64{
         {"null", nullptr},
         {"string", "value"},
-        {"uinteger", 10000000000000000000},
+        {"uinteger", LARGE_UINT},
         {"integer", -12},
         {"double", 3.14},
         {"boolean", true}
@@ -236,7 +242,7 @@ TEST_CASE("Parse file with single JSON object containing all possible JSON eleme
     const auto &values = result.data.Lines()[0].Values();
     CHECK(std::holds_alternative<std::monostate>(values.at("null")));
     CHECK(std::get<std::string>(values.at("string")) == "value");
-    CHECK(std::get<uint64_t>(values.at("uinteger")) == 10000000000000000000);
+    CHECK(std::get<uint64_t>(values.at("uinteger")) == LARGE_UINT);
     CHECK(std::get<int64_t>(values.at("integer")) == -12);
     CHECK(std::get<double>(values.at("double")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values.at("boolean")) == true);
@@ -260,9 +266,9 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     // This test should validate caching
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
-        {glz::generic{{"1", nullptr}, {"2", "value"}, {"3", 10000000000000000000}, {"4", -12}, {"5", 3.14}, {"6", true}},
-         glz::generic{{"6", nullptr}, {"1", "value"}, {"2", 10000000000000000000}, {"3", -12}, {"4", 3.14}, {"5", true}},
-         glz::generic{{"5", nullptr}, {"6", "value"}, {"1", 10000000000000000000}, {"2", -12}, {"3", 3.14}, {"4", true}}}
+        {glz::generic_sorted_u64{{"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}},
+         glz::generic_sorted_u64{{"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}},
+         glz::generic_sorted_u64{{"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}}}
     );
 
     auto result = parser.Parse(testFile.GetFilePath());
@@ -272,7 +278,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     const auto &values = result.data.Lines()[0].Values();
     CHECK(std::holds_alternative<std::monostate>(values.at("1")));
     CHECK(std::get<std::string>(values.at("2")) == "value");
-    CHECK(std::get<uint64_t>(values.at("3")) == 10000000000000000000);
+    CHECK(std::get<uint64_t>(values.at("3")) == LARGE_UINT);
     CHECK(std::get<int64_t>(values.at("4")) == -12);
     CHECK(std::get<double>(values.at("5")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values.at("6")) == true);
@@ -280,7 +286,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     const auto &values1 = result.data.Lines()[1].Values();
     CHECK(std::holds_alternative<std::monostate>(values1.at("6")));
     CHECK(std::get<std::string>(values1.at("1")) == "value");
-    CHECK(std::get<uint64_t>(values1.at("2")) == 10000000000000000000);
+    CHECK(std::get<uint64_t>(values1.at("2")) == LARGE_UINT);
     CHECK(std::get<int64_t>(values1.at("3")) == -12);
     CHECK(std::get<double>(values1.at("4")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values1.at("5")) == true);
@@ -288,7 +294,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     const auto &values2 = result.data.Lines()[2].Values();
     CHECK(std::holds_alternative<std::monostate>(values2.at("5")));
     CHECK(std::get<std::string>(values2.at("6")) == "value");
-    CHECK(std::get<uint64_t>(values2.at("1")) == 10000000000000000000);
+    CHECK(std::get<uint64_t>(values2.at("1")) == LARGE_UINT);
     CHECK(std::get<int64_t>(values2.at("2")) == -12);
     CHECK(std::get<double>(values2.at("3")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(values2.at("4")) == true);
@@ -308,7 +314,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
 TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
 {
     loglib::JsonParser parser;
-    TestJsonLogFile testFile({glz::generic{{"key1", "value1"}}, glz::generic{{"key2", "value2"}}});
+    TestJsonLogFile testFile({glz::generic_sorted_u64{{"key1", "value1"}}, glz::generic_sorted_u64{{"key2", "value2"}}});
 
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.errors.empty());
@@ -328,7 +334,7 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
 {
     // Parse will end with first invalid line
     loglib::JsonParser parser;
-    TestJsonLogFile testFile({glz::generic{{"key1", "value1"}}, "invalid json", glz::generic{{"key2", "value2"}}});
+    TestJsonLogFile testFile({glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json", glz::generic_sorted_u64{{"key2", "value2"}}});
 
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
@@ -352,7 +358,7 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
 
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
-        {glz::generic{{"key1", "value1"}}, "invalid json 1", glz::generic{{"key2", "value2"}}, "invalid json 2"}
+        {glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json 1", glz::generic_sorted_u64{{"key2", "value2"}}, "invalid json 2"}
     );
 
     auto result = parser.Parse(testFile.GetFilePath());

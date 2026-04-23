@@ -23,7 +23,7 @@ TEST_CASE("Create non-existent parser", "[log_factory]")
 
 TEST_CASE("Parse JSON log file", "[log_factory]")
 {
-    TestJsonLogFile testFile(glz::generic{{"key", "value"}});
+    TestJsonLogFile testFile(glz::generic_sorted_u64{{"key", "value"}});
 
     LogFactory factory;
     ParseResult result = factory.Parse(testFile.GetFilePath());

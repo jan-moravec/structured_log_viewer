@@ -171,7 +171,7 @@ std::string JsonParser::ToString(const LogMap &values) const
         return "{}";
     }
 
-    glz::generic json;
+    glz::generic_sorted_u64 json;
 
     for (const auto &pair : values)
     {

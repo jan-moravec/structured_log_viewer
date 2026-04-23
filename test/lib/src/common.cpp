@@ -69,7 +69,7 @@ const std::vector<std::string> &TestJsonLogFile::StringLines() const
     return mStringLines;
 }
 
-const std::vector<glz::generic> &TestJsonLogFile::JsonLines() const
+const std::vector<glz::generic_sorted_u64> &TestJsonLogFile::JsonLines() const
 {
     return mJsonLines;
 }
@@ -159,7 +159,7 @@ void InitializeTimezoneData()
 
 TestJsonLogFile::Line::Line(const char *line)
 {
-    glz::generic json;
+    glz::generic_sorted_u64 json;
     auto error = glz::read_json(json, line);
     if (!error)
     {
@@ -171,7 +171,7 @@ TestJsonLogFile::Line::Line(const char *line)
     }
 }
 
-TestJsonLogFile::Line::Line(glz::generic json) : data(std::move(json))
+TestJsonLogFile::Line::Line(glz::generic_sorted_u64 json) : data(std::move(json))
 {
 }
 
@@ -180,7 +180,7 @@ std::string TestJsonLogFile::Line::ToString() const
     return std::visit(
         [](const auto &data) -> std::string {
             using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, glz::generic>)
+            if constexpr (std::is_same_v<T, glz::generic_sorted_u64>)
             {
                 return glz::write_json(data).value_or("");
             }
@@ -193,12 +193,12 @@ std::string TestJsonLogFile::Line::ToString() const
     );
 }
 
-void TestJsonLogFile::Line::Parse(std::vector<std::string> &strings, std::vector<glz::generic> &jsons) const
+void TestJsonLogFile::Line::Parse(std::vector<std::string> &strings, std::vector<glz::generic_sorted_u64> &jsons) const
 {
     std::visit(
         [&](const auto &data) {
             using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, glz::generic>)
+            if constexpr (std::is_same_v<T, glz::generic_sorted_u64>)
             {
                 jsons.push_back(data);
             }

@@ -49,7 +49,7 @@ std::vector<TestJsonLogFile::Line> GenerateRandomJsonLogs(size_t count)
             message += WORDS[word_dist(gen)];
         }
 
-        glz::generic json;
+        glz::generic_sorted_u64 json;
         json["timestamp"] =
             date::format("%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now()));
         json["level"] = LEVELS[level_dist(gen)];
