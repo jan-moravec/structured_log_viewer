@@ -23,22 +23,24 @@ bool JsonParser::IsValid(const std::filesystem::path &file) const
     }
 
     std::string line;
-    simdjson::dom::parser parser;
-
-    if (std::getline(stream, line))
+    if (!std::getline(stream, line))
     {
-        try
-        {
-            auto result = parser.parse(line);
-            return result.is_object();
-        }
-        catch (...)
-        {
-            return false;
-        }
+        return false;
     }
 
-    return false;
+    if (!line.empty() && line.back() == '\r')
+    {
+        line.pop_back();
+    }
+
+    if (line.empty())
+    {
+        return false;
+    }
+
+    simdjson::ondemand::parser parser;
+    auto doc = parser.iterate(simdjson::pad(line));
+    return !doc.get_object().error();
 }
 
 ParseResult JsonParser::Parse(const std::filesystem::path &file) const
@@ -169,7 +171,7 @@ std::string JsonParser::ToString(const LogMap &values) const
         return "{}";
     }
 
-    glz::json_t json;
+    glz::generic_sorted_u64 json;
 
     for (const auto &pair : values)
     {

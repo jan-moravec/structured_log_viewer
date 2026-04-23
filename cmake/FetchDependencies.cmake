@@ -53,7 +53,7 @@ if(NOT USE_SYSTEM_FMT)
     fetchcontent_declare(
         fmt
         GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-        GIT_TAG 11.2.0)
+        GIT_TAG 12.1.0)
     fetchcontent_makeavailable(fmt)
 else()
     find_package(fmt REQUIRED)
@@ -63,7 +63,7 @@ if(NOT USE_SYSTEM_CATCH2)
     fetchcontent_declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.8.1)
+        GIT_TAG v3.14.0)
     fetchcontent_makeavailable(Catch2)
 else()
     find_package(Catch2 REQUIRED)
@@ -83,7 +83,7 @@ if(NOT USE_SYSTEM_GLAZE)
     fetchcontent_declare(
         glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-        GIT_TAG v5.5.2)
+        GIT_TAG v7.4.0)
     fetchcontent_makeavailable(glaze)
 else()
     find_package(glaze REQUIRED)
@@ -93,7 +93,7 @@ if(NOT USE_SYSTEM_SIMDJSON)
     fetchcontent_declare(
         simdjson
         GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-        GIT_TAG v3.13.0)
+        GIT_TAG v4.6.3)
     set(SIMDJSON_BUILD_STATIC ON)
     set(SIMDJSON_ENABLE_THREADS ON)
     fetchcontent_makeavailable(simdjson)
@@ -105,7 +105,7 @@ if(NOT USE_SYSTEM_ROBIN_MAP)
     fetchcontent_declare(
         robin_map
         GIT_REPOSITORY https://github.com/Tessil/robin-map.git
-        GIT_TAG v1.4.0)
+        GIT_TAG v1.4.1)
     fetchcontent_makeavailable(robin_map)
 else()
     find_package(robin_map REQUIRED)

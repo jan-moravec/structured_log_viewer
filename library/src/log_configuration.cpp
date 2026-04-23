@@ -40,6 +40,13 @@ bool IsTimestampKey(const std::string &key)
     );
 }
 
+// Glaze 7.x moved indentation_width out of the core opts struct into an inheritable option.
+struct PrettyOpts : glz::opts
+{
+    uint8_t indentation_width = 4;
+};
+constexpr PrettyOpts kPrettifyOpts{{.prettify = true}};
+
 } // namespace
 
 namespace loglib
@@ -66,7 +73,7 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
 void LogConfigurationManager::Save(const std::filesystem::path &path) const
 {
     std::string json;
-    const auto error = glz::write<glz::opts{.prettify = true, .indentation_width = 4}>(mConfiguration, json);
+    const auto error = glz::write<kPrettifyOpts>(mConfiguration, json);
     if (error)
     {
         throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));

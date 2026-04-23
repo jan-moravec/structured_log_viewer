@@ -15,13 +15,13 @@ public:
     struct Line
     {
         Line(const char *line);
-        Line(glz::json_t json);
+        Line(glz::generic_sorted_u64 json);
 
-        using Type = std::variant<std::string, glz::json_t>;
+        using Type = std::variant<std::string, glz::generic_sorted_u64>;
         Type data;
 
         std::string ToString() const;
-        void Parse(std::vector<std::string> &strings, std::vector<glz::json_t> &jsons) const;
+        void Parse(std::vector<std::string> &strings, std::vector<glz::generic_sorted_u64> &jsons) const;
     };
 
     TestJsonLogFile(std::string filePath = FILE_PATH);
@@ -33,14 +33,14 @@ public:
     void WriteToFile(std::vector<Line> lines);
     const std::vector<Line> &Lines() const;
     const std::vector<std::string> &StringLines() const;
-    const std::vector<glz::json_t> &JsonLines() const;
+    const std::vector<glz::generic_sorted_u64> &JsonLines() const;
 
 private:
     static constexpr char FILE_PATH[] = "test.json";
     std::string mFilePath;
     std::vector<Line> mLines;
     std::vector<std::string> mStringLines;
-    std::vector<glz::json_t> mJsonLines;
+    std::vector<glz::generic_sorted_u64> mJsonLines;
 };
 
 class TestLogConfiguration
