@@ -107,7 +107,7 @@
     <string>Copy</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+S</string>
+    <string>Ctrl+C</string>
    </property>
   </action>
   <action name="actionFind">

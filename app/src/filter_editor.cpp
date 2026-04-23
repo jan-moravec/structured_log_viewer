@@ -181,19 +181,20 @@ qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
 void FilterEditor::OnOkClicked()
 {
     const int index = mRowComboBox->currentIndex();
-    if (index < 0 && index >= mModel.Configuration().columns.size())
+    if (index < 0 || static_cast<size_t>(index) >= mModel.Configuration().columns.size())
     {
         return;
     }
 
-    if (mModel.Configuration().columns[index].type != LogConfiguration::Type::time && mStringLineEdit->text().isEmpty())
+    const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
+    if (column.type != LogConfiguration::Type::time && mStringLineEdit->text().isEmpty())
     {
         // Validation: Don't allow empty filter string
         mStringLineEdit->setStyleSheet("border: 1px solid red");
         return;
     }
 
-    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::time)
+    if (column.type == LogConfiguration::Type::time)
     {
         emit FilterTimeStampSubmitted(
             mFilterID,
@@ -214,16 +215,19 @@ void FilterEditor::OnOkClicked()
 
 void FilterEditor::UpdateSelectedColumn(int index)
 {
-    if (index < 0 && index >= mModel.Configuration().columns.size())
+    if (index < 0 || static_cast<size_t>(index) >= mModel.Configuration().columns.size())
     {
         return;
     }
-    if (mModel.Configuration().columns[index].type == LogConfiguration::Type::time)
+    if (mModel.Configuration().columns[static_cast<size_t>(index)].type == LogConfiguration::Type::time)
     {
         mStackedWidget->setCurrentIndex(1);
 
-        std::optional<std::pair<qint64, qint64>> minMax = mModel.GetMinMaxValues<qint64>(index).value();
-        SetBeginEnd(minMax->first, minMax->second);
+        const auto minMax = mModel.GetMinMaxValues<qint64>(index);
+        if (minMax.has_value())
+        {
+            SetBeginEnd(minMax->first, minMax->second);
+        }
     }
     else
     {
