@@ -220,7 +220,7 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 TEST_CASE("Parse file with single JSON object containing all possible JSON elements", "[json_parser]")
 {
     loglib::JsonParser parser;
-    TestJsonLogFile testFile(glz::json_t{
+    TestJsonLogFile testFile(glz::generic{
         {"null", nullptr},
         {"string", "value"},
         {"uinteger", 10000000000000000000},
@@ -260,9 +260,9 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     // This test should validate caching
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
-        {glz::json_t{{"1", nullptr}, {"2", "value"}, {"3", 10000000000000000000}, {"4", -12}, {"5", 3.14}, {"6", true}},
-         glz::json_t{{"6", nullptr}, {"1", "value"}, {"2", 10000000000000000000}, {"3", -12}, {"4", 3.14}, {"5", true}},
-         glz::json_t{{"5", nullptr}, {"6", "value"}, {"1", 10000000000000000000}, {"2", -12}, {"3", 3.14}, {"4", true}}}
+        {glz::generic{{"1", nullptr}, {"2", "value"}, {"3", 10000000000000000000}, {"4", -12}, {"5", 3.14}, {"6", true}},
+         glz::generic{{"6", nullptr}, {"1", "value"}, {"2", 10000000000000000000}, {"3", -12}, {"4", 3.14}, {"5", true}},
+         glz::generic{{"5", nullptr}, {"6", "value"}, {"1", 10000000000000000000}, {"2", -12}, {"3", 3.14}, {"4", true}}}
     );
 
     auto result = parser.Parse(testFile.GetFilePath());
@@ -308,7 +308,7 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
 TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
 {
     loglib::JsonParser parser;
-    TestJsonLogFile testFile({glz::json_t{{"key1", "value1"}}, glz::json_t{{"key2", "value2"}}});
+    TestJsonLogFile testFile({glz::generic{{"key1", "value1"}}, glz::generic{{"key2", "value2"}}});
 
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.errors.empty());
@@ -328,7 +328,7 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
 {
     // Parse will end with first invalid line
     loglib::JsonParser parser;
-    TestJsonLogFile testFile({glz::json_t{{"key1", "value1"}}, "invalid json", glz::json_t{{"key2", "value2"}}});
+    TestJsonLogFile testFile({glz::generic{{"key1", "value1"}}, "invalid json", glz::generic{{"key2", "value2"}}});
 
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
@@ -352,7 +352,7 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
 
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
-        {glz::json_t{{"key1", "value1"}}, "invalid json 1", glz::json_t{{"key2", "value2"}}, "invalid json 2"}
+        {glz::generic{{"key1", "value1"}}, "invalid json 1", glz::generic{{"key2", "value2"}}, "invalid json 2"}
     );
 
     auto result = parser.Parse(testFile.GetFilePath());
