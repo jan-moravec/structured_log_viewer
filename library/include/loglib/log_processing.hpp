@@ -27,7 +27,8 @@ void Initialize(const std::filesystem::path &tzdata);
  *
  * @param logData Reference to the log data to be processed.
  * @param configuration Configuration settings that define how timestamps should be parsed.
- * @return std::vector<std::string> A vector of parsed timestamp strings.
+ * @return std::vector<std::string> Human-readable error messages for log lines whose
+ *         configured timestamp column could not be parsed. Empty if all timestamps parsed successfully.
  */
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 

@@ -7,6 +7,7 @@
 #include "preferences_editor.hpp"
 
 #include <loglib/log_configuration.hpp>
+#include <loglib/log_parser.hpp>
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -15,9 +16,11 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 QT_BEGIN_NAMESPACE
 namespace Ui
@@ -61,7 +64,9 @@ private slots:
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
 
 private:
-    void OpenFileInternal(const QString &file);
+    void OpenFileInternal(const QString &file, std::vector<std::string> &errors);
+    void OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr<loglib::LogParser> parser);
+    void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
     void UpdateFilters();
 
