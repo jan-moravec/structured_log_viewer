@@ -8,6 +8,7 @@
 #include <loglib/log_processing.hpp>
 
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QDebug>
 #include <QFileDialog>
 #include <QHeaderView>
@@ -127,6 +128,12 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
         {
 #ifdef _WIN32
             const auto tzdata = std::filesystem::current_path() / std::filesystem::path("tzdata");
+#elif defined(__APPLE__)
+            // Inside a .app bundle, applicationDirPath() is <bundle>/Contents/MacOS.
+            // tzdata is shipped as <bundle>/Contents/Resources/tzdata.
+            const auto contentsDir =
+                std::filesystem::path(QCoreApplication::applicationDirPath().toStdString()).parent_path();
+            const auto tzdata = contentsDir / "Resources" / "tzdata";
 #else
             const char *appDir = std::getenv("APPDIR");
             const auto tzdata = appDir ? std::filesystem::path(appDir) / std::filesystem::path("usr/share/tzdata")

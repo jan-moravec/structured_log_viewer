@@ -57,6 +57,20 @@ set_target_properties(
                TRUE WIN32_EXECUTABLE
                TRUE)
 
+# On macOS the executable runs from <App>.app/Contents/MacOS/, so the tzdata
+# directory that FetchDependencies.cmake copies next to the build output is not
+# reachable at runtime. Mirror it into the bundle's Contents/Resources so the
+# application can find it via QCoreApplication::applicationDirPath().
+if(APPLE)
+    add_custom_command(
+        TARGET StructuredLogViewer
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata
+                $<TARGET_BUNDLE_CONTENT_DIR:StructuredLogViewer>/Resources/tzdata
+        COMMENT "Copying tzdata into macOS app bundle Resources"
+        VERBATIM)
+endif()
+
 include(GNUInstallDirs)
 install(
     TARGETS StructuredLogViewer
