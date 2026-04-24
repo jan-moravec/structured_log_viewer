@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 
 namespace
 {
@@ -57,7 +58,9 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
     std::ifstream file(path);
     if (file.is_open())
     {
-        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        std::ostringstream buffer;
+        buffer << file.rdbuf();
+        const std::string content = buffer.str();
         const auto error = glz::read_json(mConfiguration, content);
         if (error)
         {

@@ -47,8 +47,11 @@ jobs:
           arch: "linux_gcc_64"
           cache: true
 
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake libfuse2 xvfb libxcb-cursor0
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 xvfb libxcb-cursor0
 
       - name: Build
         run: |
@@ -115,10 +118,8 @@ jobs:
           arch: "win64_msvc2022_64"
           cache: true
 
-      - name: Install build tools
-        run: |
-          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-          choco install ninja -y
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Build
         shell: cmd

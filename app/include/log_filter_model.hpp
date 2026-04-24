@@ -15,15 +15,22 @@ public:
         int role,
         const QVariant &value,
         int hits = 1,
-        Qt::MatchFlags flags = Qt::MatchFlags(Qt::MatchStartsWith | Qt::MatchWrap),
+        Qt::MatchFlags flags = Qt::MatchStartsWith | Qt::MatchWrap,
         bool forward = true,
         int skipFirstN = 0
     ) const;
 
     void SetFilterRules(std::vector<std::unique_ptr<FilterRule>> &&filterRules)
     {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+        // Qt 6.9+: limit invalidation to rows only (our filter never affects columns).
+        beginFilterChange();
         mFilterRules = std::move(filterRules);
-        invalidateFilter(); // Call this to reapply the filter with the new regex list.
+        endFilterChange(QSortFilterProxyModel::Direction::Rows);
+#else
+        mFilterRules = std::move(filterRules);
+        invalidateFilter();
+#endif
     }
 
 protected:
