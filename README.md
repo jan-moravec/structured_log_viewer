@@ -107,18 +107,17 @@ Most third-party C++ dependencies are fetched automatically via `FetchContent`. 
 
 #### Building
 
-It is recommended to use Qt Creator for development (open the top-level `CMakeLists.txt`).
-
-To build manually:
+The project ships a [`CMakePresets.json`](CMakePresets.json) that defines shared configure/build/test/workflow presets, so a single command can configure, build, and run the test suite:
 
 ```sh
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build . -j
+cmake --workflow --preset release
 ```
 
-On Windows, use the Developer PowerShell or Developer Command Prompt for VS 2022. See [CONTRIBUTING.md](CONTRIBUTING.md#building) for platform-specific notes and test instructions.
+Available workflows are `release`, `debug`, and `relwithdebinfo`; each writes to its own `build/<preset>/` directory. All presets use the Ninja generator, so `ninja` must be on your `PATH` (installed by default with modern Qt / Visual Studio, or available via your system package manager).
+
+On Windows, run the command from the **Developer PowerShell** (or **Developer Command Prompt**) for Visual Studio 2022 so MSVC is on `PATH`.
+
+For machine-specific overrides (e.g. pinning `CMAKE_PREFIX_PATH` to your Qt install), create a personal `CMakeUserPresets.json` at the repo root — it is gitignored. Qt Creator, CLion, and VS Code all discover these presets automatically. See [CONTRIBUTING.md](CONTRIBUTING.md#building) for a worked example and per-step commands.
 
 ### Contributing
 
