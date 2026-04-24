@@ -9,8 +9,8 @@
 
 namespace
 {
-const QString CONFIGURATION_STYLE = "appearence/style";
-const QString CONFIGURATION_FONT = "appearence/font";
+const QString CONFIGURATION_STYLE = "appearance/style";
+const QString CONFIGURATION_FONT = "appearance/font";
 } // namespace
 
 AppearanceControl::Configuration AppearanceControl::mConfiguration;

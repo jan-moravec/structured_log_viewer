@@ -7,7 +7,7 @@ function(set_project_warnings project_name WARNINGS_AS_ERRORS)
         /w14254 # 'operator': conversion from 'type1:field_bits' to 'type2:field_bits', possible loss of data
         /w14263 # 'function': member function does not override any base class virtual member function
         /w14265 # 'classname': class has virtual functions, but destructor is not virtual instances of this class may
-                # not
+        # not
         # be destructed correctly
         /w14287 # 'operator': unsigned/negative constant mismatch
         /we4289 # nonstandard extension used: 'variable': loop control variable declared in the for-loop is used outside
@@ -61,8 +61,10 @@ function(set_project_warnings project_name WARNINGS_AS_ERRORS)
     endif()
 
     # Explicitly turn off following warnings
-    set(CLANG_WARNINGS ${CLANG_WARNINGS} -Wno-gnu-zero-variadic-macro-arguments # issues in oatcpp macro generators
-                       -Wno-format-pedantic # TDBG %p requires void * type, this issue is everywhere
+    set(CLANG_WARNINGS
+        ${CLANG_WARNINGS}
+        -Wno-gnu-zero-variadic-macro-arguments # issues in oatcpp macro generators
+        -Wno-format-pedantic # TDBG %p requires void * type, this issue is everywhere
     )
 
     set(CUDA_WARNINGS
@@ -106,9 +108,10 @@ function(set_project_warnings project_name WARNINGS_AS_ERRORS)
     target_compile_options(
         ${project_name}
         INTERFACE # C++ warnings
-                  $<$<COMPILE_LANGUAGE:CXX>:${PROJECT_WARNINGS_CXX}>
-                  # C warnings
-                  $<$<COMPILE_LANGUAGE:C>:${PROJECT_WARNINGS_C}>
-                  # Cuda warnings
-                  $<$<COMPILE_LANGUAGE:CUDA>:${PROJECT_WARNINGS_CUDA}>)
+            $<$<COMPILE_LANGUAGE:CXX>:${PROJECT_WARNINGS_CXX}>
+            # C warnings
+            $<$<COMPILE_LANGUAGE:C>:${PROJECT_WARNINGS_C}>
+            # Cuda warnings
+            $<$<COMPILE_LANGUAGE:CUDA>:${PROJECT_WARNINGS_CUDA}>
+    )
 endfunction()

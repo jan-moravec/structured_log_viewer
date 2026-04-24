@@ -266,9 +266,15 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     // This test should validate caching
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
-        {glz::generic_sorted_u64{{"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}},
-         glz::generic_sorted_u64{{"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}},
-         glz::generic_sorted_u64{{"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}}}
+        {glz::generic_sorted_u64{
+             {"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}
+         },
+         glz::generic_sorted_u64{
+             {"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}
+         },
+         glz::generic_sorted_u64{
+             {"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}
+         }}
     );
 
     auto result = parser.Parse(testFile.GetFilePath());
@@ -314,7 +320,8 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
 TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
 {
     loglib::JsonParser parser;
-    TestJsonLogFile testFile({glz::generic_sorted_u64{{"key1", "value1"}}, glz::generic_sorted_u64{{"key2", "value2"}}});
+    TestJsonLogFile testFile({glz::generic_sorted_u64{{"key1", "value1"}}, glz::generic_sorted_u64{{"key2", "value2"}}}
+    );
 
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.errors.empty());
@@ -334,7 +341,9 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
 {
     // Parse will end with first invalid line
     loglib::JsonParser parser;
-    TestJsonLogFile testFile({glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json", glz::generic_sorted_u64{{"key2", "value2"}}});
+    TestJsonLogFile testFile(
+        {glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json", glz::generic_sorted_u64{{"key2", "value2"}}}
+    );
 
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
@@ -358,7 +367,10 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
 
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
-        {glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json 1", glz::generic_sorted_u64{{"key2", "value2"}}, "invalid json 2"}
+        {glz::generic_sorted_u64{{"key1", "value1"}},
+         "invalid json 1",
+         glz::generic_sorted_u64{{"key2", "value2"}},
+         "invalid json 2"}
     );
 
     auto result = parser.Parse(testFile.GetFilePath());

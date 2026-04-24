@@ -4,13 +4,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(
-    QT
-    NAMES
-    Qt6
-    Qt5
-    REQUIRED
-    COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
 if(${QT_VERSION} LESS 6.1.0)
@@ -33,7 +27,8 @@ set(PROJECT_SOURCES
     src/preferences_editor.cpp
     include/preferences_editor.hpp
     src/appearance_control.cpp
-    include/appearance_control.hpp)
+    include/appearance_control.hpp
+)
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})
 
@@ -51,11 +46,13 @@ target_link_libraries(StructuredLogViewer PUBLIC logapp)
 
 set_target_properties(
     StructuredLogViewer
-    PROPERTIES ${BUNDLE_ID_OPTION} MACOSX_BUNDLE_BUNDLE_VERSION
-               ${PROJECT_VERSION} MACOSX_BUNDLE_SHORT_VERSION_STRING
-               ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} MACOSX_BUNDLE
-               TRUE WIN32_EXECUTABLE
-               TRUE)
+    PROPERTIES
+        ${BUNDLE_ID_OPTION} MACOSX_BUNDLE_BUNDLE_VERSION
+        ${PROJECT_VERSION} MACOSX_BUNDLE_SHORT_VERSION_STRING
+        ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} MACOSX_BUNDLE
+        TRUE WIN32_EXECUTABLE
+        TRUE
+)
 
 # On macOS the executable runs from <App>.app/Contents/MacOS/, so the tzdata
 # directory that FetchDependencies.cmake copies next to the build output is not
@@ -65,10 +62,12 @@ if(APPLE)
     add_custom_command(
         TARGET StructuredLogViewer
         POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata
-                $<TARGET_BUNDLE_CONTENT_DIR:StructuredLogViewer>/Resources/tzdata
+        COMMAND
+            ${CMAKE_COMMAND} -E copy_directory ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata
+            $<TARGET_BUNDLE_CONTENT_DIR:StructuredLogViewer>/Resources/tzdata
         COMMENT "Copying tzdata into macOS app bundle Resources"
-        VERBATIM)
+        VERBATIM
+    )
 endif()
 
 include(GNUInstallDirs)
@@ -76,6 +75,7 @@ install(
     TARGETS StructuredLogViewer
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 qt_finalize_executable(StructuredLogViewer)

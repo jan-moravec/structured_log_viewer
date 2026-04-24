@@ -77,10 +77,10 @@ The pinned tool versions live in [`.pre-commit-config.yaml`](.pre-commit-config.
 ## Pull requests
 
 1. Fork the repository and create a topic branch from `main`.
-2. Keep commits focused; rebase onto `main` before opening a PR.
-3. Ensure `pre-commit run --all-files` passes locally.
-4. Make sure CI (Linux, Windows, macOS) is green — tests and packaging both must succeed.
-5. Describe the motivation and user-visible changes in the PR description.
+1. Keep commits focused; rebase onto `main` before opening a PR.
+1. Ensure `pre-commit run --all-files` passes locally.
+1. Make sure CI (Linux, Windows, macOS) is green — tests and packaging both must succeed.
+1. Describe the motivation and user-visible changes in the PR description.
 
 ## Release process
 
@@ -89,7 +89,8 @@ Releases are cut from tags matching `v*` (e.g. `v0.7.0`). The [`Build` workflow]
 ### Steps
 
 1. Make sure `main` is green and all desired changes are merged.
-2. Bump the version in the top-level [`CMakeLists.txt`](CMakeLists.txt):
+
+1. Bump the version in the top-level [`CMakeLists.txt`](CMakeLists.txt):
 
    ```cmake
    project(
@@ -98,8 +99,9 @@ Releases are cut from tags matching `v*` (e.g. `v0.7.0`). The [`Build` workflow]
        LANGUAGES CXX)
    ```
 
-3. Commit the bump and open a PR; merge once CI passes.
-4. Tag the merge commit and push the tag:
+1. Commit the bump and open a PR; merge once CI passes.
+
+1. Tag the merge commit and push the tag:
 
    ```sh
    git checkout main
@@ -108,7 +110,7 @@ Releases are cut from tags matching `v*` (e.g. `v0.7.0`). The [`Build` workflow]
    git push origin v0.7.0
    ```
 
-5. The `Build` workflow will run on the tag and, on success, attach the following assets to the GitHub Release named after the tag:
+1. The `Build` workflow will run on the tag and, on success, attach the following assets to the GitHub Release named after the tag:
 
    | Platform | Artifact                                    | Checksum                                           |
    | -------- | ------------------------------------------- | -------------------------------------------------- |
@@ -117,7 +119,7 @@ Releases are cut from tags matching `v*` (e.g. `v0.7.0`). The [`Build` workflow]
    | Windows  | `StructuredLogViewer.zip`                   | `StructuredLogViewer.zip.sha256`                   |
    | macOS    | `StructuredLogViewer.dmg`                   | `StructuredLogViewer.dmg.sha256`                   |
 
-6. Edit the auto-created GitHub Release to add release notes (highlights, breaking changes, known issues) and publish it.
+1. Edit the auto-created GitHub Release to add release notes (highlights, breaking changes, known issues) and publish it.
 
 ### Verifying a release
 
