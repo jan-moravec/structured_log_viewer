@@ -22,8 +22,10 @@ public:
 
     void SetFilterRules(std::vector<std::unique_ptr<FilterRule>> &&filterRules)
     {
+        // Limit the invalidation to rows only (our filter never affects columns).
+        beginFilterChange();
         mFilterRules = std::move(filterRules);
-        invalidateFilter(); // Call this to reapply the filter with the new regex list.
+        endFilterChange(QSortFilterProxyModel::Direction::Rows);
     }
 
 protected:
