@@ -53,22 +53,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Set alternating row colors
     mTableView->setAlternatingRowColors(true);
 
-    if (AppearanceControl::IsDarkTheme())
-    {
-        mTableView->setStyleSheet(R"(
-QTableView { background-color: #222222; alternate-background-color: #333333; }
-QTableView::item:selected { background-color: #00518F; }
-QTableView::item:selected:!active { background-color: #00518F; }
-)");
-    }
-    else
-    {
-        mTableView->setStyleSheet(R"(
-QTableView { background-color: #FFFFFF; alternate-background-color: #F0F0F0; }
-QTableView::item:selected { background-color: #ADD4FF; color: black; }
-QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
-)");
-    }
+    ApplyTableStyleSheet();
 
     // Enable sorting
     mSortFilterProxyModel = new LogFilterModel(this);
@@ -210,15 +195,26 @@ void MainWindow::UpdateUi()
 
 bool MainWindow::event(QEvent *event)
 {
-    if (event->type() == QEvent::ApplicationFontChange)
+    switch (event->type())
     {
-        QFont applicatioFont = qApp->font();
-        mTableView->setFont(applicatioFont);
-        applicatioFont.setBold(true);
-        mTableView->horizontalHeader()->setFont(applicatioFont);
-        return true;
+    case QEvent::ApplicationFontChange: {
+        QFont applicationFont = qApp->font();
+        mTableView->setFont(applicationFont);
+        applicationFont.setBold(true);
+        mTableView->horizontalHeader()->setFont(applicationFont);
+        break;
     }
-    return QMainWindow::event(event); // Handle other events normally
+    case QEvent::ApplicationPaletteChange:
+    case QEvent::ThemeChange:
+    case QEvent::StyleChange:
+        // The table stylesheet encodes dark/light colors derived from the current palette, so
+        // it must be refreshed whenever the user switches style or system theme.
+        ApplyTableStyleSheet();
+        break;
+    default:
+        break;
+    }
+    return QMainWindow::event(event);
 }
 
 void MainWindow::OpenFiles()
@@ -524,6 +520,26 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     QAction *clearAction = menuItem->addAction("Clear");
     connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
+}
+
+void MainWindow::ApplyTableStyleSheet()
+{
+    if (AppearanceControl::IsDarkTheme())
+    {
+        mTableView->setStyleSheet(R"(
+QTableView { background-color: #222222; alternate-background-color: #333333; }
+QTableView::item:selected { background-color: #00518F; }
+QTableView::item:selected:!active { background-color: #00518F; }
+)");
+    }
+    else
+    {
+        mTableView->setStyleSheet(R"(
+QTableView { background-color: #FFFFFF; alternate-background-color: #F0F0F0; }
+QTableView::item:selected { background-color: #ADD4FF; color: black; }
+QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
+)");
+    }
 }
 
 void MainWindow::UpdateFilters()

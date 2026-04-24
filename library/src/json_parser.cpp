@@ -22,25 +22,24 @@ bool JsonParser::IsValid(const std::filesystem::path &file) const
         return false;
     }
 
+    // Find the first non-empty line; leading blank lines are common in hand-edited logs and
+    // should not cause the parser to reject the whole file.
     std::string line;
-    if (!std::getline(stream, line))
+    while (std::getline(stream, line))
     {
-        return false;
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+        if (!line.empty())
+        {
+            simdjson::ondemand::parser parser;
+            auto doc = parser.iterate(simdjson::pad(line));
+            return !doc.get_object().error();
+        }
     }
 
-    if (!line.empty() && line.back() == '\r')
-    {
-        line.pop_back();
-    }
-
-    if (line.empty())
-    {
-        return false;
-    }
-
-    simdjson::ondemand::parser parser;
-    auto doc = parser.iterate(simdjson::pad(line));
-    return !doc.get_object().error();
+    return false;
 }
 
 ParseResult JsonParser::Parse(const std::filesystem::path &file) const
@@ -145,11 +144,6 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
                 continue;
             }
         }
-    }
-
-    if (lines.empty())
-    {
-        throw std::runtime_error("No valid JSON data found in the file.");
     }
 
     // Prepare the keys for the result

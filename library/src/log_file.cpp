@@ -49,8 +49,11 @@ std::string LogFileReference::GetLine() const
     return mLogFile.GetLine(mLineNumber);
 }
 
-LogFile::LogFile(std::filesystem::path filePath) : mPath(std::move(filePath)), mFile(mPath)
+LogFile::LogFile(std::filesystem::path filePath) : mPath(std::move(filePath)), mFile(mPath, std::ios::binary)
 {
+    // Binary mode is required because mLineOffsets stores raw byte offsets (computed from the
+    // memory-mapped file in the parsers). A text-mode stream would translate CRLF -> LF on
+    // Windows, misaligning seekg/read with those offsets.
     if (!mFile.is_open())
     {
         throw std::runtime_error("Failed to open file: " + mPath.string());

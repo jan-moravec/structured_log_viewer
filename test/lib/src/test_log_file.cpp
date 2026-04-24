@@ -26,6 +26,34 @@ TEST_CASE("Successfully open a valid log file", "[LogFile]")
     CHECK_THROWS_AS(logFile->GetLine(3), std::out_of_range);
 }
 
+TEST_CASE("Read last line without trailing newline", "[LogFile]")
+{
+    // The last line of a file may not end with '\n'; JsonParser handles that by pushing a
+    // virtual terminator one byte past EOF. Verify GetLine still returns the full content.
+    TestLogFile testLogFile;
+    testLogFile.Write("Line 1\nLine 2");
+
+    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+
+    CHECK(logFile->GetLineCount() == 2);
+    CHECK(logFile->GetLine(0) == "Line 1");
+    CHECK(logFile->GetLine(1) == "Line 2");
+}
+
+TEST_CASE("Read lines from file with CRLF line endings", "[LogFile]")
+{
+    // Ensure byte offsets and CRLF stripping work regardless of the host's line-ending
+    // conventions.
+    TestLogFile testLogFile;
+    testLogFile.Write("Line 1\r\nLine 2\r\nLine 3\r\n");
+
+    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+
+    CHECK(logFile->GetLine(0) == "Line 1");
+    CHECK(logFile->GetLine(1) == "Line 2");
+    CHECK(logFile->GetLine(2) == "Line 3");
+}
+
 TEST_CASE("Throw runtime error when opening a non-existent file", "[LogFile]")
 {
     CHECK_THROWS_AS(LogFile("non_existent_file.txt"), std::runtime_error);

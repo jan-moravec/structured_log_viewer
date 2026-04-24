@@ -110,13 +110,13 @@ const std::string &TestLogFile::GetFilePath() const
 
 TestLogFile::TestLogFile(std::string filePath) : mFilePath(std::move(filePath))
 {
-    std::ofstream file(GetFilePath());
+    std::ofstream file(GetFilePath(), std::ios::binary);
     REQUIRE(file.is_open());
 }
 
 void TestLogFile::Write(const std::string &content) const
 {
-    std::ofstream file(GetFilePath());
+    std::ofstream file(GetFilePath(), std::ios::binary);
     REQUIRE(file.is_open());
     file << content;
 }
@@ -128,13 +128,28 @@ TestLogFile::~TestLogFile()
 
 std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 {
-    std::ifstream file(GetFilePath());
-    std::string line;
+    // Use a binary stream so std::streampos values match the byte offsets stored in
+    // LogFile::mLineOffsets on every platform (no CRLF translation).
+    std::ifstream file(GetFilePath(), std::ios::binary);
     auto logFile = std::make_unique<LogFile>(GetFilePath());
 
-    while (std::getline(file, line))
+    // Scan for '\n' in the raw bytes and push one offset per
+    // line. When the file does not end with a newline, push `fileSize + 1` as the virtual
+    // terminator so GetLine's `stop - start - 1` size computation stays valid for the final
+    // line.
+    char ch = '\0';
+    std::size_t pos = 0;
+    while (file.get(ch))
     {
-        logFile->CreateReference(file.tellg());
+        ++pos;
+        if (ch == '\n')
+        {
+            logFile->CreateReference(pos);
+        }
+    }
+    if (pos > 0 && ch != '\n')
+    {
+        logFile->CreateReference(pos + 1);
     }
 
     return logFile;
