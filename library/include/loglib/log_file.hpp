@@ -87,7 +87,7 @@ public:
      * @param lineNumber The line number to retrieve (0-based index).
      * @return std::string The content of the specified log line.
      */
-    std::string GetLine(uint64_t lineNumber);
+    std::string GetLine(size_t lineNumber);
 
     /**
      * @brief Gets the total number of lines in the log file.
