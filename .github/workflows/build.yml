@@ -18,7 +18,35 @@ env:
   APP_NAME: "StructuredLogViewer"
 
 jobs:
+  pre-commit:
+    # Fails fast on formatting / lint issues before any expensive build runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-${{ runner.os }}-
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure --color=always
+
   build-linux:
+    needs: pre-commit
     # Pinned to the oldest supported runner so the AppImage links against an
     # older glibc and stays compatible with Ubuntu 22.04 / equivalent distros.
     runs-on: ubuntu-22.04
@@ -123,6 +151,7 @@ jobs:
             ${{ env.APP_NAME }}-*.AppImage.zsync.sha256
 
   build-windows:
+    needs: pre-commit
     runs-on: windows-latest
     permissions:
       contents: write
@@ -195,6 +224,7 @@ jobs:
             ${{ env.APP_NAME }}.zip.sha256
 
   build-macos:
+    needs: pre-commit
     runs-on: macos-latest
     permissions:
       contents: write
