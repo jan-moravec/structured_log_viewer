@@ -104,26 +104,7 @@ On Windows, use the Developer PowerShell or Command Prompt.
 
 ### Contributing
 
-Contributions are welcome! Please fork the repository and submit pull requests with your changes.
-
-### Developer Tools
-
-All code is automatically formatted. The C/C++ code is formatted with clang-format, the Python code is formatted with black formatter.
-
-Please install pre-commit for this repository:
-
-```sh
-pip install pre-commit
-pre-commit install
-```
-
-To manually format the code with pre-commit, run:
-
-```sh
-pre-commit run --all-files
-```
-
-The versions of formatting tools are in [.pre-commit-config.yaml](.pre-commit-config.yaml).
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, code style, test setup, and the release process.
 
 ## License
 
