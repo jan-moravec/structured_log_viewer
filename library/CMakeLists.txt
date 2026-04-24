@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 
 add_library(
-    loglib STATIC
+    loglib
+    STATIC
     src/json_parser.cpp
     src/log_configuration.cpp
     src/log_data.cpp
@@ -9,17 +10,12 @@ add_library(
     src/log_file.cpp
     src/log_line.cpp
     src/log_processing.cpp
-    src/log_table.cpp)
+    src/log_table.cpp
+)
 
 target_include_directories(loglib PUBLIC ./include)
 
 target_link_libraries(
     loglib
-    PUBLIC robin_map
-           mio
-           simdjson::simdjson
-           glaze::glaze
-           date::date
-           date::date-tz
-           fmt::fmt
-           project_warnings)
+    PUBLIC robin_map mio simdjson::simdjson glaze::glaze date::date date::date-tz fmt::fmt project_warnings
+)

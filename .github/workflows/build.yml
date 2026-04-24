@@ -57,7 +57,8 @@ jobs:
         run: |
           mkdir build
           cd build
-          export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
+          CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
+          export CMAKE_BUILD_PARALLEL_LEVEL
           cmake -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 
@@ -217,7 +218,8 @@ jobs:
         run: |
           mkdir build
           cd build
-          export CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.ncpu)
+          CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.ncpu)
+          export CMAKE_BUILD_PARALLEL_LEVEL
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
           cmake --build .
 

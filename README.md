@@ -21,13 +21,14 @@ Currently, only JSON logs are supported.
 #### Linux
 
 1. Download the latest release of `StructuredLogViewer.AppImage`.
-2. Make the AppImage executable:
+
+1. Make the AppImage executable:
 
    ```sh
    chmod +x StructuredLogViewer.AppImage
    ```
 
-3. Run the AppImage:
+1. Run the AppImage:
 
    ```sh
    ./StructuredLogViewer.AppImage
@@ -36,8 +37,8 @@ Currently, only JSON logs are supported.
 #### Windows
 
 1. Download the latest release of `StructuredLogViewer.zip`.
-2. Unzip the archive.
-3. Run the `StructuredLogViewer.exe` executable.
+1. Unzip the archive.
+1. Run the `StructuredLogViewer.exe` executable.
 
 ### Usage
 
