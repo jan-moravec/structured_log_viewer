@@ -4,14 +4,14 @@ Thanks for your interest in contributing! This document covers building from sou
 
 ## Prerequisites
 
-- **CMake** 3.19 or newer
+- **CMake** 3.28 or newer
 - **Qt** 6.1 or newer (Qt 6.8 is used in CI)
 - A C++23-capable toolchain:
   - Linux: GCC 13+ or Clang 17+
   - Windows: MSVC 2022 (Visual Studio 2022)
   - macOS: Xcode 15+ / Apple Clang
 
-Most third-party C++ dependencies (`date`, `fmt`, `Catch2`, `mio`, `glaze`, `simdjson`, `robin-map`) are fetched automatically via `FetchContent`. To use system copies instead, pass e.g. `-DUSE_SYSTEM_FMT=ON` when configuring.
+Most third-party C++ dependencies (`date`, `fmt`, `Catch2`, `mio`, `glaze`, `simdjson`, `robin-map`) are fetched automatically via `FetchContent`. To use system copies instead, pass the corresponding option when configuring — one of `USE_SYSTEM_DATE`, `USE_SYSTEM_FMT`, `USE_SYSTEM_CATCH2`, `USE_SYSTEM_MIO`, `USE_SYSTEM_GLAZE`, `USE_SYSTEM_SIMDJSON`, `USE_SYSTEM_ROBIN_MAP` (e.g. `-DUSE_SYSTEM_FMT=ON`). See [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake) for the pinned versions.
 
 ## Building
 
