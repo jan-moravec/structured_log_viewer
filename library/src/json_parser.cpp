@@ -69,7 +69,7 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
     auto logFile = std::make_unique<LogFile>(file);
 
     // Get file content as string view
-    std::string_view fileContent(static_cast<const char *>(mmap.data()), mmap.size());
+    std::string_view fileContent(mmap.data(), mmap.size());
     lines.reserve(2000);
     std::string linePadded;
 
@@ -97,8 +97,8 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
         // Adjust reservation after processing some lines to get a better estimate
         if (lineNumber == 1000)
         {
-            double avgLineLength = static_cast<double>(currentPos) / lineNumber;
-            size_t estimatedLines = static_cast<size_t>(fileContent.size() * 1.5 / avgLineLength);
+            double avgLineLength = static_cast<double>(currentPos) / static_cast<double>(lineNumber);
+            size_t estimatedLines = static_cast<size_t>(static_cast<double>(fileContent.size()) * 1.5 / avgLineLength);
             // Re-reserve with better estimate, still capping at a reasonable maximum
             lines.reserve(estimatedLines);
         }
