@@ -69,6 +69,7 @@ private:
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
     void UpdateFilters();
+    void ApplyTableStyleSheet();
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;

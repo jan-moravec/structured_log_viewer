@@ -1,9 +1,6 @@
 #include "log_model.hpp"
 
-#include <QBrush>
-#include <QDateTime>
 #include <QModelIndex>
-#include <QRegularExpression>
 #include <QString>
 #include <QVariant>
 
@@ -117,10 +114,6 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return QVariant(
             QString::fromStdString(mLogTable.Data().Lines()[static_cast<size_t>(index.row())].FileReference().GetLine())
         );
-    }
-    else if (role == Qt::BackgroundRole)
-    {
-        // return QBrush(Qt::yellow);
     }
 
     return QVariant();

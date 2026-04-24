@@ -3,6 +3,8 @@
 #include "log_configuration.hpp"
 #include "log_line.hpp"
 
+#include <date/tz.h>
+
 #include <filesystem>
 
 namespace loglib
@@ -17,6 +19,19 @@ namespace loglib
  * @param tzdata Path to the timezone database directory.
  */
 void Initialize(const std::filesystem::path &tzdata);
+
+/**
+ * @brief Returns the process-wide cached pointer to the current IANA time zone.
+ *
+ * The returned pointer is lazily initialized on the first call; it must not be invoked
+ * before ::loglib::Initialize has installed the tzdata database. All formatters and
+ * converters in the library route their zone lookups through this function so they
+ * share a single zone instance.
+ *
+ * @return Non-owning pointer to the current time zone (never null after successful
+ *         initialization).
+ */
+const date::time_zone *CurrentZone();
 
 /**
  * @brief Parses timestamps from log data according to the provided configuration.

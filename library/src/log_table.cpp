@@ -107,8 +107,7 @@ std::string LogTable::FormatLogValue(const std::string &format, const LogValue &
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                static auto tz = date::current_zone();
-                date::zoned_time local_time{tz, std::chrono::round<std::chrono::milliseconds>(arg)};
+                const date::zoned_time local_time{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(arg)};
                 return date::format(format, local_time);
             }
             else if constexpr (std::is_same_v<T, std::monostate>)

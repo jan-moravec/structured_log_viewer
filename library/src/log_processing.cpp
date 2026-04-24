@@ -66,6 +66,15 @@ bool ParseTimestampLine(
 namespace loglib
 {
 
+const date::time_zone *CurrentZone()
+{
+    // date::current_zone() depends on the tzdata database that `Initialize` installs, so it
+    // must not be called before Initialize returns. Caching here in a single place keeps
+    // every formatter/converter using the same zone instance.
+    static const date::time_zone *tz = date::current_zone();
+    return tz;
+}
+
 void Initialize(const std::filesystem::path &tzdata)
 {
     date::set_install(tzdata.string());
@@ -101,46 +110,41 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp)
 {
-    static auto tz = date::current_zone();
-    const auto zonedTime = date::zoned_time{tz, timeStamp};
+    const auto zonedTime = date::zoned_time{CurrentZone(), timeStamp};
     const auto localTime = zonedTime.get_local_time();
     return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.time_since_epoch()).count();
 }
 
 int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds)
 {
-    static auto tz = date::current_zone();
-    std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
+    const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
         std::chrono::microseconds{microseconds}
     };
-    const date::zoned_time localTime{tz, utcTime};
+    const date::zoned_time localTime{CurrentZone(), utcTime};
     return std::chrono::duration_cast<std::chrono::milliseconds>(localTime.get_local_time().time_since_epoch()).count();
 }
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
 {
-    static auto tz = date::current_zone();
     const auto localTime = date::local_time<std::chrono::microseconds>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(milliseconds))
     );
-    const auto systemTime = tz->to_sys(localTime);
+    const auto systemTime = CurrentZone()->to_sys(localTime);
     return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
 }
 
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
 {
-    static auto tz = date::current_zone();
-    std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
+    const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
         std::chrono::microseconds{microseconds}
     };
-    const date::zoned_time localTime{tz, std::chrono::round<std::chrono::milliseconds>(utcTime)};
+    const date::zoned_time localTime{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(utcTime)};
     return date::format("%F %T", localTime);
 }
 
 std::string TimeStampToDateTimeString(TimeStamp timeStamp)
 {
-    static auto tz = date::current_zone();
-    const date::zoned_time localTime{tz, std::chrono::round<std::chrono::milliseconds>(timeStamp)};
+    const date::zoned_time localTime{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(timeStamp)};
     return date::format("%F %T", localTime);
 }
 

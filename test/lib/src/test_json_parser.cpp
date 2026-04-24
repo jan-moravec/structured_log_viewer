@@ -37,6 +37,14 @@ TEST_CASE("Validate file with empty lines", "[json_parser]")
     CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
 }
 
+TEST_CASE("Validate file with leading blank line", "[json_parser]")
+{
+    // Leading blank lines are tolerated: the first non-empty line is what determines validity.
+    loglib::JsonParser parser;
+    TestJsonLogFile testFile(std::vector<TestJsonLogFile::Line>{"\n", R"({"key": "value"})"});
+    CHECK(parser.IsValid(testFile.GetFilePath()));
+}
+
 TEST_CASE("Validate file with invalid line", "[json_parser]")
 {
     loglib::JsonParser parser;
@@ -73,16 +81,24 @@ TEST_CASE("Parse empty file", "[json_parser]")
 
 TEST_CASE("Parse file with empty lines", "[json_parser]")
 {
+    // Blank lines are not errors, just content-free input. Parse should succeed with no data
+    // and no errors so callers can distinguish this from parse failures.
     loglib::JsonParser parser;
     TestJsonLogFile testFile(TestJsonLogFile::Line("\n\n\n"));
-    CHECK_THROWS_AS(parser.Parse(testFile.GetFilePath()), std::runtime_error);
+    auto result = parser.Parse(testFile.GetFilePath());
+    CHECK(result.data.Lines().empty());
+    CHECK(result.errors.empty());
 }
 
 TEST_CASE("Parse file with invalid line", "[json_parser]")
 {
+    // A file containing only invalid lines produces an empty LogData but reports each failure
+    // through `errors` so the caller can surface them.
     loglib::JsonParser parser;
     TestJsonLogFile testFile(TestJsonLogFile::Line("invalid json"));
-    CHECK_THROWS_AS(parser.Parse(testFile.GetFilePath()), std::runtime_error);
+    auto result = parser.Parse(testFile.GetFilePath());
+    CHECK(result.data.Lines().empty());
+    CHECK(result.errors.size() == 1);
 }
 
 TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
@@ -98,7 +114,9 @@ TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
 {
     loglib::JsonParser parser;
     TestJsonLogFile testFile(std::vector<TestJsonLogFile::Line>{"invalid json 1", "invalid json 2"});
-    CHECK_THROWS_AS(parser.Parse(testFile.GetFilePath()), std::runtime_error);
+    auto result = parser.Parse(testFile.GetFilePath());
+    CHECK(result.data.Lines().empty());
+    CHECK(result.errors.size() == 2);
 }
 
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
