@@ -1,0 +1,19 @@
+# Default: auto-detect text files, normalize to LF in the repo and on checkout
+# on every platform. Keeps diffs clean across Windows/Linux contributors.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF so they execute correctly on Windows.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Unix shell scripts must stay LF even if checked out on Windows.
+*.sh   text eol=lf
+
+# Explicit binary markers (prevents any accidental text conversion).
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary

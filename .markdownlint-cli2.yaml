@@ -1,0 +1,15 @@
+config:
+  # Line length: mdformat does not reflow prose, so enforcing MD013 would
+  # constantly conflict with it. Disable and let mdformat handle layout.
+  MD013: false
+  # Inline HTML is occasionally useful (e.g. badges, <br>) in README files.
+  MD033: false
+  # Allow duplicate headings as long as they are not siblings (e.g. repeated
+  # "### Usage" subsections under different top-level headings).
+  MD024:
+    siblings_only: true
+
+ignores:
+  - "**/build/**"
+  - "**/.venv/**"
+  - "**/node_modules/**"
