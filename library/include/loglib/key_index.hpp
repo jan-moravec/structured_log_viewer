@@ -7,6 +7,11 @@
 #include <string_view>
 #include <vector>
 
+#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
+#include <atomic>
+#include <cstddef>
+#endif
+
 namespace loglib
 {
 
@@ -122,6 +127,31 @@ public:
      * use `KeyOf` over the high-water-mark slice instead.
      */
     std::vector<std::string> SortedKeys() const;
+
+#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
+    /**
+     * @brief Test-only call counters for `GetOrInsert` and `Find`.
+     *
+     * Compiled in only when `LOGLIB_KEY_INDEX_INSTRUMENTATION` is defined,
+     * which the unit-test target enables and shipped builds do not (PRD req.
+     * 4.1.8a). Lets tests assert that the per-worker key cache (PRD §4.1)
+     * actually elides canonical lookups: a 100-line stream of 5 fixed keys
+     * with `useThreadLocalKeyCache = true` should leave
+     * `LoadGetOrInsertCount() <= effectiveThreads × 5` rather than rising
+     * toward `100 × 5 = 500`.
+     */
+    static std::atomic<std::size_t> sGetOrInsertCallCount;
+    static std::atomic<std::size_t> sFindCallCount;
+
+    /// Reset both counters to zero. Intended for use at the start of a test.
+    static void ResetInstrumentationCounters() noexcept;
+
+    /// Snapshot the `GetOrInsert` call count.
+    static std::size_t LoadGetOrInsertCount() noexcept;
+
+    /// Snapshot the `Find` call count.
+    static std::size_t LoadFindCount() noexcept;
+#endif
 
 private:
     struct Impl;

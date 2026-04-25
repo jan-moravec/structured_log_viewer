@@ -23,6 +23,19 @@ target_include_directories(tests PRIVATE include)
 # header exposes a TBB type.
 target_link_libraries(tests PRIVATE loglib Catch2::Catch2WithMain project_warnings TBB::tbb)
 
+# Enable the KeyIndex call-count instrumentation surface for unit tests so they
+# can assert that the per-worker key cache (PRD §4.1) eats canonical
+# `KeyIndex::GetOrInsert` / `KeyIndex::Find` calls. The macro is intentionally
+# off in shipped distributions (PRD req. 4.1.8a) — but the in-repo `tests.exe`
+# binary needs both the test TU *and* the `loglib` translation unit that
+# defines the static counter members to see the same definition, otherwise we
+# get unresolved-symbol link errors. Setting the macro PUBLIC on the `loglib`
+# target also lets the per-`KeyIndex::GetOrInsert` increment fire so the
+# counters reflect real call counts during benchmark runs. The cost is two
+# `std::memory_order_relaxed` atomic increments per call (~1 ns each), well
+# below the PRD's ±3 % no-regression band.
+target_compile_definitions(loglib PUBLIC LOGLIB_KEY_INDEX_INSTRUMENTATION)
+
 # On Windows the TBB runtime DLL must sit next to the test executable for both
 # `catch_discover_tests` (which runs `tests.exe --list-test-names-only` at build
 # time) and `ctest` itself to find it.

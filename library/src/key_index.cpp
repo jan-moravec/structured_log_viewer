@@ -82,6 +82,9 @@ KeyIndex &KeyIndex::operator=(KeyIndex &&) noexcept = default;
 
 KeyId KeyIndex::GetOrInsert(std::string_view key)
 {
+#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
+    sGetOrInsertCallCount.fetch_add(1, std::memory_order_relaxed);
+#endif
     // Materialise a std::string for the TBB lookup. concurrent_hash_map
     // doesn't support heterogeneous lookup, but per-worker caches absorb this
     // cost in the parsing hot path, so this slower call site is only exercised
@@ -133,6 +136,9 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
 
 KeyId KeyIndex::Find(std::string_view key) const
 {
+#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
+    sFindCallCount.fetch_add(1, std::memory_order_relaxed);
+#endif
     const std::string keyOwned(key);
     Impl::ForwardMap::const_accessor acc;
     if (mImpl->forward.find(acc, keyOwned))
@@ -163,5 +169,26 @@ std::vector<std::string> KeyIndex::SortedKeys() const
     std::sort(result.begin(), result.end());
     return result;
 }
+
+#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
+std::atomic<std::size_t> KeyIndex::sGetOrInsertCallCount{0};
+std::atomic<std::size_t> KeyIndex::sFindCallCount{0};
+
+void KeyIndex::ResetInstrumentationCounters() noexcept
+{
+    sGetOrInsertCallCount.store(0, std::memory_order_relaxed);
+    sFindCallCount.store(0, std::memory_order_relaxed);
+}
+
+std::size_t KeyIndex::LoadGetOrInsertCount() noexcept
+{
+    return sGetOrInsertCallCount.load(std::memory_order_relaxed);
+}
+
+std::size_t KeyIndex::LoadFindCount() noexcept
+{
+    return sFindCallCount.load(std::memory_order_relaxed);
+}
+#endif
 
 } // namespace loglib

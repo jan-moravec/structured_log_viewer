@@ -15,17 +15,19 @@
 #include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_pipeline.h>
 
+#include <tsl/robin_map.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -111,6 +113,128 @@ FastFieldKey ExtractFieldKey(Field &field)
 KeyId InternKey(const FastFieldKey &fk, KeyIndex &keys)
 {
     return fk.isView ? keys.GetOrInsert(fk.view) : keys.GetOrInsert(fk.owned);
+}
+
+/**
+ * @brief Transparent hash adapter for the per-worker key cache.
+ *
+ * `tsl::robin_map`'s heterogeneous-lookup overloads are SFINAE-gated on the
+ * Hash and KeyEqual types both declaring an `is_transparent` typedef. We
+ * route every overload through `std::hash<std::string_view>` so the bucket
+ * a `std::string_view` query lands in is identical to the bucket the
+ * matching `std::string` was stored under at insert time, regardless of
+ * which overload the standard library implementation provides for
+ * `std::hash<std::string>` (PRD §4.1.3, §6.2).
+ */
+struct TransparentStringHash
+{
+    using is_transparent = void;
+
+    size_t operator()(std::string_view sv) const noexcept
+    {
+        return std::hash<std::string_view>{}(sv);
+    }
+    size_t operator()(const std::string &s) const noexcept
+    {
+        return std::hash<std::string_view>{}(s);
+    }
+    size_t operator()(const char *s) const noexcept
+    {
+        return std::hash<std::string_view>{}(std::string_view(s));
+    }
+};
+
+/// Transparent equality adapter; `std::equal_to<>` would also work, but
+/// keeping the type local makes the cache type alias self-contained.
+struct TransparentStringEqual
+{
+    using is_transparent = void;
+
+    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(std::string_view lhs, const std::string &rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string &lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string &lhs, const std::string &rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+};
+
+} // namespace
+
+namespace detail
+{
+
+/**
+ * @brief Per-worker key string -> KeyId cache backing PRD §4.1.
+ *
+ * Wrapped in a struct (rather than a bare `using` alias) so the public
+ * `JsonParser` header can forward-declare it as an opaque type and pass it
+ * by pointer through `ParseLine`'s parameter list without dragging in
+ * `tsl/robin_map.h` or the transparent-hash adapters above.
+ *
+ * `tsl::robin_map` was picked per PRD §6.2: it is header-only (already
+ * available via the `robin_map` FetchContent dep), supports heterogeneous
+ * lookup natively when both `Hash::is_transparent` and
+ * `KeyEqual::is_transparent` are present, and outperforms
+ * `std::unordered_map` by roughly 2× for the small (~5–50 entries) caches
+ * we expect per worker.
+ *
+ * On a cache hit `find(std::string_view)` performs zero heap allocations
+ * (PRD req. 4.1.3); on a miss the worker calls `KeyIndex::GetOrInsert`
+ * once, then writes back into the cache so subsequent lookups for the same
+ * key in the same worker are O(1) and zero-alloc.
+ */
+struct PerWorkerKeyCache
+{
+    tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
+};
+
+} // namespace detail
+
+namespace
+{
+
+/**
+ * @brief Routes a per-field key lookup through the per-worker cache when
+ *        the option is enabled and the key was emitted as a `string_view`
+ *        into the mmap (the fast path).
+ *
+ * Cache-eligible inputs (`fk.isView == true` and `useCache == true`) check
+ * the per-worker `tsl::robin_map` via heterogeneous `find(string_view)` —
+ * no `std::string` is materialised on the hit path. On a miss we fall
+ * through to `KeyIndex::GetOrInsert(fk.view)` exactly once and then write
+ * the new mapping back into the local cache. The owned-key slow path
+ * (`!fk.isView`, e.g. JSON-escaped keys) skips the cache entirely: those
+ * are rare enough (PRD M5: ≥ 99 % fast-path fraction) that the extra cache
+ * entry would not pay for itself, and they already paid the unescape +
+ * `std::string` allocation in `ExtractFieldKey` (PRD req. 4.1.4 / 4.1.6).
+ */
+KeyId InternKeyVia(const FastFieldKey &fk, KeyIndex &keys, detail::PerWorkerKeyCache *cache, bool useCache)
+{
+    if (!useCache || cache == nullptr)
+    {
+        return InternKey(fk, keys);
+    }
+    if (!fk.isView)
+    {
+        return keys.GetOrInsert(fk.owned);
+    }
+    if (auto it = cache->map.find(fk.view); it != cache->map.end())
+    {
+        return it->second;
+    }
+    const KeyId id = keys.GetOrInsert(fk.view);
+    cache->map.emplace(std::string(fk.view), id);
+    return id;
 }
 
 /**
@@ -340,7 +464,12 @@ std::string JsonParser::ToString(const LogMap &values) const
 }
 
 std::vector<std::pair<KeyId, LogValue>> JsonParser::ParseLine(
-    simdjson::ondemand::object &object, KeyIndex &keys, ParseCache &cache, bool sourceIsStable
+    simdjson::ondemand::object &object,
+    KeyIndex &keys,
+    ParseCache &cache,
+    bool sourceIsStable,
+    detail::PerWorkerKeyCache *keyCache,
+    bool useKeyCache
 )
 {
     std::vector<std::pair<KeyId, LogValue>> result;
@@ -357,7 +486,7 @@ std::vector<std::pair<KeyId, LogValue>> JsonParser::ParseLine(
             continue;
         }
 
-        const KeyId keyId = InternKey(fk, keys);
+        const KeyId keyId = InternKeyVia(fk, keys, keyCache, useKeyCache);
         cache.EnsureCapacity(keyId);
 
         auto value = field.value();
@@ -601,14 +730,17 @@ struct JsonParser::StreamingDetail
      * Each Stage B worker holds one of these to amortise the cost of: (a)
      * the simdjson on-demand parser instance, (b) the padded scratch buffer
      * used when the trailing tail of the mmap doesn't have SIMDJSON_PADDING
-     * bytes of slack, (c) the per-KeyId type-cache vector, and (d) an
-     * optional small key cache (key string -> KeyId) that absorbs the
-     * std::string materialisation cost in front of the canonical KeyIndex
-     * (PRD req. 4.1.2/2b).
+     * bytes of slack, (c) the per-KeyId type-cache vector, and (d) the
+     * per-worker key string -> `KeyId` cache (PRD §4.1) that fronts the
+     * canonical `KeyIndex` and absorbs the per-call `std::string`
+     * materialisation cost via heterogeneous `find(string_view)` on a
+     * `tsl::robin_map`. Cache entries survive the move-construction that
+     * `enumerable_thread_specific` performs when growing its per-thread
+     * slot table (covered by the `[key_cache][move]` test).
      *
      * The per-worker timestamp helper (`LastValidTimestampParse`) is
      * intentionally *not* held here yet: Stage B in-pipeline timestamp
-     * promotion (PRD req. 4.2.21) is wired up in task 3.8/4.6 once
+     * promotion (PRD req. 4.2.21) is wired up in task 3.0 (PRD §4.2a) once
      * `BackfillTimestampColumn` is extracted from `log_processing.cpp`.
      */
     struct WorkerState
@@ -616,7 +748,7 @@ struct JsonParser::StreamingDetail
         simdjson::ondemand::parser parser;
         std::string linePadded;
         JsonParser::ParseCache cache;
-        std::unordered_map<std::string, KeyId> keyCache;
+        detail::PerWorkerKeyCache keyCache;
     };
 
     /**
@@ -724,9 +856,10 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
             }
 
             auto objectValue = object.value();
-            (void)useThreadLocalKeyCache; // hooked in once a per-worker cache wins benchmarks
-            (void)useParseCache;          // ParseCache is always-on for now; opt-out lands in 6.x
-            auto values = JsonParser::ParseLine(objectValue, keys, worker.cache, sourceIsStable);
+            (void)useParseCache; // ParseCache is always-on for now; opt-out lands in 6.x
+            auto values = JsonParser::ParseLine(
+                objectValue, keys, worker.cache, sourceIsStable, &worker.keyCache, useThreadLocalKeyCache
+            );
 
             // Placeholder line number; Stage C overwrites once it reasserts ordering.
             LogFileReference fileRef(logFile, 0);

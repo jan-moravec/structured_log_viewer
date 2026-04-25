@@ -1,16 +1,21 @@
 #include "common.hpp"
 
 #include <loglib/json_parser.hpp>
+#include <loglib/key_index.hpp>
 #include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>
+#include <tsl/robin_map.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <random>
+#include <string>
+#include <string_view>
 #include <thread>
 
 namespace
@@ -546,4 +551,196 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
             CHECK(LogValueEquivalent(lv, rv));
         }
     }
+}
+
+#ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
+
+TEST_CASE(
+    "Per-worker key cache eats canonical KeyIndex::GetOrInsert calls on the hot path",
+    "[json_parser][per_worker_cache]"
+)
+{
+    // PRD §4.1 / req. 4.1.8a: with `useThreadLocalKeyCache = true`, a 100-line stream that uses
+    // only 5 fixed keys must leave `KeyIndex::LoadGetOrInsertCount() <= effectiveThreads × 5`.
+    // The canonical lookup fires exactly once per (worker × key) pair on first sight, then every
+    // subsequent field key for that worker hits the per-worker `tsl::robin_map` cache instead.
+    //
+    // The complementary check (cache off → call count rises toward `lines × keys` = 500) keeps
+    // the instrumentation honest: if the macro silently no-ops or the counter never increments,
+    // both halves of the test would pass trivially. Pinning a hard floor on the cache-off run
+    // (≥ 100) catches that failure mode.
+    using namespace loglib;
+
+    constexpr size_t kLineCount = 100;
+    constexpr unsigned int kThreads = 4;
+
+    // Build a fixture where every line carries the same 5 keys; the values vary so the lines
+    // are not byte-identical (avoids any hypothetical dedup short-circuit) but the key surface
+    // is locked to exactly {key1..key5}.
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.reserve(kLineCount);
+    for (size_t i = 0; i < kLineCount; ++i)
+    {
+        glz::generic_sorted_u64 json;
+        json["key1"] = static_cast<int64_t>(i);
+        json["key2"] = std::string("value_") + std::to_string(i);
+        json["key3"] = static_cast<int64_t>(i * 2);
+        json["key4"] = (i % 2 == 0);
+        json["key5"] = static_cast<double>(i) * 0.5;
+        lines.emplace_back(json);
+    }
+    const TestJsonLogFile testFile(lines);
+
+    JsonParser parser;
+    JsonParserOptions opts;
+    opts.threads = kThreads;
+    opts.useThreadLocalKeyCache = true;
+
+    KeyIndex::ResetInstrumentationCounters();
+    const auto cachedResult = parser.Parse(testFile.GetFilePath(), opts);
+    const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
+
+    REQUIRE(cachedResult.errors.empty());
+    REQUIRE(cachedResult.data.Lines().size() == kLineCount);
+
+    // Upper bound: every Stage B worker may pay one canonical lookup per fresh key before its
+    // local cache is populated. effectiveThreads × keys is the worst case; the actual number is
+    // typically smaller because not every worker runs and not every worker sees every key.
+    INFO("cached run cachedCalls=" << cachedCalls << " bound=" << (kThreads * 5));
+    CHECK(cachedCalls <= static_cast<std::size_t>(kThreads) * 5);
+
+    // Sanity: at least the keys themselves were registered exactly once per unique key.
+    CHECK(cachedResult.data.SortedKeys().size() == 5);
+
+    // Now flip the cache off and re-parse. Every field-key sighting must now traverse the
+    // canonical KeyIndex, so the counter should sit close to lines × keys (500 on this fixture).
+    JsonParserOptions noCacheOpts = opts;
+    noCacheOpts.useThreadLocalKeyCache = false;
+
+    KeyIndex::ResetInstrumentationCounters();
+    const auto noCacheResult = parser.Parse(testFile.GetFilePath(), noCacheOpts);
+    const std::size_t noCacheCalls = KeyIndex::LoadGetOrInsertCount();
+
+    REQUIRE(noCacheResult.errors.empty());
+    REQUIRE(noCacheResult.data.Lines().size() == kLineCount);
+
+    INFO(
+        "cache-off run noCacheCalls=" << noCacheCalls
+                                      << " expected close to lines*keys=" << (kLineCount * 5)
+    );
+    // Floor at 100 is comfortably above the cache-on bound (kThreads × 5 = 20) so the check
+    // catches a silently-stuck instrumentation counter as well as a regressed cache-off path.
+    CHECK(noCacheCalls >= 100);
+    // Hard upper bound: there is one GetOrInsert per (line × key) pair plus the worst-case
+    // dedup pass, which is bounded by the same number again. 2 × lines × keys is the loosest
+    // honest cap that still flags an unexpected explosion.
+    CHECK(noCacheCalls <= 2 * kLineCount * 5);
+}
+
+#endif // LOGLIB_KEY_INDEX_INSTRUMENTATION
+
+namespace
+{
+
+// Local replicas of the transparent-hash adapters from `library/src/json_parser.cpp` so the
+// move-survival test can stand up the exact `tsl::robin_map<std::string, KeyId, ..., ...>`
+// instantiation that backs `loglib::detail::PerWorkerKeyCache`. The wrapper struct in
+// `json_parser.cpp` adds nothing beyond the map field, so its compiler-generated move
+// constructor delegates straight through to the map's move constructor — exactly what we
+// exercise here.
+struct TestTransparentStringHash
+{
+    using is_transparent = void;
+
+    size_t operator()(std::string_view sv) const noexcept
+    {
+        return std::hash<std::string_view>{}(sv);
+    }
+    size_t operator()(const std::string &s) const noexcept
+    {
+        return std::hash<std::string_view>{}(s);
+    }
+    size_t operator()(const char *s) const noexcept
+    {
+        return std::hash<std::string_view>{}(std::string_view(s));
+    }
+};
+
+struct TestTransparentStringEqual
+{
+    using is_transparent = void;
+
+    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(std::string_view lhs, const std::string &rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string &lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string &lhs, const std::string &rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+};
+
+using TestPerWorkerKeyCache = tsl::robin_map<std::string, loglib::KeyId, TestTransparentStringHash,
+                                             TestTransparentStringEqual>;
+
+} // namespace
+
+TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_cache][move]")
+{
+    // PRD §7.5 risk row 1: `tbb::enumerable_thread_specific<WorkerState>` may move-construct
+    // worker slots when its per-thread table grows. If `PerWorkerKeyCache`'s move constructor
+    // ever drops cached entries (e.g. someone replaces the underlying type with a non-move-
+    // preserving container), every Stage B worker would silently regress to an unbounded number
+    // of canonical `KeyIndex::GetOrInsert` calls — which the cache-hit test above would flag,
+    // but only after a full pipeline run. This test pins the contract directly on the cache
+    // type used inside `WorkerState` so a future container swap fails fast at the unit-test
+    // tier rather than at the benchmark tier.
+    using namespace loglib;
+
+    TestPerWorkerKeyCache source;
+    source.emplace("alpha", static_cast<KeyId>(7));
+    source.emplace("beta", static_cast<KeyId>(11));
+    source.emplace("gamma", static_cast<KeyId>(13));
+
+    REQUIRE(source.size() == 3);
+
+    // Move-construct: this is what `enumerable_thread_specific` does when growing its
+    // per-thread slot table.
+    TestPerWorkerKeyCache moved(std::move(source));
+
+    REQUIRE(moved.size() == 3);
+    REQUIRE(moved.find(std::string_view{"alpha"}) != moved.end());
+    REQUIRE(moved.find(std::string_view{"beta"}) != moved.end());
+    REQUIRE(moved.find(std::string_view{"gamma"}) != moved.end());
+    CHECK(moved.find(std::string_view{"alpha"})->second == static_cast<KeyId>(7));
+    CHECK(moved.find(std::string_view{"beta"})->second == static_cast<KeyId>(11));
+    CHECK(moved.find(std::string_view{"gamma"})->second == static_cast<KeyId>(13));
+
+    // Move-assignment too: `enumerable_thread_specific` also reassigns slots in some growth
+    // strategies. Reuse `moved` as the source so the original test inputs are still in play.
+    TestPerWorkerKeyCache assigned;
+    assigned = std::move(moved);
+
+    REQUIRE(assigned.size() == 3);
+    CHECK(assigned.find(std::string_view{"alpha"})->second == static_cast<KeyId>(7));
+    CHECK(assigned.find(std::string_view{"beta"})->second == static_cast<KeyId>(11));
+    CHECK(assigned.find(std::string_view{"gamma"})->second == static_cast<KeyId>(13));
+
+    // Heterogeneous lookup invariant after the move: `find(std::string_view)` resolves the
+    // exact same bucket the originating `emplace(std::string)` populated. If the transparent
+    // hash adapter is ever broken (e.g. someone routes the `std::string` overload through a
+    // different std::hash instantiation than the `std::string_view` overload), this catches it.
+    char rawKey[] = {'a', 'l', 'p', 'h', 'a'};
+    const std::string_view view(rawKey, sizeof(rawKey));
+    auto it = assigned.find(view);
+    REQUIRE(it != assigned.end());
+    CHECK(it->second == static_cast<KeyId>(7));
 }

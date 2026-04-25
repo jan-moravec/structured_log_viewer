@@ -19,6 +19,28 @@ namespace loglib
 struct LogConfiguration;
 class LogFile;
 
+namespace detail
+{
+
+/**
+ * @brief Opaque, .cpp-defined per-worker key string -> `KeyId` cache that
+ *        backs PRD §4.1.
+ *
+ * Forward-declared here so the private static `JsonParser::ParseLine` can
+ * name it by pointer in its parameter list without dragging the
+ * `tsl::robin_map<std::string, KeyId, TransparentHash, TransparentEqual>`
+ * machinery (and the transparent-hash adapter types) into the public
+ * header. The full definition lives in `json_parser.cpp` next to the
+ * Stage B `WorkerState`.
+ *
+ * Pointer-style is intentional: a null pointer is the "no cache" path and
+ * is the same code path as `useThreadLocalKeyCache = false` — the legacy
+ * behaviour kept for benchmarks and bisects (PRD req. 4.1.6 / 4.1.7).
+ */
+struct PerWorkerKeyCache;
+
+} // namespace detail
+
 /**
  * @brief Options bundle for `JsonParser::ParseStreaming`.
  *
@@ -241,11 +263,28 @@ private:
      *                       fields must be materialised as owned `std::string`
      *                       to detach from the per-line scratch buffer. See
      *                       PRD req. 4.1.6 / 4.1.15a.
+     * @param keyCache       Optional per-worker key string -> `KeyId` cache
+     *                       (PRD §4.1). May be `nullptr` to skip the cache
+     *                       entirely; pass-through to `KeyIndex::GetOrInsert`
+     *                       on every field key in that case. When non-null,
+     *                       fast-path keys (`isView == true`) check the cache
+     *                       first and only consult the canonical `KeyIndex`
+     *                       on a miss.
+     * @param useKeyCache    Mirrors `JsonParserOptions::useThreadLocalKeyCache`;
+     *                       a `false` value forces the no-cache path even when
+     *                       `keyCache != nullptr`. The two parameters are kept
+     *                       distinct so callers do not have to nullable-thread
+     *                       the cache pointer through every call site.
      * @return The parsed pairs in ascending KeyId order, ready to feed
      *         `LogLine`'s pre-sorted constructor.
      */
     static std::vector<std::pair<KeyId, LogValue>> ParseLine(
-        simdjson::ondemand::object &object, KeyIndex &keys, ParseCache &cache, bool sourceIsStable
+        simdjson::ondemand::object &object,
+        KeyIndex &keys,
+        ParseCache &cache,
+        bool sourceIsStable,
+        detail::PerWorkerKeyCache *keyCache = nullptr,
+        bool useKeyCache = false
     );
 };
 
