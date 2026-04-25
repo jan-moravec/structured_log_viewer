@@ -16,7 +16,7 @@
 namespace loglib
 {
 
-class LogConfiguration;
+struct LogConfiguration;
 class LogFile;
 
 /**

@@ -18,5 +18,10 @@ target_link_libraries(apptest PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp)
 # Include directories
 target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
-# Add the test to CTest
-add_test(NAME apptest COMMAND apptest)
+# Add the test to CTest. The working directory is pinned to the binary directory
+# so the deferred MainWindow::QTimer::singleShot tzdata loader (which resolves
+# `current_path() / "tzdata"`) finds the same `tzdata/` folder the production
+# Windows install layout uses. Without this, ctest launches apptest from the
+# build/test/app/ directory where no tzdata exists and the loader fires a
+# QMessageBox::critical that segfaults under the Qt offscreen platform.
+add_test(NAME apptest COMMAND apptest WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest>)

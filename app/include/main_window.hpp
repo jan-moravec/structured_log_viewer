@@ -11,9 +11,13 @@
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFuture>
+#include <QFutureWatcher>
+#include <QLabel>
 #include <QMainWindow>
 #include <QMimeData>
 #include <QPushButton>
+#include <QString>
 #include <QVBoxLayout>
 
 #include <memory>
@@ -71,6 +75,23 @@ private:
     void UpdateFilters();
     void ApplyTableStyleSheet();
 
+    /**
+     * @brief Streams a JSON log through `JsonParser::ParseStreaming` on a
+     *        background thread (PRD req. 4.3.29).
+     *
+     * Locks the configuration UI for the duration of the parse, hands the
+     * model's `QtStreamingLogSink` and a freshly-installed `stop_token` to
+     * the parser, and tracks the parse via a `QFutureWatcher` so a second
+     * `OpenJsonStreaming` call won't leave the previous one dangling.
+     *
+     * @return true if the streaming pipeline started; false if the file
+     *              could not be opened (in which case @p errors carries the
+     *              reason and the caller falls back to the synchronous path).
+     */
+    bool OpenJsonStreaming(const QString &file, std::vector<std::string> &errors);
+    void SetConfigurationUiEnabled(bool enabled);
+    void UpdateStreamingStatus();
+
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
     LogFilterModel *mSortFilterProxyModel;
@@ -80,4 +101,32 @@ private:
     PreferencesEditor *mPreferencesEditor;
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
+
+    /// Status-bar label that shows "Parsing <file> — N lines, M errors"
+    /// while a streaming parse is in flight (PRD req. 4.3.29).
+    QLabel *mStatusLabel = nullptr;
+
+    /// Display name of the file currently being streamed; used to render
+    /// `mStatusLabel`. Empty when no parse is in flight.
+    QString mStreamingFileName;
+
+    /// Tracks the background `QtConcurrent::run` future for the active
+    /// streaming parse. Reused so a second open can detect (and wait on /
+    /// cancel) a previous one without leaking. `QFutureWatcher` is parented
+    /// to the window so its lifetime is bounded automatically.
+    QFutureWatcher<void> *mStreamingWatcher = nullptr;
+
+    /// True between `BeginStreaming` and the matching `streamingFinished`
+    /// signal. Used to gate the configuration UI per PRD req. 4.3.29 and to
+    /// suppress the post-parse error summary on cancellation.
+    bool mStreamingActive = false;
+
+    /// Errors accumulated from the streaming sink during the active parse.
+    /// Surfaced via the existing `QMessageBox` summary on
+    /// `streamingFinished(false)`.
+    std::vector<std::string> mStreamingErrors;
+
+    /// Running line / error count snapshot for the status-bar label.
+    qsizetype mStreamingLineCount = 0;
+    qsizetype mStreamingErrorCount = 0;
 };

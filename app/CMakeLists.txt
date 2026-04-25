@@ -16,6 +16,8 @@ set(PROJECT_SOURCES
     include/main_window.hpp
     src/log_model.cpp
     include/log_model.hpp
+    src/qt_streaming_log_sink.cpp
+    include/qt_streaming_log_sink.hpp
     src/log_table_view.cpp
     include/log_table_view.hpp
     src/find_record_widget.cpp

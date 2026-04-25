@@ -3,12 +3,18 @@
 #include "key_index.hpp"
 #include "log_configuration.hpp"
 #include "log_data.hpp"
+#include "log_file.hpp"
+#include "streaming_log_sink.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <memory>
+#include <optional>
 #include <string>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace loglib
@@ -44,6 +50,67 @@ public:
      * @param data The new log data to be merged with the existing data.
      */
     void Update(LogData &&data);
+
+    /**
+     * @brief Initialises the table for an upcoming streaming parse.
+     *
+     * Installs @p file as the data source (so subsequent `AppendBatch` calls
+     * can splice batches in without owning a separate `LogData` per batch),
+     * snapshots the time-column KeyId set against the configuration that the
+     * Stage B parser is about to be handed (PRD req. 4.1.13b / 4.2.21), and
+     * resets `LastBackfillRange()` to `nullopt`. After this call the table is
+     * ready to consume `StreamedBatch`es.
+     *
+     * Note that `Configuration()` is *not* mutated by `BeginStreaming`; the
+     * GUI is expected to lock the configuration UI between `BeginStreaming`
+     * and the corresponding `streamingFinished` signal (PRD req. 4.3.29).
+     *
+     * @param file Optional already-opened source file. Pass `nullptr` to keep
+     *             the table file-less (e.g. fixture tests that hand-craft
+     *             `StreamedBatch`es without a backing `LogFile`).
+     */
+    void BeginStreaming(std::unique_ptr<LogFile> file);
+
+    /**
+     * @brief Appends one streaming batch of pre-parsed lines to the table.
+     *
+     * Implements the streaming append path from PRD req. 4.1.13a / 4.2.18
+     * Stage C. Behaviour:
+     *   - Resets `LastBackfillRange()` to `nullopt` at entry.
+     *   - If `batch.newKeys` is non-empty, extends the configuration's column
+     *     list (always at the end — PRD req. 4.1.13) so any unmapped key
+     *     appears as either a freshly-promoted `Type::time` column (when the
+     *     auto-promotion heuristic matches) or a default `Type::any` column.
+     *   - Splices `batch.lines` and `batch.localLineOffsets` into the owned
+     *     `LogData` via `LogData::AppendBatch`.
+     *   - For each `Type::time` column whose KeyId set is *not* a subset of
+     *     the snapshot stamped by `BeginStreaming`, runs
+     *     `BackfillTimestampColumn` over **all** rows (already-appended +
+     *     just-appended) so the new column has parsed timestamps everywhere
+     *     (PRD req. 4.1.13b). Updates the snapshot so subsequent batches do
+     *     not re-back-fill the same column. Records the affected column range
+     *     in `mLastBackfillRange` for `LogModel::AppendBatch` to drive a
+     *     `dataChanged` notification.
+     *
+     * The function is intentionally `void`: all column / row count deltas
+     * needed by Qt's `beginInsertRows`/`beginInsertColumns` are observed by
+     * the caller via `RowCount()`/`ColumnCount()` (PRD third-pass review,
+     * Decision 33).
+     *
+     * @param batch Streaming batch to consume. Move-out is encouraged.
+     */
+    void AppendBatch(StreamedBatch batch);
+
+    /**
+     * @brief Returns the inclusive `[firstColumn, lastColumn]` range of
+     *        columns that the most recent `AppendBatch` back-filled
+     *        timestamps for, or `std::nullopt` if no back-fill happened.
+     *
+     * Reset to `std::nullopt` at the start of every `AppendBatch` call. Used
+     * by `LogModel::AppendBatch` to emit `dataChanged` for the affected cells
+     * (PRD req. 4.1.13a, 4.3.27).
+     */
+    const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const;
 
     /**
      * @brief Gets the header text for the specified column.
@@ -134,9 +201,25 @@ private:
      */
     void RefreshColumnKeyIds();
 
+    /**
+     * @brief Internal shared body of `Update` and the configuration-snapshot
+     *        captured by `BeginStreaming`.
+     */
+    void RefreshSnapshotTimeKeys();
+
     LogData mData;
     LogConfigurationManager mConfiguration;
     std::vector<std::vector<KeyId>> mColumnKeyIds;
+
+    /// Set of KeyIds belonging to `Type::time` columns at the moment the
+    /// streaming pipeline took its snapshot of `Configuration()`. Populated
+    /// by `BeginStreaming` and grown as `AppendBatch` performs back-fills, so
+    /// each newly-promoted time column is back-filled exactly once.
+    std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
+
+    /// The column range affected by the most recent `AppendBatch` back-fill,
+    /// or `std::nullopt` if none. Reset on entry to every `AppendBatch` call.
+    std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
 };
 
 } // namespace loglib

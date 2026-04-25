@@ -4,6 +4,7 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <iterator>
 #include <sstream>
 #include <string>
 
@@ -87,6 +88,31 @@ void Initialize(const std::filesystem::path &tzdata)
     static_cast<void>(date::current_zone()); // Test the database
 }
 
+std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::vector<LogLine> &lines)
+{
+    // Shared per-column timestamp back-fill body. Used by:
+    //   - ParseTimestamps (whole-data, legacy single-shot path), and
+    //   - LogTable::AppendBatch (mid-stream back-fill after a new time column is auto-promoted
+    //     from a key first observed in a streaming batch — PRD req. 4.1.13b).
+    // The LastValidTimestampParse cache survives only across calls within the same column
+    // walk; resetting it at function entry matches the legacy semantics and keeps the
+    // back-fill path independent of caller state.
+    std::vector<std::string> errors;
+    std::optional<LastValidTimestampParse> lastValid;
+    for (auto &line : lines)
+    {
+        if (!ParseTimestampLine(line, column, lastValid))
+        {
+            errors.emplace_back(fmt::format(
+                "Failed to parse a timestamp for column '{}' from line number {}",
+                column.header,
+                line.FileReference().GetLineNumber()
+            ));
+        }
+    }
+    return errors;
+}
+
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
 {
     std::vector<std::string> errors;
@@ -96,17 +122,11 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
         const LogConfiguration::Column &column = configuration.columns[i];
         if (column.type == LogConfiguration::Type::time)
         {
-            std::optional<LastValidTimestampParse> lastValid;
-            for (auto &line : logData.Lines())
+            auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
+            if (!columnErrors.empty())
             {
-                if (!ParseTimestampLine(line, column, lastValid))
-                {
-                    errors.emplace_back(fmt::format(
-                        "Failed to parse a timestamp for column '{}' from line number {}",
-                        column.header,
-                        line.FileReference().GetLineNumber()
-                    ));
-                }
+                errors.reserve(errors.size() + columnErrors.size());
+                std::move(columnErrors.begin(), columnErrors.end(), std::back_inserter(errors));
             }
         }
     }

@@ -3,26 +3,36 @@
 
 #include "appearance_control.hpp"
 #include "filter_editor.hpp"
+#include "qt_streaming_log_sink.hpp"
 
+#include <loglib/json_parser.hpp>
+#include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
+#include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStandardItemModel>
+#include <QStatusBar>
 #include <QTableView>
 #include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrent>
 
 #include <algorithm>
+#include <exception>
 #include <iterator>
+#include <memory>
+#include <stop_token>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -106,6 +116,43 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mPreferencesEditor->show();
         mPreferencesEditor->raise();
         mPreferencesEditor->activateWindow();
+    });
+
+    // Status-bar plumbing for the streaming progress label (PRD req. 4.3.29).
+    // The label is permanently a child of the status bar; visibility is toggled
+    // through the text content (empty -> hidden) so the layout doesn't reflow on
+    // every update tick.
+    mStatusLabel = new QLabel(this);
+    statusBar()->addPermanentWidget(mStatusLabel);
+    mStatusLabel->hide();
+
+    mStreamingWatcher = new QFutureWatcher<void>(this);
+
+    // Wire the LogModel streaming signals into the status-bar updater and the
+    // post-parse summary slot. lineCountChanged also fires for batches that only
+    // carry errors (so the label still ticks); errorCountChanged only fires when
+    // the batch actually contained errors. streamingFinished is the single
+    // terminal slot — re-enables config UI, clears the label, surfaces the
+    // QMessageBox summary on success.
+    connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
+        mStreamingLineCount = count;
+        UpdateStreamingStatus();
+    });
+    connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
+        mStreamingErrorCount = count;
+        UpdateStreamingStatus();
+    });
+    connect(mModel, &LogModel::streamingFinished, this, [this](bool cancelled) {
+        mStreamingActive = false;
+        SetConfigurationUiEnabled(true);
+        UpdateUi();
+        // mStatusLabel is hidden by UpdateStreamingStatus once mStreamingActive is false.
+        UpdateStreamingStatus();
+        if (!cancelled)
+        {
+            ShowParseErrors("Error Parsing Logs", mModel->StreamingErrors());
+        }
+        mStreamingFileName.clear();
     });
 
     QTimer::singleShot(0, [this] {
@@ -235,8 +282,51 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         return;
     }
 
+    // Use the streaming path when the chosen parser is the JSON parser AND only
+    // one file was selected — the streaming pipeline is a per-file affair (the
+    // sink owns one parse generation at a time) so multi-file selection still
+    // routes through the legacy synchronous loop. The single-file streaming case
+    // is the dominant UX (open one big log, watch it stream in) and is the one
+    // the PRD targets (req. 4.3.29).
+    const bool canStream = (dynamic_cast<loglib::JsonParser *>(parser.get()) != nullptr) && files.size() == 1;
+
     mModel->Clear();
     ClearAllFilters();
+
+    if (canStream)
+    {
+        std::vector<std::string> errors;
+        const bool started = OpenJsonStreaming(files.front(), errors);
+        if (!started)
+        {
+            // Streaming setup failed (e.g. mmap open error). Fall back to the
+            // synchronous JSON path so the user still sees an error summary —
+            // and so we don't silently drop the open. The fallback intentionally
+            // shares the post-parse summary path with the streaming success
+            // case to keep the UX consistent.
+            try
+            {
+                loglib::ParseResult result = parser->Parse(files.front().toStdString());
+                mModel->AddData(std::move(result.data));
+                errors.insert(
+                    errors.end(),
+                    std::make_move_iterator(result.errors.begin()),
+                    std::make_move_iterator(result.errors.end())
+                );
+            }
+            catch (const std::exception &e)
+            {
+                errors.push_back(std::string("Failed to parse '") + files.front().toStdString() + "': " + e.what());
+            }
+            UpdateUi();
+            ShowParseErrors("Error Parsing Logs", errors);
+        }
+        // On the streaming-started path the post-parse summary is shown from
+        // the streamingFinished slot (which fires after the parser has fully
+        // drained — including any final empty terminal batch — see PRD req.
+        // 4.3.26a / 4.3.29).
+        return;
+    }
 
     std::vector<std::string> errors;
     for (const QString &file : files)
@@ -266,6 +356,124 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
 
     UpdateUi();
     ShowParseErrors("Error Parsing Logs", errors);
+}
+
+bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string> &errors)
+{
+    // Open the LogFile up-front on the GUI thread so file-open errors surface
+    // synchronously and the caller can fall back to the synchronous path. Once
+    // ownership transfers into LogModel::BeginStreaming, the model owns the
+    // mmap for the lifetime of the parse.
+    std::unique_ptr<loglib::LogFile> logFile;
+    try
+    {
+        logFile = std::make_unique<loglib::LogFile>(file.toStdString());
+    }
+    catch (const std::exception &e)
+    {
+        errors.push_back(std::string("Failed to open '") + file.toStdString() + "': " + e.what());
+        return false;
+    }
+
+    // Snapshot the configuration BEFORE handing it to Stage B. The shared_ptr<const>
+    // lets the worker thread read it lock-free for the lifetime of the parse;
+    // the GUI thread is gated against editing it via SetConfigurationUiEnabled
+    // (PRD req. 4.2.21 / 4.3.29). Snapshotting up-front (rather than passing
+    // mModel->Configuration() by reference) means a configuration edit that
+    // sneaks past the UI gate cannot still affect the in-flight parse.
+    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+
+    mStreamingFileName = QFileInfo(file).fileName();
+    mStreamingActive = true;
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    SetConfigurationUiEnabled(false);
+    UpdateStreamingStatus();
+
+    // BeginStreaming installs the file on the model's LogTable and bumps the
+    // QtStreamingLogSink generation, returning the freshly-installed stop_token.
+    const std::stop_token stopToken = mModel->BeginStreaming(std::move(logFile));
+    QtStreamingLogSink *sink = mModel->Sink();
+
+    // Hand the parser a borrowed reference to the *same* LogFile the model
+    // owns, instead of opening a second mmap on the worker thread. Stage B
+    // emits std::string_view-typed LogValues that point into the file's mmap
+    // (PRD req. 4.1.6/4.1.15a), so the file must outlive every LogLine the
+    // sink delivers to LogTable. Sharing the model's LogFile is safe because
+    // the parser only ever reads the mmap and only mutates the line-offset
+    // table via Stage C → sink → LogTable::AppendBatch (i.e. the GUI thread).
+    loglib::LogFile *parseFile = nullptr;
+    if (!mModel->Table().Data().Files().empty())
+    {
+        parseFile = mModel->Table().Data().Files().front().get();
+    }
+    if (parseFile == nullptr)
+    {
+        errors.push_back(std::string("Failed to install '") + file.toStdString() + "' on the streaming model");
+        mStreamingActive = false;
+        SetConfigurationUiEnabled(true);
+        UpdateStreamingStatus();
+        return false;
+    }
+
+    loglib::JsonParserOptions options;
+    options.stopToken = stopToken;
+    options.configuration = std::move(cfg);
+
+    // QtConcurrent::run launches on the global thread pool and returns a
+    // QFuture<void>. The future is owned by mStreamingWatcher so a second open
+    // can observe the previous parse's finalisation. The actual cancellation
+    // path is Clear()->RequestStop()->stop_token; the watcher is purely a
+    // lifetime tracker (PRD req. 4.3.28 / 4.3.29).
+    QFuture<void> future = QtConcurrent::run([sink, options = std::move(options), parseFile]() {
+        try
+        {
+            loglib::JsonParser parser;
+            parser.ParseStreaming(*parseFile, *sink, options);
+        }
+        catch (const std::exception &e)
+        {
+            // Surface a synthetic terminal batch carrying the open/parse error
+            // so the GUI sees a single contract for failure too. The sink's
+            // generation check still applies; if cancellation already fired,
+            // this never reaches the model.
+            loglib::StreamedBatch errorBatch;
+            errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
+            sink->OnBatch(std::move(errorBatch));
+            sink->OnFinished(false);
+        }
+    });
+    mStreamingWatcher->setFuture(future);
+
+    return true;
+}
+
+void MainWindow::SetConfigurationUiEnabled(bool enabled)
+{
+    // PRD req. 4.2.21 / 4.3.29 — while a streaming parse is in flight, every
+    // affordance that mutates the LogConfiguration must be disabled. The parser
+    // thread holds an immutable snapshot, so a user edit during streaming would
+    // either silently affect only post-streaming rows or trigger an expensive
+    // whole-data re-parse. Re-enabled from the streamingFinished slot.
+    ui->actionLoadConfiguration->setEnabled(enabled);
+    ui->actionSaveConfiguration->setEnabled(enabled);
+    ui->actionPreferences->setEnabled(enabled);
+}
+
+void MainWindow::UpdateStreamingStatus()
+{
+    if (!mStreamingActive)
+    {
+        mStatusLabel->clear();
+        mStatusLabel->hide();
+        return;
+    }
+    QString text = QString("Parsing %1 - %2 lines, %3 errors")
+                       .arg(mStreamingFileName)
+                       .arg(mStreamingLineCount)
+                       .arg(mStreamingErrorCount);
+    mStatusLabel->setText(text);
+    mStatusLabel->show();
 }
 
 void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)

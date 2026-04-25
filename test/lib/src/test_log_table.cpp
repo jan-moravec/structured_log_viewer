@@ -3,9 +3,14 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_processing.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/streaming_log_sink.hpp>
 
 #include <catch2/catch_all.hpp>
+
+#include <utility>
+#include <vector>
 
 using namespace loglib;
 
@@ -115,4 +120,393 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     CHECK(logTable.Data().Lines()[1].FileReference().GetLineNumber() == 0);
     CHECK(logTable.Data().Lines()[1].FileReference().GetLine() == "newfile1");
     CHECK(logTable.Data().Lines()[1].FileReference().GetPath() == newTestFile.GetFilePath());
+}
+
+namespace
+{
+
+// Helper that builds a LogLine bound to @p keys, inserting each (key, value) pair via
+// GetOrInsert so the test does not have to spell KeyIds explicitly.
+LogLine MakeLine(KeyIndex &keys, LogFile &file, const std::vector<std::pair<std::string, LogValue>> &fields)
+{
+    std::vector<std::pair<KeyId, LogValue>> sorted;
+    sorted.reserve(fields.size());
+    for (const auto &[key, value] : fields)
+    {
+        sorted.emplace_back(keys.GetOrInsert(key), value);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    return LogLine(std::move(sorted), keys, LogFileReference(file, 0));
+}
+
+// Helper that snapshots a column → KeyId range from a given KeyIndex into a StreamedBatch::newKeys.
+StreamedBatch BuildStreamedBatch(
+    KeyIndex &keys,
+    LogFile &file,
+    const std::vector<std::vector<std::pair<std::string, LogValue>>> &lines,
+    size_t prevKeyCount,
+    size_t firstLineNumber
+)
+{
+    StreamedBatch batch;
+    batch.firstLineNumber = firstLineNumber;
+    batch.lines.reserve(lines.size());
+    for (const auto &fields : lines)
+    {
+        batch.lines.push_back(MakeLine(keys, file, fields));
+    }
+    const size_t currentKeyCount = keys.Size();
+    if (currentKeyCount > prevKeyCount)
+    {
+        batch.newKeys.reserve(currentKeyCount - prevKeyCount);
+        for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+        {
+            batch.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+        }
+    }
+    return batch;
+}
+
+} // namespace
+
+TEST_CASE("LogTable::AppendBatch -- steady-state batches with no new keys do not extend columns",
+          "[log_table][append_batch]")
+{
+    TestLogFile testFile("steady.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(logFile));
+
+    KeyIndex &keys = table.Data().Keys();
+    auto batchA = BuildStreamedBatch(
+        keys, *filePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1
+    );
+    table.AppendBatch(std::move(batchA));
+
+    REQUIRE(table.RowCount() == 1);
+    REQUIRE(table.ColumnCount() == 2);
+    const std::string firstHeader = table.GetHeader(0);
+    const std::string secondHeader = table.GetHeader(1);
+
+    auto batchB = BuildStreamedBatch(
+        keys, *filePtr, {{{"key1", std::string("v1b")}, {"key2", std::string("v2b")}}}, keys.Size(), 2
+    );
+    REQUIRE(batchB.newKeys.empty());
+    table.AppendBatch(std::move(batchB));
+
+    CHECK(table.RowCount() == 2);
+    CHECK(table.ColumnCount() == 2);
+    CHECK(table.GetHeader(0) == firstHeader);
+    CHECK(table.GetHeader(1) == secondHeader);
+    CHECK(!table.LastBackfillRange().has_value());
+}
+
+TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end",
+          "[log_table][append_batch]")
+{
+    TestLogFile testFile("append_columns.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(logFile));
+
+    KeyIndex &keys = table.Data().Keys();
+    table.AppendBatch(BuildStreamedBatch(
+        keys, *filePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1
+    ));
+    REQUIRE(table.ColumnCount() == 2);
+    const std::string alphaHeader = table.GetHeader(0);
+    const std::string betaHeader = table.GetHeader(1);
+
+    table.AppendBatch(BuildStreamedBatch(
+        keys, *filePtr, {{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}}, keys.Size() - 1, 2
+    ));
+
+    REQUIRE(table.ColumnCount() == 3);
+    CHECK(table.GetHeader(0) == alphaHeader); // unchanged position
+    CHECK(table.GetHeader(1) == betaHeader);  // unchanged position
+    CHECK(table.GetHeader(2) == "gamma");     // appended at the end
+    CHECK(!table.LastBackfillRange().has_value());
+}
+
+TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log_table][append_batch]")
+{
+    TestLogFile testFile("empty_rows.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+
+    LogTable table;
+    table.BeginStreaming(std::move(logFile));
+
+    StreamedBatch errorOnly;
+    errorOnly.firstLineNumber = 1;
+    errorOnly.errors.emplace_back("Something went wrong on line 1");
+    REQUIRE_NOTHROW(table.AppendBatch(std::move(errorOnly)));
+
+    CHECK(table.RowCount() == 0);
+    CHECK(!table.LastBackfillRange().has_value());
+
+    StreamedBatch newKeysOnly;
+    newKeysOnly.firstLineNumber = 1;
+    newKeysOnly.newKeys.emplace_back("future_key");
+    REQUIRE_NOTHROW(table.AppendBatch(std::move(newKeysOnly)));
+
+    CHECK(table.RowCount() == 0);
+    CHECK(table.ColumnCount() == 1);
+    CHECK(table.GetHeader(0) == "future_key");
+
+    StreamedBatch entirelyEmpty;
+    entirelyEmpty.firstLineNumber = 1;
+    REQUIRE_NOTHROW(table.AppendBatch(std::move(entirelyEmpty)));
+    CHECK(table.RowCount() == 0);
+}
+
+// PRD req. 4.1.13 — the column → KeyId cache is append-only. Update() and
+// AppendBatch() may grow it but must never reorder existing columns or
+// insert new ones in the middle. This is the contract that lets the Qt
+// LogModel emit beginInsertColumns / endInsertColumns over the trailing
+// range without invalidating any persistent QModelIndex held by the view.
+TEST_CASE("LogTable column to KeyId cache is append-only across Update and AppendBatch",
+          "[log_table][append_only]")
+{
+    TestLogFile testFile("append_only.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(logFile));
+
+    KeyIndex &keys = table.Data().Keys();
+
+    // Pin every header position observed so far. After each subsequent
+    // Update/AppendBatch the test re-reads the header at each remembered
+    // index and asserts it has not moved — that is the invariant we want
+    // to lock down end-to-end.
+    std::vector<std::string> pinnedHeaders;
+
+    auto pinAndCheck = [&](LogTable &t) {
+        for (size_t i = 0; i < pinnedHeaders.size(); ++i)
+        {
+            REQUIRE(t.ColumnCount() > i);
+            CHECK(t.GetHeader(static_cast<int>(i)) == pinnedHeaders[i]);
+        }
+        pinnedHeaders.clear();
+        const size_t total = t.ColumnCount();
+        pinnedHeaders.reserve(total);
+        for (size_t i = 0; i < total; ++i)
+        {
+            pinnedHeaders.emplace_back(t.GetHeader(static_cast<int>(i)));
+        }
+    };
+
+    // Step 1: introduce {alpha, beta} via AppendBatch.
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"alpha", std::string("a1")}, {"beta", std::string("b1")}},
+        },
+        0,
+        1
+    ));
+    REQUIRE(table.ColumnCount() == 2);
+    pinAndCheck(table);
+
+    // Step 2: AppendBatch with one new key (gamma). It must land at index 2,
+    // alpha and beta keep their indices.
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"alpha", std::string("a2")}, {"gamma", std::string("g1")}},
+        },
+        keys.Size() - 1,
+        2
+    ));
+    REQUIRE(table.ColumnCount() == 3);
+    CHECK(table.GetHeader(2) == "gamma");
+    pinAndCheck(table);
+
+    // Step 3: a steady-state batch with NO new keys must not change the
+    // column count or any header position.
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"alpha", std::string("a3")}, {"beta", std::string("b3")}, {"gamma", std::string("g3")}},
+        },
+        keys.Size(),
+        3
+    ));
+    REQUIRE(table.ColumnCount() == 3);
+    pinAndCheck(table);
+
+    // Step 4: introduce two new keys at once via AppendBatch (delta, epsilon).
+    // They must appear at the end in the order Stage B observed them, never
+    // anywhere else in the existing range. Pre-existing alpha/beta/gamma keep
+    // their positions so any consumer that has cached column indices does not
+    // need to remap them.
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"delta", std::string("d1")}, {"epsilon", std::string("e1")}},
+        },
+        keys.Size(),
+        4
+    ));
+    REQUIRE(table.ColumnCount() == 5);
+    CHECK(table.GetHeader(3) == "delta");
+    CHECK(table.GetHeader(4) == "epsilon");
+    pinAndCheck(table);
+}
+
+// Same append-only contract, but driven exclusively through the legacy
+// LogTable::Update() path. Update() is also used outside streaming (e.g. when
+// MainWindow opens additional files into an already-populated LogTable), so it
+// has to honour the same invariant — already-known column indices stable, new
+// columns at the end. Note that LogConfigurationManager::Update DOES still
+// apply the timestamp auto-promotion swap for the *first* timestamp column
+// it sees on a freshly-built configuration; this test deliberately avoids
+// timestamp keys so that legacy reorder path stays out of scope.
+TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table][append_only]")
+{
+    TestLogFile fileA("log_file_initial.json");
+    TestLogFile fileB("log_file_second.json");
+    TestLogFile fileC("log_file_third.json");
+
+    fileA.Write("a1\n");
+    auto logFileA = fileA.CreateLogFile();
+
+    KeyIndex keysA;
+    std::vector<LogLine> linesA;
+    linesA.emplace_back(LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, LogFileReference(*logFileA, 0));
+
+    LogData dataA(std::move(logFileA), std::move(linesA), std::move(keysA));
+
+    LogConfiguration cfg;
+    cfg.columns.push_back({"alpha", {"alpha"}, "{}", LogConfiguration::Type::any, {}});
+    cfg.columns.push_back({"beta", {"beta"}, "{}", LogConfiguration::Type::any, {}});
+    TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table(std::move(dataA), std::move(mgr));
+    REQUIRE(table.ColumnCount() == 2);
+    REQUIRE(table.GetHeader(0) == "alpha");
+    REQUIRE(table.GetHeader(1) == "beta");
+
+    // Update with a separate LogData that introduces a single new key (gamma).
+    // gamma must land at index 2; alpha and beta keep their positions.
+    fileB.Write("b1\n");
+    auto logFileB = fileB.CreateLogFile();
+
+    KeyIndex keysB;
+    std::vector<LogLine> linesB;
+    linesB.emplace_back(LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, LogFileReference(*logFileB, 0));
+
+    LogData dataB(std::move(logFileB), std::move(linesB), std::move(keysB));
+    table.Update(std::move(dataB));
+
+    REQUIRE(table.ColumnCount() == 3);
+    CHECK(table.GetHeader(0) == "alpha");
+    CHECK(table.GetHeader(1) == "beta");
+    CHECK(table.GetHeader(2) == "gamma");
+
+    // Update with a third LogData that introduces yet another key (delta).
+    // delta lands at index 3; everything else stays put.
+    fileC.Write("c1\n");
+    auto logFileC = fileC.CreateLogFile();
+
+    KeyIndex keysC;
+    std::vector<LogLine> linesC;
+    linesC.emplace_back(LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, LogFileReference(*logFileC, 0));
+
+    LogData dataC(std::move(logFileC), std::move(linesC), std::move(keysC));
+    table.Update(std::move(dataC));
+
+    REQUIRE(table.ColumnCount() == 4);
+    CHECK(table.GetHeader(0) == "alpha");
+    CHECK(table.GetHeader(1) == "beta");
+    CHECK(table.GetHeader(2) == "gamma");
+    CHECK(table.GetHeader(3) == "delta");
+}
+
+TEST_CASE("LogTable::AppendBatch -- auto-promoted time column triggers back-fill on already-appended rows",
+          "[log_table][append_batch]")
+{
+    InitializeTimezoneData();
+
+    TestLogFile testFile("backfill.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(logFile));
+
+    KeyIndex &keys = table.Data().Keys();
+    // Batch 1: no timestamp column yet; rows carry only `msg`.
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"msg", std::string("first")}},
+            {{"msg", std::string("second")}},
+        },
+        0,
+        1
+    ));
+    REQUIRE(table.RowCount() == 2);
+    REQUIRE(table.ColumnCount() == 1);
+    CHECK(!table.LastBackfillRange().has_value());
+
+    // Batch 2: introduces `timestamp`. The auto-promotion heuristic in
+    // `LogConfigurationManager::AppendKeys` recognises the name and creates a Type::time
+    // column at the END of the configuration, so column index 1 should be the new time
+    // column. The two already-appended rows did not see Stage B's timestamp pass (their
+    // batch did not even contain the key) so AppendBatch must back-fill them — the new row
+    // also gets parsed by the same back-fill (because its KeyId is not yet in the snapshot).
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"msg", std::string("third")}, {"timestamp", std::string("2024-01-15T12:34:56")}},
+        },
+        keys.Size(),
+        3
+    ));
+
+    REQUIRE(table.RowCount() == 3);
+    REQUIRE(table.ColumnCount() == 2);
+    CHECK(table.GetHeader(1) == "timestamp");
+
+    // The back-fill range covers exactly the new time column (index 1, inclusive on both ends).
+    REQUIRE(table.LastBackfillRange().has_value());
+    CHECK(table.LastBackfillRange()->first == 1);
+    CHECK(table.LastBackfillRange()->second == 1);
+
+    // The third row's timestamp is now a parsed TimeStamp (the back-fill ran over all rows
+    // including the just-appended one). Rows 0 and 1 stay monostate because they never
+    // carried the key.
+    const LogValue thirdRowTimestamp = table.GetValue(2, 1);
+    CHECK(std::holds_alternative<TimeStamp>(thirdRowTimestamp));
+
+    // A subsequent steady-state batch with no new keys must NOT re-back-fill — the time
+    // column's KeyId is now in the snapshot.
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {{{"msg", std::string("fourth")}, {"timestamp", std::string("2024-01-15T12:34:57")}}},
+        keys.Size(),
+        4
+    ));
+    CHECK(!table.LastBackfillRange().has_value());
 }

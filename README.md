@@ -121,6 +121,27 @@ On Windows, run the command from the **Developer PowerShell** (or **Developer Co
 
 For machine-specific overrides (e.g. pinning `CMAKE_PREFIX_PATH` to your Qt install), create a personal `CMakeUserPresets.json` at the repo root — it is gitignored. Qt Creator, CLion, and VS Code all discover these presets automatically. See [CONTRIBUTING.md](CONTRIBUTING.md#building) for a worked example and per-step commands.
 
+#### Benchmarks
+
+`test/lib/src/benchmark_json.cpp` contains the parser/lookup micro-benchmarks documented in the streaming-parser PRD. Every benchmark `TEST_CASE` carries the Catch2 `[.][benchmark]` tag pair, so they are **hidden from `ctest` by default** (CI only runs the functional tests). To run them locally:
+
+```sh
+# Run all benchmarks
+build/release/bin/Release/tests "[benchmark]"
+
+# Run a specific variant by sub-tag
+build/release/bin/Release/tests "[get_value_micro]"
+build/release/bin/Release/tests "[no_thread_local_cache]"
+build/release/bin/Release/tests "[no_parse_cache]"
+build/release/bin/Release/tests "[allocations]"
+build/release/bin/Release/tests "[cancellation]"
+
+# Opt into the 1'000'000-line large-file case explicitly
+build/release/bin/Release/tests "[large]"
+```
+
+Throughput, fast-path fraction, and cancellation-latency numbers are emitted via Catch2's `WARN` macro so they appear in the test output even on success.
+
 ### Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed build instructions, test setup, coding style, and the release process.

@@ -48,6 +48,27 @@ const date::time_zone *CurrentZone();
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 
 /**
+ * @brief Parses the timestamps for a single configured `Type::time` column over
+ *        an arbitrary slice of `LogLine`s.
+ *
+ * Extracted from the per-column inner loop of `ParseTimestamps` so the
+ * streaming back-fill (`LogTable::AppendBatch`, PRD req. 4.1.13b) and the
+ * legacy whole-data pass can share a single implementation. Walks @p lines in
+ * order, applying the column's `keys × parseFormats` matrix to each line and
+ * promoting matched string values to `TimeStamp` via `LogLine::SetValue`.
+ * Reuses the `LastValidTimestampParse` fast path from the legacy pass so files
+ * that use one timestamp format throughout pay one strptime call per line.
+ *
+ * @param column Configured `Type::time` column. Caller must ensure
+ *               `column.type == LogConfiguration::Type::time`; the function
+ *               does not re-check.
+ * @param lines  Mutable slice of lines to back-fill in place.
+ * @return Per-line failure messages (one per line that did not match any
+ *         (key, format) pair). Empty if every line parsed.
+ */
+std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::vector<LogLine> &lines);
+
+/**
  * @brief Converts a TimeStamp object to local time in milliseconds since epoch.
  *
  * @param timeStamp The TimeStamp object to convert.

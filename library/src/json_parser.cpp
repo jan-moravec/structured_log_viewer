@@ -16,9 +16,11 @@
 #include <oneapi/tbb/parallel_pipeline.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -865,36 +867,91 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
         );
     };
 
-    // Stage C: serial, in-order. Aggregates per-batch state, computes the new-keys slice
-    // versus the previous batch's KeyIndex high-water mark, and forwards the StreamedBatch
-    // to the sink. Coalescing into larger sink-visible batches lands in task 5.x; for now we
-    // pass each pipeline batch through 1:1. We start the high-water mark from the sink's
-    // current key count so a sink that pre-populated its KeyIndex (e.g. via a previous
-    // parse on the same model) does not see those keys repeated as "new" in batch 0.
-    size_t prevKeyCount = keys.Size();
-    auto stageC = [&](ParsedPipelineBatch parsed) {
-        StreamedBatch batch;
-        batch.firstLineNumber = parsed.firstLineNumber;
-        batch.lines = std::move(parsed.lines);
-        batch.localLineOffsets = std::move(parsed.localLineOffsets);
-        batch.errors = std::move(parsed.errors);
+    // Stage C: serial, in-order. Aggregates per-pipeline-batch state into a sink-visible
+    // StreamedBatch, flushing whenever either of the two coalescing thresholds (PRD req.
+    // 4.3.26) trips:
+    //   - kStreamFlushLines   : line count accumulated since the last flush
+    //   - kStreamFlushInterval: wall-clock elapsed since the last flush
+    // Both are intentionally small enough that a fast UI gets sub-100 ms time-to-first-row
+    // updates while still amortising sink-side bookkeeping over 1 000-line groups in steady
+    // state. The newKeys slice is computed lazily (only at flush time) so a key that appears
+    // and disappears within a single coalesced window is still reported exactly once.
+    //
+    // We start the high-water mark from the sink's current key count so a sink that
+    // pre-populated its KeyIndex (e.g. via a previous parse on the same model) does not see
+    // those keys repeated as "new" in batch 0.
+    constexpr size_t kStreamFlushLines = 1000;
+    constexpr auto kStreamFlushInterval = std::chrono::milliseconds(50);
 
+    StreamedBatch pending;
+    bool pendingPrimed = false;
+    size_t prevKeyCount = keys.Size();
+    auto lastFlush = std::chrono::steady_clock::now();
+
+    auto emitNewKeysInto = [&](StreamedBatch &out) {
         const size_t currentKeyCount = keys.Size();
         if (currentKeyCount > prevKeyCount)
         {
-            batch.newKeys.reserve(currentKeyCount - prevKeyCount);
+            out.newKeys.reserve(out.newKeys.size() + (currentKeyCount - prevKeyCount));
             for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
             {
-                batch.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+                out.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
             }
             prevKeyCount = currentKeyCount;
         }
+    };
 
-        sink.OnBatch(std::move(batch));
+    auto flushPending = [&](bool force) {
+        if (!force && pending.lines.size() < kStreamFlushLines &&
+            (std::chrono::steady_clock::now() - lastFlush) < kStreamFlushInterval)
+        {
+            return;
+        }
+        emitNewKeysInto(pending);
+        sink.OnBatch(std::move(pending));
+        pending = StreamedBatch{};
+        pendingPrimed = false;
+        lastFlush = std::chrono::steady_clock::now();
+    };
+
+    auto stageC = [&](ParsedPipelineBatch parsed) {
+        if (!pendingPrimed)
+        {
+            pending.firstLineNumber = parsed.firstLineNumber;
+            pendingPrimed = true;
+        }
+        if (!parsed.lines.empty())
+        {
+            pending.lines.reserve(pending.lines.size() + parsed.lines.size());
+            std::move(parsed.lines.begin(), parsed.lines.end(), std::back_inserter(pending.lines));
+        }
+        if (!parsed.localLineOffsets.empty())
+        {
+            pending.localLineOffsets.reserve(pending.localLineOffsets.size() + parsed.localLineOffsets.size());
+            std::move(
+                parsed.localLineOffsets.begin(),
+                parsed.localLineOffsets.end(),
+                std::back_inserter(pending.localLineOffsets)
+            );
+        }
+        if (!parsed.errors.empty())
+        {
+            pending.errors.reserve(pending.errors.size() + parsed.errors.size());
+            std::move(parsed.errors.begin(), parsed.errors.end(), std::back_inserter(pending.errors));
+        }
+        flushPending(false);
     };
 
     // RAII-scope an explicit oneTBB parallelism cap so we do not balloon thread usage on
     // 64-core hosts; users can opt into more via JsonParserOptions::threads.
+    //
+    // Cancellation latency contract (PRD req. 4.2.22a/b): Stage A polls the stop_token on
+    // every batch boundary, so once the user requests cancellation the pipeline will drain
+    // at most `ntokens` Stage B tokens (each carrying ~`batchSizeBytes` worth of work) before
+    // shutdown. Worst-case wasted work is therefore bounded by `ntokens * batchSizeBytes`
+    // bytes (default ≈ 16 * 1 MiB = 16 MiB on an 8-core host), independent of the input file
+    // size. The Stage C coalescing flush above does not extend this bound — it operates only
+    // on output already produced by Stage B.
     oneapi::tbb::global_control gc(
         oneapi::tbb::global_control::max_allowed_parallelism, static_cast<size_t>(effectiveThreads)
     );
@@ -906,23 +963,25 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
             oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
     );
 
-    // Final flush: even if the last pipeline batch already fired, the sink contract (PRD
-    // req. 4.3.26a) requires one trailing OnBatch carrying any tail-end newKeys/errors. With
-    // the 1:1 coalescing above this is normally redundant, but issuing a no-op batch keeps the
-    // sink invariant simple to reason about.
+    // Final flush before OnFinished. The PRD (req. 4.3.26a) requires that the sink see at
+    // least one final OnBatch even if it carries no rows — so the sink can finalise its state
+    // (e.g. emit dataChanged, update progress labels) under a single contract. Force-flush
+    // any in-flight pending batch first, then if nothing was flushed this turn (e.g. because
+    // the file was empty or the parse was cancelled before Stage A produced any tokens) emit
+    // a synthetic terminal batch carrying the tail newKeys snapshot.
+    if (pendingPrimed || keys.Size() > prevKeyCount)
+    {
+        if (!pendingPrimed)
+        {
+            pending.firstLineNumber = nextLineNumber;
+            pendingPrimed = true;
+        }
+        flushPending(true);
+    }
+    else
     {
         StreamedBatch tail;
         tail.firstLineNumber = nextLineNumber;
-        const size_t currentKeyCount = keys.Size();
-        if (currentKeyCount > prevKeyCount)
-        {
-            tail.newKeys.reserve(currentKeyCount - prevKeyCount);
-            for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
-            {
-                tail.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
-            }
-            prevKeyCount = currentKeyCount;
-        }
         sink.OnBatch(std::move(tail));
     }
 

@@ -102,6 +102,23 @@ public:
     void Update(const LogData &logData);
 
     /**
+     * @brief Append-only configuration extension used by the streaming path.
+     *
+     * Walks @p newKeys (typically `StreamedBatch::newKeys`) and appends a
+     * column at the *end* of `mConfiguration.columns` for any key that is
+     * not already configured. Auto-promotes timestamp-named keys to
+     * `Type::time` columns (matching the heuristic in `Update`) but, unlike
+     * `Update`, never reorders existing columns — the streaming UI contract
+     * (PRD req. 4.1.13) requires that any column index that has already been
+     * observed stays put for the life of the parse so Qt's
+     * `beginInsertColumns` works correctly.
+     *
+     * @param newKeys Keys observed for the first time in the most recent
+     *                streaming batch.
+     */
+    void AppendKeys(const std::vector<std::string> &newKeys);
+
+    /**
      * @brief Retrieves the current log configuration.
      * @return A constant reference to the log configuration.
      */

@@ -123,6 +123,39 @@ void LogConfigurationManager::Update(const LogData &logData)
     }
 }
 
+void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
+{
+    // Streaming-mode column extension. Differs from Update in two ways:
+    //   1. Operates on an explicit "new keys" slice (typically
+    //      `StreamedBatch::newKeys`) rather than the canonical KeyIndex
+    //      snapshot — avoids re-walking the entire SortedKeys list per batch.
+    //   2. Always appends — never reorders. Timestamp auto-promotion still
+    //      happens (so `LogTable::AppendBatch` knows which new columns need
+    //      back-filling) but the new time column lands at the end alongside
+    //      every other freshly-discovered key, preserving the append-only
+    //      contract that Qt's `beginInsertColumns` relies on (PRD req.
+    //      4.1.13 / Decision 14).
+    for (const std::string &key : newKeys)
+    {
+        if (IsKeyInAnyColumn(key, mConfiguration.columns))
+        {
+            continue;
+        }
+        if (IsTimestampKey(key))
+        {
+            mConfiguration.columns.push_back(LogConfiguration::Column{
+                key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+            });
+        }
+        else
+        {
+            mConfiguration.columns.push_back(
+                LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
+            );
+        }
+    }
+}
+
 const LogConfiguration &LogConfigurationManager::Configuration() const
 {
     return mConfiguration;
