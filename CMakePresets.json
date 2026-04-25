@@ -1,0 +1,84 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25 },
+
+    "configurePresets": [
+        {
+            "name": "_base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release (Ninja)",
+            "description": "Optimized build, no debug info, assertions stripped.",
+            "inherits": "_base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug (Ninja)",
+            "description": "Debug build with full symbols and assertions.",
+            "inherits": "_base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "RelWithDebInfo (Ninja)",
+            "description": "Release optimizations + debug info, suitable for profiling.",
+            "inherits": "_base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+        }
+    ],
+
+    "buildPresets": [
+        { "name": "release",        "configurePreset": "release" },
+        { "name": "debug",          "configurePreset": "debug" },
+        { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" }
+    ],
+
+    "testPresets": [
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "output":      { "outputOnFailure": true },
+            "execution":   { "noTestsAction": "error", "stopOnFailure": false },
+            "environment": { "QT_QPA_PLATFORM": "offscreen" }
+        },
+        {
+            "name": "debug",
+            "inherits": "release",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "relwithdebinfo",
+            "inherits": "release",
+            "configurePreset": "relwithdebinfo"
+        }
+    ],
+
+    "workflowPresets": [
+        {
+            "name": "release",
+            "displayName": "Release: configure + build + test",
+            "steps": [
+                { "type": "configure", "name": "release" },
+                { "type": "build",     "name": "release" },
+                { "type": "test",      "name": "release" }
+            ]
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug: configure + build + test",
+            "steps": [
+                { "type": "configure", "name": "debug" },
+                { "type": "build",     "name": "debug" },
+                { "type": "test",      "name": "debug" }
+            ]
+        }
+    ]
+}

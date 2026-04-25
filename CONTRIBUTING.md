@@ -15,41 +15,98 @@ Most third-party C++ dependencies (`date`, `fmt`, `Catch2`, `mio`, `glaze`, `sim
 
 ## Building
 
-### Linux / macOS
+All build configurations are defined in [`CMakePresets.json`](CMakePresets.json) (CMake 3.25+). The shared presets are:
+
+| Preset           | Build type       | Purpose                                    |
+| ---------------- | ---------------- | ------------------------------------------ |
+| `release`        | `Release`        | Optimized build, used by CI and releases.  |
+| `debug`          | `Debug`          | Full debug info and assertions.            |
+| `relwithdebinfo` | `RelWithDebInfo` | Release optimizations + debug info (perf). |
+
+Each preset uses the **Ninja** generator and writes to `build/<presetName>/`. They also enable `CMAKE_EXPORT_COMPILE_COMMANDS` so `clangd`, `clang-tidy`, and other tools work out of the box. Matching `buildPresets`, `testPresets`, and `workflowPresets` are defined with the same names.
+
+### Quick start
+
+Configure, build, and test in one shot:
 
 ```sh
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build . -j
+cmake --workflow --preset release
+```
+
+Or run the steps individually (handy for iterative development — CI does this too):
+
+```sh
+cmake --preset release           # configure
+cmake --build --preset release   # build
+ctest --preset release           # test (sets QT_QPA_PLATFORM=offscreen)
 ```
 
 ### Windows
 
-Open the **Developer PowerShell for VS 2022** or Developer Command Prompt and run:
+Run the same commands from the **Developer PowerShell for VS 2022** (or Developer Command Prompt) so that `cl.exe` and Ninja are on `PATH`.
 
-```powershell
-mkdir build
-cd build
-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
-cmake --build .
+### Machine-specific overrides (`CMakeUserPresets.json`)
+
+For paths that differ between machines (typically your Qt install), add a `CMakeUserPresets.json` at the repo root — it is gitignored and merged with `CMakePresets.json` automatically. Example:
+
+```json
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25 },
+    "include": ["CMakePresets.json"],
+    "configurePresets": [
+        {
+            "name": "local",
+            "inherits": "release",
+            "cacheVariables": {
+                "CMAKE_PREFIX_PATH": "C:/Qt/6.8.0/msvc2022_64"
+            }
+        }
+    ],
+    "buildPresets": [{ "name": "local", "configurePreset": "local" }],
+    "testPresets":  [
+        {
+            "name": "local",
+            "configurePreset": "local",
+            "output":      { "outputOnFailure": true },
+            "environment": { "QT_QPA_PLATFORM": "offscreen" }
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "local",
+            "steps": [
+                { "type": "configure", "name": "local" },
+                { "type": "build",     "name": "local" },
+                { "type": "test",      "name": "local" }
+            ]
+        }
+    ]
+}
 ```
 
-Qt Creator works out of the box with the top-level `CMakeLists.txt`.
+Then `cmake --workflow --preset local` (or `cmake --preset local` + `cmake --build --preset local`) uses your local Qt.
+
+### Enabling system packages
+
+To use system copies of dependencies instead of `FetchContent`, pass the relevant option at configure time — for example:
+
+```sh
+cmake --preset release -DUSE_SYSTEM_FMT=ON -DUSE_SYSTEM_SIMDJSON=ON
+```
+
+The full list of `USE_SYSTEM_*` options is in [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake).
+
+### IDE integration
+
+Qt Creator, CLion, Visual Studio, and VS Code (with the CMake Tools extension) all detect `CMakePresets.json` / `CMakeUserPresets.json` automatically — just open the repository folder and pick a preset.
 
 ## Running tests
 
-From the `build/` directory:
+`ctest --preset <name>` runs the full suite and automatically sets `QT_QPA_PLATFORM=offscreen` for headless GUI tests:
 
 ```sh
-ctest --output-on-failure -C Release
-```
-
-On headless environments (CI, remote VMs), set the Qt platform to offscreen first:
-
-```sh
-export QT_QPA_PLATFORM=offscreen   # Linux / macOS
-$env:QT_QPA_PLATFORM = "offscreen" # Windows PowerShell
+ctest --preset release
 ```
 
 The suite contains:

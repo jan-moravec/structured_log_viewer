@@ -39,6 +39,9 @@ Thumbs.db
 *.pro.user*
 CMakeLists.txt.user*
 
+# Personal CMake preset overrides (machine-specific paths, e.g. Qt location)
+CMakeUserPresets.json
+
 # xemacs temporary files
 *.flc
 

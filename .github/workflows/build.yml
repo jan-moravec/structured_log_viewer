@@ -81,20 +81,15 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y libfuse2 xvfb libxcb-cursor0 zsync
 
+      - name: Configure
+        run: cmake --preset release
+
       - name: Build
-        run: |
-          mkdir build
-          cd build
-          CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
-          export CMAKE_BUILD_PARALLEL_LEVEL
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          cmake --build .
+        run: cmake --build --preset release
 
       - name: Run unit tests
-        run: |
-          cd build
-          export QT_QPA_PLATFORM=offscreen
-          ctest --output-on-failure -C Release
+        # ctest preset already sets QT_QPA_PLATFORM=offscreen.
+        run: ctest --preset release
 
       - name: Install linuxdeploy and plugin
         run: |
@@ -115,8 +110,8 @@ jobs:
           mkdir -p $APP_DIR/usr/lib
           mkdir -p $APP_DIR/usr/share/applications
           mkdir -p $APP_DIR/usr/share/icons/hicolor/256x256/apps
-          cp build/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/
-          cp -r build/bin/Release/tzdata $APP_DIR/usr/share/
+          cp build/release/bin/Release/${{ env.APP_NAME }} $APP_DIR/usr/bin/
+          cp -r build/release/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
           ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
@@ -171,30 +166,30 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      - name: Configure
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
+          cmake --preset release
+
       - name: Build
         shell: cmd
         run: |
-          mkdir build
-          cd build
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          set CMAKE_BUILD_PARALLEL_LEVEL=%NUMBER_OF_PROCESSORS%
-          cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
-          cmake --build .
+          cmake --build --preset release
 
       - name: Run unit tests
+        # ctest preset already sets QT_QPA_PLATFORM=offscreen.
         shell: cmd
-        run: |
-          cd build
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          ctest --output-on-failure -C Release
+        run: ctest --preset release
 
       - name: Package application
         shell: powershell
         run: |
           mkdir ${{ env.APP_NAME }}
           cd ${{ env.APP_NAME }}
-          mv ../build/bin/Release/${{ env.APP_NAME }}.exe .
-          mv ../build/bin/Release/tzdata .
+          mv ../build/release/bin/Release/${{ env.APP_NAME }}.exe .
+          mv ../build/release/bin/Release/tzdata .
           windeployqt --release ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
 
@@ -244,24 +239,19 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      - name: Configure
+        run: cmake --preset release
+
       - name: Build
-        run: |
-          mkdir build
-          cd build
-          CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.ncpu)
-          export CMAKE_BUILD_PARALLEL_LEVEL
-          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
-          cmake --build .
+        run: cmake --build --preset release
 
       - name: Run unit tests
-        run: |
-          cd build
-          export QT_QPA_PLATFORM=offscreen
-          ctest --output-on-failure -C Release
+        # ctest preset already sets QT_QPA_PLATFORM=offscreen.
+        run: ctest --preset release
 
       - name: Package application
         run: |
-          cd build/bin/Release
+          cd build/release/bin/Release
           # tzdata is copied into the bundle's Contents/Resources by the CMake
           # POST_BUILD step; verify it's there before deploying.
           if [ ! -d "${{ env.APP_NAME }}.app/Contents/Resources/tzdata" ]; then
