@@ -8,6 +8,7 @@ option(USE_SYSTEM_MIO "Use system mandreyel mio library" OFF)
 option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
 option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
 option(USE_SYSTEM_ROBIN_MAP "Use system Tessil robin-map library" OFF)
+option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
@@ -149,4 +150,35 @@ if(NOT USE_SYSTEM_ROBIN_MAP)
     FetchContent_MakeAvailable(robin_map)
 else()
     find_package(robin_map REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_TBB)
+    FetchContent_Declare(
+        tbb
+        GIT_REPOSITORY https://github.com/uxlfoundation/oneTBB.git
+        GIT_TAG v2022.3.0
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    block()
+        set(TBB_TEST OFF)
+        set(TBB_EXAMPLES OFF)
+        # oneTBB compiles its own translation units with -Werror by default; turn that off
+        # so its compiler warnings don't gate our build (we still build our own code with
+        # CompilerWarnings.cmake's strict settings).
+        set(TBB_STRICT OFF)
+        # oneTBB upstream strongly discourages building as a static library and
+        # `tbb::parallel_pipeline` relies on dynamic library state. Force a shared
+        # build regardless of the project-level BUILD_SHARED_LIBS default so the
+        # consumer always links against tbb12.dll on Windows.
+        set(BUILD_SHARED_LIBS ON)
+        FetchContent_MakeAvailable(tbb)
+    endblock()
+else()
+    # 2021.5.0 is the first release that ships the oneAPI-style tbb::filter_mode /
+    # tbb::parallel_pipeline API used by the streaming JSON parser. Older legacy-API
+    # system packages (TBB 2020.x and earlier) would fail at use sites rather than at
+    # find_package; pinning the minimum version here makes the failure mode early and
+    # obvious.
+    find_package(TBB 2021.5 REQUIRED)
 endif()

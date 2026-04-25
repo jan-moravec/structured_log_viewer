@@ -95,8 +95,10 @@ void LogConfigurationManager::Save(const std::filesystem::path &path) const
 
 void LogConfigurationManager::Update(const LogData &logData)
 {
-    // Update configuration columns with new keys
-    for (const std::string &key : logData.Keys())
+    // Update configuration columns with new keys. SortedKeys() snapshots the
+    // KeyIndex into a std::vector<std::string> so this cold path does not need
+    // to be aware of the new dense KeyId storage.
+    for (const std::string &key : logData.SortedKeys())
     {
         if (!IsKeyInAnyColumn(key, mConfiguration.columns))
         {

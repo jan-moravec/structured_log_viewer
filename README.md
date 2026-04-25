@@ -105,6 +105,8 @@ The `app` component is a Qt 6 Widgets application. It uses `loglib` for parsing 
 
 Most third-party C++ dependencies are fetched automatically via `FetchContent`. To use system copies, pass the corresponding option (e.g. `-DUSE_SYSTEM_FMT=ON`) when configuring. See [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake) for the full list.
 
+`loglib` links against [oneTBB](https://github.com/uxlfoundation/oneTBB) (Intel oneAPI Threading Building Blocks) for the parallel JSON parsing pipeline. It is fetched at version `v2022.3.0` by default; pass `-DUSE_SYSTEM_TBB=ON` to use a system installation, which must be **>= 2021.5** (the first oneAPI-style release that ships `tbb::filter_mode` / `tbb::parallel_pipeline`). On Windows, the build copies `tbb12.dll` next to `StructuredLogViewer.exe` automatically (both into the build tree and the install tree) — keep it next to the executable when redistributing.
+
 #### Building
 
 The project ships a [`CMakePresets.json`](CMakePresets.json) that defines shared configure/build/test/workflow presets, so a single command can configure, build, and run the test suite:
@@ -135,5 +137,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - [stephenberry/glaze](https://github.com/stephenberry/glaze) — JSON serialization for configuration
 - [mandreyel/mio](https://github.com/mandreyel/mio) — header-only memory-mapped file I/O
 - [Tessil/robin-map](https://github.com/Tessil/robin-map) — fast hash map
+- [uxlfoundation/oneTBB](https://github.com/uxlfoundation/oneTBB) — Threading Building Blocks (parallel parsing pipeline)
 - [catchorg/Catch2](https://github.com/catchorg/Catch2) — unit testing and benchmarking
 - [Icon by Ilham Fitrotul Hayat](https://www.freepik.com/icon/file_5392654)

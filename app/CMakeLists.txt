@@ -78,4 +78,22 @@ install(
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# On Windows the TBB runtime DLL (tbb12.dll) is loaded from the directory next to the
+# executable. Copy it into the build tree so the binary can be launched directly from
+# build/, and install it next to the binary so the packaged release works too. On
+# non-Windows platforms TBB::tbb is resolved via rpath (FetchContent build) or distro
+# library paths (USE_SYSTEM_TBB=ON), so no copy step is needed.
+if(WIN32)
+    add_custom_command(
+        TARGET StructuredLogViewer
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb>
+                $<TARGET_FILE_DIR:StructuredLogViewer>
+        COMMENT "Copying TBB runtime DLL next to StructuredLogViewer.exe"
+        VERBATIM
+    )
+
+    install(FILES $<TARGET_FILE:TBB::tbb> DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
 qt_finalize_executable(StructuredLogViewer)

@@ -1,7 +1,10 @@
 #include "common.hpp"
 
+#include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_file.hpp>
+#include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>
@@ -95,13 +98,14 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     // Create LogData with mixed keys including a timestamp
     TestLogFile testLogFile;
     std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", "value"}}, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"newKey", "test"}}, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"timestamp", "2023-01-01T12:00:00Z"}}, LogFileReference(*logFile, 0));
-    std::vector<std::string> testKeys = {"regular", "newKey", "timestamp"};
+    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, LogFileReference(*logFile, 0));
+    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, LogFileReference(*logFile, 0));
+    testLines.emplace_back(
+        LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, LogFileReference(*logFile, 0)
+    );
 
-    // Create LogData instance
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
     // Update configuration with the new data

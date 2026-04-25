@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/key_index.hpp>
 #include <loglib/log_processing.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -25,13 +26,12 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
 {
     TestLogFile testLogFile;
     std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", "value1"}}, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"key1", "value2"}}, LogFileReference(*logFile, 1));
-    testLines.emplace_back(LogMap{{"key2", 42}}, LogFileReference(*logFile, 2));
-    std::vector<std::string> testKeys = {"key1", "key2"};
+    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, LogFileReference(*logFile, 0));
+    testLines.emplace_back(LogMap{{"key1", std::string("value2")}}, testKeys, LogFileReference(*logFile, 1));
+    testLines.emplace_back(LogMap{{"key2", int64_t{42}}}, testKeys, LogFileReference(*logFile, 2));
 
-    // Create LogData instance
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
     // Create a configuration with no timestamp columns
@@ -61,14 +61,17 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 {
     TestLogFile testLogFile;
     std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key", "2025-04-25T12:34:56+00:00"}}, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"key", "2025-04-25 12:34:56+00:00"}}, LogFileReference(*logFile, 1));
-    testLines.emplace_back(LogMap{{"key", "2025-04-25T12:34:56"}}, LogFileReference(*logFile, 2));
-    testLines.emplace_back(LogMap{{"key", "2025-04-25 12:34:56"}}, LogFileReference(*logFile, 3));
-    std::vector<std::string> testKeys = {"key"};
+    testLines.emplace_back(
+        LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, LogFileReference(*logFile, 0)
+    );
+    testLines.emplace_back(
+        LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, LogFileReference(*logFile, 1)
+    );
+    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, LogFileReference(*logFile, 2));
+    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, LogFileReference(*logFile, 3));
 
-    // Create LogData instance
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
     // Create a configuration with no timestamp columns

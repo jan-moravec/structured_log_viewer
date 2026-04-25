@@ -81,3 +81,28 @@ TEST_CASE("Parse and load JSON log", "[benchmark][json_parser]")
         });
     };
 }
+
+TEST_CASE("Parse and load JSON log (single thread)", "[benchmark][json_parser][single_thread]")
+{
+    // Forces the streaming pipeline down to one Stage B worker so we can compare against the
+    // default-parallelism benchmark and quantify oneTBB's speedup (PRD req. 4.5.34). Same fixture
+    // size as the default benchmark to keep the numbers directly comparable.
+    BENCHMARK_ADVANCED("Parse 10'000 JSON log entries (single thread)")(Catch::Benchmark::Chronometer meter)
+    {
+        auto logs = GenerateRandomJsonLogs(10'000);
+        const TestJsonLogFile testFile(logs);
+        const JsonParser parser;
+
+        JsonParserOptions opts;
+        opts.threads = 1;
+
+        meter.measure([&]() {
+            LogTable table;
+            ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+            REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+            REQUIRE(result.errors.empty());
+            table.Update(std::move(result.data));
+            return table;
+        });
+    };
+}

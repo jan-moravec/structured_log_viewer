@@ -1,42 +1,193 @@
 #include "loglib/log_line.hpp"
 
+#include <algorithm>
+#include <cassert>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
 namespace loglib
 {
-LogLine::LogLine(LogMap values, LogFileReference fileReference)
-    : mValues(std::move(values)), mFileReference(std::move(fileReference))
+
+std::optional<std::string_view> AsStringView(const LogValue &value)
 {
+    if (const auto *view = std::get_if<std::string_view>(&value))
+    {
+        return *view;
+    }
+    if (const auto *owned = std::get_if<std::string>(&value))
+    {
+        return std::string_view(*owned);
+    }
+    return std::nullopt;
+}
+
+bool HoldsString(const LogValue &value)
+{
+    return std::holds_alternative<std::string_view>(value) || std::holds_alternative<std::string>(value);
+}
+
+LogValue ToOwnedLogValue(const LogValue &value)
+{
+    if (const auto *view = std::get_if<std::string_view>(&value))
+    {
+        return std::string(*view);
+    }
+    return value;
+}
+
+bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
+{
+    // Treat string_view and string as the same logical kind so the parity test can compare
+    // outputs of two parsers that may have made different fast/slow-path choices for the
+    // same underlying bytes (PRD req. 4.1.16, S7).
+    const auto lhsString = AsStringView(lhs);
+    const auto rhsString = AsStringView(rhs);
+    if (lhsString.has_value() || rhsString.has_value())
+    {
+        return lhsString.has_value() && rhsString.has_value() && *lhsString == *rhsString;
+    }
+    return lhs == rhs;
+}
+
+LogLine::LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LogFileReference fileReference)
+    : mValues(std::move(sortedValues)), mKeys(&keys), mFileReference(std::move(fileReference))
+{
+#ifndef NDEBUG
+    // Pinning the contract: callers must hand in a vector sorted ascending by KeyId. The
+    // hot-path GetValue and the merge step in LogData both rely on this for correctness and
+    // performance.
+    assert(std::is_sorted(mValues.begin(), mValues.end(), [](const auto &a, const auto &b) {
+        return a.first < b.first;
+    }));
+#endif
+}
+
+LogLine::LogLine(const LogMap &values, KeyIndex &keys, LogFileReference fileReference)
+    : mKeys(&keys), mFileReference(std::move(fileReference))
+{
+    mValues.reserve(values.size());
+    for (const auto &[key, value] : values)
+    {
+        mValues.emplace_back(keys.GetOrInsert(key), value);
+    }
+    std::sort(mValues.begin(), mValues.end(), [](const auto &a, const auto &b) {
+        return a.first < b.first;
+    });
+}
+
+LogValue LogLine::GetValue(KeyId id) const
+{
+    for (const auto &entry : mValues)
+    {
+        if (entry.first == id)
+        {
+            return entry.second;
+        }
+        if (entry.first > id)
+        {
+            // Sorted-ascending invariant lets us early-exit once we passed the requested id.
+            break;
+        }
+    }
+    return std::monostate{};
 }
 
 LogValue LogLine::GetValue(const std::string &key) const
 {
-    if (key.empty())
+    if (key.empty() || mKeys == nullptr)
     {
-        return std::monostate();
+        return std::monostate{};
     }
-
-    const auto iterator = mValues.find(key);
-    if (iterator != mValues.end())
+    const KeyId id = mKeys->Find(key);
+    if (id == kInvalidKeyId)
     {
-        return iterator->second;
+        return std::monostate{};
     }
+    return GetValue(id);
+}
 
-    return std::monostate();
+void LogLine::SetValue(KeyId id, LogValue value)
+{
+#ifndef NDEBUG
+    // The plain SetValue overload is intended for owned values produced after parsing (e.g.
+    // the timestamp promotion pass). Callers that have a view into the mmap must use the
+    // LogValueTrustView-tagged overload to make the lifetime promise explicit.
+    assert(!std::holds_alternative<std::string_view>(value));
+#endif
+    SetValue(id, std::move(value), LogValueTrustView{});
+}
+
+void LogLine::SetValue(KeyId id, LogValue value, LogValueTrustView /*trust*/)
+{
+    auto it = std::lower_bound(mValues.begin(), mValues.end(), id, [](const auto &entry, KeyId target) {
+        return entry.first < target;
+    });
+    if (it != mValues.end() && it->first == id)
+    {
+        it->second = std::move(value);
+        return;
+    }
+    mValues.emplace(it, id, std::move(value));
 }
 
 void LogLine::SetValue(const std::string &key, LogValue value)
 {
-    mValues[key] = value;
+    if (mKeys == nullptr)
+    {
+        throw std::runtime_error("LogLine::SetValue(string): KeyIndex back-pointer is unset");
+    }
+    const KeyId id = mKeys->Find(key);
+    if (id == kInvalidKeyId)
+    {
+        throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
+    }
+    SetValue(id, std::move(value));
 }
 
 std::vector<std::string> LogLine::GetKeys() const
 {
     std::vector<std::string> keys;
     keys.reserve(mValues.size());
-    for (const auto &pair : mValues)
+    if (mKeys == nullptr)
     {
-        keys.push_back(pair.first);
+        return keys;
+    }
+    for (const auto &entry : mValues)
+    {
+        keys.emplace_back(mKeys->KeyOf(entry.first));
     }
     return keys;
+}
+
+std::span<const std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
+{
+    return std::span<const std::pair<KeyId, LogValue>>(mValues.data(), mValues.size());
+}
+
+LogMap LogLine::Values() const
+{
+    LogMap snapshot;
+    snapshot.reserve(mValues.size());
+    if (mKeys == nullptr)
+    {
+        return snapshot;
+    }
+    for (const auto &entry : mValues)
+    {
+        snapshot.emplace(std::string(mKeys->KeyOf(entry.first)), entry.second);
+    }
+    return snapshot;
+}
+
+void LogLine::RebindKeys(const KeyIndex &keys)
+{
+    mKeys = &keys;
+}
+
+const KeyIndex &LogLine::Keys() const
+{
+    return *mKeys;
 }
 
 const LogFileReference &LogLine::FileReference() const
@@ -44,14 +195,9 @@ const LogFileReference &LogLine::FileReference() const
     return mFileReference;
 }
 
-const LogMap &LogLine::Values() const
+LogFileReference &LogLine::FileReference()
 {
-    return mValues;
-}
-
-LogMap &LogLine::Values()
-{
-    return mValues;
+    return mFileReference;
 }
 
 } // namespace loglib

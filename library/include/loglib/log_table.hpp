@@ -1,5 +1,6 @@
 #pragma once
 
+#include "key_index.hpp"
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 
@@ -8,6 +9,7 @@
 #include <fmt/format.h>
 
 #include <string>
+#include <vector>
 
 namespace loglib
 {
@@ -121,8 +123,20 @@ private:
      */
     static std::string FormatLogValue(const std::string &format, const LogValue &value);
 
+    /**
+     * @brief Rebuilds the column → KeyId cache from the current configuration.
+     *
+     * The cache is one inner vector per configured column. Each inner vector
+     * lists the canonical KeyIds of the configuration's `column.keys`,
+     * resolved through the owning `LogData::Keys()`. Unknown keys are stored
+     * as `kInvalidKeyId` and skipped at lookup time. Called whenever the data
+     * or configuration changes (PRD req. 4.1.12).
+     */
+    void RefreshColumnKeyIds();
+
     LogData mData;
     LogConfigurationManager mConfiguration;
+    std::vector<std::vector<KeyId>> mColumnKeyIds;
 };
 
 } // namespace loglib

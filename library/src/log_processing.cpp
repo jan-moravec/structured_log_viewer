@@ -4,6 +4,9 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <sstream>
+#include <string>
+
 namespace
 {
 
@@ -12,10 +15,13 @@ using namespace loglib;
 bool ParseTimestampLine(LogLine &line, const std::string &key, const std::string &format)
 {
     LogValue value = line.GetValue(key);
-    if (std::holds_alternative<std::string>(value))
+    const auto timestampString = AsStringView(value);
+    if (timestampString.has_value())
     {
-        const auto timeStampString = std::get<std::string>(value);
-        std::istringstream stream{timeStampString};
+        // istringstream still needs an owning string; the construction is unavoidable for the
+        // streaming-stdlib parser API. Once this hot path matters more we can swap in a
+        // string_view-aware parser (PRD §4.2.21 future work).
+        std::istringstream stream{std::string(*timestampString)};
         TimeStamp timestamp;
         stream >> date::parse(format, timestamp);
         if (stream && timestamp.time_since_epoch().count() > 0)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "log_data.hpp"
+#include "log_line.hpp"
 
 #include <filesystem>
 #include <string>
@@ -54,14 +55,17 @@ public:
     virtual ParseResult Parse(const std::filesystem::path &file) const = 0;
 
     /**
-     * @brief Convert a log values to a string representation.
+     * @brief Convert a log line to a string representation.
      *
-     * This method should be implemented to convert a log values to a string format.
+     * Implementations should produce the parser's native serialization (e.g. a
+     * JSON object string for `JsonParser`). Operates on a `LogLine` rather
+     * than the raw value collection so that implementations can resolve KeyIds
+     * via the line's bound `KeyIndex` (PRD req. 4.1.14).
      *
-     * @param values The log values to convert.
+     * @param line The log line to convert.
      * @return std::string The string representation of the log line.
      */
-    virtual std::string ToString(const LogMap &values) const = 0;
+    virtual std::string ToString(const LogLine &line) const = 0;
 };
 
 } // namespace loglib

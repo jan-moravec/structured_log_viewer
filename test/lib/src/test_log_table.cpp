@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_table.hpp>
@@ -16,14 +17,11 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
 
     // Create test log lines
+    KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", "value1"}}, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"key2", "value2"}}, LogFileReference(*logFile, 1));
+    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, LogFileReference(*logFile, 0));
+    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, LogFileReference(*logFile, 1));
 
-    // Create test keys
-    std::vector<std::string> testKeys = {"key1", "key2"};
-
-    // Create LogData instance
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
     // Create test configuration
@@ -65,13 +63,10 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
 
     // Create initial log lines
+    KeyIndex initialKeys;
     std::vector<LogLine> initialLines;
-    initialLines.emplace_back(LogMap{{"key1", "value1"}}, LogFileReference(*logFile, 0));
+    initialLines.emplace_back(LogMap{{"key1", std::string("value1")}}, initialKeys, LogFileReference(*logFile, 0));
 
-    // Create initial test keys
-    std::vector<std::string> initialKeys = {"key1"};
-
-    // Create initial LogData instance
     LogData initialData(std::move(logFile), std::move(initialLines), std::move(initialKeys));
 
     // Create initial configuration
@@ -96,13 +91,10 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     std::unique_ptr<LogFile> newLogFile = newTestFile.CreateLogFile();
 
     // Create new log lines with new keys
+    KeyIndex newKeys;
     std::vector<LogLine> newLines;
-    newLines.emplace_back(LogMap{{"key2", "value2"}}, LogFileReference(*newLogFile, 0));
+    newLines.emplace_back(LogMap{{"key2", std::string("value2")}}, newKeys, LogFileReference(*newLogFile, 0));
 
-    // Create new test keys
-    std::vector<std::string> newKeys = {"key2"};
-
-    // Create new LogData instance
     LogData newData(std::move(newLogFile), std::move(newLines), std::move(newKeys));
 
     // Update the LogTable with the new data

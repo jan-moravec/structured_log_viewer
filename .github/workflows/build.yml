@@ -190,8 +190,28 @@ jobs:
           cd ${{ env.APP_NAME }}
           mv ../build/release/bin/Release/${{ env.APP_NAME }}.exe .
           mv ../build/release/bin/Release/tzdata .
+          # Carry oneTBB's runtime DLL alongside the executable. The CMake
+          # POST_BUILD rule in app/CMakeLists.txt already copies it next to
+          # StructuredLogViewer.exe, so the file is present in the build tree.
+          Move-Item ../build/release/bin/Release/tbb*.dll .
           windeployqt --release ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
+
+      - name: Smoke-test packaged binary
+        # Launches the packaged executable headlessly so a missing tbb12.dll
+        # (STATUS_DLL_NOT_FOUND, 0xc0000135) fails CI before we ship a broken zip.
+        shell: powershell
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $exe = "${{ env.APP_NAME }}\${{ env.APP_NAME }}.exe"
+          $p = Start-Process -FilePath $exe -PassThru -NoNewWindow
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) {
+            Write-Error "Packaged binary exited prematurely with code $($p.ExitCode) (STATUS_DLL_NOT_FOUND = -1073741515 / 0xc0000135)"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "Packaged binary started successfully and was terminated after 5s."
 
       - name: Compute SHA256 checksums
         shell: powershell

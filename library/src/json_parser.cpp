@@ -1,18 +1,203 @@
 #include "loglib/json_parser.hpp"
 
+#include "buffering_sink.hpp"
+
+#include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
 
+#include <date/date.h>
 #include <fmt/format.h>
 #include <glaze/glaze.hpp>
-#include <mio/mmap.hpp>
-#include <simdjson.h>
 
+#include <oneapi/tbb/enumerable_thread_specific.h>
+#include <oneapi/tbb/global_control.h>
+#include <oneapi/tbb/parallel_pipeline.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace loglib
 {
+
+namespace
+{
+
+/**
+ * @brief Returns a `std::string_view` over a JSON field key with the
+ *        surrounding quotes stripped, taking the fast path when the bytes
+ *        between the quotes contain no backslash.
+ *
+ * Falls back to `field.unescaped_key()` (which materialises an owning
+ * `std::string` via simdjson's reusable buffer) when the bytes contain at
+ * least one backslash. This matches the contract from PRD req. 4.1.15b: the
+ * caller can decide whether to keep the view (zero-copy, points into the mmap
+ * for the duration of the parse) or to materialise an owned copy.
+ *
+ * Returned in @p outView and @p outOwned: at most one of the two is populated.
+ */
+struct FastFieldKey
+{
+    bool isView = false;
+    std::string_view view;
+    std::string owned;
+};
+
+template <class Field>
+FastFieldKey ExtractFieldKey(Field &field)
+{
+    FastFieldKey result;
+
+    // field.key() returns a raw_json_string covering the JSON-source key including its
+    // surrounding quotes. raw() exposes the underlying char* span; we strip the quotes and,
+    // for the common (no escape) case, return a view directly into the mmap. This avoids the
+    // unescape pass and the std::string materialisation that field.unescaped_key() does.
+    simdjson::ondemand::raw_json_string raw;
+    if (field.key().get(raw))
+    {
+        return result;
+    }
+    const char *rawData = raw.raw();
+    if (rawData != nullptr)
+    {
+        // raw() returns a pointer into the input; the string is unterminated and runs up to
+        // the closing quote. We don't have a length directly, so scan for the closing quote
+        // manually. Backslash inside the run forces the slow path because the closing quote
+        // could be escaped.
+        const char *p = rawData;
+        bool sawBackslash = false;
+        while (*p != '"' || sawBackslash)
+        {
+            if (*p == '\\')
+            {
+                sawBackslash = !sawBackslash;
+            }
+            else
+            {
+                sawBackslash = false;
+            }
+            ++p;
+        }
+        const std::string_view inner(rawData, static_cast<size_t>(p - rawData));
+        if (inner.find('\\') == std::string_view::npos)
+        {
+            result.isView = true;
+            result.view = inner;
+            return result;
+        }
+    }
+
+    std::string_view unescaped;
+    if (!field.unescaped_key().get(unescaped))
+    {
+        result.isView = false;
+        result.owned = std::string(unescaped);
+    }
+    return result;
+}
+
+KeyId InternKey(const FastFieldKey &fk, KeyIndex &keys)
+{
+    return fk.isView ? keys.GetOrInsert(fk.view) : keys.GetOrInsert(fk.owned);
+}
+
+/**
+ * @brief Inserts (id, value) into @p out preserving ascending-KeyId order.
+ *
+ * Hot path: the simdjson document iterator is forced to walk fields in
+ * document order, but the canonical KeyIndex assigns ids in first-seen order
+ * across the entire file, so `out` does not stay sorted on its own. Each
+ * insertion does a linear scan from the back; for realistic field counts this
+ * beats `std::lower_bound` due to better branch prediction and the typical
+ * "newly-assigned id is the largest so far" pattern that keeps the loop body
+ * to a single comparison.
+ */
+void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogValue value)
+{
+    auto it = out.end();
+    while (it != out.begin())
+    {
+        auto prev = it - 1;
+        if (prev->first < id)
+        {
+            break;
+        }
+        if (prev->first == id)
+        {
+            // Last write wins on duplicate keys, mirroring the previous LogMap insert behaviour.
+            prev->second = std::move(value);
+            return;
+        }
+        it = prev;
+    }
+    out.emplace(it, id, std::move(value));
+}
+
+template <class Value>
+LogValue ExtractStringValue(Value &value, bool sourceIsStable)
+{
+    // raw_json_token includes the surrounding quotes for a JSON string token. We can only
+    // strip them and emit a view directly if the underlying bytes outlive the LogLine — i.e.
+    // when the parser is iterating directly over the mmap (PRD req. 4.1.6 / 4.1.15a). When
+    // the caller fed simdjson a padded scratch copy (the SIMDJSON_PADDING fallback path), the
+    // returned view points into that scratch buffer and would dangle as soon as the next line
+    // overwrites it; in that case we must materialise an owned std::string.
+    if (sourceIsStable)
+    {
+        std::string_view rawToken(value.raw_json_token());
+        if (rawToken.size() >= 2 && rawToken.front() == '"' && rawToken.back() == '"')
+        {
+            std::string_view inner = rawToken.substr(1, rawToken.size() - 2);
+            if (inner.find('\\') == std::string_view::npos)
+            {
+                return LogValue{inner};
+            }
+        }
+    }
+
+    std::string_view stringValue;
+    if (!value.get_string().get(stringValue))
+    {
+        return LogValue{std::string(stringValue)};
+    }
+    return LogValue{std::monostate{}};
+}
+
+template <class Value>
+LogValue ExtractRawJsonValue(Value &value, bool sourceIsStable)
+{
+    std::string_view rawJson;
+    if (!value.raw_json().get(rawJson))
+    {
+        // Trim trailing whitespace simdjson keeps on raw_json output for arrays/objects.
+        while (!rawJson.empty() && (rawJson.back() == ' ' || rawJson.back() == '\n' || rawJson.back() == '\r' ||
+                                    rawJson.back() == '\t'))
+        {
+            rawJson.remove_suffix(1);
+        }
+        // Same lifetime contract as ExtractStringValue: the view is only safe to keep when it
+        // points into the mmap. If the parser is reading from a padded scratch buffer we make
+        // an owning copy so the LogValue is detached from the per-line scratch lifetime.
+        if (sourceIsStable)
+        {
+            return LogValue{rawJson};
+        }
+        return LogValue{std::string(rawJson)};
+    }
+    return LogValue{std::monostate{}};
+}
+
+} // namespace
 
 bool JsonParser::IsValid(const std::filesystem::path &file) const
 {
@@ -44,7 +229,17 @@ bool JsonParser::IsValid(const std::filesystem::path &file) const
 
 ParseResult JsonParser::Parse(const std::filesystem::path &file) const
 {
-    // Check if file exists and is not empty
+    // Defaulted-options entry point. Routes through the explicit-options
+    // overload so there is exactly one synchronous parse body (PRD req. 4.4.31).
+    return Parse(file, JsonParserOptions{});
+}
+
+ParseResult JsonParser::Parse(const std::filesystem::path &file, JsonParserOptions options) const
+{
+    // Legacy synchronous API. Implement on top of ParseStreaming + an in-process
+    // BufferingSink so there is exactly one parser body to test and benchmark
+    // (PRD req. 4.4.31). The sink owns the LogFile until it is folded into the
+    // final LogData via TakeData().
     if (!std::filesystem::exists(file))
     {
         throw std::runtime_error(fmt::format("File '{}' does not exist.", file.string()));
@@ -54,108 +249,76 @@ ParseResult JsonParser::Parse(const std::filesystem::path &file) const
         throw std::runtime_error(fmt::format("File '{}' is empty.", file.string()));
     }
 
-    // Memory map the file
-    std::error_code errorMap;
-    mio::mmap_source mmap = mio::make_mmap_source(file.string(), errorMap);
-    if (errorMap)
-    {
-        throw std::runtime_error(fmt::format("Failed to memory map file '{}': {}", file.string(), errorMap.message()));
-    }
-
-    ParseCache cache;
-    std::vector<LogLine> lines;
-    std::vector<std::string> errors;
     auto logFile = std::make_unique<LogFile>(file);
+    LogFile *logFilePtr = logFile.get();
+    BufferingSink sink(std::move(logFile));
 
-    // Get file content as string view
-    std::string_view fileContent(mmap.data(), mmap.size());
-    lines.reserve(2000);
-    std::string linePadded;
+    ParseStreaming(*logFilePtr, sink, std::move(options));
 
-    simdjson::ondemand::parser parser;
-    size_t currentPos = 0;
-    size_t lineNumber = 0;
+    LogData data = sink.TakeData();
+    std::vector<std::string> errors = sink.TakeErrors();
+    return ParseResult{std::move(data), std::move(errors)};
+}
 
-    // Process each line
-    while (currentPos < fileContent.size())
+namespace
+{
+
+void EncodeLogValue(glz::generic_sorted_u64 &json, const std::string &key, const LogValue &value)
+{
+    std::visit(
+        [&json, &key](const auto &val) {
+            using T = std::decay_t<decltype(val)>;
+            if constexpr (std::is_same_v<T, std::monostate>)
+            {
+                json[key] = nullptr;
+            }
+            else if constexpr (std::is_same_v<T, TimeStamp>)
+            {
+                json[key] = TimeStampToDateTimeString(val);
+            }
+            else if constexpr (std::is_same_v<T, std::string_view>)
+            {
+                json[key] = std::string(val);
+            }
+            else
+            {
+                json[key] = val;
+            }
+        },
+        value
+    );
+}
+
+std::string SerializeJson(const glz::generic_sorted_u64 &json)
+{
+    std::string result;
+    const auto error = glz::write_json(json, result);
+    if (error)
     {
-        lineNumber++;
+        throw std::runtime_error(fmt::format("Failed to serialize JSON: {}", glz::format_error(error)));
+    }
+    return result;
+}
 
-        // Find the end of the current line (optimize for common case)
-        const char *start = fileContent.data() + currentPos;
-        const char *end = fileContent.data() + fileContent.size();
-        const char *newline = static_cast<const char *>(memchr(start, '\n', end - start));
+} // namespace
 
-        const size_t lineEnd = newline ? (newline - fileContent.data()) : fileContent.size();
-        auto fileReference = logFile->CreateReference(lineEnd + 1);
-        std::string_view line(start, lineEnd - currentPos);
-
-        // Move to the next line
-        currentPos = lineEnd + 1;
-
-        // Adjust reservation after processing some lines to get a better estimate
-        if (lineNumber == 1000)
-        {
-            double avgLineLength = static_cast<double>(currentPos) / static_cast<double>(lineNumber);
-            size_t estimatedLines = static_cast<size_t>(static_cast<double>(fileContent.size()) * 1.5 / avgLineLength);
-            // Re-reserve with better estimate, still capping at a reasonable maximum
-            lines.reserve(estimatedLines);
-        }
-
-        // Remove carriage return if present
-        if (!line.empty() && line.back() == '\r')
-        {
-            line.remove_suffix(1);
-        }
-
-        // Skip empty lines
-        if (!line.empty())
-        {
-            // Parse the line
-            try
-            {
-                const size_t remaining = fileContent.size() - lineEnd;
-                auto result = remaining >= simdjson::SIMDJSON_PADDING
-                                  ? parser.iterate(line.data(), line.size(), line.size() + remaining)
-                                  : parser.iterate(simdjson::pad(linePadded.assign(line)));
-                if (result.error())
-                {
-                    errors.push_back(
-                        fmt::format("Error on line {}: {}", lineNumber, simdjson::error_message(result.error()))
-                    );
-                    continue;
-                }
-
-                auto object = result.get_object();
-                if (object.error())
-                {
-                    errors.push_back(fmt::format("Error on line {}: Not a JSON object.", lineNumber));
-                    continue;
-                }
-
-                auto objectValue = object.value();
-                // Parse the line and add it to our results
-                auto parsedLine = ParseLine(objectValue, cache);
-                lines.emplace_back(std::move(parsedLine), std::move(fileReference));
-            }
-            catch (const std::exception &e)
-            {
-                errors.push_back(fmt::format("Error on line {}: {}", lineNumber, e.what()));
-                continue;
-            }
-        }
+std::string JsonParser::ToString(const LogLine &line) const
+{
+    const auto values = line.IndexedValues();
+    if (values.empty())
+    {
+        return "{}";
     }
 
-    // Prepare the keys for the result
-    std::vector<std::string> finalKeys;
-    finalKeys.reserve(cache.keyTypes.size());
-    for (const auto &keyType : cache.keyTypes)
-    {
-        finalKeys.push_back(keyType.first);
-    }
-    std::sort(finalKeys.begin(), finalKeys.end());
+    glz::generic_sorted_u64 json;
 
-    return ParseResult{LogData(std::move(logFile), std::move(lines), std::move(finalKeys)), std::move(errors)};
+    const auto &keys = line.Keys();
+    for (const auto &entry : values)
+    {
+        EncodeLogValue(json, std::string(keys.KeyOf(entry.first)), entry.second);
+    }
+
+    return SerializeJson(json);
 }
 
 std::string JsonParser::ToString(const LogMap &values) const
@@ -166,124 +329,80 @@ std::string JsonParser::ToString(const LogMap &values) const
     }
 
     glz::generic_sorted_u64 json;
-
-    for (const auto &pair : values)
+    for (const auto &[key, value] : values)
     {
-        const auto &key = pair.first;
-        const auto &value = pair.second;
-
-        std::visit(
-            [&json, &key](const auto &val) {
-                using T = std::decay_t<decltype(val)>;
-                if constexpr (std::is_same_v<T, std::monostate>)
-                {
-                    json[key] = nullptr;
-                }
-                else if constexpr (std::is_same_v<T, TimeStamp>)
-                {
-                    json[key] = TimeStampToDateTimeString(val);
-                }
-                else
-                {
-                    json[key] = val;
-                }
-            },
-            value
-        );
+        EncodeLogValue(json, key, value);
     }
 
-    std::string result;
-    const auto error = glz::write_json(json, result);
-    if (error)
-    {
-        throw std::runtime_error(fmt::format("Failed to serialize JSON: {}", glz::format_error(error)));
-    }
-
-    return result;
+    return SerializeJson(json);
 }
 
-LogMap JsonParser::ParseLine(simdjson::ondemand::object &object, ParseCache &cache)
+std::vector<std::pair<KeyId, LogValue>> JsonParser::ParseLine(
+    simdjson::ondemand::object &object, KeyIndex &keys, ParseCache &cache, bool sourceIsStable
+)
 {
-    LogMap result;
+    std::vector<std::pair<KeyId, LogValue>> result;
+    // Reserve roughly the number of fields we typically see; growth is cheap because the
+    // pair is small.
+    result.reserve(16);
 
-    auto countFieldsResult = object.count_fields();
-    if (countFieldsResult.error())
-    {
-        throw std::runtime_error(
-            fmt::format("Error counting fields: {}", simdjson::error_message(countFieldsResult.error()))
-        );
-    }
-    if (countFieldsResult.value() == 0)
-    {
-        return result;
-    }
-    result.rehash(countFieldsResult.value());
-
-    // Iterate through all key-value pairs in the JSON object
     for (auto field : object)
     {
-        auto key_result = field.unescaped_key();
-        if (key_result.error())
+        FastFieldKey fk = ExtractFieldKey(field);
+        if (!fk.isView && fk.owned.empty())
         {
-            continue; // Skip fields with invalid keys
+            // unescape failed; skip the field rather than emit a synthetic empty key.
+            continue;
         }
 
-        std::string_view key_view = key_result.value();
-        std::string key_str(key_view);
+        const KeyId keyId = InternKey(fk, keys);
+        cache.EnsureCapacity(keyId);
 
-        // Handle different value types
         auto value = field.value();
 
-        // Check if we have cached type information
-        auto typeIt = cache.keyTypes.find(key_str);
-        if (typeIt != cache.keyTypes.end())
+        if (cache.hasKeyType[keyId])
         {
-            bool cacheValid = false;
-
-            // Use cached type information
-            auto type = typeIt->second;
+            const auto type = cache.keyTypes[keyId];
             switch (type)
             {
             case simdjson::ondemand::json_type::boolean: {
-                bool bool_value;
-                if (!value.get(bool_value))
+                bool b;
+                if (!value.get(b))
                 {
-                    result.emplace(std::move(key_str), bool_value);
-                    cacheValid = true;
+                    InsertSorted(result, keyId, LogValue{b});
+                    continue;
                 }
                 break;
             }
             case simdjson::ondemand::json_type::number: {
-                // Use cached number type if available
-                auto numTypeIt = cache.numberTypes.find(key_str);
-                if (numTypeIt != cache.numberTypes.end())
+                if (cache.hasNumberType[keyId])
                 {
-                    switch (numTypeIt->second)
+                    switch (cache.numberTypes[keyId])
                     {
                     case simdjson::ondemand::number_type::signed_integer: {
-                        int64_t int_value;
-                        if (!value.get(int_value))
+                        int64_t i;
+                        if (!value.get(i))
                         {
-                            result.emplace(std::move(key_str), int_value);
-                            cacheValid = true;
+                            InsertSorted(result, keyId, LogValue{i});
+                            continue;
                         }
                         break;
                     }
                     case simdjson::ondemand::number_type::unsigned_integer: {
-                        uint64_t uint_value;
-                        if (!value.get(uint_value))
+                        uint64_t u;
+                        if (!value.get(u))
                         {
-                            result.emplace(std::move(key_str), uint_value);
-                            cacheValid = true;
+                            InsertSorted(result, keyId, LogValue{u});
+                            continue;
                         }
                         break;
                     }
                     case simdjson::ondemand::number_type::floating_point_number: {
-                        double double_value;
-                        if (!value.get(double_value))
+                        double d;
+                        if (!value.get(d))
                         {
-                            result.emplace(std::move(key_str), double_value);
-                            cacheValid = true;
+                            InsertSorted(result, keyId, LogValue{d});
+                            continue;
                         }
                         break;
                     }
@@ -294,159 +413,520 @@ LogMap JsonParser::ParseLine(simdjson::ondemand::object &object, ParseCache &cac
                 break;
             }
             case simdjson::ondemand::json_type::string: {
-                std::string_view string_view;
-                if (!value.get(string_view))
+                LogValue stringValue = ExtractStringValue(value, sourceIsStable);
+                if (!std::holds_alternative<std::monostate>(stringValue))
                 {
-                    result.emplace(std::move(key_str), std::string(string_view));
-                    cacheValid = true;
+                    InsertSorted(result, keyId, std::move(stringValue));
+                    continue;
                 }
                 break;
             }
             case simdjson::ondemand::json_type::array:
             case simdjson::ondemand::json_type::object: {
-                // For objects and arrays, we'll use the raw JSON string
-                std::string_view json_view;
-                if (!value.raw_json().get(json_view))
+                LogValue rawValue = ExtractRawJsonValue(value, sourceIsStable);
+                if (!std::holds_alternative<std::monostate>(rawValue))
                 {
-                    result.emplace(std::move(key_str), std::string(json_view));
-                    cacheValid = true;
+                    InsertSorted(result, keyId, std::move(rawValue));
+                    continue;
                 }
                 break;
             }
             case simdjson::ondemand::json_type::null:
                 if (value.is_null())
                 {
-                    result.emplace(std::move(key_str), std::monostate());
-                    cacheValid = true;
+                    InsertSorted(result, keyId, LogValue{std::monostate{}});
+                    continue;
                 }
                 break;
             default:
                 break;
             }
-
-            if (cacheValid)
-            {
-                continue;
-            }
         }
 
-        // Get the type of the value and cache it
-        auto type_result = value.type();
-        if (type_result.error())
+        // Cache miss / cache mismatch: fall through to typed parsing and prime the cache.
+        auto typeResult = value.type();
+        if (typeResult.error())
         {
-            result.emplace(std::move(key_str), std::monostate());
+            InsertSorted(result, keyId, LogValue{std::monostate{}});
             continue;
         }
 
-        auto type = type_result.value();
-        cache.keyTypes[key_str] = type;
+        const auto type = typeResult.value();
+        cache.keyTypes[keyId] = type;
+        cache.hasKeyType[keyId] = true;
 
         switch (type)
         {
         case simdjson::ondemand::json_type::boolean: {
-            bool bool_value;
-            if (!value.get(bool_value))
+            bool b;
+            if (!value.get(b))
             {
-                result.emplace(std::move(key_str), bool_value);
+                InsertSorted(result, keyId, LogValue{b});
             }
             else
             {
-                result.emplace(std::move(key_str), std::monostate());
+                InsertSorted(result, keyId, LogValue{std::monostate{}});
             }
             break;
         }
         case simdjson::ondemand::json_type::number: {
-            // Check the number type
-            auto number_type = value.get_number_type();
-            if (number_type.error())
+            auto numberType = value.get_number_type();
+            if (numberType.error())
             {
-                result.emplace(std::move(key_str), std::monostate());
+                InsertSorted(result, keyId, LogValue{std::monostate{}});
                 break;
             }
-
-            // Cache the number type
-            cache.numberTypes[key_str] = number_type.value();
-
-            switch (number_type.value())
+            cache.numberTypes[keyId] = numberType.value();
+            cache.hasNumberType[keyId] = true;
+            switch (numberType.value())
             {
             case simdjson::ondemand::number_type::signed_integer: {
-                int64_t int_value;
-                if (!value.get(int_value))
+                int64_t i;
+                if (!value.get(i))
                 {
-                    result.emplace(std::move(key_str), int_value);
+                    InsertSorted(result, keyId, LogValue{i});
                 }
                 else
                 {
-                    result.emplace(std::move(key_str), std::monostate());
+                    InsertSorted(result, keyId, LogValue{std::monostate{}});
                 }
                 break;
             }
             case simdjson::ondemand::number_type::unsigned_integer: {
-                uint64_t uint_value;
-                if (!value.get(uint_value))
+                uint64_t u;
+                if (!value.get(u))
                 {
-                    result.emplace(std::move(key_str), uint_value);
+                    InsertSorted(result, keyId, LogValue{u});
                 }
                 else
                 {
-                    result.emplace(std::move(key_str), std::monostate());
+                    InsertSorted(result, keyId, LogValue{std::monostate{}});
                 }
                 break;
             }
             case simdjson::ondemand::number_type::floating_point_number: {
-                double double_value;
-                if (!value.get(double_value))
+                double d;
+                if (!value.get(d))
                 {
-                    result.emplace(std::move(key_str), double_value);
+                    InsertSorted(result, keyId, LogValue{d});
                 }
                 else
                 {
-                    result.emplace(std::move(key_str), std::monostate());
+                    InsertSorted(result, keyId, LogValue{std::monostate{}});
                 }
                 break;
             }
             default:
-                result.emplace(std::move(key_str), std::monostate());
+                InsertSorted(result, keyId, LogValue{std::monostate{}});
                 break;
             }
             break;
         }
         case simdjson::ondemand::json_type::string: {
-            std::string_view string_view;
-            if (!value.get(string_view))
-            {
-                result.emplace(std::move(key_str), std::string(string_view));
-            }
-            else
-            {
-                result.emplace(std::move(key_str), std::monostate());
-            }
+            LogValue stringValue = ExtractStringValue(value, sourceIsStable);
+            InsertSorted(result, keyId, std::move(stringValue));
             break;
         }
         case simdjson::ondemand::json_type::array:
         case simdjson::ondemand::json_type::object: {
-            // For objects and arrays, we'll use the raw JSON string
-            std::string_view json_view;
-            if (!value.raw_json().get(json_view))
-            {
-                result.emplace(std::move(key_str), std::string(json_view));
-            }
-            else
-            {
-                result.emplace(std::move(key_str), std::monostate());
-            }
+            LogValue rawValue = ExtractRawJsonValue(value, sourceIsStable);
+            InsertSorted(result, keyId, std::move(rawValue));
             break;
         }
         case simdjson::ondemand::json_type::null:
-            result.emplace(std::move(key_str), std::monostate());
+            InsertSorted(result, keyId, LogValue{std::monostate{}});
             break;
         default:
-            result.emplace(std::move(key_str), std::monostate());
+            InsertSorted(result, keyId, LogValue{std::monostate{}});
             break;
         }
     }
 
     return result;
+}
+
+/**
+ * @brief Streaming-pipeline implementation detail for `JsonParser`.
+ *
+ * Bundled as a friend struct (declared in `json_parser.hpp`) so that the
+ * Stage B parsing body can reach the private nested `ParseCache` and the
+ * private static `ParseLine` helper without exposing them on the public
+ * `JsonParser` surface. Everything inside lives only in this translation
+ * unit; nothing here is part of the binary interface.
+ */
+struct JsonParser::StreamingDetail
+{
+    /**
+     * @brief Stage A token: a contiguous byte range of the mmap that
+     *        contains an integer number of complete log lines.
+     *
+     * Stage A advances a cursor in `serial_in_order` mode and emits one of
+     * these per pipeline tick. `bytesBegin` and `bytesEnd` are pointers into
+     * the mmap (lifetime tied to the LogFile, which outlives the pipeline).
+     * `firstLineNumber` is the 1-based absolute line number of the first
+     * line in the batch, used by Stage B to stamp each LogLine's
+     * LogFileReference.
+     */
+    struct PipelineBatch
+    {
+        uint64_t batchIndex = 0;
+        const char *bytesBegin = nullptr;
+        const char *bytesEnd = nullptr;
+        const char *fileEnd = nullptr;
+        size_t firstLineNumber = 1;
+    };
+
+    /**
+     * @brief Stage B token: per-line parse output for a single PipelineBatch.
+     *
+     * The pipeline shuttles these from Stage B (parallel) to Stage C
+     * (serial_in_order); ordering is reasserted by
+     * `tbb::filter_mode::serial_in_order` before the appender sees them.
+     */
+    struct ParsedPipelineBatch
+    {
+        uint64_t batchIndex = 0;
+        std::vector<LogLine> lines;
+        std::vector<uint64_t> localLineOffsets; // start-of-line byte offsets within the file
+        std::vector<std::string> errors;
+        size_t firstLineNumber = 1;
+        size_t totalLineCount = 0; // lines + errors + skipped-empty
+    };
+
+    /**
+     * @brief Per-worker scratch held in oneTBB's enumerable_thread_specific.
+     *
+     * Each Stage B worker holds one of these to amortise the cost of: (a)
+     * the simdjson on-demand parser instance, (b) the padded scratch buffer
+     * used when the trailing tail of the mmap doesn't have SIMDJSON_PADDING
+     * bytes of slack, (c) the per-KeyId type-cache vector, and (d) an
+     * optional small key cache (key string -> KeyId) that absorbs the
+     * std::string materialisation cost in front of the canonical KeyIndex
+     * (PRD req. 4.1.2/2b).
+     *
+     * The per-worker timestamp helper (`LastValidTimestampParse`) is
+     * intentionally *not* held here yet: Stage B in-pipeline timestamp
+     * promotion (PRD req. 4.2.21) is wired up in task 3.8/4.6 once
+     * `BackfillTimestampColumn` is extracted from `log_processing.cpp`.
+     */
+    struct WorkerState
+    {
+        simdjson::ondemand::parser parser;
+        std::string linePadded;
+        JsonParser::ParseCache cache;
+        std::unordered_map<std::string, KeyId> keyCache;
+    };
+
+    /**
+     * @brief Walks @p batch's bytes and parses each non-empty line into a
+     *        `LogLine`.
+     *
+     * Encapsulates the per-batch work of Stage B so we can unit-test the
+     * parsing body separately from the pipeline harness if needed. The
+     * per-worker timestamp-promotion fast path lands once
+     * `BackfillTimestampColumn` is extracted in task 3.8/4.6.
+     */
+    static ParsedPipelineBatch ParseBatchBody(
+        const PipelineBatch &batch,
+        WorkerState &worker,
+        KeyIndex &keys,
+        LogFile &logFile,
+        const LogConfiguration *configuration,
+        bool useThreadLocalKeyCache,
+        bool useParseCache
+    );
+};
+
+JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::ParseBatchBody(
+    const PipelineBatch &batch,
+    WorkerState &worker,
+    KeyIndex &keys,
+    LogFile &logFile,
+    const LogConfiguration *configuration,
+    bool useThreadLocalKeyCache,
+    bool useParseCache
+)
+{
+    (void)configuration; // Stage B in-pipeline timestamp promotion lands in task 4.6/3.8.
+
+    ParsedPipelineBatch parsed;
+    parsed.batchIndex = batch.batchIndex;
+    parsed.firstLineNumber = batch.firstLineNumber;
+
+    const char *cursor = batch.bytesBegin;
+    const char *end = batch.bytesEnd;
+    const char *fileEnd = batch.fileEnd;
+    const char *fileBegin = logFile.Data();
+
+    // Estimate ~32 bytes per line is too aggressive for big logs; ~64 is closer for prod logs.
+    const size_t batchBytes = static_cast<size_t>(end - cursor);
+    const size_t estimatedLines = batchBytes / 64 + 1;
+    parsed.lines.reserve(estimatedLines);
+    parsed.localLineOffsets.reserve(estimatedLines);
+
+    size_t absoluteLineNumber = batch.firstLineNumber;
+
+    while (cursor < end)
+    {
+        const char *lineStart = cursor;
+        const char *newline = static_cast<const char *>(memchr(cursor, '\n', static_cast<size_t>(end - cursor)));
+        const char *lineEnd = newline ? newline : end;
+        cursor = (newline != nullptr) ? newline + 1 : end;
+
+        std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.remove_suffix(1);
+        }
+
+        // Always record the offset, including for empty lines, so the LogFile's mLineOffsets
+        // table matches the legacy parser's behaviour (one entry per consumed line). The
+        // stored value is the offset of the *next* line (i.e. one past the trailing newline),
+        // matching the sentinel convention `LogFile::CreateReference` uses.
+        parsed.localLineOffsets.push_back(static_cast<uint64_t>(cursor - fileBegin));
+
+        if (line.empty())
+        {
+            absoluteLineNumber++;
+            continue;
+        }
+
+        try
+        {
+            // The parser is reading directly from the mmap when there is at least
+            // SIMDJSON_PADDING bytes of slack between line.end() and the file tail; otherwise
+            // we fall back to a per-worker padded copy. Only the mmap path can safely emit
+            // string_view alternatives in LogValue (PRD req. 4.1.6 / 4.1.15a).
+            const size_t remaining = static_cast<size_t>(fileEnd - lineEnd);
+            const bool sourceIsStable = remaining >= simdjson::SIMDJSON_PADDING;
+            auto result = sourceIsStable
+                              ? worker.parser.iterate(line.data(), line.size(), line.size() + remaining)
+                              : worker.parser.iterate(simdjson::pad(worker.linePadded.assign(line)));
+            if (result.error())
+            {
+                parsed.errors.push_back(fmt::format(
+                    "Error on line {}: {}",
+                    absoluteLineNumber,
+                    simdjson::error_message(result.error())
+                ));
+                absoluteLineNumber++;
+                continue;
+            }
+
+            auto object = result.get_object();
+            if (object.error())
+            {
+                parsed.errors.push_back(fmt::format("Error on line {}: Not a JSON object.", absoluteLineNumber));
+                absoluteLineNumber++;
+                continue;
+            }
+
+            auto objectValue = object.value();
+            (void)useThreadLocalKeyCache; // hooked in once a per-worker cache wins benchmarks
+            (void)useParseCache;          // ParseCache is always-on for now; opt-out lands in 6.x
+            auto values = JsonParser::ParseLine(objectValue, keys, worker.cache, sourceIsStable);
+
+            // Placeholder line number; Stage C overwrites once it reasserts ordering.
+            LogFileReference fileRef(logFile, 0);
+            LogLine logLine(std::move(values), keys, std::move(fileRef));
+            logLine.FileReference().SetLineNumber(absoluteLineNumber);
+
+            parsed.lines.push_back(std::move(logLine));
+        }
+        catch (const std::exception &e)
+        {
+            parsed.errors.push_back(fmt::format("Error on line {}: {}", absoluteLineNumber, e.what()));
+        }
+
+        absoluteLineNumber++;
+    }
+
+    parsed.totalLineCount = absoluteLineNumber - batch.firstLineNumber;
+    return parsed;
+}
+
+void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParserOptions options) const
+{
+    sink.OnStarted();
+
+    // Cooperative cancellation entry-check: if the caller already requested stop before we ever
+    // started, fire OnFinished(true) and bail without doing any work (PRD req. 4.2.22a).
+    if (options.stopToken.stop_requested())
+    {
+        sink.OnFinished(true);
+        return;
+    }
+
+    const char *fileBegin = file.Data();
+    const size_t fileSize = file.Size();
+    if (fileSize == 0 || fileBegin == nullptr)
+    {
+        sink.OnFinished(false);
+        return;
+    }
+    const char *fileEnd = fileBegin + fileSize;
+
+    // Resolve thread/parallelism settings. Worker count is bounded by both the user request
+    // and our default ceiling; ntokens defaults to 2× workers so Stage B can stay busy while
+    // Stage A and Stage C do their (much lighter) bookkeeping.
+    unsigned int effectiveThreads = options.threads != 0
+                                        ? options.threads
+                                        : std::min(std::thread::hardware_concurrency(),
+                                                   static_cast<unsigned int>(JsonParserOptions::kDefaultMaxThreads));
+    if (effectiveThreads == 0)
+    {
+        effectiveThreads = 1;
+    }
+    const size_t ntokens = options.ntokens != 0 ? options.ntokens : static_cast<size_t>(2 * effectiveThreads);
+    const size_t batchSize = options.batchSizeBytes != 0 ? options.batchSizeBytes
+                                                         : JsonParserOptions::kDefaultBatchSizeBytes;
+
+    // Pre-grow the file's line offset table to roughly the expected number of lines so the
+    // Stage C appender (or the calling sink, in the streaming case) does not pay a quadratic
+    // realloc tax on big files. Estimate is intentionally generous — overshooting is cheap.
+    file.ReserveLineOffsets(fileSize / 100);
+
+    // Borrow the canonical KeyIndex from the sink (PRD req. 4.1.2/2a). Every Stage B worker
+    // routes GetOrInsert/KeyOf through this single instance, and Stage C reads its
+    // high-water-mark slice directly to populate StreamedBatch::newKeys. The sink owns the
+    // KeyIndex's lifetime; we never make a parallel copy that would have to be reconciled.
+    KeyIndex &keys = sink.Keys();
+    using PipelineBatch = StreamingDetail::PipelineBatch;
+    using ParsedPipelineBatch = StreamingDetail::ParsedPipelineBatch;
+    using WorkerState = StreamingDetail::WorkerState;
+    oneapi::tbb::enumerable_thread_specific<WorkerState> workers;
+
+    const LogConfiguration *configurationPtr = options.configuration.get();
+    const bool useThreadLocalKeyCache = options.useThreadLocalKeyCache;
+    const bool useParseCache = options.useParseCache;
+
+    // Stage A: serial, in-order. Walks the mmap at batchSize granularity, advancing to the
+    // next newline so each batch contains an integer number of lines. Tracks the absolute line
+    // number of the first line in the next batch so Stage C can stamp LogFileReferences
+    // without an extra accumulator.
+    const char *cursor = fileBegin;
+    uint64_t batchIndex = 0;
+    size_t nextLineNumber = 1;
+    std::stop_token stopToken = options.stopToken;
+
+    auto stageA = [&](oneapi::tbb::flow_control &fc) -> PipelineBatch {
+        if (cursor >= fileEnd || stopToken.stop_requested())
+        {
+            fc.stop();
+            return PipelineBatch{};
+        }
+
+        const char *batchBegin = cursor;
+        const char *target = std::min(cursor + batchSize, fileEnd);
+        if (target < fileEnd)
+        {
+            // Advance to next newline so each batch is an integer number of lines. If no
+            // newline exists between target and fileEnd, the batch absorbs the rest of the
+            // file (handles the "single line larger than batch" case).
+            const char *newline = static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
+            cursor = (newline != nullptr) ? newline + 1 : fileEnd;
+        }
+        else
+        {
+            cursor = fileEnd;
+        }
+
+        PipelineBatch out;
+        out.batchIndex = batchIndex++;
+        out.bytesBegin = batchBegin;
+        out.bytesEnd = cursor;
+        out.fileEnd = fileEnd;
+        out.firstLineNumber = nextLineNumber;
+
+        // Pre-count this batch's newlines so Stage A keeps an accurate line-number running
+        // total. memchr is cheap enough that doing it twice (here and in Stage B) is not
+        // a measurable cost in practice; if it becomes one we can hoist it from Stage B.
+        size_t lineCount = 0;
+        for (const char *p = batchBegin; p < cursor; ++p)
+        {
+            const char *nl = static_cast<const char *>(memchr(p, '\n', static_cast<size_t>(cursor - p)));
+            if (nl == nullptr)
+            {
+                ++lineCount; // trailing line without '\n'
+                break;
+            }
+            ++lineCount;
+            p = nl;
+        }
+        nextLineNumber += lineCount;
+        return out;
+    };
+
+    // Stage B: parallel. Per-worker simdjson + KeyIndex interning + ParseCache lookups.
+    auto stageB = [&](PipelineBatch batch) -> ParsedPipelineBatch {
+        WorkerState &worker = workers.local();
+        return StreamingDetail::ParseBatchBody(
+            batch, worker, keys, file, configurationPtr, useThreadLocalKeyCache, useParseCache
+        );
+    };
+
+    // Stage C: serial, in-order. Aggregates per-batch state, computes the new-keys slice
+    // versus the previous batch's KeyIndex high-water mark, and forwards the StreamedBatch
+    // to the sink. Coalescing into larger sink-visible batches lands in task 5.x; for now we
+    // pass each pipeline batch through 1:1. We start the high-water mark from the sink's
+    // current key count so a sink that pre-populated its KeyIndex (e.g. via a previous
+    // parse on the same model) does not see those keys repeated as "new" in batch 0.
+    size_t prevKeyCount = keys.Size();
+    auto stageC = [&](ParsedPipelineBatch parsed) {
+        StreamedBatch batch;
+        batch.firstLineNumber = parsed.firstLineNumber;
+        batch.lines = std::move(parsed.lines);
+        batch.localLineOffsets = std::move(parsed.localLineOffsets);
+        batch.errors = std::move(parsed.errors);
+
+        const size_t currentKeyCount = keys.Size();
+        if (currentKeyCount > prevKeyCount)
+        {
+            batch.newKeys.reserve(currentKeyCount - prevKeyCount);
+            for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+            {
+                batch.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+            }
+            prevKeyCount = currentKeyCount;
+        }
+
+        sink.OnBatch(std::move(batch));
+    };
+
+    // RAII-scope an explicit oneTBB parallelism cap so we do not balloon thread usage on
+    // 64-core hosts; users can opt into more via JsonParserOptions::threads.
+    oneapi::tbb::global_control gc(
+        oneapi::tbb::global_control::max_allowed_parallelism, static_cast<size_t>(effectiveThreads)
+    );
+
+    oneapi::tbb::parallel_pipeline(
+        ntokens,
+        oneapi::tbb::make_filter<void, PipelineBatch>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
+            oneapi::tbb::make_filter<PipelineBatch, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
+            oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
+    );
+
+    // Final flush: even if the last pipeline batch already fired, the sink contract (PRD
+    // req. 4.3.26a) requires one trailing OnBatch carrying any tail-end newKeys/errors. With
+    // the 1:1 coalescing above this is normally redundant, but issuing a no-op batch keeps the
+    // sink invariant simple to reason about.
+    {
+        StreamedBatch tail;
+        tail.firstLineNumber = nextLineNumber;
+        const size_t currentKeyCount = keys.Size();
+        if (currentKeyCount > prevKeyCount)
+        {
+            tail.newKeys.reserve(currentKeyCount - prevKeyCount);
+            for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+            {
+                tail.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+            }
+            prevKeyCount = currentKeyCount;
+        }
+        sink.OnBatch(std::move(tail));
+    }
+
+    sink.OnFinished(stopToken.stop_requested());
 }
 
 } // namespace loglib

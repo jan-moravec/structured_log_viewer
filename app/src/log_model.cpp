@@ -77,6 +77,13 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 {
                     return QVariant(ConvertToSingleLineCompactQString(arg));
                 }
+                else if constexpr (std::is_same_v<T, std::string_view>)
+                {
+                    // string_view alternative carries values that point directly into the
+                    // mmap (PRD req. 4.1.6). Promote to std::string so the QString factory
+                    // never observes the borrowed view past the LogValue's lifetime.
+                    return QVariant(ConvertToSingleLineCompactQString(std::string(arg)));
+                }
                 else if constexpr (std::is_same_v<T, int64_t>)
                 {
                     return QVariant::fromValue<qlonglong>(arg);
