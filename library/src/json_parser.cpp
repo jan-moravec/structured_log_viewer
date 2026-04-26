@@ -777,7 +777,15 @@ struct JsonParser::StreamingDetail
     struct WorkerState
     {
         simdjson::ondemand::parser parser;
+        // Per-worker scratch for the !sourceIsStable tail-line branch (see PRD §4.5 /
+        // parser-perf task 6.0). Sized once on first slow-path hit to fit the largest
+        // observed line plus `simdjson::SIMDJSON_PADDING` plus a small slack so subsequent
+        // tail-line iterations only memcpy + memset + iterate (no allocation, no
+        // trailing-whitespace scan that `simdjson::pad` does internally). Tracking
+        // `maxLineSize` separately from `linePadded.size()` keeps the grow check a single
+        // size_t comparison even after the buffer has been grown for the padding region.
         std::string linePadded;
+        size_t maxLineSize = 0;
         JsonParser::ParseCache cache;
         detail::PerWorkerKeyCache keyCache;
         std::vector<std::optional<LastValidTimestampParse>> lastValidTimestamps;
@@ -881,11 +889,43 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
             // SIMDJSON_PADDING bytes of slack between line.end() and the file tail; otherwise
             // we fall back to a per-worker padded copy. Only the mmap path can safely emit
             // string_view alternatives in LogValue (PRD req. 4.1.6 / 4.1.15a).
+            //
+            // Slow-path note (PRD §4.5 / parser-perf task 6.0): the legacy code wrapped the
+            // assign in `simdjson::pad(...)`, which (a) walks the new bytes backwards looking
+            // for trailing whitespace it could reuse as padding and (b) calls
+            // `s.append(needed_padding, ' ')` per line — a `traits::assign` loop that may also
+            // reallocate. We bypass that helper entirely: `linePadded` is kept permanently
+            // sized to fit the worker's largest observed line plus `SIMDJSON_PADDING` plus a
+            // small slack, then each tail line is `memcpy`'d in and the trailing padding bytes
+            // are zeroed via `memset`. After warm-up this branch is allocation-free.
             const size_t remaining = static_cast<size_t>(fileEnd - lineEnd);
             const bool sourceIsStable = remaining >= simdjson::SIMDJSON_PADDING;
             auto result = sourceIsStable
                               ? worker.parser.iterate(line.data(), line.size(), line.size() + remaining)
-                              : worker.parser.iterate(simdjson::pad(worker.linePadded.assign(line)));
+                              : [&]() {
+                                    const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
+                                    if (line.size() > worker.maxLineSize ||
+                                        worker.linePadded.size() < needed)
+                                    {
+                                        worker.maxLineSize = std::max(worker.maxLineSize, line.size());
+                                        // 64 bytes of head-room amortises the resize cost over the
+                                        // next few growing tail lines without bloating idle workers.
+                                        worker.linePadded.resize(
+                                            worker.maxLineSize + simdjson::SIMDJSON_PADDING + 64
+                                        );
+                                    }
+                                    std::memcpy(worker.linePadded.data(), line.data(), line.size());
+                                    std::memset(
+                                        worker.linePadded.data() + line.size(),
+                                        0,
+                                        simdjson::SIMDJSON_PADDING
+                                    );
+                                    return worker.parser.iterate(
+                                        worker.linePadded.data(),
+                                        line.size(),
+                                        worker.linePadded.size()
+                                    );
+                                }();
             if (result.error())
             {
                 // Error messages quote the *relative* line index here; Stage C does not

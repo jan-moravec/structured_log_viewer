@@ -1012,3 +1012,53 @@ TEST_CASE(
         CHECK(AsStringView(value) == std::string_view{expected[i].second});
     }
 }
+
+TEST_CASE(
+    "Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of EOF",
+    "[json_parser][padding_tail]"
+)
+{
+    // PRD §4.5 / parser-perf task 6.4: every short fixture's last line ends within
+    // `simdjson::SIMDJSON_PADDING` bytes of EOF, so Stage B's `!sourceIsStable` branch
+    // takes over and parses the line out of the per-worker `linePadded` scratch instead
+    // of the mmap directly. Task 6.0 replaced the `simdjson::pad(...)` call on this
+    // path with explicit `memcpy` + `memset` + length-aware `iterate`, plus a one-shot
+    // `worker.linePadded.resize(...)` sized to the largest line observed by the worker.
+    // The two failure modes this test exercises:
+    //   1. the resize-on-grow branch when later lines are longer than earlier ones,
+    //   2. the memcpy + memset + iterate body itself, which has to produce values
+    //      byte-identical to the mmap fast path even though the parser is now reading
+    //      from `linePadded` rather than the source bytes.
+    using namespace loglib;
+
+    // Three lines whose payloads grow monotonically, so the slow-path resize fires
+    // first on line 1, again on line 2, and not on line 3 (capacity already covers it).
+    // Padding is only ~64 bytes on Win/MSVC so even the longest line below sits well
+    // within SIMDJSON_PADDING of EOF for any reasonable file size.
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.emplace_back(R"({"k":"a"})");                                  // shortest
+    lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwx"})");           // longer
+    lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})"); // longest
+    const TestJsonLogFile testFile(lines);
+
+    JsonParser parser;
+    const ParseResult result = parser.Parse(testFile.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == lines.size());
+
+    const KeyId keyId = result.data.Keys().Find("k");
+    REQUIRE(keyId != kInvalidKeyId);
+
+    const std::vector<std::string> expectedValues = {
+        "a",
+        "abcdefghijklmnopqrstuvwx",
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+    };
+
+    for (size_t i = 0; i < expectedValues.size(); ++i)
+    {
+        INFO("i=" << i << " expected value=" << expectedValues[i]);
+        const LogValue value = result.data.Lines()[i].GetValue(keyId);
+        CHECK(AsStringView(value) == std::string_view{expectedValues[i]});
+    }
+}
