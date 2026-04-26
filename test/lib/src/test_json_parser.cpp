@@ -1062,3 +1062,61 @@ TEST_CASE(
         CHECK(AsStringView(value) == std::string_view{expectedValues[i]});
     }
 }
+
+TEST_CASE(
+    "InsertSorted preserves last-write-wins on duplicate keys above the lower_bound threshold",
+    "[json_parser][duplicate_keys]"
+)
+{
+    // PRD §4.6 / parser-perf task 7.3: above ~8 fields per line `InsertSorted` switches
+    // from its narrow-row linear back-scan to `std::lower_bound`. The duplicate-key
+    // semantics must remain identical across the threshold: when the same key appears
+    // more than once in a single JSON line, the *last* occurrence wins (req. 4.6.4),
+    // matching the legacy `LogMap` insert behaviour the rest of the parser relies on.
+    //
+    // The narrow-row branch handled this by overwriting the equal-keyed slot it
+    // discovered while back-scanning. The new lower_bound branch checks the result
+    // for an exact-key match before emplacing. This test pins both branches at once
+    // by emitting one line that hits each side of the threshold and asserting that
+    // the duplicate-key value the parser keeps is the second one in document order.
+    using namespace loglib;
+
+    // (1) Wide row: 12 fields total, with `dup` duplicated. The 12 distinct field
+    //     positions push `out.size()` above the kInsertSortedLowerBoundThreshold (8)
+    //     well before the second `dup` arrives, so the duplicate handling exercises
+    //     the lower_bound branch. We hand-craft the JSON so simdjson preserves the
+    //     duplicate (`glz::generic_sorted_u64` would dedup at construction time).
+    //
+    // (2) Narrow row: 4 fields with `dup` duplicated. `out.size() < 8` for the
+    //     entire line, so the linear back-scan branch handles it. Both rows must
+    //     yield the same "last write wins" outcome.
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.emplace_back(
+        R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
+    );
+    lines.emplace_back(R"({"a":1,"dup":"first","b":2,"dup":"second"})");
+
+    const TestJsonLogFile testFile(lines);
+
+    JsonParser parser;
+    const ParseResult result = parser.Parse(testFile.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == lines.size());
+
+    const KeyId dupKey = result.data.Keys().Find("dup");
+    REQUIRE(dupKey != kInvalidKeyId);
+
+    // Wide row exercises the lower_bound branch.
+    {
+        INFO("wide row (>= 8 fields): lower_bound branch");
+        const LogValue value = result.data.Lines()[0].GetValue(dupKey);
+        CHECK(AsStringView(value) == std::string_view{"second"});
+    }
+
+    // Narrow row exercises the linear back-scan branch.
+    {
+        INFO("narrow row (< 8 fields): linear back-scan branch");
+        const LogValue value = result.data.Lines()[1].GetValue(dupKey);
+        CHECK(AsStringView(value) == std::string_view{"second"});
+    }
+}

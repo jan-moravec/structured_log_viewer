@@ -232,33 +232,76 @@ KeyId InternKeyVia(const FastFieldKey &fk, KeyIndex &keys, detail::PerWorkerKeyC
 }
 
 /**
+ * @brief Field-count threshold above which `InsertSorted` switches from a
+ *        linear back-scan to `std::lower_bound`.
+ *
+ * The linear back-scan beats `std::lower_bound` for narrow rows (the typical
+ * case where simdjson hands fields to us in document order and the
+ * newly-assigned KeyId is already the largest so far, so the loop body
+ * collapses to a single `prev->first < id` comparison and immediately breaks).
+ * Above ~8 fields per line the binary search starts to win because the
+ * back-scan turns into a worst-case O(N) walk on every duplicate-key collision
+ * and on the "field appeared earlier in document order" path that the [wide]
+ * fixture (30 columns per line) deliberately exercises.
+ *
+ * The threshold is empirically chosen at 8 per PRD §4.6.1 / task 7.2: it is
+ * the inflection point where the branch-predictor advantage of the back-scan
+ * is overtaken by the cache-friendly halving of `std::lower_bound`. The 5- and
+ * 30-column benchmarks ([large] / [wide]) sit comfortably on either side.
+ */
+constexpr size_t kInsertSortedLowerBoundThreshold = 8;
+
+/**
  * @brief Inserts (id, value) into @p out preserving ascending-KeyId order.
  *
  * Hot path: the simdjson document iterator is forced to walk fields in
  * document order, but the canonical KeyIndex assigns ids in first-seen order
- * across the entire file, so `out` does not stay sorted on its own. Each
- * insertion does a linear scan from the back; for realistic field counts this
- * beats `std::lower_bound` due to better branch prediction and the typical
- * "newly-assigned id is the largest so far" pattern that keeps the loop body
- * to a single comparison.
+ * across the entire file, so `out` does not stay sorted on its own. For the
+ * common narrow-row case (`out.size() < kInsertSortedLowerBoundThreshold`) we
+ * keep the linear back-scan: branch prediction is excellent because the
+ * "newly-assigned id is the largest so far" pattern collapses the loop body
+ * to a single comparison, and the back-scan handles the duplicate-key
+ * "last write wins" case in the same pass with no extra branches.
+ *
+ * Above the threshold (the [wide] benchmark fixture lives here) we switch to
+ * `std::lower_bound` so the per-field cost stays O(log N) instead of O(N).
+ * Duplicate-key semantics are preserved: when `lower_bound` lands on an
+ * equal-keyed element we overwrite its value in place (last write wins),
+ * matching the legacy `LogMap` insert semantics that the [duplicate_keys]
+ * unit test pins down.
  */
 void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogValue value)
 {
-    auto it = out.end();
-    while (it != out.begin())
+    if (out.size() < kInsertSortedLowerBoundThreshold)
     {
-        auto prev = it - 1;
-        if (prev->first < id)
+        auto it = out.end();
+        while (it != out.begin())
         {
-            break;
+            auto prev = it - 1;
+            if (prev->first < id)
+            {
+                break;
+            }
+            if (prev->first == id)
+            {
+                // Last write wins on duplicate keys, mirroring the previous LogMap insert behaviour.
+                prev->second = std::move(value);
+                return;
+            }
+            it = prev;
         }
-        if (prev->first == id)
-        {
-            // Last write wins on duplicate keys, mirroring the previous LogMap insert behaviour.
-            prev->second = std::move(value);
-            return;
-        }
-        it = prev;
+        out.emplace(it, id, std::move(value));
+        return;
+    }
+
+    auto it = std::lower_bound(out.begin(), out.end(), id, [](const std::pair<KeyId, LogValue> &lhs, KeyId rhs) {
+        return lhs.first < rhs;
+    });
+    if (it != out.end() && it->first == id)
+    {
+        // Last write wins on duplicate keys; mirrors the back-scan branch above.
+        it->second = std::move(value);
+        return;
     }
     out.emplace(it, id, std::move(value));
 }
