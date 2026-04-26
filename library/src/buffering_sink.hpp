@@ -48,6 +48,24 @@ public:
     void OnFinished(bool cancelled) override;
 
     /**
+     * @brief Opts the buffering sink into Stage C's uncoalesced fast path.
+     *
+     * Per PRD §4.8.3 / parser-perf task 9.4: `BufferingSink::OnBatch`
+     * unconditionally appends every batch into its own `mLines` /
+     * `mLineOffsets` / `mErrors` accumulators, so Stage C's 1 000-line
+     * coalescing window is wasted double-buffering. Returning `true`
+     * lets the parser forward each `ParsedPipelineBatch` directly to
+     * `OnBatch` without going through the `pending` accumulator or the
+     * `kStreamFlushLines` / `kStreamFlushInterval` thresholds. Functional
+     * behaviour of the legacy `Parse(path)` API is unchanged — only the
+     * Stage C bookkeeping cost goes away.
+     */
+    bool PrefersUncoalesced() const override
+    {
+        return true;
+    }
+
+    /**
      * @brief Releases the buffered `LogData` (file + lines + keys) to the
      *        caller. Must be called exactly once after `OnFinished`.
      */

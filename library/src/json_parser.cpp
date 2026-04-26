@@ -1237,9 +1237,19 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     // We start the high-water mark from the sink's current key count so a sink that
     // pre-populated its KeyIndex (e.g. via a previous parse on the same model) does not see
     // those keys repeated as "new" in batch 0.
+    //
+    // Sinks may opt into an uncoalesced fast path (PRD §4.8.3 / parser-perf task 9.4):
+    // `BufferingSink` re-buffers every `OnBatch` straight into its own
+    // `mLines`/`mLineOffsets`/`mErrors` accumulators, so the `pending` double-buffer here is
+    // wasted double work. When `sink.PrefersUncoalesced()` is true we forward each parsed
+    // batch directly to `OnBatch`, skipping the `pending` accumulator, the
+    // `kStreamFlushLines` / `kStreamFlushInterval` thresholds, the `lastFlush` clock, and
+    // the trailing `flushPending(true)` ceremony — there is nothing to flush. Streaming GUI
+    // sinks (`QtStreamingLogSink`) keep the default and the coalesced path runs unchanged.
     constexpr size_t kStreamFlushLines = 1000;
     constexpr auto kStreamFlushInterval = std::chrono::milliseconds(50);
 
+    const bool prefersUncoalesced = sink.PrefersUncoalesced();
     StreamedBatch pending;
     bool pendingPrimed = false;
     size_t prevKeyCount = keys.Size();
@@ -1300,6 +1310,38 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
             }
         }
 
+        if (prefersUncoalesced)
+        {
+            // PRD §4.8.3 fast path: forward each parsed batch directly to the sink with
+            // no per-batch coalescing overhead. The `newKeys` slice is computed inline
+            // here (Stage B may have surfaced new keys via per-line `KeyIndex::GetOrInsert`
+            // since the previous batch) so the sink still observes the same monotonic
+            // append-only key sequence the coalesced path produces.
+            StreamedBatch out;
+            out.lines = std::move(parsed.lines);
+            out.localLineOffsets = std::move(parsed.localLineOffsets);
+            out.errors = std::move(parsed.errors);
+            out.firstLineNumber = nextLineNumber;
+            const size_t currentKeyCount = keys.Size();
+            if (currentKeyCount > prevKeyCount)
+            {
+                out.newKeys.reserve(currentKeyCount - prevKeyCount);
+                for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+                {
+                    out.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+                }
+                prevKeyCount = currentKeyCount;
+            }
+
+            nextLineNumber += parsed.totalLineCount;
+
+            sink.OnBatch(std::move(out));
+
+            stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
+            ++stageCBatches;
+            return;
+        }
+
         if (!pendingPrimed)
         {
             // The first line in the *coalesced* StreamedBatch we'll send to the sink is the
@@ -1310,24 +1352,37 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
             pending.firstLineNumber = nextLineNumber;
             pendingPrimed = true;
         }
+        // Range-aware `insert` rather than `reserve(size + N) + back_inserter`:
+        // `vector::reserve` grows capacity to *exactly* the requested size on
+        // both libstdc++ and the MSVC STL, so a `reserve(size + N)` per batch
+        // forces a fresh allocation + per-element move every batch (PRD §4.8 /
+        // parser-perf task 9.0 — measured 7+ s of Stage C wall time on the
+        // `[wide]` fixture before the fix). `insert(end, first, last)` is
+        // range-aware and grows the underlying buffer geometrically, keeping
+        // the per-batch cost amortised O(parsed.lines.size()).
         if (!parsed.lines.empty())
         {
-            pending.lines.reserve(pending.lines.size() + parsed.lines.size());
-            std::move(parsed.lines.begin(), parsed.lines.end(), std::back_inserter(pending.lines));
+            pending.lines.insert(
+                pending.lines.end(),
+                std::make_move_iterator(parsed.lines.begin()),
+                std::make_move_iterator(parsed.lines.end())
+            );
         }
         if (!parsed.localLineOffsets.empty())
         {
-            pending.localLineOffsets.reserve(pending.localLineOffsets.size() + parsed.localLineOffsets.size());
-            std::move(
-                parsed.localLineOffsets.begin(),
-                parsed.localLineOffsets.end(),
-                std::back_inserter(pending.localLineOffsets)
+            pending.localLineOffsets.insert(
+                pending.localLineOffsets.end(),
+                std::make_move_iterator(parsed.localLineOffsets.begin()),
+                std::make_move_iterator(parsed.localLineOffsets.end())
             );
         }
         if (!parsed.errors.empty())
         {
-            pending.errors.reserve(pending.errors.size() + parsed.errors.size());
-            std::move(parsed.errors.begin(), parsed.errors.end(), std::back_inserter(pending.errors));
+            pending.errors.insert(
+                pending.errors.end(),
+                std::make_move_iterator(parsed.errors.begin()),
+                std::make_move_iterator(parsed.errors.end())
+            );
         }
 
         // Advance the cursor by exactly the number of source lines this parsed batch
@@ -1370,7 +1425,30 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     // any in-flight pending batch first, then if nothing was flushed this turn (e.g. because
     // the file was empty or the parse was cancelled before Stage A produced any tokens) emit
     // a synthetic terminal batch carrying the tail newKeys snapshot.
-    if (pendingPrimed || keys.Size() > prevKeyCount)
+    //
+    // The uncoalesced fast path has no `pending` accumulator to flush; every parsed batch
+    // was already forwarded directly to `OnBatch`. The only thing the trailing batch still
+    // needs to surface is the §4.3.26a "always-emit" contract — and any tail `newKeys`
+    // that Stage B registered after the last parsed batch (e.g. configured time keys
+    // promoted by `JsonParser::ParseStreaming`'s pre-resolution step against an empty
+    // file). We funnel both into a single synthetic terminal batch.
+    if (prefersUncoalesced)
+    {
+        StreamedBatch tail;
+        tail.firstLineNumber = nextLineNumber;
+        const size_t currentKeyCount = keys.Size();
+        if (currentKeyCount > prevKeyCount)
+        {
+            tail.newKeys.reserve(currentKeyCount - prevKeyCount);
+            for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+            {
+                tail.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+            }
+            prevKeyCount = currentKeyCount;
+        }
+        sink.OnBatch(std::move(tail));
+    }
+    else if (pendingPrimed || keys.Size() > prevKeyCount)
     {
         if (!pendingPrimed)
         {

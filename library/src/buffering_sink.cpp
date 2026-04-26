@@ -1,5 +1,6 @@
 #include "buffering_sink.hpp"
 
+#include <iterator>
 #include <utility>
 
 namespace loglib
@@ -26,24 +27,40 @@ void BufferingSink::OnBatch(StreamedBatch batch)
     // the buffered final LogData re-derives the full key set from mKeys in
     // TakeData(), so any per-batch slice would be redundant for this consumer
     // (Qt-side sinks use newKeys for incremental column extension instead).
+    //
+    // Important: PRD §4.8 / parser-perf task 9.0 — do *not* call
+    // `mLines.reserve(mLines.size() + batch.lines.size())` here. Both libstdc++
+    // and the MSVC STL implement `vector::reserve(n)` as "grow capacity to
+    // exactly `n`", which means a per-batch `reserve` re-allocates the whole
+    // vector every batch and the buffered legacy `Parse(path)` path turns into
+    // O(N²/B) — on the `[wide]` 1 M-line / 700-batch fixture that's
+    // ~1.4 billion `LogLine` moves, easily 7+ seconds of Stage C wall time.
+    // `vector::insert(end, first, last)` is range-aware and grows the
+    // capacity geometrically (same factor as `push_back`), keeping the total
+    // cost amortised O(N).
     if (!batch.lines.empty())
     {
-        mLines.reserve(mLines.size() + batch.lines.size());
-        std::move(batch.lines.begin(), batch.lines.end(), std::back_inserter(mLines));
+        mLines.insert(
+            mLines.end(),
+            std::make_move_iterator(batch.lines.begin()),
+            std::make_move_iterator(batch.lines.end())
+        );
     }
     if (!batch.localLineOffsets.empty())
     {
-        mLineOffsets.reserve(mLineOffsets.size() + batch.localLineOffsets.size());
-        std::move(
-            batch.localLineOffsets.begin(),
-            batch.localLineOffsets.end(),
-            std::back_inserter(mLineOffsets)
+        mLineOffsets.insert(
+            mLineOffsets.end(),
+            std::make_move_iterator(batch.localLineOffsets.begin()),
+            std::make_move_iterator(batch.localLineOffsets.end())
         );
     }
     if (!batch.errors.empty())
     {
-        mErrors.reserve(mErrors.size() + batch.errors.size());
-        std::move(batch.errors.begin(), batch.errors.end(), std::back_inserter(mErrors));
+        mErrors.insert(
+            mErrors.end(),
+            std::make_move_iterator(batch.errors.begin()),
+            std::make_move_iterator(batch.errors.end())
+        );
     }
 }
 

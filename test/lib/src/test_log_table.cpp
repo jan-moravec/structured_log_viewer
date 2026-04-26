@@ -511,19 +511,21 @@ TEST_CASE("LogTable::AppendBatch -- auto-promoted time column triggers back-fill
     CHECK(!table.LastBackfillRange().has_value());
 }
 
-// PRD task 2.8 — confirm `LogTable::AppendBatch` exercises the new no-alloc
-// `KeyIndex::Find` fast path the expected number of times. After §4.2 lands
-// the per-call `std::string` materialisation is gone; the call **count**
-// itself is unchanged at this point — the count drop comes in PRD §4.8.2
-// (task 9.0) which gates `RefreshColumnKeyIds` on `!batch.newKeys.empty()`.
-//
-// The heterogeneous-lookup contract that "no `std::string` is constructed
-// per `Find`" is asserted structurally via `KeyIndex::Find(std::string_view)`
-// taking a `string_view` by value through to the per-shard
-// `tsl::robin_map::find(string_view)` overload — which does not allocate.
-// This test establishes the call-count baseline against which task 9.0's
-// drop will be measured.
-TEST_CASE("LogTable::AppendBatch -- RefreshColumnKeyIds Find call count baseline", "[log_table][refresh_no_alloc]")
+// PRD task 9.0 / §4.8.2 — `LogTable::AppendBatch::RefreshColumnKeyIds` thrashing
+// fix. Before task 9.0 this test (named "RefreshColumnKeyIds Find call count
+// baseline") asserted `findCount == kBatches × kKeyCount` to pin the pre-fix
+// number of `KeyIndex::Find` calls a wide-configuration steady-state stream
+// pays per AppendBatch. After task 9.0 the call is gated on
+// `!batch.newKeys.empty()` (and, when keys *do* arrive, restricted to columns
+// whose `keys` overlap with `batch.newKeys` via
+// `RefreshColumnKeyIdsForKeys`). For pure steady-state batches that means
+// `findCount == 0` instead of `kBatches × kKeyCount` — a saved ~99 000 Find
+// calls on the GUI thread for the worked example in PRD §4.8.2 (100 columns
+// × 1 000 batches × no new keys after batch 1).
+TEST_CASE(
+    "LogTable::AppendBatch -- RefreshColumnKeyIds skipped on steady-state batches",
+    "[log_table][refresh_no_alloc]"
+)
 {
     constexpr int kKeyCount = 100;
     constexpr int kBatches = 1'000;
@@ -534,8 +536,10 @@ TEST_CASE("LogTable::AppendBatch -- RefreshColumnKeyIds Find call count baseline
     LogFile *filePtr = logFile.get();
 
     // Build a single column whose `keys` list contains kKeyCount entries.
-    // RefreshColumnKeyIds calls `Find` once per (column, key) pair, so each
-    // AppendBatch contributes kKeyCount Find calls deterministically.
+    // Pre-task-9.0 RefreshColumnKeyIds called `Find` once per (column, key)
+    // pair on every AppendBatch invocation; post-fix, an empty `newKeys`
+    // means RefreshColumnKeyIdsForKeys returns immediately without touching
+    // the KeyIndex at all.
     LogConfiguration cfg;
     LogConfiguration::Column wide;
     wide.header = "Wide";
@@ -557,16 +561,18 @@ TEST_CASE("LogTable::AppendBatch -- RefreshColumnKeyIds Find call count baseline
     table.BeginStreaming(std::move(logFile));
 
     // Pre-populate every key in the KeyIndex once so each AppendBatch is a
-    // pure steady-state batch (no `newKeys`, no auto-promotion). After this
-    // priming AppendBatch's `RefreshColumnKeyIds` walks all 100 keys via
-    // `Find` per call.
+    // pure steady-state batch (no `newKeys`, no auto-promotion).
     KeyIndex &keys = table.Data().Keys();
     for (int i = 0; i < kKeyCount; ++i)
     {
         keys.GetOrInsert("k" + std::to_string(i));
     }
 
-    // Reset counters so other test cases do not leak counts into us.
+    // Reset counters so other test cases do not leak counts into us. Note:
+    // BeginStreaming above runs the *full* RefreshColumnKeyIds (which does
+    // pay the kKeyCount Find calls) — but that is expected and not what we
+    // are measuring here. We are measuring the per-batch AppendBatch
+    // contribution in the steady state.
     KeyIndex::ResetInstrumentationCounters();
 
     for (int batchIdx = 0; batchIdx < kBatches; ++batchIdx)
@@ -578,15 +584,102 @@ TEST_CASE("LogTable::AppendBatch -- RefreshColumnKeyIds Find call count baseline
         table.AppendBatch(std::move(batch));
     }
 
-    // Expected Find call count: kBatches × kKeyCount from RefreshColumnKeyIds.
-    // No time column means the back-fill loop in AppendBatch contributes
-    // zero additional Find calls.
+    // PRD §4.8.2: on steady-state batches with empty `newKeys`,
+    // AppendBatch must not call `KeyIndex::Find` at all. No time column
+    // means the back-fill loop in AppendBatch contributes zero additional
+    // Find calls either, so the total is exactly zero.
     const std::size_t findCount = KeyIndex::LoadFindCount();
-    INFO("Find calls = " << findCount << " over " << kBatches << " AppendBatch calls × " << kKeyCount << " keys");
-    CHECK(findCount == static_cast<std::size_t>(kBatches) * static_cast<std::size_t>(kKeyCount));
+    INFO(
+        "Find calls = " << findCount << " over " << kBatches << " AppendBatch calls × " << kKeyCount
+                        << " keys (expected 0 post-task-9.0)"
+    );
+    CHECK(findCount == 0);
 
     // Sanity: the lines actually accumulated and the column count did not
     // grow (no `newKeys` arrived).
     CHECK(table.RowCount() == static_cast<size_t>(kBatches));
     CHECK(table.ColumnCount() == 1);
+}
+
+// PRD task 9.3 / §4.8.2 — when `batch.newKeys` *is* non-empty,
+// `RefreshColumnKeyIdsForKeys` must only re-walk columns whose `keys` overlap
+// with the arrived `newKeys`. Untouched columns keep their cached KeyIds.
+//
+// Setup: two columns, "Touched" (keys = {"k0"}) and "Untouched" (keys = {"u0",
+// "u1", ..., "u49"}). A batch arrives carrying a brand-new key "k0_new" that
+// is *also* in the "Touched" column's `keys` list (we add it before calling
+// AppendBatch), so RefreshColumnKeyIdsForKeys must walk the 2-key Touched
+// column (1 Find call from the lookup loop after `affected == true`) and skip
+// the 50-key Untouched column entirely.
+TEST_CASE(
+    "LogTable::AppendBatch -- RefreshColumnKeyIdsForKeys skips columns without overlap",
+    "[log_table][refresh_no_alloc]"
+)
+{
+    constexpr int kUntouchedKeyCount = 50;
+
+    TestLogFile testFile("refresh_no_alloc_incremental.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    LogConfiguration cfg;
+
+    LogConfiguration::Column touched;
+    touched.header = "Touched";
+    touched.printFormat = "{}";
+    touched.type = LogConfiguration::Type::any;
+    touched.keys = {"k0", "k0_new"};
+    cfg.columns.push_back(std::move(touched));
+
+    LogConfiguration::Column untouched;
+    untouched.header = "Untouched";
+    untouched.printFormat = "{}";
+    untouched.type = LogConfiguration::Type::any;
+    untouched.keys.reserve(kUntouchedKeyCount);
+    for (int i = 0; i < kUntouchedKeyCount; ++i)
+    {
+        untouched.keys.push_back("u" + std::to_string(i));
+    }
+    cfg.columns.push_back(std::move(untouched));
+
+    TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(logFile));
+
+    // Pre-populate every key the columns reference except the brand-new one
+    // ("k0_new") so BeginStreaming's `RefreshColumnKeyIds` walks them all.
+    KeyIndex &keys = table.Data().Keys();
+    keys.GetOrInsert("k0");
+    for (int i = 0; i < kUntouchedKeyCount; ++i)
+    {
+        keys.GetOrInsert("u" + std::to_string(i));
+    }
+
+    // First batch: announce one brand-new key ("k0_new") that the "Touched"
+    // column already references. The "Untouched" column has no overlap, so
+    // RefreshColumnKeyIdsForKeys must skip its 50-key Find loop entirely.
+    KeyIndex::ResetInstrumentationCounters();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"k0_new"};
+    batch.lines.push_back(MakeLine(keys, *filePtr, {{"k0_new", std::string("hello")}}));
+    table.AppendBatch(std::move(batch));
+
+    // Expected Find calls: exactly `Touched.keys.size() == 2` (one for "k0",
+    // one for the freshly-arrived "k0_new"). The Untouched column contributes
+    // zero. Pre-task-9.0 we would have paid 2 + 50 = 52 Find calls here.
+    const std::size_t findCount = KeyIndex::LoadFindCount();
+    INFO(
+        "Find calls = " << findCount << " — expected 2 (only the Touched column whose keys overlap with newKeys is refreshed)"
+    );
+    CHECK(findCount == 2);
+
+    CHECK(table.RowCount() == 1);
+    CHECK(table.ColumnCount() == 2);
 }

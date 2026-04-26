@@ -197,9 +197,37 @@ private:
      * lists the canonical KeyIds of the configuration's `column.keys`,
      * resolved through the owning `LogData::Keys()`. Unknown keys are stored
      * as `kInvalidKeyId` and skipped at lookup time. Called whenever the data
-     * or configuration changes (PRD req. 4.1.12).
+     * or configuration changes wholesale — i.e. from `Update`, the constructor,
+     * and `BeginStreaming` (PRD req. 4.1.12).
      */
     void RefreshColumnKeyIds();
+
+    /**
+     * @brief Incrementally patches the column → KeyId cache for columns
+     *        that reference any key in @p newKeys.
+     *
+     * Used by `AppendBatch` when the streaming pipeline reports new keys
+     * (`StreamedBatch::newKeys`) — the only situation where the
+     * `mColumnKeyIds` cache built by the previous `RefreshColumnKeyIds` /
+     * `RefreshColumnKeyIdsForKeys` pass can have gone stale, because
+     * `KeyIndex::Find` may have started returning a valid KeyId for a key
+     * that previously resolved to `kInvalidKeyId`. Columns whose `keys`
+     * vector has no overlap with @p newKeys keep their cached entries
+     * untouched: per PRD §4.2 the canonical KeyIndex is monotonic
+     * (KeyIds are dense and never reassigned), so once a column's keys
+     * have been resolved they stay resolved for the rest of the parse.
+     *
+     * For a 100-column streaming parse with 1 000 batches and zero new
+     * keys after batch 1, this combined with the `!batch.newKeys.empty()`
+     * gate in `AppendBatch` saves ~99 000 redundant `KeyIndex::Find`
+     * calls on the GUI thread (PRD §4.8.2 worked example).
+     *
+     * @param newKeys Keys observed for the first time in the most recent
+     *                streaming batch — the same vector passed via
+     *                `StreamedBatch::newKeys` and forwarded to
+     *                `LogConfigurationManager::AppendKeys`.
+     */
+    void RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys);
 
     /**
      * @brief Internal shared body of `Update` and the configuration-snapshot

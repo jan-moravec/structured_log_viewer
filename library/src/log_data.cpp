@@ -152,9 +152,17 @@ void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> line
     // 4.2.18 Stage C). Lines arrive already bound to the canonical KeyIndex (the parser
     // borrows it via `StreamingLogSink::Keys`), but we re-bind defensively in case a caller
     // builds a batch against a different `KeyIndex` instance and hands it in directly.
+    //
+    // PRD §4.8 / parser-perf task 9.0: deliberately *no* `mLines.reserve(size + N)` here.
+    // Both libstdc++ and the MSVC STL implement `vector::reserve(n)` as "grow capacity to
+    // exactly `n`", which means a per-batch `reserve` re-allocates the entire `mLines`
+    // buffer every batch (O(N²/B) over the streaming run — measured at > 1 s of GUI-thread
+    // wall time on the `[stream_to_table]` 1 M-line / ~700-batch fixture before the fix).
+    // `push_back` grows the capacity geometrically (typically 1.5× or 2× per implementation),
+    // so dropping the explicit reserve falls back to amortised O(N) total cost while
+    // keeping the per-line `RebindKeys` step exactly where it is.
     if (!lines.empty())
     {
-        mLines.reserve(mLines.size() + lines.size());
         for (auto &line : lines)
         {
             line.RebindKeys(mKeys);

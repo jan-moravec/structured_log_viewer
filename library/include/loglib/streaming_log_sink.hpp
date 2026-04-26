@@ -113,6 +113,34 @@ public:
      *                  end-of-file completion (including the file-empty case).
      */
     virtual void OnFinished(bool cancelled) = 0;
+
+    /**
+     * @brief Opt-in flag: skip Stage C's coalescing accumulator and forward
+     *        each parsed pipeline batch directly to `OnBatch` (PRD §4.8.3).
+     *
+     * Stage C's default behaviour buffers parsed batches into a `pending`
+     * `StreamedBatch` and flushes whenever the line count crosses
+     * `kStreamFlushLines` (1 000) or the wall-clock since the last flush
+     * crosses `kStreamFlushInterval` (50 ms). That coalescing exists so a
+     * streaming GUI sink (`QtStreamingLogSink`) sees a smooth ~20 Hz batch
+     * rate instead of ~1 kHz. For sinks that immediately re-buffer the
+     * batch into their own data structures (e.g. `BufferingSink` used by
+     * the legacy `Parse(path)` API) the coalescing is wasted work — Stage
+     * C ends up paying for double-buffering the lines and recomputing the
+     * `newKeys` slice, only to have the sink hand them right back into a
+     * single-output collection.
+     *
+     * Implementations that prefer the uncoalesced fast path return `true`.
+     * `BufferingSink` does. The Qt streaming sink keeps the default
+     * `false` so the GUI still gets the 50 ms / 1 000-line coalescing.
+     *
+     * @return `true` to disable Stage C coalescing for this sink; `false`
+     *         to keep the default behaviour.
+     */
+    virtual bool PrefersUncoalesced() const
+    {
+        return false;
+    }
 };
 
 } // namespace loglib

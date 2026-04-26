@@ -2,6 +2,9 @@
 
 #include "loglib/log_processing.hpp"
 
+#include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace loglib
@@ -85,9 +88,20 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mData.AppendBatch(std::move(batch.lines), std::move(batch.localLineOffsets));
     }
 
-    // Step 3: refresh the column → KeyId cache. Cheap when no new columns were appended;
-    // necessary when they were so GetValue/GetFormattedValue see the new positions.
-    RefreshColumnKeyIds();
+    // Step 3: refresh the column → KeyId cache only when this batch surfaced new keys.
+    // Without new keys the existing cache is still correct because `KeyIndex` assigns dense,
+    // monotonically-increasing KeyIds (PRD §4.2): a key that resolved last batch will resolve
+    // to the same id this batch, and a key that resolved to `kInvalidKeyId` last batch can
+    // only flip to a valid id by being added to the configuration here — which, by definition,
+    // means it appeared in `batch.newKeys`. The incremental path further restricts the patch
+    // to columns whose `keys` vector overlaps with `batch.newKeys`, leaving the rest of the
+    // cache untouched (PRD §4.8.2). For a 100-column / 1 000-batch streaming parse with zero
+    // new keys after batch 1 this saves ~99 000 redundant `KeyIndex::Find` calls on the GUI
+    // thread.
+    if (!batch.newKeys.empty())
+    {
+        RefreshColumnKeyIdsForKeys(batch.newKeys);
+    }
 
     // Step 4: walk the configuration once more for time columns whose KeyId set is not a
     // subset of the Stage-B snapshot. Each such column is one that Stage B did not parse
@@ -244,6 +258,73 @@ void LogTable::RefreshColumnKeyIds()
             ids.push_back(mData.Keys().Find(key));
         }
         mColumnKeyIds.push_back(std::move(ids));
+    }
+}
+
+void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys)
+{
+    // PRD §4.8.2 / parser-perf task 9.3: incremental column → KeyId refresh. Two design
+    // notes worth keeping in this function:
+    //
+    // 1. We iterate `mConfiguration.Configuration().columns` *after* `AppendBatch` has
+    //    already extended the configuration via `AppendKeys`, so any column added by the
+    //    just-arrived batch is now visible at the tail of the `columns` vector. The
+    //    `mColumnKeyIds` cache may therefore be shorter than `columns` — in that case we
+    //    grow it with empty inner vectors, then fall through to the lookup loop which
+    //    populates them in place. This preserves the post-condition that
+    //    `mColumnKeyIds.size() == columns.size()` after every successful return.
+    //
+    // 2. The `string_view` set is built once per batch from `newKeys` (typically a small
+    //    handful of strings, often empty after batch 1 in steady state). Per-column we
+    //    walk `column.keys` and only rebuild the inner vector if any of those keys is in
+    //    the newKeys set. Untouched columns keep their cached KeyIds — `KeyIndex` is
+    //    monotonic so a previously-resolved id is still valid this batch.
+    if (newKeys.empty())
+    {
+        return;
+    }
+
+    std::unordered_set<std::string_view> newKeySet;
+    newKeySet.reserve(newKeys.size());
+    for (const std::string &key : newKeys)
+    {
+        newKeySet.emplace(key);
+    }
+
+    const auto &columns = mConfiguration.Configuration().columns;
+    if (mColumnKeyIds.size() < columns.size())
+    {
+        mColumnKeyIds.resize(columns.size());
+    }
+
+    for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
+    {
+        const auto &column = columns[columnIndex];
+
+        bool affected = mColumnKeyIds[columnIndex].size() != column.keys.size();
+        if (!affected)
+        {
+            for (const std::string &key : column.keys)
+            {
+                if (newKeySet.find(std::string_view(key)) != newKeySet.end())
+                {
+                    affected = true;
+                    break;
+                }
+            }
+        }
+        if (!affected)
+        {
+            continue;
+        }
+
+        std::vector<KeyId> ids;
+        ids.reserve(column.keys.size());
+        for (const std::string &key : column.keys)
+        {
+            ids.push_back(mData.Keys().Find(key));
+        }
+        mColumnKeyIds[columnIndex] = std::move(ids);
     }
 }
 
