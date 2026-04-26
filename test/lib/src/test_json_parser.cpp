@@ -963,3 +963,52 @@ TEST_CASE(
     CHECK(file.GetLine(105) == R"({"key":"value-6"})");
     CHECK(file.GetLine(109) == R"({"key":"value-10"})");
 }
+
+TEST_CASE(
+    "ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys",
+    "[json_parser][extract_field_key]"
+)
+{
+    // PRD §4.4 / parser-perf task 5.5 / §7.5 risk row 4: replacing the byte-loop in
+    // `ExtractFieldKey` with simdjson's length-aware `field.escaped_key()` (req. 4.4.1)
+    // must keep the fast/slow-path split intact (req. 4.4.3): keys with no backslash
+    // become a `string_view` directly into the input, keys with one or more backslash
+    // bytes fall back to `field.unescaped_key()` and an owned `std::string`. The four
+    // canonical key shapes below cover every observable code path through the new
+    // implementation. A regression in either the byte-loop replacement or the slow-path
+    // dispatch would surface here as a missing key in the canonical `KeyIndex`.
+    using namespace loglib;
+
+    // Each line carries one peculiar key plus a stable value so the assertion can be
+    // keyed by line index. The raw-string contents are JSON-on-disk, i.e. backslashes
+    // are real characters in the bytes simdjson sees.
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.emplace_back(R"({"plain": "v-plain"})");          // (a) fast path: no backslash
+    lines.emplace_back(R"({"with\"quote": "v-quote"})");    // (b) slow path: escaped quote
+    lines.emplace_back(R"({"back\\slash": "v-backslash"})"); // (c) slow path: escaped backslash
+    lines.emplace_back(R"({"\u0041BC": "v-unicode"})");      // (d) slow path: Unicode escape
+    const TestJsonLogFile testFile(lines);
+
+    JsonParser parser;
+    const ParseResult result = parser.Parse(testFile.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == lines.size());
+
+    // Expected unescaped key per line, paired with the value it should reach. The keys
+    // are the post-unescape forms simdjson would produce — e.g. \u0041 collapses to A.
+    const std::vector<std::pair<std::string, std::string>> expected = {
+        {"plain", "v-plain"},
+        {"with\"quote", "v-quote"},
+        {"back\\slash", "v-backslash"},
+        {"ABC", "v-unicode"},
+    };
+
+    for (size_t i = 0; i < expected.size(); ++i)
+    {
+        INFO("i=" << i << " expected key=" << expected[i].first << " value=" << expected[i].second);
+        const KeyId keyId = result.data.Keys().Find(expected[i].first);
+        REQUIRE(keyId != kInvalidKeyId);
+        const LogValue value = result.data.Lines()[i].GetValue(keyId);
+        CHECK(AsStringView(value) == std::string_view{expected[i].second});
+    }
+}

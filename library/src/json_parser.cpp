@@ -48,7 +48,16 @@ namespace
  * caller can decide whether to keep the view (zero-copy, points into the mmap
  * for the duration of the parse) or to materialise an owned copy.
  *
- * Returned in @p outView and @p outOwned: at most one of the two is populated.
+ * Implementation note (PRD §4.4 / parser-perf task 5.0): simdjson is pinned at
+ * v4.6.3 in `cmake/FetchDependencies.cmake`, well above the 3.6 cutoff that
+ * introduced `field.escaped_key()`. That entry point hands us a
+ * `string_view` over the raw key bytes (no surrounding quotes, no
+ * unescape) at zero cost — simdjson already located the closing quote
+ * during its SIMD pre-scan, so we no longer need the byte-at-a-time loop
+ * the legacy code ran here. Detecting whether to take the slow path is a
+ * single `string_view::find('\\')` over the same bytes (libc++/libstdc++
+ * vectorise this via `memchr`), collapsing the previous double-scan into
+ * one pass.
  */
 struct FastFieldKey
 {
@@ -62,45 +71,30 @@ FastFieldKey ExtractFieldKey(Field &field)
 {
     FastFieldKey result;
 
-    // field.key() returns a raw_json_string covering the JSON-source key including its
-    // surrounding quotes. raw() exposes the underlying char* span; we strip the quotes and,
-    // for the common (no escape) case, return a view directly into the mmap. This avoids the
-    // unescape pass and the std::string materialisation that field.unescaped_key() does.
-    simdjson::ondemand::raw_json_string raw;
-    if (field.key().get(raw))
+    // simdjson's escaped_key() returns the raw key bytes as a string_view directly into the
+    // input (the mmap or the per-worker padded scratch, depending on tail-line proximity).
+    // Length is known up front, so we avoid the manual byte-loop the legacy code ran to
+    // locate the closing quote.
+    std::string_view escaped;
+    if (field.escaped_key().get(escaped))
     {
         return result;
     }
-    const char *rawData = raw.raw();
-    if (rawData != nullptr)
+
+    // Fast path: no escape sequences => the view points directly into the input and lives
+    // for the duration of the parse. ~99 % of real-world keys hit this path
+    // (PRD M5 / [allocations] benchmark fast-path fraction).
+    if (escaped.find('\\') == std::string_view::npos)
     {
-        // raw() returns a pointer into the input; the string is unterminated and runs up to
-        // the closing quote. We don't have a length directly, so scan for the closing quote
-        // manually. Backslash inside the run forces the slow path because the closing quote
-        // could be escaped.
-        const char *p = rawData;
-        bool sawBackslash = false;
-        while (*p != '"' || sawBackslash)
-        {
-            if (*p == '\\')
-            {
-                sawBackslash = !sawBackslash;
-            }
-            else
-            {
-                sawBackslash = false;
-            }
-            ++p;
-        }
-        const std::string_view inner(rawData, static_cast<size_t>(p - rawData));
-        if (inner.find('\\') == std::string_view::npos)
-        {
-            result.isView = true;
-            result.view = inner;
-            return result;
-        }
+        result.isView = true;
+        result.view = escaped;
+        return result;
     }
 
+    // Slow path: at least one backslash present, so the in-source bytes need unescaping.
+    // simdjson::field::unescaped_key() writes the unescaped bytes into the parser's reusable
+    // string-buffer and returns a view over that storage; copy it into our owned slot since
+    // the buffer is reused by the next field of the same parse.
     std::string_view unescaped;
     if (!field.unescaped_key().get(unescaped))
     {
