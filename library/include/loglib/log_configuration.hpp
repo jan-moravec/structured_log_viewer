@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace loglib
@@ -125,7 +126,39 @@ public:
     const LogConfiguration &Configuration() const;
 
 private:
+    /**
+     * @brief Ensures `mKeysInColumns` mirrors the current `mConfiguration.columns`.
+     *
+     * Lazily rebuilt on the next query after any mutating path
+     * (`Load` / `Update` / `AppendKeys`) flips `mCacheStale`. Mutating paths
+     * also keep the cache fresh as they append new columns so subsequent
+     * iterations of the same loop see the freshly-added keys without needing
+     * a full rebuild (PRD §4.7.6 / parser-perf task 8.6).
+     */
+    void EnsureKeyCacheBuilt() const;
+
+    /**
+     * @brief Cached `O(1)` membership test for "is @p key listed under any
+     *        column's `keys` vector".
+     *
+     * Replaces the O(M·K) free-function `IsKeyInAnyColumn` that walked every
+     * column × every key per query. For a 30-column configuration with ~30
+     * keys/column this drops ~900 string compares per inserted key on the
+     * GUI thread to a single hash lookup. Critical prerequisite for the
+     * `[wide]` benchmark to be meaningful (PRD §4.7.6 / Q7).
+     */
+    bool IsKeyInAnyColumnCached(const std::string &key) const;
+
     LogConfiguration mConfiguration;
+
+    /// Cache of every key that appears under any column's `keys` vector. See
+    /// PRD §4.7.6 / Q7 for the invalidation contract: every mutating path
+    /// (`Load`, `Update`, `AppendKeys`) flips `mCacheStale` so the next
+    /// query rebuilds it. NOTE for the next mutator-adder: any new column-
+    /// mutating path (e.g. a future `RemoveColumn`) MUST flip this flag too.
+    /// `Save` and `Configuration` are read-only and leave the flag alone.
+    mutable std::unordered_set<std::string> mKeysInColumns;
+    mutable bool mCacheStale = true;
 };
 
 } // namespace loglib

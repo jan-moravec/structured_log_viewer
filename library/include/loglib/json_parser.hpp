@@ -6,6 +6,7 @@
 
 #include <simdjson.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -40,6 +41,68 @@ namespace detail
 struct PerWorkerKeyCache;
 
 } // namespace detail
+
+/**
+ * @brief Per-stage CPU- and wall-clock timing telemetry for one
+ *        `JsonParser::ParseStreaming` call (PRD §4.7 / §6.1).
+ *
+ * Filled in when `JsonParserOptions::timings != nullptr`. The struct is
+ * copyable and trivially-default-constructible; the parser overwrites every
+ * field exactly once, just before `OnFinished` fires on the sink.
+ *
+ * Stage A and Stage C run as `serial_in_order` filters, so their per-stage
+ * CPU time equals their wall-clock contribution to the parse. Stage B is
+ * the only parallel stage, so `stageBCpuTotal` is the **sum** across the
+ * `enumerable_thread_specific` workers and may total up to
+ * `(effectiveThreads × wallClockTotal)` on a perfectly-saturated parse.
+ *
+ * Reading the numbers (PRD §4.7.2 / M4):
+ *   - Stage A wall-clock %  = `stageACpuTotal / wallClockTotal`
+ *   - Stage B utilisation % = `stageBCpuTotal / (effectiveThreads × wallClockTotal)`
+ *   - Stage C wall-clock %  = `stageCCpuTotal / wallClockTotal`
+ *
+ * The benchmark printer (`benchmark_json.cpp`) is responsible for the
+ * "% of wall clock" derivation; the parser only writes the raw numerators
+ * and denominator. Reporting `effectiveThreads` separately makes the
+ * struct interpretable by any downstream consumer that did not invoke
+ * `ParseStreaming` itself.
+ */
+struct StageTimings
+{
+    /// Wall-clock duration of the entire `ParseStreaming` call (start to
+    /// `OnFinished`). The denominator for any "% of wall clock" derivation.
+    std::chrono::nanoseconds wallClockTotal{0};
+
+    /// Sum of per-worker CPU time spent in Stage A. Stage A is
+    /// `serial_in_order`, so this equals Stage A's wall-clock contribution.
+    std::chrono::nanoseconds stageACpuTotal{0};
+
+    /// Sum of per-worker CPU time spent in Stage B. Stage B is parallel;
+    /// this can total up to `(effectiveThreads × wallClockTotal)` on a
+    /// perfectly-saturated parse.
+    std::chrono::nanoseconds stageBCpuTotal{0};
+
+    /// Sum of per-worker CPU time spent in Stage C. Stage C is
+    /// `serial_in_order`, so this equals Stage C's wall-clock contribution.
+    std::chrono::nanoseconds stageCCpuTotal{0};
+
+    /// Sink-side wall-clock cost. For the `BufferingSink` path this is
+    /// folded into `stageCCpuTotal`; for the streaming sink it captures
+    /// the queued-connection hop cost that lands on the GUI thread.
+    std::chrono::nanoseconds sinkTotal{0};
+
+    /// Number of TBB workers Stage B actually ran with. Needed by the
+    /// printer to derive Stage B utilisation. Reported separately rather
+    /// than re-derived so a downstream consumer can interpret the numbers
+    /// without invoking the parser itself.
+    unsigned int effectiveThreads = 1;
+
+    /// Number of pipeline batches each stage processed (matched 1:1 between
+    /// stages because the pipeline is `serial_in_order` end-to-end).
+    size_t stageABatches = 0;
+    size_t stageBBatches = 0;
+    size_t stageCBatches = 0;
+};
 
 /**
  * @brief Options bundle for `JsonParser::ParseStreaming`.
@@ -117,6 +180,21 @@ struct JsonParserOptions
      *        file (PRD req. 4.1.15).
      */
     bool useParseCache = true;
+
+    /**
+     * @brief When non-null, Stage A / Stage B / Stage C populate this
+     *        `StageTimings` instance with per-stage CPU time, wall-clock
+     *        total, batch counts and `effectiveThreads`. The pointer is
+     *        owned by the caller and only written once, immediately
+     *        before `OnFinished` fires on the sink (PRD §4.7.1 / §6.1).
+     *
+     * `mutable` so the option can sit on a `const JsonParserOptions&`
+     * captured by an enclosing `const` benchmark wrapper while still
+     * letting the parser write the timings out. When null (default) the
+     * parser does no timing work — there is zero allocation and zero
+     * `steady_clock::now()` cost on the unused path (PRD §6.1).
+     */
+    mutable StageTimings *timings = nullptr;
 };
 
 /**

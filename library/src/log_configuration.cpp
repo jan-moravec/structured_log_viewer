@@ -9,19 +9,6 @@
 namespace
 {
 
-bool IsKeyInAnyColumn(const std::string &key, const std::vector<loglib::LogConfiguration::Column> &columns)
-{
-    for (const auto &column : columns)
-    {
-        if (std::find(column.keys.begin(), column.keys.end(), key) != column.keys.end())
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 std::string ToLower(const std::string &str)
 {
     std::string lower = str;
@@ -66,6 +53,9 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
         {
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
+        // Configuration was replaced wholesale; the next IsKeyInAnyColumn query rebuilds the
+        // cache against the loaded columns (PRD §4.7.6 / Q7).
+        mCacheStale = true;
     }
     else
     {
@@ -98,9 +88,10 @@ void LogConfigurationManager::Update(const LogData &logData)
     // Update configuration columns with new keys. SortedKeys() snapshots the
     // KeyIndex into a std::vector<std::string> so this cold path does not need
     // to be aware of the new dense KeyId storage.
+    EnsureKeyCacheBuilt();
     for (const std::string &key : logData.SortedKeys())
     {
-        if (!IsKeyInAnyColumn(key, mConfiguration.columns))
+        if (!IsKeyInAnyColumnCached(key))
         {
             if (IsTimestampKey(key))
             {
@@ -119,6 +110,10 @@ void LogConfigurationManager::Update(const LogData &logData)
                     LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
                 );
             }
+            // Keep the cache consistent inside the loop so a `SortedKeys()` snapshot that
+            // contains the same key twice (currently impossible — `KeyIndex` dedupes — but
+            // robust against future callers) does not double-add the column.
+            mKeysInColumns.insert(key);
         }
     }
 }
@@ -135,9 +130,10 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
     //      every other freshly-discovered key, preserving the append-only
     //      contract that Qt's `beginInsertColumns` relies on (PRD req.
     //      4.1.13 / Decision 14).
+    EnsureKeyCacheBuilt();
     for (const std::string &key : newKeys)
     {
-        if (IsKeyInAnyColumn(key, mConfiguration.columns))
+        if (IsKeyInAnyColumnCached(key))
         {
             continue;
         }
@@ -153,12 +149,41 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
             );
         }
+        // Same in-loop cache maintenance as `Update`: a duplicate key in `newKeys`
+        // (legal — `StreamedBatch::newKeys` is unique per batch but two consecutive
+        // batches' slices may overlap if the caller forwards them naively) must not
+        // add two columns for the same key.
+        mKeysInColumns.insert(key);
     }
 }
 
 const LogConfiguration &LogConfigurationManager::Configuration() const
 {
     return mConfiguration;
+}
+
+void LogConfigurationManager::EnsureKeyCacheBuilt() const
+{
+    if (!mCacheStale)
+    {
+        return;
+    }
+    mKeysInColumns.clear();
+    mKeysInColumns.reserve(mConfiguration.columns.size() * 4);
+    for (const LogConfiguration::Column &column : mConfiguration.columns)
+    {
+        for (const std::string &key : column.keys)
+        {
+            mKeysInColumns.insert(key);
+        }
+    }
+    mCacheStale = false;
+}
+
+bool LogConfigurationManager::IsKeyInAnyColumnCached(const std::string &key) const
+{
+    EnsureKeyCacheBuilt();
+    return mKeysInColumns.find(key) != mKeysInColumns.end();
 }
 
 } // namespace loglib

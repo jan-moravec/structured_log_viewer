@@ -97,6 +97,220 @@ std::vector<TestJsonLogFile::Line> GenerateRandomJsonLogs(size_t count)
     return logs;
 }
 
+// PRD §4.7.3 / parser-perf task 8.8 — wide-row fixture generator.
+//
+// Stresses the per-line field-iteration cost (`InsertSorted`, `ExtractFieldKey`,
+// `ParseLine`) and the `IsKeyInAnyColumn` cache by emitting `columnCount` keys
+// per line in a fixed order. The default mix matches §4.7.3:
+//   - ~10 string keys (lorem-style messages, levels, components),
+//   - ~10 numeric keys (latencies, byte counts, ids),
+//   - ~5 boolean keys (flags),
+//   - ~5 keys that rotate through `null` / array / object so the value-shape
+//     dispatch in `ParseLine` exercises every leaf.
+//
+// Above `columnCount = 30` the helper round-robins through the same key family
+// suffixed with the column index so the line shape stays semantically wide
+// without inventing arbitrary key vocabularies. Below 30, we trim the longest
+// family last (strings > numbers > booleans > others) so the proportions stay
+// close to the §4.7.3 mix even at 10–20 columns.
+//
+// Note: every line emits the keys in the **same** fixed iteration order. That
+// makes the per-worker `ParseCache` and `KeyIndex` warm-up paths deterministic
+// across runs, so the `[wide]` numbers are repeatable enough to use as a
+// regression gate (PRD req. 4.7.5).
+std::vector<TestJsonLogFile::Line> GenerateWideJsonLogs(size_t count, size_t columnCount = 30)
+{
+    static const std::array<std::string, 10> STRING_KEYS = {"timestamp", "level", "component", "message", "module",
+                                                            "host",      "user",  "session",   "request", "trace_id"};
+    static const std::array<std::string, 10> NUMERIC_KEYS = {"latency_ms",   "bytes_in",     "bytes_out", "thread_id",
+                                                             "request_id",   "response_id",  "queue_len", "retry_count",
+                                                             "memory_usage", "cpu_usage_pct"};
+    static const std::array<std::string, 5> BOOL_KEYS = {"is_error", "cache_hit", "authenticated", "throttled", "secure"};
+    static const std::array<std::string, 5> OTHER_KEYS = {"trace_data", "tags", "metadata", "extras", "annotations"};
+
+    static const std::array<std::string, 6> LEVELS = {"trace", "debug", "info", "warning", "error", "fatal"};
+    static const std::array<std::string, 5> COMPONENTS = {"app", "network", "database", "ui", "system"};
+    static const std::array<std::string, 20> WORDS = {"lorem",       "ipsum",      "dolor",      "sit",    "amet",
+                                                      "consectetur", "adipiscing", "elit",       "sed",    "do",
+                                                      "eiusmod",     "tempor",     "incididunt", "ut",     "labore",
+                                                      "et",          "dolore",     "magna",      "aliqua", "ut"};
+
+    // Build the deterministic key list once. Each entry tags the family so we
+    // know what value shape to emit per row.
+    enum class Family
+    {
+        String,
+        Numeric,
+        Boolean,
+        Null,
+        Array,
+        Object,
+    };
+    std::vector<std::pair<std::string, Family>> keys;
+    keys.reserve(columnCount);
+
+    auto pushFamily = [&](const auto &source, Family family, size_t take) {
+        for (size_t i = 0; i < take; ++i)
+        {
+            const size_t bucket = i / source.size();
+            const size_t idx = i % source.size();
+            std::string keyName = source[idx];
+            if (bucket > 0)
+            {
+                keyName += "_";
+                keyName += std::to_string(bucket);
+            }
+            keys.emplace_back(std::move(keyName), family);
+        }
+    };
+
+    // Trim from "others" first so the §4.7.3 string/number proportions stay
+    // intact when the caller picks `columnCount < 30`.
+    const size_t totalString = std::min<size_t>(columnCount, 10);
+    const size_t remainingAfterString = columnCount - totalString;
+    const size_t totalNumeric = std::min<size_t>(remainingAfterString, 10);
+    const size_t remainingAfterNumeric = remainingAfterString - totalNumeric;
+    const size_t totalBoolean = std::min<size_t>(remainingAfterNumeric, 5);
+    size_t remaining = remainingAfterNumeric - totalBoolean;
+
+    pushFamily(STRING_KEYS, Family::String, totalString);
+    pushFamily(NUMERIC_KEYS, Family::Numeric, totalNumeric);
+    pushFamily(BOOL_KEYS, Family::Boolean, totalBoolean);
+
+    // The remainder rotates between null / array / object. We split it as
+    // evenly as possible so each leaf shape runs at every line.
+    const size_t nullCount = (remaining + 2) / 3;
+    remaining -= std::min(nullCount, remaining);
+    const size_t arrayCount = (remaining + 1) / 2;
+    remaining -= std::min(arrayCount, remaining);
+    const size_t objectCount = remaining;
+
+    pushFamily(OTHER_KEYS, Family::Null, nullCount);
+    pushFamily(OTHER_KEYS, Family::Array, arrayCount);
+    pushFamily(OTHER_KEYS, Family::Object, objectCount);
+
+    // Round-robin pad if columnCount > the natural cap. We keep the shape mix
+    // proportional by cycling through families in the same string/number/bool/
+    // other ratio used above.
+    while (keys.size() < columnCount)
+    {
+        const size_t shape = keys.size() % 4;
+        const size_t bucket = keys.size() / 4;
+        if (shape == 0)
+        {
+            keys.emplace_back("string_extra_" + std::to_string(bucket), Family::String);
+        }
+        else if (shape == 1)
+        {
+            keys.emplace_back("number_extra_" + std::to_string(bucket), Family::Numeric);
+        }
+        else if (shape == 2)
+        {
+            keys.emplace_back("bool_extra_" + std::to_string(bucket), Family::Boolean);
+        }
+        else
+        {
+            keys.emplace_back("object_extra_" + std::to_string(bucket), Family::Object);
+        }
+    }
+
+    std::vector<TestJsonLogFile::Line> logs;
+    logs.reserve(count);
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> level_dist(0, static_cast<int>(LEVELS.size()) - 1);
+    std::uniform_int_distribution<> component_dist(0, static_cast<int>(COMPONENTS.size()) - 1);
+    std::uniform_int_distribution<> word_dist(0, static_cast<int>(WORDS.size()) - 1);
+    std::uniform_int_distribution<> words_count_dist(3, 8);
+    std::uniform_int_distribution<int> int_dist(0, 1'000'000);
+    std::uniform_int_distribution<int> small_int_dist(0, 100);
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        glz::generic_sorted_u64 json;
+        for (size_t k = 0; k < keys.size(); ++k)
+        {
+            const std::string &keyName = keys[k].first;
+            switch (keys[k].second)
+            {
+            case Family::String: {
+                if (keyName.rfind("timestamp", 0) == 0)
+                {
+                    json[keyName] = date::format(
+                        "%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now())
+                    );
+                }
+                else if (keyName.rfind("level", 0) == 0)
+                {
+                    json[keyName] = LEVELS[level_dist(gen)];
+                }
+                else if (keyName.rfind("component", 0) == 0)
+                {
+                    json[keyName] = COMPONENTS[component_dist(gen)];
+                }
+                else
+                {
+                    std::string value;
+                    const int wc = words_count_dist(gen);
+                    for (int j = 0; j < wc; ++j)
+                    {
+                        if (!value.empty())
+                        {
+                            value += " ";
+                        }
+                        value += WORDS[word_dist(gen)];
+                    }
+                    json[keyName] = value;
+                }
+                break;
+            }
+            case Family::Numeric: {
+                if (keyName.rfind("thread_id", 0) == 0)
+                {
+                    json[keyName] = static_cast<int64_t>(i % 16);
+                }
+                else if (keyName.rfind("cpu_usage_pct", 0) == 0)
+                {
+                    json[keyName] = static_cast<int64_t>(small_int_dist(gen));
+                }
+                else
+                {
+                    json[keyName] = static_cast<int64_t>(int_dist(gen));
+                }
+                break;
+            }
+            case Family::Boolean: {
+                json[keyName] = ((i + k) & 1) == 0;
+                break;
+            }
+            case Family::Null: {
+                json[keyName] = nullptr;
+                break;
+            }
+            case Family::Array: {
+                std::vector<glz::generic_sorted_u64> arr;
+                arr.emplace_back(static_cast<int64_t>(int_dist(gen)));
+                arr.emplace_back(static_cast<int64_t>(small_int_dist(gen)));
+                arr.emplace_back(WORDS[word_dist(gen)]);
+                json[keyName] = std::move(arr);
+                break;
+            }
+            case Family::Object: {
+                glz::generic_sorted_u64 obj;
+                obj["k"] = static_cast<int64_t>(small_int_dist(gen));
+                obj["v"] = WORDS[word_dist(gen)];
+                json[keyName] = std::move(obj);
+                break;
+            }
+            }
+        }
+        logs.emplace_back(std::move(json));
+    }
+
+    return logs;
+}
+
 TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
 {
     BENCHMARK_ADVANCED("Parse 10'000 JSON log entries")(Catch::Benchmark::Chronometer meter)
@@ -142,6 +356,61 @@ TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser
     };
 }
 
+namespace
+{
+
+// PRD §4.7.2 / parser-perf task 8.10 — per-stage breakdown emit.
+//
+// Mirrors the §4.7.2 reference format verbatim:
+//   "Wall-clock: 1.55 s | Stage A CPU: 80 ms | Stage B CPU: 11.2 s
+//    (across 8 workers, 90 % utilisation = 11.2 / (8 × 1.55)) |
+//    Stage C CPU: 95 ms | Sink: 110 ms"
+// Stage B utilisation is derived as
+//   `stageBCpuTotal / (effectiveThreads × wallClockTotal)`.
+void ReportStageTimings(const char *label, const StageTimings &t)
+{
+    using ms = std::chrono::duration<double, std::milli>;
+    using s = std::chrono::duration<double>;
+    const double wallClockS = s(t.wallClockTotal).count();
+    const double stageAMs = ms(t.stageACpuTotal).count();
+    const double stageBS = s(t.stageBCpuTotal).count();
+    const double stageCMs = ms(t.stageCCpuTotal).count();
+    const double sinkMs = ms(t.sinkTotal).count();
+    const double denom = static_cast<double>(t.effectiveThreads) * wallClockS;
+    const double utilization = denom == 0.0 ? 0.0 : (stageBS / denom) * 100.0;
+    WARN(
+        label << " — Wall-clock: " << wallClockS << " s | Stage A CPU: " << stageAMs
+              << " ms | Stage B CPU: " << stageBS << " s (across " << t.effectiveThreads << " workers, "
+              << utilization << " % utilisation = " << stageBS << " / (" << t.effectiveThreads << " * " << wallClockS
+              << ")) | Stage C CPU: " << stageCMs << " ms | Sink: " << sinkMs
+              << " ms | batches A/B/C=" << t.stageABatches << "/" << t.stageBBatches << "/" << t.stageCBatches
+    );
+}
+
+// PRD §4.7.5 / parser-perf task 8.11 — no-regression checks.
+//
+// Every commit on this branch must include before/after MB/s for the three
+// regression-gating fixtures `[large]`, `[wide]`, `[stream_to_table]` in its
+// commit message. The PR/CI checklist must also include:
+//   - `[allocations]` fast-path fraction ≥ 99 %  (M5)
+//   - Stage B utilisation > 70 %                  (M4)
+//   - Stage A wall-clock %  < 5 %                 (M4)
+//   - `[cancellation]` p95 latency within ±3 % of the prior commit's number
+//
+// The numbers come from the `WARN` lines emitted by `ReportThroughput` above
+// and `ReportStageTimings` (per task 8.10).
+//
+// The PRD's §7.4 acceptance gate G4 is "±3 % per change OR a documented
+// architectural justification in the commit message". This comment block is
+// the authoritative reference for what every commit-message PR-block must
+// quote (so a future contributor knows what to copy in).
+//
+// NOTE: keep the comment list in sync with the WARN format if `[wide]` or
+// `[stream_to_table]` later add fields — the format is the source of truth
+// for the gate.
+
+} // namespace
+
 // PRD task 6.1 — large-file benchmark (1'000'000 lines, ~170 MB). Tagged
 // `[large]` so it is opt-in via Catch2's tag filter and does not slow the
 // default `[benchmark]` run.
@@ -157,15 +426,94 @@ TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_pars
     // BENCHMARK_ADVANCED summary only reports nanoseconds. Catch2's
     // Chronometer has no public elapsed() accessor, so we time it ourselves.
     {
+        StageTimings timings;
+        JsonParserOptions warmupOpts;
+        warmupOpts.timings = &timings;
+
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath());
+        ParseResult warmup = parser.Parse(testFile.GetFilePath(), warmupOpts);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
         ReportThroughput("Parse 1'000'000 warm-up", elapsed, bytes, logs.size());
+        ReportStageTimings("Parse 1'000'000 warm-up", timings);
     }
 
     BENCHMARK_ADVANCED("Parse 1'000'000 JSON log entries")(Catch::Benchmark::Chronometer meter)
+    {
+        meter.measure([&]() {
+            LogTable table;
+            ParseResult result = parser.Parse(testFile.GetFilePath());
+            REQUIRE(result.data.Lines().size() == logs.size());
+            REQUIRE(result.errors.empty());
+            table.Update(std::move(result.data));
+            return table;
+        });
+    };
+}
+
+// PRD §4.7.4 / parser-perf task 8.9 — wide-row benchmark (1'000'000 lines,
+// ~30 fields per line). Stresses the per-line field-iteration cost
+// (`InsertSorted`, `ExtractFieldKey`, `ParseLine`) and the
+// `IsKeyInAnyColumn` cache from §4.7.6 against a configuration that has
+// every emitted key registered up front. Reports the same MB/s / lines/s /
+// per-stage breakdown as `[large]` so the two are directly comparable.
+TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][json_parser][wide]")
+{
+    auto logs = GenerateWideJsonLogs(1'000'000);
+    const TestJsonLogFile testFile(logs);
+    const JsonParser parser;
+    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+
+    // Untimed warm-up + per-stage breakdown emit, mirroring `[large]`.
+    {
+        StageTimings timings;
+        JsonParserOptions warmupOpts;
+        warmupOpts.timings = &timings;
+
+        const auto start = std::chrono::steady_clock::now();
+        ParseResult warmup = parser.Parse(testFile.GetFilePath(), warmupOpts);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        REQUIRE(warmup.data.Lines().size() == logs.size());
+        REQUIRE(warmup.errors.empty());
+        ReportThroughput("Parse wide warm-up", elapsed, bytes, logs.size());
+        ReportStageTimings("Parse wide warm-up", timings);
+
+        // Fast-path fraction reporting (M5). Walks the parsed values once and
+        // counts string_view (fast) vs. owned string (slow) hits per the same
+        // recipe as the `[allocations]` benchmark. Enforced ≥ 99 % via the
+        // commit gate, not the test itself, so a regression in this number
+        // surfaces in the PR description rather than as a hard failure.
+        size_t totalStringValues = 0;
+        size_t stringViewValues = 0;
+        for (const LogLine &line : warmup.data.Lines())
+        {
+            for (size_t i = 0; i < warmup.data.Keys().Size(); ++i)
+            {
+                const LogValue &v = line.GetValue(static_cast<KeyId>(i));
+                if (std::holds_alternative<std::string_view>(v))
+                {
+                    ++stringViewValues;
+                    ++totalStringValues;
+                }
+                else if (std::holds_alternative<std::string>(v))
+                {
+                    ++totalStringValues;
+                }
+            }
+        }
+        const double fastPathFraction = totalStringValues == 0
+                                            ? 0.0
+                                            : static_cast<double>(stringViewValues) /
+                                                  static_cast<double>(totalStringValues);
+        WARN(
+            "Parse wide warm-up — string_view fast-path fraction: " << (fastPathFraction * 100.0) << "% ("
+                                                                    << stringViewValues << " / " << totalStringValues
+                                                                    << ")"
+        );
+    }
+
+    BENCHMARK_ADVANCED("Parse 1'000'000 wide JSON log entries")(Catch::Benchmark::Chronometer meter)
     {
         meter.measure([&]() {
             LogTable table;

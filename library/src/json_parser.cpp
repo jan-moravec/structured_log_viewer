@@ -1056,6 +1056,27 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     using TimeColumnSpec = StreamingDetail::TimeColumnSpec;
     oneapi::tbb::enumerable_thread_specific<WorkerState> workers;
 
+    // Per-stage timing telemetry (PRD §4.7 / §6.1 / parser-perf task 8.0). Off by default;
+    // populated only when the caller wires `options.timings` to a `StageTimings` instance.
+    // Stage A and Stage C run as `serial_in_order` filters, so a single non-atomic
+    // accumulator under that exclusivity invariant is sufficient (the same idiom the
+    // existing `cursor`, `batchIndex` and `nextLineNumber` counters use). Stage B is
+    // parallel, so per-worker `enumerable_thread_specific<nanoseconds>` accumulators are
+    // summed once after the pipeline drains. We capture every clock unconditionally —
+    // `steady_clock::now()` is a couple of `rdtsc`-shaped instructions on x86 — so the
+    // hot path doesn't need to branch on `collectTimings`. The struct is only written
+    // out at the end if the caller asked for it.
+    StageTimings *timingsOut = options.timings;
+    const auto wallClockStart = std::chrono::steady_clock::now();
+    std::chrono::nanoseconds stageACpuTotal{0};
+    size_t stageABatches = 0;
+    oneapi::tbb::enumerable_thread_specific<std::chrono::nanoseconds> stageBCpuPerWorker(
+        std::chrono::nanoseconds{0}
+    );
+    std::atomic<size_t> stageBBatches{0};
+    std::chrono::nanoseconds stageCCpuTotal{0};
+    size_t stageCBatches = 0;
+
     const LogConfiguration *configurationPtr = options.configuration.get();
     const bool useThreadLocalKeyCache = options.useThreadLocalKeyCache;
     const bool useParseCache = options.useParseCache;
@@ -1108,6 +1129,8 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
             return PipelineBatch{};
         }
 
+        const auto stageStart = std::chrono::steady_clock::now();
+
         const char *batchBegin = cursor;
         const char *target = std::min(cursor + batchSize, fileEnd);
         if (target < fileEnd)
@@ -1130,16 +1153,32 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
         out.fileEnd = fileEnd;
         // Advisory only post-§4.3; Stage B stamps relative indices and Stage C shifts them.
         out.firstLineNumber = 0;
+
+        // Stage A is `serial_in_order`, so the non-atomic increments below run
+        // mutually-exclusively across pipeline batches (same invariant `cursor` /
+        // `batchIndex` rely on). Cost per batch is one `steady_clock::now()` and an
+        // integer add — well under the per-batch `memchr` we just paid above.
+        stageACpuTotal += std::chrono::steady_clock::now() - stageStart;
+        ++stageABatches;
         return out;
     };
 
     // Stage B: parallel. Per-worker simdjson + KeyIndex interning + ParseCache lookups +
     // Type::time column promotion (PRD §4.2a / parser-perf task 3.4).
     auto stageB = [&](PipelineBatch batch) -> ParsedPipelineBatch {
+        const auto stageStart = std::chrono::steady_clock::now();
         WorkerState &worker = workers.local();
-        return StreamingDetail::ParseBatchBody(
+        ParsedPipelineBatch parsed = StreamingDetail::ParseBatchBody(
             batch, worker, keys, file, timeColumns, useThreadLocalKeyCache, useParseCache
         );
+        // Per-worker accumulator, summed once after the pipeline drains. Using
+        // `enumerable_thread_specific` instead of `std::atomic` keeps the per-call cost
+        // to a non-shared cache-line write — the global atomic counter for batch counts
+        // costs one CAS per batch, which is unavoidable but small at the batch
+        // granularity (~174 batches on the [large] fixture, not per-line).
+        stageBCpuPerWorker.local() += std::chrono::steady_clock::now() - stageStart;
+        stageBBatches.fetch_add(1, std::memory_order_relaxed);
+        return parsed;
     };
 
     // Stage C: serial, in-order. Aggregates per-pipeline-batch state into a sink-visible
@@ -1201,6 +1240,8 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     };
 
     auto stageC = [&](ParsedPipelineBatch parsed) {
+        const auto stageStart = std::chrono::steady_clock::now();
+
         // Shift every line in the batch from its 1-based relative index (within the parsed
         // batch) up to its absolute file line number. `nextLineNumber - 1` is the delta
         // such that line 1 of the batch becomes `nextLineNumber`, line 2 becomes
@@ -1253,6 +1294,10 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
         nextLineNumber += parsed.totalLineCount;
 
         flushPending(false);
+
+        // Same `serial_in_order` invariant as Stage A — non-atomic accumulator is safe.
+        stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
+        ++stageCBatches;
     };
 
     // RAII-scope an explicit oneTBB parallelism cap so we do not balloon thread usage on
@@ -1296,6 +1341,32 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
         StreamedBatch tail;
         tail.firstLineNumber = nextLineNumber;
         sink.OnBatch(std::move(tail));
+    }
+
+    // Surface per-stage timing telemetry (PRD §6.1) before `OnFinished` fires so any
+    // sink-side hook reading the struct sees a fully-populated payload. We only write
+    // the struct when the caller asked for it — this is the only place where the
+    // collected counters are exposed externally; otherwise they go out of scope unused.
+    if (timingsOut != nullptr)
+    {
+        timingsOut->wallClockTotal = std::chrono::steady_clock::now() - wallClockStart;
+        timingsOut->stageACpuTotal = stageACpuTotal;
+        timingsOut->stageBCpuTotal = std::chrono::nanoseconds{0};
+        for (const std::chrono::nanoseconds &perWorker : stageBCpuPerWorker)
+        {
+            timingsOut->stageBCpuTotal += perWorker;
+        }
+        timingsOut->stageCCpuTotal = stageCCpuTotal;
+        // Stage C currently subsumes the sink-side cost for the buffered path; we
+        // expose it as a separate field so the streaming sink can charge its
+        // queued-connection hop into `sinkTotal` once §4.8 lands. For now, the field
+        // remains zero and the consumer infers the buffered-path equivalence from the
+        // §6.1 doc comment.
+        timingsOut->sinkTotal = std::chrono::nanoseconds{0};
+        timingsOut->effectiveThreads = effectiveThreads;
+        timingsOut->stageABatches = stageABatches;
+        timingsOut->stageBBatches = stageBBatches.load(std::memory_order_relaxed);
+        timingsOut->stageCBatches = stageCBatches;
     }
 
     sink.OnFinished(stopToken.stop_requested());
