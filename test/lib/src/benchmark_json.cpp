@@ -375,6 +375,135 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     REQUIRE(stringViewValues > 0);
 }
 
+// Parser-perf task 3.10 — end-to-end MainWindow-flow benchmark for PRD §4.2a /
+// req. 4.2a.7 / metric M7. Mirrors the `[large]` fixture in size and content but
+// drives the full streaming GUI flow: `LogTable::BeginStreaming` + a custom sink
+// that calls `LogTable::AppendBatch` per `OnBatch`. Reports end-to-end MB/s plus
+// the cumulative wall-time spent in the GUI-thread mid-stream timestamp back-fill
+// (`LogTable::AppendBatch` step 4) so we can quantify the M7 expectation that
+// Stage B's in-pipeline promotion drops the back-fill cost by ≥ 95 %.
+//
+// The fixture configures a `Type::time` column for `timestamp` so Stage B has
+// real promotion work to do — without it the back-fill loop stays a no-op for
+// every batch and the benchmark would not exercise M7 at all.
+TEST_CASE(
+    "Parse and stream to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][stream_to_table]"
+)
+{
+    auto logs = GenerateRandomJsonLogs(1'000'000);
+    const TestJsonLogFile testFile(logs);
+    const JsonParser parser;
+    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+
+    InitializeTimezoneData();
+
+    // Configuration mirrors the GUI's typical timestamp column shape exactly —
+    // `LogTable::BeginStreaming`'s snapshot will pick up this column up front, so
+    // Stage B promotes every line's `timestamp` value inline and the GUI-thread
+    // mid-stream back-fill loop only fires for *additional* time columns auto-
+    // promoted from keys first observed in a later batch (none in this fixture).
+    LogConfiguration baseConfig;
+    LogConfiguration::Column timestampColumn;
+    timestampColumn.header = "timestamp";
+    timestampColumn.keys = {"timestamp"};
+    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.parseFormats = {"%FT%T"};
+    timestampColumn.printFormat = "%F %H:%M:%S";
+    baseConfig.columns.push_back(std::move(timestampColumn));
+    auto configuration = std::make_shared<LogConfiguration>(baseConfig);
+
+    // Persist the configuration to a temp JSON file so we can install it into the
+    // table's `LogConfigurationManager` via `Load`. The manager has no public
+    // setter for a fully-formed LogConfiguration; `Load` is the canonical entry
+    // point used by the GUI as well.
+    TestLogConfiguration configFile;
+    configFile.Write(baseConfig);
+
+    // Sink that mirrors `LogModel::OnBatch`: route every Stage C batch into
+    // `LogTable::AppendBatch` (which runs the GUI-thread back-fill loop step 4).
+    // We instrument the back-fill step by re-running it inline ourselves before
+    // calling AppendBatch — but that would double-fill. Instead, we time the
+    // AppendBatch call itself (which includes the back-fill loop as its hottest
+    // sub-step in the legacy path) and rely on the M7 expectation that Stage B
+    // promotion makes the overwhelming majority of that time disappear.
+    struct StreamSink : StreamingLogSink
+    {
+        LogTable *table = nullptr;
+        std::chrono::steady_clock::duration appendTotal{};
+        size_t appendBatches = 0;
+        size_t appendLines = 0;
+
+        KeyIndex &Keys() override { return table->Data().Keys(); }
+        void OnStarted() override {}
+        void OnBatch(StreamedBatch batch) override
+        {
+            const size_t lines = batch.lines.size();
+            const auto start = std::chrono::steady_clock::now();
+            table->AppendBatch(std::move(batch));
+            appendTotal += std::chrono::steady_clock::now() - start;
+            ++appendBatches;
+            appendLines += lines;
+        }
+        void OnFinished(bool /*cancelled*/) override {}
+    };
+
+    // Untimed warm-up: same shape as the [large] benchmark so the throughput
+    // numbers come out comparable. Reports MB/s plus the GUI-thread AppendBatch
+    // wall-time per 100 k lines streamed so M7 is visible in the test log.
+    {
+        LogConfigurationManager configManager;
+        configManager.Load(configFile.GetFilePath());
+        LogTable table(LogData{}, std::move(configManager));
+        auto fileWarmup = std::make_unique<LogFile>(testFile.GetFilePath());
+        table.BeginStreaming(std::move(fileWarmup));
+
+        StreamSink sink;
+        sink.table = &table;
+
+        JsonParserOptions opts;
+        opts.configuration = configuration;
+
+        LogFile parseFile(testFile.GetFilePath());
+        const auto start = std::chrono::steady_clock::now();
+        parser.ParseStreaming(parseFile, sink, opts);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+
+        REQUIRE(table.RowCount() == logs.size());
+        ReportThroughput("Stream to LogTable warm-up", elapsed, bytes, logs.size());
+
+        const double appendMs = std::chrono::duration<double, std::milli>(sink.appendTotal).count();
+        const double per100k = sink.appendLines == 0
+                                   ? 0.0
+                                   : appendMs * 100'000.0 / static_cast<double>(sink.appendLines);
+        WARN(
+            "LogTable::AppendBatch wall-time: " << appendMs << " ms over " << sink.appendBatches << " batches / "
+                                                << sink.appendLines << " lines (" << per100k << " ms / 100k lines)"
+        );
+    }
+
+    BENCHMARK_ADVANCED("Stream 1'000'000 JSON log entries to LogTable")(Catch::Benchmark::Chronometer meter)
+    {
+        meter.measure([&]() {
+            LogConfigurationManager configManager;
+            configManager.Load(configFile.GetFilePath());
+            LogTable table(LogData{}, std::move(configManager));
+            auto fileForTable = std::make_unique<LogFile>(testFile.GetFilePath());
+            table.BeginStreaming(std::move(fileForTable));
+
+            StreamSink sink;
+            sink.table = &table;
+
+            JsonParserOptions opts;
+            opts.configuration = configuration;
+
+            LogFile parseFile(testFile.GetFilePath());
+            parser.ParseStreaming(parseFile, sink, opts);
+            REQUIRE(table.RowCount() == logs.size());
+            return table.RowCount();
+        });
+    };
+}
+
 // PRD task 6.7 — cancellation-latency benchmark. Drives `ParseStreaming`
 // against a 1'000'000-line fixture and asks for a stop after the first batch
 // arrives. We measure the wall time between `request_stop()` and

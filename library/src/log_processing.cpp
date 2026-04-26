@@ -8,58 +8,80 @@
 #include <sstream>
 #include <string>
 
+namespace loglib
+{
+
 namespace
 {
 
-using namespace loglib;
-
-bool ParseTimestampLine(LogLine &line, const std::string &key, const std::string &format)
+/**
+ * @brief Tries a single `(keyId, format)` pair against @p line.
+ *
+ * Returns true (and overwrites the line's value at @p keyId with a `TimeStamp`)
+ * iff the value at @p keyId is a string-like alternative that `date::parse`
+ * accepts under @p format and the resulting timestamp is non-epoch. Used by
+ * both the public KeyId-keyed `ParseTimestampLine` overload and the legacy
+ * column-keyed wrapper that `BackfillTimestampColumn` exposes.
+ */
+bool TryParseTimestampOnce(LogLine &line, KeyId keyId, const std::string &format)
 {
-    LogValue value = line.GetValue(key);
-    const auto timestampString = AsStringView(value);
-    if (timestampString.has_value())
+    if (keyId == kInvalidKeyId)
     {
-        // istringstream still needs an owning string; the construction is unavoidable for the
-        // streaming-stdlib parser API. Once this hot path matters more we can swap in a
-        // string_view-aware parser (PRD §4.2.21 future work).
-        std::istringstream stream{std::string(*timestampString)};
-        TimeStamp timestamp;
-        stream >> date::parse(format, timestamp);
-        if (stream && timestamp.time_since_epoch().count() > 0)
-        {
-            line.SetValue(key, timestamp);
-            return true;
-        }
+        return false;
     }
-
+    LogValue value = line.GetValue(keyId);
+    const auto timestampString = AsStringView(value);
+    if (!timestampString.has_value())
+    {
+        return false;
+    }
+    // istringstream still needs an owning string; the construction is unavoidable for the
+    // streaming-stdlib parser API. Once this hot path matters more we can swap in a
+    // string_view-aware parser (PRD §4.2.21 future work).
+    std::istringstream stream{std::string(*timestampString)};
+    TimeStamp timestamp;
+    stream >> date::parse(format, timestamp);
+    if (stream && timestamp.time_since_epoch().count() > 0)
+    {
+        line.SetValue(keyId, timestamp);
+        return true;
+    }
     return false;
 }
 
-struct LastValidTimestampParse
-{
-    std::string key;
-    std::string format;
-};
+} // namespace
 
 bool ParseTimestampLine(
-    LogLine &line, const LogConfiguration::Column &column, std::optional<LastValidTimestampParse> &lastValid
+    LogLine &line,
+    std::span<const KeyId> keyIds,
+    std::span<const std::string> parseFormats,
+    std::optional<LastValidTimestampParse> &lastValid
 )
 {
+    // Fast path: try the (keyId, format) pair that worked on the previous line first.
+    // For files that use a single timestamp format throughout, this collapses the per-line
+    // work to one date::parse + one LogLine::GetValue.
     if (lastValid.has_value())
     {
-        if (ParseTimestampLine(line, lastValid->key, lastValid->format))
+        if (TryParseTimestampOnce(line, lastValid->keyId, lastValid->format))
         {
             return true;
         }
     }
 
-    for (const std::string &key : column.keys)
+    // Slow path: walk the full matrix. Updates `lastValid` to the winning pair so
+    // subsequent calls take the fast path.
+    for (const KeyId keyId : keyIds)
     {
-        for (const std::string &format : column.parseFormats)
+        if (keyId == kInvalidKeyId)
         {
-            if (ParseTimestampLine(line, key, format))
+            continue;
+        }
+        for (const std::string &format : parseFormats)
+        {
+            if (TryParseTimestampOnce(line, keyId, format))
             {
-                lastValid = {key, format};
+                lastValid = LastValidTimestampParse{keyId, format};
                 return true;
             }
         }
@@ -67,11 +89,6 @@ bool ParseTimestampLine(
 
     return false;
 }
-
-} // namespace
-
-namespace loglib
-{
 
 const date::time_zone *CurrentZone()
 {
@@ -98,10 +115,27 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
     // walk; resetting it at function entry matches the legacy semantics and keeps the
     // back-fill path independent of caller state.
     std::vector<std::string> errors;
+    if (lines.empty())
+    {
+        return errors;
+    }
+
+    // Resolve column.keys → KeyIds once at function entry so the per-line inner loop is
+    // KeyId-keyed (`LogLine::GetValue(KeyId)` linear scan over the small sorted pair vector,
+    // no `KeyIndex::Find` per call). Unknown keys land as kInvalidKeyId and are silently
+    // skipped by `ParseTimestampLine`.
+    const KeyIndex &keyIndex = lines.front().Keys();
+    std::vector<KeyId> keyIds;
+    keyIds.reserve(column.keys.size());
+    for (const std::string &key : column.keys)
+    {
+        keyIds.push_back(keyIndex.Find(key));
+    }
+
     std::optional<LastValidTimestampParse> lastValid;
     for (auto &line : lines)
     {
-        if (!ParseTimestampLine(line, column, lastValid))
+        if (!ParseTimestampLine(line, keyIds, column.parseFormats, lastValid))
         {
             errors.emplace_back(fmt::format(
                 "Failed to parse a timestamp for column '{}' from line number {}",

@@ -2,21 +2,27 @@
 
 #include <loglib/json_parser.hpp>
 #include <loglib/key_index.hpp>
+#include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_processing.hpp>
 
 #include <catch2/catch_all.hpp>
+#include <date/date.h>
 #include <glaze/glaze.hpp>
 #include <tsl/robin_map.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <random>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <variant>
 
 namespace
 {
@@ -743,4 +749,217 @@ TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_
     auto it = assigned.find(view);
     REQUIRE(it != assigned.end());
     CHECK(it->second == static_cast<KeyId>(7));
+}
+
+namespace
+{
+
+// Minimal `%FT%T`-style ISO-8601 timestamp generator used by the Stage B promotion test
+// below. The `GenerateRandomJsonLogs` helper in `benchmark_json.cpp` does the same job for
+// the benchmarks but lives in a different translation unit, so we re-roll a small variant
+// here to keep the unit-test side independent.
+std::string FormatIsoTimestamp(std::chrono::system_clock::time_point tp)
+{
+    return date::format("%FT%T", date::floor<std::chrono::milliseconds>(tp));
+}
+
+} // namespace
+
+TEST_CASE(
+    "Stage B promotes Type::time column values to TimeStamp inline when configuration is supplied",
+    "[json_parser][stage_b_timestamps]"
+)
+{
+    // PRD §4.2a / parser-perf task 3.7: when `JsonParserOptions::configuration` describes a
+    // `Type::time` column, every parsed line whose value at the column's key is a parseable
+    // ISO-8601 string must come out of `JsonParser::Parse` already promoted to `TimeStamp`.
+    // The legacy whole-data `ParseTimestamps` pass is therefore redundant for these snapshot
+    // keys, which is what backs the truthful `LogData::MarkTimestampsParsed()` flag set by
+    // `LogTable::BeginStreaming` (see `log_table.cpp` step 1 / req. 4.2a.3).
+    using namespace loglib;
+
+    InitializeTimezoneData();
+
+    constexpr size_t kLineCount = 1'000;
+
+    // Build 1 000 lines spaced 1 ms apart so each line carries a distinct timestamp string.
+    // Mixing fields per line keeps the per-key type cache from short-circuiting in a way
+    // that could mask a regression in the promotion path.
+    const auto base = std::chrono::system_clock::now();
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.reserve(kLineCount);
+    for (size_t i = 0; i < kLineCount; ++i)
+    {
+        glz::generic_sorted_u64 json;
+        json["timestamp"] = FormatIsoTimestamp(base + std::chrono::milliseconds(static_cast<int64_t>(i)));
+        json["level"] = std::string("info");
+        json["thread_id"] = static_cast<int64_t>(i % 8);
+        json["message"] = std::string("hello");
+        lines.emplace_back(json);
+    }
+    const TestJsonLogFile testFile(lines);
+
+    // Configuration mirrors the production timestamp column shape: one key (`timestamp`),
+    // one parse format (`%FT%T`). Stage B pre-resolves the key into a KeyId at pipeline
+    // start (PRD §4.2a / task 3.2) and the worker's `lastValidTimestamp` cache collapses
+    // the per-line work to one `date::parse` call after the first sighting.
+    auto configuration = std::make_shared<LogConfiguration>();
+    LogConfiguration::Column timestampColumn;
+    timestampColumn.header = "timestamp";
+    timestampColumn.keys = {"timestamp"};
+    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.parseFormats = {"%FT%T"};
+    configuration->columns.push_back(std::move(timestampColumn));
+
+    JsonParserOptions opts;
+    opts.configuration = configuration;
+
+    JsonParser parser;
+    const ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == kLineCount);
+
+    const KeyId timestampKeyId = result.data.Keys().Find("timestamp");
+    REQUIRE(timestampKeyId != kInvalidKeyId);
+
+    // Every line's `timestamp` value must be a fully-promoted `TimeStamp` (no leftover
+    // strings that the GUI back-fill loop would have to take a second pass on for
+    // snapshot-time keys). A single non-TimeStamp slip indicates Stage B did not run the
+    // promotion or the per-worker `lastValidTimestamp` cache lost its way mid-batch.
+    size_t promoted = 0;
+    for (const auto &line : result.data.Lines())
+    {
+        const LogValue value = line.GetValue(timestampKeyId);
+        if (std::holds_alternative<TimeStamp>(value))
+        {
+            ++promoted;
+        }
+    }
+    INFO("promoted=" << promoted << " of " << kLineCount);
+    CHECK(promoted == kLineCount);
+}
+
+TEST_CASE(
+    "Stage B leaves unparseable timestamp values as strings and pushes no errors",
+    "[json_parser][stage_b_timestamps]"
+)
+{
+    // PRD §4.2a.5: promotion failures must never push into `parsed.errors` — they leave the
+    // value as the original string so `LogTable::AppendBatch::BackfillTimestampColumn` can
+    // take a second pass on it. This test pins that contract directly: a fixture with a
+    // mix of parseable and unparseable timestamp strings must come out with errors.empty()
+    // and the bad rows still carrying a string at the timestamp KeyId.
+    using namespace loglib;
+
+    InitializeTimezoneData();
+
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.emplace_back(R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})");
+    lines.emplace_back(R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})");
+    lines.emplace_back(R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})");
+    lines.emplace_back(R"({"timestamp": "", "msg": "empty"})");
+    lines.emplace_back(R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})");
+    const TestJsonLogFile testFile(lines);
+
+    auto configuration = std::make_shared<LogConfiguration>();
+    LogConfiguration::Column timestampColumn;
+    timestampColumn.header = "timestamp";
+    timestampColumn.keys = {"timestamp"};
+    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.parseFormats = {"%FT%T"};
+    configuration->columns.push_back(std::move(timestampColumn));
+
+    JsonParserOptions opts;
+    opts.configuration = configuration;
+
+    JsonParser parser;
+    const ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+
+    // Promotion failures are silent; only genuine JSON-parse errors land in `errors`.
+    CHECK(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 5);
+
+    const KeyId timestampKeyId = result.data.Keys().Find("timestamp");
+    REQUIRE(timestampKeyId != kInvalidKeyId);
+
+    CHECK(std::holds_alternative<TimeStamp>(result.data.Lines()[0].GetValue(timestampKeyId)));
+    CHECK_FALSE(std::holds_alternative<TimeStamp>(result.data.Lines()[1].GetValue(timestampKeyId)));
+    CHECK(AsStringView(result.data.Lines()[1].GetValue(timestampKeyId)) == std::string_view{"not-a-timestamp"});
+    CHECK(std::holds_alternative<TimeStamp>(result.data.Lines()[2].GetValue(timestampKeyId)));
+    CHECK_FALSE(std::holds_alternative<TimeStamp>(result.data.Lines()[3].GetValue(timestampKeyId)));
+    CHECK(AsStringView(result.data.Lines()[3].GetValue(timestampKeyId)) == std::string_view{""});
+    CHECK(std::holds_alternative<TimeStamp>(result.data.Lines()[4].GetValue(timestampKeyId)));
+}
+
+TEST_CASE(
+    "Streaming pipeline preserves absolute line numbers across runs of mid-stream empty lines",
+    "[json_parser][empty_lines]"
+)
+{
+    // PRD §7.5 risk row 3 / parser-perf task 3.9: a contiguous run of empty lines in the
+    // middle of the stream must not desynchronise Stage A's line counter from Stage B's
+    // emitted absolute line numbers, and the per-line offset table must still allocate one
+    // slot per empty line (matching the legacy parser's "empty line consumes one line
+    // number" semantics — see `json_parser.cpp` empty-line handling at the
+    // `localLineOffsets.push_back` call).
+    using namespace loglib;
+
+    constexpr size_t kEmptyLineCount = 100;
+
+    // Layout: 5 valid lines, 100 blank lines, 5 valid lines. Absolute line numbers
+    // observed by the consumer must be {1..5, 106..110}; total file line count
+    // (LogFile::GetLineCount, which counts every consumed source line including the
+    // blanks) must be 110.
+    std::vector<std::string> raw;
+    raw.reserve(5 + kEmptyLineCount + 5);
+    for (size_t i = 0; i < 5; ++i)
+    {
+        raw.emplace_back(std::string(R"({"key":"value-)") + std::to_string(i + 1) + R"("})");
+    }
+    for (size_t i = 0; i < kEmptyLineCount; ++i)
+    {
+        raw.emplace_back("");
+    }
+    for (size_t i = 0; i < 5; ++i)
+    {
+        raw.emplace_back(std::string(R"({"key":"value-)") + std::to_string(i + 6) + R"("})");
+    }
+
+    std::vector<TestJsonLogFile::Line> fixtureLines;
+    fixtureLines.reserve(raw.size());
+    for (const auto &s : raw)
+    {
+        fixtureLines.emplace_back(s.c_str());
+    }
+    const TestJsonLogFile testFile(fixtureLines);
+
+    JsonParser parser;
+    const ParseResult result = parser.Parse(testFile.GetFilePath());
+
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 10);
+    REQUIRE(result.data.Files().size() == 1);
+
+    // Absolute line numbers: 1..5 then 106..110.
+    const std::vector<size_t> expected = {1, 2, 3, 4, 5, 106, 107, 108, 109, 110};
+    for (size_t i = 0; i < result.data.Lines().size(); ++i)
+    {
+        INFO("i=" << i);
+        CHECK(result.data.Lines()[i].FileReference().GetLineNumber() == expected[i]);
+    }
+
+    // The LogFile-side offset table should record one entry per consumed line including
+    // every blank line; otherwise GetLine(absoluteLineNumber) would skew when the GUI later
+    // double-clicks a row to open the source line.
+    const LogFile &file = *result.data.Files()[0];
+    CHECK(file.GetLineCount() == 110);
+
+    // Spot-check that a specific empty-line index round-trips to an empty string and that
+    // the surrounding valid lines still render their original JSON content.
+    CHECK(file.GetLine(0) == R"({"key":"value-1"})");
+    CHECK(file.GetLine(4) == R"({"key":"value-5"})");
+    CHECK(file.GetLine(50).empty()); // somewhere in the empty run
+    CHECK(file.GetLine(105) == R"({"key":"value-6"})");
+    CHECK(file.GetLine(109) == R"({"key":"value-10"})");
 }

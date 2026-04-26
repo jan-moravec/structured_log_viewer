@@ -725,23 +725,44 @@ struct JsonParser::StreamingDetail
     };
 
     /**
+     * @brief Pre-resolved Stage B view of one configured `Type::time` column.
+     *
+     * `JsonParser::ParseStreaming` walks `options.configuration->columns`
+     * once at pipeline start and materialises one of these per
+     * `Type::time` column. Column key strings are resolved to `KeyId`s up
+     * front so Stage B's per-line promotion loop is KeyId-keyed (no
+     * per-line `KeyIndex::Find`). The `parseFormats` vector is copied
+     * (not referenced) so the spec list stays valid even if the original
+     * configuration shared_ptr is reset by the caller mid-parse.
+     *
+     * PRD §4.2a / parser-perf task 3.2; pairs 1:1 with
+     * `WorkerState::lastValidTimestamps[i]`.
+     */
+    struct TimeColumnSpec
+    {
+        std::vector<KeyId> keyIds;
+        std::vector<std::string> parseFormats;
+    };
+
+    /**
      * @brief Per-worker scratch held in oneTBB's enumerable_thread_specific.
      *
      * Each Stage B worker holds one of these to amortise the cost of: (a)
      * the simdjson on-demand parser instance, (b) the padded scratch buffer
      * used when the trailing tail of the mmap doesn't have SIMDJSON_PADDING
-     * bytes of slack, (c) the per-KeyId type-cache vector, and (d) the
+     * bytes of slack, (c) the per-KeyId type-cache vector, (d) the
      * per-worker key string -> `KeyId` cache (PRD §4.1) that fronts the
      * canonical `KeyIndex` and absorbs the per-call `std::string`
      * materialisation cost via heterogeneous `find(string_view)` on a
-     * `tsl::robin_map`. Cache entries survive the move-construction that
+     * `tsl::robin_map`, and (e) one `LastValidTimestampParse` carry-over
+     * per `Type::time` column so a worker that observes a stable timestamp
+     * format pays one `date::parse` call per line per column instead of
+     * walking the full `keyIds × parseFormats` matrix every time (PRD
+     * §4.2a / parser-perf task 3.3).
+     *
+     * Cache entries survive the move-construction that
      * `enumerable_thread_specific` performs when growing its per-thread
      * slot table (covered by the `[key_cache][move]` test).
-     *
-     * The per-worker timestamp helper (`LastValidTimestampParse`) is
-     * intentionally *not* held here yet: Stage B in-pipeline timestamp
-     * promotion (PRD req. 4.2.21) is wired up in task 3.0 (PRD §4.2a) once
-     * `BackfillTimestampColumn` is extracted from `log_processing.cpp`.
      */
     struct WorkerState
     {
@@ -749,23 +770,29 @@ struct JsonParser::StreamingDetail
         std::string linePadded;
         JsonParser::ParseCache cache;
         detail::PerWorkerKeyCache keyCache;
+        std::vector<std::optional<LastValidTimestampParse>> lastValidTimestamps;
     };
 
     /**
      * @brief Walks @p batch's bytes and parses each non-empty line into a
-     *        `LogLine`.
+     *        `LogLine`, optionally promoting `Type::time` column values to
+     *        `TimeStamp` inline.
      *
      * Encapsulates the per-batch work of Stage B so we can unit-test the
-     * parsing body separately from the pipeline harness if needed. The
-     * per-worker timestamp-promotion fast path lands once
-     * `BackfillTimestampColumn` is extracted in task 3.8/4.6.
+     * parsing body separately from the pipeline harness if needed. Per
+     * PRD §4.2a / parser-perf task 3.4, after each successful line append
+     * the function walks `timeColumns` and calls `ParseTimestampLine` on
+     * the freshly-pushed `LogLine`; promotion failures are silently left
+     * as the original string so `LogTable::AppendBatch`'s mid-stream
+     * back-fill can take a second pass on them (PRD §4.2a.5 / Stage C
+     * silent-discard semantics in `log_table.cpp` step 4).
      */
     static ParsedPipelineBatch ParseBatchBody(
         const PipelineBatch &batch,
         WorkerState &worker,
         KeyIndex &keys,
         LogFile &logFile,
-        const LogConfiguration *configuration,
+        const std::vector<TimeColumnSpec> &timeColumns,
         bool useThreadLocalKeyCache,
         bool useParseCache
     );
@@ -776,12 +803,18 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
     WorkerState &worker,
     KeyIndex &keys,
     LogFile &logFile,
-    const LogConfiguration *configuration,
+    const std::vector<TimeColumnSpec> &timeColumns,
     bool useThreadLocalKeyCache,
     bool useParseCache
 )
 {
-    (void)configuration; // Stage B in-pipeline timestamp promotion lands in task 4.6/3.8.
+    // Lazily right-size the worker's per-time-column lastValid cache. Sized once on first
+    // entry — `timeColumns` is captured by reference from `ParseStreaming`'s pipeline
+    // start-up and does not grow during the parse.
+    if (!timeColumns.empty() && worker.lastValidTimestamps.size() < timeColumns.size())
+    {
+        worker.lastValidTimestamps.resize(timeColumns.size());
+    }
 
     ParsedPipelineBatch parsed;
     parsed.batchIndex = batch.batchIndex;
@@ -867,6 +900,26 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
             logLine.FileReference().SetLineNumber(absoluteLineNumber);
 
             parsed.lines.push_back(std::move(logLine));
+
+            // PRD §4.2a / parser-perf task 3.4: promote any configured Type::time columns
+            // inline so the GUI thread's mid-stream BackfillTimestampColumn pass becomes a
+            // no-op for these snapshot-time keys. Promotion failures (e.g. empty value, malformed
+            // string) are silently left as the original string per §4.2a.5 — the fallback
+            // happens in `LogTable::AppendBatch::BackfillTimestampColumn`, matching the legacy
+            // GUI-side silent-discard semantics. Iterating against a reference to the line
+            // we just pushed keeps the back-pointer to `keys` (set by the LogLine constructor)
+            // valid for `ParseTimestampLine`'s `LogLine::GetValue(KeyId)` linear scan.
+            if (!timeColumns.empty())
+            {
+                LogLine &storedLine = parsed.lines.back();
+                for (size_t i = 0; i < timeColumns.size(); ++i)
+                {
+                    const TimeColumnSpec &spec = timeColumns[i];
+                    (void)ParseTimestampLine(
+                        storedLine, spec.keyIds, spec.parseFormats, worker.lastValidTimestamps[i]
+                    );
+                }
+            }
         }
         catch (const std::exception &e)
         {
@@ -929,11 +982,39 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     using PipelineBatch = StreamingDetail::PipelineBatch;
     using ParsedPipelineBatch = StreamingDetail::ParsedPipelineBatch;
     using WorkerState = StreamingDetail::WorkerState;
+    using TimeColumnSpec = StreamingDetail::TimeColumnSpec;
     oneapi::tbb::enumerable_thread_specific<WorkerState> workers;
 
     const LogConfiguration *configurationPtr = options.configuration.get();
     const bool useThreadLocalKeyCache = options.useThreadLocalKeyCache;
     const bool useParseCache = options.useParseCache;
+
+    // Pre-resolve every Type::time column's keys into KeyIds once (PRD §4.2a / parser-perf
+    // task 3.2). Stage B walks this vector per line; the column-key resolution path goes
+    // through `KeyIndex::GetOrInsert` so previously-unseen keys are registered up front and
+    // their KeyIds become part of the snapshot Stage C will report via `StreamedBatch::newKeys`
+    // on the first batch (matching the legacy parser, which also surfaces configured time
+    // keys regardless of whether any line carried them). Empty when configuration is null —
+    // matches the legacy synchronous `JsonParser::Parse(path)` default.
+    std::vector<TimeColumnSpec> timeColumns;
+    if (configurationPtr != nullptr)
+    {
+        for (const LogConfiguration::Column &column : configurationPtr->columns)
+        {
+            if (column.type != LogConfiguration::Type::time)
+            {
+                continue;
+            }
+            TimeColumnSpec spec;
+            spec.keyIds.reserve(column.keys.size());
+            for (const std::string &key : column.keys)
+            {
+                spec.keyIds.push_back(keys.GetOrInsert(key));
+            }
+            spec.parseFormats = column.parseFormats;
+            timeColumns.push_back(std::move(spec));
+        }
+    }
 
     // Stage A: serial, in-order. Walks the mmap at batchSize granularity, advancing to the
     // next newline so each batch contains an integer number of lines. Tracks the absolute line
@@ -992,11 +1073,12 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
         return out;
     };
 
-    // Stage B: parallel. Per-worker simdjson + KeyIndex interning + ParseCache lookups.
+    // Stage B: parallel. Per-worker simdjson + KeyIndex interning + ParseCache lookups +
+    // Type::time column promotion (PRD §4.2a / parser-perf task 3.4).
     auto stageB = [&](PipelineBatch batch) -> ParsedPipelineBatch {
         WorkerState &worker = workers.local();
         return StreamingDetail::ParseBatchBody(
-            batch, worker, keys, file, configurationPtr, useThreadLocalKeyCache, useParseCache
+            batch, worker, keys, file, timeColumns, useThreadLocalKeyCache, useParseCache
         );
     };
 

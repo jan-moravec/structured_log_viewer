@@ -41,9 +41,15 @@ void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(file), std::move(noLines), KeyIndex{});
-        // Stage B already promotes timestamps inline; flag the LogData so the legacy
-        // ParseTimestamps pass in Update is skipped if Update is ever called against this
-        // table after streaming completes (PRD req. 4.2.21).
+        // PRD §4.2a / parser-perf task 3.6: Stage B now actually promotes Type::time column
+        // values to TimeStamp inline (see `JsonParser::ParseStreaming`'s `timeColumns`
+        // pre-resolution + `ParseBatchBody`'s per-line `ParseTimestampLine` call), so this
+        // flag is truthful from the moment the streaming pipeline starts. Time columns whose
+        // KeyIds first appear *after* the Stage B snapshot (i.e. auto-promoted mid-stream
+        // from a key surfaced by a later batch) are still back-filled on the GUI thread by
+        // `LogTable::AppendBatch` step 4 against `mStageBSnapshotTimeKeys`, but those are
+        // *additional* columns layered on top of an already-parsed line set rather than the
+        // load-bearing lie the flag used to be (PRD A.8 reference).
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
