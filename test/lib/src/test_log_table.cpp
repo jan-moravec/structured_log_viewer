@@ -510,3 +510,83 @@ TEST_CASE("LogTable::AppendBatch -- auto-promoted time column triggers back-fill
     ));
     CHECK(!table.LastBackfillRange().has_value());
 }
+
+// PRD task 2.8 — confirm `LogTable::AppendBatch` exercises the new no-alloc
+// `KeyIndex::Find` fast path the expected number of times. After §4.2 lands
+// the per-call `std::string` materialisation is gone; the call **count**
+// itself is unchanged at this point — the count drop comes in PRD §4.8.2
+// (task 9.0) which gates `RefreshColumnKeyIds` on `!batch.newKeys.empty()`.
+//
+// The heterogeneous-lookup contract that "no `std::string` is constructed
+// per `Find`" is asserted structurally via `KeyIndex::Find(std::string_view)`
+// taking a `string_view` by value through to the per-shard
+// `tsl::robin_map::find(string_view)` overload — which does not allocate.
+// This test establishes the call-count baseline against which task 9.0's
+// drop will be measured.
+TEST_CASE("LogTable::AppendBatch -- RefreshColumnKeyIds Find call count baseline", "[log_table][refresh_no_alloc]")
+{
+    constexpr int kKeyCount = 100;
+    constexpr int kBatches = 1'000;
+
+    TestLogFile testFile("refresh_no_alloc.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    // Build a single column whose `keys` list contains kKeyCount entries.
+    // RefreshColumnKeyIds calls `Find` once per (column, key) pair, so each
+    // AppendBatch contributes kKeyCount Find calls deterministically.
+    LogConfiguration cfg;
+    LogConfiguration::Column wide;
+    wide.header = "Wide";
+    wide.printFormat = "{}";
+    wide.type = LogConfiguration::Type::any;
+    wide.keys.reserve(kKeyCount);
+    for (int i = 0; i < kKeyCount; ++i)
+    {
+        wide.keys.push_back("k" + std::to_string(i));
+    }
+    cfg.columns.push_back(std::move(wide));
+
+    TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(logFile));
+
+    // Pre-populate every key in the KeyIndex once so each AppendBatch is a
+    // pure steady-state batch (no `newKeys`, no auto-promotion). After this
+    // priming AppendBatch's `RefreshColumnKeyIds` walks all 100 keys via
+    // `Find` per call.
+    KeyIndex &keys = table.Data().Keys();
+    for (int i = 0; i < kKeyCount; ++i)
+    {
+        keys.GetOrInsert("k" + std::to_string(i));
+    }
+
+    // Reset counters so other test cases do not leak counts into us.
+    KeyIndex::ResetInstrumentationCounters();
+
+    for (int batchIdx = 0; batchIdx < kBatches; ++batchIdx)
+    {
+        StreamedBatch batch;
+        batch.firstLineNumber = static_cast<size_t>(batchIdx + 1);
+        batch.lines.push_back(MakeLine(keys, *filePtr, {{"k0", std::string("steady")}}));
+        REQUIRE(batch.newKeys.empty());
+        table.AppendBatch(std::move(batch));
+    }
+
+    // Expected Find call count: kBatches × kKeyCount from RefreshColumnKeyIds.
+    // No time column means the back-fill loop in AppendBatch contributes
+    // zero additional Find calls.
+    const std::size_t findCount = KeyIndex::LoadFindCount();
+    INFO("Find calls = " << findCount << " over " << kBatches << " AppendBatch calls × " << kKeyCount << " keys");
+    CHECK(findCount == static_cast<std::size_t>(kBatches) * static_cast<std::size_t>(kKeyCount));
+
+    // Sanity: the lines actually accumulated and the column count did not
+    // grow (no `newKeys` arrived).
+    CHECK(table.RowCount() == static_cast<size_t>(kBatches));
+    CHECK(table.ColumnCount() == 1);
+}

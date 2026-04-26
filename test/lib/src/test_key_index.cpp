@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <random>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -185,4 +187,104 @@ TEST_CASE("KeyIndex move construction preserves the dictionary", "[key_index]")
     CHECK(moved.Find("beta") == b);
     CHECK(moved.KeyOf(a) == "alpha");
     CHECK(moved.KeyOf(b) == "beta");
+}
+
+// PRD task 2.5 / §7.5 risk row 2 — heterogeneous-lookup race stress test.
+// Eight workers race to GetOrInsert/Find against a small (200-key) overlapping
+// pool. Postcondition: exactly 200 distinct ids, every Find matches its
+// GetOrInsert, KeyOf round-trips correctly, and ids are dense in [0, 200).
+TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find storm", "[key_index][stress]")
+{
+    constexpr int kKeyCount = 200;
+    constexpr int kThreadCount = 8;
+    constexpr int kIterationsPerThread = 100'000;
+
+    std::vector<std::string> keys;
+    keys.reserve(kKeyCount);
+    for (int i = 0; i < kKeyCount; ++i)
+    {
+        keys.push_back("stress_key_" + std::to_string(i));
+    }
+
+    KeyIndex index;
+
+    oneapi::tbb::parallel_for(0, kThreadCount, [&](int thread) {
+        // Per-thread RNG so the iteration order interleaves but is reproducible.
+        std::mt19937 rng(static_cast<unsigned>(thread) * 37u + 1u);
+        std::uniform_int_distribution<int> pickKey(0, kKeyCount - 1);
+        for (int i = 0; i < kIterationsPerThread; ++i)
+        {
+            const std::string &k = keys[static_cast<size_t>(pickKey(rng))];
+            // Mix of GetOrInsert + Find so both code paths race against
+            // each other on the same shard. Throwaway results — the
+            // postcondition is checked once after the parallel_for.
+            (void)index.GetOrInsert(k);
+            (void)index.Find(k);
+        }
+    });
+
+    REQUIRE(index.Size() == static_cast<size_t>(kKeyCount));
+
+    std::set<KeyId> seenIds;
+    for (const auto &k : keys)
+    {
+        const KeyId byFind = index.Find(k);
+        REQUIRE(byFind != kInvalidKeyId);
+        const KeyId byGetOrInsert = index.GetOrInsert(k);
+        CHECK(byFind == byGetOrInsert);
+        const auto [it, inserted] = seenIds.insert(byFind);
+        INFO("Duplicate id " << byFind << " observed for key " << k);
+        REQUIRE(inserted);
+        CHECK(index.KeyOf(byFind) == k);
+    }
+    CHECK(*seenIds.begin() == 0);
+    CHECK(*seenIds.rbegin() == static_cast<KeyId>(kKeyCount - 1));
+    CHECK(index.Size() == static_cast<size_t>(kKeyCount));
+}
+
+// PRD task 2.6 — heterogeneous-lookup unit test. Exercises the new no-alloc
+// fast path: a `string_view` query (built from a `char` buffer) must succeed
+// without the caller materialising a `std::string`. The PRD wording asks us
+// to assert the call counts via `LOGLIB_KEY_INDEX_INSTRUMENTATION` exactly,
+// so we reset the counters at the top and read them at the end.
+TEST_CASE(
+    "KeyIndex heterogeneous lookup never requires the caller to materialise a std::string", "[key_index][heterogeneous]"
+)
+{
+    KeyIndex index;
+    const KeyId alphaId = index.GetOrInsert("alpha");
+    const KeyId betaId = index.GetOrInsert("beta");
+
+    // Counters are process-global; reset right before the measured calls so
+    // any other test interleaving does not leak count noise into us.
+    KeyIndex::ResetInstrumentationCounters();
+
+    // Build the query as a string_view over a stack-allocated char buffer so
+    // there is no chance of an implicit std::string ever being constructed
+    // along the call path.
+    constexpr char alphaBuf[] = "alpha";
+    constexpr char betaBuf[] = "beta";
+    constexpr char absentBuf[] = "missing";
+    const std::string_view alphaView(alphaBuf, sizeof(alphaBuf) - 1);
+    const std::string_view betaView(betaBuf, sizeof(betaBuf) - 1);
+    const std::string_view absentView(absentBuf, sizeof(absentBuf) - 1);
+
+    CHECK(index.Find(alphaView) == alphaId);
+    CHECK(index.Find(betaView) == betaId);
+    CHECK(index.Find(absentView) == kInvalidKeyId);
+
+    // Repeat-`GetOrInsert` for an existing key must take the fast path
+    // (heterogeneous `find` on the per-shard map) and not allocate a new id.
+    CHECK(index.GetOrInsert(alphaView) == alphaId);
+    CHECK(index.GetOrInsert(betaView) == betaId);
+    CHECK(index.Size() == 2);
+
+    // Counter assertions: 3 Find calls, 2 GetOrInsert calls. If the
+    // implementation regressed and a heterogeneous find path now constructs
+    // a std::string, this still passes — the counter only proves the public
+    // API was exercised the expected number of times. The non-allocation
+    // contract itself is ratified by the PRD's [allocations] benchmark
+    // (M5: ≥ 99 % string_view fast-path fraction) staying green.
+    CHECK(KeyIndex::LoadFindCount() == 3);
+    CHECK(KeyIndex::LoadGetOrInsertCount() == 2);
 }
