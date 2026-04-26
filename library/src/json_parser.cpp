@@ -694,9 +694,16 @@ struct JsonParser::StreamingDetail
      * Stage A advances a cursor in `serial_in_order` mode and emits one of
      * these per pipeline tick. `bytesBegin` and `bytesEnd` are pointers into
      * the mmap (lifetime tied to the LogFile, which outlives the pipeline).
-     * `firstLineNumber` is the 1-based absolute line number of the first
-     * line in the batch, used by Stage B to stamp each LogLine's
-     * LogFileReference.
+     *
+     * `firstLineNumber` was previously used to hand Stage B an absolute
+     * line-number cursor, which forced Stage A to count newlines per batch
+     * (PRD §6.4 reference body kept it as a single bounded `memchr` per
+     * batch, but the legacy code did one `memchr` per line). PRD §4.3 /
+     * parser-perf task 4.0 retired that scheme: Stage B now stamps
+     * *relative* line indices (1-based within its batch) and Stage C — which
+     * sees parsed batches in order — shifts them up by the running cursor
+     * via `LogFileReference::ShiftLineNumber`. The field is now advisory
+     * (always `0` from Stage A) and may be retired once no caller reads it.
      */
     struct PipelineBatch
     {
@@ -704,7 +711,7 @@ struct JsonParser::StreamingDetail
         const char *bytesBegin = nullptr;
         const char *bytesEnd = nullptr;
         const char *fileEnd = nullptr;
-        size_t firstLineNumber = 1;
+        size_t firstLineNumber = 0;
     };
 
     /**
@@ -720,8 +727,17 @@ struct JsonParser::StreamingDetail
         std::vector<LogLine> lines;
         std::vector<uint64_t> localLineOffsets; // start-of-line byte offsets within the file
         std::vector<std::string> errors;
-        size_t firstLineNumber = 1;
-        size_t totalLineCount = 0; // lines + errors + skipped-empty
+        // Carried through from the corresponding `PipelineBatch` for symmetry
+        // (and for ad-hoc consumers that may inspect it). Stage A always emits
+        // `0` here post-PRD §4.3 / parser-perf task 4.0; the absolute line
+        // numbers on `lines[i].FileReference()` are shifted into place by
+        // Stage C, not by reading this field.
+        size_t firstLineNumber = 0;
+        // Total source lines this batch consumed = parsed lines + parse errors
+        // + skipped empty lines. Stage C uses this to advance its running
+        // line-number cursor by exactly the right amount before processing
+        // the next batch (PRD §4.3.3).
+        size_t totalLineCount = 0;
     };
 
     /**
@@ -831,7 +847,14 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
     parsed.lines.reserve(estimatedLines);
     parsed.localLineOffsets.reserve(estimatedLines);
 
-    size_t absoluteLineNumber = batch.firstLineNumber;
+    // PRD §4.3 / parser-perf task 4.3: stamp 1-based *relative* line numbers (within the
+    // current batch). Stage C — which receives parsed batches in order — shifts these into
+    // absolute file line numbers by adding `(currentBatchStartLine - 1)` once per batch via
+    // `LogFileReference::ShiftLineNumber`. Decoupling Stage B from any global cursor means
+    // the parallel stage no longer pays a per-line `memchr` from Stage A's line-counter
+    // (PRD §6.4), and removes the implicit serial dependency on `nextLineNumber` between
+    // adjacent Stage A invocations.
+    size_t relativeLineNumber = 1;
 
     while (cursor < end)
     {
@@ -854,7 +877,7 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
 
         if (line.empty())
         {
-            absoluteLineNumber++;
+            relativeLineNumber++;
             continue;
         }
 
@@ -871,20 +894,27 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
                               : worker.parser.iterate(simdjson::pad(worker.linePadded.assign(line)));
             if (result.error())
             {
+                // Error messages quote the *relative* line index here; Stage C does not
+                // back-fill the message string (only the LogFileReference number on
+                // successful lines). This is a deliberate trade-off: parse errors are rare
+                // enough that the small loss in human-readable absolute-line precision in
+                // error messages is preferable to the per-error string-rewrite cost in
+                // Stage C. Sinks that need absolute numbers in error text can shift them
+                // themselves using `StreamedBatch::firstLineNumber`.
                 parsed.errors.push_back(fmt::format(
                     "Error on line {}: {}",
-                    absoluteLineNumber,
+                    relativeLineNumber,
                     simdjson::error_message(result.error())
                 ));
-                absoluteLineNumber++;
+                relativeLineNumber++;
                 continue;
             }
 
             auto object = result.get_object();
             if (object.error())
             {
-                parsed.errors.push_back(fmt::format("Error on line {}: Not a JSON object.", absoluteLineNumber));
-                absoluteLineNumber++;
+                parsed.errors.push_back(fmt::format("Error on line {}: Not a JSON object.", relativeLineNumber));
+                relativeLineNumber++;
                 continue;
             }
 
@@ -894,10 +924,12 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
                 objectValue, keys, worker.cache, sourceIsStable, &worker.keyCache, useThreadLocalKeyCache
             );
 
-            // Placeholder line number; Stage C overwrites once it reasserts ordering.
+            // Stamp the line's relative index. Stage C will shift this up to the absolute
+            // file line number once the batch is dequeued in order via
+            // `LogFileReference::ShiftLineNumber(currentBatchStartLine - 1)` (PRD §4.3.3).
             LogFileReference fileRef(logFile, 0);
             LogLine logLine(std::move(values), keys, std::move(fileRef));
-            logLine.FileReference().SetLineNumber(absoluteLineNumber);
+            logLine.FileReference().SetLineNumber(relativeLineNumber);
 
             parsed.lines.push_back(std::move(logLine));
 
@@ -923,13 +955,18 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
         }
         catch (const std::exception &e)
         {
-            parsed.errors.push_back(fmt::format("Error on line {}: {}", absoluteLineNumber, e.what()));
+            parsed.errors.push_back(fmt::format("Error on line {}: {}", relativeLineNumber, e.what()));
         }
 
-        absoluteLineNumber++;
+        relativeLineNumber++;
     }
 
-    parsed.totalLineCount = absoluteLineNumber - batch.firstLineNumber;
+    // `totalLineCount` is the number of source lines this batch consumed (parsed lines +
+    // parse errors + skipped empty lines). Stage C uses this exact value to advance its
+    // running line-number cursor before processing the next batch (PRD §4.3.3), so it must
+    // count *every* `cursor`-advancing iteration of the loop above — which `relativeLineNumber`
+    // does because both the empty-line and the parse-error fall-throughs increment it.
+    parsed.totalLineCount = relativeLineNumber - 1;
     return parsed;
 }
 
@@ -1017,12 +1054,17 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     }
 
     // Stage A: serial, in-order. Walks the mmap at batchSize granularity, advancing to the
-    // next newline so each batch contains an integer number of lines. Tracks the absolute line
-    // number of the first line in the next batch so Stage C can stamp LogFileReferences
-    // without an extra accumulator.
+    // next newline so each batch contains an integer number of lines.
+    //
+    // Post-PRD §4.3 / parser-perf task 4.0, Stage A no longer knows anything about line
+    // numbers — the per-batch newline-counting loop has been retired. Stage B stamps
+    // 1-based relative indices within each batch, and Stage C maintains the running absolute
+    // line cursor and shifts each line's `LogFileReference` into place via
+    // `LogFileReference::ShiftLineNumber` (two operations per batch, none per line). The
+    // matching reference body for Stage A is the §6.4 snippet: a single bounded `memchr`
+    // per batch, nothing else.
     const char *cursor = fileBegin;
     uint64_t batchIndex = 0;
-    size_t nextLineNumber = 1;
     std::stop_token stopToken = options.stopToken;
 
     auto stageA = [&](oneapi::tbb::flow_control &fc) -> PipelineBatch {
@@ -1052,24 +1094,8 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
         out.bytesBegin = batchBegin;
         out.bytesEnd = cursor;
         out.fileEnd = fileEnd;
-        out.firstLineNumber = nextLineNumber;
-
-        // Pre-count this batch's newlines so Stage A keeps an accurate line-number running
-        // total. memchr is cheap enough that doing it twice (here and in Stage B) is not
-        // a measurable cost in practice; if it becomes one we can hoist it from Stage B.
-        size_t lineCount = 0;
-        for (const char *p = batchBegin; p < cursor; ++p)
-        {
-            const char *nl = static_cast<const char *>(memchr(p, '\n', static_cast<size_t>(cursor - p)));
-            if (nl == nullptr)
-            {
-                ++lineCount; // trailing line without '\n'
-                break;
-            }
-            ++lineCount;
-            p = nl;
-        }
-        nextLineNumber += lineCount;
+        // Advisory only post-§4.3; Stage B stamps relative indices and Stage C shifts them.
+        out.firstLineNumber = 0;
         return out;
     };
 
@@ -1103,6 +1129,17 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     size_t prevKeyCount = keys.Size();
     auto lastFlush = std::chrono::steady_clock::now();
 
+    // PRD §4.3 / parser-perf task 4.4: Stage C maintains the absolute-line cursor that
+    // Stage B no longer knows about. `nextLineNumber` is 1-based and tracks the absolute
+    // line number that the *next* incoming `ParsedPipelineBatch`'s first line should land
+    // on. We shift each parsed line by `(nextLineNumber - 1)` (two operations per batch:
+    // a single `ShiftLineNumber` per LogLine + an integer add to advance the cursor by
+    // `parsed.totalLineCount`). For `[wide]`-style batches with thousands of lines this is
+    // the sub-step that uncaps Stage B's parallel speedup, because Stage A is no longer
+    // doing a per-line `memchr` to maintain the same cursor on its own (PRD §4.3 expected
+    // impact, M4 Stage-A wall-clock target < 5 %).
+    size_t nextLineNumber = 1;
+
     auto emitNewKeysInto = [&](StreamedBatch &out) {
         const size_t currentKeyCount = keys.Size();
         if (currentKeyCount > prevKeyCount)
@@ -1130,9 +1167,29 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
     };
 
     auto stageC = [&](ParsedPipelineBatch parsed) {
+        // Shift every line in the batch from its 1-based relative index (within the parsed
+        // batch) up to its absolute file line number. `nextLineNumber - 1` is the delta
+        // such that line 1 of the batch becomes `nextLineNumber`, line 2 becomes
+        // `nextLineNumber + 1`, etc. Using `ShiftLineNumber` instead of `SetLineNumber +
+        // counter` keeps the per-line cost to a single integer add and avoids re-deriving
+        // the relative index in Stage C.
+        const size_t lineNumberDelta = nextLineNumber - 1;
+        if (lineNumberDelta != 0)
+        {
+            for (LogLine &line : parsed.lines)
+            {
+                line.FileReference().ShiftLineNumber(lineNumberDelta);
+            }
+        }
+
         if (!pendingPrimed)
         {
-            pending.firstLineNumber = parsed.firstLineNumber;
+            // The first line in the *coalesced* StreamedBatch we'll send to the sink is the
+            // first line of this parsed batch — and that line, post-shift, sits at
+            // `nextLineNumber`. Mirroring this contract lets sinks reason about
+            // `pending.firstLineNumber` without re-deriving it from the lines' own
+            // references.
+            pending.firstLineNumber = nextLineNumber;
             pendingPrimed = true;
         }
         if (!parsed.lines.empty())
@@ -1154,6 +1211,13 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
             pending.errors.reserve(pending.errors.size() + parsed.errors.size());
             std::move(parsed.errors.begin(), parsed.errors.end(), std::back_inserter(pending.errors));
         }
+
+        // Advance the cursor by exactly the number of source lines this parsed batch
+        // consumed (parsed lines + parse errors + skipped empty lines). This keeps the
+        // running cursor correct across batches with mixed empty/parsed/error content
+        // and across runs of mid-stream empty lines (PRD §7.5 risk row 3).
+        nextLineNumber += parsed.totalLineCount;
+
         flushPending(false);
     };
 

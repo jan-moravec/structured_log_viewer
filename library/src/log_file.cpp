@@ -77,6 +77,11 @@ void LogFileReference::SetLineNumber(size_t lineNumber)
     mLineNumber = lineNumber;
 }
 
+void LogFileReference::ShiftLineNumber(size_t delta) noexcept
+{
+    mLineNumber += delta;
+}
+
 std::string LogFileReference::GetLine() const
 {
     return mLogFile->GetLine(mLineNumber);

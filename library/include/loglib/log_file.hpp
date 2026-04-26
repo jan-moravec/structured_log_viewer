@@ -51,6 +51,23 @@ public:
     void SetLineNumber(size_t lineNumber);
 
     /**
+     * @brief Adds @p delta to the currently-stored line number.
+     *
+     * Stage-C-internal helper for the line-numbering scheme introduced by PRD
+     * §4.3 / parser-perf task 4.0: Stage B no longer knows the absolute line
+     * number of any line it parses, so it stamps a *relative* index (1-based
+     * within its batch) and Stage C — which sees parsed batches in order —
+     * shifts each line by `(currentBatchStart - 1)` once the batch arrives.
+     * Two operations per batch (capture cursor + ShiftLineNumber over the
+     * batch) replace the per-line `memchr` Stage A used to do (see PRD §6.4
+     * for the simplified Stage A reference body).
+     *
+     * `noexcept` because the body is a single integer add against a member
+     * that has no invariants beyond "stay an integer".
+     */
+    void ShiftLineNumber(size_t delta) noexcept;
+
+    /**
      * @brief Reads and retrieves the content of the referenced log line.
      *
      * @return std::string The content of the referenced log line.
