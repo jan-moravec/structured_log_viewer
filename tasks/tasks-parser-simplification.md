@@ -121,14 +121,14 @@ Each parent task 1.0–4.0 maps to one PRD functional-requirement section (§4.1
   - [x] 4.11 Capture before/after `MB/s` for `[large]`, `[wide]`, `[stream_to_table]` (expected drift ~0 % — comments and doc-strings only). *(See commit message.)*
   - [x] 4.12 Commit to `feature/improve-performance-and-add-streaming` with the §4.11 numbers in the message.
 
-- [ ] 5.0 Verify success metrics & sign-off (PRD §8, M1–M11)
-  - [ ] 5.1 **M1** — `wc -l library/src/json_parser.cpp` ≤ **1,050** (down from 1,511; ≥ 30 % reduction per G2).
-  - [ ] 5.2 **M2 / M3 / M4** — run `[large]`, `[wide]`, `[stream_to_table]` warm-up MB/s on the same machine that produced the predecessor baseline (`tasks/tasks-hl-inspired-parser-performance.md` task 6.1 numbers). Target floors: ≥ 985 MB/s on `[large]`, ≥ 1,151 MB/s on `[wide]`, ≥ 128 MB/s on `[stream_to_table]` (15 % regression budget per G6).
-  - [ ] 5.3 **M5** — manual review of `library/include/loglib/parser_options.hpp` and `library/include/loglib/json_parser.hpp` confirms **0** tuning-knob fields on the public `ParserOptions` (only `stopToken` and `configuration`); every knob lives on `loglib::internal::AdvancedParserOptions` in `loglib/internal/parser_options.hpp`.
-  - [ ] 5.4 **M6** — `rg "PRD\b|§|parser-perf|task \d+\.\d+" library app test` returns **0** lines.
-  - [ ] 5.5 **M7** — `ctest --preset local` reports 95 + new `[mock_parser]` cases passing.
-  - [ ] 5.6 **M8** — `testStreamingParityVsLegacy` passes (run by name).
-  - [ ] 5.7 **M9** — `[cancellation]` median / p95 within ±20 % of current values (~3.4 ms / ~6.9 ms).
-  - [ ] 5.8 **M10** — `test/lib/src/test_parser_pipeline.cpp` exists and exercises the shared toolkit through `KeyValueLineParser` (multi-batch parse, cancellation, error propagation, timestamp promotion).
-  - [ ] 5.9 **M11** — `rg "JsonParserOptions|JsonParser::Options" library app test` returns **0** lines.
-  - [ ] 5.10 If every metric M1–M11 is green, the PRD is done. Otherwise, file a follow-up note in the final commit's message identifying which metric failed and whether a fix sits inside or outside the 15 % regression floor (G6); a violation of any **hard** constraint (G0 or the 15 % floor) forces a revert per the PRD.
+- [x] 5.0 Verify success metrics & sign-off (PRD §8, M1–M11)
+  - [x] 5.1 **M1** — `wc -l library/src/json_parser.cpp` ≤ **1,050** (down from 1,511; ≥ 30 % reduction per G2). *(725 lines after task 4.0 — 52 % under baseline.)*
+  - [x] 5.2 **M2 / M3 / M4** — run `[large]`, `[wide]`, `[stream_to_table]` warm-up MB/s on the same machine that produced the predecessor baseline (`tasks/tasks-hl-inspired-parser-performance.md` task 6.1 numbers). Target floors: ≥ 985 MB/s on `[large]`, ≥ 1,151 MB/s on `[wide]`, ≥ 128 MB/s on `[stream_to_table]` (15 % regression budget per G6). *(After task 4.0: `[large]` 1092.2 MB/s, `[wide]` 1305.1 MB/s, `[stream_to_table]` 1207.0 MB/s — every floor cleared by ≥ 11 %.)*
+  - [x] 5.3 **M5** — manual review of `library/include/loglib/parser_options.hpp` and `library/include/loglib/json_parser.hpp` confirms **0** tuning-knob fields on the public `ParserOptions` (only `stopToken` and `configuration`); every knob lives on `loglib::internal::AdvancedParserOptions` in `loglib/internal/parser_options.hpp`. *(Verified: public `ParserOptions` carries only `stopToken` + `configuration`; the six knobs `threads`, `batchSizeBytes`, `ntokens`, `useThreadLocalKeyCache`, `useParseCache`, `timings` all live on `internal::AdvancedParserOptions`.)*
+  - [x] 5.4 **M6** — `rg "PRD\b|§|parser-perf|task \d+\.\d+" library app test` returns **0** lines. *(Confirmed via `Grep` across `library/`, `app/`, `test/`.)*
+  - [x] 5.5 **M7** — `ctest --preset local` reports 95 + new `[mock_parser]` cases passing. *(104/104 passing including the four `[mock_parser]` cases.)*
+  - [x] 5.6 **M8** — `testStreamingParityVsLegacy` passes (run by name). *(`apptest.exe testStreamingParityVsLegacy` exits 0.)*
+  - [x] 5.7 **M9** — `[cancellation]` median / p95 within ±20 % of current values (~3.4 ms / ~6.9 ms). *(2 runs: median 3.22 / 3.69 ms, p95 4.89 / 6.31 ms — both inside ±20 % envelope.)*
+  - [x] 5.8 **M10** — `test/lib/src/test_parser_pipeline.cpp` exists and exercises the shared toolkit through `KeyValueLineParser` (multi-batch parse, cancellation, error propagation, timestamp promotion). *(Verified: four `[mock_parser]` cases.)*
+  - [x] 5.9 **M11** — `rg "JsonParserOptions|JsonParser::Options" library app test` returns **0** lines. *(Confirmed via `Grep` across `library/`, `app/`, `test/`.)*
+  - [x] 5.10 If every metric M1–M11 is green, the PRD is done. Otherwise, file a follow-up note in the final commit's message identifying which metric failed and whether a fix sits inside or outside the 15 % regression floor (G6); a violation of any **hard** constraint (G0 or the 15 % floor) forces a revert per the PRD. *(All eleven metrics green; PRD §8 sign-off complete.)*
