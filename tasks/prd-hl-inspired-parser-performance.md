@@ -346,3 +346,35 @@ Captured at the close of `tasks-parser-performance-hardening.md` task 10.0:
 | `[cancellation]` median / p95 | — | **~5.6 ms / ~6.2 ms** |
 
 These are the numbers every PR in this PRD compares against.
+
+### B.1 Post-hl-PRD baseline (captured at task 6.0 close-out, 2026-04-27)
+
+Captured at the close of `tasks-hl-inspired-parser-performance.md` task 6.0 — i.e. with task 1.0 (IPO/LTO) shipped and tasks 2.0 / 4.0 / 5.0 closed per G6 / below-threshold (no code on disk). All numbers are isolated per-process readings on `benchmarks.exe`. Hardware: Windows 10 / x64, 8 logical cores, clang-cl 22 (LLVM 22) targeting `x86_64-pc-windows-msvc`.
+
+| Benchmark | Pre-PRD baseline (Appendix B) | Post-PRD final | Delta |
+| --- | --- | --- | --- |
+| `[large]` warm-up (1 M / 181 MB) | 867.88 MB/s | **1158.08 MB/s** | **+33.4 %** |
+| `[large]` Catch2 mean of 5 | — | 1388.82 ms ± 14.13 ms | — |
+| `[wide]` warm-up (1 M / 30-col / 735 MB) | TBD (see task 8.0 commit) | **1354.46 MB/s** | — |
+| `[wide]` Catch2 mean of 5 | — | 3297.53 ms ± 53.79 ms | — |
+| `[stream_to_table]` warm-up (1 M) | TBD (see task 9.0 commit) | **150.20 MB/s**, 868.5 k lines/s | — |
+| `[stream_to_table]` `LogTable::AppendBatch` | — | 51.47 ms / 174 batches (5.15 ms / 100 k lines) | — |
+| `[stream_to_table]` Catch2 mean of 5 | — | 1304.28 ms ± 9.72 ms | — |
+| Stage B utilisation `[large]` | 74.65 % | **85.08 %** | **+10.4 pp** |
+| Stage B utilisation `[wide]` | 91.46 % | **91.66 %** | within noise |
+| Stage A wall-clock %, `[large]` | 0.33 % | **0.43 %** | within noise |
+| Stage A wall-clock %, `[wide]` | 0.46 % | **0.55 %** | within noise |
+| Stage C wall-clock %, `[wide]` | 22.6 % | **33.7 %** | **+11.1 pp** ⚠ — drives the §4.5.2 follow-up PRD recommendation; Stage C is now the dominant non-parallelised cost |
+| Stage C wall-clock %, `[large]` | — | **42.3 %** (54.4 ms / 128.7 ms) | — same dominance shape as `[wide]` |
+| `[allocations]` per-line count | ~1.0 | **1.004** | unchanged (M5 forfeit per task 2.0 closure) |
+| `[allocations]` `string_view` fast-path fraction, `[large]` | — | **99.9 %** | — |
+| `[allocations]` `string_view` fast-path fraction, `[wide]` | 99.9999 % | **99.9999 %** | unchanged |
+| `[no_thread_local_cache]` warm-up (10 k) | — | **327.55 MB/s**, 1.88 M lines/s | — |
+| `[no_thread_local_cache]` Catch2 mean of 5 | — | 15.94 ms ± 0.36 ms | — |
+| `[get_value_micro]` slow path (string_view lookup) | — | 1.272 ms ± 0.119 ms | — |
+| `[get_value_micro]` fast path (KeyId lookup) | — | 0.174 ms ± 0.006 ms | **7.3×** speed-up over slow path |
+| `[cancellation]` median / p95 | 5.6 ms / 6.2 ms | **3.36 ms / 6.91 ms** | median **−40 %**, p95 +11.5 % (within p95-on-20-samples noise) |
+| `sizeof(LogLine)` | ~96 bytes | ~96 bytes | unchanged (§4.1's `static_assert` not added because §4.1 reverted) |
+| IPO link-time delta (§4.0 / task 1.0) | n/a | < 1 s incremental on Ninja, full-clean < 30 s | informational |
+
+These are the numbers the **next** performance PRD compares against. Headline movers were §4.0's IPO/LTO (drove M1 from 867.88 → 1158.08 MB/s and M4 from 74.65 % → 85.08 %) and the parent PRD's §4.8 / §4.9 work (drove `[cancellation]` median from 5.6 → 3.36 ms). Stage C wall-clock fraction climbed to ~42 % on `[large]` and ~34 % on `[wide]` — that climb is the most actionable signal for the follow-up §4.5 PRD seed (§4.5.2 SIMD / parallelised newline-counter and post-pipeline Stage C).
