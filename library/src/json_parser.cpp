@@ -30,13 +30,8 @@ namespace loglib
 namespace
 {
 
-/**
- * @brief Returns a `std::string_view` over a JSON field key with the surrounding
- *        quotes stripped, taking the fast path when the bytes between the quotes
- *        contain no backslash. Falls back to `field.unescaped_key()` (which
- *        materialises an owning copy via simdjson's reusable buffer) when the
- *        bytes contain at least one backslash.
- */
+/// JSON field key extracted via the no-escape fast path (`isView == true`)
+/// or the `unescaped_key()` slow path (`owned`).
 struct FastFieldKey
 {
     bool isView = false;
@@ -71,19 +66,8 @@ FastFieldKey ExtractFieldKey(Field &field)
     return result;
 }
 
-KeyId InternFieldKey(const FastFieldKey &fk, KeyIndex &keys, detail::PerWorkerKeyCache *cache, bool useCache)
-{
-    if (!fk.isView)
-    {
-        return keys.GetOrInsert(fk.owned);
-    }
-    return detail::InternKeyVia(fk.view, keys, cache, useCache);
-}
-
-/// Field-count threshold above which `InsertSorted` switches from a linear back-scan to
-/// `std::lower_bound`. Below the threshold the back-scan wins because the
-/// "newly-assigned id is the largest so far" pattern collapses the body to a single
-/// comparison; above it `[wide]`-style 30-column rows benefit from the binary search.
+/// Crossover at which `InsertSorted` switches from a linear back-scan to
+/// `std::lower_bound`. Tuned for the `[wide]` benchmark.
 constexpr size_t kInsertSortedLowerBoundThreshold = 8;
 
 void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogValue value)
@@ -123,10 +107,8 @@ void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogVal
 template <class Value>
 LogValue ExtractStringValue(Value &value, bool sourceIsStable)
 {
-    // The string-view fast path is only safe when the bytes outlive the LogLine — i.e.
-    // when simdjson is iterating directly over the mmap. The padded-scratch fallback
-    // path returns views that dangle as soon as the next line overwrites them, so we
-    // must materialise an owned std::string in that case.
+    // string_view path is only safe when simdjson iterates directly over the
+    // mmap; the padded-scratch fallback yields views that dangle on the next line.
     if (sourceIsStable)
     {
         std::string_view rawToken(value.raw_json_token());
@@ -168,9 +150,8 @@ LogValue ExtractRawJsonValue(Value &value, bool sourceIsStable)
     return LogValue{std::monostate{}};
 }
 
-/// Per-key type cache keyed by `KeyId`. Carried inside the streaming pipeline's
-/// per-worker scratch so the simdjson `value.type()` / `get_number_type()` calls
-/// fire only on the first occurrence of each key.
+/// Per-key simdjson type cache so `value.type()` / `get_number_type()` fire
+/// only on the first occurrence of each key.
 struct ParseCache
 {
     std::vector<simdjson::ondemand::json_type> keyTypes;
@@ -214,7 +195,9 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
             continue;
         }
 
-        const KeyId keyId = InternFieldKey(fk, keys, keyCache, useKeyCache);
+        const KeyId keyId = fk.isView
+                                ? detail::InternKeyVia(fk.view, keys, keyCache, useKeyCache)
+                                : keys.GetOrInsert(fk.owned);
         EnsureCacheCapacity(cache, keyId);
 
         auto value = field.value();
@@ -440,7 +423,7 @@ std::string SerializeJson(const glz::generic_sorted_u64 &json)
     return result;
 }
 
-/// JSON-specific per-worker scratch carried by the shared harness's `WorkerScratch`.
+/// JSON-specific per-worker scratch.
 struct JsonWorkerState
 {
     simdjson::ondemand::parser parser;
@@ -449,8 +432,7 @@ struct JsonWorkerState
     ParseCache cache;
 };
 
-/// Stage A token: a contiguous byte range of the mmap that contains an integer number
-/// of complete log lines.
+/// Stage A token: a contiguous byte range of the mmap covering complete lines.
 struct JsonByteRange
 {
     uint64_t batchIndex = 0;
@@ -466,7 +448,6 @@ void DecodeJsonBatch(
     LogFile &logFile,
     std::span<const detail::TimeColumnSpec> timeColumns,
     bool useThreadLocalKeyCache,
-    bool useParseCache,
     detail::ParsedPipelineBatch &parsed
 )
 {
@@ -507,10 +488,8 @@ void DecodeJsonBatch(
 
         try
         {
-            // simdjson reads directly from the mmap when there is at least SIMDJSON_PADDING
-            // bytes of slack between line.end() and the file tail; otherwise we fall back to
-            // a per-worker padded copy. Only the mmap path can safely emit string_view
-            // alternatives in LogValue.
+            // mmap fast path requires SIMDJSON_PADDING bytes of slack past lineEnd;
+            // otherwise fall back to a per-worker padded copy.
             const size_t remaining = static_cast<size_t>(fileEnd - lineEnd);
             const bool sourceIsStable = remaining >= simdjson::SIMDJSON_PADDING;
             auto result = sourceIsStable
@@ -557,7 +536,6 @@ void DecodeJsonBatch(
             }
 
             auto objectValue = object.value();
-            (void)useParseCache;
             auto values = ParseJsonLine(
                 objectValue, keys, worker.user.cache, sourceIsStable, &worker.keyCache, useThreadLocalKeyCache
             );
@@ -568,8 +546,7 @@ void DecodeJsonBatch(
 
             parsed.lines.push_back(std::move(logLine));
 
-            // Promote time-column values inline so we stay hot in L1; a per-batch
-            // second walk loses cache locality on the [stream_to_table] benchmark.
+            // Promote inline so the freshly-written values are still hot in L1.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns);
         }
         catch (const std::exception &e)
@@ -658,19 +635,10 @@ void JsonParser::ParseStreaming(
     internal::AdvancedParserOptions advanced
 ) const
 {
-    detail::PipelineHarnessOptions harnessOpts;
-    harnessOpts.threads = advanced.threads;
-    harnessOpts.batchSizeBytes = advanced.batchSizeBytes;
-    harnessOpts.ntokens = advanced.ntokens;
-    harnessOpts.configuration = options.configuration;
-    harnessOpts.stopToken = options.stopToken;
-    harnessOpts.timings = advanced.timings;
-
     const size_t batchSize = advanced.batchSizeBytes != 0
                                  ? advanced.batchSizeBytes
-                                 : detail::PipelineHarnessOptions::kDefaultBatchSizeBytes;
+                                 : internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
     const bool useThreadLocalKeyCache = advanced.useThreadLocalKeyCache;
-    const bool useParseCache = advanced.useParseCache;
 
     LogFile *filePtr = &file;
     const char *fileBegin = file.Data();
@@ -679,8 +647,7 @@ void JsonParser::ParseStreaming(
     const char *cursor = fileBegin;
     uint64_t batchIndex = 0;
 
-    auto stageA = [cursor, fileEnd, batchSize, batchIndex, fileBegin](JsonByteRange &out) mutable -> bool {
-        (void)fileBegin;
+    auto stageA = [cursor, fileEnd, batchSize, batchIndex](JsonByteRange &out) mutable -> bool {
         if (cursor >= fileEnd)
         {
             return false;
@@ -705,21 +672,17 @@ void JsonParser::ParseStreaming(
         return true;
     };
 
-    auto stageB = [filePtr, useThreadLocalKeyCache, useParseCache](
+    auto stageB = [filePtr, useThreadLocalKeyCache](
                       JsonByteRange token,
                       detail::WorkerScratch<JsonWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const detail::TimeColumnSpec> timeColumns,
                       detail::ParsedPipelineBatch &parsed
                   ) {
-        DecodeJsonBatch(
-            token, worker, keys, *filePtr, timeColumns, useThreadLocalKeyCache, useParseCache, parsed
-        );
+        DecodeJsonBatch(token, worker, keys, *filePtr, timeColumns, useThreadLocalKeyCache, parsed);
     };
 
-    detail::RunParserPipeline<JsonByteRange, JsonWorkerState>(
-        file, sink, harnessOpts, stageA, stageB
-    );
+    detail::RunParserPipeline<JsonByteRange, JsonWorkerState>(file, sink, options, advanced, stageA, stageB);
 }
 
 } // namespace loglib

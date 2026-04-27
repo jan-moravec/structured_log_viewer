@@ -40,29 +40,10 @@
 namespace
 {
 
-// Resolve the on-disk `tzdata/` directory the date library reads at startup.
-// Search order (first hit wins):
-//   1. `<applicationDirPath>/tzdata`        — the canonical layout on every
-//      platform: cmake/FetchDependencies.cmake stages tzdata next to the
-//      built executable (`${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata`), and
-//      installed/deployed bundles ship it in the same relative spot. This
-//      is the path that lets the binary run from anywhere on disk without
-//      needing a particular working directory.
-//   2. `<applicationDirPath>/../Resources/tzdata` — macOS .app bundle layout
-//      (`applicationDirPath()` is `<bundle>/Contents/MacOS`, tzdata sits at
-//      `<bundle>/Contents/Resources/tzdata`).
-//   3. `$APPDIR/usr/share/tzdata`           — Linux AppImage layout.
-//   4. Walk up the current-directory ancestor chain looking for a sibling
-//      `tzdata/` (mirrors `InitializeTimezoneData()` in
-//      `test/lib/src/common.cpp`). Lets manual invocations succeed when the
-//      CWD happens to live inside the build tree.
-//
-// On miss returns an empty path; `searched` is populated with every candidate
-// the lookup tried so the caller can quote it in the failure diagnostic. The
-// stop conditions on the CWD walk match common.cpp:
-//   * `parent.empty()` — POSIX, parent of `/` is `""`;
-//   * `parent == path` — Windows, `path("C:\\").parent_path()` returns
-//     `C:\\` itself, so the walk would otherwise spin forever.
+// Locate the staged `tzdata/` directory. Tries (in order): next to the
+// binary, the macOS Resources/ bundle layout, $APPDIR/usr/share/tzdata
+// (Linux AppImage), then walks the CWD ancestor chain. On miss returns
+// an empty path and populates `searched` for diagnostics.
 std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
 {
     auto pushAndCheck = [&searched](std::filesystem::path candidate) -> bool {
@@ -117,10 +98,7 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
     return {};
 }
 
-// Format a multi-line diagnostic listing every searched candidate, matching
-// the shape of `FAIL(...)` in test/lib/src/common.cpp's
-// `InitializeTimezoneData()` so support requests against either codepath
-// surface the same actionable detail.
+// Diagnostic for "no tzdata found" matching common.cpp's shape.
 QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &searched)
 {
     QStringList lines;
@@ -225,21 +203,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mPreferencesEditor->activateWindow();
     });
 
-    // Status-bar plumbing for the streaming progress label. The label is a
-    // permanent child of the status bar; visibility is toggled by setting empty
-    // text so the layout doesn't reflow on every update tick.
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
 
     mStreamingWatcher = new QFutureWatcher<void>(this);
 
-    // Wire the LogModel streaming signals into the status-bar updater and the
-    // post-parse summary slot. lineCountChanged also fires for batches that only
-    // carry errors (so the label still ticks); errorCountChanged only fires when
-    // the batch actually contained errors. streamingFinished is the single
-    // terminal slot — re-enables config UI, clears the label, surfaces the
-    // QMessageBox summary on success.
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
@@ -252,7 +221,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mStreamingActive = false;
         SetConfigurationUiEnabled(true);
         UpdateUi();
-        // mStatusLabel is hidden by UpdateStreamingStatus once mStreamingActive is false.
         UpdateStreamingStatus();
         if (!cancelled)
         {
@@ -262,16 +230,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     });
 
     QTimer::singleShot(0, [this] {
-        // Resolve the tzdata directory and initialize the date library. On
-        // failure we deliberately emit a stderr diagnostic via `qCritical()`
-        // and exit instead of popping a modal `QMessageBox::critical(...)`:
-        // under `QT_QPA_PLATFORM=offscreen` (CI / `apptest`) a modal dialog
-        // blocks the event loop indefinitely with no way to dismiss it, and
-        // we have observed it also crash inside `QWidget::setParent` when
-        // the QApplication / parent widget state is not yet fully settled
-        // mid-`QTimer::singleShot` dispatch. `qCritical()` always lands on
-        // stderr regardless of platform, so the user (or the CI log) sees
-        // exactly which paths the lookup tried and why startup aborted.
+        // Failure is reported via qCritical() rather than a modal dialog
+        // because under offscreen Qt (CI / apptest) modal dialogs hang.
         std::vector<std::filesystem::path> searched;
         const auto tzdata = FindTzdata(searched);
 
@@ -365,8 +325,7 @@ bool MainWindow::event(QEvent *event)
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
     case QEvent::StyleChange:
-        // The table stylesheet encodes dark/light colors derived from the current palette, so
-        // it must be refreshed whenever the user switches style or system theme.
+        // Stylesheet encodes palette-derived colors; refresh on theme change.
         ApplyTableStyleSheet();
         break;
     default:
@@ -393,11 +352,8 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         return;
     }
 
-    // Use the streaming path only when the chosen parser is JSON AND a single
-    // file was selected — the streaming pipeline is a per-file affair (the
-    // sink owns one parse generation at a time), so multi-file selection still
-    // goes through the synchronous loop. Single-file streaming is the dominant
-    // UX (open one big log, watch it stream in).
+    // Stream only single-file JSON opens; multi-file goes through the
+    // synchronous loop (the sink holds one parse generation at a time).
     const bool canStream = (dynamic_cast<loglib::JsonParser *>(parser.get()) != nullptr) && files.size() == 1;
 
     mModel->Clear();
@@ -409,11 +365,8 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         const bool started = OpenJsonStreaming(files.front(), errors);
         if (!started)
         {
-            // Streaming setup failed (e.g. mmap open error). Fall back to the
-            // synchronous JSON path so the user still sees an error summary —
-            // and so we don't silently drop the open. The fallback intentionally
-            // shares the post-parse summary path with the streaming success
-            // case to keep the UX consistent.
+            // Streaming setup failed (e.g. mmap open error); fall back to
+            // synchronous JSON so the user still gets an error summary.
             try
             {
                 loglib::ParseResult result = parser->Parse(files.front().toStdString());
@@ -431,9 +384,7 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
             UpdateUi();
             ShowParseErrors("Error Parsing Logs", errors);
         }
-        // On the streaming-started path the post-parse summary is shown from
-        // the `streamingFinished` slot, which fires after the parser drains
-        // (including the final empty terminal batch).
+        // The streaming-started path shows its summary from `streamingFinished`.
         return;
     }
 
@@ -469,10 +420,8 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
 
 bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string> &errors)
 {
-    // Open the LogFile up-front on the GUI thread so file-open errors surface
-    // synchronously and the caller can fall back to the synchronous path. Once
-    // ownership transfers into LogModel::BeginStreaming, the model owns the
-    // mmap for the lifetime of the parse.
+    // Open on the GUI thread so file-open errors surface synchronously and
+    // the caller can fall back to the synchronous path.
     std::unique_ptr<loglib::LogFile> logFile;
     try
     {
@@ -498,18 +447,11 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
 
-    // BeginStreaming installs the file on the model's LogTable and bumps the
-    // QtStreamingLogSink generation, returning the freshly-installed stop_token.
     const std::stop_token stopToken = mModel->BeginStreaming(std::move(logFile));
     QtStreamingLogSink *sink = mModel->Sink();
 
-    // Hand the parser a borrowed reference to the *same* `LogFile` the model
-    // owns instead of opening a second mmap on the worker. The parser emits
-    // `string_view`-typed `LogValue`s that point directly into the file's
-    // mmap, so the file must outlive every `LogLine` the sink hands to
-    // `LogTable`. Sharing is safe: the worker only reads the mmap; the
-    // line-offset table is mutated only from the GUI thread via
-    // `LogTable::AppendBatch`.
+    // Borrow the *same* LogFile the model owns; emitted string_view values
+    // point into its mmap, so the file must outlive every emitted LogLine.
     loglib::LogFile *parseFile = nullptr;
     if (!mModel->Table().Data().Files().empty())
     {
@@ -528,11 +470,8 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     options.stopToken = stopToken;
     options.configuration = std::move(cfg);
 
-    // `QtConcurrent::run` launches on the global thread pool and returns a
-    // `QFuture<void>`. The future is owned by `mStreamingWatcher` so a second
-    // open can observe the previous parse's finalisation. The cancellation
-    // path is `Clear() -> RequestStop() -> stop_token`; the watcher is just a
-    // lifetime tracker.
+    // Future stored on mStreamingWatcher only as a lifetime tracker;
+    // cancellation goes through Clear() -> RequestStop() -> stop_token.
     QFuture<void> future = QtConcurrent::run([sink, options = std::move(options), parseFile]() {
         try
         {
@@ -541,10 +480,8 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
         }
         catch (const std::exception &e)
         {
-            // Surface a synthetic terminal batch carrying the open/parse error
-            // so the GUI sees a single contract for failure too. The sink's
-            // generation check still applies; if cancellation already fired,
-            // this never reaches the model.
+            // Surface a synthetic terminal batch so failure flows through
+            // the same path as success.
             loglib::StreamedBatch errorBatch;
             errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
             sink->OnBatch(std::move(errorBatch));
@@ -558,11 +495,8 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
 
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
 {
-    // While a streaming parse is in flight, every affordance that mutates
-    // `LogConfiguration` must be disabled. The parser holds an immutable
-    // snapshot, so a user edit during streaming would either silently affect
-    // only post-streaming rows or trigger an expensive whole-data re-parse.
-    // Re-enabled from the `streamingFinished` slot.
+    // The parser holds an immutable LogConfiguration snapshot; gate edits
+    // while streaming so they don't only affect post-streaming rows.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);

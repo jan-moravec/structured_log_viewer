@@ -1,10 +1,13 @@
 #include "loglib/log_processing.hpp"
 
+#include "timestamp_promotion.hpp"
+
 #include <date/date.h>
 #include <date/tz.h>
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <iterator>
 #include <sstream>
@@ -17,8 +20,6 @@ namespace loglib
 namespace
 {
 
-/// Reads @p n digit bytes from @p p into @p out. Returns false on any
-/// non-digit byte. Caller guarantees @p n bytes are readable.
 bool ParseFixedDigits(const char *p, size_t n, int &out)
 {
     int value = 0;
@@ -32,44 +33,6 @@ bool ParseFixedDigits(const char *p, size_t n, int &out)
         value = value * 10 + (c - '0');
     }
     out = value;
-    return true;
-}
-
-/// Thread-local scratch used by `ParseTimestampLine`. The streaming pipeline
-/// uses per-`WorkerState` scratch instead; this is for the legacy whole-data
-/// `BackfillTimestampColumn` path and ad-hoc callers.
-TimestampParseScratch &ThreadScratch()
-{
-    thread_local TimestampParseScratch scratch;
-    return scratch;
-}
-
-/// Tries a single `(keyId, format, kind)` triple against @p line. On success
-/// overwrites the line's value at @p keyId with the parsed `TimeStamp`.
-bool TryParseTimestampOnce(
-    LogLine &line,
-    KeyId keyId,
-    const std::string &format,
-    TimestampFormatKind kind,
-    TimestampParseScratch &scratch
-)
-{
-    if (keyId == kInvalidKeyId)
-    {
-        return false;
-    }
-    LogValue value = line.GetValue(keyId);
-    const auto timestampString = AsStringView(value);
-    if (!timestampString.has_value())
-    {
-        return false;
-    }
-    TimeStamp timestamp;
-    if (!TryParseTimestamp(*timestampString, format, kind, scratch, timestamp))
-    {
-        return false;
-    }
-    line.SetValue(keyId, timestamp);
     return true;
 }
 
@@ -93,8 +56,6 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
 bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
 {
     // Layout: YYYY-MM-DDsHH:MM:SS[.fff[fff]]
-    //         0123456789012345678
-    //                            ^19
     constexpr size_t kPrefixLen = 19;
     if (sv.size() < kPrefixLen)
     {
@@ -167,8 +128,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
             ++fractionEnd;
         }
         const size_t fractionLen = fractionEnd - fractionStart;
-        // Reject empty fractions (`12:34:56.`) and anything beyond 6 digits (timezone
-        // offsets, sub-microsecond precision); those fall back to `date::parse`.
+        // Empty / >6-digit fractions fall back to `date::parse`.
         if (fractionLen == 0 || fractionEnd != sv.size())
         {
             return false;
@@ -183,8 +143,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
         }
     }
 
-    // `date::year_month_day::ok()` validates the date but not H:M:S. Accept
-    // second == 60 to match `date::parse("%T", …)` leap-second handling.
+    // Accept second == 60 to match `date::parse("%T")` leap-second handling.
     if (hour > 23 || minute > 59 || second > 60)
     {
         return false;
@@ -205,7 +164,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
                          ) +
                          std::chrono::microseconds{fractionalUs};
     out = TimeStamp{totalUs};
-    // Treat non-positive epochs as parse failures, mirroring the slow-path sentinel.
+    // Non-positive epochs are reported as failure (matches slow-path sentinel).
     return out.time_since_epoch().count() > 0;
 }
 
@@ -213,9 +172,6 @@ bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 )
 {
-    // Reuse the scratch's std::string and istringstream so we amortise both the
-    // copy and the stringbuf across calls. `clear()` resets the previous parse's
-    // fail/eof bits before we swap in new bytes.
     scratch.str.assign(sv.data(), sv.size());
     scratch.stream.clear();
     scratch.stream.str(scratch.str);
@@ -244,56 +200,8 @@ bool TryParseTimestamp(
     }
 }
 
-namespace
-{
-
-/// Per-line back-fill body shared by `BackfillTimestampColumn`. Walks the
-/// `(keyIds × parseFormats)` matrix, trying the cached pair in @p lastValid
-/// first; on success, promotes the line's value to `TimeStamp` and updates
-/// the cache. Streaming uses `detail::PromoteLineTimestamps` directly.
-bool ParseTimestampLine(
-    LogLine &line,
-    std::span<const KeyId> keyIds,
-    std::span<const std::string> parseFormats,
-    std::optional<LastValidTimestampParse> &lastValid
-)
-{
-    TimestampParseScratch &scratch = ThreadScratch();
-
-    if (lastValid.has_value())
-    {
-        if (TryParseTimestampOnce(line, lastValid->keyId, lastValid->format, lastValid->kind, scratch))
-        {
-            return true;
-        }
-    }
-
-    for (const KeyId keyId : keyIds)
-    {
-        if (keyId == kInvalidKeyId)
-        {
-            continue;
-        }
-        for (const std::string &format : parseFormats)
-        {
-            const TimestampFormatKind kind = ClassifyTimestampFormat(format);
-            if (TryParseTimestampOnce(line, keyId, format, kind, scratch))
-            {
-                lastValid = LastValidTimestampParse{keyId, format, kind};
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-} // namespace
-
 const date::time_zone *CurrentZone()
 {
-    // Must be called after `Initialize` has installed the tzdata database.
-    // Cached here so every formatter/converter shares one zone instance.
     static const date::time_zone *tz = date::current_zone();
     return tz;
 }
@@ -301,33 +209,39 @@ const date::time_zone *CurrentZone()
 void Initialize(const std::filesystem::path &tzdata)
 {
     date::set_install(tzdata.string());
-    static_cast<void>(date::current_zone()); // Test the database
+    static_cast<void>(date::current_zone());
 }
 
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::vector<LogLine> &lines)
 {
-    // Per-column timestamp back-fill shared by `ParseTimestamps` (whole-data) and
-    // `LogTable::AppendBatch` (mid-stream after a new time column is auto-promoted).
     std::vector<std::string> errors;
     if (lines.empty())
     {
         return errors;
     }
 
-    // Resolve `column.keys` to KeyIds once so the per-line inner loop avoids
-    // `KeyIndex::Find` per call. Unknown keys become `kInvalidKeyId` and are skipped.
     const KeyIndex &keyIndex = lines.front().Keys();
-    std::vector<KeyId> keyIds;
-    keyIds.reserve(column.keys.size());
+    detail::TimeColumnSpec spec;
+    spec.keyIds.reserve(column.keys.size());
     for (const std::string &key : column.keys)
     {
-        keyIds.push_back(keyIndex.Find(key));
+        spec.keyIds.push_back(keyIndex.Find(key));
+    }
+    spec.parseFormats = column.parseFormats;
+    spec.formatKinds.reserve(spec.parseFormats.size());
+    for (const std::string &format : spec.parseFormats)
+    {
+        spec.formatKinds.push_back(ClassifyTimestampFormat(format));
     }
 
-    std::optional<LastValidTimestampParse> lastValid;
+    const std::array<detail::TimeColumnSpec, 1> specs{std::move(spec)};
+    std::vector<std::optional<LastValidTimestampParse>> lastValid(1);
+    std::vector<detail::LastTimestampBytesHit> bytesHits(1);
+    TimestampParseScratch scratch;
+
     for (auto &line : lines)
     {
-        if (!ParseTimestampLine(line, keyIds, column.parseFormats, lastValid))
+        if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch))
         {
             errors.emplace_back(fmt::format(
                 "Failed to parse a timestamp for column '{}' from line number {}",

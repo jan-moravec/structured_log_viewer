@@ -12,51 +12,28 @@
 namespace loglib
 {
 
-/**
- * @brief Internal `StreamingLogSink` adapter for the synchronous
- *        `LogParser::Parse(path) -> ParseResult` API.
- *
- * Accumulates every line and error from the streaming pipeline into a single
- * in-memory `LogData` and `errors` vector. Lets `Parse(path)` stay a thin
- * wrapper over `ParseStreaming(path, sink, opts)` without forcing the rest
- * of the codebase onto the streaming surface.
- *
- * Constructed by `LogParser::Parse` with an already-opened `LogFile` that
- * the sink transfers into the final `LogData` once streaming completes.
- */
+/// `StreamingLogSink` adapter behind the synchronous `LogParser::Parse(path)`
+/// overload: accumulates every batch into a single `LogData`. One sink per parse.
 class BufferingSink : public StreamingLogSink
 {
 public:
-    /**
-     * @brief Builds a sink that takes ownership of @p logFile and
-     *        accumulates batches against the internally-owned `KeyIndex`.
-     *
-     * One sink per parse — construct a fresh instance per `Parse` call.
-     */
+    /// Takes ownership of @p logFile and routes batches into an internal `KeyIndex`.
     explicit BufferingSink(std::unique_ptr<LogFile> logFile);
 
-    /// Canonical KeyIndex handed to the streaming pipeline. Owned here so
-    /// the lifetime trivially outlasts the parse.
     KeyIndex &Keys() override;
 
     void OnStarted() override;
     void OnBatch(StreamedBatch batch) override;
     void OnFinished(bool cancelled) override;
 
-    /// Opts into the parser's uncoalesced fast path. We re-buffer everything
-    /// into our own accumulators anyway, so the default coalescing is just
-    /// extra copies for no observable benefit.
+    /// We re-buffer batches anyway, so opt out of the harness's coalescing.
     bool PrefersUncoalesced() const override
     {
         return true;
     }
 
-    /// Releases the buffered `LogData` to the caller. Call exactly once
-    /// after `OnFinished`.
+    /// Call exactly once after `OnFinished`.
     LogData TakeData();
-
-    /// Releases the accumulated parse errors. Call exactly once after
-    /// `OnFinished`.
     std::vector<std::string> TakeErrors();
 
 private:

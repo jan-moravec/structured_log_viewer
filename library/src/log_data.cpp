@@ -14,9 +14,7 @@ LogData::LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, KeyI
 {
     mFiles.push_back(std::move(file));
 
-    // Make sure every line points to the canonical KeyIndex we now own. Callers may have
-    // built `lines` against a temporary KeyIndex (e.g. inside a parser-local builder) before
-    // moving it into us.
+    // Rebind to the canonical KeyIndex we now own.
     for (auto &line : mLines)
     {
         line.RebindKeys(mKeys);
@@ -29,9 +27,7 @@ LogData::LogData(LogData &&other) noexcept
     , mKeys(std::move(other.mKeys))
     , mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
 {
-    // KeyIndex is pImpl, but its wrapper moved to a new address. Re-bind every
-    // LogLine's KeyIndex back-pointer to *this so it does not dereference a
-    // moved-from `other.mKeys`.
+    // The KeyIndex wrapper moved address; rebind line back-pointers to *this.
     for (auto &line : mLines)
     {
         line.RebindKeys(mKeys);
@@ -108,8 +104,7 @@ void LogData::Merge(LogData &&other)
         std::back_inserter(mFiles)
     );
 
-    // Build a remap table: ids in other.mKeys -> ids in mKeys. Walking other.mKeys' high-water
-    // slice keeps this O(N) in the merged-in key count rather than O(M*N) per line.
+    // Remap table: ids in other.mKeys -> ids in mKeys. O(N) in the merged-in key count.
     const size_t otherKeyCount = other.mKeys.Size();
     std::vector<KeyId> remap(otherKeyCount);
     for (size_t i = 0; i < otherKeyCount; ++i)
@@ -121,9 +116,7 @@ void LogData::Merge(LogData &&other)
     mLines.reserve(mLines.size() + other.mLines.size());
     for (auto &line : other.mLines)
     {
-        // Rewire each indexed pair's KeyId via the remap table, then re-sort because the new
-        // ids may not be in the original order. A single pass over each line keeps the merge
-        // bounded by the total number of (line, key) pairs.
+        // Rewire each pair's KeyId, then re-sort since the new ids may differ in order.
         std::vector<std::pair<KeyId, LogValue>> remapped;
         const auto values = line.IndexedValues();
         remapped.reserve(values.size());
@@ -147,10 +140,8 @@ void LogData::Merge(LogData &&other)
 
 void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets)
 {
-    // Deliberately no `mLines.reserve(size + N)` here: both libstdc++ and MSVC
-    // STL implement `vector::reserve(n)` as "grow capacity to exactly `n`", so
-    // a per-batch reserve reallocates the buffer every batch (O(N^2/B)).
-    // `push_back`'s geometric growth gives amortised O(N) instead.
+    // No per-batch `mLines.reserve(...)`: STL `reserve(n)` is "grow to exactly n",
+    // so it would reallocate every batch (O(N^2/B)). Rely on geometric growth.
     if (!lines.empty())
     {
         for (auto &line : lines)

@@ -12,26 +12,20 @@ namespace loglib
 {
 
 /// Collection of log data loaded from one or more log files. Owns the canonical
-/// `KeyIndex` for the dataset; every owned `LogLine` resolves keys through it.
+/// `KeyIndex`; every owned `LogLine` resolves keys through it.
 class LogData
 {
 public:
     LogData();
 
-    /// @param file  Owning pointer to the source `LogFile`.
-    /// @param lines Parsed log lines. Each line's KeyIndex back-pointer is
-    ///              rebound to @p keys by this constructor, so callers may
-    ///              pass lines that were temporarily bound to a builder-local
-    ///              KeyIndex.
-    /// @param keys  Canonical KeyIndex to take ownership of.
+    /// Constructs a `LogData` and rebinds each line's `KeyIndex` back-pointer
+    /// to @p keys, so lines built against a temporary KeyIndex stay valid.
     LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, KeyIndex keys);
 
     LogData(const LogData &) = delete;
     LogData &operator=(const LogData &) = delete;
 
-    /// Move ops walk the line vector and rebind each line's KeyIndex
-    /// back-pointer to the new owner — `LogLine::Keys()` must always
-    /// dereference the canonical KeyIndex of the enclosing LogData.
+    /// Move ops rebind each line's `KeyIndex` back-pointer to the new owner.
     LogData(LogData &&other) noexcept;
     LogData &operator=(LogData &&other) noexcept;
 
@@ -44,24 +38,19 @@ public:
     const KeyIndex &Keys() const;
     KeyIndex &Keys();
 
-    /// Sorted snapshot of the registered keys. Re-snapshots on every call;
-    /// prefer `Keys()` in hot code.
+    /// Sorted snapshot of the registered keys. Cold path.
     std::vector<std::string> SortedKeys() const;
 
-    /// Returns true if the streaming pipeline already promoted timestamp
-    /// columns during Stage B, so `LogTable::Update` can skip the whole-data
-    /// timestamp pass.
+    /// Whether Stage B already promoted timestamp columns in the parser, so
+    /// `LogTable::Update` can skip the whole-data pass.
     bool TimestampsAlreadyParsed() const;
-
-    /// Marks this `LogData` as having had timestamp promotion done in the
-    /// parser. Set by the streaming pipeline before publishing the data.
     void MarkTimestampsParsed();
 
-    /// Merges @p other into this `LogData`, rewiring back-pointers and
-    /// remapping KeyIds to the canonical (this-side) KeyIndex.
+    /// Merges @p other in place, rewiring back-pointers and remapping KeyIds
+    /// to this side's canonical `KeyIndex`.
     void Merge(LogData &&other);
 
-    /// Streaming append of a pre-parsed batch of lines and their file offsets.
+    /// Streaming append of a pre-parsed batch.
     void AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets);
 
 private:

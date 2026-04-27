@@ -20,17 +20,9 @@ void BufferingSink::OnStarted()
 
 void BufferingSink::OnBatch(StreamedBatch batch)
 {
-    // The pipeline built `batch.lines` against this sink's `mKeys` (borrowed
-    // via `Keys()`), so we can splice everything in without rebinding KeyIds.
-    // `newKeys` is ignored: `TakeData()` re-derives the full key set from
-    // `mKeys`, so a per-batch slice is redundant for this consumer.
-    //
-    // Important: do *not* `mLines.reserve(mLines.size() + batch.lines.size())`
-    // per batch. Both libstdc++ and MSVC STL implement `vector::reserve(n)` as
-    // "grow capacity to exactly `n`", so a per-batch reserve re-allocates the
-    // whole vector every batch, turning the buffered path into O(N²/B).
-    // `vector::insert(end, first, last)` grows capacity geometrically and
-    // keeps total cost amortised O(N).
+    // Splice straight into mLines. Don't `reserve(mLines.size() + n)` per
+    // batch — MSVC/libstdc++ implement reserve as "grow to exactly n", which
+    // would turn the buffered path into O(N²/B). insert() grows geometrically.
     if (!batch.lines.empty())
     {
         mLines.insert(
@@ -69,9 +61,8 @@ KeyIndex &BufferingSink::Keys()
 
 LogData BufferingSink::TakeData()
 {
-    // Move the line offsets into the LogFile so GetLine(i) keeps working on the
-    // returned LogData. Order matters: AppendLineOffsets walks the file's
-    // existing offsets, so do this before the file is moved into LogData.
+    // Push line offsets into the LogFile before it moves into LogData,
+    // so GetLine(i) keeps working on the returned data.
     if (mFile && !mLineOffsets.empty())
     {
         mFile->AppendLineOffsets(mLineOffsets);

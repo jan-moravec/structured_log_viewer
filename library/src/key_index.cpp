@@ -1,5 +1,7 @@
 #include "loglib/key_index.hpp"
 
+#include "transparent_string_hash.hpp"
+
 #include <tsl/robin_map.h>
 
 #include <algorithm>
@@ -7,7 +9,6 @@
 #include <atomic>
 #include <cstddef>
 #include <deque>
-#include <functional>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -17,61 +18,13 @@
 
 namespace loglib
 {
+using detail::TransparentStringEqual;
+using detail::TransparentStringHash;
 
-namespace
-{
-
-/// Transparent hash for the per-shard `tsl::robin_map<std::string, KeyId, ...>`.
-/// All overloads route through `std::hash<std::string_view>` so a `string_view`
-/// query lands in the same bucket as the matching owning `std::string`.
-struct TransparentStringHash
-{
-    using is_transparent = void;
-
-    size_t operator()(std::string_view sv) const noexcept
-    {
-        return std::hash<std::string_view>{}(sv);
-    }
-    size_t operator()(const std::string &s) const noexcept
-    {
-        return std::hash<std::string_view>{}(s);
-    }
-    size_t operator()(const char *s) const noexcept
-    {
-        return std::hash<std::string_view>{}(std::string_view(s));
-    }
-};
-
-/// Transparent equality companion for `TransparentStringHash`. Required by
-/// `tsl::robin_map`'s heterogeneous-lookup machinery.
-struct TransparentStringEqual
-{
-    using is_transparent = void;
-
-    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-    bool operator()(std::string_view lhs, const std::string &rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-    bool operator()(const std::string &lhs, std::string_view rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-    bool operator()(const std::string &lhs, const std::string &rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-};
-
-} // namespace
 
 struct KeyIndex::Impl
 {
-    /// Power-of-two shard count so the low bits of a `std::hash<string_view>`
-    /// pick a shard via `& kShardMask`.
+    /// Power-of-two shard count: hash-low-bits AND `kShardMask` picks a shard.
     static constexpr size_t kShardCount = 16;
     static constexpr size_t kShardMask = kShardCount - 1;
 
@@ -82,18 +35,14 @@ struct KeyIndex::Impl
     };
     std::array<Shard, kShardCount> shards;
 
-    /// KeyId index -> owning string. `std::deque` is required: it keeps
-    /// pointers/views to previously inserted strings stable across appends,
-    /// which `KeyOf`'s lifetime contract depends on.
+    /// KeyId -> owning string. `deque` keeps inserted strings pointer-stable,
+    /// which `KeyOf`'s contract relies on.
     std::deque<std::string> reverse;
 
-    /// High-water mark of allocated KeyIds. Stored separately so `Size()`
-    /// can be read without taking any lock.
+    /// High-water KeyId, stored separately so `Size()` is lock-free.
     std::atomic<size_t> size{0};
 
-    /// Serialises `reverse.emplace_back` so the deque mutation observed by
-    /// `KeyOf(id)` happens-before any other thread reads `id` via the per-
-    /// shard map.
+    /// Serialises `reverse.emplace_back` against `KeyOf` readers.
     mutable std::mutex reverseMutex;
 
     static size_t ShardIndex(std::string_view key) noexcept
@@ -134,13 +83,12 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
         return it->second;
     }
 
-    // Append to `reverse` before publishing into the shard map so the entry's
-    // address is stable before any other thread can observe the new id.
+    // Append to `reverse` first so the string address is stable before any
+    // other thread can observe the new id.
     const KeyId id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
     shard.map.emplace(mImpl->reverse.back(), id);
 
-    // Release-store on size synchronizes-with the acquire-load in Size().
     mImpl->size.store(mImpl->reverse.size(), std::memory_order_release);
     return id;
 }
@@ -162,9 +110,8 @@ KeyId KeyIndex::Find(std::string_view key) const
 
 std::string_view KeyIndex::KeyOf(KeyId id) const
 {
-    // The reverse deque is append-only and pointer-stable; dereferencing
-    // without taking reverseMutex is safe once the KeyId has been observed
-    // (release-store on `size` in GetOrInsert).
+    // Append-only, pointer-stable deque: lock-free read after the KeyId has
+    // been observed (release-store on `size` in GetOrInsert).
     return mImpl->reverse[id];
 }
 

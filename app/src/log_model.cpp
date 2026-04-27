@@ -10,8 +10,7 @@
 
 LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
-    // The bridging sink lives on the GUI thread alongside the model and is
-    // parented to it so its lifetime tracks the model's automatically.
+    // Sink is parented to the model so its lifetime tracks the model's.
     mSink = new QtStreamingLogSink(this, this);
 }
 
@@ -28,11 +27,8 @@ void LogModel::AddData(loglib::LogData &&logData)
 
 void LogModel::Clear()
 {
-    // Cancel any in-flight streaming parse first. Non-blocking; the parser
-    // thread is allowed to keep running for a moment as it drains the
-    // pipeline. The generation bump in `RequestStop` plus the upcoming
-    // `beginResetModel` cause any straggler `OnBatch` calls to be dropped
-    // before they reach the freshly reset model.
+    // Cancel any in-flight parse; the generation bump in RequestStop drops
+    // any stragglers `OnBatch` posts before they reach the reset model.
     if (mSink)
     {
         mSink->RequestStop();
@@ -52,16 +48,12 @@ void LogModel::Clear()
 
 std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 {
-    // Use `beginResetModel` rather than per-row remove signals — `BeginStreaming`
-    // is the natural point to swap the whole table out. After `endResetModel`
-    // the streaming `AppendBatch` path takes over and grows the model row-by-row.
     beginResetModel();
 
     if (file)
     {
-        // Reserve the line-offset table proportionally to the file size so each
-        // batch's `vector::insert` stays amortised O(1). The `size / 100` factor
-        // matches the ~100-byte average JSON-line size from the benchmark fixture.
+        // ~100 bytes/line matches the benchmark fixture; keeps per-batch
+        // line-offset insertions amortised O(1).
         const size_t reserveCount = file->Size() / 100;
         mLogTable.BeginStreaming(std::move(file));
         if (reserveCount > 0 && !mLogTable.Data().Files().empty())
@@ -86,9 +78,7 @@ std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 
 void LogModel::AppendBatch(loglib::StreamedBatch batch)
 {
-    // Capture the errors BEFORE moving the batch — `LogTable::AppendBatch`
-    // discards `batch.errors`, so this is the model's only opportunity to
-    // peel them off into `mStreamingErrors`.
+    // Capture errors before LogTable::AppendBatch swallows them.
     const qsizetype capturedErrorCount = static_cast<qsizetype>(batch.errors.size());
     if (!batch.errors.empty())
     {
@@ -108,26 +98,19 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     const int newRowCount = static_cast<int>(mLogTable.RowCount());
     const int newColumnCount = static_cast<int>(mLogTable.ColumnCount());
 
-    // Step 4 — column delta. Always before rows so any new column header is in
-    // place by the time inserted rows query data() for it.
+    // Columns first so new headers are live when inserted rows query data().
     if (newColumnCount > oldColumnCount)
     {
         beginInsertColumns(QModelIndex(), oldColumnCount, newColumnCount - 1);
         endInsertColumns();
     }
 
-    // Step 5 — row delta. Skip when there were no new rows; an empty-rows-only
-    // batch (errors only, or new keys only) is a normal occurrence and
-    // beginInsertRows with last < first would be a Qt assertion failure.
     if (newRowCount > oldRowCount)
     {
         beginInsertRows(QModelIndex(), oldRowCount, newRowCount - 1);
         endInsertRows();
     }
 
-    // Step 6 — back-fill notify. After beginInsertRows/endInsertRows the views
-    // already know about the new rows, so dataChanged covers both the previously
-    // visible rows and the just-inserted ones in a single emit.
     if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
     {
         const int firstColumn = static_cast<int>(range->first);
@@ -139,9 +122,6 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         );
     }
 
-    // Step 7 — counters. `lineCountChanged` fires unconditionally so the
-    // status-bar progress label keeps ticking even on batches that added
-    // zero rows but, say, increased the error count.
     mErrorCount += capturedErrorCount;
     emit lineCountChanged(static_cast<qsizetype>(newRowCount));
     if (capturedErrorCount > 0)
@@ -208,9 +188,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
                 else if constexpr (std::is_same_v<T, std::string_view>)
                 {
-                    // The `string_view` alternative borrows directly from the mmap.
-                    // Promote to `std::string` so the QString factory never sees the
-                    // view past the `LogValue`'s lifetime.
+                    // Materialise so the QString factory doesn't outlive the mmap view.
                     return QVariant(ConvertToSingleLineCompactQString(std::string(arg)));
                 }
                 else if constexpr (std::is_same_v<T, int64_t>)

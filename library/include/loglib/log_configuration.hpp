@@ -56,29 +56,24 @@ struct LogConfiguration
     std::vector<LogFilter> filters;
 };
 
-/// Manages the log configuration: loading, saving, updating from observed data.
+/// Manages the log configuration: loading, saving, and updating from
+/// observed data.
 class LogConfigurationManager
 {
 public:
     LogConfigurationManager() = default;
 
-    /// Loads the configuration from @p path. Throws `std::runtime_error` if the
-    /// file cannot be opened.
+    /// Throws `std::runtime_error` if the file cannot be opened.
     void Load(const std::filesystem::path &path);
-
-    /// Saves the configuration to @p path. Throws `std::runtime_error` if the
-    /// file cannot be opened.
     void Save(const std::filesystem::path &path) const;
 
-    /// Rebuilds the configuration from the current `LogData`. May reorder
-    /// columns; not safe to call mid-stream.
+    /// Rebuilds the configuration from @p logData. Not safe to call mid-stream.
     void Update(const LogData &logData);
 
-    /// Append-only configuration extension used by the streaming path. Appends
-    /// a column for any key in @p newKeys that is not already configured;
-    /// auto-promotes timestamp-named keys to `Type::time`. Existing column
-    /// indices stay put for the life of the parse so Qt's `beginInsertColumns`
-    /// works correctly.
+    /// Append-only extension used by the streaming path: appends any key in
+    /// @p newKeys not already configured, auto-promoting timestamp-named keys
+    /// to `Type::time`. Existing column indices stay put for the life of the
+    /// parse so Qt's `beginInsertColumns` stays valid.
     void AppendKeys(const std::vector<std::string> &newKeys);
 
     const LogConfiguration &Configuration() const;
@@ -89,9 +84,8 @@ private:
 
     LogConfiguration mConfiguration;
 
-    /// Cached set of every key that appears under any column's `keys` vector.
-    /// Invalidation contract: every mutating path (`Load`, `Update`,
-    /// `AppendKeys`) flips `mCacheStale`. Any future mutator must do the same.
+    /// Cached "every key referenced by any column". Every mutator must flip
+    /// `mCacheStale`.
     mutable std::unordered_set<std::string> mKeysInColumns;
     mutable bool mCacheStale = true;
 };

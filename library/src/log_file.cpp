@@ -25,18 +25,8 @@ namespace loglib
 namespace
 {
 
-/**
- * @brief Hints to the OS that the mmap will be read sequentially front-to-back.
- *
- * - On POSIX, calls `posix_madvise(addr, size, POSIX_MADV_SEQUENTIAL)` so the
- *   kernel can prefetch and drop already-read pages aggressively.
- * - On Windows, calls `PrefetchVirtualMemory` with a single range descriptor so
- *   the working-set manager starts the read-ahead before the parser touches
- *   the bytes.
- *
- * Failures are non-fatal — the parser still works without the hint. We do not
- * log the error to avoid noisy output during routine open-file operations.
- */
+/// Hints sequential read access to the OS (POSIX `posix_madvise` /
+/// Windows `PrefetchVirtualMemory`). Best-effort; failures are ignored.
 void HintSequential(const mio::mmap_source &mmap)
 {
     if (mmap.size() == 0)
@@ -94,9 +84,8 @@ LogFile::LogFile(std::filesystem::path filePath) : mPath(std::move(filePath))
         throw std::runtime_error(fmt::format("File '{}' does not exist.", mPath.string()));
     }
 
-    // Empty files are tolerated to keep the existing "validate empty file" test path: the mmap
-    // ctor would fail on a zero-byte file on some platforms, so short-circuit here. mLineOffsets
-    // still gets the leading sentinel so `GetLineCount() == 0` is reported consistently.
+    // Empty files: skip mmap (some platforms reject zero-byte mappings); the
+    // leading offset sentinel below still keeps `GetLineCount() == 0` truthful.
     const auto size = std::filesystem::file_size(mPath);
     if (size > 0)
     {
@@ -141,14 +130,10 @@ std::string LogFile::GetLine(size_t lineNumber) const
         return std::string{};
     }
 
-    // The stored stop offset is one byte past the trailing '\n'; subtract 1 for the newline.
-    // Final line without a trailing newline still works because CreateReference stores
-    // `fileSize + 1` as the sentinel for that case (see TestLogFile::CreateLogFile in the
-    // test helpers and JsonParser::Parse).
+    // Stop offset is one byte past the trailing '\n'. Files without a trailing
+    // newline use `fileSize + 1` as the sentinel; clamp against the mmap size.
     size_t length = static_cast<size_t>(stopOffset - startOffset - 1);
 
-    // Clamp against the actual mmap size in case the line table includes the sentinel
-    // `fileSize + 1` for a file without a trailing newline.
     const size_t mmapSize = mMmap.size();
     if (startOffset + length > mmapSize)
     {

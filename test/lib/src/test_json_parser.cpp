@@ -35,11 +35,10 @@ namespace
 {
 constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
 
-// Drives a synchronous parse against the streaming pipeline (mirrors the legacy
-// `JsonParser::Parse(path, opts)` shape) for tests that need to dial advanced
-// tuning knobs but still consume a `ParseResult`.
+// Drives a synchronous parse against the streaming pipeline for tests that
+// need to dial advanced tuning knobs but still consume a `ParseResult`.
 loglib::ParseResult ParseWithSink(
-    const loglib::LogParser &parser,
+    const loglib::JsonParser &parser,
     const std::filesystem::path &path,
     const loglib::ParserOptions &options = {},
     const loglib::internal::AdvancedParserOptions &advanced = {}
@@ -71,7 +70,6 @@ TEST_CASE(
     CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::kDefaultBatchSizeBytes);
     CHECK(advanced.ntokens == 0u);
     CHECK(advanced.useThreadLocalKeyCache == true);
-    CHECK(advanced.useParseCache == true);
     CHECK(advanced.timings == nullptr);
     CHECK(internal::AdvancedParserOptions::kDefaultMaxThreads == 8u);
     CHECK(internal::AdvancedParserOptions::kDefaultBatchSizeBytes == 1024u * 1024u);

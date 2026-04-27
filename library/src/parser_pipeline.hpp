@@ -1,6 +1,7 @@
 #pragma once
 
 #include "timestamp_promotion.hpp"
+#include "transparent_string_hash.hpp"
 
 #include "loglib/internal/parser_options.hpp"
 #include "loglib/key_index.hpp"
@@ -8,6 +9,7 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
+#include "loglib/parser_options.hpp"
 #include "loglib/streaming_log_sink.hpp"
 
 #include <oneapi/tbb/enumerable_thread_specific.h>
@@ -35,58 +37,15 @@
 namespace loglib::detail
 {
 
-/// Transparent hash adapter for the per-worker key cache; routes every overload through
-/// `std::hash<std::string_view>` so a `string_view` lookup hits the same bucket the
-/// matching `std::string` was stored under.
-struct TransparentStringHash
-{
-    using is_transparent = void;
-
-    size_t operator()(std::string_view sv) const noexcept
-    {
-        return std::hash<std::string_view>{}(sv);
-    }
-    size_t operator()(const std::string &s) const noexcept
-    {
-        return std::hash<std::string_view>{}(s);
-    }
-    size_t operator()(const char *s) const noexcept
-    {
-        return std::hash<std::string_view>{}(std::string_view(s));
-    }
-};
-
-struct TransparentStringEqual
-{
-    using is_transparent = void;
-
-    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-    bool operator()(std::string_view lhs, const std::string &rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-    bool operator()(const std::string &lhs, std::string_view rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-    bool operator()(const std::string &lhs, const std::string &rhs) const noexcept
-    {
-        return lhs == rhs;
-    }
-};
-
-/// Per-worker key string -> KeyId cache. On a hit, `find(string_view)` allocates nothing;
-/// on a miss the worker calls `KeyIndex::GetOrInsert` once, then writes back.
+/// Per-worker key string -> KeyId cache. Hit: `find(string_view)` is alloc-free;
+/// miss: one `KeyIndex::GetOrInsert` plus a write-back.
 struct PerWorkerKeyCache
 {
     tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
 };
 
-/// Per-worker scratch shared across every parser. Holds the key cache plus the
-/// per-time-column carry-over caches the post-decoding timestamp hook needs.
+/// Per-worker scratch shared across parsers: key cache plus per-time-column
+/// carry-over for the inline timestamp-promotion hook.
 struct WorkerScratchBase
 {
     PerWorkerKeyCache keyCache;
@@ -106,28 +65,21 @@ struct WorkerScratchBase
         }
     }
 
-    /// Convenience inline hook the parser calls right after pushing a fresh `LogLine`
-    /// onto its `ParsedPipelineBatch`. Forwards to the shared `PromoteLineTimestamps`
-    /// helper, threading the worker's per-column carry-over caches through. Doing it
-    /// inline (rather than as a post-decode pass over the parsed batch) keeps the
-    /// line's freshly-written values hot in L1 and avoids a second walk over the
-    /// per-line `(KeyId, LogValue)` vector.
+    /// Called inline after pushing a `LogLine` onto its `ParsedPipelineBatch`,
+    /// while the freshly-written values are still hot in L1.
     void PromoteTimestamps(class LogLine &line, std::span<const TimeColumnSpec> timeColumns);
 };
 
-/// Templated wrapper that lets a parser bolt format-specific scratch (e.g. a
-/// `simdjson::ondemand::parser` instance + padded line buffer) onto the shared
-/// `WorkerScratchBase`.
+/// Bolts format-specific scratch (e.g. simdjson parser + padded buffer) onto
+/// the shared base.
 template <class UserState>
 struct WorkerScratch : WorkerScratchBase
 {
     UserState user;
 };
 
-/// Routes a per-field key lookup through the per-worker cache when the option is enabled
-/// and the input is a `string_view` whose bytes outlive the line. On the cache-miss path
-/// we call `KeyIndex::GetOrInsert(view)` exactly once and write the new mapping back
-/// into the local cache.
+/// Routes a key lookup through the per-worker cache when enabled. The view's
+/// bytes must outlive the cache entry on the miss path.
 inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache, bool useCache)
 {
     if (!useCache || cache == nullptr)
@@ -143,17 +95,15 @@ inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCach
     return id;
 }
 
-/// Parsed Stage B output. Stage B (parallel) emits one of these per Stage A token;
-/// Stage C (serial_in_order) re-asserts ordering before the sink sees them.
+/// Parsed Stage B output. Stage C re-asserts ordering before the sink sees it.
 struct ParsedPipelineBatch
 {
     uint64_t batchIndex = 0;
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
-    /// Number of source lines this batch consumed (parsed lines + parse errors + skipped
-    /// empty lines). Stage C uses this exact value to advance its running line-number
-    /// cursor across batches, so it must count every input-advancing iteration.
+    /// Source lines consumed (parsed + errors + skipped empties). Stage C uses
+    /// this to advance its running line-number cursor across batches.
     size_t totalLineCount = 0;
 };
 
@@ -167,33 +117,14 @@ WorkerScratchBase::PromoteTimestamps(LogLine &line, std::span<const TimeColumnSp
     PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch);
 }
 
-/// Inputs the harness needs from the parser's `ParseStreaming` call. Mirrors today's
-/// `ParserOptions{}` + `AdvancedParserOptions{}` defaults bit-for-bit so a default-
-/// constructed instance reproduces the legacy synchronous `Parse(path)` behaviour.
-struct PipelineHarnessOptions
-{
-    static constexpr unsigned int kDefaultMaxThreads = internal::AdvancedParserOptions::kDefaultMaxThreads;
-    static constexpr size_t kDefaultBatchSizeBytes = internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
-
-    unsigned int threads = 0;
-    size_t batchSizeBytes = kDefaultBatchSizeBytes;
-    size_t ntokens = 0;
-    std::shared_ptr<const LogConfiguration> configuration;
-    std::stop_token stopToken{};
-    StageTimings *timings = nullptr;
-};
-
-/// Resolves `effectiveThreads` and `ntokens` against today's defaulting rules:
-/// `threads == 0 -> min(hardware_concurrency, kDefaultMaxThreads)`, `ntokens == 0 ->
-/// 2 * effectiveThreads`. Both are clamped to a minimum of 1.
+/// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.
 struct ResolvedPipelineSettings
 {
     unsigned int effectiveThreads = 1;
     size_t ntokens = 0;
-    size_t batchSizeBytes = PipelineHarnessOptions::kDefaultBatchSizeBytes;
 };
 
-ResolvedPipelineSettings ResolvePipelineSettings(const PipelineHarnessOptions &opts);
+ResolvedPipelineSettings ResolvePipelineSettings(const internal::AdvancedParserOptions &advanced);
 
 namespace pipeline_detail
 {
@@ -203,30 +134,23 @@ constexpr auto kStreamFlushInterval = std::chrono::milliseconds(50);
 
 }  // namespace pipeline_detail
 
-/// Templated entry point. The parser supplies a Stage A token type (`Token`), a
-/// per-worker scratch slot (`UserState`), and two callables:
-///
-///   - `stageADriver(Token& out) -> bool` — serial_in_order; returns false at EOF.
-///     The harness wraps it with the `stop_token` poll and Stage A telemetry.
-///   - `stageBDecoder(Token, WorkerScratch<UserState>&, KeyIndex&,
-///                    std::span<const TimeColumnSpec>, ParsedPipelineBatch&)` — parallel.
-///
-/// The harness owns: sink lifecycle (`OnStarted` / `OnFinished`), Stage C coalescing,
-/// new-keys diff, per-worker key cache, per-line timestamp promotion (applied on every
-/// line in the parsed batch before Stage C sees it), telemetry, and cooperative
-/// cancellation.
+/// Streaming-pipeline entry point. Stage A `stageADriver(Token&) -> bool` is
+/// serial_in_order; Stage B `stageBDecoder(Token, scratch, keys, columns,
+/// out)` is parallel. Stage C coalescing, new-keys diff, inline timestamp
+/// promotion, telemetry, and stop_token cancellation are owned by the harness.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunParserPipeline(
     LogFile &file,
     StreamingLogSink &sink,
-    const PipelineHarnessOptions &opts,
+    const ParserOptions &options,
+    const internal::AdvancedParserOptions &advanced,
     StageADriver &&stageADriver,
     StageBDecoder &&stageBDecoder
 )
 {
     sink.OnStarted();
 
-    if (opts.stopToken.stop_requested())
+    if (options.stopToken.stop_requested())
     {
         sink.OnFinished(true);
         return;
@@ -238,18 +162,20 @@ void RunParserPipeline(
         return;
     }
 
-    const ResolvedPipelineSettings settings = ResolvePipelineSettings(opts);
+    const ResolvedPipelineSettings settings = ResolvePipelineSettings(advanced);
     file.ReserveLineOffsets(file.Size() / 100);
 
     KeyIndex &keys = sink.Keys();
 
     const std::vector<TimeColumnSpec> timeColumns =
-        BuildTimeColumnSpecs(keys, opts.configuration.get());
+        BuildTimeColumnSpecs(keys, options.configuration.get());
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 
-    StageTimings *timingsOut = opts.timings;
-    const auto wallClockStart = std::chrono::steady_clock::now();
+    StageTimings *timingsOut = advanced.timings;
+    const bool collectTimings = (timingsOut != nullptr);
+    const auto wallClockStart = collectTimings ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
     std::chrono::nanoseconds stageACpuTotal{0};
     size_t stageABatches = 0;
     oneapi::tbb::enumerable_thread_specific<std::chrono::nanoseconds> stageBCpuPerWorker(
@@ -266,7 +192,7 @@ void RunParserPipeline(
     auto lastFlush = std::chrono::steady_clock::now();
     size_t nextLineNumber = 1;
 
-    const std::stop_token stopToken = opts.stopToken;
+    const std::stop_token stopToken = options.stopToken;
     std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
     auto stageA = [&](oneapi::tbb::flow_control &fc) -> Token {
@@ -275,7 +201,8 @@ void RunParserPipeline(
             fc.stop();
             return Token{};
         }
-        const auto stageStart = std::chrono::steady_clock::now();
+        const auto stageStart = collectTimings ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
         Token token{};
         const bool produced = stageADriver(token);
         if (!produced)
@@ -283,28 +210,31 @@ void RunParserPipeline(
             fc.stop();
             return Token{};
         }
-        stageACpuTotal += std::chrono::steady_clock::now() - stageStart;
-        ++stageABatches;
+        if (collectTimings)
+        {
+            stageACpuTotal += std::chrono::steady_clock::now() - stageStart;
+            ++stageABatches;
+        }
         return token;
     };
 
     auto stageB = [&](Token token) -> ParsedPipelineBatch {
-        const auto stageStart = std::chrono::steady_clock::now();
+        const auto stageStart = collectTimings ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
         WorkerScratch<UserState> &worker = workers.local();
         worker.EnsureTimeColumnCapacity(timeColumnsSpan.size());
 
         ParsedPipelineBatch parsed;
         stageBDecoder(std::move(token), worker, keys, timeColumnsSpan, parsed);
 
-        stageBCpuPerWorker.local() += std::chrono::steady_clock::now() - stageStart;
-        stageBBatches.fetch_add(1, std::memory_order_relaxed);
+        if (collectTimings)
+        {
+            stageBCpuPerWorker.local() += std::chrono::steady_clock::now() - stageStart;
+            stageBBatches.fetch_add(1, std::memory_order_relaxed);
+        }
         return parsed;
     };
 
-    // Stage C lives inline (rather than in a helper) so the compiler can keep `pending`,
-    // `pendingPrimed`, `prevKeyCount`, `lastFlush` and `nextLineNumber` in registers across
-    // the per-batch body. Pulling them through a struct of pointers shows up as a measurable
-    // throughput regression on `[large]` (hot serial_in_order path, ~173 calls/parse).
     auto emitNewKeysInto = [&](StreamedBatch &out) {
         const size_t currentKeyCount = keys.Size();
         if (currentKeyCount > prevKeyCount)
@@ -332,7 +262,8 @@ void RunParserPipeline(
     };
 
     auto stageC = [&](ParsedPipelineBatch parsed) {
-        const auto stageStart = std::chrono::steady_clock::now();
+        const auto stageStart = collectTimings ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
 
         const size_t lineNumberDelta = nextLineNumber - 1;
         if (lineNumberDelta != 0)
@@ -355,8 +286,11 @@ void RunParserPipeline(
             nextLineNumber += parsed.totalLineCount;
 
             sink.OnBatch(std::move(out));
-            stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
-            ++stageCBatches;
+            if (collectTimings)
+            {
+                stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
+                ++stageCBatches;
+            }
             return;
         }
 
@@ -394,8 +328,11 @@ void RunParserPipeline(
 
         flushPending(false);
 
-        stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
-        ++stageCBatches;
+        if (collectTimings)
+        {
+            stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
+            ++stageCBatches;
+        }
     };
 
     oneapi::tbb::global_control gc(
@@ -405,8 +342,11 @@ void RunParserPipeline(
 
     oneapi::tbb::parallel_pipeline(
         settings.ntokens,
+        // A: serial_in_order — drives Stage A tokens in source order.
         oneapi::tbb::make_filter<void, Token>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
+            // B: parallel — decode batches concurrently.
             oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
+            // C: serial_in_order — coalesce / emit batches in source order.
             oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
     );
 

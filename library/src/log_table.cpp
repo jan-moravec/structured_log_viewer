@@ -29,26 +29,19 @@ void LogTable::Update(LogData &&data)
 
 void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
 {
-    // Streaming entry point. Replaces any prior data with a fresh LogData backed by @p file
-    // and snapshots the time-column KeyId set against the current configuration (which is
-    // the one the streaming parser will see). KeyIds present at this point are guaranteed
-    // to have been parsed inline by the parser; KeyIds that appear later (auto-promoted
-    // from a later batch's new keys) are back-filled by `AppendBatch`.
     mLastBackfillRange.reset();
 
     if (file)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(file), std::move(noLines), KeyIndex{});
-        // The streaming parser promotes Type::time values to TimeStamp inline, so this
-        // flag is truthful from the moment the pipeline starts. Time columns first seen
-        // *after* this snapshot are still back-filled on the GUI thread by `AppendBatch`.
+        // Stage B promotes Type::time inline; later-discovered time columns are
+        // back-filled in `AppendBatch`.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
     else
     {
-        // File-less init for fixture tests that hand-craft batches.
         mData = LogData{};
         mData.MarkTimestampsParsed();
     }
@@ -61,32 +54,22 @@ void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
 
-    // Step 1: extend the configuration if the batch surfaced new keys. Append-only,
-    // so already-known column indices stay put for any consumer that has observed them.
     if (!batch.newKeys.empty())
     {
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
-    // Step 2: splice lines + line offsets into the owned LogData. Lines are already
-    // bound to the canonical KeyIndex (borrowed via `StreamingLogSink::Keys`), but
-    // `AppendBatch` defensively rebinds for hand-crafted test fixtures.
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
     {
         mData.AppendBatch(std::move(batch.lines), std::move(batch.localLineOffsets));
     }
 
-    // Step 3: refresh the column → KeyId cache only when new keys arrived. KeyIds are
-    // dense and monotonic, so a key that resolved last batch still resolves the same
-    // way; a `kInvalidKeyId` can only flip to valid via a `newKeys` addition.
     if (!batch.newKeys.empty())
     {
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    // Step 4: back-fill time columns whose KeyId set is not a subset of the snapshot.
-    // Each such column was added after streaming began, so we back-fill it across every
-    // row in `mData.Lines()` exactly once and append its keys to the snapshot.
+    // Back-fill time columns first seen after the streaming snapshot.
     const auto &columns = mConfiguration.Configuration().columns;
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -241,14 +224,6 @@ void LogTable::RefreshColumnKeyIds()
 
 void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys)
 {
-    // Incremental column → KeyId cache refresh. Two design notes:
-    //   1. We run *after* `AppendBatch` has extended the configuration via `AppendKeys`,
-    //      so any newly-added column appears at the tail of `columns`. If `mColumnKeyIds`
-    //      is shorter than `columns` we grow it with empty inner vectors and the loop
-    //      below populates them, preserving the size invariant on return.
-    //   2. The `string_view` set is built once from `newKeys` (typically empty after
-    //      batch 1). Columns whose `keys` don't overlap with `newKeySet` keep their
-    //      cached entries — KeyIds are monotonic so resolved ids stay resolved.
     if (newKeys.empty())
     {
         return;
@@ -300,9 +275,6 @@ void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKey
 
 void LogTable::RefreshSnapshotTimeKeys()
 {
-    // Capture every KeyId currently referenced by a Type::time column. Keys present at
-    // this moment have been parsed inline by the streaming parser; keys that arrive
-    // later are absent here and `AppendBatch` will trigger their back-fill.
     mStageBSnapshotTimeKeys.clear();
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)

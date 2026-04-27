@@ -37,7 +37,7 @@ BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration)
     return result;
 }
 
-void PromoteLineTimestamps(
+bool PromoteLineTimestamps(
     LogLine &line,
     std::span<const TimeColumnSpec> timeColumns,
     std::vector<std::optional<LastValidTimestampParse>> &lastValid,
@@ -45,6 +45,7 @@ void PromoteLineTimestamps(
     TimestampParseScratch &tsScratch
 )
 {
+    bool anyPromoted = false;
     for (size_t i = 0; i < timeColumns.size(); ++i)
     {
         const TimeColumnSpec &spec = timeColumns[i];
@@ -116,7 +117,10 @@ void PromoteLineTimestamps(
                 }
             }
         }
+
+        anyPromoted = anyPromoted || promoted;
     }
+    return anyPromoted;
 }
 
 } // namespace loglib::detail

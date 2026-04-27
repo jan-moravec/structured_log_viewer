@@ -28,7 +28,7 @@ bool IsTimestampKey(const std::string &key)
     );
 }
 
-// Glaze 7.x moved indentation_width out of the core opts struct into an inheritable option.
+// Glaze 7.x: indentation_width moved off of glz::opts into an inheritable option.
 struct PrettyOpts : glz::opts
 {
     uint8_t indentation_width = 4;
@@ -53,8 +53,6 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
         {
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
-        // Configuration was replaced wholesale; the next `IsKeyInAnyColumn` query
-        // rebuilds the cache against the loaded columns.
         mCacheStale = true;
     }
     else
@@ -85,9 +83,6 @@ void LogConfigurationManager::Save(const std::filesystem::path &path) const
 
 void LogConfigurationManager::Update(const LogData &logData)
 {
-    // Update configuration columns with new keys. SortedKeys() snapshots the
-    // KeyIndex into a std::vector<std::string> so this cold path does not need
-    // to be aware of the new dense KeyId storage.
     EnsureKeyCacheBuilt();
     for (const std::string &key : logData.SortedKeys())
     {
@@ -98,7 +93,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                 mConfiguration.columns.push_back(LogConfiguration::Column{
                     key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
-                // Timestamp should be the first column, all the others will be shifted
+                // Timestamps land in the first column; shift everything else right.
                 for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
                 {
                     std::swap(mConfiguration.columns[i], mConfiguration.columns[i - 1]);
@@ -110,9 +105,6 @@ void LogConfigurationManager::Update(const LogData &logData)
                     LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
                 );
             }
-            // Keep the cache consistent inside the loop so a `SortedKeys()` snapshot that
-            // contains the same key twice (currently impossible — `KeyIndex` dedupes — but
-            // robust against future callers) does not double-add the column.
             mKeysInColumns.insert(key);
         }
     }
@@ -120,13 +112,7 @@ void LogConfigurationManager::Update(const LogData &logData)
 
 void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
 {
-    // Streaming-mode column extension. Differs from `Update` in two ways:
-    //   1. Operates on an explicit "new keys" slice (`StreamedBatch::newKeys`)
-    //      rather than re-walking the full canonical KeyIndex.
-    //   2. Always appends — never reorders. Timestamp auto-promotion still
-    //      happens, but the new time column lands at the end alongside every
-    //      other freshly-discovered key, preserving the append-only contract
-    //      that Qt's `beginInsertColumns` relies on.
+    // Always append — never reorder — to keep Qt's `beginInsertColumns` valid.
     EnsureKeyCacheBuilt();
     for (const std::string &key : newKeys)
     {
@@ -146,10 +132,6 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
             );
         }
-        // Same in-loop cache maintenance as `Update`: a duplicate key in `newKeys`
-        // (legal — `StreamedBatch::newKeys` is unique per batch but two consecutive
-        // batches' slices may overlap if the caller forwards them naively) must not
-        // add two columns for the same key.
         mKeysInColumns.insert(key);
     }
 }

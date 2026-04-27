@@ -3,10 +3,12 @@
 #include "parser_pipeline.hpp"
 #include "timestamp_promotion.hpp"
 
+#include <loglib/internal/parser_options.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/parser_options.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -53,14 +55,19 @@ public:
     {
     };
 
-    void ParseStreaming(LogFile &file, StreamingLogSink &sink, const loglib::detail::PipelineHarnessOptions &opts) const
+    void ParseStreaming(
+        LogFile &file,
+        StreamingLogSink &sink,
+        const loglib::ParserOptions &options,
+        const loglib::internal::AdvancedParserOptions &advanced
+    ) const
     {
         LogFile *filePtr = &file;
         const char *fileBegin = file.Data();
         const char *fileEnd = (fileBegin != nullptr) ? fileBegin + file.Size() : nullptr;
-        const size_t batchBytes = opts.batchSizeBytes != 0
-                                      ? opts.batchSizeBytes
-                                      : loglib::detail::PipelineHarnessOptions::kDefaultBatchSizeBytes;
+        const size_t batchBytes = advanced.batchSizeBytes != 0
+                                      ? advanced.batchSizeBytes
+                                      : loglib::internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
         const char *cursor = fileBegin;
 
         auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
@@ -180,7 +187,7 @@ public:
             parsed.totalLineCount = relativeLineNumber - 1;
         };
 
-        loglib::detail::RunParserPipeline<ByteRange, WorkerState>(file, sink, opts, stageA, stageB);
+        loglib::detail::RunParserPipeline<ByteRange, WorkerState>(file, sink, options, advanced, stageA, stageB);
     }
 };
 
@@ -244,13 +251,14 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
     TempTextFile fixture(GenerateRecords(kRecordCount));
     LogFile logFile(fixture.Path());
 
-    loglib::detail::PipelineHarnessOptions opts;
-    opts.batchSizeBytes = 8 * 1024;
-    opts.threads = 2;
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 8 * 1024;
+    advanced.threads = 2;
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, opts);
+    parser.ParseStreaming(logFile, sink, options, advanced);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -287,13 +295,14 @@ TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors"
     TempTextFile fixture(content);
     LogFile logFile(fixture.Path());
 
-    loglib::detail::PipelineHarnessOptions opts;
-    opts.threads = 1;
-    opts.batchSizeBytes = 1024 * 1024;
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = 1024 * 1024;
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, opts);
+    parser.ParseStreaming(logFile, sink, options, advanced);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -322,10 +331,11 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     constexpr size_t kBatchBytes = 64 * 1024;
     constexpr size_t kNtokens = 4;
 
-    loglib::detail::PipelineHarnessOptions opts;
-    opts.batchSizeBytes = kBatchBytes;
-    opts.ntokens = kNtokens;
-    opts.threads = 4;
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = kBatchBytes;
+    advanced.ntokens = kNtokens;
+    advanced.threads = 4;
 
     struct CancellingSink : CollectingSink
     {
@@ -352,10 +362,10 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     };
 
     CancellingSink sink;
-    opts.stopToken = sink.stop.get_token();
+    options.stopToken = sink.stop.get_token();
 
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, opts);
+    parser.ParseStreaming(logFile, sink, options, advanced);
 
     REQUIRE(sink.cancelled);
     const auto latency = sink.finishedAt - sink.requestedAt;
@@ -387,13 +397,14 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     timeColumn.parseFormats = {"%FT%TZ"};
     configuration->columns.push_back(timeColumn);
 
-    loglib::detail::PipelineHarnessOptions opts;
-    opts.threads = 1;
-    opts.configuration = configuration;
+    loglib::ParserOptions options;
+    options.configuration = configuration;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, opts);
+    parser.ParseStreaming(logFile, sink, options, advanced);
 
     size_t promoted = 0;
     size_t totalLines = 0;

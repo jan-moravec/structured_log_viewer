@@ -38,9 +38,7 @@ LogValue ToOwnedLogValue(const LogValue &value)
 
 bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 {
-    // Treat `string_view` and `string` as the same logical kind so the parity
-    // test can compare outputs of two parsers that may have made different
-    // fast/slow-path choices on the same underlying bytes.
+    // Treat `string_view` and `string` as the same logical kind.
     const auto lhsString = AsStringView(lhs);
     const auto rhsString = AsStringView(rhs);
     if (lhsString.has_value() || rhsString.has_value())
@@ -54,8 +52,7 @@ LogLine::LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, const Key
     : mValues(std::move(sortedValues)), mKeys(&keys), mFileReference(std::move(fileReference))
 {
 #ifndef NDEBUG
-    // Sorted-ascending-by-KeyId is a precondition; both `GetValue` and the
-    // merge step in `LogData` rely on it for correctness and performance.
+    // Precondition: ascending-by-KeyId; `GetValue` and `LogData::Merge` rely on it.
     assert(std::is_sorted(mValues.begin(), mValues.end(), [](const auto &a, const auto &b) {
         return a.first < b.first;
     }));
@@ -108,9 +105,8 @@ LogValue LogLine::GetValue(const std::string &key) const
 void LogLine::SetValue(KeyId id, LogValue value)
 {
 #ifndef NDEBUG
-    // The untagged setter is for owned values produced after parsing. Callers
-    // that hand in a `string_view` must use the `LogValueTrustView` overload
-    // and so make the lifetime promise explicit.
+    // Untagged setter is for owned values; callers passing a `string_view`
+    // must use the `LogValueTrustView` overload to declare the lifetime.
     assert(!std::holds_alternative<std::string_view>(value));
 #endif
     SetValue(id, std::move(value), LogValueTrustView{});
