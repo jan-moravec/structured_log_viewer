@@ -22,6 +22,7 @@
 #include <QMessageBox>
 #include <QStandardItemModel>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTableView>
 #include <QTimer>
 #include <QUuid>
@@ -33,6 +34,112 @@
 #include <iterator>
 #include <memory>
 #include <stop_token>
+#include <system_error>
+#include <vector>
+
+namespace
+{
+
+// Resolve the on-disk `tzdata/` directory the date library reads at startup.
+// Search order (first hit wins):
+//   1. `<applicationDirPath>/tzdata`        — the canonical layout on every
+//      platform: cmake/FetchDependencies.cmake stages tzdata next to the
+//      built executable (`${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata`), and
+//      installed/deployed bundles ship it in the same relative spot. This
+//      is the path that lets the binary run from anywhere on disk without
+//      needing a particular working directory.
+//   2. `<applicationDirPath>/../Resources/tzdata` — macOS .app bundle layout
+//      (`applicationDirPath()` is `<bundle>/Contents/MacOS`, tzdata sits at
+//      `<bundle>/Contents/Resources/tzdata`).
+//   3. `$APPDIR/usr/share/tzdata`           — Linux AppImage layout.
+//   4. Walk up the current-directory ancestor chain looking for a sibling
+//      `tzdata/` (mirrors `InitializeTimezoneData()` in
+//      `test/lib/src/common.cpp`). Lets manual invocations succeed when the
+//      CWD happens to live inside the build tree.
+//
+// On miss returns an empty path; `searched` is populated with every candidate
+// the lookup tried so the caller can quote it in the failure diagnostic. The
+// stop conditions on the CWD walk match common.cpp:
+//   * `parent.empty()` — POSIX, parent of `/` is `""`;
+//   * `parent == path` — Windows, `path("C:\\").parent_path()` returns
+//     `C:\\` itself, so the walk would otherwise spin forever.
+std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
+{
+    auto pushAndCheck = [&searched](std::filesystem::path candidate) -> bool {
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(candidate, ec);
+        searched.push_back(std::move(candidate));
+        return exists && !ec;
+    };
+
+    const auto appDir = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
+    if (!appDir.empty() && pushAndCheck(appDir / "tzdata"))
+    {
+        return searched.back();
+    }
+
+#ifdef __APPLE__
+    if (!appDir.empty() && pushAndCheck(appDir.parent_path() / "Resources" / "tzdata"))
+    {
+        return searched.back();
+    }
+#endif
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+    if (const char *appImageDir = std::getenv("APPDIR"))
+    {
+        if (pushAndCheck(std::filesystem::path(appImageDir) / "usr/share/tzdata"))
+        {
+            return searched.back();
+        }
+    }
+#endif
+
+    std::error_code cwdEc;
+    auto walk = std::filesystem::current_path(cwdEc);
+    if (!cwdEc)
+    {
+        while (true)
+        {
+            if (pushAndCheck(walk / "tzdata"))
+            {
+                return searched.back();
+            }
+            const auto parent = walk.parent_path();
+            if (parent.empty() || parent == walk)
+            {
+                break;
+            }
+            walk = parent;
+        }
+    }
+
+    return {};
+}
+
+// Format a multi-line diagnostic listing every searched candidate, matching
+// the shape of `FAIL(...)` in test/lib/src/common.cpp's
+// `InitializeTimezoneData()` so support requests against either codepath
+// surface the same actionable detail.
+QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &searched)
+{
+    QStringList lines;
+    lines << QStringLiteral("Could not find the `tzdata/` directory required to initialize the timezone database.");
+    lines << QStringLiteral("Searched the following candidate locations (in order):");
+    for (const auto &p : searched)
+    {
+        lines << QStringLiteral("  - %1").arg(QString::fromStdString(p.string()));
+    }
+    lines << QString();
+    lines << QStringLiteral(
+        "Run the binary from a directory that has a sibling `tzdata/` "
+        "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
+        "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds)."
+    );
+    return lines.join(QLatin1Char('\n'));
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -156,30 +263,35 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     });
 
     QTimer::singleShot(0, [this] {
+        // Resolve the tzdata directory and initialize the date library. On
+        // failure we deliberately emit a stderr diagnostic via `qCritical()`
+        // and exit instead of popping a modal `QMessageBox::critical(...)`:
+        // under `QT_QPA_PLATFORM=offscreen` (CI / `apptest`) a modal dialog
+        // blocks the event loop indefinitely with no way to dismiss it, and
+        // we have observed it also crash inside `QWidget::setParent` when
+        // the QApplication / parent widget state is not yet fully settled
+        // mid-`QTimer::singleShot` dispatch. `qCritical()` always lands on
+        // stderr regardless of platform, so the user (or the CI log) sees
+        // exactly which paths the lookup tried and why startup aborted.
+        std::vector<std::filesystem::path> searched;
+        const auto tzdata = FindTzdata(searched);
+
+        if (tzdata.empty())
+        {
+            const QString message = FormatTzdataNotFoundMessage(searched);
+            qCritical().noquote() << "Fatal:" << message;
+            QApplication::exit(1);
+            return;
+        }
+
         try
         {
-#ifdef _WIN32
-            const auto tzdata = std::filesystem::current_path() / std::filesystem::path("tzdata");
-#elif defined(__APPLE__)
-            // Inside a .app bundle, applicationDirPath() is <bundle>/Contents/MacOS.
-            // tzdata is shipped as <bundle>/Contents/Resources/tzdata.
-            const auto contentsDir =
-                std::filesystem::path(QCoreApplication::applicationDirPath().toStdString()).parent_path();
-            const auto tzdata = contentsDir / "Resources" / "tzdata";
-#else
-            const char *appDir = std::getenv("APPDIR");
-            const auto tzdata = appDir ? std::filesystem::path(appDir) / std::filesystem::path("usr/share/tzdata")
-                                       : std::filesystem::current_path() / std::filesystem::path("tzdata");
-#endif
             loglib::Initialize(tzdata);
         }
         catch (std::exception &e)
         {
-            QMessageBox::critical(
-                this,
-                "Fatal Error",
-                QString("An unrecoverable error occurred:\n") + e.what() + "\n\nApplication will exit."
-            );
+            qCritical().noquote() << "Fatal: failed to initialize timezone database at"
+                                  << QString::fromStdString(tzdata.string()) << ":" << e.what();
             QApplication::exit(1);
         }
     });

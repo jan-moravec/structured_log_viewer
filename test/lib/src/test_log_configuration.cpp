@@ -245,7 +245,7 @@ TEST_CASE("Cache: Load wholesale-replaces the cache against the freshly loaded c
 }
 
 TEST_CASE(
-    "Cache: parity with the pre-cache O(M·K) walk on the existing fixture", "[LogConfigurationManager][cache_invalidation]"
+    "Cache: parity with the pre-cache O(M*K) walk on the existing fixture", "[LogConfigurationManager][cache_invalidation]"
 )
 {
     // Re-run the existing "Update with mixed keys organizes timestamp first"

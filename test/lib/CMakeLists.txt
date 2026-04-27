@@ -3,7 +3,6 @@ cmake_minimum_required(VERSION 3.19)
 # Create test executable
 add_executable(
     tests
-    "src/benchmark_json.cpp"
     "src/common.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
@@ -51,3 +50,29 @@ endif()
 
 # Discover tests
 catch_discover_tests(tests)
+
+# PRD hl-inspired §7.4 — benchmarks live in their own executable so they are
+# never picked up by the unit-test runner. The `tests` target finishes in a
+# couple of seconds; pulling the long-running parse fixtures (`[large]`,
+# `[wide]`, `[stream_to_table]`, `[cancellation]`) into the same binary makes
+# `tests.exe` filter passes (e.g. `~[.]`) hang in process-global state long
+# enough to look like a deadlock. Splitting them out also lets the benchmark
+# binary opt out of `catch_discover_tests` so CTest never schedules them.
+add_executable(
+    benchmarks
+    "src/benchmark_json.cpp"
+    "src/common.cpp"
+)
+
+target_include_directories(benchmarks PRIVATE include)
+target_link_libraries(benchmarks PRIVATE loglib Catch2::Catch2WithMain project_warnings TBB::tbb)
+
+if(WIN32)
+    add_custom_command(
+        TARGET benchmarks
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb> $<TARGET_FILE_DIR:benchmarks>
+        COMMENT "Copying TBB runtime DLL next to benchmarks.exe"
+        VERBATIM
+    )
+endif()

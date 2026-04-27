@@ -157,19 +157,50 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 
 void InitializeTimezoneData()
 {
+    // Walk up the ancestor chain of the current working directory looking
+    // for a sibling `tzdata/` folder. The expected invocation patterns are
+    // `ctest --preset local` (which runs each test from the build's working
+    // directory) or running the binary directly from a directory whose
+    // ancestor chain contains the staged `tzdata/` (`cmake/FetchDependencies
+    // .cmake` puts one at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata`, i.e.
+    // next to the .exe).
+    //
+    // Two stop conditions are required to keep the walk bounded:
+    //   - `parent.empty()` covers POSIX where the parent of "/" is "".
+    //   - `parent == path` covers Windows where
+    //     `std::filesystem::path("C:\\").parent_path()` returns `C:\\`
+    //     itself; the original loop relied on `REQUIRE(!path.empty())` and
+    //     never terminated when no `tzdata` ancestor existed, manifesting
+    //     as a hard hang of `tests.exe` whenever it was invoked from a CWD
+    //     outside the build tree (e.g. `build/local/bin/Release/tests.exe`
+    //     run from the repo root).
     static const auto TZ_DATA = std::filesystem::path("tzdata");
     std::filesystem::path path = std::filesystem::current_path();
     while (true)
     {
         const auto tzdataPath = path / TZ_DATA;
-        if (std::filesystem::exists(tzdataPath))
+        std::error_code ec;
+        if (std::filesystem::exists(tzdataPath, ec))
         {
             loglib::Initialize(tzdataPath);
+            return;
+        }
+        const auto parent = path.parent_path();
+        if (parent.empty() || parent == path)
+        {
             break;
         }
-        path = path.parent_path();
-        REQUIRE(!path.empty());
+        path = parent;
     }
+
+    FAIL(
+        "InitializeTimezoneData(): no `tzdata` directory found along the "
+        "ancestor chain of the current working directory ("
+        << std::filesystem::current_path().string()
+        << "). Run the binary via `ctest --preset local` or invoke it from a "
+           "directory whose ancestor chain contains the staged `tzdata/` "
+           "(typically `build/<preset>/bin/<config>/`)."
+    );
 }
 
 TestJsonLogFile::Line::Line(const char *line)

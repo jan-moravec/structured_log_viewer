@@ -14,8 +14,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <numeric>
 #include <random>
 #include <stop_token>
 #include <string>
@@ -45,6 +47,57 @@ void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_
     WARN(
         label << ": " << mbps << " MB/s, " << linesPerSec << " lines/s (" << bytes << " bytes / " << lines
               << " lines / " << seconds << "s)"
+    );
+}
+
+// PRD §7.4 / G4 — manual replacement for Catch2's `BENCHMARK_ADVANCED` on the
+// long-running parse fixtures. `BENCHMARK_ADVANCED` runs an iteration-
+// estimation pass (calling the lambda 1, 2, 4, … times until elapsed ≥ a
+// threshold) and a 100-resample bootstrap analysis on top of the user-
+// requested samples. For a 1-second-per-call benchmark like `[large]` /
+// `[wide]` / `[stream_to_table]` that adds 3-5× to total wall-time per run
+// and made `[stream_to_table]` time out at 30 minutes during PRD task 1.0
+// baseline capture. This helper just runs the lambda `samples` times,
+// timings each via `steady_clock`, and emits a one-line WARN with mean /
+// low / high / stddev so the per-commit numbers stay copy-pasteable into
+// PR descriptions.
+//
+// The number of samples is intentionally small (5 by default — same as
+// what the `--benchmark-samples 5` flag selected for these fixtures during
+// task 1.0). Increase via the `samples` argument at call sites that need
+// tighter confidence intervals; on a 1-s benchmark a 5-sample run already
+// surfaces single-digit-percent regressions reliably (G4's ±3 % gate).
+template <typename Fn>
+void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
+{
+    REQUIRE(samples > 0);
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(samples);
+    for (std::size_t i = 0; i < samples; ++i)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        fn();
+        elapsed.push_back(std::chrono::steady_clock::now() - start);
+    }
+
+    const auto sum = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero());
+    const auto mean = sum / static_cast<long long>(samples);
+    const auto low = *std::min_element(elapsed.begin(), elapsed.end());
+    const auto high = *std::max_element(elapsed.begin(), elapsed.end());
+
+    double meanNs = static_cast<double>(mean.count());
+    double sqAccum = 0.0;
+    for (const auto &e : elapsed)
+    {
+        const double d = static_cast<double>(e.count()) - meanNs;
+        sqAccum += d * d;
+    }
+    const double stddevNs = std::sqrt(sqAccum / static_cast<double>(samples));
+
+    using ms = std::chrono::duration<double, std::milli>;
+    WARN(
+        label << " (samples=" << samples << "): mean=" << ms(mean).count() << " ms, low=" << ms(low).count()
+              << " ms, high=" << ms(high).count() << " ms, stddev=" << (stddevNs / 1'000'000.0) << " ms"
     );
 }
 
@@ -313,22 +366,28 @@ std::vector<TestJsonLogFile::Line> GenerateWideJsonLogs(size_t count, size_t col
 
 TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
 {
-    BENCHMARK_ADVANCED("Parse 10'000 JSON log entries")(Catch::Benchmark::Chronometer meter)
-    {
-        // 1.7 MB per 10'000 lines of data
-        auto logs = GenerateRandomJsonLogs(10'000);
-        const TestJsonLogFile testFile(logs);
-        const JsonParser parser;
+    // 1.7 MB per 10'000 lines of data
+    auto logs = GenerateRandomJsonLogs(10'000);
+    const TestJsonLogFile testFile(logs);
+    const JsonParser parser;
+    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-        meter.measure([&]() {
-            LogTable table;
-            ParseResult result = parser.Parse(testFile.GetFilePath());
-            REQUIRE(result.data.Lines().size() == testFile.Lines().size());
-            REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
-            return table;
-        });
-    };
+    {
+        const auto start = std::chrono::steady_clock::now();
+        ParseResult warmup = parser.Parse(testFile.GetFilePath());
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        REQUIRE(warmup.data.Lines().size() == logs.size());
+        REQUIRE(warmup.errors.empty());
+        ReportThroughput("Parse 10'000 warm-up", elapsed, bytes, logs.size());
+    }
+
+    RunTimedSamples("Parse 10'000 JSON log entries", 5, [&]() {
+        LogTable table;
+        ParseResult result = parser.Parse(testFile.GetFilePath());
+        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+        REQUIRE(result.errors.empty());
+        table.Update(std::move(result.data));
+    });
 }
 
 TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser][single_thread]")
@@ -336,24 +395,30 @@ TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser
     // Forces the streaming pipeline down to one Stage B worker so we can compare against the
     // default-parallelism benchmark and quantify oneTBB's speedup (PRD req. 4.5.34). Same fixture
     // size as the default benchmark to keep the numbers directly comparable.
-    BENCHMARK_ADVANCED("Parse 10'000 JSON log entries (single thread)")(Catch::Benchmark::Chronometer meter)
+    auto logs = GenerateRandomJsonLogs(10'000);
+    const TestJsonLogFile testFile(logs);
+    const JsonParser parser;
+    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+
+    JsonParserOptions opts;
+    opts.threads = 1;
+
     {
-        auto logs = GenerateRandomJsonLogs(10'000);
-        const TestJsonLogFile testFile(logs);
-        const JsonParser parser;
+        const auto start = std::chrono::steady_clock::now();
+        ParseResult warmup = parser.Parse(testFile.GetFilePath(), opts);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        REQUIRE(warmup.data.Lines().size() == logs.size());
+        REQUIRE(warmup.errors.empty());
+        ReportThroughput("Parse 10'000 (1 thread) warm-up", elapsed, bytes, logs.size());
+    }
 
-        JsonParserOptions opts;
-        opts.threads = 1;
-
-        meter.measure([&]() {
-            LogTable table;
-            ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
-            REQUIRE(result.data.Lines().size() == testFile.Lines().size());
-            REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
-            return table;
-        });
-    };
+    RunTimedSamples("Parse 10'000 JSON log entries (single thread)", 5, [&]() {
+        LogTable table;
+        ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+        REQUIRE(result.errors.empty());
+        table.Update(std::move(result.data));
+    });
 }
 
 namespace
@@ -422,9 +487,10 @@ TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_pars
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     // PRD task 6.6 — capture wall-clock for one untimed warm-up run so the
-    // throughput numbers (MB/s, lines/s) end up in the test log even when the
-    // BENCHMARK_ADVANCED summary only reports nanoseconds. Catch2's
-    // Chronometer has no public elapsed() accessor, so we time it ourselves.
+    // throughput numbers (MB/s, lines/s) end up in the test log alongside
+    // the per-stage breakdown emitted by `ReportStageTimings`. The timed-
+    // sample loop below (`RunTimedSamples`) only emits ns/sample, so the
+    // MB/s + per-stage numbers come from this warm-up.
     {
         StageTimings timings;
         JsonParserOptions warmupOpts;
@@ -439,17 +505,13 @@ TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_pars
         ReportStageTimings("Parse 1'000'000 warm-up", timings);
     }
 
-    BENCHMARK_ADVANCED("Parse 1'000'000 JSON log entries")(Catch::Benchmark::Chronometer meter)
-    {
-        meter.measure([&]() {
-            LogTable table;
-            ParseResult result = parser.Parse(testFile.GetFilePath());
-            REQUIRE(result.data.Lines().size() == logs.size());
-            REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
-            return table;
-        });
-    };
+    RunTimedSamples("Parse 1'000'000 JSON log entries", 5, [&]() {
+        LogTable table;
+        ParseResult result = parser.Parse(testFile.GetFilePath());
+        REQUIRE(result.data.Lines().size() == logs.size());
+        REQUIRE(result.errors.empty());
+        table.Update(std::move(result.data));
+    });
 }
 
 // PRD §4.7.4 / parser-perf task 8.9 — wide-row benchmark (1'000'000 lines,
@@ -513,17 +575,13 @@ TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][jso
         );
     }
 
-    BENCHMARK_ADVANCED("Parse 1'000'000 wide JSON log entries")(Catch::Benchmark::Chronometer meter)
-    {
-        meter.measure([&]() {
-            LogTable table;
-            ParseResult result = parser.Parse(testFile.GetFilePath());
-            REQUIRE(result.data.Lines().size() == logs.size());
-            REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
-            return table;
-        });
-    };
+    RunTimedSamples("Parse 1'000'000 wide JSON log entries", 5, [&]() {
+        LogTable table;
+        ParseResult result = parser.Parse(testFile.GetFilePath());
+        REQUIRE(result.data.Lines().size() == logs.size());
+        REQUIRE(result.errors.empty());
+        table.Update(std::move(result.data));
+    });
 }
 
 // PRD task 6.2 — `useThreadLocalKeyCache=false` variant. Lets us bisect how
@@ -533,25 +591,30 @@ TEST_CASE(
     "Parse and load JSON log (no thread-local key cache)", "[.][benchmark][json_parser][no_thread_local_cache]"
 )
 {
-    BENCHMARK_ADVANCED("Parse 10'000 JSON log entries (no thread-local key cache)"
-    )(Catch::Benchmark::Chronometer meter)
+    auto logs = GenerateRandomJsonLogs(10'000);
+    const TestJsonLogFile testFile(logs);
+    const JsonParser parser;
+    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+
+    JsonParserOptions opts;
+    opts.useThreadLocalKeyCache = false;
+
     {
-        auto logs = GenerateRandomJsonLogs(10'000);
-        const TestJsonLogFile testFile(logs);
-        const JsonParser parser;
+        const auto start = std::chrono::steady_clock::now();
+        ParseResult warmup = parser.Parse(testFile.GetFilePath(), opts);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        REQUIRE(warmup.data.Lines().size() == logs.size());
+        REQUIRE(warmup.errors.empty());
+        ReportThroughput("Parse 10'000 (no thread-local key cache) warm-up", elapsed, bytes, logs.size());
+    }
 
-        JsonParserOptions opts;
-        opts.useThreadLocalKeyCache = false;
-
-        meter.measure([&]() {
-            LogTable table;
-            ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
-            REQUIRE(result.data.Lines().size() == testFile.Lines().size());
-            REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
-            return table;
-        });
-    };
+    RunTimedSamples("Parse 10'000 JSON log entries (no thread-local key cache)", 5, [&]() {
+        LogTable table;
+        ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+        REQUIRE(result.errors.empty());
+        table.Update(std::move(result.data));
+    });
 }
 
 // PRD task 6.3 — `useParseCache=false` variant. Disables the per-worker
@@ -559,24 +622,30 @@ TEST_CASE(
 // per-field `value.type()` round-trip (PRD req. 4.1.15).
 TEST_CASE("Parse and load JSON log (no parse cache)", "[.][benchmark][json_parser][no_parse_cache]")
 {
-    BENCHMARK_ADVANCED("Parse 10'000 JSON log entries (no parse cache)")(Catch::Benchmark::Chronometer meter)
+    auto logs = GenerateRandomJsonLogs(10'000);
+    const TestJsonLogFile testFile(logs);
+    const JsonParser parser;
+    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+
+    JsonParserOptions opts;
+    opts.useParseCache = false;
+
     {
-        auto logs = GenerateRandomJsonLogs(10'000);
-        const TestJsonLogFile testFile(logs);
-        const JsonParser parser;
+        const auto start = std::chrono::steady_clock::now();
+        ParseResult warmup = parser.Parse(testFile.GetFilePath(), opts);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        REQUIRE(warmup.data.Lines().size() == logs.size());
+        REQUIRE(warmup.errors.empty());
+        ReportThroughput("Parse 10'000 (no parse cache) warm-up", elapsed, bytes, logs.size());
+    }
 
-        JsonParserOptions opts;
-        opts.useParseCache = false;
-
-        meter.measure([&]() {
-            LogTable table;
-            ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
-            REQUIRE(result.data.Lines().size() == testFile.Lines().size());
-            REQUIRE(result.errors.empty());
-            table.Update(std::move(result.data));
-            return table;
-        });
-    };
+    RunTimedSamples("Parse 10'000 JSON log entries (no parse cache)", 5, [&]() {
+        LogTable table;
+        ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+        REQUIRE(result.errors.empty());
+        table.Update(std::move(result.data));
+    });
 }
 
 // PRD task 6.5 — `LogLine::GetValue` micro-benchmark. Walks every field of
@@ -607,8 +676,13 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         keyIds[i] = id;
     }
 
-    BENCHMARK("LogLine::GetValue(string) — slow path")
-    {
+    // Use `volatile` to force the optimiser to keep the lookup in the loop
+    // body rather than fold the whole walk away (the previous Catch2
+    // `BENCHMARK` macro had a built-in `Catch::Benchmark::keep_memory()` /
+    // result-return guard; `RunTimedSamples` does not, so we need our own).
+    volatile size_t hitsSink = 0;
+
+    RunTimedSamples("LogLine::GetValue(string) — slow path", 11, [&]() {
         size_t hits = 0;
         for (const LogLine &line : lines)
         {
@@ -620,11 +694,10 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
                 }
             }
         }
-        return hits;
-    };
+        hitsSink = hits;
+    });
 
-    BENCHMARK("LogLine::GetValue(KeyId) — fast path")
-    {
+    RunTimedSamples("LogLine::GetValue(KeyId) — fast path", 11, [&]() {
         size_t hits = 0;
         for (const LogLine &line : lines)
         {
@@ -636,8 +709,10 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
                 }
             }
         }
-        return hits;
-    };
+        hitsSink = hits;
+    });
+
+    (void)hitsSink;
 }
 
 // PRD tasks 6.4 + 6.8 — structural allocation / fast-path fraction report.
@@ -829,27 +904,23 @@ TEST_CASE(
         );
     }
 
-    BENCHMARK_ADVANCED("Stream 1'000'000 JSON log entries to LogTable")(Catch::Benchmark::Chronometer meter)
-    {
-        meter.measure([&]() {
-            LogConfigurationManager configManager;
-            configManager.Load(configFile.GetFilePath());
-            LogTable table(LogData{}, std::move(configManager));
-            auto fileForTable = std::make_unique<LogFile>(testFile.GetFilePath());
-            table.BeginStreaming(std::move(fileForTable));
+    RunTimedSamples("Stream 1'000'000 JSON log entries to LogTable", 5, [&]() {
+        LogConfigurationManager configManager;
+        configManager.Load(configFile.GetFilePath());
+        LogTable table(LogData{}, std::move(configManager));
+        auto fileForTable = std::make_unique<LogFile>(testFile.GetFilePath());
+        table.BeginStreaming(std::move(fileForTable));
 
-            StreamSink sink;
-            sink.table = &table;
+        StreamSink sink;
+        sink.table = &table;
 
-            JsonParserOptions opts;
-            opts.configuration = configuration;
+        JsonParserOptions opts;
+        opts.configuration = configuration;
 
-            LogFile parseFile(testFile.GetFilePath());
-            parser.ParseStreaming(parseFile, sink, opts);
-            REQUIRE(table.RowCount() == logs.size());
-            return table.RowCount();
-        });
-    };
+        LogFile parseFile(testFile.GetFilePath());
+        parser.ParseStreaming(parseFile, sink, opts);
+        REQUIRE(table.RowCount() == logs.size());
+    });
 }
 
 // PRD task 6.7 — cancellation-latency benchmark. Drives `ParseStreaming`
@@ -858,10 +929,12 @@ TEST_CASE(
 // `OnFinished(cancelled=true)` to validate the PRD-imposed
 // `ntokens × batchSizeBytes` upper bound (PRD req. 4.2.22a/b).
 //
-// Note: BENCHMARK_ADVANCED times the full lambda which includes Stage A's
-// startup before the first batch arrives, so it cannot be used to isolate
-// the latency itself. We instead repeat the parse N times manually and
-// summarise the latency distribution via INFO so it shows up in the test log.
+// Note: a Catch2 BENCHMARK lambda would time the full ParseStreaming call
+// (Stage A startup + cancellation propagation + drain), so it cannot
+// isolate the latency itself. We repeat the parse N times manually and
+// summarise the latency distribution via INFO so it shows up in the test
+// log. (Same rationale as the manual `RunTimedSamples` helper used above
+// for `[large]` / `[wide]` / `[stream_to_table]`.)
 TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
     auto logs = GenerateRandomJsonLogs(1'000'000);
