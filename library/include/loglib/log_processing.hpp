@@ -220,55 +220,6 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::vector<LogLine> &lines);
 
 /**
- * @brief Promotes one log line's timestamp string to a `TimeStamp` using the
- *        provided pre-resolved (KeyId, format) matrix.
- *
- * Public, header-exposed overload of the per-line back-fill body that the
- * streaming pipeline's Stage B uses to promote `Type::time` column values
- * inline (PRD req. 4.2.21 / §4.2a / parser-perf task 3.0). Caller pre-resolves
- * the column's `keys -> KeyIds` once at pipeline start (or once at
- * BackfillTimestampColumn entry) so this function does no string-keyed
- * lookups; the per-line work is `LogLine::GetValue(KeyId)` (linear scan over
- * the small sorted pair vector) plus a `date::parse` call.
- *
- * Walks the matrix in `keyIds × parseFormats` order, with the
- * `lastValid`-cached pair tried first. On a match, the line's value at the
- * matching KeyId is replaced with the parsed `TimeStamp` and `lastValid` is
- * updated. On no match, the line is left untouched (caller may subsequently
- * call again with a wider matrix or report the failure).
- *
- * Failure-mode contract (PRD §4.2a.5): when no (keyId, format) pair matches,
- * the function silently returns `false` and does not touch the line. The
- * legacy whole-data `BackfillTimestampColumn` wraps this and surfaces a
- * human-readable error per failure; the streaming Stage B does *not* — it
- * leaves the value as a string so `LogTable::AppendBatch`'s mid-stream
- * back-fill loop can take a second pass on it (matches the existing GUI-side
- * silent-discard semantics in `log_table.cpp` step 4).
- *
- * @param line          Log line to promote in place.
- * @param keyIds        Resolved KeyIds for this column's `keys` list. Entries
- *                      equal to `kInvalidKeyId` are silently skipped; the
- *                      caller does not need to filter them out.
- * @param parseFormats  Format strings to feed `date::parse`. Order matches
- *                      `LogConfiguration::Column::parseFormats` so the first
- *                      format that parses wins.
- * @param lastValid     In/out cache of the last (keyId, format) pair that
- *                      successfully promoted a line. Reset by the caller at
- *                      the start of a column walk. The function tries this
- *                      pair first; on success it stays put, on failure the
- *                      function falls back to the full matrix and updates the
- *                      cache to whichever pair won (if any).
- * @return `true` iff a (keyId, format) pair matched and the line's value at
- *         that KeyId was promoted to `TimeStamp`.
- */
-bool ParseTimestampLine(
-    LogLine &line,
-    std::span<const KeyId> keyIds,
-    std::span<const std::string> parseFormats,
-    std::optional<LastValidTimestampParse> &lastValid
-);
-
-/**
  * @brief Converts a TimeStamp object to local time in milliseconds since epoch.
  *
  * @param timeStamp The TimeStamp object to convert.

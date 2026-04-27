@@ -277,6 +277,16 @@ bool TryParseTimestamp(
     }
 }
 
+namespace
+{
+
+/// Per-line back-fill body shared by `BackfillTimestampColumn`. Walks a single
+/// `(keyIds × parseFormats)` matrix against @p line, trying the pair cached in
+/// @p lastValid first; on a match, promotes the line's value to `TimeStamp` and
+/// updates the cache. Returns false (and leaves the line untouched) when no pair
+/// matches. The streaming pipeline does not go through this — the harness uses
+/// `loglib::detail::PromoteLineTimestamps` directly with pre-resolved
+/// `TimeColumnSpec`s.
 bool ParseTimestampLine(
     LogLine &line,
     std::span<const KeyId> keyIds,
@@ -286,9 +296,6 @@ bool ParseTimestampLine(
 {
     TimestampParseScratch &scratch = ThreadScratch();
 
-    // Fast path: try the (keyId, format) pair that worked on the previous line first.
-    // For files that use a single timestamp format throughout, this collapses the per-line
-    // work to one date::parse + one LogLine::GetValue.
     if (lastValid.has_value())
     {
         if (TryParseTimestampOnce(line, lastValid->keyId, lastValid->format, lastValid->kind, scratch))
@@ -297,8 +304,6 @@ bool ParseTimestampLine(
         }
     }
 
-    // Slow path: walk the full matrix. Updates `lastValid` to the winning pair so
-    // subsequent calls take the fast path.
     for (const KeyId keyId : keyIds)
     {
         if (keyId == kInvalidKeyId)
@@ -318,6 +323,8 @@ bool ParseTimestampLine(
 
     return false;
 }
+
+} // namespace
 
 const date::time_zone *CurrentZone()
 {
