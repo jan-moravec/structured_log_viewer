@@ -959,9 +959,11 @@ TEST_CASE(
     constexpr size_t kEmptyLineCount = 100;
 
     // Layout: 5 valid lines, 100 blank lines, 5 valid lines. Absolute line numbers
-    // observed by the consumer must be {1..5, 106..110}; total file line count
-    // (LogFile::GetLineCount, which counts every consumed source line including the
-    // blanks) must be 110.
+    // observed by the consumer are 0-based indices into `LogFile::mLineOffsets`
+    // (so `LogFileReference::GetLine()` round-trips the source bytes); after this
+    // fixture they must be {0..4, 105..109}. Total file line count
+    // (`LogFile::GetLineCount`, which counts every consumed source line including
+    // the blanks) must be 110.
     std::vector<std::string> raw;
     raw.reserve(5 + kEmptyLineCount + 5);
     for (size_t i = 0; i < 5; ++i)
@@ -992,12 +994,26 @@ TEST_CASE(
     REQUIRE(result.data.Lines().size() == 10);
     REQUIRE(result.data.Files().size() == 1);
 
-    // Absolute line numbers: 1..5 then 106..110.
-    const std::vector<size_t> expected = {1, 2, 3, 4, 5, 106, 107, 108, 109, 110};
+    // Absolute (0-based) line numbers: 0..4 then 105..109.
+    const std::vector<size_t> expected = {0, 1, 2, 3, 4, 105, 106, 107, 108, 109};
     for (size_t i = 0; i < result.data.Lines().size(); ++i)
     {
         INFO("i=" << i);
         CHECK(result.data.Lines()[i].FileReference().GetLineNumber() == expected[i]);
+    }
+
+    // GetLine() must round-trip the source bytes for both the pre-empty-run and
+    // post-empty-run regions. This is the contract that motivated the 0-based
+    // shift above: prior versions stamped 1-based numbers, so calling GetLine()
+    // on the last line threw `out_of_range` and earlier lines returned the next
+    // physical line's bytes.
+    for (size_t i = 0; i < result.data.Lines().size(); ++i)
+    {
+        INFO("i=" << i);
+        const auto &lineRef = result.data.Lines()[i].FileReference();
+        const std::string expectedContent =
+            std::string(R"({"key":"value-)") + std::to_string(i + 1) + R"("})";
+        CHECK(lineRef.GetLine() == expectedContent);
     }
 
     // The LogFile-side offset table should record one entry per consumed line including

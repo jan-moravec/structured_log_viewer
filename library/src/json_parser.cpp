@@ -542,7 +542,12 @@ void DecodeJsonBatch(
 
             LogFileReference fileRef(logFile, 0);
             LogLine logLine(std::move(values), keys, std::move(fileRef));
-            logLine.FileReference().SetLineNumber(relativeLineNumber);
+            // Stamp the 0-based offset of this line within the batch so that
+            // `LogFile::GetLine(GetLineNumber())` indexes the correct row in
+            // `mLineOffsets` after Stage C shifts by the running cursor.
+            // `relativeLineNumber` itself stays 1-based for the human-facing
+            // error messages above.
+            logLine.FileReference().SetLineNumber(relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 

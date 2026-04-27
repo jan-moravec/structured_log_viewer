@@ -177,7 +177,11 @@ public:
 
                 LogFileReference fileRef(*filePtr, 0);
                 LogLine logLine(std::move(values), keys, std::move(fileRef));
-                logLine.FileReference().SetLineNumber(relativeLineNumber);
+                // 0-based offset within the batch so that, after Stage C
+                // shifts by the running cursor, `LogFileReference::GetLine`
+                // (which calls `LogFile::GetLine(N)` with `N` 0-based) can
+                // round-trip the source bytes for the line.
+                logLine.FileReference().SetLineNumber(relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));
                 worker.PromoteTimestamps(parsed.lines.back(), timeColumns);
 
