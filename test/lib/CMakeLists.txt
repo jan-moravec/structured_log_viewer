@@ -13,9 +13,10 @@ add_executable(
     "src/test_log_line.cpp"
     "src/test_log_processing.cpp"
     "src/test_log_table.cpp"
+    "src/test_parser_pipeline.cpp"
 )
 
-target_include_directories(tests PRIVATE include)
+target_include_directories(tests PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/../../library/src)
 
 # Link libraries. TBB is linked directly so the concurrent KeyIndex test can call
 # tbb::parallel_for; loglib itself keeps TBB PRIVATE because no public loglib

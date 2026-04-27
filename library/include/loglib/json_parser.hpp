@@ -288,42 +288,20 @@ public:
      */
     std::string ToString(const LogMap &values) const;
 
-private:
-    /**
-     * @brief Per-key type cache keyed by `KeyId`.
-     *
-     * Reshaped from the original `tsl::robin_map<std::string, ...>` so the hot
-     * path indexes into a contiguous vector by KeyId rather than hashing the
-     * key string per field. Lazily resized to `keyId + 1` (not
-     * `KeyIndex::Size()`) to avoid a benign race with concurrent inserts in the
-     * canonical KeyIndex once Stage B becomes parallel (PRD §4.1.15 / task 3.4).
-     *
-     * The bool "have-info" sentinel is kept as a plain `std::vector<bool>` for
-     * simplicity; the parser is single-threaded for now and the per-worker
-     * variant lands in task 4.0.
-     */
+    /// Per-key type cache keyed by `KeyId`. Carried inside the streaming pipeline's
+    /// per-worker scratch so the simdjson `value.type()` / `get_number_type()` calls
+    /// fire only on the first occurrence of each key. Public for the duration of the
+    /// parser-simplification refactor; task 2.7 will move it out of this header.
+public:
     struct ParseCache
     {
         std::vector<simdjson::ondemand::json_type> keyTypes;
         std::vector<simdjson::ondemand::number_type> numberTypes;
         std::vector<bool> hasKeyType;
         std::vector<bool> hasNumberType;
-
-        void EnsureCapacity(KeyId id)
-        {
-            const size_t needed = static_cast<size_t>(id) + 1;
-            if (keyTypes.size() < needed)
-            {
-                keyTypes.resize(needed, simdjson::ondemand::json_type::null);
-                hasKeyType.resize(needed, false);
-            }
-            if (numberTypes.size() < needed)
-            {
-                numberTypes.resize(needed, simdjson::ondemand::number_type::signed_integer);
-                hasNumberType.resize(needed, false);
-            }
-        }
     };
+
+private:
 
     /**
      * @brief Parses one JSON object into a sorted-by-`KeyId` vector of
