@@ -155,12 +155,12 @@ private slots:
         QVERIFY(!window->windowIcon().isNull());
     }
 
-    // PRD req. S7 / task 5.23 — drive the same fixture through both the legacy
-    // synchronous JsonParser::Parse path (LogModel::AddData) and the streaming
-    // pipeline (LogModel::BeginStreaming + ParseStreaming + EndStreaming) and
-    // assert byte-equivalent display output. Pinned to threads=1 so the order
-    // in which Stage B workers race on KeyIndex::GetOrInsert cannot perturb
-    // the streaming-side AppendKeys insertion order — that would make the
+    // Drive the same fixture through both the synchronous `LogParser::Parse`
+    // path (`LogModel::AddData`) and the streaming pipeline
+    // (`LogModel::BeginStreaming` + `ParseStreaming` + `EndStreaming`) and
+    // assert byte-equivalent display output. Pinned to `threads=1` so the
+    // order in which workers race on `KeyIndex::GetOrInsert` can't perturb
+    // the streaming-side `AppendKeys` insertion order — that would make the
     // legacy (sorted) vs. streaming (insertion) column ordering diverge for
     // reasons unrelated to per-cell parsing parity.
     void testStreamingParityVsLegacy()

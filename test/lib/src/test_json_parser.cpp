@@ -232,9 +232,9 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("String")
     {
-        // Unescaped string values are emitted as std::string_view into the mmap (PRD req.
-        // 4.1.6/4.1.15a); use AsStringView so the test is agnostic to which alternative the
-        // parser picks per the fast/slow path heuristic.
+        // Unescaped string values are emitted as `std::string_view` into the mmap;
+        // use `AsStringView` so the test is agnostic to which alternative the parser
+        // picks per the fast/slow path heuristic.
         TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": "value"})"));
         auto result = parser.Parse(testFile.GetFilePath());
         CHECK(result.errors.empty());
@@ -541,11 +541,11 @@ TEST_CASE("Convert all possible values to string", "[json_parser]")
 
 TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
 {
-    // Drives the same fixture through the streaming pipeline twice — once with one Stage B
-    // worker and once with `hardware_concurrency` workers — and asserts byte-equivalent output
-    // (PRD req. 4.1.16, S7). Specifically: same line count, same SortedKeys set, and per-cell
-    // value equivalence under `LogValueEquivalent` (which folds string/string_view distinctions
-    // into a single string-bytes comparison).
+    // Drives the same fixture through the streaming pipeline twice — once with
+    // a single worker and once with `hardware_concurrency` workers — and
+    // asserts byte-equivalent output: same line count, same `SortedKeys` set,
+    // and per-cell value equivalence under `LogValueEquivalent` (which folds
+    // `string` / `string_view` distinctions into one bytes comparison).
     using namespace loglib;
 
     JsonParser parser;
@@ -615,15 +615,17 @@ TEST_CASE(
     "[json_parser][per_worker_cache]"
 )
 {
-    // PRD §4.1 / req. 4.1.8a: with `useThreadLocalKeyCache = true`, a 100-line stream that uses
-    // only 5 fixed keys must leave `KeyIndex::LoadGetOrInsertCount() <= effectiveThreads × 5`.
-    // The canonical lookup fires exactly once per (worker × key) pair on first sight, then every
-    // subsequent field key for that worker hits the per-worker `tsl::robin_map` cache instead.
+    // With `useThreadLocalKeyCache = true`, a 100-line stream that uses only
+    // 5 fixed keys must leave `KeyIndex::LoadGetOrInsertCount() <=
+    // effectiveThreads × 5`: the canonical lookup fires exactly once per
+    // (worker × key) pair on first sight, then every subsequent field key
+    // for that worker hits the per-worker `tsl::robin_map` cache instead.
     //
-    // The complementary check (cache off → call count rises toward `lines × keys` = 500) keeps
-    // the instrumentation honest: if the macro silently no-ops or the counter never increments,
-    // both halves of the test would pass trivially. Pinning a hard floor on the cache-off run
-    // (≥ 100) catches that failure mode.
+    // The complementary check (cache off → call count rises toward `lines ×
+    // keys` = 500) keeps the instrumentation honest: if the macro silently
+    // no-ops or the counter never increments, both halves of the test
+    // would pass trivially. A hard floor of 100 on the cache-off run
+    // catches that failure mode.
     using namespace loglib;
 
     constexpr size_t kLineCount = 100;
@@ -751,14 +753,14 @@ using TestPerWorkerKeyCache = tsl::robin_map<std::string, loglib::KeyId, TestTra
 
 TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_cache][move]")
 {
-    // PRD §7.5 risk row 1: `tbb::enumerable_thread_specific<WorkerState>` may move-construct
-    // worker slots when its per-thread table grows. If `PerWorkerKeyCache`'s move constructor
-    // ever drops cached entries (e.g. someone replaces the underlying type with a non-move-
-    // preserving container), every Stage B worker would silently regress to an unbounded number
-    // of canonical `KeyIndex::GetOrInsert` calls — which the cache-hit test above would flag,
-    // but only after a full pipeline run. This test pins the contract directly on the cache
-    // type used inside `WorkerState` so a future container swap fails fast at the unit-test
-    // tier rather than at the benchmark tier.
+    // `tbb::enumerable_thread_specific<WorkerState>` may move-construct worker
+    // slots when its per-thread table grows. If `PerWorkerKeyCache`'s move
+    // constructor ever drops cached entries (e.g. someone replaces the
+    // underlying container with a non-move-preserving one), every worker
+    // silently regresses to unbounded canonical `KeyIndex::GetOrInsert`
+    // calls. The cache-hit test above would catch that — but only after a
+    // full pipeline run. This test pins the contract directly on the cache
+    // type so a future container swap fails fast at the unit-test tier.
     using namespace loglib;
 
     TestPerWorkerKeyCache source;
@@ -820,12 +822,12 @@ TEST_CASE(
     "[json_parser][stage_b_timestamps]"
 )
 {
-    // PRD §4.2a / parser-perf task 3.7: when `ParserOptions::configuration` describes a
-    // `Type::time` column, every parsed line whose value at the column's key is a parseable
-    // ISO-8601 string must come out of `JsonParser::Parse` already promoted to `TimeStamp`.
-    // The legacy whole-data `ParseTimestamps` pass is therefore redundant for these snapshot
-    // keys, which is what backs the truthful `LogData::MarkTimestampsParsed()` flag set by
-    // `LogTable::BeginStreaming` (see `log_table.cpp` step 1 / req. 4.2a.3).
+    // When `ParserOptions::configuration` describes a `Type::time` column,
+    // every parsed line whose value at the column's key is a parseable
+    // ISO-8601 string must come out of `JsonParser::Parse` already promoted
+    // to `TimeStamp`. The legacy whole-data `ParseTimestamps` pass is thus
+    // redundant for these snapshot keys, which backs the truthful
+    // `LogData::MarkTimestampsParsed()` flag set by `BeginStreaming`.
     using namespace loglib;
 
     InitializeTimezoneData();
@@ -849,10 +851,11 @@ TEST_CASE(
     }
     const TestJsonLogFile testFile(lines);
 
-    // Configuration mirrors the production timestamp column shape: one key (`timestamp`),
-    // one parse format (`%FT%T`). Stage B pre-resolves the key into a KeyId at pipeline
-    // start (PRD §4.2a / task 3.2) and the worker's `lastValidTimestamp` cache collapses
-    // the per-line work to one `date::parse` call after the first sighting.
+    // Configuration mirrors the production timestamp column shape: one key
+    // (`timestamp`) and one parse format (`%FT%T`). Stage B pre-resolves the
+    // key into a `KeyId` at pipeline start and the per-worker
+    // `lastValidTimestamp` cache collapses the per-line work to one
+    // `date::parse` call after the first sighting.
     auto configuration = std::make_shared<LogConfiguration>();
     LogConfiguration::Column timestampColumn;
     timestampColumn.header = "timestamp";
@@ -895,11 +898,12 @@ TEST_CASE(
     "[json_parser][stage_b_timestamps]"
 )
 {
-    // PRD §4.2a.5: promotion failures must never push into `parsed.errors` — they leave the
-    // value as the original string so `LogTable::AppendBatch::BackfillTimestampColumn` can
-    // take a second pass on it. This test pins that contract directly: a fixture with a
-    // mix of parseable and unparseable timestamp strings must come out with errors.empty()
-    // and the bad rows still carrying a string at the timestamp KeyId.
+    // Promotion failures must never push into `parsed.errors` — they leave
+    // the value as the original string so the back-fill pass can take a
+    // second crack at it. This test pins that contract: a fixture mixing
+    // parseable and unparseable timestamp strings must come out with
+    // `errors.empty()` and the bad rows still carrying a string at the
+    // timestamp KeyId.
     using namespace loglib;
 
     InitializeTimezoneData();
@@ -947,12 +951,11 @@ TEST_CASE(
     "[json_parser][empty_lines]"
 )
 {
-    // PRD §7.5 risk row 3 / parser-perf task 3.9: a contiguous run of empty lines in the
-    // middle of the stream must not desynchronise Stage A's line counter from Stage B's
-    // emitted absolute line numbers, and the per-line offset table must still allocate one
-    // slot per empty line (matching the legacy parser's "empty line consumes one line
-    // number" semantics — see `json_parser.cpp` empty-line handling at the
-    // `localLineOffsets.push_back` call).
+    // A contiguous run of mid-stream empty lines must not desynchronise the
+    // chunker's line counter from the decoder's emitted absolute line
+    // numbers, and the per-line offset table must still allocate one slot
+    // per empty line (an empty line consumes one line number — see
+    // `json_parser.cpp`'s empty-line handling).
     using namespace loglib;
 
     constexpr size_t kEmptyLineCount = 100;
@@ -1019,14 +1022,12 @@ TEST_CASE(
     "[json_parser][extract_field_key]"
 )
 {
-    // PRD §4.4 / parser-perf task 5.5 / §7.5 risk row 4: replacing the byte-loop in
-    // `ExtractFieldKey` with simdjson's length-aware `field.escaped_key()` (req. 4.4.1)
-    // must keep the fast/slow-path split intact (req. 4.4.3): keys with no backslash
-    // become a `string_view` directly into the input, keys with one or more backslash
-    // bytes fall back to `field.unescaped_key()` and an owned `std::string`. The four
-    // canonical key shapes below cover every observable code path through the new
-    // implementation. A regression in either the byte-loop replacement or the slow-path
-    // dispatch would surface here as a missing key in the canonical `KeyIndex`.
+    // `ExtractFieldKey` uses simdjson's length-aware `field.escaped_key()` and
+    // keeps the fast/slow-path split intact: keys with no backslash become a
+    // `string_view` directly into the input; keys with any backslash byte
+    // fall back to `field.unescaped_key()` and an owned `std::string`. The
+    // four canonical key shapes below cover every observable code path; a
+    // regression would surface as a missing key in the canonical `KeyIndex`.
     using namespace loglib;
 
     // Each line carries one peculiar key plus a stable value so the assertion can be
@@ -1068,17 +1069,15 @@ TEST_CASE(
     "[json_parser][padding_tail]"
 )
 {
-    // PRD §4.5 / parser-perf task 6.4: every short fixture's last line ends within
-    // `simdjson::SIMDJSON_PADDING` bytes of EOF, so Stage B's `!sourceIsStable` branch
-    // takes over and parses the line out of the per-worker `linePadded` scratch instead
-    // of the mmap directly. Task 6.0 replaced the `simdjson::pad(...)` call on this
-    // path with explicit `memcpy` + `memset` + length-aware `iterate`, plus a one-shot
-    // `worker.linePadded.resize(...)` sized to the largest line observed by the worker.
-    // The two failure modes this test exercises:
-    //   1. the resize-on-grow branch when later lines are longer than earlier ones,
-    //   2. the memcpy + memset + iterate body itself, which has to produce values
-    //      byte-identical to the mmap fast path even though the parser is now reading
-    //      from `linePadded` rather than the source bytes.
+    // Every short fixture's last line ends within `SIMDJSON_PADDING` bytes
+    // of EOF, so Stage B's `!sourceIsStable` branch takes over and parses
+    // the line out of the per-worker `linePadded` scratch instead of the
+    // mmap directly. The slow path uses explicit `memcpy` + `memset` +
+    // length-aware `iterate` plus a one-shot `linePadded.resize(...)`
+    // sized to the largest line observed by the worker. This test
+    // exercises (1) the resize-on-grow branch when later lines are longer
+    // than earlier ones, and (2) the memcpy + memset + iterate body
+    // itself, which must produce values byte-identical to the fast path.
     using namespace loglib;
 
     // Three lines whose payloads grow monotonically, so the slow-path resize fires
@@ -1118,11 +1117,12 @@ TEST_CASE(
     "[json_parser][duplicate_keys]"
 )
 {
-    // PRD §4.6 / parser-perf task 7.3: above ~8 fields per line `InsertSorted` switches
-    // from its narrow-row linear back-scan to `std::lower_bound`. The duplicate-key
-    // semantics must remain identical across the threshold: when the same key appears
-    // more than once in a single JSON line, the *last* occurrence wins (req. 4.6.4),
-    // matching the legacy `LogMap` insert behaviour the rest of the parser relies on.
+    // Above ~8 fields per line `InsertSorted` switches from its narrow-row
+    // linear back-scan to `std::lower_bound`. Duplicate-key semantics must
+    // remain identical across the threshold: when the same key appears
+    // more than once in a single JSON line, the *last* occurrence wins
+    // (matching the legacy `LogMap` insert behaviour the rest of the parser
+    // relies on).
     //
     // The narrow-row branch handled this by overwriting the equal-keyed slot it
     // discovered while back-scanning. The new lower_bound branch checks the result

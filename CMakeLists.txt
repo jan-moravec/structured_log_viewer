@@ -2,13 +2,13 @@ cmake_minimum_required(VERSION 3.28)
 
 project(structured_log_viewer VERSION 0.6.0 LANGUAGES CXX)
 
-# PRD hl-inspired §4.0 / task 1.0 — enable interprocedural optimisation (LTO/IPO)
-# for Release and RelWithDebInfo so the linker can inline across translation-unit
-# boundaries (notably simdjson value visitors, `tsl::robin_map` probing, and the
-# `LogValue` variant visitors). Debug intentionally stays off for fast iteration.
-# When `check_ipo_supported` reports a per-platform failure the `else` branch
-# leaves the build unchanged so CI jobs that lack a compatible toolchain still
-# succeed without IPO.
+# Enable interprocedural optimisation (LTO/IPO) for Release and RelWithDebInfo
+# so the linker can inline across translation-unit boundaries (notably simdjson
+# value visitors, `tsl::robin_map` probing, and the `LogValue` variant
+# visitors). Debug intentionally stays off for fast iteration. When
+# `check_ipo_supported` reports a per-platform failure the `else` branch leaves
+# the build unchanged so CI jobs that lack a compatible toolchain still succeed
+# without IPO.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT loglib_ipo_supported OUTPUT loglib_ipo_error LANGUAGES CXX)
 if(loglib_ipo_supported)

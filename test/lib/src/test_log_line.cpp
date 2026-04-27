@@ -144,12 +144,12 @@ TEST_CASE("Set and update values", "[log_line]")
     CHECK(std::find(resultKeys.begin(), resultKeys.end(), newKey) != resultKeys.end());
 }
 
-// PRD req. 4.1.6 / 4.1.16 — the AsStringView / HoldsString / ToOwnedLogValue
-// / LogValueEquivalent helpers are the public seam every consumer outside the
-// parser uses to read string-typed values without caring whether the parser
-// happened to land on the view or owned alternative. Pin the contract so the
-// downstream conditional in (e.g.) LogModel::data and JsonParser::ToString
-// keeps working as the parser shifts more values onto the fast path.
+// `AsStringView` / `HoldsString` / `ToOwnedLogValue` / `LogValueEquivalent`
+// are the public seam consumers use to read string-typed values without
+// caring whether the parser landed on the view or owned alternative. Pin
+// the contract so downstream code (e.g. `LogModel::data`,
+// `JsonParser::ToString`) keeps working as the parser shifts more values
+// onto the fast path.
 TEST_CASE("AsStringView returns bytes for both string alternatives, nullopt for non-strings", "[log_line][helpers]")
 {
     const std::string owned = "owned-bytes";
@@ -233,9 +233,9 @@ TEST_CASE("LogValueEquivalent treats string and string_view byte-equal as equiva
     CHECK_FALSE(LogValueEquivalent(LogValue{1.0}, LogValue{int64_t{1}}));
 }
 
-// PRD req. 4.1.16 — fast path (GetValue(KeyId) over a sorted-by-id flat
-// vector) and slow path (GetValue(string) routing through the back-pointer)
-// must observe the same value regardless of the alternative the parser chose.
+// Fast path (`GetValue(KeyId)` over the sorted-by-id flat vector) and slow
+// path (`GetValue(string)` routing through the back-pointer) must observe
+// the same value regardless of which alternative the parser chose.
 TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alternatives", "[log_line][helpers]")
 {
     TestLogFile testLogFile;

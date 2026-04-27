@@ -225,10 +225,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mPreferencesEditor->activateWindow();
     });
 
-    // Status-bar plumbing for the streaming progress label (PRD req. 4.3.29).
-    // The label is permanently a child of the status bar; visibility is toggled
-    // through the text content (empty -> hidden) so the layout doesn't reflow on
-    // every update tick.
+    // Status-bar plumbing for the streaming progress label. The label is a
+    // permanent child of the status bar; visibility is toggled by setting empty
+    // text so the layout doesn't reflow on every update tick.
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
@@ -394,12 +393,11 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         return;
     }
 
-    // Use the streaming path when the chosen parser is the JSON parser AND only
-    // one file was selected — the streaming pipeline is a per-file affair (the
-    // sink owns one parse generation at a time) so multi-file selection still
-    // routes through the legacy synchronous loop. The single-file streaming case
-    // is the dominant UX (open one big log, watch it stream in) and is the one
-    // the PRD targets (req. 4.3.29).
+    // Use the streaming path only when the chosen parser is JSON AND a single
+    // file was selected — the streaming pipeline is a per-file affair (the
+    // sink owns one parse generation at a time), so multi-file selection still
+    // goes through the synchronous loop. Single-file streaming is the dominant
+    // UX (open one big log, watch it stream in).
     const bool canStream = (dynamic_cast<loglib::JsonParser *>(parser.get()) != nullptr) && files.size() == 1;
 
     mModel->Clear();
@@ -434,9 +432,8 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
             ShowParseErrors("Error Parsing Logs", errors);
         }
         // On the streaming-started path the post-parse summary is shown from
-        // the streamingFinished slot (which fires after the parser has fully
-        // drained — including any final empty terminal batch — see PRD req.
-        // 4.3.26a / 4.3.29).
+        // the `streamingFinished` slot, which fires after the parser drains
+        // (including the final empty terminal batch).
         return;
     }
 
@@ -487,12 +484,11 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
         return false;
     }
 
-    // Snapshot the configuration BEFORE handing it to Stage B. The shared_ptr<const>
-    // lets the worker thread read it lock-free for the lifetime of the parse;
-    // the GUI thread is gated against editing it via SetConfigurationUiEnabled
-    // (PRD req. 4.2.21 / 4.3.29). Snapshotting up-front (rather than passing
-    // mModel->Configuration() by reference) means a configuration edit that
-    // sneaks past the UI gate cannot still affect the in-flight parse.
+    // Snapshot the configuration BEFORE handing it to the parser. The
+    // `shared_ptr<const>` lets the worker read it lock-free; the GUI is
+    // gated against editing it via `SetConfigurationUiEnabled`. Snapshotting
+    // up-front means a configuration edit that sneaks past the UI gate
+    // cannot still affect the in-flight parse.
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
     mStreamingFileName = QFileInfo(file).fileName();
@@ -507,13 +503,13 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     const std::stop_token stopToken = mModel->BeginStreaming(std::move(logFile));
     QtStreamingLogSink *sink = mModel->Sink();
 
-    // Hand the parser a borrowed reference to the *same* LogFile the model
-    // owns, instead of opening a second mmap on the worker thread. Stage B
-    // emits std::string_view-typed LogValues that point into the file's mmap
-    // (PRD req. 4.1.6/4.1.15a), so the file must outlive every LogLine the
-    // sink delivers to LogTable. Sharing the model's LogFile is safe because
-    // the parser only ever reads the mmap and only mutates the line-offset
-    // table via Stage C → sink → LogTable::AppendBatch (i.e. the GUI thread).
+    // Hand the parser a borrowed reference to the *same* `LogFile` the model
+    // owns instead of opening a second mmap on the worker. The parser emits
+    // `string_view`-typed `LogValue`s that point directly into the file's
+    // mmap, so the file must outlive every `LogLine` the sink hands to
+    // `LogTable`. Sharing is safe: the worker only reads the mmap; the
+    // line-offset table is mutated only from the GUI thread via
+    // `LogTable::AppendBatch`.
     loglib::LogFile *parseFile = nullptr;
     if (!mModel->Table().Data().Files().empty())
     {
@@ -532,11 +528,11 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     options.stopToken = stopToken;
     options.configuration = std::move(cfg);
 
-    // QtConcurrent::run launches on the global thread pool and returns a
-    // QFuture<void>. The future is owned by mStreamingWatcher so a second open
-    // can observe the previous parse's finalisation. The actual cancellation
-    // path is Clear()->RequestStop()->stop_token; the watcher is purely a
-    // lifetime tracker (PRD req. 4.3.28 / 4.3.29).
+    // `QtConcurrent::run` launches on the global thread pool and returns a
+    // `QFuture<void>`. The future is owned by `mStreamingWatcher` so a second
+    // open can observe the previous parse's finalisation. The cancellation
+    // path is `Clear() -> RequestStop() -> stop_token`; the watcher is just a
+    // lifetime tracker.
     QFuture<void> future = QtConcurrent::run([sink, options = std::move(options), parseFile]() {
         try
         {
@@ -562,11 +558,11 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
 
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
 {
-    // PRD req. 4.2.21 / 4.3.29 — while a streaming parse is in flight, every
-    // affordance that mutates the LogConfiguration must be disabled. The parser
-    // thread holds an immutable snapshot, so a user edit during streaming would
-    // either silently affect only post-streaming rows or trigger an expensive
-    // whole-data re-parse. Re-enabled from the streamingFinished slot.
+    // While a streaming parse is in flight, every affordance that mutates
+    // `LogConfiguration` must be disabled. The parser holds an immutable
+    // snapshot, so a user edit during streaming would either silently affect
+    // only post-streaming rows or trigger an expensive whole-data re-parse.
+    // Re-enabled from the `streamingFinished` slot.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);

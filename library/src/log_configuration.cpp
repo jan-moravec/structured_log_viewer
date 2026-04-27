@@ -53,8 +53,8 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
         {
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
-        // Configuration was replaced wholesale; the next IsKeyInAnyColumn query rebuilds the
-        // cache against the loaded columns (PRD §4.7.6 / Q7).
+        // Configuration was replaced wholesale; the next `IsKeyInAnyColumn` query
+        // rebuilds the cache against the loaded columns.
         mCacheStale = true;
     }
     else
@@ -120,16 +120,13 @@ void LogConfigurationManager::Update(const LogData &logData)
 
 void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
 {
-    // Streaming-mode column extension. Differs from Update in two ways:
-    //   1. Operates on an explicit "new keys" slice (typically
-    //      `StreamedBatch::newKeys`) rather than the canonical KeyIndex
-    //      snapshot — avoids re-walking the entire SortedKeys list per batch.
+    // Streaming-mode column extension. Differs from `Update` in two ways:
+    //   1. Operates on an explicit "new keys" slice (`StreamedBatch::newKeys`)
+    //      rather than re-walking the full canonical KeyIndex.
     //   2. Always appends — never reorders. Timestamp auto-promotion still
-    //      happens (so `LogTable::AppendBatch` knows which new columns need
-    //      back-filling) but the new time column lands at the end alongside
-    //      every other freshly-discovered key, preserving the append-only
-    //      contract that Qt's `beginInsertColumns` relies on (PRD req.
-    //      4.1.13 / Decision 14).
+    //      happens, but the new time column lands at the end alongside every
+    //      other freshly-discovered key, preserving the append-only contract
+    //      that Qt's `beginInsertColumns` relies on.
     EnsureKeyCacheBuilt();
     for (const std::string &key : newKeys)
     {

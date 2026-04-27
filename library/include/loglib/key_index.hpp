@@ -15,61 +15,25 @@
 namespace loglib
 {
 
-/**
- * @brief Dense integer identifier for a log field key.
- *
- * KeyIds are assigned monotonically starting from 0 by `KeyIndex::GetOrInsert`
- * and never reused. Code that consumes a KeyId can therefore use it as an index
- * into per-key arrays (e.g. the per-worker parse cache) without an extra
- * indirection table.
- */
+/// Dense integer id for a log field key. Ids are assigned monotonically from 0
+/// by `KeyIndex::GetOrInsert` and never reused, so they double as indices into
+/// per-key arrays.
 using KeyId = uint32_t;
 
-/**
- * @brief Sentinel value returned by `KeyIndex::Find` when a key is unknown.
- *
- * Distinct from any value returned by `KeyIndex::GetOrInsert`, which always
- * returns an in-range id. Equal to `std::numeric_limits<KeyId>::max()`.
- */
+/// Sentinel returned by `KeyIndex::Find` when a key is unknown.
 inline constexpr KeyId kInvalidKeyId = std::numeric_limits<KeyId>::max();
 
-/**
- * @brief Shared, lock-light, append-only dictionary mapping log field keys to
- *        dense integer ids.
- *
- * `KeyIndex` is the single source of truth for the set of keys observed in a
- * `LogData`. It exists so that `LogLine`s can store a `KeyId` per field rather
- * than copying the field name as a `std::string`, and so that the parsing
- * pipeline can look up the canonical id of a key from any worker thread without
- * synchronising on a global mutex.
- *
- * ### Thread-safety contract (PRD req. 4.1.2 / 4.1.2a)
- *
- * - `GetOrInsert(std::string_view)` is safe to call concurrently from multiple
- *   threads, including with overlapping key sets. It returns the canonical
- *   `KeyId` for `key`, allocating a new id (the next consecutive value) if the
- *   key was not previously known.
- * - `Find(std::string_view) const` is safe to call concurrently with
- *   `GetOrInsert`. It returns `kInvalidKeyId` if the key has not been inserted.
- * - `KeyOf(KeyId) const` returns a `std::string_view` that points into storage
- *   that lives for the entire lifetime of the `KeyIndex` (pointer-stable across
- *   concurrent inserts). The view is invalidated only when the `KeyIndex` is
- *   destroyed or moved-from.
- * - `Size() const` returns the current high-water mark of allocated ids; it is
- *   safe to call concurrently with `GetOrInsert`. The result may grow between
- *   the call and the caller observing the value.
- * - `SortedKeys() const` is intended for cold paths (e.g. building the legacy
- *   `std::vector<std::string>` view exposed by `LogData::Keys()`). It takes a
- *   snapshot under the same internal lock used by inserts, which is acceptable
- *   for the diagnostic / configuration-UI use cases that call it.
- *
- * Pipeline Stage C (the `serial_in_order` appender) is the only stage that
- * needs the "high-water mark slice" trick described in PRD req. 4.1.2/2a:
- * snapshot `prevSize = Size()` once at start, then after each batch read
- * `currentSize = Size()` and emit `KeyOf` for every id in
- * `[prevSize, currentSize)` as the batch's set of newly-introduced keys. Since
- * ids are dense and never reordered, this slice is exact.
- */
+/// Shared, lock-light, append-only dictionary mapping log field keys to dense
+/// integer ids.
+///
+/// Thread-safety contract:
+/// - `GetOrInsert` and `Find` are safe to call concurrently from multiple
+///   threads with overlapping key sets.
+/// - The `string_view` returned by `KeyOf` points into storage that is
+///   pointer-stable for the lifetime of the `KeyIndex`; concurrent inserts do
+///   not invalidate it.
+/// - `Size` may grow between the call and the caller observing the value.
+/// - `SortedKeys` snapshots under an internal lock; intended for cold paths.
 class KeyIndex
 {
 public:
@@ -82,74 +46,36 @@ public:
     KeyIndex(KeyIndex &&) noexcept;
     KeyIndex &operator=(KeyIndex &&) noexcept;
 
-    /**
-     * @brief Returns the canonical id for @p key, allocating a new one if the
-     *        key has not been seen before.
-     *
-     * Thread-safe. Concurrent calls with overlapping or distinct keys both
-     * yield a single dense id space (every key maps to exactly one id, ids are
-     * consecutive starting at 0).
-     *
-     * @param key The key string to canonicalise. The contents are copied into
-     *            internal storage; the input view does not need to outlive the
-     *            call.
-     * @return The canonical id, in range `[0, Size())`.
-     */
+    /// Returns the canonical id for @p key, allocating a new one if the key has
+    /// not been seen before. Thread-safe; concurrent calls share a single dense
+    /// id space. The input view's contents are copied; it does not need to
+    /// outlive the call.
     KeyId GetOrInsert(std::string_view key);
 
-    /**
-     * @brief Returns the canonical id for @p key without inserting.
-     *
-     * Thread-safe. Returns `kInvalidKeyId` if @p key has not been inserted.
-     */
+    /// Returns the canonical id for @p key, or `kInvalidKeyId` if it has not
+    /// been inserted. Thread-safe.
     KeyId Find(std::string_view key) const;
 
-    /**
-     * @brief Returns the key string for the given id.
-     *
-     * The returned view is stable for the lifetime of the `KeyIndex`. Calling
-     * with an id outside `[0, Size())` is undefined behaviour.
-     */
+    /// Returns the key string for @p id. The view is stable for the lifetime of
+    /// the `KeyIndex`. Calling with an id outside `[0, Size())` is undefined.
     std::string_view KeyOf(KeyId id) const;
 
-    /**
-     * @brief Returns the current number of registered keys (i.e. the high-water
-     *        mark of allocated ids).
-     */
+    /// Current number of registered keys (the high-water mark of allocated ids).
     size_t Size() const;
 
-    /**
-     * @brief Returns a copy of all keys, sorted lexicographically.
-     *
-     * Cold path: takes a snapshot under the internal lock and is intended for
-     * diagnostics, configuration UI, and the legacy
-     * `LogData::Keys() -> std::vector<std::string>` accessor. Hot paths should
-     * use `KeyOf` over the high-water-mark slice instead.
-     */
+    /// Returns a copy of all keys, sorted lexicographically. Cold path; takes a
+    /// snapshot under the internal lock.
     std::vector<std::string> SortedKeys() const;
 
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
-    /**
-     * @brief Test-only call counters for `GetOrInsert` and `Find`.
-     *
-     * Compiled in only when `LOGLIB_KEY_INDEX_INSTRUMENTATION` is defined,
-     * which the unit-test target enables and shipped builds do not (PRD req.
-     * 4.1.8a). Lets tests assert that the per-worker key cache (PRD §4.1)
-     * actually elides canonical lookups: a 100-line stream of 5 fixed keys
-     * with `useThreadLocalKeyCache = true` should leave
-     * `LoadGetOrInsertCount() <= effectiveThreads × 5` rather than rising
-     * toward `100 × 5 = 500`.
-     */
+    /// Test-only call counters for `GetOrInsert` and `Find`. Compiled in only
+    /// when `LOGLIB_KEY_INDEX_INSTRUMENTATION` is defined, which the unit-test
+    /// target enables and shipped builds do not.
     static std::atomic<std::size_t> sGetOrInsertCallCount;
     static std::atomic<std::size_t> sFindCallCount;
 
-    /// Reset both counters to zero. Intended for use at the start of a test.
     static void ResetInstrumentationCounters() noexcept;
-
-    /// Snapshot the `GetOrInsert` call count.
     static std::size_t LoadGetOrInsertCount() noexcept;
-
-    /// Snapshot the `Find` call count.
     static std::size_t LoadFindCount() noexcept;
 #endif
 

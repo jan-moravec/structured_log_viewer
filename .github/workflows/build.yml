@@ -47,10 +47,10 @@ jobs:
 
   build-linux-system-tbb:
     # Sanity-check that loglib still builds and tests pass when oneTBB is
-    # picked up from the system instead of FetchContent (PRD req. 4.6.39 /
-    # task 6.9). Ubuntu 24.04 ships libtbb-dev 2021.11, which clears the
-    # documented `>= 2021.5` floor in README.md. We do not package an artifact
-    # here — this job is purely a build/test validation.
+    # picked up from the system instead of FetchContent. Ubuntu 24.04 ships
+    # libtbb-dev 2021.11, which clears the documented `>= 2021.5` floor in
+    # README.md. We do not package an artifact here — this job is purely a
+    # build/test validation.
     needs: pre-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 30

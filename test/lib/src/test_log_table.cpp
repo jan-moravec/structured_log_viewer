@@ -266,11 +266,11 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
     CHECK(table.RowCount() == 0);
 }
 
-// PRD req. 4.1.13 — the column → KeyId cache is append-only. Update() and
-// AppendBatch() may grow it but must never reorder existing columns or
-// insert new ones in the middle. This is the contract that lets the Qt
-// LogModel emit beginInsertColumns / endInsertColumns over the trailing
-// range without invalidating any persistent QModelIndex held by the view.
+// The column → KeyId cache is append-only: `Update()` and `AppendBatch()`
+// may grow it but must never reorder existing columns or insert new ones in
+// the middle. This is the contract that lets the Qt `LogModel` emit
+// `beginInsertColumns` / `endInsertColumns` over the trailing range without
+// invalidating any persistent `QModelIndex` held by the view.
 TEST_CASE("LogTable column to KeyId cache is append-only across Update and AppendBatch",
           "[log_table][append_only]")
 {
@@ -511,17 +511,12 @@ TEST_CASE("LogTable::AppendBatch -- auto-promoted time column triggers back-fill
     CHECK(!table.LastBackfillRange().has_value());
 }
 
-// PRD task 9.0 / §4.8.2 — `LogTable::AppendBatch::RefreshColumnKeyIds` thrashing
-// fix. Before task 9.0 this test (named "RefreshColumnKeyIds Find call count
-// baseline") asserted `findCount == kBatches × kKeyCount` to pin the pre-fix
-// number of `KeyIndex::Find` calls a wide-configuration steady-state stream
-// pays per AppendBatch. After task 9.0 the call is gated on
-// `!batch.newKeys.empty()` (and, when keys *do* arrive, restricted to columns
-// whose `keys` overlap with `batch.newKeys` via
-// `RefreshColumnKeyIdsForKeys`). For pure steady-state batches that means
-// `findCount == 0` instead of `kBatches × kKeyCount` — a saved ~99 000 Find
-// calls on the GUI thread for the worked example in PRD §4.8.2 (100 columns
-// × 1 000 batches × no new keys after batch 1).
+// `LogTable::AppendBatch` no longer calls `RefreshColumnKeyIds` on every
+// invocation — it gates the call on `!batch.newKeys.empty()` and, when keys
+// *do* arrive, restricts the patch to columns whose `keys` overlap with
+// `batch.newKeys` via `RefreshColumnKeyIdsForKeys`. For pure steady-state
+// batches that means `findCount == 0` (saving ~99 000 `Find` calls on a
+// 100-column / 1 000-batch parse with no new keys after batch 1).
 TEST_CASE(
     "LogTable::AppendBatch -- RefreshColumnKeyIds skipped on steady-state batches",
     "[log_table][refresh_no_alloc]"
@@ -584,10 +579,10 @@ TEST_CASE(
         table.AppendBatch(std::move(batch));
     }
 
-    // PRD §4.8.2: on steady-state batches with empty `newKeys`,
-    // AppendBatch must not call `KeyIndex::Find` at all. No time column
-    // means the back-fill loop in AppendBatch contributes zero additional
-    // Find calls either, so the total is exactly zero.
+    // On steady-state batches with empty `newKeys`, `AppendBatch` must not
+    // call `KeyIndex::Find` at all. No time column means the back-fill
+    // loop contributes zero additional `Find` calls either, so the total
+    // is exactly zero.
     const std::size_t findCount = KeyIndex::LoadFindCount();
     INFO(
         "Find calls = " << findCount << " over " << kBatches << " AppendBatch calls × " << kKeyCount
@@ -601,9 +596,9 @@ TEST_CASE(
     CHECK(table.ColumnCount() == 1);
 }
 
-// PRD task 9.3 / §4.8.2 — when `batch.newKeys` *is* non-empty,
-// `RefreshColumnKeyIdsForKeys` must only re-walk columns whose `keys` overlap
-// with the arrived `newKeys`. Untouched columns keep their cached KeyIds.
+// When `batch.newKeys` *is* non-empty, `RefreshColumnKeyIdsForKeys` must
+// only re-walk columns whose `keys` overlap with the arrived `newKeys`.
+// Untouched columns keep their cached KeyIds.
 //
 // Setup: two columns, "Touched" (keys = {"k0"}) and "Untouched" (keys = {"u0",
 // "u1", ..., "u49"}). A batch arrives carrying a brand-new key "k0_new" that

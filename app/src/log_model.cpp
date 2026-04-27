@@ -28,12 +28,11 @@ void LogModel::AddData(loglib::LogData &&logData)
 
 void LogModel::Clear()
 {
-    // Cancel any in-flight streaming parse first (PRD req. 4.3.30). Non-blocking;
-    // the parser thread is allowed to keep running for a brief moment as it
-    // walks out of parallel_pipeline. The combination of generation bump (in
-    // RequestStop) plus the upcoming model reset means any straggler OnBatch
-    // calls that reach the GUI event loop are dropped before they can touch the
-    // freshly reset model.
+    // Cancel any in-flight streaming parse first. Non-blocking; the parser
+    // thread is allowed to keep running for a moment as it drains the
+    // pipeline. The generation bump in `RequestStop` plus the upcoming
+    // `beginResetModel` cause any straggler `OnBatch` calls to be dropped
+    // before they reach the freshly reset model.
     if (mSink)
     {
         mSink->RequestStop();
@@ -53,18 +52,16 @@ void LogModel::Clear()
 
 std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 {
-    // Reset model state via beginResetModel (rather than per-row remove signals)
-    // because BeginStreaming is the natural point to swap the entire table out.
-    // After endResetModel, the streaming AppendBatch path takes over and grows
-    // the model row-by-row via beginInsertRows/endInsertRows (PRD req. 4.3.27).
+    // Use `beginResetModel` rather than per-row remove signals — `BeginStreaming`
+    // is the natural point to swap the whole table out. After `endResetModel`
+    // the streaming `AppendBatch` path takes over and grows the model row-by-row.
     beginResetModel();
 
     if (file)
     {
         // Reserve the line-offset table proportionally to the file size so each
-        // batch's vector::insert is amortised O(1). The "file_size / 100" factor
-        // is the same heuristic the PRD recommends (req. 4.1.6a) and matches the
-        // ~100-byte average JSON-line size we observed in the benchmark fixture.
+        // batch's `vector::insert` stays amortised O(1). The `size / 100` factor
+        // matches the ~100-byte average JSON-line size from the benchmark fixture.
         const size_t reserveCount = file->Size() / 100;
         mLogTable.BeginStreaming(std::move(file));
         if (reserveCount > 0 && !mLogTable.Data().Files().empty())
@@ -89,9 +86,9 @@ std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 
 void LogModel::AppendBatch(loglib::StreamedBatch batch)
 {
-    // Capture the errors BEFORE moving the batch — LogTable::AppendBatch
-    // discards batch.errors (loglib has no notion of how the GUI surfaces
-    // them) so this is the model's only opportunity to peel them off.
+    // Capture the errors BEFORE moving the batch — `LogTable::AppendBatch`
+    // discards `batch.errors`, so this is the model's only opportunity to
+    // peel them off into `mStreamingErrors`.
     const qsizetype capturedErrorCount = static_cast<qsizetype>(batch.errors.size());
     if (!batch.errors.empty())
     {
@@ -142,9 +139,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         );
     }
 
-    // Step 7 — counters. lineCountChanged fires unconditionally (req. 4.3.27)
-    // so the status-bar progress label can keep ticking even on batches that
-    // added zero rows but, say, increased the error count.
+    // Step 7 — counters. `lineCountChanged` fires unconditionally so the
+    // status-bar progress label keeps ticking even on batches that added
+    // zero rows but, say, increased the error count.
     mErrorCount += capturedErrorCount;
     emit lineCountChanged(static_cast<qsizetype>(newRowCount));
     if (capturedErrorCount > 0)
@@ -211,9 +208,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
                 else if constexpr (std::is_same_v<T, std::string_view>)
                 {
-                    // string_view alternative carries values that point directly into the
-                    // mmap (PRD req. 4.1.6). Promote to std::string so the QString factory
-                    // never observes the borrowed view past the LogValue's lifetime.
+                    // The `string_view` alternative borrows directly from the mmap.
+                    // Promote to `std::string` so the QString factory never sees the
+                    // view past the `LogValue`'s lifetime.
                     return QVariant(ConvertToSingleLineCompactQString(std::string(arg)));
                 }
                 else if constexpr (std::is_same_v<T, int64_t>)

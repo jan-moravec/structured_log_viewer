@@ -56,11 +56,11 @@ ParseResult ParseWithSink(
     return ParseResult{std::move(data), std::move(errors)};
 }
 
-// Convenience helper that prints the throughput numbers for a parse-style
-// benchmark via Catch2's WARN macro. We compute MB/s of input parsed and
-// lines/s separately so PR descriptions can quote both (PRD req. 4.5.34).
-// WARN is used (rather than INFO) so the line shows up in the test log on
-// success; functionally this is just a report.
+// Convenience helper that prints throughput numbers for a parse-style
+// benchmark via Catch2's `WARN` macro. We report MB/s of input parsed and
+// lines/s separately so PR descriptions can quote both. `WARN` is used
+// rather than `INFO` so the line shows up in the test log on success;
+// functionally this is just a report.
 void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_t bytes, size_t lines)
 {
     if (elapsed.count() == 0)
@@ -76,23 +76,22 @@ void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_
     );
 }
 
-// PRD §7.4 / G4 — manual replacement for Catch2's `BENCHMARK_ADVANCED` on the
-// long-running parse fixtures. `BENCHMARK_ADVANCED` runs an iteration-
-// estimation pass (calling the lambda 1, 2, 4, … times until elapsed ≥ a
-// threshold) and a 100-resample bootstrap analysis on top of the user-
-// requested samples. For a 1-second-per-call benchmark like `[large]` /
-// `[wide]` / `[stream_to_table]` that adds 3-5× to total wall-time per run
-// and made `[stream_to_table]` time out at 30 minutes during PRD task 1.0
-// baseline capture. This helper just runs the lambda `samples` times,
-// timings each via `steady_clock`, and emits a one-line WARN with mean /
-// low / high / stddev so the per-commit numbers stay copy-pasteable into
-// PR descriptions.
+// Manual replacement for Catch2's `BENCHMARK_ADVANCED` on the long-running
+// parse fixtures. `BENCHMARK_ADVANCED` runs an iteration-estimation pass
+// (calling the lambda 1, 2, 4, … times until elapsed ≥ threshold) and a
+// 100-resample bootstrap analysis on top of the user-requested samples.
+// For 1-second-per-call benchmarks like `[large]` / `[wide]` /
+// `[stream_to_table]` that adds 3-5× total wall-time per run and made
+// `[stream_to_table]` time out at 30 minutes during baseline capture.
+// This helper just runs the lambda `samples` times, times each via
+// `steady_clock`, and emits a one-line WARN with mean / low / high /
+// stddev so per-commit numbers stay copy-pasteable into PR descriptions.
 //
-// The number of samples is intentionally small (5 by default — same as
-// what the `--benchmark-samples 5` flag selected for these fixtures during
-// task 1.0). Increase via the `samples` argument at call sites that need
-// tighter confidence intervals; on a 1-s benchmark a 5-sample run already
-// surfaces single-digit-percent regressions reliably (G4's ±3 % gate).
+// `samples` defaults to 5 — the same setting `--benchmark-samples 5`
+// selected for these fixtures historically. On a 1-s benchmark a
+// 5-sample run already surfaces single-digit-percent regressions
+// reliably; bump it via the argument at call sites that need tighter
+// confidence intervals.
 template <typename Fn>
 void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
 {
@@ -176,27 +175,26 @@ std::vector<TestJsonLogFile::Line> GenerateRandomJsonLogs(size_t count)
     return logs;
 }
 
-// PRD §4.7.3 / parser-perf task 8.8 — wide-row fixture generator.
+// Wide-row fixture generator.
 //
-// Stresses the per-line field-iteration cost (`InsertSorted`, `ExtractFieldKey`,
-// `ParseLine`) and the `IsKeyInAnyColumn` cache by emitting `columnCount` keys
-// per line in a fixed order. The default mix matches §4.7.3:
-//   - ~10 string keys (lorem-style messages, levels, components),
+// Stresses per-line field iteration (`InsertSorted`, `ExtractFieldKey`,
+// `ParseLine`) and the `IsKeyInAnyColumn` cache by emitting `columnCount`
+// keys per line in a fixed order. The default mix is:
+//   - ~10 string keys  (timestamps, levels, components, lorem messages),
 //   - ~10 numeric keys (latencies, byte counts, ids),
-//   - ~5 boolean keys (flags),
-//   - ~5 keys that rotate through `null` / array / object so the value-shape
-//     dispatch in `ParseLine` exercises every leaf.
+//   - ~5  boolean keys (flags),
+//   - ~5  keys that rotate through `null` / array / object so the value-
+//         shape dispatch in `ParseLine` exercises every leaf.
 //
-// Above `columnCount = 30` the helper round-robins through the same key family
-// suffixed with the column index so the line shape stays semantically wide
-// without inventing arbitrary key vocabularies. Below 30, we trim the longest
-// family last (strings > numbers > booleans > others) so the proportions stay
-// close to the §4.7.3 mix even at 10–20 columns.
+// Above `columnCount = 30` the helper round-robins through the same key
+// family suffixed with the column index. Below 30 we trim the longest
+// family last (strings > numbers > booleans > others) to keep proportions
+// close to the default mix even at 10–20 columns.
 //
-// Note: every line emits the keys in the **same** fixed iteration order. That
-// makes the per-worker `ParseCache` and `KeyIndex` warm-up paths deterministic
-// across runs, so the `[wide]` numbers are repeatable enough to use as a
-// regression gate (PRD req. 4.7.5).
+// Every line emits keys in the *same* fixed iteration order, so the
+// per-worker parse cache and `KeyIndex` warm-up paths are deterministic
+// across runs and `[wide]` numbers are repeatable enough to use as a
+// regression gate.
 std::vector<TestJsonLogFile::Line> GenerateWideJsonLogs(size_t count, size_t columnCount = 30)
 {
     static const std::array<std::string, 10> STRING_KEYS = {"timestamp", "level", "component", "message", "module",
@@ -243,7 +241,7 @@ std::vector<TestJsonLogFile::Line> GenerateWideJsonLogs(size_t count, size_t col
         }
     };
 
-    // Trim from "others" first so the §4.7.3 string/number proportions stay
+    // Trim from "others" first so the string/number proportions stay
     // intact when the caller picks `columnCount < 30`.
     const size_t totalString = std::min<size_t>(columnCount, 10);
     const size_t remainingAfterString = columnCount - totalString;
@@ -418,9 +416,9 @@ TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
 
 TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser][single_thread]")
 {
-    // Forces the streaming pipeline down to one Stage B worker so we can compare against the
-    // default-parallelism benchmark and quantify oneTBB's speedup (PRD req. 4.5.34). Same fixture
-    // size as the default benchmark to keep the numbers directly comparable.
+    // Forces the pipeline down to one worker so we can compare against the
+    // default-parallelism benchmark and quantify the oneTBB speed-up. Same
+    // fixture size as the default benchmark to keep numbers comparable.
     auto logs = GenerateRandomJsonLogs(10'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
@@ -451,14 +449,11 @@ TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser
 namespace
 {
 
-// PRD §4.7.2 / parser-perf task 8.10 — per-stage breakdown emit.
-//
-// Mirrors the §4.7.2 reference format verbatim:
+// Per-stage breakdown emit. Format:
 //   "Wall-clock: 1.55 s | Stage A CPU: 80 ms | Stage B CPU: 11.2 s
 //    (across 8 workers, 90 % utilisation = 11.2 / (8 × 1.55)) |
 //    Stage C CPU: 95 ms | Sink: 110 ms"
-// Stage B utilisation is derived as
-//   `stageBCpuTotal / (effectiveThreads × wallClockTotal)`.
+// Stage B utilisation is `stageBCpuTotal / (effectiveThreads × wallClockTotal)`.
 void ReportStageTimings(const char *label, const StageTimings &t)
 {
     using ms = std::chrono::duration<double, std::milli>;
@@ -479,33 +474,26 @@ void ReportStageTimings(const char *label, const StageTimings &t)
     );
 }
 
-// PRD §4.7.5 / parser-perf task 8.11 — no-regression checks.
-//
-// Every commit on this branch must include before/after MB/s for the three
-// regression-gating fixtures `[large]`, `[wide]`, `[stream_to_table]` in its
-// commit message. The PR/CI checklist must also include:
-//   - `[allocations]` fast-path fraction ≥ 99 %  (M5)
-//   - Stage B utilisation > 70 %                  (M4)
-//   - Stage A wall-clock %  < 5 %                 (M4)
+// No-regression checklist. Every commit on this branch must include
+// before/after MB/s for the three regression-gating fixtures `[large]`,
+// `[wide]`, `[stream_to_table]` in its commit message, plus:
+//   - `[allocations]` fast-path fraction ≥ 99 %
+//   - Stage B utilisation > 70 %
+//   - Stage A wall-clock %  < 5 %
 //   - `[cancellation]` p95 latency within ±3 % of the prior commit's number
 //
-// The numbers come from the `WARN` lines emitted by `ReportThroughput` above
-// and `ReportStageTimings` (per task 8.10).
-//
-// The PRD's §7.4 acceptance gate G4 is "±3 % per change OR a documented
-// architectural justification in the commit message". This comment block is
-// the authoritative reference for what every commit-message PR-block must
-// quote (so a future contributor knows what to copy in).
-//
-// NOTE: keep the comment list in sync with the WARN format if `[wide]` or
-// `[stream_to_table]` later add fields — the format is the source of truth
-// for the gate.
+// Numbers come from the `WARN` lines emitted by `ReportThroughput` and
+// `ReportStageTimings` above. The acceptance gate is "within ±3 % per
+// change or a documented architectural justification in the commit
+// message" — this comment is the canonical reference for what every PR
+// description should quote, so keep it in sync with the WARN format if
+// `[wide]` or `[stream_to_table]` ever grow new fields.
 
 } // namespace
 
-// PRD task 6.1 — large-file benchmark (1'000'000 lines, ~170 MB). Tagged
-// `[large]` so it is opt-in via Catch2's tag filter and does not slow the
-// default `[benchmark]` run.
+// Large-file benchmark (1'000'000 lines, ~170 MB). Tagged `[large]` so it
+// is opt-in via Catch2's tag filter and doesn't slow the default
+// `[benchmark]` run.
 TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_parser][large]")
 {
     auto logs = GenerateRandomJsonLogs(1'000'000);
@@ -513,11 +501,11 @@ TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_pars
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-    // PRD task 6.6 — capture wall-clock for one untimed warm-up run so the
-    // throughput numbers (MB/s, lines/s) end up in the test log alongside
-    // the per-stage breakdown emitted by `ReportStageTimings`. The timed-
-    // sample loop below (`RunTimedSamples`) only emits ns/sample, so the
-    // MB/s + per-stage numbers come from this warm-up.
+    // Capture wall-clock for one untimed warm-up run so throughput numbers
+    // (MB/s, lines/s) end up in the test log alongside the per-stage
+    // breakdown emitted by `ReportStageTimings`. The timed-sample loop
+    // below only emits ns/sample, so the MB/s + per-stage numbers come
+    // from this warm-up.
     {
         StageTimings timings;
         ParserOptions warmupOpts;
@@ -542,12 +530,12 @@ TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_pars
     });
 }
 
-// PRD §4.7.4 / parser-perf task 8.9 — wide-row benchmark (1'000'000 lines,
-// ~30 fields per line). Stresses the per-line field-iteration cost
-// (`InsertSorted`, `ExtractFieldKey`, `ParseLine`) and the
-// `IsKeyInAnyColumn` cache from §4.7.6 against a configuration that has
-// every emitted key registered up front. Reports the same MB/s / lines/s /
-// per-stage breakdown as `[large]` so the two are directly comparable.
+// Wide-row benchmark (1'000'000 lines, ~30 fields per line). Stresses the
+// per-line field-iteration cost (`InsertSorted`, `ExtractFieldKey`,
+// `ParseLine`) and the `IsKeyInAnyColumn` cache against a configuration
+// that has every emitted key registered up front. Reports the same MB/s
+// / lines/s / per-stage breakdown as `[large]` so the two are directly
+// comparable.
 TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][json_parser][wide]")
 {
     auto logs = GenerateWideJsonLogs(1'000'000);
@@ -570,11 +558,11 @@ TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][jso
         ReportThroughput("Parse wide warm-up", elapsed, bytes, logs.size());
         ReportStageTimings("Parse wide warm-up", timings);
 
-        // Fast-path fraction reporting (M5). Walks the parsed values once and
+        // Fast-path fraction reporting. Walks the parsed values once and
         // counts string_view (fast) vs. owned string (slow) hits per the same
         // recipe as the `[allocations]` benchmark. Enforced ≥ 99 % via the
-        // commit gate, not the test itself, so a regression in this number
-        // surfaces in the PR description rather than as a hard failure.
+        // commit-message gate, not the test itself, so a regression in this
+        // number surfaces in the PR description rather than as a hard failure.
         size_t totalStringValues = 0;
         size_t stringViewValues = 0;
         for (const LogLine &line : warmup.data.Lines())
@@ -613,9 +601,9 @@ TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][jso
     });
 }
 
-// PRD task 6.2 — `useThreadLocalKeyCache=false` variant. Lets us bisect how
-// much of the multi-threaded speedup comes from the per-worker interned key
-// cache vs. the simdjson + KeyIndex hot path itself (PRD req. 4.1.2/2b).
+// `useThreadLocalKeyCache=false` variant. Lets us bisect how much of the
+// multi-threaded speed-up comes from the per-worker interned key cache vs.
+// the simdjson + `KeyIndex` hot path itself.
 TEST_CASE(
     "Parse and load JSON log (no thread-local key cache)", "[.][benchmark][json_parser][no_thread_local_cache]"
 )
@@ -647,9 +635,9 @@ TEST_CASE(
     });
 }
 
-// PRD task 6.3 — `useParseCache=false` variant. Disables the per-worker
-// simdjson type-cache so we can quantify the savings from skipping the
-// per-field `value.type()` round-trip (PRD req. 4.1.15).
+// `useParseCache=false` variant. Disables the per-worker simdjson type
+// cache so we can quantify the savings from skipping the per-field
+// `value.type()` round-trip.
 TEST_CASE("Parse and load JSON log (no parse cache)", "[.][benchmark][json_parser][no_parse_cache]")
 {
     auto logs = GenerateRandomJsonLogs(10'000);
@@ -679,10 +667,10 @@ TEST_CASE("Parse and load JSON log (no parse cache)", "[.][benchmark][json_parse
     });
 }
 
-// PRD task 6.5 — `LogLine::GetValue` micro-benchmark. Walks every field of
-// every parsed line via the slow path (key string -> KeyIndex -> KeyId) and
-// then via the fast path (cached KeyId) so the README can quote the speedup
-// PRD req. 4.1.10/4.1.10a calls out.
+// `LogLine::GetValue` micro-benchmark. Walks every field of every parsed
+// line via the slow path (key string -> `KeyIndex` -> `KeyId`) and then
+// via the fast path (cached `KeyId`) so PR descriptions can quote the
+// speed-up the cached-id overload buys.
 TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_value_micro]")
 {
     auto logs = GenerateRandomJsonLogs(10'000);
@@ -746,32 +734,31 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     (void)hitsSink;
 }
 
-// PRD tasks 6.4 + 6.8 — structural allocation / fast-path fraction report.
+// Structural allocation / fast-path fraction report.
 //
 // We deliberately do **not** override global `operator new` here. A
-// thread-local-gated override would work in principle, but it interacts
-// awkwardly with Catch2's own allocator-heavy reporting and with TBB's worker
-// threads that allocate independently of the main thread. Instead we count the
-// observable structural cost of a parse:
+// thread-local-gated override would work in principle but interacts
+// awkwardly with Catch2's own allocator-heavy reporting and with TBB
+// worker threads that allocate independently of the main thread. Instead
+// we count the observable structural cost of a parse:
 //
-//   - number of `LogLine`s (one heap-allocated vector backing per line);
-//   - number of `LogValue`s holding `std::string` (one owned-string allocation
-//     per value, the only per-value allocation path);
-//   - number of `LogValue`s holding `std::string_view` (the fast path that
-//     points back into the mmap and allocates nothing — PRD req. 4.1.15a).
+//   - number of `LogLine`s (one heap-allocated vector per line);
+//   - number of `LogValue`s holding `std::string` (one owned-string
+//     allocation per value — the only per-value allocation path);
+//   - number of `LogValue`s holding `std::string_view` (the fast path
+//     that points back into the mmap and allocates nothing).
 //
 // Together these give a tight upper bound on per-parse heap allocations
 // (`#lines + #ownedStrings + O(KeyIndex growth)`). Combined with the
-// fast-path fraction this satisfies both PRD bullet points:
-//   * 6.4: "demonstrate that the per-line allocation count after warm-up is
-//     bounded by a small constant — target <= 1 per line for the owned-string
-//     fallback path; 0 in the all-string_view case".
-//   * 6.8: "report the fraction of string values that landed in the
-//     `string_view` fast path".
+// fast-path fraction this demonstrates two contracts:
+//   * The per-line allocation count after warm-up is bounded by a small
+//     constant — target ≤ 1 per line for the owned-string fallback path,
+//     0 in the all-`string_view` case.
+//   * The fraction of string values that landed in the `string_view`
+//     fast path.
 TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchmark][json_parser][allocations]")
 {
-    // 1'000-line synthetic input with short ASCII string values, per the PRD
-    // recipe for the [allocations] variant.
+    // 1'000-line synthetic input with short ASCII string values.
     auto logs = GenerateRandomJsonLogs(1'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
@@ -810,8 +797,9 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
         totalStringValues == 0 ? 0.0 : static_cast<double>(stringViewValues) / static_cast<double>(totalStringValues);
 
     // Upper bound: at most one owned-string allocation per value plus one
-    // backing-vector allocation per line. The KeyIndex grows by O(distinctKeys)
-    // which is ~5 here and is therefore dwarfed by the per-line term.
+    // backing-vector allocation per line. The `KeyIndex` grows by
+    // `O(distinctKeys)` which is ~5 here and is therefore dwarfed by the
+    // per-line term.
     const size_t allocUpperBound = lineCount + ownedStringValues;
 
     WARN(
@@ -829,17 +817,17 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     REQUIRE(stringViewValues > 0);
 }
 
-// Parser-perf task 3.10 — end-to-end MainWindow-flow benchmark for PRD §4.2a /
-// req. 4.2a.7 / metric M7. Mirrors the `[large]` fixture in size and content but
-// drives the full streaming GUI flow: `LogTable::BeginStreaming` + a custom sink
-// that calls `LogTable::AppendBatch` per `OnBatch`. Reports end-to-end MB/s plus
-// the cumulative wall-time spent in the GUI-thread mid-stream timestamp back-fill
-// (`LogTable::AppendBatch` step 4) so we can quantify the M7 expectation that
-// Stage B's in-pipeline promotion drops the back-fill cost by ≥ 95 %.
+// End-to-end MainWindow-flow benchmark. Mirrors the `[large]` fixture in
+// size and content but drives the full streaming GUI flow:
+// `LogTable::BeginStreaming` + a custom sink that calls
+// `LogTable::AppendBatch` per `OnBatch`. Reports end-to-end MB/s plus the
+// cumulative wall-time spent in the GUI-thread mid-stream timestamp
+// back-fill (`LogTable::AppendBatch` step 4) so the in-pipeline promotion
+// savings are visible in the test log.
 //
-// The fixture configures a `Type::time` column for `timestamp` so Stage B has
-// real promotion work to do — without it the back-fill loop stays a no-op for
-// every batch and the benchmark would not exercise M7 at all.
+// The fixture configures a `Type::time` column for `timestamp` so the
+// streaming parser has real promotion work to do — without it the
+// back-fill loop stays a no-op for every batch.
 TEST_CASE(
     "Parse and stream to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][stream_to_table]"
 )
@@ -851,11 +839,12 @@ TEST_CASE(
 
     InitializeTimezoneData();
 
-    // Configuration mirrors the GUI's typical timestamp column shape exactly —
-    // `LogTable::BeginStreaming`'s snapshot will pick up this column up front, so
-    // Stage B promotes every line's `timestamp` value inline and the GUI-thread
-    // mid-stream back-fill loop only fires for *additional* time columns auto-
-    // promoted from keys first observed in a later batch (none in this fixture).
+    // Configuration mirrors the GUI's typical timestamp column shape.
+    // `LogTable::BeginStreaming`'s snapshot picks it up up front, so the
+    // parser promotes every line's `timestamp` value inline and the
+    // GUI-thread mid-stream back-fill loop only fires for *additional*
+    // time columns auto-promoted from keys first observed in a later
+    // batch (none in this fixture).
     LogConfiguration baseConfig;
     LogConfiguration::Column timestampColumn;
     timestampColumn.header = "timestamp";
@@ -866,20 +855,18 @@ TEST_CASE(
     baseConfig.columns.push_back(std::move(timestampColumn));
     auto configuration = std::make_shared<LogConfiguration>(baseConfig);
 
-    // Persist the configuration to a temp JSON file so we can install it into the
-    // table's `LogConfigurationManager` via `Load`. The manager has no public
-    // setter for a fully-formed LogConfiguration; `Load` is the canonical entry
-    // point used by the GUI as well.
+    // Persist the configuration to a temp JSON file so we can install it
+    // into the table's `LogConfigurationManager` via `Load`. The manager
+    // has no public setter for a fully-formed `LogConfiguration`; `Load`
+    // is the canonical entry point the GUI uses as well.
     TestLogConfiguration configFile;
     configFile.Write(baseConfig);
 
-    // Sink that mirrors `LogModel::OnBatch`: route every Stage C batch into
-    // `LogTable::AppendBatch` (which runs the GUI-thread back-fill loop step 4).
-    // We instrument the back-fill step by re-running it inline ourselves before
-    // calling AppendBatch — but that would double-fill. Instead, we time the
-    // AppendBatch call itself (which includes the back-fill loop as its hottest
-    // sub-step in the legacy path) and rely on the M7 expectation that Stage B
-    // promotion makes the overwhelming majority of that time disappear.
+    // Sink that mirrors `LogModel::OnBatch`: routes every batch into
+    // `LogTable::AppendBatch` (which runs the GUI-thread back-fill loop).
+    // We time the `AppendBatch` call itself — re-running back-fill before
+    // it would double-fill — and rely on the in-pipeline promotion to
+    // make the overwhelming majority of that time disappear.
     struct StreamSink : StreamingLogSink
     {
         LogTable *table = nullptr;
@@ -901,9 +888,10 @@ TEST_CASE(
         void OnFinished(bool /*cancelled*/) override {}
     };
 
-    // Untimed warm-up: same shape as the [large] benchmark so the throughput
-    // numbers come out comparable. Reports MB/s plus the GUI-thread AppendBatch
-    // wall-time per 100 k lines streamed so M7 is visible in the test log.
+    // Untimed warm-up: same shape as the `[large]` benchmark so throughput
+    // numbers come out comparable. Reports MB/s plus the GUI-thread
+    // `AppendBatch` wall-time per 100k lines streamed so the back-fill
+    // savings are visible in the test log.
     {
         LogConfigurationManager configManager;
         configManager.Load(configFile.GetFilePath());
@@ -954,18 +942,18 @@ TEST_CASE(
     });
 }
 
-// PRD task 6.7 — cancellation-latency benchmark. Drives `ParseStreaming`
-// against a 1'000'000-line fixture and asks for a stop after the first batch
+// Cancellation-latency benchmark. Drives `ParseStreaming` against a
+// 1'000'000-line fixture and asks for a stop after the first batch
 // arrives. We measure the wall time between `request_stop()` and
-// `OnFinished(cancelled=true)` to validate the PRD-imposed
-// `ntokens × batchSizeBytes` upper bound (PRD req. 4.2.22a/b).
+// `OnFinished(cancelled=true)` to validate the
+// `ntokens × batchSizeBytes` upper bound on cancellation latency.
 //
-// Note: a Catch2 BENCHMARK lambda would time the full ParseStreaming call
-// (Stage A startup + cancellation propagation + drain), so it cannot
-// isolate the latency itself. We repeat the parse N times manually and
-// summarise the latency distribution via INFO so it shows up in the test
-// log. (Same rationale as the manual `RunTimedSamples` helper used above
-// for `[large]` / `[wide]` / `[stream_to_table]`.)
+// A Catch2 `BENCHMARK` lambda would time the full `ParseStreaming` call
+// (startup + cancellation propagation + drain), so it can't isolate the
+// latency itself. We repeat the parse N times manually and summarise the
+// latency distribution via `INFO` so it shows up in the test log — same
+// rationale as the manual `RunTimedSamples` helper used above for
+// `[large]` / `[wide]` / `[stream_to_table]`.
 TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
     auto logs = GenerateRandomJsonLogs(1'000'000);
@@ -1028,6 +1016,6 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
                                      << ", max=" << maxLatency
     );
     // Sanity bound: even on a slow CI box we expect cancellation to drain in
-    // well under a second (PRD req. 4.2.22b). 5s is a generous safety net.
+    // well under a second. 5s is a generous safety net.
     REQUIRE(maxLatency < 5'000'000.0);
 }

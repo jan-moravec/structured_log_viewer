@@ -128,15 +128,15 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     CHECK(manager.Configuration().columns[0].parseFormats[0] == "%FT%T%Ez");
 }
 
-// PRD §4.7.6 / parser-perf task 8.6 — `IsKeyInAnyColumn` cache invalidation tests.
+// `IsKeyInAnyColumn` cache invalidation tests.
 //
 // The cache is private; we exercise it indirectly by observing that mutating
-// paths still produce the right column shape after a query has populated it.
-// Specifically, every mutating path (`Load`, `Update`, `AppendKeys`) must flip
-// the cache-stale flag so the next query sees the freshly mutated column set.
-// If a mutating path forgets to invalidate, the loops below would either
-// skip-add a column (false-positive cached "already there") or double-add a
-// column (false-negative cached "absent" after the rebuild already saw it).
+// paths still produce the right column shape after a query populated it.
+// Every mutating path (`Load`, `Update`, `AppendKeys`) must flip the
+// cache-stale flag so the next query sees the freshly mutated column set.
+// A missed invalidation would either skip-add a column (false-positive
+// "already there") or double-add it (false-negative "absent" after a
+// rebuild already saw it).
 
 TEST_CASE("Cache: AppendKeys after a query sees the freshly appended key", "[LogConfigurationManager][cache_invalidation]")
 {

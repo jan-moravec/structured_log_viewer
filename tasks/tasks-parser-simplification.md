@@ -101,25 +101,25 @@ Each parent task 1.0–4.0 maps to one PRD functional-requirement section (§4.1
   - [x] 3.8 Capture before/after `MB/s` for `[large]`, `[wide]`, `[stream_to_table]`. `[stream_to_table]` is the bench most sensitive to this change; flag and justify any regression > 5 % in the commit message (PRD G6). *(See commit message; all three within noise.)*
   - [x] 3.9 Commit to `feature/improve-performance-and-add-streaming` with the §3.8 numbers in the message.
 
-- [ ] 4.0 Code hygiene pass (PRD §4.4)
-  - [ ] 4.1 Sweep `library/`, `app/`, and `test/` (source and headers only — leave `tasks/`, `cmake/`, top-level `*.md` alone) and remove every `// PRD §…`, `// (PRD req. …)`, `// parser-perf task …`, `// task N.M`, and naked `§` reference. Use `rg "PRD\b|§|parser-perf|task \d+\.\d+" library app test` as the closing check; expected count is **0** (M6, PRD §4.4.1, §7).
-  - [ ] 4.2 Shrink doc-comments on public types/methods to a one-line summary stating *what* the symbol is. Remove multi-paragraph rationale, references to other code, and historical context (PRD §4.4.2). Apply this especially to `library/include/loglib/json_parser.hpp`, `log_parser.hpp`, `log_table.hpp`, `streaming_log_sink.hpp`, `log_configuration.hpp`.
-  - [ ] 4.3 Remove mid-function narrative comments that simply restate the next 3 lines (e.g. `// Step 2: splice the lines …` directly above `lines.insert(...)`) (PRD §4.4.3).
-  - [ ] 4.4 Remove inline doc-comments on private helpers, lambdas, and nested types unless the intent is non-obvious (PRD §4.4.4).
-  - [ ] 4.5 Remove fluff doc comments — `@brief Default constructor for X.`, `@param x The x.`, parameter descriptions that just repeat the parameter name, `@return The number of …` for an obviously-named getter (PRD §4.4.5).
-  - [ ] 4.6 **Preserve** `@param` / `@return` / inline notes that document a contract a competent caller could otherwise violate (PRD §4.4.7), specifically:
+- [x] 4.0 Code hygiene pass (PRD §4.4)
+  - [x] 4.1 Sweep `library/`, `app/`, and `test/` (source and headers only — leave `tasks/`, `cmake/`, top-level `*.md` alone) and remove every `// PRD §…`, `// (PRD req. …)`, `// parser-perf task …`, `// task N.M`, and naked `§` reference. Use `rg "PRD\b|§|parser-perf|task \d+\.\d+" library app test` as the closing check; expected count is **0** (M6, PRD §4.4.1, §7). *(Closing `Grep` returns 0 hits across `library/`, `app/`, and `test/`.)*
+  - [x] 4.2 Shrink doc-comments on public types/methods to a one-line summary stating *what* the symbol is. Remove multi-paragraph rationale, references to other code, and historical context (PRD §4.4.2). Apply this especially to `library/include/loglib/json_parser.hpp`, `log_parser.hpp`, `log_table.hpp`, `streaming_log_sink.hpp`, `log_configuration.hpp`.
+  - [x] 4.3 Remove mid-function narrative comments that simply restate the next 3 lines (e.g. `// Step 2: splice the lines …` directly above `lines.insert(...)`) (PRD §4.4.3).
+  - [x] 4.4 Remove inline doc-comments on private helpers, lambdas, and nested types unless the intent is non-obvious (PRD §4.4.4).
+  - [x] 4.5 Remove fluff doc comments — `@brief Default constructor for X.`, `@param x The x.`, parameter descriptions that just repeat the parameter name, `@return The number of …` for an obviously-named getter (PRD §4.4.5).
+  - [x] 4.6 **Preserve** `@param` / `@return` / inline notes that document a contract a competent caller could otherwise violate (PRD §4.4.7), specifically:
     - Preconditions (e.g. `BackfillTimestampColumn`'s "Caller must ensure `column.type == LogConfiguration::Type::time`").
     - Lifetime / aliasing (e.g. "the returned `string_view` points into the mmap and outlives the `LogLine`").
     - Ownership transfer (e.g. `BufferingSink(std::unique_ptr<LogFile>)` — sink takes ownership).
     - Sorted-input invariants (e.g. `LogLine`'s pre-sorted-by-KeyId constructor contract).
     - In/out parameter semantics (e.g. `lastValid` "in/out cache").
     - Failure-mode contracts (e.g. "silently returns false; does not touch the line").
-  - [ ] 4.7 Confirm `tasks/` is untouched. Search-confirm with `git status -- tasks/` showing only this file's changes (PRD §4.4.6).
-  - [ ] 4.8 Check `test/lib/CMakeLists.txt` for any leftover `# PRD …` / `# task X.Y` references and remove them (currently 4 hits per `rg`).
-  - [ ] 4.9 Re-run the orphan-check across the full source tree: `rg "PRD\b|§|parser-perf|task \d+\.\d+" library app test` returns 0 lines (M6).
-  - [ ] 4.10 Run `ctest --preset local`. All tests pass; comment-only changes must not affect any assertion.
-  - [ ] 4.11 Capture before/after `MB/s` for `[large]`, `[wide]`, `[stream_to_table]` (expected drift ~0 % — comments and doc-strings only).
-  - [ ] 4.12 Commit to `feature/improve-performance-and-add-streaming` with the §4.11 numbers in the message.
+  - [x] 4.7 Confirm `tasks/` is untouched. Search-confirm with `git status -- tasks/` showing only this file's changes (PRD §4.4.6). *(`git status -- tasks/` showed a clean tree; this file is the only mutation, applied by §4.12 after the commit.)*
+  - [x] 4.8 Check `test/lib/CMakeLists.txt` for any leftover `# PRD …` / `# task X.Y` references and remove them (currently 4 hits per `rg`).
+  - [x] 4.9 Re-run the orphan-check across the full source tree: `rg "PRD\b|§|parser-perf|task \d+\.\d+" library app test` returns 0 lines (M6).
+  - [x] 4.10 Run `ctest --preset local`. All tests pass; comment-only changes must not affect any assertion. *(104/104 passing.)*
+  - [x] 4.11 Capture before/after `MB/s` for `[large]`, `[wide]`, `[stream_to_table]` (expected drift ~0 % — comments and doc-strings only). *(See commit message.)*
+  - [x] 4.12 Commit to `feature/improve-performance-and-add-streaming` with the §4.11 numbers in the message.
 
 - [ ] 5.0 Verify success metrics & sign-off (PRD §8, M1–M11)
   - [ ] 5.1 **M1** — `wc -l library/src/json_parser.cpp` ≤ **1,050** (down from 1,511; ≥ 30 % reduction per G2).

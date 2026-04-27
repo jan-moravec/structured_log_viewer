@@ -21,17 +21,9 @@ namespace loglib
 namespace
 {
 
-/**
- * @brief Transparent hash for the per-shard `tsl::robin_map<std::string, KeyId, ...>`.
- *
- * `tsl::robin_map`'s heterogeneous-lookup overloads are SFINAE-gated on both
- * the hash and the equality declaring an `is_transparent` typedef. We route
- * every overload through `std::hash<std::string_view>` so the bucket a
- * `std::string_view` query lands in is identical to the bucket the matching
- * `std::string` was stored under at insert time, regardless of which overload
- * the standard library implementation provides for `std::hash<std::string>`
- * (PRD §4.2 / §6.3 Route C).
- */
+/// Transparent hash for the per-shard `tsl::robin_map<std::string, KeyId, ...>`.
+/// All overloads route through `std::hash<std::string_view>` so a `string_view`
+/// query lands in the same bucket as the matching owning `std::string`.
 struct TransparentStringHash
 {
     using is_transparent = void;
@@ -78,22 +70,11 @@ struct TransparentStringEqual
 
 struct KeyIndex::Impl
 {
-    /// Shard count — sized so the bottom 4 bits of a `std::hash<string_view>`
-    /// pick a shard. A power-of-two count keeps the `& kShardMask` cheap and
-    /// gives roughly even occupancy under any reasonable hash output.
-    ///
-    /// 16 shards is the recommendation in PRD §6.3 and is enough that a
-    /// realistic ~30-key wide configuration distributes ~2 keys/shard, so an
-    /// 8-thread `Find` storm under `LogTable::AppendBatch::RefreshColumnKeyIds`
-    /// (PRD §4.8.2) hits ~uncontended shared-locks per shard.
+    /// Power-of-two shard count so the low bits of a `std::hash<string_view>`
+    /// pick a shard via `& kShardMask`.
     static constexpr size_t kShardCount = 16;
     static constexpr size_t kShardMask = kShardCount - 1;
 
-    /// Per-shard fast map. Stored key type is `std::string` (the canonical
-    /// owning copy) so heterogeneous `find(std::string_view)` works through
-    /// the transparent hash + equality. KeyOf does **not** read this map —
-    /// the canonical view it returns lives in `reverse` for pointer stability
-    /// across rehashes.
     struct Shard
     {
         tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
@@ -101,25 +82,20 @@ struct KeyIndex::Impl
     };
     std::array<Shard, kShardCount> shards;
 
-    /// Reverse storage: KeyId index -> owning std::string. `std::deque` is
-    /// used so that growing the reverse storage never invalidates pointers/
-    /// views to previously inserted strings, which is required by `KeyOf`'s
-    /// documented pointer-stability contract.
+    /// KeyId index -> owning string. `std::deque` is required: it keeps
+    /// pointers/views to previously inserted strings stable across appends,
+    /// which `KeyOf`'s lifetime contract depends on.
     std::deque<std::string> reverse;
 
-    /// Atomic high-water mark of allocated KeyIds; equals `reverse.size()`
-    /// once `reverseMutex` is unlocked. Stored separately so `Size()` can be
-    /// read concurrently without taking any lock.
+    /// High-water mark of allocated KeyIds. Stored separately so `Size()`
+    /// can be read without taking any lock.
     std::atomic<size_t> size{0};
 
     /// Serialises `reverse.emplace_back` so the deque mutation observed by
     /// `KeyOf(id)` happens-before any other thread reads `id` via the per-
-    /// shard map. Insert-only path; `KeyOf` and `Size()` do not take this
-    /// lock. `SortedKeys()` snapshots under it.
+    /// shard map.
     mutable std::mutex reverseMutex;
 
-    /// Computes the shard index for @p key, using the same hash function the
-    /// per-shard map uses internally. Result is in [0, kShardCount).
     static size_t ShardIndex(std::string_view key) noexcept
     {
         return std::hash<std::string_view>{}(key) & kShardMask;
@@ -143,9 +119,6 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
 
     Impl::Shard &shard = mImpl->shards[Impl::ShardIndex(key)];
 
-    // Fast path: heterogeneous `find(std::string_view)` under the per-shard
-    // shared lock. Multiple readers across shards run wait-free; multiple
-    // readers within the same shard share the lock without blocking.
     {
         std::shared_lock<std::shared_mutex> lock(shard.mutex);
         if (auto it = shard.map.find(key); it != shard.map.end())
@@ -154,37 +127,20 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
         }
     }
 
-    // Slow path: take both the shard's exclusive lock and the reverse-
-    // storage lock atomically via std::scoped_lock's deadlock-avoiding
-    // algorithm. Lock order is consistent across all call sites
-    // (shard exclusive, then reverseMutex), but scoped_lock removes the need
-    // to reason about it manually if a future caller adds more locks.
     std::scoped_lock locks(shard.mutex, mImpl->reverseMutex);
 
-    // Double-check under the exclusive lock — another thread may have
-    // inserted the key between our shared-lock find above and our acquiring
-    // the exclusive lock.
     if (auto it = shard.map.find(key); it != shard.map.end())
     {
         return it->second;
     }
 
-    // Append to the reverse deque first so the entry's address is stable
-    // before any other thread observes the new id via the shard map.
+    // Append to `reverse` before publishing into the shard map so the entry's
+    // address is stable before any other thread can observe the new id.
     const KeyId id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
-
-    // Insert into the per-shard map. The stored std::string is a copy of the
-    // canonical reverse-deque entry; we accept the duplication in exchange
-    // for keeping the map's storage independent of the deque's pointer
-    // stability contract. Heterogeneous lookup means callers never have to
-    // materialise a std::string for a `find` query (PRD req. 4.2.1, 4.2.4).
     shard.map.emplace(mImpl->reverse.back(), id);
 
-    // Publish the new size last, with release semantics, so a concurrent
-    // `Size()` reader that observes the new value also observes the
-    // underlying deque growth (synchronizes-with std::memory_order_acquire
-    // in Size()).
+    // Release-store on size synchronizes-with the acquire-load in Size().
     mImpl->size.store(mImpl->reverse.size(), std::memory_order_release);
     return id;
 }
@@ -206,10 +162,9 @@ KeyId KeyIndex::Find(std::string_view key) const
 
 std::string_view KeyIndex::KeyOf(KeyId id) const
 {
-    // The reverse deque only ever appends, and a successful KeyId implies the
-    // entry at that index has been published (release-store on `size` in
-    // GetOrInsert). std::deque guarantees pointer stability across appends, so
-    // dereferencing without the reverseMutex is safe here.
+    // The reverse deque is append-only and pointer-stable; dereferencing
+    // without taking reverseMutex is safe once the KeyId has been observed
+    // (release-store on `size` in GetOrInsert).
     return mImpl->reverse[id];
 }
 

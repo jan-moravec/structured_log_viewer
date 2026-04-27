@@ -568,9 +568,8 @@ void DecodeJsonBatch(
 
             parsed.lines.push_back(std::move(logLine));
 
-            // Per PRD §4.3.2, time-column promotion is the harness's hook, but applied
-            // inline (per line, hot in L1) rather than as a per-batch post-decode walk:
-            // the [stream_to_table] benchmark is sensitive to the second-walk cache loss.
+            // Promote time-column values inline so we stay hot in L1; a per-batch
+            // second walk loses cache locality on the [stream_to_table] benchmark.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns);
         }
         catch (const std::exception &e)

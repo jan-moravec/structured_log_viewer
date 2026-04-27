@@ -76,13 +76,13 @@ private:
     void ApplyTableStyleSheet();
 
     /**
-     * @brief Streams a JSON log through `JsonParser::ParseStreaming` on a
-     *        background thread (PRD req. 4.3.29).
+     * @brief Streams a JSON log through `LogParser::ParseStreaming` on a
+     *        background thread.
      *
-     * Locks the configuration UI for the duration of the parse, hands the
-     * model's `QtStreamingLogSink` and a freshly-installed `stop_token` to
-     * the parser, and tracks the parse via a `QFutureWatcher` so a second
-     * `OpenJsonStreaming` call won't leave the previous one dangling.
+     * Locks the configuration UI for the parse, hands the model's
+     * `QtStreamingLogSink` and a freshly-installed `stop_token` to the
+     * parser, and tracks the parse via a `QFutureWatcher` so a second
+     * `OpenJsonStreaming` call doesn't leave the previous one dangling.
      *
      * @return true if the streaming pipeline started; false if the file
      *              could not be opened (in which case @p errors carries the
@@ -103,7 +103,7 @@ private:
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
     /// Status-bar label that shows "Parsing <file> — N lines, M errors"
-    /// while a streaming parse is in flight (PRD req. 4.3.29).
+    /// while a streaming parse is in flight.
     QLabel *mStatusLabel = nullptr;
 
     /// Display name of the file currently being streamed; used to render
@@ -117,8 +117,8 @@ private:
     QFutureWatcher<void> *mStreamingWatcher = nullptr;
 
     /// True between `BeginStreaming` and the matching `streamingFinished`
-    /// signal. Used to gate the configuration UI per PRD req. 4.3.29 and to
-    /// suppress the post-parse error summary on cancellation.
+    /// signal. Used to gate the configuration UI and to suppress the
+    /// post-parse error summary on cancellation.
     bool mStreamingActive = false;
 
     /// Errors accumulated from the streaming sink during the active parse.

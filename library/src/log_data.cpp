@@ -29,10 +29,9 @@ LogData::LogData(LogData &&other) noexcept
     , mKeys(std::move(other.mKeys))
     , mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
 {
-    // KeyIndex is pImpl, so the underlying storage stays put on the heap, but the wrapper
-    // moved to a new address. Re-bind every LogLine's `mKeys` back-pointer so it dereferences
-    // through *this rather than the moved-from `other.mKeys` (which Catch may destroy
-    // arbitrarily after the move on Windows where NRVO didn't elide the copy).
+    // KeyIndex is pImpl, but its wrapper moved to a new address. Re-bind every
+    // LogLine's KeyIndex back-pointer to *this so it does not dereference a
+    // moved-from `other.mKeys`.
     for (auto &line : mLines)
     {
         line.RebindKeys(mKeys);
@@ -148,19 +147,10 @@ void LogData::Merge(LogData &&other)
 
 void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets)
 {
-    // Streaming append path used by Stage C of the parsing pipeline (PRD req. 4.1.13a /
-    // 4.2.18 Stage C). Lines arrive already bound to the canonical KeyIndex (the parser
-    // borrows it via `StreamingLogSink::Keys`), but we re-bind defensively in case a caller
-    // builds a batch against a different `KeyIndex` instance and hands it in directly.
-    //
-    // PRD §4.8 / parser-perf task 9.0: deliberately *no* `mLines.reserve(size + N)` here.
-    // Both libstdc++ and the MSVC STL implement `vector::reserve(n)` as "grow capacity to
-    // exactly `n`", which means a per-batch `reserve` re-allocates the entire `mLines`
-    // buffer every batch (O(N²/B) over the streaming run — measured at > 1 s of GUI-thread
-    // wall time on the `[stream_to_table]` 1 M-line / ~700-batch fixture before the fix).
-    // `push_back` grows the capacity geometrically (typically 1.5× or 2× per implementation),
-    // so dropping the explicit reserve falls back to amortised O(N) total cost while
-    // keeping the per-line `RebindKeys` step exactly where it is.
+    // Deliberately no `mLines.reserve(size + N)` here: both libstdc++ and MSVC
+    // STL implement `vector::reserve(n)` as "grow capacity to exactly `n`", so
+    // a per-batch reserve reallocates the buffer every batch (O(N^2/B)).
+    // `push_back`'s geometric growth gives amortised O(N) instead.
     if (!lines.empty())
     {
         for (auto &line : lines)

@@ -189,9 +189,9 @@ TEST_CASE("KeyIndex move construction preserves the dictionary", "[key_index]")
     CHECK(moved.KeyOf(b) == "beta");
 }
 
-// PRD task 2.5 / §7.5 risk row 2 — heterogeneous-lookup race stress test.
-// Eight workers race to GetOrInsert/Find against a small (200-key) overlapping
-// pool. Postcondition: exactly 200 distinct ids, every Find matches its
+// Heterogeneous-lookup race stress test. Eight workers race
+// `GetOrInsert`/`Find` against a small (200-key) overlapping pool.
+// Postcondition: exactly 200 distinct ids, every Find matches its
 // GetOrInsert, KeyOf round-trips correctly, and ids are dense in [0, 200).
 TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find storm", "[key_index][stress]")
 {
@@ -242,11 +242,10 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
     CHECK(index.Size() == static_cast<size_t>(kKeyCount));
 }
 
-// PRD task 2.6 — heterogeneous-lookup unit test. Exercises the new no-alloc
-// fast path: a `string_view` query (built from a `char` buffer) must succeed
-// without the caller materialising a `std::string`. The PRD wording asks us
-// to assert the call counts via `LOGLIB_KEY_INDEX_INSTRUMENTATION` exactly,
-// so we reset the counters at the top and read them at the end.
+// Heterogeneous-lookup unit test. Exercises the no-alloc fast path: a
+// `string_view` query (built from a stack `char` buffer) must succeed
+// without the caller materialising a `std::string`. The instrumentation
+// counters are reset at the top and read at the end.
 TEST_CASE(
     "KeyIndex heterogeneous lookup never requires the caller to materialise a std::string", "[key_index][heterogeneous]"
 )
@@ -281,10 +280,10 @@ TEST_CASE(
 
     // Counter assertions: 3 Find calls, 2 GetOrInsert calls. If the
     // implementation regressed and a heterogeneous find path now constructs
-    // a std::string, this still passes — the counter only proves the public
-    // API was exercised the expected number of times. The non-allocation
-    // contract itself is ratified by the PRD's [allocations] benchmark
-    // (M5: ≥ 99 % string_view fast-path fraction) staying green.
+    // a std::string, this test still passes — the counter only proves the
+    // public API was exercised the expected number of times. The non-
+    // allocation contract itself is enforced by the `[allocations]`
+    // benchmark's `string_view` fast-path fraction staying green.
     CHECK(KeyIndex::LoadFindCount() == 3);
     CHECK(KeyIndex::LoadGetOrInsertCount() == 2);
 }

@@ -33,46 +33,39 @@ public:
     void Clear();
 
     /**
-     * @brief Initialises the model for an upcoming streaming parse against
-     *        @p file (PRD req. 4.3.27).
+     * @brief Initialises the model for a streaming parse against @p file.
      *
-     * Resets row/column counts, installs the file as the table's source via
-     * `LogTable::BeginStreaming`, calls `mSink->BeginParse()` to obtain a
-     * fresh `std::stop_token` (returned to the caller for installation on
-     * `ParserOptions::stopToken`) and reserves capacity in the
-     * file-backed line-offset table proportional to the file size so the
-     * per-batch appends stay amortised O(1).
+     * Resets row/column counts, installs @p file as the table's source via
+     * `LogTable::BeginStreaming`, obtains a fresh `std::stop_token` from
+     * the bridging sink (returned for installation on
+     * `ParserOptions::stopToken`), and reserves line-offset capacity
+     * proportional to the file size so per-batch appends stay amortised
+     * O(1).
      *
-     * @param file Already-opened `LogFile` whose mmap will back the parse.
-     *             Ownership transfers to the model (and to its `LogTable`).
-     * @return     The cooperative-cancellation token to install on the
-     *             `ParserOptions` for the upcoming parse.
+     * @param file Already-opened `LogFile` whose mmap backs the parse.
+     *             Ownership transfers to the model.
+     * @return     Cooperative-cancellation token for the upcoming parse.
      */
     std::stop_token BeginStreaming(std::unique_ptr<loglib::LogFile> file);
 
     /**
-     * @brief Appends one streamed batch to the table, driving the
-     *        appropriate Qt model-change signals (PRD req. 4.3.27).
+     * @brief Appends one streamed batch and drives Qt model-change signals.
      *
-     * Implements the seven-step delta drive: capture old row/column counts
-     * and `errors.size()` BEFORE moving the batch; call
-     * `LogTable::AppendBatch(std::move(batch))`; capture the new counts;
-     * issue `beginInsertColumns`/`endInsertColumns` if the column delta is
-     * positive; issue `beginInsertRows`/`endInsertRows` if the row delta is
-     * positive (skip both if delta == 0 — empty-rows-only batches are
-     * tolerated); if `LogTable::LastBackfillRange()` is non-null emit
-     * `dataChanged` over the affected column range AFTER `endInsertRows`;
-     * update the running `mLineCount` / `mErrorCount` and emit
-     * `lineCountChanged` (always) and `errorCountChanged` (only when
-     * `capturedErrorCount > 0`).
+     * Captures old row/column counts and `errors.size()` *before* moving
+     * the batch; calls `LogTable::AppendBatch`; emits
+     * `beginInsertColumns`/`endInsertColumns` and
+     * `beginInsertRows`/`endInsertRows` for any positive delta (empty-rows
+     * batches are tolerated); if `LogTable::LastBackfillRange()` is set,
+     * emits `dataChanged` over that column range AFTER `endInsertRows`;
+     * updates `mLineCount` / `mErrorCount` and emits `lineCountChanged`
+     * (always) plus `errorCountChanged` when `capturedErrorCount > 0`.
      */
     void AppendBatch(loglib::StreamedBatch batch);
 
     /**
-     * @brief Finalises the streaming parse. Emits `streamingFinished(bool)`.
-     *        Does NOT call `ParseTimestamps` — Stage B and `AppendBatch`
-     *        have already done all timestamp work (PRD req. 4.2.21,
-     *        4.1.13b).
+     * @brief Finalises the streaming parse. Emits `streamingFinished`.
+     *        Does NOT call `ParseTimestamps` — the streaming pipeline and
+     *        `AppendBatch` have already promoted every timestamp.
      */
     void EndStreaming(bool cancelled);
 
@@ -89,23 +82,22 @@ public:
     loglib::LogConfigurationManager &ConfigurationManager();
 
     /**
-     * @brief Returns the GUI-side bridging sink. Lifetime-tied to this model.
+     * @brief Returns the GUI-side bridging sink. Lifetime-tied to the model.
      *
      * Exposed so `MainWindow` can hand the same sink instance to
-     * `JsonParser::ParseStreaming` after `BeginStreaming` has already
-     * installed a fresh `stop_token` on it.
+     * `LogParser::ParseStreaming` after `BeginStreaming` has installed a
+     * fresh `stop_token` on it.
      */
     QtStreamingLogSink *Sink();
 
     /**
-     * @brief Returns the per-line errors collected from streamed batches
-     *        since the last `Clear`/`BeginStreaming`.
+     * @brief Per-line errors collected from streamed batches since the last
+     *        `Clear`/`BeginStreaming`.
      *
-     * `LogTable::AppendBatch` discards `batch.errors` (loglib has no
-     * notion of how the GUI wants to surface them) so `LogModel` peels them
-     * off into this vector first. `MainWindow` consumes it on the
-     * `streamingFinished(false)` slot to show the post-parse summary
-     * (PRD req. 4.3.29).
+     * `LogTable::AppendBatch` discards `batch.errors` (loglib has no view
+     * of how the GUI wants to surface them) so `LogModel` peels them off
+     * here first. `MainWindow` consumes this on the
+     * `streamingFinished(false)` slot to show the post-parse summary.
      */
     const std::vector<std::string> &StreamingErrors() const;
 

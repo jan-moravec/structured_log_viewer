@@ -27,10 +27,10 @@ std::stop_token QtStreamingLogSink::BeginParse()
 
 void QtStreamingLogSink::RequestStop()
 {
-    // GUI-thread only. The order matters (PRD req. 4.3.28): bump the generation
-    // FIRST so the queued OnBatch calls already in the event loop are dropped on
-    // receipt; only then ask the parser to stop, allowing the up-to-`ntokens`
-    // in-flight batches to dissolve into the same dropped-by-generation sink.
+    // GUI-thread only. Order matters: bump the generation FIRST so the queued
+    // OnBatch calls already in the event loop are dropped on receipt, then ask
+    // the parser to stop. Any in-flight batches still emitted before the parser
+    // notices the stop request dissolve into the same generation-dropped sink.
     mGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (mStopSource.has_value())
     {

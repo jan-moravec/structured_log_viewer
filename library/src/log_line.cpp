@@ -38,9 +38,9 @@ LogValue ToOwnedLogValue(const LogValue &value)
 
 bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 {
-    // Treat string_view and string as the same logical kind so the parity test can compare
-    // outputs of two parsers that may have made different fast/slow-path choices for the
-    // same underlying bytes (PRD req. 4.1.16, S7).
+    // Treat `string_view` and `string` as the same logical kind so the parity
+    // test can compare outputs of two parsers that may have made different
+    // fast/slow-path choices on the same underlying bytes.
     const auto lhsString = AsStringView(lhs);
     const auto rhsString = AsStringView(rhs);
     if (lhsString.has_value() || rhsString.has_value())
@@ -54,9 +54,8 @@ LogLine::LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, const Key
     : mValues(std::move(sortedValues)), mKeys(&keys), mFileReference(std::move(fileReference))
 {
 #ifndef NDEBUG
-    // Pinning the contract: callers must hand in a vector sorted ascending by KeyId. The
-    // hot-path GetValue and the merge step in LogData both rely on this for correctness and
-    // performance.
+    // Sorted-ascending-by-KeyId is a precondition; both `GetValue` and the
+    // merge step in `LogData` rely on it for correctness and performance.
     assert(std::is_sorted(mValues.begin(), mValues.end(), [](const auto &a, const auto &b) {
         return a.first < b.first;
     }));
@@ -86,7 +85,6 @@ LogValue LogLine::GetValue(KeyId id) const
         }
         if (entry.first > id)
         {
-            // Sorted-ascending invariant lets us early-exit once we passed the requested id.
             break;
         }
     }
@@ -110,9 +108,9 @@ LogValue LogLine::GetValue(const std::string &key) const
 void LogLine::SetValue(KeyId id, LogValue value)
 {
 #ifndef NDEBUG
-    // The plain SetValue overload is intended for owned values produced after parsing (e.g.
-    // the timestamp promotion pass). Callers that have a view into the mmap must use the
-    // LogValueTrustView-tagged overload to make the lifetime promise explicit.
+    // The untagged setter is for owned values produced after parsing. Callers
+    // that hand in a `string_view` must use the `LogValueTrustView` overload
+    // and so make the lifetime promise explicit.
     assert(!std::holds_alternative<std::string_view>(value));
 #endif
     SetValue(id, std::move(value), LogValueTrustView{});

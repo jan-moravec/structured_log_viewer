@@ -59,12 +59,12 @@ TEST_CASE("Throw runtime error when opening a non-existent file", "[LogFile]")
     CHECK_THROWS_AS(LogFile("non_existent_file.txt"), std::runtime_error);
 }
 
-// PRD req. 4.1.6a — the mmap pointer returned by Data() must survive a move
-// of the owning LogFile. This is what allows downstream LogValues to hold
-// std::string_view`s into the file content for the entire LogFile lifetime,
-// regardless of whether the LogFile is later moved out of the container that
-// originally created it (e.g. LogModel taking ownership). If a future mio
-// upgrade silently changes that contract, this test fails loudly.
+// The mmap pointer returned by `Data()` must survive a move of the owning
+// `LogFile`. This is what allows downstream `LogValue`s to hold
+// `std::string_view`s into the file content for the entire `LogFile`
+// lifetime, regardless of whether the file is later moved between owners
+// (e.g. `LogModel` taking ownership). A future `mio` upgrade that silently
+// changes that contract would fail this test loudly.
 TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-stability]")
 {
     TestLogFile testLogFile;
