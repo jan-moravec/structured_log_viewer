@@ -97,6 +97,207 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     CHECK(std::get<TimeStamp>(logData.Lines()[3].GetValue("key")) == timestamp);
 }
 
+TEST_CASE("ClassifyTimestampFormat", "[log_processing][iso8601_fast_path]")
+{
+    CHECK(ClassifyTimestampFormat("%FT%T") == TimestampFormatKind::Iso8601_T);
+    CHECK(ClassifyTimestampFormat("%F %T") == TimestampFormatKind::Iso8601_Space);
+    CHECK(ClassifyTimestampFormat("%FT%T%Ez") == TimestampFormatKind::Generic);
+    CHECK(ClassifyTimestampFormat("%F %T%Ez") == TimestampFormatKind::Generic);
+    CHECK(ClassifyTimestampFormat("") == TimestampFormatKind::Generic);
+    CHECK(ClassifyTimestampFormat(" %FT%T") == TimestampFormatKind::Generic);
+    CHECK(ClassifyTimestampFormat("%FT%T ") == TimestampFormatKind::Generic);
+}
+
+TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601_fast_path]")
+{
+    const TimeStamp expectedNoFraction{std::chrono::microseconds{1745584496000000}};
+    const TimeStamp expectedMs{std::chrono::microseconds{1745584496123000}};
+    const TimeStamp expectedUs{std::chrono::microseconds{1745584496123456}};
+
+    SECTION("%FT%T no fractional seconds")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56", 'T', out));
+        CHECK(out == expectedNoFraction);
+    }
+
+    SECTION("%FT%T with millisecond fraction")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.123", 'T', out));
+        CHECK(out == expectedMs);
+    }
+
+    SECTION("%FT%T with microsecond fraction")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.123456", 'T', out));
+        CHECK(out == expectedUs);
+    }
+
+    SECTION("%F %T no fractional seconds")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25 12:34:56", ' ', out));
+        CHECK(out == expectedNoFraction);
+    }
+
+    SECTION("%F %T with millisecond fraction")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25 12:34:56.123", ' ', out));
+        CHECK(out == expectedMs);
+    }
+
+    SECTION("%F %T with microsecond fraction")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25 12:34:56.123456", ' ', out));
+        CHECK(out == expectedUs);
+    }
+
+    SECTION("Single-digit fractional pads to microseconds")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.5", 'T', out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496500000}});
+    }
+
+    SECTION("Two-digit fractional pads to microseconds")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.50", 'T', out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496500000}});
+    }
+}
+
+TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso8601_fast_path]")
+{
+    TimeStamp out{};
+
+    SECTION("Empty string")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("", 'T', out));
+    }
+
+    SECTION("Too short")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34", 'T', out));
+    }
+
+    SECTION("Wrong date/time separator")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25 12:34:56", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56", ' ', out));
+    }
+
+    SECTION("Invalid month")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-13-01T12:34:56", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-00-01T12:34:56", 'T', out));
+    }
+
+    SECTION("Invalid day-of-month")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-31T12:34:56", 'T', out)); // April has 30 days
+        CHECK_FALSE(TryParseIsoTimestamp("2025-02-29T12:34:56", 'T', out)); // 2025 is not leap
+    }
+
+    SECTION("Invalid hour")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T24:00:00", 'T', out));
+    }
+
+    SECTION("Invalid minute")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:60:00", 'T', out));
+    }
+
+    SECTION("Non-digit in fixed positions")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:5x", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("20a5-04-25T12:34:56", 'T', out));
+    }
+
+    SECTION("Trailing garbage after seconds")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56Z", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56+00:00", 'T', out));
+    }
+
+    SECTION("Empty fractional after dot")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.", 'T', out));
+    }
+
+    SECTION("Sub-microsecond fractional precision")
+    {
+        // 7+ digit fraction must round-trip to slow path so callers don't
+        // silently lose precision.
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567", 'T', out));
+    }
+
+    SECTION("Trailing garbage after fractional digits")
+    {
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123Z", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123x", 'T', out));
+    }
+}
+
+TEST_CASE("TryParseIsoTimestamp matches date::parse for representative inputs", "[log_processing][iso8601_fast_path]")
+{
+    const std::vector<std::string> isoTInputs = {
+        "1970-01-01T00:00:01",          "2000-02-29T23:59:59", // leap year
+        "2024-12-31T23:59:59.999",      "2025-04-25T12:34:56",
+        "2025-04-25T12:34:56.123",      "2025-04-25T12:34:56.123456",
+        "2099-06-15T03:04:05.000001",
+    };
+
+    for (const auto &input : isoTInputs)
+    {
+        CAPTURE(input);
+        TimeStamp fastOut{};
+        REQUIRE(TryParseIsoTimestamp(input, 'T', fastOut));
+
+        TimestampParseScratch scratch;
+        TimeStamp slowOut{};
+        REQUIRE(TryParseGenericTimestamp(input, "%FT%T", scratch, slowOut));
+
+        CHECK(fastOut == slowOut);
+    }
+}
+
+TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast_path]")
+{
+    TimestampParseScratch scratch;
+    TimeStamp out{};
+
+    SECTION("Iso8601_T routes to fast path")
+    {
+        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56", "%FT%T", TimestampFormatKind::Iso8601_T, scratch, out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
+    }
+
+    SECTION("Iso8601_Space routes to fast path")
+    {
+        REQUIRE(TryParseTimestamp("2025-04-25 12:34:56", "%F %T", TimestampFormatKind::Iso8601_Space, scratch, out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
+    }
+
+    SECTION("Generic routes to date::parse")
+    {
+        REQUIRE(
+            TryParseTimestamp("2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out)
+        );
+        CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
+    }
+
+    SECTION("Generic rejects malformed input")
+    {
+        CHECK_FALSE(TryParseTimestamp("not a date", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out));
+    }
+}
+
 TEST_CASE("TimeStampToLocalMillisecondsSinceEpoch", "[log_processing]")
 {
     InitializeTimezoneData();

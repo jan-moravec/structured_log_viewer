@@ -788,6 +788,11 @@ struct JsonParser::StreamingDetail
      * (not referenced) so the spec list stays valid even if the original
      * configuration shared_ptr is reset by the caller mid-parse.
      *
+     * `formatKinds` holds the result of `ClassifyTimestampFormat` for each
+     * entry of `parseFormats`, computed once at pipeline start so the
+     * Stage B inline promotion loop never re-classifies per line. Entries
+     * pair 1:1 with `parseFormats`.
+     *
      * PRD §4.2a / parser-perf task 3.2; pairs 1:1 with
      * `WorkerState::lastValidTimestamps[i]`.
      */
@@ -795,6 +800,7 @@ struct JsonParser::StreamingDetail
     {
         std::vector<KeyId> keyIds;
         std::vector<std::string> parseFormats;
+        std::vector<TimestampFormatKind> formatKinds;
     };
 
     /**
@@ -817,6 +823,30 @@ struct JsonParser::StreamingDetail
      * `enumerable_thread_specific` performs when growing its per-thread
      * slot table (covered by the `[key_cache][move]` test).
      */
+    /**
+     * @brief Per-worker per-time-column same-bytes short-circuit cache.
+     *
+     * Many real-world logs emit consecutive lines with identical timestamps
+     * (sub-second log bursts, replayed events, …). On a cache hit we reuse
+     * the previous parse and skip the entire format dispatch, saving the
+     * `LogLine::GetValue` + `date::parse` / `TryParseIsoTimestamp` round-trip.
+     * The synthetic `[stream_to_table]` fixture's `system_clock::now()`-per-
+     * line timestamps deliberately defeat this cache; the win is on
+     * production logs.
+     *
+     * `bytes` owns the previous string contents so the comparison stays
+     * safe even if the original `std::string_view` was a transient view
+     * into the per-worker `linePadded` scratch (the !sourceIsStable tail-
+     * line branch).
+     */
+    struct LastTimestampBytesHit
+    {
+        KeyId keyId = kInvalidKeyId;
+        std::string bytes;
+        TimeStamp parsed{};
+        bool valid = false;
+    };
+
     struct WorkerState
     {
         simdjson::ondemand::parser parser;
@@ -832,6 +862,13 @@ struct JsonParser::StreamingDetail
         JsonParser::ParseCache cache;
         detail::PerWorkerKeyCache keyCache;
         std::vector<std::optional<LastValidTimestampParse>> lastValidTimestamps;
+        // Scratch buffers for the generic `date::parse` fallback path. Reused across
+        // every line so neither the `std::string` copy nor the `std::istringstream`'s
+        // internal stringbuf re-allocates per call. Sized in lockstep with
+        // `lastValidTimestamps` (and so with `timeColumns`) the first time a worker
+        // sees a non-empty `timeColumns` vector.
+        TimestampParseScratch tsScratch;
+        std::vector<LastTimestampBytesHit> lastBytesHits;
     };
 
     /**
@@ -869,12 +906,16 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
     bool useParseCache
 )
 {
-    // Lazily right-size the worker's per-time-column lastValid cache. Sized once on first
-    // entry — `timeColumns` is captured by reference from `ParseStreaming`'s pipeline
-    // start-up and does not grow during the parse.
+    // Lazily right-size the worker's per-time-column lastValid cache and same-bytes
+    // hit cache. Sized once on first entry — `timeColumns` is captured by reference
+    // from `ParseStreaming`'s pipeline start-up and does not grow during the parse.
     if (!timeColumns.empty() && worker.lastValidTimestamps.size() < timeColumns.size())
     {
         worker.lastValidTimestamps.resize(timeColumns.size());
+    }
+    if (!timeColumns.empty() && worker.lastBytesHits.size() < timeColumns.size())
+    {
+        worker.lastBytesHits.resize(timeColumns.size());
     }
 
     ParsedPipelineBatch parsed;
@@ -1017,16 +1058,105 @@ JsonParser::StreamingDetail::ParsedPipelineBatch JsonParser::StreamingDetail::Pa
             // happens in `LogTable::AppendBatch::BackfillTimestampColumn`, matching the legacy
             // GUI-side silent-discard semantics. Iterating against a reference to the line
             // we just pushed keeps the back-pointer to `keys` (set by the LogLine constructor)
-            // valid for `ParseTimestampLine`'s `LogLine::GetValue(KeyId)` linear scan.
+            // valid for `LogLine::GetValue(KeyId)`'s linear scan.
+            //
+            // Inlined dispatcher (parser-perf task 3.4 — fast-path follow-up): instead of
+            // calling `ParseTimestampLine`, we (1) look up the value at the cached
+            // last-winning KeyId first, (2) short-circuit on a same-bytes hit against the
+            // previous successful parse for this column, and (3) dispatch to the hand-
+            // rolled `TryParseIsoTimestamp` fast path for `%FT%T` / `%F %T`. Only the
+            // generic fallback touches `date::parse` / iostreams now, and even that path
+            // reuses the worker's `tsScratch` buffers so the per-line heap traffic is bounded
+            // by the size of the timestamp string.
             if (!timeColumns.empty())
             {
                 LogLine &storedLine = parsed.lines.back();
                 for (size_t i = 0; i < timeColumns.size(); ++i)
                 {
                     const TimeColumnSpec &spec = timeColumns[i];
-                    (void)ParseTimestampLine(
-                        storedLine, spec.keyIds, spec.parseFormats, worker.lastValidTimestamps[i]
-                    );
+                    std::optional<LastValidTimestampParse> &lastValid = worker.lastValidTimestamps[i];
+                    LastTimestampBytesHit &bytesHit = worker.lastBytesHits[i];
+
+                    // Helper that pulls the timestamp string for a given KeyId from
+                    // the just-stored line; returns nullopt if the value is missing
+                    // or already non-string (e.g. promoted on a previous pass).
+                    const auto getStringFor = [&storedLine](KeyId keyId) -> std::optional<std::string_view> {
+                        if (keyId == kInvalidKeyId)
+                        {
+                            return std::nullopt;
+                        }
+                        LogValue value = storedLine.GetValue(keyId);
+                        return AsStringView(value);
+                    };
+
+                    // Try the cached (KeyId, format, kind) first. This is the dominant
+                    // path for files that use a single timestamp format throughout — the
+                    // entire body collapses to one GetValue + one bytes compare or one
+                    // fast-path parse.
+                    auto tryPromote = [&](KeyId keyId, const std::string &format,
+                                          TimestampFormatKind kind, std::string_view sv) -> bool {
+                        // Same-bytes short-circuit. Bypasses `TryParseIsoTimestamp` and
+                        // any locale-bearing iostream code entirely; on the
+                        // [stream_to_table] benchmark this misses (timestamps are unique
+                        // per line), but production logs that emit bursts of identical
+                        // timestamps land here.
+                        if (bytesHit.valid && bytesHit.keyId == keyId && bytesHit.bytes.size() == sv.size() &&
+                            std::memcmp(bytesHit.bytes.data(), sv.data(), sv.size()) == 0)
+                        {
+                            storedLine.SetValue(keyId, bytesHit.parsed);
+                            return true;
+                        }
+                        TimeStamp parsed;
+                        if (!TryParseTimestamp(sv, format, kind, worker.tsScratch, parsed))
+                        {
+                            return false;
+                        }
+                        storedLine.SetValue(keyId, parsed);
+                        bytesHit.keyId = keyId;
+                        bytesHit.bytes.assign(sv.data(), sv.size());
+                        bytesHit.parsed = parsed;
+                        bytesHit.valid = true;
+                        return true;
+                    };
+
+                    bool promoted = false;
+                    if (lastValid.has_value())
+                    {
+                        if (auto sv = getStringFor(lastValid->keyId); sv.has_value())
+                        {
+                            if (tryPromote(lastValid->keyId, lastValid->format, lastValid->kind, *sv))
+                            {
+                                promoted = true;
+                            }
+                        }
+                    }
+
+                    if (!promoted)
+                    {
+                        // First-line / cache-miss fall-through: walk the full
+                        // (keyIds × parseFormats) matrix. Updates `lastValid` to whichever
+                        // pair won so subsequent lines take the fast path above.
+                        for (size_t k = 0; !promoted && k < spec.keyIds.size(); ++k)
+                        {
+                            const KeyId keyId = spec.keyIds[k];
+                            auto sv = getStringFor(keyId);
+                            if (!sv.has_value())
+                            {
+                                continue;
+                            }
+                            for (size_t f = 0; f < spec.parseFormats.size(); ++f)
+                            {
+                                const std::string &format = spec.parseFormats[f];
+                                const TimestampFormatKind kind = spec.formatKinds[f];
+                                if (tryPromote(keyId, format, kind, *sv))
+                                {
+                                    lastValid = LastValidTimestampParse{keyId, format, kind};
+                                    promoted = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1147,6 +1277,14 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParse
                 spec.keyIds.push_back(keys.GetOrInsert(key));
             }
             spec.parseFormats = column.parseFormats;
+            // Pre-classify every format string so the Stage B inline timestamp
+            // promotion loop can dispatch to the hand-rolled fast path with a
+            // single byte comparison rather than re-classifying per line.
+            spec.formatKinds.reserve(spec.parseFormats.size());
+            for (const std::string &format : spec.parseFormats)
+            {
+                spec.formatKinds.push_back(ClassifyTimestampFormat(format));
+            }
             timeColumns.push_back(std::move(spec));
         }
     }

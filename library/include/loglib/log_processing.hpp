@@ -6,13 +6,55 @@
 
 #include <date/tz.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
+#include <string_view>
 
 namespace loglib
 {
+
+/**
+ * @brief Coarse classification of timestamp `parseFormats` strings used to
+ *        dispatch the per-line parse to a hand-rolled fast path when the
+ *        format matches one of the common ISO-8601 shapes.
+ *
+ * `Generic` always falls through to the existing `date::parse` /
+ * `std::istringstream` path, so adding a new fast-path kind is strictly
+ * additive — unknown formats keep the legacy semantics.
+ *
+ * The `_T` / `_Space` variants differ only in the date/time separator
+ * character (`'T'` vs `' '`), matching `%FT%T` and `%F %T` respectively.
+ * Both accept an optional `.fff` / `.ffffff` fractional-seconds suffix
+ * (millisecond / microsecond precision), which `%T` does too in Howard
+ * Hinnant's parser. Anything trailing past microsecond precision (e.g.
+ * timezone offsets, sub-microsecond fractions) round-trips back to the
+ * generic path.
+ */
+enum class TimestampFormatKind : std::uint8_t
+{
+    Generic,
+    Iso8601_T,
+    Iso8601_Space,
+};
+
+/**
+ * @brief Returns the fast-path kind for @p format, or `Generic` for any
+ *        format string that does not match one of the recognised ISO-8601
+ *        shapes verbatim.
+ *
+ * The recognised set is intentionally conservative — only `"%FT%T"` and
+ * `"%F %T"`. Any decoration such as a trailing `%Ez` (timezone offset),
+ * leading whitespace, or alternative date-component ordering routes the
+ * caller back to `date::parse`.
+ *
+ * Pure function; cheap enough to call once per (column, format) at config
+ * time so the streaming Stage B hot path never re-classifies per line.
+ */
+TimestampFormatKind ClassifyTimestampFormat(std::string_view format);
 
 /**
  * @brief Per-line carry-over for `ParseTimestampLine`'s "remember the last
@@ -31,12 +73,93 @@ namespace loglib
  * carries one of these per Stage B `WorkerState`'s per-time-column slot
  * across batches because a single worker walks the same set of columns
  * over and over.
+ *
+ * `kind` is the cached result of `ClassifyTimestampFormat(format)` so the
+ * hot path can dispatch the fast/slow-path branch on a single byte
+ * comparison rather than re-classifying the format string per line.
  */
 struct LastValidTimestampParse
 {
     KeyId keyId = kInvalidKeyId;
     std::string format;
+    TimestampFormatKind kind = TimestampFormatKind::Generic;
 };
+
+/**
+ * @brief Per-caller scratch buffers for the generic `date::parse` fallback.
+ *
+ * The legacy slow path constructed a fresh `std::istringstream` and copied
+ * the timestamp bytes into a fresh `std::string` on every call — two heap
+ * allocations per line on the [stream_to_table] hot path. Threading one of
+ * these through the per-line helpers lets the streaming Stage B amortise
+ * both allocations across an entire batch (one per worker, lifetime tied
+ * to `WorkerState`) and lets the legacy whole-data path own one scratch
+ * for the duration of a column walk.
+ *
+ * The struct is intentionally trivial — callers `clear()`/`assign()` the
+ * fields directly through the helper functions below; nothing else touches
+ * them.
+ */
+struct TimestampParseScratch
+{
+    std::string str;
+    std::istringstream stream;
+};
+
+/**
+ * @brief Parses an ISO-8601-style timestamp directly from @p sv into @p out.
+ *
+ * Recognised shape: `YYYY-MM-DD<sep>HH:MM:SS[.fff[fff]]` where `<sep>` is
+ * either `'T'` or `' '` (callers pass the desired separator). Up to six
+ * fractional-second digits are accepted (rounded to microsecond precision).
+ * Anything else — leading whitespace, alternative date-component ordering,
+ * timezone offsets, sub-microsecond precision — returns `false` so the
+ * caller can fall back to the generic `date::parse` path.
+ *
+ * Pure: no heap allocation, no iostream, no locale facets. ~50 ns / call
+ * after warm-up; designed to remove `date::parse` from the streaming
+ * Stage B hot path on the [stream_to_table] benchmark.
+ *
+ * To match the legacy `TryParseTimestampOnce` failure contract, an epoch-
+ * zero result (`time_since_epoch().count() <= 0`) is reported as a parse
+ * failure even when the string was structurally valid.
+ *
+ * @param sv           Timestamp bytes (no surrounding quotes; whitespace is
+ *                     not stripped by this function).
+ * @param dateTimeSep  `'T'` for `%FT%T`-style inputs, `' '` for `%F %T`.
+ * @param out          Output timestamp, written only on success.
+ * @return `true` iff @p sv parsed cleanly under the recognised shape.
+ */
+bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out);
+
+/**
+ * @brief Slow-path equivalent of `TryParseIsoTimestamp` for arbitrary
+ *        `date::parse`-compatible @p format strings.
+ *
+ * Reuses the caller-supplied scratch buffers so the per-call heap traffic
+ * is bounded by the size of the input string (one short copy into
+ * `scratch.str`); the `std::istringstream` itself is reset via `clear()` +
+ * `str()` rather than reconstructed.
+ */
+bool TryParseGenericTimestamp(
+    std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
+);
+
+/**
+ * @brief Dispatcher that picks the fast or slow path based on @p kind and
+ *        threads the caller's scratch buffers through to the slow path.
+ *
+ * Used by both the legacy `ParseTimestampLine` (with thread-local scratch)
+ * and the streaming Stage B inline timestamp-promotion loop (with
+ * `WorkerState`-owned scratch).
+ */
+bool TryParseTimestamp(
+    std::string_view sv,
+    const std::string &format,
+    TimestampFormatKind kind,
+    TimestampParseScratch &scratch,
+    TimeStamp &out
+);
 
 /**
  * @brief Initializes the log processing library with timezone data.
