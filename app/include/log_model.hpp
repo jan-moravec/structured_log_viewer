@@ -39,14 +39,14 @@ public:
      * Resets row/column counts, installs the file as the table's source via
      * `LogTable::BeginStreaming`, calls `mSink->BeginParse()` to obtain a
      * fresh `std::stop_token` (returned to the caller for installation on
-     * `JsonParserOptions::stopToken`) and reserves capacity in the
+     * `ParserOptions::stopToken`) and reserves capacity in the
      * file-backed line-offset table proportional to the file size so the
      * per-batch appends stay amortised O(1).
      *
      * @param file Already-opened `LogFile` whose mmap will back the parse.
      *             Ownership transfers to the model (and to its `LogTable`).
      * @return     The cooperative-cancellation token to install on the
-     *             `JsonParserOptions` for the upcoming parse.
+     *             `ParserOptions` for the upcoming parse.
      */
     std::stop_token BeginStreaming(std::unique_ptr<loglib::LogFile> file);
 

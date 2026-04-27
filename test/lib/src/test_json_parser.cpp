@@ -1,10 +1,16 @@
 #include "common.hpp"
 
+#include "buffering_sink.hpp"
+
+#include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
+#include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parser.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/parser_options.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
@@ -22,12 +28,54 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <variant>
 
 namespace
 {
 constexpr uint64_t LARGE_UINT = 10000000000000000000ULL;
+
+// Drives a synchronous parse against the streaming pipeline (mirrors the legacy
+// `JsonParser::Parse(path, opts)` shape) for tests that need to dial advanced
+// tuning knobs but still consume a `ParseResult`.
+loglib::ParseResult ParseWithSink(
+    const loglib::LogParser &parser,
+    const std::filesystem::path &path,
+    const loglib::ParserOptions &options = {},
+    const loglib::internal::AdvancedParserOptions &advanced = {}
+)
+{
+    auto logFile = std::make_unique<loglib::LogFile>(path);
+    loglib::LogFile *logFilePtr = logFile.get();
+    loglib::BufferingSink sink(std::move(logFile));
+    parser.ParseStreaming(*logFilePtr, sink, options, advanced);
+    loglib::LogData data = sink.TakeData();
+    std::vector<std::string> errors = sink.TakeErrors();
+    return loglib::ParseResult{std::move(data), std::move(errors)};
+}
 } // namespace
+
+TEST_CASE(
+    "ParserOptions{} + AdvancedParserOptions{} reproduces the legacy default-options behaviour",
+    "[json_parser][parser_options][defaults]"
+)
+{
+    using namespace loglib;
+
+    const ParserOptions defaults;
+    CHECK_FALSE(defaults.stopToken.stop_possible());
+    CHECK(defaults.configuration == nullptr);
+
+    const internal::AdvancedParserOptions advanced;
+    CHECK(advanced.threads == 0u);
+    CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::kDefaultBatchSizeBytes);
+    CHECK(advanced.ntokens == 0u);
+    CHECK(advanced.useThreadLocalKeyCache == true);
+    CHECK(advanced.useParseCache == true);
+    CHECK(advanced.timings == nullptr);
+    CHECK(internal::AdvancedParserOptions::kDefaultMaxThreads == 8u);
+    CHECK(internal::AdvancedParserOptions::kDefaultBatchSizeBytes == 1024u * 1024u);
+}
 
 TEST_CASE("Validate non-existent file", "[json_parser]")
 {
@@ -523,14 +571,15 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     }
     const TestJsonLogFile testFile(logs);
 
-    JsonParserOptions singleThread;
+    ParserOptions opts;
+    internal::AdvancedParserOptions singleThread;
     singleThread.threads = 1;
 
-    JsonParserOptions multiThread;
+    internal::AdvancedParserOptions multiThread;
     multiThread.threads = std::max(2u, std::thread::hardware_concurrency());
 
-    auto singleResult = parser.Parse(testFile.GetFilePath(), singleThread);
-    auto multiResult = parser.Parse(testFile.GetFilePath(), multiThread);
+    auto singleResult = ParseWithSink(parser, testFile.GetFilePath(), opts, singleThread);
+    auto multiResult = ParseWithSink(parser, testFile.GetFilePath(), opts, multiThread);
 
     REQUIRE(singleResult.errors.empty());
     REQUIRE(multiResult.errors.empty());
@@ -598,12 +647,13 @@ TEST_CASE(
     const TestJsonLogFile testFile(lines);
 
     JsonParser parser;
-    JsonParserOptions opts;
-    opts.threads = kThreads;
-    opts.useThreadLocalKeyCache = true;
+    ParserOptions opts;
+    internal::AdvancedParserOptions advanced;
+    advanced.threads = kThreads;
+    advanced.useThreadLocalKeyCache = true;
 
     KeyIndex::ResetInstrumentationCounters();
-    const auto cachedResult = parser.Parse(testFile.GetFilePath(), opts);
+    const auto cachedResult = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
     const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
 
     REQUIRE(cachedResult.errors.empty());
@@ -620,11 +670,11 @@ TEST_CASE(
 
     // Now flip the cache off and re-parse. Every field-key sighting must now traverse the
     // canonical KeyIndex, so the counter should sit close to lines × keys (500 on this fixture).
-    JsonParserOptions noCacheOpts = opts;
-    noCacheOpts.useThreadLocalKeyCache = false;
+    internal::AdvancedParserOptions noCacheAdvanced = advanced;
+    noCacheAdvanced.useThreadLocalKeyCache = false;
 
     KeyIndex::ResetInstrumentationCounters();
-    const auto noCacheResult = parser.Parse(testFile.GetFilePath(), noCacheOpts);
+    const auto noCacheResult = ParseWithSink(parser, testFile.GetFilePath(), opts, noCacheAdvanced);
     const std::size_t noCacheCalls = KeyIndex::LoadGetOrInsertCount();
 
     REQUIRE(noCacheResult.errors.empty());
@@ -770,7 +820,7 @@ TEST_CASE(
     "[json_parser][stage_b_timestamps]"
 )
 {
-    // PRD §4.2a / parser-perf task 3.7: when `JsonParserOptions::configuration` describes a
+    // PRD §4.2a / parser-perf task 3.7: when `ParserOptions::configuration` describes a
     // `Type::time` column, every parsed line whose value at the column's key is a parseable
     // ISO-8601 string must come out of `JsonParser::Parse` already promoted to `TimeStamp`.
     // The legacy whole-data `ParseTimestamps` pass is therefore redundant for these snapshot
@@ -811,11 +861,11 @@ TEST_CASE(
     timestampColumn.parseFormats = {"%FT%T"};
     configuration->columns.push_back(std::move(timestampColumn));
 
-    JsonParserOptions opts;
+    ParserOptions opts;
     opts.configuration = configuration;
 
     JsonParser parser;
-    const ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+    const ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts);
 
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == kLineCount);
@@ -870,11 +920,11 @@ TEST_CASE(
     timestampColumn.parseFormats = {"%FT%T"};
     configuration->columns.push_back(std::move(timestampColumn));
 
-    JsonParserOptions opts;
+    ParserOptions opts;
     opts.configuration = configuration;
 
     JsonParser parser;
-    const ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+    const ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts);
 
     // Promotion failures are silent; only genuine JSON-parse errors land in `errors`.
     CHECK(result.errors.empty());

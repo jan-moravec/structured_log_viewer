@@ -4,8 +4,10 @@
 #include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
 
+#include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/parser_options.hpp>
 
 #include <QSignalSpy>
 #include <QString>
@@ -198,9 +200,10 @@ private slots:
         // keys in file order (a, b, c, d). The legacy LogConfigurationManager::
         // Update walks SortedKeys() (alphabetic) — both produce the same
         // column order on this fixture only because we authored it that way.
-        loglib::JsonParserOptions options;
-        options.threads = 1;
+        loglib::ParserOptions options;
         options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
 
         QtStreamingLogSink *sink = streamingModel.Sink();
         QVERIFY(sink != nullptr);
@@ -216,7 +219,7 @@ private slots:
         // std::thread plumbing while still exercising the queued-connection
         // delivery path that production code relies on.
         loglib::JsonParser parser;
-        parser.ParseStreaming(*parseFile, *sink, options);
+        parser.ParseStreaming(*parseFile, *sink, options, advanced);
 
         // Spin the event loop so the queued OnBatch / OnFinished invocations
         // posted by QtStreamingLogSink during the parse above are drained

@@ -1,11 +1,16 @@
 #include "common.hpp"
 
+#include "buffering_sink.hpp"
+
+#include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/parser_options.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
@@ -17,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <stop_token>
@@ -29,6 +35,26 @@ using namespace loglib;
 
 namespace
 {
+
+// Drives a synchronous parse against the streaming pipeline (mirroring the legacy
+// `JsonParser::Parse(path, opts)` shape) for benchmarks that need to dial advanced
+// tuning knobs while still consuming a `ParseResult`. The default-options
+// `parser.Parse(path)` overload routes through the same `BufferingSink` plumbing.
+ParseResult ParseWithSink(
+    const LogParser &parser,
+    const std::filesystem::path &path,
+    const ParserOptions &options = {},
+    const internal::AdvancedParserOptions &advanced = {}
+)
+{
+    auto logFile = std::make_unique<LogFile>(path);
+    LogFile *logFilePtr = logFile.get();
+    BufferingSink sink(std::move(logFile));
+    parser.ParseStreaming(*logFilePtr, sink, options, advanced);
+    LogData data = sink.TakeData();
+    std::vector<std::string> errors = sink.TakeErrors();
+    return ParseResult{std::move(data), std::move(errors)};
+}
 
 // Convenience helper that prints the throughput numbers for a parse-style
 // benchmark via Catch2's WARN macro. We compute MB/s of input parsed and
@@ -400,12 +426,13 @@ TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-    JsonParserOptions opts;
-    opts.threads = 1;
+    ParserOptions opts;
+    internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
 
     {
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath(), opts);
+        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -414,7 +441,7 @@ TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser
 
     RunTimedSamples("Parse 10'000 JSON log entries (single thread)", 5, [&]() {
         LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+        ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
         REQUIRE(result.errors.empty());
         table.Update(std::move(result.data));
@@ -493,11 +520,12 @@ TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_pars
     // MB/s + per-stage numbers come from this warm-up.
     {
         StageTimings timings;
-        JsonParserOptions warmupOpts;
-        warmupOpts.timings = &timings;
+        ParserOptions warmupOpts;
+        internal::AdvancedParserOptions warmupAdvanced;
+        warmupAdvanced.timings = &timings;
 
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath(), warmupOpts);
+        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), warmupOpts, warmupAdvanced);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -530,11 +558,12 @@ TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][jso
     // Untimed warm-up + per-stage breakdown emit, mirroring `[large]`.
     {
         StageTimings timings;
-        JsonParserOptions warmupOpts;
-        warmupOpts.timings = &timings;
+        ParserOptions warmupOpts;
+        internal::AdvancedParserOptions warmupAdvanced;
+        warmupAdvanced.timings = &timings;
 
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath(), warmupOpts);
+        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), warmupOpts, warmupAdvanced);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -596,12 +625,13 @@ TEST_CASE(
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-    JsonParserOptions opts;
-    opts.useThreadLocalKeyCache = false;
+    ParserOptions opts;
+    internal::AdvancedParserOptions advanced;
+    advanced.useThreadLocalKeyCache = false;
 
     {
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath(), opts);
+        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -610,7 +640,7 @@ TEST_CASE(
 
     RunTimedSamples("Parse 10'000 JSON log entries (no thread-local key cache)", 5, [&]() {
         LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+        ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
         REQUIRE(result.errors.empty());
         table.Update(std::move(result.data));
@@ -627,12 +657,13 @@ TEST_CASE("Parse and load JSON log (no parse cache)", "[.][benchmark][json_parse
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-    JsonParserOptions opts;
-    opts.useParseCache = false;
+    ParserOptions opts;
+    internal::AdvancedParserOptions advanced;
+    advanced.useParseCache = false;
 
     {
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath(), opts);
+        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -641,7 +672,7 @@ TEST_CASE("Parse and load JSON log (no parse cache)", "[.][benchmark][json_parse
 
     RunTimedSamples("Parse 10'000 JSON log entries (no parse cache)", 5, [&]() {
         LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath(), opts);
+        ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
         REQUIRE(result.errors.empty());
         table.Update(std::move(result.data));
@@ -883,7 +914,7 @@ TEST_CASE(
         StreamSink sink;
         sink.table = &table;
 
-        JsonParserOptions opts;
+        ParserOptions opts;
         opts.configuration = configuration;
 
         LogFile parseFile(testFile.GetFilePath());
@@ -914,7 +945,7 @@ TEST_CASE(
         StreamSink sink;
         sink.table = &table;
 
-        JsonParserOptions opts;
+        ParserOptions opts;
         opts.configuration = configuration;
 
         LogFile parseFile(testFile.GetFilePath());
@@ -976,7 +1007,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     {
         LogFile file(testFile.GetFilePath());
         LatencySink sink;
-        JsonParserOptions opts;
+        ParserOptions opts;
         opts.stopToken = sink.stop.get_token();
         parser.ParseStreaming(file, sink, opts);
         REQUIRE(sink.cancelled);

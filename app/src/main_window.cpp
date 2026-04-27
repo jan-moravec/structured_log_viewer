@@ -528,7 +528,7 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
         return false;
     }
 
-    loglib::JsonParserOptions options;
+    loglib::ParserOptions options;
     options.stopToken = stopToken;
     options.configuration = std::move(cfg);
 

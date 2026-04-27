@@ -1,8 +1,8 @@
 #include "loglib/json_parser.hpp"
 
-#include "buffering_sink.hpp"
 #include "parser_pipeline.hpp"
 
+#include "loglib/internal/parser_options.hpp"
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
@@ -168,7 +168,18 @@ LogValue ExtractRawJsonValue(Value &value, bool sourceIsStable)
     return LogValue{std::monostate{}};
 }
 
-void EnsureCacheCapacity(JsonParser::ParseCache &cache, KeyId id)
+/// Per-key type cache keyed by `KeyId`. Carried inside the streaming pipeline's
+/// per-worker scratch so the simdjson `value.type()` / `get_number_type()` calls
+/// fire only on the first occurrence of each key.
+struct ParseCache
+{
+    std::vector<simdjson::ondemand::json_type> keyTypes;
+    std::vector<simdjson::ondemand::number_type> numberTypes;
+    std::vector<bool> hasKeyType;
+    std::vector<bool> hasNumberType;
+};
+
+void EnsureCacheCapacity(ParseCache &cache, KeyId id)
 {
     const size_t needed = static_cast<size_t>(id) + 1;
     if (cache.keyTypes.size() < needed)
@@ -186,7 +197,7 @@ void EnsureCacheCapacity(JsonParser::ParseCache &cache, KeyId id)
 std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
     simdjson::ondemand::object &object,
     KeyIndex &keys,
-    JsonParser::ParseCache &cache,
+    ParseCache &cache,
     bool sourceIsStable,
     detail::PerWorkerKeyCache *keyCache,
     bool useKeyCache
@@ -435,7 +446,7 @@ struct JsonWorkerState
     simdjson::ondemand::parser parser;
     std::string linePadded;
     size_t maxLineSize = 0;
-    JsonParser::ParseCache cache;
+    ParseCache cache;
 };
 
 /// Stage A token: a contiguous byte range of the mmap that contains an integer number
@@ -601,33 +612,6 @@ bool JsonParser::IsValid(const std::filesystem::path &file) const
     return false;
 }
 
-ParseResult JsonParser::Parse(const std::filesystem::path &file) const
-{
-    return Parse(file, JsonParserOptions{});
-}
-
-ParseResult JsonParser::Parse(const std::filesystem::path &file, JsonParserOptions options) const
-{
-    if (!std::filesystem::exists(file))
-    {
-        throw std::runtime_error(fmt::format("File '{}' does not exist.", file.string()));
-    }
-    if (std::filesystem::file_size(file) == 0)
-    {
-        throw std::runtime_error(fmt::format("File '{}' is empty.", file.string()));
-    }
-
-    auto logFile = std::make_unique<LogFile>(file);
-    LogFile *logFilePtr = logFile.get();
-    BufferingSink sink(std::move(logFile));
-
-    ParseStreaming(*logFilePtr, sink, std::move(options));
-
-    LogData data = sink.TakeData();
-    std::vector<std::string> errors = sink.TakeErrors();
-    return ParseResult{std::move(data), std::move(errors)};
-}
-
 std::string JsonParser::ToString(const LogLine &line) const
 {
     const auto values = line.IndexedValues();
@@ -663,33 +647,31 @@ std::string JsonParser::ToString(const LogMap &values) const
     return SerializeJson(json);
 }
 
-std::vector<std::pair<KeyId, LogValue>> JsonParser::ParseLine(
-    simdjson::ondemand::object &object,
-    KeyIndex &keys,
-    ParseCache &cache,
-    bool sourceIsStable,
-    detail::PerWorkerKeyCache *keyCache,
-    bool useKeyCache
-)
+void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, ParserOptions options) const
 {
-    return ParseJsonLine(object, keys, cache, sourceIsStable, keyCache, useKeyCache);
+    ParseStreaming(file, sink, std::move(options), internal::AdvancedParserOptions{});
 }
 
-void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, JsonParserOptions options) const
+void JsonParser::ParseStreaming(
+    LogFile &file,
+    StreamingLogSink &sink,
+    ParserOptions options,
+    internal::AdvancedParserOptions advanced
+) const
 {
     detail::PipelineHarnessOptions harnessOpts;
-    harnessOpts.threads = options.threads;
-    harnessOpts.batchSizeBytes = options.batchSizeBytes;
-    harnessOpts.ntokens = options.ntokens;
+    harnessOpts.threads = advanced.threads;
+    harnessOpts.batchSizeBytes = advanced.batchSizeBytes;
+    harnessOpts.ntokens = advanced.ntokens;
     harnessOpts.configuration = options.configuration;
     harnessOpts.stopToken = options.stopToken;
-    harnessOpts.timings = options.timings;
+    harnessOpts.timings = advanced.timings;
 
-    const size_t batchSize = options.batchSizeBytes != 0
-                                 ? options.batchSizeBytes
+    const size_t batchSize = advanced.batchSizeBytes != 0
+                                 ? advanced.batchSizeBytes
                                  : detail::PipelineHarnessOptions::kDefaultBatchSizeBytes;
-    const bool useThreadLocalKeyCache = options.useThreadLocalKeyCache;
-    const bool useParseCache = options.useParseCache;
+    const bool useThreadLocalKeyCache = advanced.useThreadLocalKeyCache;
+    const bool useParseCache = advanced.useParseCache;
 
     LogFile *filePtr = &file;
     const char *fileBegin = file.Data();

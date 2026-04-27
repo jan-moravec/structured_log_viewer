@@ -65,7 +65,7 @@ add_executable(
     "src/common.cpp"
 )
 
-target_include_directories(benchmarks PRIVATE include)
+target_include_directories(benchmarks PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/../../library/src)
 target_link_libraries(benchmarks PRIVATE loglib Catch2::Catch2WithMain project_warnings TBB::tbb)
 
 if(WIN32)

@@ -2,7 +2,7 @@
 
 #include "timestamp_promotion.hpp"
 
-#include "loglib/json_parser.hpp"
+#include "loglib/internal/parser_options.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
@@ -168,12 +168,12 @@ WorkerScratchBase::PromoteTimestamps(LogLine &line, std::span<const TimeColumnSp
 }
 
 /// Inputs the harness needs from the parser's `ParseStreaming` call. Mirrors today's
-/// `JsonParserOptions` defaults bit-for-bit so a default-constructed instance reproduces
-/// the legacy synchronous `Parse(path)` behaviour.
+/// `ParserOptions{}` + `AdvancedParserOptions{}` defaults bit-for-bit so a default-
+/// constructed instance reproduces the legacy synchronous `Parse(path)` behaviour.
 struct PipelineHarnessOptions
 {
-    static constexpr unsigned int kDefaultMaxThreads = 8;
-    static constexpr size_t kDefaultBatchSizeBytes = 1024 * 1024;
+    static constexpr unsigned int kDefaultMaxThreads = internal::AdvancedParserOptions::kDefaultMaxThreads;
+    static constexpr size_t kDefaultBatchSizeBytes = internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
 
     unsigned int threads = 0;
     size_t batchSizeBytes = kDefaultBatchSizeBytes;

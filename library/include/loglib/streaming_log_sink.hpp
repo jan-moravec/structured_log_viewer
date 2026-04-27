@@ -67,7 +67,7 @@ struct StreamedBatch
  *      state under a single contract.
  *   3. Exactly one `OnFinished(cancelled)` at the end of the parse, where
  *      `cancelled == true` if the parse was stopped via the
- *      `JsonParserOptions::stopToken` mechanism.
+ *      `ParserOptions::stopToken` mechanism.
  *
  * The sink methods are not required to be thread-safe across themselves — the
  * parser's Stage C is a `serial_in_order` filter, so they are always called

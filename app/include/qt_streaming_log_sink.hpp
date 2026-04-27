@@ -44,7 +44,7 @@ public:
      * Bumps `mGeneration` (so any in-flight queued events from a previous
      * parse are dropped on receipt), replaces `mStopSource` with a freshly
      * constructed `std::stop_source`, and returns its `stop_token` so the
-     * caller can install it on `JsonParserOptions::stopToken`.
+     * caller can install it on `ParserOptions::stopToken`.
      */
     std::stop_token BeginParse();
 

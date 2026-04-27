@@ -6,6 +6,7 @@ add_library(
     src/buffering_sink.cpp
     src/json_parser.cpp
     src/key_index.cpp
+    src/log_parser.cpp
     src/parser_pipeline.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
