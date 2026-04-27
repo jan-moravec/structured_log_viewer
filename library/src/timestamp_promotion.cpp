@@ -52,13 +52,18 @@ bool PromoteLineTimestamps(
         std::optional<LastValidTimestampParse> &lv = lastValid[i];
         LastTimestampBytesHit &bytesHit = bytesHits[i];
 
-        const auto getStringFor = [&line](KeyId keyId) -> std::optional<std::string_view> {
+        // Returns the field's `LogValue` by value; the caller binds it locally
+        // so that `AsStringView` can yield a view that stays valid for the
+        // remainder of the enclosing scope. Returning a `string_view` directly
+        // would dangle on the `std::string` alternative — `AsStringView` would
+        // hand back a view into the local's owned buffer, which is destroyed
+        // at function-return.
+        const auto getValueFor = [&line](KeyId keyId) -> LogValue {
             if (keyId == kInvalidKeyId)
             {
-                return std::nullopt;
+                return LogValue{std::monostate{}};
             }
-            LogValue value = line.GetValue(keyId);
-            return AsStringView(value);
+            return line.GetValue(keyId);
         };
 
         const auto tryPromote = [&](KeyId keyId, const std::string &format,
@@ -85,7 +90,8 @@ bool PromoteLineTimestamps(
         bool promoted = false;
         if (lv.has_value())
         {
-            if (auto sv = getStringFor(lv->keyId); sv.has_value())
+            const LogValue value = getValueFor(lv->keyId);
+            if (auto sv = AsStringView(value); sv.has_value())
             {
                 if (tryPromote(lv->keyId, lv->format, lv->kind, *sv))
                 {
@@ -99,7 +105,8 @@ bool PromoteLineTimestamps(
             for (size_t k = 0; !promoted && k < spec.keyIds.size(); ++k)
             {
                 const KeyId keyId = spec.keyIds[k];
-                auto sv = getStringFor(keyId);
+                const LogValue value = getValueFor(keyId);
+                const auto sv = AsStringView(value);
                 if (!sv.has_value())
                 {
                     continue;
