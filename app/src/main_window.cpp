@@ -207,8 +207,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
 
-    mStreamingWatcher = new QFutureWatcher<void>(this);
-
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
@@ -470,8 +468,11 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     options.stopToken = stopToken;
     options.configuration = std::move(cfg);
 
-    // Future stored on mStreamingWatcher only as a lifetime tracker;
-    // cancellation goes through Clear() -> RequestStop() -> stop_token.
+    // The future is handed to the model so it can `waitForFinished()` on the
+    // worker before destroying the `LogTable` (and the `LogFile` whose mmap
+    // the worker is reading from). Cooperative cancellation via the
+    // stop_token is not enough: Stage B of the TBB pipeline runs in parallel
+    // mode and does not check the stop_token mid-batch.
     QFuture<void> future = QtConcurrent::run([sink, options = std::move(options), parseFile]() {
         try
         {
@@ -488,7 +489,7 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
             sink->OnFinished(false);
         }
     });
-    mStreamingWatcher->setFuture(future);
+    mModel->SetStreamingFuture(std::move(future));
 
     return true;
 }

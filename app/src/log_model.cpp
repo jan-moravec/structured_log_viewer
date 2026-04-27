@@ -2,6 +2,7 @@
 
 #include "qt_streaming_log_sink.hpp"
 
+#include <QFutureWatcher>
 #include <QModelIndex>
 #include <QString>
 #include <QVariant>
@@ -10,11 +11,29 @@
 
 LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
-    // Sink is parented to the model so its lifetime tracks the model's.
+    // Sink and watcher are parented to the model so their lifetimes track
+    // the model's (and so QObject's parent-cleanup deletes them after the
+    // explicit wait we run in the destructor below).
     mSink = new QtStreamingLogSink(this, this);
+    mStreamingWatcher = new QFutureWatcher<void>(this);
 }
 
-LogModel::~LogModel() = default;
+LogModel::~LogModel()
+{
+    // The background parser holds a raw `LogFile*` borrowed from `mLogTable`.
+    // `mLogTable` is destroyed before `QObject::~QObject()` deletes the
+    // watcher child, so unless we synchronously wait here Stage B of the TBB
+    // pipeline can keep reading from the unmapped mmap after this destructor
+    // body completes. `RequestStop()` alone only flips a cooperative flag.
+    if (mSink)
+    {
+        mSink->RequestStop();
+    }
+    if (mStreamingWatcher)
+    {
+        mStreamingWatcher->waitForFinished();
+    }
+}
 
 void LogModel::AddData(loglib::LogData &&logData)
 {
@@ -27,11 +46,25 @@ void LogModel::AddData(loglib::LogData &&logData)
 
 void LogModel::Clear()
 {
-    // Cancel any in-flight parse; the generation bump in RequestStop drops
-    // any stragglers `OnBatch` posts before they reach the reset model.
+    // The background `QtConcurrent::run` worker captures a raw `LogFile*`
+    // borrowed from `mLogTable`. `RequestStop()` is cooperative and only
+    // halts Stage A (serial_in_order); Stage B tasks already in flight run
+    // to completion in parallel mode without checking the stop_token, and
+    // Stage C drains them. If we destroy `mLogTable` (which unmaps the file)
+    // before the pipeline returns, those Stage B tasks read from the now-
+    // unmapped mmap => use-after-free. So we *block* on the future here.
+    //
+    // The wait also covers the case where ungated entry points (`actionOpen`,
+    // `actionOpenJsonLogs`, `dropEvent`, `LoadConfiguration`) trigger a
+    // `Clear()` while a streaming parse is still running.
+    const bool wasStreaming = mStreamingWatcher && mStreamingWatcher->isRunning();
     if (mSink)
     {
         mSink->RequestStop();
+    }
+    if (mStreamingWatcher)
+    {
+        mStreamingWatcher->waitForFinished();
     }
 
     beginResetModel();
@@ -44,6 +77,21 @@ void LogModel::Clear()
 
     emit lineCountChanged(0);
     emit errorCountChanged(0);
+
+    // The worker's queued `OnFinished(true)` will be discarded by the sink's
+    // generation-mismatch check (RequestStop bumped the generation before the
+    // event reaches the GUI thread), so any UI state that lives on
+    // `streamingFinished` (e.g. re-enabling the configuration menus) needs to
+    // be signalled here explicitly when we've cancelled an active parse.
+    if (wasStreaming)
+    {
+        emit streamingFinished(true);
+    }
+}
+
+void LogModel::SetStreamingFuture(QFuture<void> future)
+{
+    mStreamingWatcher->setFuture(std::move(future));
 }
 
 std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)

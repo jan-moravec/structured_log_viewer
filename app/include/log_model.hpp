@@ -6,12 +6,14 @@
 #include <loglib/streaming_log_sink.hpp>
 
 #include <QAbstractTableModel>
+#include <QFuture>
 
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+template <typename T> class QFutureWatcher;
 class QtStreamingLogSink;
 
 enum LogModelItemDataRole
@@ -35,6 +37,16 @@ public:
     /// Resets the model and arms the bridging sink for a streaming parse
     /// against @p file (ownership transfers). Returns the parse stop_token.
     std::stop_token BeginStreaming(std::unique_ptr<loglib::LogFile> file);
+
+    /// Hands the model the `QFuture` returned by the background streaming
+    /// parser (typically `QtConcurrent::run`). The model retains it as a
+    /// synchronisation handle so `Clear()` and the destructor can block until
+    /// the worker has fully released its borrowed `LogFile*` before the mmap
+    /// is unmapped — a cooperative `RequestStop()` alone is not sufficient
+    /// because Stage B of the TBB pipeline runs in `parallel` mode and does
+    /// not check the stop_token mid-batch. Must be called on the GUI thread
+    /// immediately after kicking off the parse.
+    void SetStreamingFuture(QFuture<void> future);
 
     /// Appends one streamed batch and emits the corresponding
     /// rows/columns/dataChanged signals plus the line/error counters.
@@ -78,6 +90,12 @@ signals:
 private:
     loglib::LogTable mLogTable;
     QtStreamingLogSink *mSink = nullptr;
+
+    /// Tracks the background `QtConcurrent::run` future for the active
+    /// streaming parse. Owned here (not on `MainWindow`) so destructive
+    /// model operations can `waitForFinished()` before tearing down the
+    /// `LogTable`/`LogFile` that the worker still holds raw pointers into.
+    QFutureWatcher<void> *mStreamingWatcher = nullptr;
 
     /// Cumulative error count for the active parse. Mirrors
     /// `mStreamingErrors.size()` so signal listeners read it cheaply.

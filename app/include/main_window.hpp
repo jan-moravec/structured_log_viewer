@@ -11,8 +11,6 @@
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QFuture>
-#include <QFutureWatcher>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMimeData>
@@ -81,8 +79,11 @@ private:
      *
      * Locks the configuration UI for the parse, hands the model's
      * `QtStreamingLogSink` and a freshly-installed `stop_token` to the
-     * parser, and tracks the parse via a `QFutureWatcher` so a second
-     * `OpenJsonStreaming` call doesn't leave the previous one dangling.
+     * parser, and registers the parse `QFuture` with the model so the
+     * `LogModel` itself can synchronously wait on the worker before
+     * destroying the `LogTable`/`LogFile` it borrows from. Without that
+     * synchronisation, Stage B of the TBB pipeline keeps reading from the
+     * mmap after a `Clear()` unmaps it (use-after-free).
      *
      * @return true if the streaming pipeline started; false if the file
      *              could not be opened (in which case @p errors carries the
@@ -109,12 +110,6 @@ private:
     /// Display name of the file currently being streamed; used to render
     /// `mStatusLabel`. Empty when no parse is in flight.
     QString mStreamingFileName;
-
-    /// Tracks the background `QtConcurrent::run` future for the active
-    /// streaming parse. Reused so a second open can detect (and wait on /
-    /// cancel) a previous one without leaking. `QFutureWatcher` is parented
-    /// to the window so its lifetime is bounded automatically.
-    QFutureWatcher<void> *mStreamingWatcher = nullptr;
 
     /// True between `BeginStreaming` and the matching `streamingFinished`
     /// signal. Used to gate the configuration UI and to suppress the
