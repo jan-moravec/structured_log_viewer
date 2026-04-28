@@ -14,7 +14,7 @@ QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent) : QObje
 {
 }
 
-std::stop_token QtStreamingLogSink::BeginParse()
+loglib::StopToken QtStreamingLogSink::BeginParse()
 {
     // Bumping the generation drops any still-queued OnBatch from a prior parse
     // before the fresh stop source is installed.

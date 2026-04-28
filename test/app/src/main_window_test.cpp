@@ -9,6 +9,7 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/stop_token.hpp>
 
 #include <QFile>
 #include <QFileInfo>
@@ -27,7 +28,6 @@
 #include <fstream>
 #include <map>
 #include <memory>
-#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
@@ -176,7 +176,7 @@ StreamingRun RunStreaming(const QString &fixturePath)
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
     auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
-    const std::stop_token stopToken = run.model->BeginStreaming(std::move(file));
+    const loglib::StopToken stopToken = run.model->BeginStreaming(std::move(file));
 
     auto &files = run.model->Table().Data().Files();
     if (!files.empty())
@@ -295,7 +295,7 @@ private slots:
         // the lifetime of the model — opening a second mmap on the parser
         // side would dangle them as soon as the parser thread ran out.
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        const std::stop_token stopToken = streamingModel.BeginStreaming(std::move(file));
+        const loglib::StopToken stopToken = streamingModel.BeginStreaming(std::move(file));
 
         QVERIFY(!streamingModel.Table().Data().Files().empty());
         loglib::LogFile *parseFile = streamingModel.Table().Data().Files().front().get();
@@ -747,7 +747,7 @@ private slots:
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         loglib::LogFile *filePtr = file.get();
-        const std::stop_token stop = model.BeginStreaming(std::move(file));
+        const loglib::StopToken stop = model.BeginStreaming(std::move(file));
 
         // Plant a future on the model that we control from the worker
         // thread, so `Clear()`'s `waitForFinished()` blocks until we choose

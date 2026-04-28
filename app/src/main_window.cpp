@@ -10,6 +10,7 @@
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/stop_token.hpp>
 
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -33,7 +34,6 @@
 #include <exception>
 #include <iterator>
 #include <memory>
-#include <stop_token>
 #include <system_error>
 #include <vector>
 
@@ -443,7 +443,7 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
 
-    const std::stop_token stopToken = mModel->BeginStreaming(std::move(logFile));
+    const loglib::StopToken stopToken = mModel->BeginStreaming(std::move(logFile));
     QtStreamingLogSink *sink = mModel->Sink();
 
     // Borrow the *same* LogFile the model owns; emitted string_view values

@@ -14,6 +14,7 @@
 #include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/stop_token.hpp>
 
 #include <test_common/log_generator.hpp>
 
@@ -27,7 +28,6 @@
 #include <filesystem>
 #include <memory>
 #include <numeric>
-#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -527,7 +527,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     struct LatencySink : StreamingLogSink
     {
         KeyIndex keys;
-        std::stop_source stop;
+        loglib::StopSource stop;
         std::chrono::steady_clock::time_point requestedAt{};
         std::chrono::steady_clock::time_point finishedAt{};
         bool cancelled = false;

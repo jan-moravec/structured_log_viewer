@@ -132,7 +132,7 @@ void LogModel::SetStreamingFuture(QFuture<void> future)
     mStreamingWatcher->setFuture(std::move(future));
 }
 
-std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
+loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 {
     beginResetModel();
 

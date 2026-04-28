@@ -8,6 +8,7 @@
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/stop_token.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -18,7 +19,6 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -421,7 +421,7 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
 
     struct CancellingSink : CollectingSink
     {
-        std::stop_source stop;
+        loglib::StopSource stop;
         std::chrono::steady_clock::time_point requestedAt{};
         std::chrono::steady_clock::time_point finishedAt{};
         size_t batchCount = 0;

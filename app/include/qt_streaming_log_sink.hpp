@@ -1,5 +1,6 @@
 #pragma once
 
+#include <loglib/stop_token.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <QObject>
@@ -8,7 +9,6 @@
 #include <atomic>
 #include <cstdint>
 #include <optional>
-#include <stop_token>
 
 class LogModel;
 
@@ -27,7 +27,7 @@ public:
 
     /// Opens a fresh parse generation; returns the stop_token to install on
     /// `ParserOptions::stopToken`. GUI thread.
-    std::stop_token BeginParse();
+    loglib::StopToken BeginParse();
 
     /// Non-blocking cancel; signals the parse's `stop_token`. Does **not**
     /// touch the generation: the worker's drain-phase `OnBatch` /
@@ -55,5 +55,5 @@ public:
 private:
     QPointer<LogModel> mModel;
     std::atomic<uint64_t> mGeneration{0};
-    std::optional<std::stop_source> mStopSource;
+    std::optional<loglib::StopSource> mStopSource;
 };

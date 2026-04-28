@@ -3,6 +3,7 @@
 #include <loglib/log_data.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/stop_token.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <QAbstractTableModel>
@@ -36,7 +37,7 @@ public:
 
     /// Resets the model and arms the bridging sink for a streaming parse
     /// against @p file (ownership transfers). Returns the parse stop_token.
-    std::stop_token BeginStreaming(std::unique_ptr<loglib::LogFile> file);
+    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::LogFile> file);
 
     /// Hands the model the `QFuture` returned by the background streaming
     /// parser (typically `QtConcurrent::run`). The model retains it as a

@@ -9,6 +9,7 @@
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
 #include "loglib/parser_options.hpp"
+#include "loglib/stop_token.hpp"
 #include "loglib/streaming_log_sink.hpp"
 
 #include <fmt/format.h>
@@ -27,7 +28,6 @@
 #include <memory>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -187,7 +187,7 @@ void RunParserPipeline(
     auto lastFlush = std::chrono::steady_clock::now();
     size_t nextLineNumber = 1;
 
-    const std::stop_token stopToken = options.stopToken;
+    const StopToken stopToken = options.stopToken;
     std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
     auto stageA = [&](oneapi::tbb::flow_control &fc) -> Token {

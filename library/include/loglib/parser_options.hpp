@@ -1,9 +1,9 @@
 #pragma once
 
 #include "log_configuration.hpp"
+#include "stop_token.hpp"
 
 #include <memory>
-#include <stop_token>
 
 namespace loglib
 {
@@ -12,7 +12,7 @@ namespace loglib
 /// `loglib::internal::AdvancedParserOptions`.
 struct ParserOptions
 {
-    std::stop_token stopToken{};
+    StopToken stopToken{};
     std::shared_ptr<const LogConfiguration> configuration;
 };
 
