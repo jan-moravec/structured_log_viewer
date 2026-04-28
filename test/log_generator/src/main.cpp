@@ -93,11 +93,9 @@ std::uint64_t ParseSize(std::string text)
 int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.1.0");
-    program.add_description(
-        "Generate a JSONL log file with synthetic timestamp/level/message records. "
-        "Lines are produced until the file reaches the requested size; pass --timeout "
-        "to throttle writes and simulate a streaming feed."
-    );
+    program.add_description("Generate a JSONL log file with synthetic timestamp/level/message records. "
+                            "Lines are produced until the file reaches the requested size; pass --timeout "
+                            "to throttle writes and simulate a streaming feed.");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
@@ -112,9 +110,9 @@ int main(int argc, char *argv[])
         .scan<'i', int>()
         .help("Delay in milliseconds between line writes. 0 disables throttling.");
 
-    program.add_argument("--seed")
-        .scan<'i', int>()
-        .help("Optional RNG seed for reproducible output. Defaults to std::random_device.");
+    program.add_argument("--seed").scan<'i', int>().help(
+        "Optional RNG seed for reproducible output. Defaults to std::random_device."
+    );
 
     try
     {
@@ -129,9 +127,8 @@ int main(int argc, char *argv[])
     const auto sizeText = program.get<std::string>("--size");
     const auto outputPath = program.get<std::string>("--output");
     const auto timeoutMs = program.get<int>("--timeout");
-    const std::uint32_t seed = program.is_used("--seed")
-                                   ? static_cast<std::uint32_t>(program.get<int>("--seed"))
-                                   : test_common::MakeRandomSeed();
+    const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
+                                                         : test_common::MakeRandomSeed();
 
     std::uint64_t targetBytes = 0;
     try

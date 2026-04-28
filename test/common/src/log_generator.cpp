@@ -99,17 +99,27 @@ enum class Family
 
 std::vector<std::pair<std::string, Family>> BuildWideKeyList(std::size_t columnCount)
 {
-    static const std::array<std::string_view, 10> STRING_KEYS = {"timestamp", "level",   "component", "message",
-                                                                 "module",    "host",    "user",      "session",
-                                                                 "request",   "trace_id"};
-    static const std::array<std::string_view, 10> NUMERIC_KEYS = {"latency_ms",   "bytes_in",     "bytes_out",
-                                                                  "thread_id",    "request_id",   "response_id",
-                                                                  "queue_len",    "retry_count",  "memory_usage",
-                                                                  "cpu_usage_pct"};
-    static const std::array<std::string_view, 5> BOOL_KEYS = {"is_error", "cache_hit", "authenticated", "throttled",
-                                                              "secure"};
-    static const std::array<std::string_view, 5> OTHER_KEYS = {"trace_data", "tags", "metadata", "extras",
-                                                               "annotations"};
+    static const std::array<std::string_view, 10> STRING_KEYS = {
+        "timestamp", "level", "component", "message", "module", "host", "user", "session", "request", "trace_id"
+    };
+    static const std::array<std::string_view, 10> NUMERIC_KEYS = {
+        "latency_ms",
+        "bytes_in",
+        "bytes_out",
+        "thread_id",
+        "request_id",
+        "response_id",
+        "queue_len",
+        "retry_count",
+        "memory_usage",
+        "cpu_usage_pct"
+    };
+    static const std::array<std::string_view, 5> BOOL_KEYS = {
+        "is_error", "cache_hit", "authenticated", "throttled", "secure"
+    };
+    static const std::array<std::string_view, 5> OTHER_KEYS = {
+        "trace_data", "tags", "metadata", "extras", "annotations"
+    };
 
     std::vector<std::pair<std::string, Family>> keys;
     keys.reserve(columnCount);
