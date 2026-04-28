@@ -89,8 +89,7 @@ if(WIN32)
     add_custom_command(
         TARGET StructuredLogViewer
         POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb>
-                $<TARGET_FILE_DIR:StructuredLogViewer>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb> $<TARGET_FILE_DIR:StructuredLogViewer>
         COMMENT "Copying TBB runtime DLL next to StructuredLogViewer.exe"
         VERBATIM
     )

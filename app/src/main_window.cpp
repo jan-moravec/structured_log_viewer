@@ -109,11 +109,9 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
         lines << QStringLiteral("  - %1").arg(QString::fromStdString(p.string()));
     }
     lines << QString();
-    lines << QStringLiteral(
-        "Run the binary from a directory that has a sibling `tzdata/` "
-        "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
-        "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds)."
-    );
+    lines << QStringLiteral("Run the binary from a directory that has a sibling `tzdata/` "
+                            "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
+                            "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds).");
     return lines.join(QLatin1Char('\n'));
 }
 

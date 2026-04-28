@@ -22,10 +22,8 @@ LogData::LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, KeyI
 }
 
 LogData::LogData(LogData &&other) noexcept
-    : mFiles(std::move(other.mFiles))
-    , mLines(std::move(other.mLines))
-    , mKeys(std::move(other.mKeys))
-    , mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
+    : mFiles(std::move(other.mFiles)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys)),
+      mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
 {
     // The KeyIndex wrapper moved address; rebind line back-pointers to *this.
     for (auto &line : mLines)
@@ -124,9 +122,7 @@ void LogData::Merge(LogData &&other)
         {
             remapped.emplace_back(remap[entry.first], entry.second);
         }
-        std::sort(remapped.begin(), remapped.end(), [](const auto &a, const auto &b) {
-            return a.first < b.first;
-        });
+        std::sort(remapped.begin(), remapped.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
         LogLine rebuilt(std::move(remapped), mKeys, line.FileReference());
         mLines.push_back(std::move(rebuilt));

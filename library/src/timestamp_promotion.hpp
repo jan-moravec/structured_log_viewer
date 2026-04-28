@@ -35,8 +35,7 @@ struct TimeColumnSpec
 
 /// Builds one `TimeColumnSpec` per `Type::time` column. Returns empty when
 /// @p configuration is null.
-std::vector<TimeColumnSpec>
-BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
+std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
 
 /// Promotes one line's `Type::time` columns in place. Returns `true` iff at
 /// least one column was promoted on this line. Lines that don't match any

@@ -28,10 +28,7 @@ public:
 
     /// Streaming parse with the internal tuning knobs (benchmarks / bisects).
     void ParseStreaming(
-        LogFile &file,
-        StreamingLogSink &sink,
-        ParserOptions options,
-        internal::AdvancedParserOptions advanced
+        LogFile &file, StreamingLogSink &sink, ParserOptions options, internal::AdvancedParserOptions advanced
     ) const;
 
     std::string ToString(const LogLine &line) const override;

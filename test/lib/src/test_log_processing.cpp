@@ -69,8 +69,12 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     testLines.emplace_back(
         LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, LogFileReference(*logFile, 1)
     );
-    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, LogFileReference(*logFile, 2));
-    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, LogFileReference(*logFile, 3));
+    testLines.emplace_back(
+        LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, LogFileReference(*logFile, 2)
+    );
+    testLines.emplace_back(
+        LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, LogFileReference(*logFile, 3)
+    );
 
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
@@ -247,9 +251,12 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
 TEST_CASE("TryParseIsoTimestamp matches date::parse for representative inputs", "[log_processing][iso8601_fast_path]")
 {
     const std::vector<std::string> isoTInputs = {
-        "1970-01-01T00:00:01",          "2000-02-29T23:59:59", // leap year
-        "2024-12-31T23:59:59.999",      "2025-04-25T12:34:56",
-        "2025-04-25T12:34:56.123",      "2025-04-25T12:34:56.123456",
+        "1970-01-01T00:00:01",
+        "2000-02-29T23:59:59", // leap year
+        "2024-12-31T23:59:59.999",
+        "2025-04-25T12:34:56",
+        "2025-04-25T12:34:56.123",
+        "2025-04-25T12:34:56.123456",
         "2099-06-15T03:04:05.000001",
     };
 
@@ -286,9 +293,7 @@ TEST_CASE("TryParseTimestamp dispatches on kind", "[log_processing][iso8601_fast
 
     SECTION("Generic routes to date::parse")
     {
-        REQUIRE(
-            TryParseTimestamp("2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out)
-        );
+        REQUIRE(TryParseTimestamp("2025-04-25T12:34:56+00:00", "%FT%T%Ez", TimestampFormatKind::Generic, scratch, out));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496000000}});
     }
 

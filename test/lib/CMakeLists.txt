@@ -20,8 +20,13 @@ target_include_directories(tests PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/../
 
 # Link libraries. TBB is linked directly so the concurrent KeyIndex test can call
 # tbb::parallel_for; loglib itself keeps TBB PRIVATE because no public loglib
-# header exposes a TBB type.
-target_link_libraries(tests PRIVATE loglib Catch2::Catch2WithMain project_warnings TBB::tbb)
+# header exposes a TBB type. `test_common` provides the shared `JsonLogLine`
+# type aliased as `TestJsonLogFile::Line` plus the `GenerateRandomJsonLogs` /
+# `GenerateWideJsonLogs` helpers used by the benchmark TU.
+target_link_libraries(
+    tests
+    PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb
+)
 
 # Enable the KeyIndex call-count instrumentation so unit tests and
 # benchmarks can assert that the per-worker key cache eats canonical
@@ -57,14 +62,13 @@ catch_discover_tests(tests)
 # `tests.exe` filter passes hang in process-global state long enough to
 # look like a deadlock. Splitting them out also lets the benchmark binary
 # opt out of `catch_discover_tests` so CTest never schedules them.
-add_executable(
-    benchmarks
-    "src/benchmark_json.cpp"
-    "src/common.cpp"
-)
+add_executable(benchmarks "src/benchmark_json.cpp" "src/common.cpp")
 
 target_include_directories(benchmarks PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/../../library/src)
-target_link_libraries(benchmarks PRIVATE loglib Catch2::Catch2WithMain project_warnings TBB::tbb)
+target_link_libraries(
+    benchmarks
+    PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb
+)
 
 if(WIN32)
     add_custom_command(

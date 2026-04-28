@@ -98,7 +98,7 @@ TEST_CASE("KeyIndex SortedKeys returns a sorted, deduplicated snapshot", "[key_i
     index.GetOrInsert("delta");
     index.GetOrInsert("alpha");
     index.GetOrInsert("charlie");
-    index.GetOrInsert("alpha");   // duplicate insert
+    index.GetOrInsert("alpha"); // duplicate insert
     index.GetOrInsert("bravo");
 
     const std::vector<std::string> sorted = index.SortedKeys();

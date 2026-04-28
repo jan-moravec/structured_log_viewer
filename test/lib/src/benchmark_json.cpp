@@ -12,9 +12,9 @@
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 
+#include <test_common/log_generator.hpp>
+
 #include <catch2/catch_all.hpp>
-#include <date/date.h>
-#include <glaze/glaze.hpp>
 
 #include <algorithm>
 #include <array>
@@ -24,14 +24,14 @@
 #include <filesystem>
 #include <memory>
 #include <numeric>
-#include <random>
 #include <stop_token>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 using namespace loglib;
+using test_common::GenerateRandomJsonLogs;
+using test_common::GenerateWideJsonLogs;
 
 namespace
 {
@@ -92,8 +92,7 @@ void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_
 // 5-sample run already surfaces single-digit-percent regressions
 // reliably; bump it via the argument at call sites that need tighter
 // confidence intervals.
-template <typename Fn>
-void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
+template <typename Fn> void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
 {
     REQUIRE(samples > 0);
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -128,265 +127,11 @@ void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
 
 } // namespace
 
-// Helper function to generate random JSON log entries
-std::vector<TestJsonLogFile::Line> GenerateRandomJsonLogs(size_t count)
-{
-    std::vector<TestJsonLogFile::Line> logs;
-    logs.reserve(count);
-
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> level_dist(0, 3);
-    std::uniform_int_distribution<> component_dist(0, 4);
-    std::uniform_int_distribution<> words_count_dist(5, 20); // Random number of words per message
-
-    static const std::array<std::string, 6> LEVELS = {"trace", "debug", "info", "warning", "error", "fatal"};
-    static const std::array<std::string, 5> COMPONENTS = {"app", "network", "database", "ui", "system"};
-    static const std::array<std::string, 20> WORDS = {"lorem",       "ipsum",      "dolor",      "sit",    "amet",
-                                                      "consectetur", "adipiscing", "elit",       "sed",    "do",
-                                                      "eiusmod",     "tempor",     "incididunt", "ut",     "labore",
-                                                      "et",          "dolore",     "magna",      "aliqua", "ut"};
-
-    for (size_t i = 0; i < count; ++i)
-    {
-        // Generate a random message from words
-        std::string message;
-        int word_count = words_count_dist(gen);
-        for (int j = 0; j < word_count; ++j)
-        {
-            std::uniform_int_distribution<> word_dist(0, static_cast<int>(WORDS.size() - 1));
-            if (!message.empty())
-            {
-                message += " ";
-            }
-            message += WORDS[word_dist(gen)];
-        }
-
-        glz::generic_sorted_u64 json;
-        json["timestamp"] =
-            date::format("%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now()));
-        json["level"] = LEVELS[level_dist(gen)];
-        json["message"] = message;
-        json["thread_id"] = i % 16;
-        json["component"] = COMPONENTS[component_dist(gen)];
-        logs.emplace_back(json);
-    }
-
-    return logs;
-}
-
-// Wide-row fixture generator.
-//
-// Stresses per-line field iteration (`InsertSorted`, `ExtractFieldKey`,
-// `ParseLine`) and the `IsKeyInAnyColumn` cache by emitting `columnCount`
-// keys per line in a fixed order. The default mix is:
-//   - ~10 string keys  (timestamps, levels, components, lorem messages),
-//   - ~10 numeric keys (latencies, byte counts, ids),
-//   - ~5  boolean keys (flags),
-//   - ~5  keys that rotate through `null` / array / object so the value-
-//         shape dispatch in `ParseLine` exercises every leaf.
-//
-// Above `columnCount = 30` the helper round-robins through the same key
-// family suffixed with the column index. Below 30 we trim the longest
-// family last (strings > numbers > booleans > others) to keep proportions
-// close to the default mix even at 10–20 columns.
-//
-// Every line emits keys in the *same* fixed iteration order, so the
-// per-worker parse cache and `KeyIndex` warm-up paths are deterministic
-// across runs and `[wide]` numbers are repeatable enough to use as a
-// regression gate.
-std::vector<TestJsonLogFile::Line> GenerateWideJsonLogs(size_t count, size_t columnCount = 30)
-{
-    static const std::array<std::string, 10> STRING_KEYS = {"timestamp", "level", "component", "message", "module",
-                                                            "host",      "user",  "session",   "request", "trace_id"};
-    static const std::array<std::string, 10> NUMERIC_KEYS = {"latency_ms",   "bytes_in",     "bytes_out", "thread_id",
-                                                             "request_id",   "response_id",  "queue_len", "retry_count",
-                                                             "memory_usage", "cpu_usage_pct"};
-    static const std::array<std::string, 5> BOOL_KEYS = {"is_error", "cache_hit", "authenticated", "throttled", "secure"};
-    static const std::array<std::string, 5> OTHER_KEYS = {"trace_data", "tags", "metadata", "extras", "annotations"};
-
-    static const std::array<std::string, 6> LEVELS = {"trace", "debug", "info", "warning", "error", "fatal"};
-    static const std::array<std::string, 5> COMPONENTS = {"app", "network", "database", "ui", "system"};
-    static const std::array<std::string, 20> WORDS = {"lorem",       "ipsum",      "dolor",      "sit",    "amet",
-                                                      "consectetur", "adipiscing", "elit",       "sed",    "do",
-                                                      "eiusmod",     "tempor",     "incididunt", "ut",     "labore",
-                                                      "et",          "dolore",     "magna",      "aliqua", "ut"};
-
-    // Build the deterministic key list once. Each entry tags the family so we
-    // know what value shape to emit per row.
-    enum class Family
-    {
-        String,
-        Numeric,
-        Boolean,
-        Null,
-        Array,
-        Object,
-    };
-    std::vector<std::pair<std::string, Family>> keys;
-    keys.reserve(columnCount);
-
-    auto pushFamily = [&](const auto &source, Family family, size_t take) {
-        for (size_t i = 0; i < take; ++i)
-        {
-            const size_t bucket = i / source.size();
-            const size_t idx = i % source.size();
-            std::string keyName = source[idx];
-            if (bucket > 0)
-            {
-                keyName += "_";
-                keyName += std::to_string(bucket);
-            }
-            keys.emplace_back(std::move(keyName), family);
-        }
-    };
-
-    // Trim from "others" first so the string/number proportions stay
-    // intact when the caller picks `columnCount < 30`.
-    const size_t totalString = std::min<size_t>(columnCount, 10);
-    const size_t remainingAfterString = columnCount - totalString;
-    const size_t totalNumeric = std::min<size_t>(remainingAfterString, 10);
-    const size_t remainingAfterNumeric = remainingAfterString - totalNumeric;
-    const size_t totalBoolean = std::min<size_t>(remainingAfterNumeric, 5);
-    size_t remaining = remainingAfterNumeric - totalBoolean;
-
-    pushFamily(STRING_KEYS, Family::String, totalString);
-    pushFamily(NUMERIC_KEYS, Family::Numeric, totalNumeric);
-    pushFamily(BOOL_KEYS, Family::Boolean, totalBoolean);
-
-    // The remainder rotates between null / array / object. We split it as
-    // evenly as possible so each leaf shape runs at every line.
-    const size_t nullCount = (remaining + 2) / 3;
-    remaining -= std::min(nullCount, remaining);
-    const size_t arrayCount = (remaining + 1) / 2;
-    remaining -= std::min(arrayCount, remaining);
-    const size_t objectCount = remaining;
-
-    pushFamily(OTHER_KEYS, Family::Null, nullCount);
-    pushFamily(OTHER_KEYS, Family::Array, arrayCount);
-    pushFamily(OTHER_KEYS, Family::Object, objectCount);
-
-    // Round-robin pad if columnCount > the natural cap. We keep the shape mix
-    // proportional by cycling through families in the same string/number/bool/
-    // other ratio used above.
-    while (keys.size() < columnCount)
-    {
-        const size_t shape = keys.size() % 4;
-        const size_t bucket = keys.size() / 4;
-        if (shape == 0)
-        {
-            keys.emplace_back("string_extra_" + std::to_string(bucket), Family::String);
-        }
-        else if (shape == 1)
-        {
-            keys.emplace_back("number_extra_" + std::to_string(bucket), Family::Numeric);
-        }
-        else if (shape == 2)
-        {
-            keys.emplace_back("bool_extra_" + std::to_string(bucket), Family::Boolean);
-        }
-        else
-        {
-            keys.emplace_back("object_extra_" + std::to_string(bucket), Family::Object);
-        }
-    }
-
-    std::vector<TestJsonLogFile::Line> logs;
-    logs.reserve(count);
-
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> level_dist(0, static_cast<int>(LEVELS.size()) - 1);
-    std::uniform_int_distribution<> component_dist(0, static_cast<int>(COMPONENTS.size()) - 1);
-    std::uniform_int_distribution<> word_dist(0, static_cast<int>(WORDS.size()) - 1);
-    std::uniform_int_distribution<> words_count_dist(3, 8);
-    std::uniform_int_distribution<int> int_dist(0, 1'000'000);
-    std::uniform_int_distribution<int> small_int_dist(0, 100);
-
-    for (size_t i = 0; i < count; ++i)
-    {
-        glz::generic_sorted_u64 json;
-        for (size_t k = 0; k < keys.size(); ++k)
-        {
-            const std::string &keyName = keys[k].first;
-            switch (keys[k].second)
-            {
-            case Family::String: {
-                if (keyName.rfind("timestamp", 0) == 0)
-                {
-                    json[keyName] = date::format(
-                        "%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now())
-                    );
-                }
-                else if (keyName.rfind("level", 0) == 0)
-                {
-                    json[keyName] = LEVELS[level_dist(gen)];
-                }
-                else if (keyName.rfind("component", 0) == 0)
-                {
-                    json[keyName] = COMPONENTS[component_dist(gen)];
-                }
-                else
-                {
-                    std::string value;
-                    const int wc = words_count_dist(gen);
-                    for (int j = 0; j < wc; ++j)
-                    {
-                        if (!value.empty())
-                        {
-                            value += " ";
-                        }
-                        value += WORDS[word_dist(gen)];
-                    }
-                    json[keyName] = value;
-                }
-                break;
-            }
-            case Family::Numeric: {
-                if (keyName.rfind("thread_id", 0) == 0)
-                {
-                    json[keyName] = static_cast<int64_t>(i % 16);
-                }
-                else if (keyName.rfind("cpu_usage_pct", 0) == 0)
-                {
-                    json[keyName] = static_cast<int64_t>(small_int_dist(gen));
-                }
-                else
-                {
-                    json[keyName] = static_cast<int64_t>(int_dist(gen));
-                }
-                break;
-            }
-            case Family::Boolean: {
-                json[keyName] = ((i + k) & 1) == 0;
-                break;
-            }
-            case Family::Null: {
-                json[keyName] = nullptr;
-                break;
-            }
-            case Family::Array: {
-                std::vector<glz::generic_sorted_u64> arr;
-                arr.emplace_back(static_cast<int64_t>(int_dist(gen)));
-                arr.emplace_back(static_cast<int64_t>(small_int_dist(gen)));
-                arr.emplace_back(WORDS[word_dist(gen)]);
-                json[keyName] = std::move(arr);
-                break;
-            }
-            case Family::Object: {
-                glz::generic_sorted_u64 obj;
-                obj["k"] = static_cast<int64_t>(small_int_dist(gen));
-                obj["v"] = WORDS[word_dist(gen)];
-                json[keyName] = std::move(obj);
-                break;
-            }
-            }
-        }
-        logs.emplace_back(std::move(json));
-    }
-
-    return logs;
-}
+// `GenerateRandomJsonLogs` and `GenerateWideJsonLogs` were moved to the
+// shared `test_common` library (see `test/common/include/test_common/log_generator.hpp`)
+// so the `log_generator` console helper can reuse them without pulling in
+// Catch2. The `using` declarations at the top of this file expose them in
+// the same unqualified form the surrounding test cases used previously.
 
 TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
 {
@@ -466,11 +211,11 @@ void ReportStageTimings(const char *label, const StageTimings &t)
     const double denom = static_cast<double>(t.effectiveThreads) * wallClockS;
     const double utilization = denom == 0.0 ? 0.0 : (stageBS / denom) * 100.0;
     WARN(
-        label << " — Wall-clock: " << wallClockS << " s | Stage A CPU: " << stageAMs
-              << " ms | Stage B CPU: " << stageBS << " s (across " << t.effectiveThreads << " workers, "
-              << utilization << " % utilisation = " << stageBS << " / (" << t.effectiveThreads << " * " << wallClockS
-              << ")) | Stage C CPU: " << stageCMs << " ms | Sink: " << sinkMs
-              << " ms | batches A/B/C=" << t.stageABatches << "/" << t.stageBBatches << "/" << t.stageCBatches
+        label << " — Wall-clock: " << wallClockS << " s | Stage A CPU: " << stageAMs << " ms | Stage B CPU: " << stageBS
+              << " s (across " << t.effectiveThreads << " workers, " << utilization << " % utilisation = " << stageBS
+              << " / (" << t.effectiveThreads << " * " << wallClockS << ")) | Stage C CPU: " << stageCMs
+              << " ms | Sink: " << sinkMs << " ms | batches A/B/C=" << t.stageABatches << "/" << t.stageBBatches << "/"
+              << t.stageCBatches
     );
 }
 
@@ -581,14 +326,12 @@ TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][jso
                 }
             }
         }
-        const double fastPathFraction = totalStringValues == 0
-                                            ? 0.0
-                                            : static_cast<double>(stringViewValues) /
-                                                  static_cast<double>(totalStringValues);
+        const double fastPathFraction =
+            totalStringValues == 0 ? 0.0
+                                   : static_cast<double>(stringViewValues) / static_cast<double>(totalStringValues);
         WARN(
-            "Parse wide warm-up — string_view fast-path fraction: " << (fastPathFraction * 100.0) << "% ("
-                                                                    << stringViewValues << " / " << totalStringValues
-                                                                    << ")"
+            "Parse wide warm-up — string_view fast-path fraction: "
+            << (fastPathFraction * 100.0) << "% (" << stringViewValues << " / " << totalStringValues << ")"
         );
     }
 
@@ -604,9 +347,7 @@ TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][jso
 // `useThreadLocalKeyCache=false` variant. Lets us bisect how much of the
 // multi-threaded speed-up comes from the per-worker interned key cache vs.
 // the simdjson + `KeyIndex` hot path itself.
-TEST_CASE(
-    "Parse and load JSON log (no thread-local key cache)", "[.][benchmark][json_parser][no_thread_local_cache]"
-)
+TEST_CASE("Parse and load JSON log (no thread-local key cache)", "[.][benchmark][json_parser][no_thread_local_cache]")
 {
     auto logs = GenerateRandomJsonLogs(10'000);
     const TestJsonLogFile testFile(logs);
@@ -773,9 +514,9 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     WARN(
         "Allocation footprint over " << lineCount << " lines: " << totalValues << " values, " << stringViewValues
                                      << " string_view (fast path), " << ownedStringValues
-                                     << " std::string (slow path), fast-path fraction="
-                                     << (fastPathFraction * 100.0) << "%, allocation upper bound=" << allocUpperBound
-                                     << " (~" << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
+                                     << " std::string (slow path), fast-path fraction=" << (fastPathFraction * 100.0)
+                                     << "%, allocation upper bound=" << allocUpperBound << " (~"
+                                     << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
                                      << "/line)"
     );
 
@@ -796,9 +537,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
 // The fixture configures a `Type::time` column for `timestamp` so the
 // streaming parser has real promotion work to do — without it the
 // back-fill loop stays a no-op for every batch.
-TEST_CASE(
-    "Parse and stream to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][stream_to_table]"
-)
+TEST_CASE("Parse and stream to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][stream_to_table]")
 {
     auto logs = GenerateRandomJsonLogs(1'000'000);
     const TestJsonLogFile testFile(logs);
@@ -842,8 +581,13 @@ TEST_CASE(
         size_t appendBatches = 0;
         size_t appendLines = 0;
 
-        KeyIndex &Keys() override { return table->Data().Keys(); }
-        void OnStarted() override {}
+        KeyIndex &Keys() override
+        {
+            return table->Data().Keys();
+        }
+        void OnStarted() override
+        {
+        }
         void OnBatch(StreamedBatch batch) override
         {
             const size_t lines = batch.lines.size();
@@ -853,7 +597,9 @@ TEST_CASE(
             ++appendBatches;
             appendLines += lines;
         }
-        void OnFinished(bool /*cancelled*/) override {}
+        void OnFinished(bool /*cancelled*/) override
+        {
+        }
     };
 
     // Untimed warm-up: same shape as the `[large]` benchmark so throughput
@@ -882,9 +628,8 @@ TEST_CASE(
         ReportThroughput("Stream to LogTable warm-up", elapsed, bytes, logs.size());
 
         const double appendMs = std::chrono::duration<double, std::milli>(sink.appendTotal).count();
-        const double per100k = sink.appendLines == 0
-                                   ? 0.0
-                                   : appendMs * 100'000.0 / static_cast<double>(sink.appendLines);
+        const double per100k =
+            sink.appendLines == 0 ? 0.0 : appendMs * 100'000.0 / static_cast<double>(sink.appendLines);
         WARN(
             "LogTable::AppendBatch wall-time: " << appendMs << " ms over " << sink.appendBatches << " batches / "
                                                 << sink.appendLines << " lines (" << per100k << " ms / 100k lines)"
@@ -937,8 +682,13 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         bool cancelled = false;
         size_t batches = 0;
 
-        KeyIndex &Keys() override { return keys; }
-        void OnStarted() override {}
+        KeyIndex &Keys() override
+        {
+            return keys;
+        }
+        void OnStarted() override
+        {
+        }
         void OnBatch(StreamedBatch /*batch*/) override
         {
             ++batches;

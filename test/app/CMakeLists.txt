@@ -9,7 +9,10 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test Widgets)
 set(CMAKE_AUTOMOC ON)
 
 # Create the test executable for MainWindow
-qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
+qt_add_resources(RESOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fixtures.qrc
+)
 qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
 
 # Link against Qt libraries and your library code

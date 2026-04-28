@@ -39,8 +39,7 @@ struct FastFieldKey
     std::string owned;
 };
 
-template <class Field>
-FastFieldKey ExtractFieldKey(Field &field)
+template <class Field> FastFieldKey ExtractFieldKey(Field &field)
 {
     FastFieldKey result;
 
@@ -104,8 +103,7 @@ void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogVal
     out.emplace(it, id, std::move(value));
 }
 
-template <class Value>
-LogValue ExtractStringValue(Value &value, bool sourceIsStable)
+template <class Value> LogValue ExtractStringValue(Value &value, bool sourceIsStable)
 {
     // string_view path is only safe when simdjson iterates directly over the
     // mmap; the padded-scratch fallback yields views that dangle on the next line.
@@ -130,14 +128,13 @@ LogValue ExtractStringValue(Value &value, bool sourceIsStable)
     return LogValue{std::monostate{}};
 }
 
-template <class Value>
-LogValue ExtractRawJsonValue(Value &value, bool sourceIsStable)
+template <class Value> LogValue ExtractRawJsonValue(Value &value, bool sourceIsStable)
 {
     std::string_view rawJson;
     if (!value.raw_json().get(rawJson))
     {
-        while (!rawJson.empty() && (rawJson.back() == ' ' || rawJson.back() == '\n' || rawJson.back() == '\r' ||
-                                    rawJson.back() == '\t'))
+        while (!rawJson.empty() &&
+               (rawJson.back() == ' ' || rawJson.back() == '\n' || rawJson.back() == '\r' || rawJson.back() == '\t'))
         {
             rawJson.remove_suffix(1);
         }
@@ -195,9 +192,8 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
             continue;
         }
 
-        const KeyId keyId = fk.isView
-                                ? detail::InternKeyVia(fk.view, keys, keyCache, useKeyCache)
-                                : keys.GetOrInsert(fk.owned);
+        const KeyId keyId =
+            fk.isView ? detail::InternKeyVia(fk.view, keys, keyCache, useKeyCache) : keys.GetOrInsert(fk.owned);
         EnsureCacheCapacity(cache, keyId);
 
         auto value = field.value();
@@ -483,8 +479,7 @@ void DecodeJsonBatch(
         // is unterminated we still owe `GetLine` that compensating byte, so push the
         // virtual `fileSize + 1` sentinel instead of `fileSize`. Otherwise the last
         // character of the line gets lopped off when `GetLine` is later called.
-        const uint64_t nextOffset =
-            static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
+        const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
 
         if (line.empty())
@@ -499,37 +494,25 @@ void DecodeJsonBatch(
             // otherwise fall back to a per-worker padded copy.
             const size_t remaining = static_cast<size_t>(fileEnd - lineEnd);
             const bool sourceIsStable = remaining >= simdjson::SIMDJSON_PADDING;
-            auto result = sourceIsStable
-                              ? worker.user.parser.iterate(line.data(), line.size(), line.size() + remaining)
-                              : [&]() {
-                                    const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
-                                    if (line.size() > worker.user.maxLineSize ||
-                                        worker.user.linePadded.size() < needed)
-                                    {
-                                        worker.user.maxLineSize = std::max(worker.user.maxLineSize, line.size());
-                                        worker.user.linePadded.resize(
-                                            worker.user.maxLineSize + simdjson::SIMDJSON_PADDING + 64
-                                        );
-                                    }
-                                    std::memcpy(worker.user.linePadded.data(), line.data(), line.size());
-                                    std::memset(
-                                        worker.user.linePadded.data() + line.size(),
-                                        0,
-                                        simdjson::SIMDJSON_PADDING
-                                    );
-                                    return worker.user.parser.iterate(
-                                        worker.user.linePadded.data(),
-                                        line.size(),
-                                        worker.user.linePadded.size()
-                                    );
-                                }();
+            auto result =
+                sourceIsStable ? worker.user.parser.iterate(line.data(), line.size(), line.size() + remaining) : [&]() {
+                    const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
+                    if (line.size() > worker.user.maxLineSize || worker.user.linePadded.size() < needed)
+                    {
+                        worker.user.maxLineSize = std::max(worker.user.maxLineSize, line.size());
+                        worker.user.linePadded.resize(worker.user.maxLineSize + simdjson::SIMDJSON_PADDING + 64);
+                    }
+                    std::memcpy(worker.user.linePadded.data(), line.data(), line.size());
+                    std::memset(worker.user.linePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);
+                    return worker.user.parser.iterate(
+                        worker.user.linePadded.data(), line.size(), worker.user.linePadded.size()
+                    );
+                }();
             if (result.error())
             {
-                parsed.errors.push_back(fmt::format(
-                    "Error on line {}: {}",
-                    relativeLineNumber,
-                    simdjson::error_message(result.error())
-                ));
+                parsed.errors.push_back(
+                    fmt::format("Error on line {}: {}", relativeLineNumber, simdjson::error_message(result.error()))
+                );
                 relativeLineNumber++;
                 continue;
             }
@@ -641,15 +624,11 @@ void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, ParserOpt
 }
 
 void JsonParser::ParseStreaming(
-    LogFile &file,
-    StreamingLogSink &sink,
-    ParserOptions options,
-    internal::AdvancedParserOptions advanced
+    LogFile &file, StreamingLogSink &sink, ParserOptions options, internal::AdvancedParserOptions advanced
 ) const
 {
-    const size_t batchSize = advanced.batchSizeBytes != 0
-                                 ? advanced.batchSizeBytes
-                                 : internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
+    const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
+                                                          : internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
     const bool useThreadLocalKeyCache = advanced.useThreadLocalKeyCache;
 
     LogFile *filePtr = &file;
@@ -690,9 +669,7 @@ void JsonParser::ParseStreaming(
                       KeyIndex &keys,
                       std::span<const detail::TimeColumnSpec> timeColumns,
                       detail::ParsedPipelineBatch &parsed
-                  ) {
-        DecodeJsonBatch(token, worker, keys, *filePtr, timeColumns, useThreadLocalKeyCache, parsed);
-    };
+                  ) { DecodeJsonBatch(token, worker, keys, *filePtr, timeColumns, useThreadLocalKeyCache, parsed); };
 
     detail::RunParserPipeline<JsonByteRange, JsonWorkerState>(file, sink, options, advanced, stageA, stageB);
 }

@@ -92,11 +92,13 @@ public:
             return true;
         };
 
-        auto stageB = [filePtr, fileBegin](ByteRange token,
-                                            loglib::detail::WorkerScratch<WorkerState> &worker,
-                                            KeyIndex &keys,
-                                            std::span<const loglib::detail::TimeColumnSpec> timeColumns,
-                                            loglib::detail::ParsedPipelineBatch &parsed) {
+        auto stageB = [filePtr, fileBegin](
+                          ByteRange token,
+                          loglib::detail::WorkerScratch<WorkerState> &worker,
+                          KeyIndex &keys,
+                          std::span<const loglib::detail::TimeColumnSpec> timeColumns,
+                          loglib::detail::ParsedPipelineBatch &parsed
+                      ) {
             const char *cur = token.bytesBegin;
             const char *end = token.bytesEnd;
             size_t relativeLineNumber = 1;
@@ -111,8 +113,7 @@ public:
                 // Match `LogFile::GetLine`'s `stopOffset - startOffset - 1` length
                 // formula: when the last line of the file is unterminated, push
                 // `fileSize + 1` so the final character isn't trimmed off.
-                const uint64_t nextOffset =
-                    static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
+                const uint64_t nextOffset = static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
                 parsed.localLineOffsets.push_back(nextOffset);
 
                 std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
@@ -129,8 +130,9 @@ public:
 
                 if (line.front() == '!')
                 {
-                    parsed.errors.push_back("Error on line " + std::to_string(relativeLineNumber) +
-                                            ": injected parser failure");
+                    parsed.errors.push_back(
+                        "Error on line " + std::to_string(relativeLineNumber) + ": injected parser failure"
+                    );
                     ++relativeLineNumber;
                     continue;
                 }
@@ -162,8 +164,7 @@ public:
                     std::string_view keyView = field.substr(0, eq);
                     std::string_view valueView = field.substr(eq + 1);
 
-                    const loglib::KeyId keyId =
-                        loglib::detail::InternKeyVia(keyView, keys, &worker.keyCache, true);
+                    const loglib::KeyId keyId = loglib::detail::InternKeyVia(keyView, keys, &worker.keyCache, true);
                     LogValue val{std::string(valueView)};
                     auto it = values.begin();
                     while (it != values.end() && it->first < keyId)
@@ -212,9 +213,15 @@ public:
         file.write(content.data(), static_cast<std::streamsize>(content.size()));
     }
 
-    ~TempTextFile() { std::filesystem::remove(mFilePath); }
+    ~TempTextFile()
+    {
+        std::filesystem::remove(mFilePath);
+    }
 
-    const std::string &Path() const { return mFilePath; }
+    const std::string &Path() const
+    {
+        return mFilePath;
+    }
 
 private:
     std::string mFilePath;
@@ -225,9 +232,18 @@ private:
 class CollectingSink : public StreamingLogSink
 {
 public:
-    KeyIndex &Keys() override { return mKeys; }
-    void OnStarted() override { ++startedCount; }
-    void OnBatch(StreamedBatch batch) override { batches.push_back(std::move(batch)); }
+    KeyIndex &Keys() override
+    {
+        return mKeys;
+    }
+    void OnStarted() override
+    {
+        ++startedCount;
+    }
+    void OnBatch(StreamedBatch batch) override
+    {
+        batches.push_back(std::move(batch));
+    }
     void OnFinished(bool wasCancelled) override
     {
         cancelled = wasCancelled;
@@ -380,8 +396,9 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     const auto latency = sink.finishedAt - sink.requestedAt;
     const auto latencyMs = std::chrono::duration<double, std::milli>(latency).count();
 
-    INFO("Cancellation latency = " << latencyMs << " ms (ntokens=" << kNtokens << ", batch=" << kBatchBytes
-                                   << " bytes)");
+    INFO(
+        "Cancellation latency = " << latencyMs << " ms (ntokens=" << kNtokens << ", batch=" << kBatchBytes << " bytes)"
+    );
 
     REQUIRE(latency >= std::chrono::nanoseconds{0});
     REQUIRE(latencyMs < 2000.0);

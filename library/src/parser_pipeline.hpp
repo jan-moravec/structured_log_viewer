@@ -72,8 +72,7 @@ struct WorkerScratchBase
 
 /// Bolts format-specific scratch (e.g. simdjson parser + padded buffer) onto
 /// the shared base.
-template <class UserState>
-struct WorkerScratch : WorkerScratchBase
+template <class UserState> struct WorkerScratch : WorkerScratchBase
 {
     UserState user;
 };
@@ -107,8 +106,7 @@ struct ParsedPipelineBatch
     size_t totalLineCount = 0;
 };
 
-inline void
-WorkerScratchBase::PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns)
+inline void WorkerScratchBase::PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns)
 {
     if (timeColumns.empty())
     {
@@ -132,7 +130,7 @@ namespace pipeline_detail
 constexpr size_t kStreamFlushLines = 1000;
 constexpr auto kStreamFlushInterval = std::chrono::milliseconds(50);
 
-}  // namespace pipeline_detail
+} // namespace pipeline_detail
 
 /// Streaming-pipeline entry point. Stage A `stageADriver(Token&) -> bool` is
 /// serial_in_order; Stage B `stageBDecoder(Token, scratch, keys, columns,
@@ -167,20 +165,17 @@ void RunParserPipeline(
 
     KeyIndex &keys = sink.Keys();
 
-    const std::vector<TimeColumnSpec> timeColumns =
-        BuildTimeColumnSpecs(keys, options.configuration.get());
+    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(keys, options.configuration.get());
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 
     StageTimings *timingsOut = advanced.timings;
     const bool collectTimings = (timingsOut != nullptr);
-    const auto wallClockStart = collectTimings ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+    const auto wallClockStart =
+        collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     std::chrono::nanoseconds stageACpuTotal{0};
     size_t stageABatches = 0;
-    oneapi::tbb::enumerable_thread_specific<std::chrono::nanoseconds> stageBCpuPerWorker(
-        std::chrono::nanoseconds{0}
-    );
+    oneapi::tbb::enumerable_thread_specific<std::chrono::nanoseconds> stageBCpuPerWorker(std::chrono::nanoseconds{0});
     std::atomic<size_t> stageBBatches{0};
     std::chrono::nanoseconds stageCCpuTotal{0};
     size_t stageCBatches = 0;
@@ -201,8 +196,8 @@ void RunParserPipeline(
             fc.stop();
             return Token{};
         }
-        const auto stageStart = collectTimings ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+        const auto stageStart =
+            collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         Token token{};
         const bool produced = stageADriver(token);
         if (!produced)
@@ -219,8 +214,8 @@ void RunParserPipeline(
     };
 
     auto stageB = [&](Token token) -> ParsedPipelineBatch {
-        const auto stageStart = collectTimings ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+        const auto stageStart =
+            collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         WorkerScratch<UserState> &worker = workers.local();
         worker.EnsureTimeColumnCapacity(timeColumnsSpan.size());
 
@@ -262,8 +257,8 @@ void RunParserPipeline(
     };
 
     auto stageC = [&](ParsedPipelineBatch parsed) {
-        const auto stageStart = collectTimings ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{};
+        const auto stageStart =
+            collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
         const size_t lineNumberDelta = nextLineNumber - 1;
         if (lineNumberDelta != 0)
@@ -336,8 +331,7 @@ void RunParserPipeline(
     };
 
     oneapi::tbb::global_control gc(
-        oneapi::tbb::global_control::max_allowed_parallelism,
-        static_cast<size_t>(settings.effectiveThreads)
+        oneapi::tbb::global_control::max_allowed_parallelism, static_cast<size_t>(settings.effectiveThreads)
     );
 
     oneapi::tbb::parallel_pipeline(

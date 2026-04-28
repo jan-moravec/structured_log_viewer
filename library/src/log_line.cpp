@@ -48,7 +48,9 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
     return lhs == rhs;
 }
 
-LogLine::LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LogFileReference fileReference)
+LogLine::LogLine(
+    std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LogFileReference fileReference
+)
     : mValues(std::move(sortedValues)), mKeys(&keys), mFileReference(std::move(fileReference))
 {
 #ifndef NDEBUG
@@ -67,9 +69,7 @@ LogLine::LogLine(const LogMap &values, KeyIndex &keys, LogFileReference fileRefe
     {
         mValues.emplace_back(keys.GetOrInsert(key), value);
     }
-    std::sort(mValues.begin(), mValues.end(), [](const auto &a, const auto &b) {
-        return a.first < b.first;
-    });
+    std::sort(mValues.begin(), mValues.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 }
 
 LogValue LogLine::GetValue(KeyId id) const

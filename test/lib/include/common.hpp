@@ -2,6 +2,8 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
 
+#include <test_common/json_log_line.hpp>
+
 #include <glaze/glaze.hpp>
 
 #include <filesystem>
@@ -12,17 +14,10 @@
 class TestJsonLogFile
 {
 public:
-    struct Line
-    {
-        Line(const char *line);
-        Line(glz::generic_sorted_u64 json);
-
-        using Type = std::variant<std::string, glz::generic_sorted_u64>;
-        Type data;
-
-        std::string ToString() const;
-        void Parse(std::vector<std::string> &strings, std::vector<glz::generic_sorted_u64> &jsons) const;
-    };
+    // Alias the shared `JsonLogLine` so existing call sites (`TestJsonLogFile::Line`)
+    // keep compiling while the underlying type lives in `test_common` (Catch2-free)
+    // and is reusable from the standalone `log_generator` console app.
+    using Line = test_common::JsonLogLine;
 
     TestJsonLogFile(std::string filePath = FILE_PATH);
     TestJsonLogFile(Line line, std::string filePath = FILE_PATH);

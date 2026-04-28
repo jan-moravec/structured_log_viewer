@@ -158,11 +158,11 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     const auto days = date::sys_days{ymd};
-    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
-                         std::chrono::duration_cast<std::chrono::microseconds>(
-                             std::chrono::seconds{hour * 3600 + minute * 60 + second}
-                         ) +
-                         std::chrono::microseconds{fractionalUs};
+    const auto totalUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::seconds{hour * 3600 + minute * 60 + second}
+        ) +
+        std::chrono::microseconds{fractionalUs};
     out = TimeStamp{totalUs};
     // Non-positive epochs are reported as failure (matches slow-path sentinel).
     return out.time_since_epoch().count() > 0;

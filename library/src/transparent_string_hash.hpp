@@ -32,10 +32,22 @@ struct TransparentStringEqual
 {
     using is_transparent = void;
 
-    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept { return lhs == rhs; }
-    bool operator()(std::string_view lhs, const std::string &rhs) const noexcept { return lhs == rhs; }
-    bool operator()(const std::string &lhs, std::string_view rhs) const noexcept { return lhs == rhs; }
-    bool operator()(const std::string &lhs, const std::string &rhs) const noexcept { return lhs == rhs; }
+    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(std::string_view lhs, const std::string &rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string &lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string &lhs, const std::string &rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
 };
 
 } // namespace loglib::detail

@@ -635,8 +635,7 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
 
 TEST_CASE(
-    "Per-worker key cache eats canonical KeyIndex::GetOrInsert calls on the hot path",
-    "[json_parser][per_worker_cache]"
+    "Per-worker key cache eats canonical KeyIndex::GetOrInsert calls on the hot path", "[json_parser][per_worker_cache]"
 )
 {
     // With `useThreadLocalKeyCache = true`, a 100-line stream that uses only
@@ -706,10 +705,7 @@ TEST_CASE(
     REQUIRE(noCacheResult.errors.empty());
     REQUIRE(noCacheResult.data.Lines().size() == kLineCount);
 
-    INFO(
-        "cache-off run noCacheCalls=" << noCacheCalls
-                                      << " expected close to lines*keys=" << (kLineCount * 5)
-    );
+    INFO("cache-off run noCacheCalls=" << noCacheCalls << " expected close to lines*keys=" << (kLineCount * 5));
     // Floor at 100 is comfortably above the cache-on bound (kThreads × 5 = 20) so the check
     // catches a silently-stuck instrumentation counter as well as a regressed cache-off path.
     CHECK(noCacheCalls >= 100);
@@ -770,8 +766,8 @@ struct TestTransparentStringEqual
     }
 };
 
-using TestPerWorkerKeyCache = tsl::robin_map<std::string, loglib::KeyId, TestTransparentStringHash,
-                                             TestTransparentStringEqual>;
+using TestPerWorkerKeyCache =
+    tsl::robin_map<std::string, loglib::KeyId, TestTransparentStringHash, TestTransparentStringEqual>;
 
 } // namespace
 
@@ -831,8 +827,8 @@ namespace
 {
 
 // Minimal `%FT%T`-style ISO-8601 timestamp generator used by the Stage B promotion test
-// below. The `GenerateRandomJsonLogs` helper in `benchmark_json.cpp` does the same job for
-// the benchmarks but lives in a different translation unit, so we re-roll a small variant
+// below. The `test_common::GenerateRandomJsonLogs` helper does the same job for the
+// benchmarks but lives in a different translation unit, so we re-roll a small variant
 // here to keep the unit-test side independent.
 std::string FormatIsoTimestamp(std::chrono::system_clock::time_point tp)
 {
@@ -918,8 +914,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Stage B leaves unparseable timestamp values as strings and pushes no errors",
-    "[json_parser][stage_b_timestamps]"
+    "Stage B leaves unparseable timestamp values as strings and pushes no errors", "[json_parser][stage_b_timestamps]"
 )
 {
     // Promotion failures must never push into `parsed.errors` — they leave
@@ -1037,8 +1032,7 @@ TEST_CASE(
     {
         INFO("i=" << i);
         const auto &lineRef = result.data.Lines()[i].FileReference();
-        const std::string expectedContent =
-            std::string(R"({"key":"value-)") + std::to_string(i + 1) + R"("})";
+        const std::string expectedContent = std::string(R"({"key":"value-)") + std::to_string(i + 1) + R"("})";
         CHECK(lineRef.GetLine() == expectedContent);
     }
 
@@ -1057,10 +1051,7 @@ TEST_CASE(
     CHECK(file.GetLine(109) == R"({"key":"value-10"})");
 }
 
-TEST_CASE(
-    "ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys",
-    "[json_parser][extract_field_key]"
-)
+TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys", "[json_parser][extract_field_key]")
 {
     // `ExtractFieldKey` uses simdjson's length-aware `field.escaped_key()` and
     // keeps the fast/slow-path split intact: keys with no backslash become a
@@ -1074,8 +1065,8 @@ TEST_CASE(
     // keyed by line index. The raw-string contents are JSON-on-disk, i.e. backslashes
     // are real characters in the bytes simdjson sees.
     std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(R"({"plain": "v-plain"})");          // (a) fast path: no backslash
-    lines.emplace_back(R"({"with\"quote": "v-quote"})");    // (b) slow path: escaped quote
+    lines.emplace_back(R"({"plain": "v-plain"})");           // (a) fast path: no backslash
+    lines.emplace_back(R"({"with\"quote": "v-quote"})");     // (b) slow path: escaped quote
     lines.emplace_back(R"({"back\\slash": "v-backslash"})"); // (c) slow path: escaped backslash
     lines.emplace_back(R"({"\u0041BC": "v-unicode"})");      // (d) slow path: Unicode escape
     const TestJsonLogFile testFile(lines);
@@ -1104,10 +1095,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE(
-    "Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of EOF",
-    "[json_parser][padding_tail]"
-)
+TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of EOF", "[json_parser][padding_tail]")
 {
     // Every short fixture's last line ends within `SIMDJSON_PADDING` bytes
     // of EOF, so Stage B's `!sourceIsStable` branch takes over and parses
@@ -1125,8 +1113,8 @@ TEST_CASE(
     // Padding is only ~64 bytes on Win/MSVC so even the longest line below sits well
     // within SIMDJSON_PADDING of EOF for any reasonable file size.
     std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(R"({"k":"a"})");                                  // shortest
-    lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwx"})");           // longer
+    lines.emplace_back(R"({"k":"a"})");                                    // shortest
+    lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwx"})");             // longer
     lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})"); // longest
     const TestJsonLogFile testFile(lines);
 
@@ -1181,8 +1169,7 @@ TEST_CASE(
     //     entire line, so the linear back-scan branch handles it. Both rows must
     //     yield the same "last write wins" outcome.
     std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(
-        R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
+    lines.emplace_back(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
     );
     lines.emplace_back(R"({"a":1,"dup":"first","b":2,"dup":"second"})");
 

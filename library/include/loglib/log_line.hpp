@@ -24,7 +24,8 @@ using TimeStamp = std::chrono::time_point<std::chrono::system_clock, std::chrono
 /// index 0, `string` is index 1, etc. New alternatives may be added only at
 /// the end. `string_view` lets the parser hand out values pointing directly
 /// into the memory-mapped log file.
-using LogValue = std::variant<std::string_view, std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
+using LogValue =
+    std::variant<std::string_view, std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
 
 /// Cold-path key->value map for tests and debug dumps.
 using LogMap = std::unordered_map<std::string, LogValue>;

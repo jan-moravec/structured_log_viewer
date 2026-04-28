@@ -21,7 +21,6 @@ namespace loglib
 using detail::TransparentStringEqual;
 using detail::TransparentStringHash;
 
-
 struct KeyIndex::Impl
 {
     /// Power-of-two shard count: hash-low-bits AND `kShardMask` picks a shard.
@@ -47,7 +46,7 @@ struct KeyIndex::Impl
 
     static size_t ShardIndex(std::string_view key) noexcept
     {
-        return std::hash<std::string_view>{}(key) & kShardMask;
+        return std::hash<std::string_view>{}(key)&kShardMask;
     }
 };
 

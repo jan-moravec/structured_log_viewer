@@ -138,7 +138,9 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 // "already there") or double-add it (false-negative "absent" after a
 // rebuild already saw it).
 
-TEST_CASE("Cache: AppendKeys after a query sees the freshly appended key", "[LogConfigurationManager][cache_invalidation]")
+TEST_CASE(
+    "Cache: AppendKeys after a query sees the freshly appended key", "[LogConfigurationManager][cache_invalidation]"
+)
 {
     LogConfigurationManager manager;
 
@@ -161,7 +163,10 @@ TEST_CASE("Cache: AppendKeys after a query sees the freshly appended key", "[Log
     CHECK(manager.Configuration().columns[1].header == "beta");
 }
 
-TEST_CASE("Cache: Update after AppendKeys auto-promotes timestamps with the cache fresh", "[LogConfigurationManager][cache_invalidation]")
+TEST_CASE(
+    "Cache: Update after AppendKeys auto-promotes timestamps with the cache fresh",
+    "[LogConfigurationManager][cache_invalidation]"
+)
 {
     LogConfigurationManager manager;
 
@@ -193,7 +198,10 @@ TEST_CASE("Cache: Update after AppendKeys auto-promotes timestamps with the cach
     CHECK(manager.Configuration().columns[1].header == "regular");
 }
 
-TEST_CASE("Cache: Load wholesale-replaces the cache against the freshly loaded columns", "[LogConfigurationManager][cache_invalidation]")
+TEST_CASE(
+    "Cache: Load wholesale-replaces the cache against the freshly loaded columns",
+    "[LogConfigurationManager][cache_invalidation]"
+)
 {
     TestLogConfiguration firstConfigOnDisk("test_config_first.json");
     {
@@ -245,7 +253,8 @@ TEST_CASE("Cache: Load wholesale-replaces the cache against the freshly loaded c
 }
 
 TEST_CASE(
-    "Cache: parity with the pre-cache O(M*K) walk on the existing fixture", "[LogConfigurationManager][cache_invalidation]"
+    "Cache: parity with the pre-cache O(M*K) walk on the existing fixture",
+    "[LogConfigurationManager][cache_invalidation]"
 )
 {
     // Re-run the existing "Update with mixed keys organizes timestamp first"
@@ -278,7 +287,10 @@ TEST_CASE(
     CHECK(manager.Configuration().columns[2].header == "newKey");
 }
 
-TEST_CASE("Cache: a column whose `keys` differs from `header` is matched by key", "[LogConfigurationManager][cache_invalidation]")
+TEST_CASE(
+    "Cache: a column whose `keys` differs from `header` is matched by key",
+    "[LogConfigurationManager][cache_invalidation]"
+)
 {
     // The cache mirrors `column.keys`, not `column.header`. Catch the easy
     // mistake of caching headers instead of keys: build a column whose

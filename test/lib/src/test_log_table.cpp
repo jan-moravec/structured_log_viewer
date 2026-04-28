@@ -169,8 +169,9 @@ StreamedBatch BuildStreamedBatch(
 
 } // namespace
 
-TEST_CASE("LogTable::AppendBatch -- steady-state batches with no new keys do not extend columns",
-          "[log_table][append_batch]")
+TEST_CASE(
+    "LogTable::AppendBatch -- steady-state batches with no new keys do not extend columns", "[log_table][append_batch]"
+)
 {
     TestLogFile testFile("steady.json");
     testFile.Write("");
@@ -181,9 +182,8 @@ TEST_CASE("LogTable::AppendBatch -- steady-state batches with no new keys do not
     table.BeginStreaming(std::move(logFile));
 
     KeyIndex &keys = table.Data().Keys();
-    auto batchA = BuildStreamedBatch(
-        keys, *filePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1
-    );
+    auto batchA =
+        BuildStreamedBatch(keys, *filePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
     table.AppendBatch(std::move(batchA));
 
     REQUIRE(table.RowCount() == 1);
@@ -204,8 +204,7 @@ TEST_CASE("LogTable::AppendBatch -- steady-state batches with no new keys do not
     CHECK(!table.LastBackfillRange().has_value());
 }
 
-TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end",
-          "[log_table][append_batch]")
+TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", "[log_table][append_batch]")
 {
     TestLogFile testFile("append_columns.json");
     testFile.Write("");
@@ -216,9 +215,9 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end",
     table.BeginStreaming(std::move(logFile));
 
     KeyIndex &keys = table.Data().Keys();
-    table.AppendBatch(BuildStreamedBatch(
-        keys, *filePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1
-    ));
+    table.AppendBatch(
+        BuildStreamedBatch(keys, *filePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
+    );
     REQUIRE(table.ColumnCount() == 2);
     const std::string alphaHeader = table.GetHeader(0);
     const std::string betaHeader = table.GetHeader(1);
@@ -271,8 +270,7 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
 // the middle. This is the contract that lets the Qt `LogModel` emit
 // `beginInsertColumns` / `endInsertColumns` over the trailing range without
 // invalidating any persistent `QModelIndex` held by the view.
-TEST_CASE("LogTable column to KeyId cache is append-only across Update and AppendBatch",
-          "[log_table][append_only]")
+TEST_CASE("LogTable column to KeyId cache is append-only across Update and AppendBatch", "[log_table][append_only]")
 {
     TestLogFile testFile("append_only.json");
     testFile.Write("");
@@ -386,7 +384,9 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     KeyIndex keysA;
     std::vector<LogLine> linesA;
-    linesA.emplace_back(LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, LogFileReference(*logFileA, 0));
+    linesA.emplace_back(
+        LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, LogFileReference(*logFileA, 0)
+    );
 
     LogData dataA(std::move(logFileA), std::move(linesA), std::move(keysA));
 
@@ -410,7 +410,9 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     KeyIndex keysB;
     std::vector<LogLine> linesB;
-    linesB.emplace_back(LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, LogFileReference(*logFileB, 0));
+    linesB.emplace_back(
+        LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, LogFileReference(*logFileB, 0)
+    );
 
     LogData dataB(std::move(logFileB), std::move(linesB), std::move(keysB));
     table.Update(std::move(dataB));
@@ -427,7 +429,9 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     KeyIndex keysC;
     std::vector<LogLine> linesC;
-    linesC.emplace_back(LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, LogFileReference(*logFileC, 0));
+    linesC.emplace_back(
+        LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, LogFileReference(*logFileC, 0)
+    );
 
     LogData dataC(std::move(logFileC), std::move(linesC), std::move(keysC));
     table.Update(std::move(dataC));
@@ -439,8 +443,10 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     CHECK(table.GetHeader(3) == "delta");
 }
 
-TEST_CASE("LogTable::AppendBatch -- auto-promoted time column triggers back-fill on already-appended rows",
-          "[log_table][append_batch]")
+TEST_CASE(
+    "LogTable::AppendBatch -- auto-promoted time column triggers back-fill on already-appended rows",
+    "[log_table][append_batch]"
+)
 {
     InitializeTimezoneData();
 
@@ -518,8 +524,7 @@ TEST_CASE("LogTable::AppendBatch -- auto-promoted time column triggers back-fill
 // batches that means `findCount == 0` (saving ~99 000 `Find` calls on a
 // 100-column / 1 000-batch parse with no new keys after batch 1).
 TEST_CASE(
-    "LogTable::AppendBatch -- RefreshColumnKeyIds skipped on steady-state batches",
-    "[log_table][refresh_no_alloc]"
+    "LogTable::AppendBatch -- RefreshColumnKeyIds skipped on steady-state batches", "[log_table][refresh_no_alloc]"
 )
 {
     constexpr int kKeyCount = 100;
@@ -607,8 +612,7 @@ TEST_CASE(
 // column (1 Find call from the lookup loop after `affected == true`) and skip
 // the 50-key Untouched column entirely.
 TEST_CASE(
-    "LogTable::AppendBatch -- RefreshColumnKeyIdsForKeys skips columns without overlap",
-    "[log_table][refresh_no_alloc]"
+    "LogTable::AppendBatch -- RefreshColumnKeyIdsForKeys skips columns without overlap", "[log_table][refresh_no_alloc]"
 )
 {
     constexpr int kUntouchedKeyCount = 50;
@@ -671,7 +675,8 @@ TEST_CASE(
     // zero. Pre-task-9.0 we would have paid 2 + 50 = 52 Find calls here.
     const std::size_t findCount = KeyIndex::LoadFindCount();
     INFO(
-        "Find calls = " << findCount << " — expected 2 (only the Touched column whose keys overlap with newKeys is refreshed)"
+        "Find calls = " << findCount
+                        << " — expected 2 (only the Touched column whose keys overlap with newKeys is refreshed)"
     );
     CHECK(findCount == 2);
 

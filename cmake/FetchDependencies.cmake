@@ -9,6 +9,7 @@ option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
 option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
 option(USE_SYSTEM_ROBIN_MAP "Use system Tessil robin-map library" OFF)
 option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
+option(USE_SYSTEM_ARGPARSE "Use system p-ranav/argparse library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
@@ -181,4 +182,20 @@ else()
     # find_package; pinning the minimum version here makes the failure mode early and
     # obvious.
     find_package(TBB 2021.5 REQUIRED)
+endif()
+
+# `argparse` is only needed by the `test/log_generator` console helper. It is
+# header-only, so the FetchContent build cost is negligible compared with the
+# heavier deps above.
+if(NOT USE_SYSTEM_ARGPARSE)
+    FetchContent_Declare(
+        argparse
+        GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+        GIT_TAG v3.1
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(argparse)
+else()
+    find_package(argparse REQUIRED)
 endif()

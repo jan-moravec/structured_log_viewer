@@ -6,8 +6,7 @@
 namespace loglib::detail
 {
 
-std::vector<TimeColumnSpec>
-BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration)
+std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration)
 {
     std::vector<TimeColumnSpec> result;
     if (configuration == nullptr)
@@ -66,8 +65,8 @@ bool PromoteLineTimestamps(
             return line.GetValue(keyId);
         };
 
-        const auto tryPromote = [&](KeyId keyId, const std::string &format,
-                                    TimestampFormatKind kind, std::string_view sv) -> bool {
+        const auto tryPromote =
+            [&](KeyId keyId, const std::string &format, TimestampFormatKind kind, std::string_view sv) -> bool {
             if (bytesHit.valid && bytesHit.keyId == keyId && bytesHit.bytes.size() == sv.size() &&
                 std::memcmp(bytesHit.bytes.data(), sv.data(), sv.size()) == 0)
             {

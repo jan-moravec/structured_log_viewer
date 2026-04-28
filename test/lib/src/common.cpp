@@ -203,56 +203,6 @@ void InitializeTimezoneData()
     );
 }
 
-TestJsonLogFile::Line::Line(const char *line)
-{
-    glz::generic_sorted_u64 json;
-    auto error = glz::read_json(json, line);
-    if (!error)
-    {
-        data = std::move(json);
-    }
-    else
-    {
-        data = std::string(line);
-    }
-}
-
-TestJsonLogFile::Line::Line(glz::generic_sorted_u64 json) : data(std::move(json))
-{
-}
-
-std::string TestJsonLogFile::Line::ToString() const
-{
-    return std::visit(
-        [](const auto &data) -> std::string {
-            using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, glz::generic_sorted_u64>)
-            {
-                return glz::write_json(data).value_or("");
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                return data;
-            }
-        },
-        data
-    );
-}
-
-void TestJsonLogFile::Line::Parse(std::vector<std::string> &strings, std::vector<glz::generic_sorted_u64> &jsons) const
-{
-    std::visit(
-        [&](const auto &data) {
-            using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, glz::generic_sorted_u64>)
-            {
-                jsons.push_back(data);
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                strings.push_back(data);
-            }
-        },
-        data
-    );
-}
+// `TestJsonLogFile::Line` definitions previously lived here. They moved to
+// `test/common/src/json_log_line.cpp` (as `test_common::JsonLogLine`) so the
+// non-Catch2 `log_generator` console app can reuse them.

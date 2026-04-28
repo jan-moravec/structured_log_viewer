@@ -50,5 +50,11 @@ add_subdirectory(app)
 
 include(CTest)
 include(Catch)
+# `test/common` ships the shared, Catch2-free helpers (JSON line abstraction +
+# random/wide log generators) consumed by both `test/lib`'s benchmarks and
+# the standalone `test/log_generator` console app. Must come before
+# `test/lib` so the `test_common` target is available there.
+add_subdirectory(test/common)
 add_subdirectory(test/lib)
 add_subdirectory(test/app)
+add_subdirectory(test/log_generator)

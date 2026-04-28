@@ -26,9 +26,7 @@ void BufferingSink::OnBatch(StreamedBatch batch)
     if (!batch.lines.empty())
     {
         mLines.insert(
-            mLines.end(),
-            std::make_move_iterator(batch.lines.begin()),
-            std::make_move_iterator(batch.lines.end())
+            mLines.end(), std::make_move_iterator(batch.lines.begin()), std::make_move_iterator(batch.lines.end())
         );
     }
     if (!batch.localLineOffsets.empty())
@@ -42,9 +40,7 @@ void BufferingSink::OnBatch(StreamedBatch batch)
     if (!batch.errors.empty())
     {
         mErrors.insert(
-            mErrors.end(),
-            std::make_move_iterator(batch.errors.begin()),
-            std::make_move_iterator(batch.errors.end())
+            mErrors.end(), std::make_move_iterator(batch.errors.begin()), std::make_move_iterator(batch.errors.end())
         );
     }
 }

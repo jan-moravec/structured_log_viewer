@@ -128,8 +128,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         }
         else
         {
-            mConfiguration.columns.push_back(
-                LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
+            mConfiguration.columns.push_back(LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
             );
         }
         mKeysInColumns.insert(key);

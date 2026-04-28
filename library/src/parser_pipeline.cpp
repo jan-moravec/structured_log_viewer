@@ -9,10 +9,10 @@ namespace loglib::detail
 ResolvedPipelineSettings ResolvePipelineSettings(const internal::AdvancedParserOptions &advanced)
 {
     ResolvedPipelineSettings out;
-    out.effectiveThreads = advanced.threads != 0
-                               ? advanced.threads
-                               : std::min(std::thread::hardware_concurrency(),
-                                          internal::AdvancedParserOptions::kDefaultMaxThreads);
+    out.effectiveThreads =
+        advanced.threads != 0
+            ? advanced.threads
+            : std::min(std::thread::hardware_concurrency(), internal::AdvancedParserOptions::kDefaultMaxThreads);
     if (out.effectiveThreads == 0)
     {
         out.effectiveThreads = 1;
