@@ -108,7 +108,12 @@ public:
                 const char *lineEnd = (newline != nullptr) ? newline : end;
                 cur = (newline != nullptr) ? newline + 1 : end;
 
-                parsed.localLineOffsets.push_back(static_cast<uint64_t>(cur - fileBegin));
+                // Match `LogFile::GetLine`'s `stopOffset - startOffset - 1` length
+                // formula: when the last line of the file is unterminated, push
+                // `fileSize + 1` so the final character isn't trimmed off.
+                const uint64_t nextOffset =
+                    static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
+                parsed.localLineOffsets.push_back(nextOffset);
 
                 std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
                 if (!line.empty() && line.back() == '\r')

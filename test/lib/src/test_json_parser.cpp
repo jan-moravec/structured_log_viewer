@@ -419,6 +419,32 @@ TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
     CHECK(result.data.Files()[0]->GetLine(1) == R"({"key2":"value2"})");
 }
 
+TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]")
+{
+    // Regression: `DecodeJsonBatch` used to push `fileSize` as the sentinel
+    // offset for an unterminated final line, but `LogFile::GetLine` derives
+    // the line length as `stopOffset - startOffset - 1` (the `-1` being the
+    // trailing '\n'). Without the compensating `+ 1` the last character of
+    // the final line was silently lopped off when round-tripping through
+    // `GetLine` -- here the final `}` would have gone missing.
+    TestLogFile testFile;
+    testFile.Write("{\"key1\":\"value1\"}\n{\"key2\":\"value2\"}");
+
+    loglib::JsonParser parser;
+    auto result = parser.Parse(testFile.GetFilePath());
+
+    CHECK(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+    CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
+    CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
+
+    REQUIRE(result.data.Files().size() == 1);
+    const loglib::LogFile &file = *result.data.Files()[0];
+    REQUIRE(file.GetLineCount() == 2);
+    CHECK(file.GetLine(0) == R"({"key1":"value1"})");
+    CHECK(file.GetLine(1) == R"({"key2":"value2"})");
+}
+
 TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_parser]")
 {
     // Parse will end with first invalid line

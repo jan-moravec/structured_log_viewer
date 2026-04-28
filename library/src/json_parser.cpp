@@ -478,7 +478,14 @@ void DecodeJsonBatch(
             line.remove_suffix(1);
         }
 
-        parsed.localLineOffsets.push_back(static_cast<uint64_t>(cursor - fileBegin));
+        // `LogFile::GetLine` derives the line length as `stopOffset - startOffset - 1`,
+        // where the `- 1` is the trailing '\n' byte. When the final line of the file
+        // is unterminated we still owe `GetLine` that compensating byte, so push the
+        // virtual `fileSize + 1` sentinel instead of `fileSize`. Otherwise the last
+        // character of the line gets lopped off when `GetLine` is later called.
+        const uint64_t nextOffset =
+            static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
+        parsed.localLineOffsets.push_back(nextOffset);
 
         if (line.empty())
         {
