@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.28)
 
 # Shared helpers for test-tree binaries: the JSON log line abstraction and
 # the random/wide log generators. Intentionally Catch2-free so the

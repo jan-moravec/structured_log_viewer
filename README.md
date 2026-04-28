@@ -57,94 +57,9 @@ Each release is accompanied by SHA-256 checksums; see [Verifying a release](CONT
 
 For information regarding using the application, see the [user guide](doc/README.md).
 
-## Development
+## Contributing
 
-### Project Structure
-
-The project is organized into two main components: the `library` and the GUI `app`.
-
-```plaintext
-structured_log_viewer/
-├── library/               # loglib: core log handling (no Qt dependency)
-│   ├── include/loglib/    # Public library headers
-│   ├── src/               # Library implementation
-│   └── CMakeLists.txt
-├── app/                   # Qt6 GUI application (StructuredLogViewer)
-│   ├── include/           # GUI headers
-│   ├── src/               # GUI implementation (including main_window.ui)
-│   └── CMakeLists.txt
-├── test/
-│   ├── lib/               # Catch2 unit tests and benchmarks for loglib
-│   └── app/               # Qt Test smoke tests for MainWindow
-├── cmake/                 # Shared CMake modules (warnings, FetchContent)
-├── resources/             # Icons, .desktop entry, Qt resource file
-├── doc/                   # End-user documentation
-├── .github/workflows/     # CI: build + test on Linux / Windows / macOS
-├── CMakeLists.txt
-└── README.md
-```
-
-### Library
-
-The `library` component (`loglib`) provides the core functionality for handling structured log data. It defines types such as `LogLine`, `LogTable`, `LogData`, and `LogConfiguration` for representing log entries and their presentation, plus pluggable parsers (currently `JsonParser`). It has no Qt dependency and can be reused in other applications.
-
-### GUI Application
-
-The `app` component is a Qt 6 Widgets application. It uses `loglib` for parsing and data management, and exposes the data through `QAbstractTableModel`/`QSortFilterProxyModel` subclasses with support for sorting, filtering, searching, and configurable columns.
-
-### Build Instructions
-
-#### Prerequisites
-
-- **CMake** 3.28 or newer
-- **Qt** 6.1 or newer (CI uses Qt 6.8)
-- A **C++23** toolchain:
-  - Linux: GCC 13+ or Clang 17+
-  - Windows: MSVC 2022 (Visual Studio 2022)
-  - macOS: Xcode 15+ / Apple Clang
-
-Most third-party C++ dependencies are fetched automatically via `FetchContent`. To use system copies, pass the corresponding option (e.g. `-DUSE_SYSTEM_FMT=ON`) when configuring. See [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake) for the full list.
-
-`loglib` links against [oneTBB](https://github.com/uxlfoundation/oneTBB) (Intel oneAPI Threading Building Blocks) for the parallel JSON parsing pipeline. It is fetched at version `v2022.3.0` by default; pass `-DUSE_SYSTEM_TBB=ON` to use a system installation, which must be **>= 2021.5** (the first oneAPI-style release that ships `tbb::filter_mode` / `tbb::parallel_pipeline`). On Windows, the build copies `tbb12.dll` next to `StructuredLogViewer.exe` automatically (both into the build tree and the install tree) — keep it next to the executable when redistributing.
-
-#### Building
-
-The project ships a [`CMakePresets.json`](CMakePresets.json) that defines shared configure/build/test/workflow presets, so a single command can configure, build, and run the test suite:
-
-```sh
-cmake --workflow --preset release
-```
-
-Available workflows are `release`, `debug`, and `relwithdebinfo`; each writes to its own `build/<preset>/` directory. All presets use the Ninja generator, so `ninja` must be on your `PATH` (installed by default with modern Qt / Visual Studio, or available via your system package manager).
-
-On Windows, run the command from the **Developer PowerShell** (or **Developer Command Prompt**) for Visual Studio 2022 so MSVC is on `PATH`.
-
-For machine-specific overrides (e.g. pinning `CMAKE_PREFIX_PATH` to your Qt install), create a personal `CMakeUserPresets.json` at the repo root — it is gitignored. Qt Creator, CLion, and VS Code all discover these presets automatically. See [CONTRIBUTING.md](CONTRIBUTING.md#building) for a worked example and per-step commands.
-
-#### Benchmarks
-
-`test/lib/src/benchmark_json.cpp` contains the parser/lookup micro-benchmarks documented in the streaming-parser PRD. Every benchmark `TEST_CASE` carries the Catch2 `[.][benchmark]` tag pair, so they are **hidden from `ctest` by default** (CI only runs the functional tests). To run them locally:
-
-```sh
-# Run all benchmarks
-build/release/bin/Release/tests "[benchmark]"
-
-# Run a specific variant by sub-tag
-build/release/bin/Release/tests "[get_value_micro]"
-build/release/bin/Release/tests "[no_thread_local_cache]"
-build/release/bin/Release/tests "[no_parse_cache]"
-build/release/bin/Release/tests "[allocations]"
-build/release/bin/Release/tests "[cancellation]"
-
-# Opt into the 1'000'000-line large-file case explicitly
-build/release/bin/Release/tests "[large]"
-```
-
-Throughput, fast-path fraction, and cancellation-latency numbers are emitted via Catch2's `WARN` macro so they appear in the test output even on success.
-
-### Contributing
-
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed build instructions, test setup, coding style, and the release process.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the developer reference: an [architecture overview](CONTRIBUTING.md#architecture) of the `loglib` core and the Qt GUI, [build instructions](CONTRIBUTING.md#building), how to [run the test suite](CONTRIBUTING.md#running-tests) and the [parser benchmarks](CONTRIBUTING.md#benchmarking), the [code style](CONTRIBUTING.md#code-style-and-pre-commit) and [pull-request workflow](CONTRIBUTING.md#pull-requests), and the [release process](CONTRIBUTING.md#release-process).
 
 ## License
 

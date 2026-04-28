@@ -1,6 +1,9 @@
-#include "common.hpp"
+// Parser benchmarks for `loglib`. See CONTRIBUTING.md `## Benchmarking`
+// for the PR-process docs (regression gate, sample interpretation, how
+// to run). Debug builds skip these cases automatically — see
+// `BENCHMARK_REQUIRES_RELEASE_BUILD`.
 
-#include "buffering_sink.hpp"
+#include "common.hpp"
 
 #include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
@@ -36,31 +39,22 @@ using test_common::GenerateWideJsonLogs;
 namespace
 {
 
-// Drives a synchronous parse against the streaming pipeline for benchmarks
-// that need to dial advanced tuning knobs while still consuming a
-// `ParseResult`. The default-options `parser.Parse(path)` overload routes
-// through the same `BufferingSink` plumbing.
-ParseResult ParseWithSink(
-    const JsonParser &parser,
-    const std::filesystem::path &path,
-    const ParserOptions &options = {},
-    const internal::AdvancedParserOptions &advanced = {}
-)
+/// Skip the current `TEST_CASE` when running under a Debug build. Debug
+/// disables IPO/LTO and leaves assertions enabled, so the numbers are not
+/// comparable to a release-config measurement and would mislead a
+/// regression-gate reviewer. `NDEBUG` is the right gate: it is defined for
+/// `Release` and `RelWithDebInfo` (both have IPO/LTO enabled in this
+/// project's top-level `CMakeLists.txt`) and undefined for `Debug`.
+inline void RequireReleaseBuildForBenchmarks()
 {
-    auto logFile = std::make_unique<LogFile>(path);
-    LogFile *logFilePtr = logFile.get();
-    BufferingSink sink(std::move(logFile));
-    parser.ParseStreaming(*logFilePtr, sink, options, advanced);
-    LogData data = sink.TakeData();
-    std::vector<std::string> errors = sink.TakeErrors();
-    return ParseResult{std::move(data), std::move(errors)};
+#ifndef NDEBUG
+    SKIP("Benchmarks require a release build (Debug disables IPO/LTO and "
+         "leaves assertions enabled, so numbers are not comparable). "
+         "Rebuild with: cmake --preset release  (or relwithdebinfo).");
+#endif
 }
 
-// Convenience helper that prints throughput numbers for a parse-style
-// benchmark via Catch2's `WARN` macro. We report MB/s of input parsed and
-// lines/s separately so PR descriptions can quote both. `WARN` is used
-// rather than `INFO` so the line shows up in the test log on success;
-// functionally this is just a report.
+/// Emit a single-run throughput line. `WARN` is used so it prints on success.
 void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_t bytes, size_t lines)
 {
     if (elapsed.count() == 0)
@@ -76,23 +70,49 @@ void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_
     );
 }
 
-// Manual replacement for Catch2's `BENCHMARK_ADVANCED` on the long-running
-// parse fixtures. `BENCHMARK_ADVANCED` runs an iteration-estimation pass
-// (calling the lambda 1, 2, 4, … times until elapsed ≥ threshold) and a
-// 100-resample bootstrap analysis on top of the user-requested samples.
-// For 1-second-per-call benchmarks like `[large]` / `[wide]` /
-// `[stream_to_table]` that adds 3-5× total wall-time per run and made
-// `[stream_to_table]` time out at 30 minutes during baseline capture.
-// This helper just runs the lambda `samples` times, times each via
-// `steady_clock`, and emits a one-line WARN with mean / low / high /
-// stddev so per-commit numbers stay copy-pasteable into PR descriptions.
-//
-// `samples` defaults to 5 — the same setting `--benchmark-samples 5`
-// selected for these fixtures historically. On a 1-s benchmark a
-// 5-sample run already surfaces single-digit-percent regressions
-// reliably; bump it via the argument at call sites that need tighter
-// confidence intervals.
-template <typename Fn> void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
+/// Emit one per-stage CPU breakdown for a streaming parse. Stage B is the
+/// parallel decode stage, so its utilisation is `stageBCpuTotal /
+/// (effectiveThreads * wallClockTotal)`.
+void ReportStageTimings(const char *label, const StageTimings &t)
+{
+    using ms = std::chrono::duration<double, std::milli>;
+    using s = std::chrono::duration<double>;
+    const double wallClockS = s(t.wallClockTotal).count();
+    const double stageAMs = ms(t.stageACpuTotal).count();
+    const double stageBS = s(t.stageBCpuTotal).count();
+    const double stageCMs = ms(t.stageCCpuTotal).count();
+    const double sinkMs = ms(t.sinkTotal).count();
+    const double denom = static_cast<double>(t.effectiveThreads) * wallClockS;
+    const double utilization = denom == 0.0 ? 0.0 : (stageBS / denom) * 100.0;
+    WARN(
+        label << " — Wall-clock: " << wallClockS << " s | Stage A CPU: " << stageAMs << " ms | Stage B CPU: " << stageBS
+              << " s (across " << t.effectiveThreads << " workers, " << utilization << " % utilisation = " << stageBS
+              << " / (" << t.effectiveThreads << " * " << wallClockS << ")) | Stage C CPU: " << stageCMs
+              << " ms | Sink: " << sinkMs << " ms | batches A/B/C=" << t.stageABatches << "/" << t.stageBBatches << "/"
+              << t.stageCBatches
+    );
+}
+
+struct ThroughputInputs
+{
+    std::size_t bytes = 0;
+    std::size_t lines = 0;
+};
+
+struct SampleStats
+{
+    std::chrono::nanoseconds mean;
+    std::chrono::nanoseconds low;
+    std::chrono::nanoseconds high;
+    double stddevNs;
+};
+
+/// Manual replacement for Catch2's `BENCHMARK_ADVANCED`: just runs `fn`
+/// `samples` times and computes mean / low / high / stddev of the wall-
+/// clock. Avoids the Catch2 iteration-estimation pass and 100-resample
+/// bootstrap, which together added 3-5x wall-time on multi-second-per-
+/// sample fixtures and timed the 1M-line streaming case out at 30 min.
+template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn &&fn)
 {
     REQUIRE(samples > 0);
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -118,24 +138,200 @@ template <typename Fn> void RunTimedSamples(const char *label, std::size_t sampl
     }
     const double stddevNs = std::sqrt(sqAccum / static_cast<double>(samples));
 
+    return SampleStats{mean, low, high, stddevNs};
+}
+
+template <typename Fn> void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
+{
+    const SampleStats stats = CollectSamples(samples, std::forward<Fn>(fn));
     using ms = std::chrono::duration<double, std::milli>;
     WARN(
-        label << " (samples=" << samples << "): mean=" << ms(mean).count() << " ms, low=" << ms(low).count()
-              << " ms, high=" << ms(high).count() << " ms, stddev=" << (stddevNs / 1'000'000.0) << " ms"
+        label << " (samples=" << samples << "): mean=" << ms(stats.mean).count() << " ms, low=" << ms(stats.low).count()
+              << " ms, high=" << ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms"
     );
+}
+
+/// Throughput overload. Reports steady-state MB/s (mean / low / high /
+/// stddev) and lines/s on the same WARN line — that mean-MB/s is the
+/// canonical regression-gate input. `low`/`high` MB/s are derived from
+/// the matching `high`/`low` elapsed; the MB/s stddev uses a first-order
+/// Taylor approximation around the mean.
+template <typename Fn>
+void RunTimedSamples(const char *label, std::size_t samples, ThroughputInputs throughput, Fn &&fn)
+{
+    const SampleStats stats = CollectSamples(samples, std::forward<Fn>(fn));
+    using ms = std::chrono::duration<double, std::milli>;
+    using s = std::chrono::duration<double>;
+
+    const double meanSec = s(stats.mean).count();
+    const double lowSec = s(stats.low).count();
+    const double highSec = s(stats.high).count();
+    const double bytesMB = static_cast<double>(throughput.bytes) / (1024.0 * 1024.0);
+    const double linesD = static_cast<double>(throughput.lines);
+    const double meanMBps = meanSec == 0.0 ? 0.0 : bytesMB / meanSec;
+    const double highMBps = lowSec == 0.0 ? 0.0 : bytesMB / lowSec;
+    const double lowMBps = highSec == 0.0 ? 0.0 : bytesMB / highSec;
+    const double meanLinesPerSec = meanSec == 0.0 ? 0.0 : linesD / meanSec;
+    const double meanNs = static_cast<double>(stats.mean.count());
+    const double stddevMBps = meanNs == 0.0 ? 0.0 : meanMBps * (stats.stddevNs / meanNs);
+
+    WARN(
+        label << " (samples=" << samples << "): mean=" << ms(stats.mean).count() << " ms, low=" << ms(stats.low).count()
+              << " ms, high=" << ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms | "
+              << meanMBps << " MB/s mean (low=" << lowMBps << ", high=" << highMBps << ", stddev=" << stddevMBps
+              << "), " << meanLinesPerSec << " lines/s mean"
+    );
+}
+
+/// Sink that mirrors `LogModel::OnBatch`: every batch is forwarded to
+/// `LogTable::AppendBatch`, which runs the GUI-thread back-fill loop.
+struct StreamSink : StreamingLogSink
+{
+    LogTable *table = nullptr;
+    std::chrono::steady_clock::duration appendTotal{};
+    size_t appendBatches = 0;
+    size_t appendLines = 0;
+
+    KeyIndex &Keys() override
+    {
+        return table->Data().Keys();
+    }
+    void OnStarted() override
+    {
+    }
+    void OnBatch(StreamedBatch batch) override
+    {
+        const size_t lines = batch.lines.size();
+        const auto start = std::chrono::steady_clock::now();
+        table->AppendBatch(std::move(batch));
+        appendTotal += std::chrono::steady_clock::now() - start;
+        ++appendBatches;
+        appendLines += lines;
+    }
+    void OnFinished(bool /*cancelled*/) override
+    {
+    }
+};
+
+/// Build a `LogConfiguration` with one `Type::time` column for `timestamp`,
+/// matching the GUI's typical column shape so the parser has real inline
+/// timestamp-promotion work to do.
+std::shared_ptr<const LogConfiguration> MakeTimestampConfiguration()
+{
+    LogConfiguration baseConfig;
+    LogConfiguration::Column timestampColumn;
+    timestampColumn.header = "timestamp";
+    timestampColumn.keys = {"timestamp"};
+    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.parseFormats = {"%FT%T"};
+    timestampColumn.printFormat = "%F %H:%M:%S";
+    baseConfig.columns.push_back(std::move(timestampColumn));
+    return std::make_shared<LogConfiguration>(std::move(baseConfig));
+}
+
+/// One end-to-end streaming run inside the `start`/`elapsed` window:
+/// `LogConfigurationManager::Load` + `LogTable` construction + two mmap
+/// opens + `BeginStreaming` + `ParseStreaming` + `~LogTable` (frees all
+/// `LogLine`s). Sink stats and row count are copied out before the inner
+/// block closes so the caller can inspect them after the timer stops.
+struct StreamingRunResult
+{
+    std::chrono::steady_clock::duration elapsed{};
+    std::chrono::steady_clock::duration appendTotal{};
+    size_t appendBatches = 0;
+    size_t appendLines = 0;
+    size_t rowCount = 0;
+    StageTimings timings;
+};
+
+StreamingRunResult RunStreamingFlow(
+    const JsonParser &parser,
+    const std::filesystem::path &configPath,
+    const std::filesystem::path &logPath,
+    std::shared_ptr<const LogConfiguration> configuration,
+    bool captureTimings
+)
+{
+    StreamingRunResult result;
+    internal::AdvancedParserOptions advanced;
+    if (captureTimings)
+    {
+        advanced.timings = &result.timings;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    {
+        LogConfigurationManager configManager;
+        configManager.Load(configPath.string());
+        LogTable table(LogData{}, std::move(configManager));
+        auto fileForTable = std::make_unique<LogFile>(logPath);
+        table.BeginStreaming(std::move(fileForTable));
+
+        StreamSink sink;
+        sink.table = &table;
+
+        ParserOptions opts;
+        opts.configuration = configuration;
+
+        LogFile parseFile(logPath);
+        parser.ParseStreaming(parseFile, sink, opts, advanced);
+
+        result.appendTotal = sink.appendTotal;
+        result.appendBatches = sink.appendBatches;
+        result.appendLines = sink.appendLines;
+        result.rowCount = table.RowCount();
+    }
+    result.elapsed = std::chrono::steady_clock::now() - start;
+    return result;
+}
+
+/// Drive one streaming benchmark fixture: an untimed warm-up that also
+/// produces the per-stage CPU breakdown, then `samples` timed end-to-end
+/// runs through `RunTimedSamples`'s throughput overload.
+void RunStreamingBenchmark(
+    const char *label,
+    const JsonParser &parser,
+    const std::filesystem::path &configPath,
+    const std::filesystem::path &logPath,
+    std::shared_ptr<const LogConfiguration> configuration,
+    size_t expectedRows,
+    size_t bytes,
+    std::size_t samples
+)
+{
+    {
+        StreamingRunResult warmup = RunStreamingFlow(parser, configPath, logPath, configuration, true);
+        REQUIRE(warmup.rowCount == expectedRows);
+        ReportThroughput((std::string(label) + " warm-up").c_str(), warmup.elapsed, bytes, expectedRows);
+        ReportStageTimings((std::string(label) + " warm-up").c_str(), warmup.timings);
+
+        const double appendMs = std::chrono::duration<double, std::milli>(warmup.appendTotal).count();
+        const double per100k =
+            warmup.appendLines == 0 ? 0.0 : appendMs * 100'000.0 / static_cast<double>(warmup.appendLines);
+        WARN(
+            "LogTable::AppendBatch wall-time: " << appendMs << " ms over " << warmup.appendBatches << " batches / "
+                                                << warmup.appendLines << " lines (" << per100k << " ms / 100k lines)"
+        );
+    }
+
+    RunTimedSamples(label, samples, {bytes, expectedRows}, [&]() {
+        StreamingRunResult run = RunStreamingFlow(parser, configPath, logPath, configuration, false);
+        REQUIRE(run.rowCount == expectedRows);
+    });
 }
 
 } // namespace
 
-// `GenerateRandomJsonLogs` and `GenerateWideJsonLogs` were moved to the
-// shared `test_common` library (see `test/common/include/test_common/log_generator.hpp`)
-// so the `log_generator` console helper can reuse them without pulling in
-// Catch2. The `using` declarations at the top of this file expose them in
-// the same unqualified form the surrounding test cases used previously.
+#define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
-TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
+// Synchronous-Parse coverage for `BufferingSink` (the sink behind
+// `LogParser::Parse(path)`, used by tests and `Edit -> Copy`). Small fixture
+// because the synchronous path is not the GUI hot path — the `[large]` and
+// `[wide]` cases below cover that.
+TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_sync]")
 {
-    // 1.7 MB per 10'000 lines of data
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
+
     auto logs = GenerateRandomJsonLogs(10'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
@@ -147,10 +343,10 @@ TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse 10'000 warm-up", elapsed, bytes, logs.size());
+        ReportThroughput("Parse 10'000 (sync) warm-up", elapsed, bytes, logs.size());
     }
 
-    RunTimedSamples("Parse 10'000 JSON log entries", 5, [&]() {
+    RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {bytes, logs.size()}, [&]() {
         LogTable table;
         ParseResult result = parser.Parse(testFile.GetFilePath());
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
@@ -159,242 +355,86 @@ TEST_CASE("Parse and load JSON log", "[.][benchmark][json_parser]")
     });
 }
 
-TEST_CASE("Parse and load JSON log (single thread)", "[.][benchmark][json_parser][single_thread]")
+// Large-file streaming benchmark (1'000'000 lines, ~170 MB). End-to-end
+// GUI flow: `LogTable::BeginStreaming` + a sink that calls
+// `LogTable::AppendBatch` per `OnBatch`, with a `Type::time` column so the
+// streaming parser does real inline timestamp promotion.
+TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][large]")
 {
-    // Forces the pipeline down to one worker so we can compare against the
-    // default-parallelism benchmark and quantify the oneTBB speed-up. Same
-    // fixture size as the default benchmark to keep numbers comparable.
-    auto logs = GenerateRandomJsonLogs(10'000);
-    const TestJsonLogFile testFile(logs);
-    const JsonParser parser;
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    ParserOptions opts;
-    internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-
-    {
-        const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(warmup.data.Lines().size() == logs.size());
-        REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse 10'000 (1 thread) warm-up", elapsed, bytes, logs.size());
-    }
-
-    RunTimedSamples("Parse 10'000 JSON log entries (single thread)", 5, [&]() {
-        LogTable table;
-        ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
-        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
-        REQUIRE(result.errors.empty());
-        table.Update(std::move(result.data));
-    });
-}
-
-namespace
-{
-
-// Per-stage breakdown emit. Format:
-//   "Wall-clock: 1.55 s | Stage A CPU: 80 ms | Stage B CPU: 11.2 s
-//    (across 8 workers, 90 % utilisation = 11.2 / (8 × 1.55)) |
-//    Stage C CPU: 95 ms | Sink: 110 ms"
-// Stage B utilisation is `stageBCpuTotal / (effectiveThreads × wallClockTotal)`.
-void ReportStageTimings(const char *label, const StageTimings &t)
-{
-    using ms = std::chrono::duration<double, std::milli>;
-    using s = std::chrono::duration<double>;
-    const double wallClockS = s(t.wallClockTotal).count();
-    const double stageAMs = ms(t.stageACpuTotal).count();
-    const double stageBS = s(t.stageBCpuTotal).count();
-    const double stageCMs = ms(t.stageCCpuTotal).count();
-    const double sinkMs = ms(t.sinkTotal).count();
-    const double denom = static_cast<double>(t.effectiveThreads) * wallClockS;
-    const double utilization = denom == 0.0 ? 0.0 : (stageBS / denom) * 100.0;
-    WARN(
-        label << " — Wall-clock: " << wallClockS << " s | Stage A CPU: " << stageAMs << " ms | Stage B CPU: " << stageBS
-              << " s (across " << t.effectiveThreads << " workers, " << utilization << " % utilisation = " << stageBS
-              << " / (" << t.effectiveThreads << " * " << wallClockS << ")) | Stage C CPU: " << stageCMs
-              << " ms | Sink: " << sinkMs << " ms | batches A/B/C=" << t.stageABatches << "/" << t.stageBBatches << "/"
-              << t.stageCBatches
-    );
-}
-
-// No-regression checklist. Every commit on this branch must include
-// before/after MB/s for the three regression-gating fixtures `[large]`,
-// `[wide]`, `[stream_to_table]` in its commit message, plus:
-//   - `[allocations]` fast-path fraction ≥ 99 %
-//   - Stage B utilisation > 70 %
-//   - Stage A wall-clock %  < 5 %
-//   - `[cancellation]` p95 latency within ±3 % of the prior commit's number
-//
-// Numbers come from the `WARN` lines emitted by `ReportThroughput` and
-// `ReportStageTimings` above. The acceptance gate is "within ±3 % per
-// change or a documented architectural justification in the commit
-// message" — this comment is the canonical reference for what every PR
-// description should quote, so keep it in sync with the WARN format if
-// `[wide]` or `[stream_to_table]` ever grow new fields.
-
-} // namespace
-
-// Large-file benchmark (1'000'000 lines, ~170 MB). Tagged `[large]` so it
-// is opt-in via Catch2's tag filter and doesn't slow the default
-// `[benchmark]` run.
-TEST_CASE("Parse and load JSON log (1'000'000 lines)", "[.][benchmark][json_parser][large]")
-{
     auto logs = GenerateRandomJsonLogs(1'000'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-    // Capture wall-clock for one untimed warm-up run so throughput numbers
-    // (MB/s, lines/s) end up in the test log alongside the per-stage
-    // breakdown emitted by `ReportStageTimings`. The timed-sample loop
-    // below only emits ns/sample, so the MB/s + per-stage numbers come
-    // from this warm-up.
-    {
-        StageTimings timings;
-        ParserOptions warmupOpts;
-        internal::AdvancedParserOptions warmupAdvanced;
-        warmupAdvanced.timings = &timings;
+    InitializeTimezoneData();
 
-        const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), warmupOpts, warmupAdvanced);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(warmup.data.Lines().size() == logs.size());
-        REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse 1'000'000 warm-up", elapsed, bytes, logs.size());
-        ReportStageTimings("Parse 1'000'000 warm-up", timings);
-    }
+    auto configuration = MakeTimestampConfiguration();
+    TestLogConfiguration configFile;
+    configFile.Write(*configuration);
 
-    RunTimedSamples("Parse 1'000'000 JSON log entries", 5, [&]() {
-        LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath());
-        REQUIRE(result.data.Lines().size() == logs.size());
-        REQUIRE(result.errors.empty());
-        table.Update(std::move(result.data));
-    });
+    RunStreamingBenchmark(
+        "Stream 1'000'000 JSON log entries to LogTable",
+        parser,
+        configFile.GetFilePath(),
+        testFile.GetFilePath(),
+        configuration,
+        logs.size(),
+        bytes,
+        4
+    );
 }
 
-// Wide-row benchmark (1'000'000 lines, ~30 fields per line). Stresses the
-// per-line field-iteration cost (`InsertSorted`, `ExtractFieldKey`,
-// `ParseLine`) and the `IsKeyInAnyColumn` cache against a configuration
-// that has every emitted key registered up front. Reports the same MB/s
-// / lines/s / per-stage breakdown as `[large]` so the two are directly
-// comparable.
-TEST_CASE("Parse and load JSON log (wide, 1'000'000 lines)", "[.][benchmark][json_parser][wide]")
+// Wide-row streaming benchmark (200'000 lines, ~30 fields per line).
+// Stresses the per-line field-iteration cost (`InsertSorted`,
+// `ExtractFieldKey`, `ParseLine`, `IsKeyInAnyColumn`). Line count is lower
+// than `[large]`'s 1'000'000 so total field operations stay comparable
+// (~6x fields per line gives ~6 M total field ops at 200'000 lines).
+TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][json_parser][wide]")
 {
-    auto logs = GenerateWideJsonLogs(1'000'000);
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
+
+    auto logs = GenerateWideJsonLogs(200'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
-    // Untimed warm-up + per-stage breakdown emit, mirroring `[large]`.
-    {
-        StageTimings timings;
-        ParserOptions warmupOpts;
-        internal::AdvancedParserOptions warmupAdvanced;
-        warmupAdvanced.timings = &timings;
+    InitializeTimezoneData();
 
-        const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), warmupOpts, warmupAdvanced);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(warmup.data.Lines().size() == logs.size());
-        REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse wide warm-up", elapsed, bytes, logs.size());
-        ReportStageTimings("Parse wide warm-up", timings);
+    auto configuration = MakeTimestampConfiguration();
+    TestLogConfiguration configFile;
+    configFile.Write(*configuration);
 
-        // Fast-path fraction reporting. Walks the parsed values once and
-        // counts string_view (fast) vs. owned string (slow) hits per the same
-        // recipe as the `[allocations]` benchmark. Enforced ≥ 99 % via the
-        // commit-message gate, not the test itself, so a regression in this
-        // number surfaces in the PR description rather than as a hard failure.
-        size_t totalStringValues = 0;
-        size_t stringViewValues = 0;
-        for (const LogLine &line : warmup.data.Lines())
-        {
-            for (size_t i = 0; i < warmup.data.Keys().Size(); ++i)
-            {
-                const LogValue &v = line.GetValue(static_cast<KeyId>(i));
-                if (std::holds_alternative<std::string_view>(v))
-                {
-                    ++stringViewValues;
-                    ++totalStringValues;
-                }
-                else if (std::holds_alternative<std::string>(v))
-                {
-                    ++totalStringValues;
-                }
-            }
-        }
-        const double fastPathFraction =
-            totalStringValues == 0 ? 0.0
-                                   : static_cast<double>(stringViewValues) / static_cast<double>(totalStringValues);
-        WARN(
-            "Parse wide warm-up — string_view fast-path fraction: "
-            << (fastPathFraction * 100.0) << "% (" << stringViewValues << " / " << totalStringValues << ")"
-        );
-    }
-
-    RunTimedSamples("Parse 1'000'000 wide JSON log entries", 5, [&]() {
-        LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath());
-        REQUIRE(result.data.Lines().size() == logs.size());
-        REQUIRE(result.errors.empty());
-        table.Update(std::move(result.data));
-    });
+    RunStreamingBenchmark(
+        "Stream 200'000 wide JSON log entries to LogTable",
+        parser,
+        configFile.GetFilePath(),
+        testFile.GetFilePath(),
+        configuration,
+        logs.size(),
+        bytes,
+        4
+    );
 }
 
-// `useThreadLocalKeyCache=false` variant. Lets us bisect how much of the
-// multi-threaded speed-up comes from the per-worker interned key cache vs.
-// the simdjson + `KeyIndex` hot path itself.
-TEST_CASE("Parse and load JSON log (no thread-local key cache)", "[.][benchmark][json_parser][no_thread_local_cache]")
-{
-    auto logs = GenerateRandomJsonLogs(10'000);
-    const TestJsonLogFile testFile(logs);
-    const JsonParser parser;
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    ParserOptions opts;
-    internal::AdvancedParserOptions advanced;
-    advanced.useThreadLocalKeyCache = false;
-
-    {
-        const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(warmup.data.Lines().size() == logs.size());
-        REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse 10'000 (no thread-local key cache) warm-up", elapsed, bytes, logs.size());
-    }
-
-    RunTimedSamples("Parse 10'000 JSON log entries (no thread-local key cache)", 5, [&]() {
-        LogTable table;
-        ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
-        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
-        REQUIRE(result.errors.empty());
-        table.Update(std::move(result.data));
-    });
-}
-
-// `LogLine::GetValue` micro-benchmark. Walks every field of every parsed
-// line via the slow path (key string -> `KeyIndex` -> `KeyId`) and then
-// via the fast path (cached `KeyId`) so PR descriptions can quote the
-// speed-up the cached-id overload buys.
+// `LogLine::GetValue` micro-benchmark: slow path (key string -> `KeyIndex`
+// -> `KeyId`) vs. fast path (cached `KeyId`). Pre-parses once so the
+// timed loop measures lookup cost only.
 TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_value_micro]")
 {
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
+
     auto logs = GenerateRandomJsonLogs(10'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    // Pre-parse once so the benchmark only measures the lookup cost.
     ParseResult result = parser.Parse(testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     const LogData &data = result.data;
     const std::vector<LogLine> &lines = data.Lines();
     REQUIRE(!lines.empty());
 
-    // Snapshot the keys we will look up. Use the canonical KeyIndex's known
-    // field names so the slow path actually has work to do.
     const std::array<std::string, 5> kKeys = {"timestamp", "level", "message", "thread_id", "component"};
     std::array<KeyId, 5> keyIds{};
     for (size_t i = 0; i < kKeys.size(); ++i)
@@ -404,10 +444,8 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         keyIds[i] = id;
     }
 
-    // Use `volatile` to force the optimiser to keep the lookup in the loop
-    // body rather than fold the whole walk away (the previous Catch2
-    // `BENCHMARK` macro had a built-in `Catch::Benchmark::keep_memory()` /
-    // result-return guard; `RunTimedSamples` does not, so we need our own).
+    // `volatile` sink — `RunTimedSamples` has no `keep_memory()` analogue,
+    // so without this the optimiser folds the whole walk away.
     volatile size_t hitsSink = 0;
 
     RunTimedSamples("LogLine::GetValue(string) — slow path", 11, [&]() {
@@ -443,31 +481,17 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     (void)hitsSink;
 }
 
-// Structural allocation / fast-path fraction report.
-//
-// We deliberately do **not** override global `operator new` here. A
-// thread-local-gated override would work in principle but interacts
-// awkwardly with Catch2's own allocator-heavy reporting and with TBB
-// worker threads that allocate independently of the main thread. Instead
-// we count the observable structural cost of a parse:
-//
-//   - number of `LogLine`s (one heap-allocated vector per line);
-//   - number of `LogValue`s holding `std::string` (one owned-string
-//     allocation per value — the only per-value allocation path);
-//   - number of `LogValue`s holding `std::string_view` (the fast path
-//     that points back into the mmap and allocates nothing).
-//
-// Together these give a tight upper bound on per-parse heap allocations
-// (`#lines + #ownedStrings + O(KeyIndex growth)`). Combined with the
-// fast-path fraction this demonstrates two contracts:
-//   * The per-line allocation count after warm-up is bounded by a small
-//     constant — target ≤ 1 per line for the owned-string fallback path,
-//     0 in the all-`string_view` case.
-//   * The fraction of string values that landed in the `string_view`
-//     fast path.
+// Allocation footprint and `string_view` fast-path fraction. We don't
+// override global `operator new` (interacts badly with Catch2 reporting
+// and TBB workers); instead we count the observable structural cost of
+// a parse: one heap-allocated vector per line, one owned-string
+// allocation per `LogValue` holding a `std::string`, zero for values
+// holding a `std::string_view`. The fast-path fraction has to stay > 0
+// or the parser regressed to an all-owned-string regime.
 TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchmark][json_parser][allocations]")
 {
-    // 1'000-line synthetic input with short ASCII string values.
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
+
     auto logs = GenerateRandomJsonLogs(1'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
@@ -504,11 +528,6 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     const size_t totalStringValues = stringViewValues + ownedStringValues;
     const double fastPathFraction =
         totalStringValues == 0 ? 0.0 : static_cast<double>(stringViewValues) / static_cast<double>(totalStringValues);
-
-    // Upper bound: at most one owned-string allocation per value plus one
-    // backing-vector allocation per line. The `KeyIndex` grows by
-    // `O(distinctKeys)` which is ~5 here and is therefore dwarfed by the
-    // per-line term.
     const size_t allocUpperBound = lineCount + ownedStringValues;
 
     WARN(
@@ -520,155 +539,17 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
                                      << "/line)"
     );
 
-    // Hard contract: the streaming parser must not regress to an all-owned-
-    // string regime. We accept some owned strings (e.g. when simdjson reports
-    // an unstable value buffer) but never zero fast-path hits on this fixture.
     REQUIRE(stringViewValues > 0);
 }
 
-// End-to-end MainWindow-flow benchmark. Mirrors the `[large]` fixture in
-// size and content but drives the full streaming GUI flow:
-// `LogTable::BeginStreaming` + a custom sink that calls
-// `LogTable::AppendBatch` per `OnBatch`. Reports end-to-end MB/s plus the
-// cumulative wall-time spent in the GUI-thread mid-stream timestamp
-// back-fill (`LogTable::AppendBatch` step 4) so the in-pipeline promotion
-// savings are visible in the test log.
-//
-// The fixture configures a `Type::time` column for `timestamp` so the
-// streaming parser has real promotion work to do — without it the
-// back-fill loop stays a no-op for every batch.
-TEST_CASE("Parse and stream to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][stream_to_table]")
-{
-    auto logs = GenerateRandomJsonLogs(1'000'000);
-    const TestJsonLogFile testFile(logs);
-    const JsonParser parser;
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
-
-    InitializeTimezoneData();
-
-    // Configuration mirrors the GUI's typical timestamp column shape.
-    // `LogTable::BeginStreaming`'s snapshot picks it up up front, so the
-    // parser promotes every line's `timestamp` value inline and the
-    // GUI-thread mid-stream back-fill loop only fires for *additional*
-    // time columns auto-promoted from keys first observed in a later
-    // batch (none in this fixture).
-    LogConfiguration baseConfig;
-    LogConfiguration::Column timestampColumn;
-    timestampColumn.header = "timestamp";
-    timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = LogConfiguration::Type::time;
-    timestampColumn.parseFormats = {"%FT%T"};
-    timestampColumn.printFormat = "%F %H:%M:%S";
-    baseConfig.columns.push_back(std::move(timestampColumn));
-    auto configuration = std::make_shared<LogConfiguration>(baseConfig);
-
-    // Persist the configuration to a temp JSON file so we can install it
-    // into the table's `LogConfigurationManager` via `Load`. The manager
-    // has no public setter for a fully-formed `LogConfiguration`; `Load`
-    // is the canonical entry point the GUI uses as well.
-    TestLogConfiguration configFile;
-    configFile.Write(baseConfig);
-
-    // Sink that mirrors `LogModel::OnBatch`: routes every batch into
-    // `LogTable::AppendBatch` (which runs the GUI-thread back-fill loop).
-    // We time the `AppendBatch` call itself — re-running back-fill before
-    // it would double-fill — and rely on the in-pipeline promotion to
-    // make the overwhelming majority of that time disappear.
-    struct StreamSink : StreamingLogSink
-    {
-        LogTable *table = nullptr;
-        std::chrono::steady_clock::duration appendTotal{};
-        size_t appendBatches = 0;
-        size_t appendLines = 0;
-
-        KeyIndex &Keys() override
-        {
-            return table->Data().Keys();
-        }
-        void OnStarted() override
-        {
-        }
-        void OnBatch(StreamedBatch batch) override
-        {
-            const size_t lines = batch.lines.size();
-            const auto start = std::chrono::steady_clock::now();
-            table->AppendBatch(std::move(batch));
-            appendTotal += std::chrono::steady_clock::now() - start;
-            ++appendBatches;
-            appendLines += lines;
-        }
-        void OnFinished(bool /*cancelled*/) override
-        {
-        }
-    };
-
-    // Untimed warm-up: same shape as the `[large]` benchmark so throughput
-    // numbers come out comparable. Reports MB/s plus the GUI-thread
-    // `AppendBatch` wall-time per 100k lines streamed so the back-fill
-    // savings are visible in the test log.
-    {
-        LogConfigurationManager configManager;
-        configManager.Load(configFile.GetFilePath());
-        LogTable table(LogData{}, std::move(configManager));
-        auto fileWarmup = std::make_unique<LogFile>(testFile.GetFilePath());
-        table.BeginStreaming(std::move(fileWarmup));
-
-        StreamSink sink;
-        sink.table = &table;
-
-        ParserOptions opts;
-        opts.configuration = configuration;
-
-        LogFile parseFile(testFile.GetFilePath());
-        const auto start = std::chrono::steady_clock::now();
-        parser.ParseStreaming(parseFile, sink, opts);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-
-        REQUIRE(table.RowCount() == logs.size());
-        ReportThroughput("Stream to LogTable warm-up", elapsed, bytes, logs.size());
-
-        const double appendMs = std::chrono::duration<double, std::milli>(sink.appendTotal).count();
-        const double per100k =
-            sink.appendLines == 0 ? 0.0 : appendMs * 100'000.0 / static_cast<double>(sink.appendLines);
-        WARN(
-            "LogTable::AppendBatch wall-time: " << appendMs << " ms over " << sink.appendBatches << " batches / "
-                                                << sink.appendLines << " lines (" << per100k << " ms / 100k lines)"
-        );
-    }
-
-    RunTimedSamples("Stream 1'000'000 JSON log entries to LogTable", 5, [&]() {
-        LogConfigurationManager configManager;
-        configManager.Load(configFile.GetFilePath());
-        LogTable table(LogData{}, std::move(configManager));
-        auto fileForTable = std::make_unique<LogFile>(testFile.GetFilePath());
-        table.BeginStreaming(std::move(fileForTable));
-
-        StreamSink sink;
-        sink.table = &table;
-
-        ParserOptions opts;
-        opts.configuration = configuration;
-
-        LogFile parseFile(testFile.GetFilePath());
-        parser.ParseStreaming(parseFile, sink, opts);
-        REQUIRE(table.RowCount() == logs.size());
-    });
-}
-
-// Cancellation-latency benchmark. Drives `ParseStreaming` against a
-// 1'000'000-line fixture and asks for a stop after the first batch
-// arrives. We measure the wall time between `request_stop()` and
-// `OnFinished(cancelled=true)` to validate the
-// `ntokens × batchSizeBytes` upper bound on cancellation latency.
-//
-// A Catch2 `BENCHMARK` lambda would time the full `ParseStreaming` call
-// (startup + cancellation propagation + drain), so it can't isolate the
-// latency itself. We repeat the parse N times manually and summarise the
-// latency distribution via `INFO` so it shows up in the test log — same
-// rationale as the manual `RunTimedSamples` helper used above for
-// `[large]` / `[wide]` / `[stream_to_table]`.
+// Cancellation-latency benchmark. Asks for a stop after the first batch
+// arrives and times the gap between `request_stop()` and
+// `OnFinished(cancelled=true)`. Validates the
+// `ntokens * batchSizeBytes` upper bound on cancellation latency.
 TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
+
     auto logs = GenerateRandomJsonLogs(1'000'000);
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
@@ -726,14 +607,9 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     const double median = latenciesUs[latenciesUs.size() / 2];
     const double p95 = latenciesUs[(latenciesUs.size() * 95) / 100];
     const double maxLatency = latenciesUs.back();
-    // WARN is the only Catch2 macro that prints unconditionally on success, which
-    // matters for benchmarks where the *number* is the deliverable. The
-    // "warning" framing is Catch's; functionally this is just a report line.
     WARN(
         "Cancellation latency over " << kIterations << " runs (us): median=" << median << ", p95=" << p95
                                      << ", max=" << maxLatency
     );
-    // Sanity bound: even on a slow CI box we expect cancellation to drain in
-    // well under a second. 5s is a generous safety net.
     REQUIRE(maxLatency < 5'000'000.0);
 }

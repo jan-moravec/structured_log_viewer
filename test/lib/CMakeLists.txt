@@ -1,8 +1,16 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.28)
 
-# Create test executable
+# Create test executable. Unit tests and benchmarks share a single binary so
+# `ctest` can schedule both kinds of cases. Benchmark cases keep their
+# Catch2 `[.][benchmark][...]` hidden-by-default tags, so invoking the
+# binary directly without a filter still runs only the unit-test subset
+# (the previous local-iteration workflow). `catch_discover_tests` below
+# enumerates them by exact name regardless, so `ctest` picks them up too —
+# under the `benchmark` label, which lets `ctest -LE benchmark` skip them
+# when iterating on the unit tests.
 add_executable(
     tests
+    "src/benchmark_json.cpp"
     "src/common.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
@@ -52,30 +60,12 @@ if(WIN32)
     )
 endif()
 
-# Discover tests
-catch_discover_tests(tests)
-
-# Benchmarks live in their own executable so they are never picked up by
-# the unit-test runner. The `tests` target finishes in a couple of seconds;
-# pulling the long-running parse fixtures (`[large]`, `[wide]`,
-# `[stream_to_table]`, `[cancellation]`) into the same binary makes
-# `tests.exe` filter passes hang in process-global state long enough to
-# look like a deadlock. Splitting them out also lets the benchmark binary
-# opt out of `catch_discover_tests` so CTest never schedules them.
-add_executable(benchmarks "src/benchmark_json.cpp" "src/common.cpp")
-
-target_include_directories(benchmarks PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/../../library/src)
-target_link_libraries(
-    benchmarks
-    PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb
-)
-
-if(WIN32)
-    add_custom_command(
-        TARGET benchmarks
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb> $<TARGET_FILE_DIR:benchmarks>
-        COMMENT "Copying TBB runtime DLL next to benchmarks.exe"
-        VERBATIM
-    )
-endif()
+# Discover tests. Two passes so benchmarks land under a CTest label without
+# changing test names: pass 1 lists every non-benchmark case, pass 2 lists
+# only the `[benchmark]`-tagged cases and tags those CTest entries with the
+# `benchmark` label. The two `--list-tests` invocations are disjoint, so no
+# CTest entry is registered twice. Users can then opt out of the long-
+# running parse fixtures with `ctest -LE benchmark`, or run only those with
+# `ctest -L benchmark`.
+catch_discover_tests(tests TEST_SPEC "~[benchmark]")
+catch_discover_tests(tests TEST_SPEC "[benchmark]" PROPERTIES LABELS "benchmark")

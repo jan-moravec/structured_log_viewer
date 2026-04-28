@@ -914,13 +914,13 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Stage B leaves unparseable timestamp values as strings and pushes no errors", "[json_parser][stage_b_timestamps]"
+    "Stage B leaves unparsable timestamp values as strings and pushes no errors", "[json_parser][stage_b_timestamps]"
 )
 {
     // Promotion failures must never push into `parsed.errors` — they leave
     // the value as the original string so the back-fill pass can take a
     // second crack at it. This test pins that contract: a fixture mixing
-    // parseable and unparseable timestamp strings must come out with
+    // parseable and unparsable timestamp strings must come out with
     // `errors.empty()` and the bad rows still carrying a string at the
     // timestamp KeyId.
     using namespace loglib;

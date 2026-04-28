@@ -88,10 +88,19 @@ jobs:
         run: cmake --build --preset release
 
       - name: Run unit tests
-        # ctest preset already sets QT_QPA_PLATFORM=offscreen. Benchmark cases
-        # are tagged `[.][benchmark]` so Catch2 hides them by default — the
-        # default ctest run only exercises functional/parity tests.
+        # ctest preset already sets QT_QPA_PLATFORM=offscreen. The `release`
+        # test preset filters out the `benchmark` CTest label so this step
+        # only runs the functional/parity tests; the parser benchmarks in
+        # `test/lib/src/benchmark_json.cpp` run in the dedicated step below.
         run: ctest --preset release
+
+      - name: Run parser benchmarks
+        # The `release-benchmark` test preset includes only the `benchmark`
+        # CTest label and runs verbosely so the WARN-line throughput / latency
+        # numbers from `test/lib/src/benchmark_json.cpp` show up in the CI log.
+        # See CONTRIBUTING.md `## Benchmarking` for the regression-gate
+        # convention these numbers feed into.
+        run: ctest --preset release-benchmark
 
       - name: Install linuxdeploy and plugin
         run: |
@@ -181,9 +190,19 @@ jobs:
           cmake --build --preset release
 
       - name: Run unit tests
-        # ctest preset already sets QT_QPA_PLATFORM=offscreen.
+        # ctest preset already sets QT_QPA_PLATFORM=offscreen. The `release`
+        # test preset filters out the `benchmark` CTest label so this step
+        # only runs the functional/parity tests; benchmarks live in the
+        # dedicated step below.
         shell: cmd
         run: ctest --preset release
+
+      - name: Run parser benchmarks
+        # The `release-benchmark` test preset includes only the `benchmark`
+        # CTest label and runs verbosely so the WARN-line throughput / latency
+        # numbers from `test/lib/src/benchmark_json.cpp` show up in the CI log.
+        shell: cmd
+        run: ctest --preset release-benchmark
 
       - name: Package application
         shell: powershell
@@ -268,8 +287,17 @@ jobs:
         run: cmake --build --preset release
 
       - name: Run unit tests
-        # ctest preset already sets QT_QPA_PLATFORM=offscreen.
+        # ctest preset already sets QT_QPA_PLATFORM=offscreen. The `release`
+        # test preset filters out the `benchmark` CTest label so this step
+        # only runs the functional/parity tests; benchmarks live in the
+        # dedicated step below.
         run: ctest --preset release
+
+      - name: Run parser benchmarks
+        # The `release-benchmark` test preset includes only the `benchmark`
+        # CTest label and runs verbosely so the WARN-line throughput / latency
+        # numbers from `test/lib/src/benchmark_json.cpp` show up in the CI log.
+        run: ctest --preset release-benchmark
 
       - name: Package application
         run: |
