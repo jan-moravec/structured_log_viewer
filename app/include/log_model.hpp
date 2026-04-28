@@ -101,6 +101,18 @@ private:
     /// `mStreamingErrors.size()` so signal listeners read it cheaply.
     qsizetype mErrorCount = 0;
 
+    /// True between `BeginStreaming()` and the matching `EndStreaming()` (or
+    /// `Clear()`). Both endpoints run on the GUI thread, so this flag is
+    /// race-free — unlike `mStreamingWatcher->isRunning()`, which flips to
+    /// `false` as soon as the worker function returns, before the queued
+    /// `OnFinished` lambda has reached the GUI thread. `Clear()` reads it to
+    /// decide whether it must emit a compensating `streamingFinished(true)`
+    /// signal (the queued `OnFinished` is silently dropped by the sink's
+    /// generation-mismatch check, since `Clear()` calls
+    /// `DropPendingBatches()` right after the join to bump the generation
+    /// past whatever the worker captured during drain).
+    bool mStreamingActive = false;
+
     std::vector<std::string> mStreamingErrors;
 
     static QString ConvertToSingleLineCompactQString(const std::string &string);

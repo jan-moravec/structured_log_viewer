@@ -1,7 +1,6 @@
 #include "loglib/log_parser.hpp"
 
-#include "buffering_sink.hpp"
-
+#include "loglib/internal/buffering_sink.hpp"
 #include "loglib/log_file.hpp"
 
 #include <fmt/format.h>

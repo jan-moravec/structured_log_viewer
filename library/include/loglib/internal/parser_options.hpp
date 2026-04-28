@@ -1,31 +1,16 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 
-namespace loglib
-{
-
-/// Per-stage timing telemetry for one streaming parse. Stage B is parallel, so
-/// `stageBCpuTotal` is summed across workers.
-struct StageTimings
-{
-    std::chrono::nanoseconds wallClockTotal{0};
-    std::chrono::nanoseconds stageACpuTotal{0};
-    std::chrono::nanoseconds stageBCpuTotal{0};
-    std::chrono::nanoseconds stageCCpuTotal{0};
-    std::chrono::nanoseconds sinkTotal{0};
-    unsigned int effectiveThreads = 1;
-    size_t stageABatches = 0;
-    size_t stageBBatches = 0;
-    size_t stageCBatches = 0;
-};
-
-namespace internal
+namespace loglib::internal
 {
 
 /// Tuning knobs for the streaming pipeline. A default-constructed instance
-/// reproduces the public `Parse(path)` behaviour.
+/// reproduces the public `Parse(path)` behaviour. The struct lives behind
+/// `internal/` because production callers should never need to touch it; the
+/// fields exist so the unit tests and benchmarks can pin determinism (single
+/// thread, smaller batches) without the public `ParserOptions` surface
+/// growing test-only knobs.
 struct AdvancedParserOptions
 {
     /// Cap on per-process oneTBB parallelism so the parser does not monopolise
@@ -41,17 +26,6 @@ struct AdvancedParserOptions
 
     /// Values smaller than a single line auto-expand so a line never spans batches.
     size_t batchSizeBytes = kDefaultBatchSizeBytes;
-
-    /// Pipeline depth in tokens. `0` defaults to `2 * effectiveThreads`.
-    size_t ntokens = 0;
-
-    /// Per-worker key-string -> KeyId cache. On by default.
-    bool useThreadLocalKeyCache = true;
-
-    /// Optional caller-owned timings sink, written once before `OnFinished`.
-    /// `mutable` so the option can sit behind a `const` benchmark wrapper.
-    mutable StageTimings *timings = nullptr;
 };
 
-} // namespace internal
-} // namespace loglib
+} // namespace loglib::internal

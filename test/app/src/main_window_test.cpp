@@ -12,6 +12,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QPromise>
 #include <QRegularExpression>
 #include <QSignalSpy>
 #include <QString>
@@ -28,6 +29,8 @@
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace
@@ -665,6 +668,142 @@ private slots:
         QCOMPARE(proxy.mapToSource(proxy.index(0, 0)).row(), 1);
         QCOMPARE(proxy.mapToSource(proxy.index(1, 0)).row(), 0);
         QCOMPARE(proxy.mapToSource(proxy.index(2, 0)).row(), 2);
+    }
+
+    // Regression: `LogModel::Clear()` used to derive `wasStreaming` from
+    // `mStreamingWatcher->isRunning()`, which races with the queued
+    // `OnFinished` lambda — the worker function returns (and the watcher
+    // flips to "not running") *before* the lambda reaches the GUI thread,
+    // so a `Clear()` in that window saw `wasStreaming == false`, the
+    // queued `OnFinished` was then dropped by the sink's generation-mismatch
+    // check after `RequestStop()` bumped the generation, and no
+    // `streamingFinished` ever arrived — leaving the configuration menus
+    // permanently disabled until the next streaming parse. Replacing the
+    // source with a GUI-thread-only flag (`mStreamingActive`) makes this
+    // case race-free; this test covers it deterministically by calling
+    // `BeginStreaming` followed immediately by `Clear()` (no parser ever
+    // runs, so we cannot rely on `OnFinished` reaching the GUI).
+    void testClearAfterBeginStreamingEmitsCompensatingFinished()
+    {
+        // Use a tiny in-memory file so BeginStreaming has a valid LogFile
+        // to install on the model.
+        TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
+
+        LogModel model;
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        static_cast<void>(model.BeginStreaming(std::move(file)));
+
+        // No parser is started, so `EndStreaming` will never fire on its own.
+        // `Clear()` must emit `streamingFinished(true)` itself based on the
+        // GUI-thread flag set by `BeginStreaming`.
+        model.Clear();
+
+        QCOMPARE(finishedSpy.count(), 1);
+        QCOMPARE(finishedSpy.takeFirst().value(0).toBool(), true); // cancelled
+
+        // A second `Clear()` after the first one already cleared the flag
+        // must not emit a spurious `streamingFinished` (otherwise repeated
+        // user-driven file opens would emit duplicate signals).
+        model.Clear();
+        QCOMPARE(finishedSpy.count(), 0);
+    }
+
+    // Regression: `QtStreamingLogSink::RequestStop()` used to bump the sink
+    // generation *before* `LogModel::Clear()` waited for the worker to
+    // finish. The worker's drain-phase `OnBatch` / `OnFinished` then
+    // captured the bumped generation (the stop_token's request_stop pairs
+    // release-acquire with the worker's load), the queued GUI-thread
+    // lambdas matched it on dispatch, and they ran `AppendBatch` /
+    // `EndStreaming` *after* `Clear()` had already destroyed `mLogTable` —
+    // a use-after-free on the dangling `LogFile*` carried inside every
+    // batched `LogLine` (observable on the `CopyLine` role) plus a
+    // spurious second `streamingFinished(true)`. Triggered by drag-and-
+    // drop, multi-file open, or load-configuration while a streaming
+    // parse is still running.
+    //
+    // The fix moves the bump to `DropPendingBatches()`, called by `Clear()`
+    // *after* `waitForFinished()` returns. This test reproduces the race
+    // deterministically with a manual worker thread that waits for the
+    // stop_token to flip (i.e. `Clear()` has called `RequestStop()`),
+    // emits one `OnBatch` referencing the planted `LogFile` plus an
+    // `OnFinished(true)`, then completes a `QPromise` planted on the
+    // model so `waitForFinished()` can unblock. With the fix both queued
+    // lambdas observe a stale generation (because `DropPendingBatches`
+    // bumped it past the worker's capture) and short-circuit; without
+    // the fix the `OnBatch` lambda would push a row whose `LogLine`
+    // points at the now-unmapped file, and the `OnFinished` lambda would
+    // emit a second `streamingFinished` on top of `Clear`'s compensating
+    // one.
+    void testClearDuringStreamingDropsDrainPhaseBatch()
+    {
+        TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
+
+        LogModel model;
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        loglib::LogFile *filePtr = file.get();
+        const std::stop_token stop = model.BeginStreaming(std::move(file));
+
+        // Plant a future on the model that we control from the worker
+        // thread, so `Clear()`'s `waitForFinished()` blocks until we choose
+        // to release it (mirroring the production `QtConcurrent::run`
+        // future the parser hands the model after Stage C drains).
+        QPromise<void> promise;
+        promise.start();
+        model.SetStreamingFuture(promise.future());
+
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        std::thread worker([sink, &promise, stop, filePtr]() {
+            // Wait for the GUI thread's `Clear()` to call `RequestStop()`.
+            // That is exactly the race window the original bug exploited:
+            // the worker's drain phase runs *after* the stop is requested
+            // and *before* `waitForFinished()` returns.
+            while (!stop.stop_requested())
+            {
+                std::this_thread::yield();
+            }
+
+            // Mirror Stage C's tail flush: a one-line `StreamedBatch`
+            // referencing the model's `LogFile` so `LogTable::AppendBatch`
+            // would observably populate a row if the lambda ever ran.
+            loglib::KeyIndex &keys = sink->Keys();
+            const loglib::KeyId keyId = keys.GetOrInsert("a");
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
+            loglib::LogLine line(std::move(values), keys, loglib::LogFileReference(*filePtr, 1));
+            loglib::StreamedBatch batch;
+            batch.lines.push_back(std::move(line));
+            batch.firstLineNumber = 1;
+            sink->OnBatch(std::move(batch));
+            sink->OnFinished(true);
+
+            // Release `Clear()`'s `waitForFinished()` so it proceeds to
+            // `DropPendingBatches()` + `mLogTable` reset on the GUI thread.
+            promise.finish();
+        });
+
+        model.Clear();
+        worker.join();
+
+        // Drain the OnBatch / OnFinished lambdas the worker posted via
+        // QMetaObject::invokeMethod / Qt::QueuedConnection. With the fix
+        // both observe a stale generation and short-circuit; without it
+        // the OnBatch lambda would call AppendBatch on the cleared model
+        // (rowCount 0 -> 1, plus a UAF on the now-destroyed `LogFile`
+        // when CopyLine is queried) and the OnFinished lambda would emit
+        // a duplicate streamingFinished.
+        QCoreApplication::processEvents();
+
+        QCOMPARE(finishedSpy.count(), 1);
+        QCOMPARE(finishedSpy.takeFirst().value(0).toBool(), true); // cancelled
+        QCOMPARE(model.rowCount(), 0);
     }
 
 private:

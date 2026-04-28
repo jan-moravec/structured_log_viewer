@@ -1,9 +1,8 @@
 #include "common.hpp"
 
-#include "parser_pipeline.hpp"
-#include "timestamp_promotion.hpp"
-
 #include <loglib/internal/parser_options.hpp>
+#include <loglib/internal/parser_pipeline.hpp>
+#include <loglib/internal/timestamp_promotion.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -131,7 +130,7 @@ public:
                 if (line.front() == '!')
                 {
                     parsed.errors.push_back(
-                        "Error on line " + std::to_string(relativeLineNumber) + ": injected parser failure"
+                        loglib::detail::ParsedLineError{relativeLineNumber, "injected parser failure"}
                     );
                     ++relativeLineNumber;
                     continue;
@@ -164,7 +163,7 @@ public:
                     std::string_view keyView = field.substr(0, eq);
                     std::string_view valueView = field.substr(eq + 1);
 
-                    const loglib::KeyId keyId = loglib::detail::InternKeyVia(keyView, keys, &worker.keyCache, true);
+                    const loglib::KeyId keyId = loglib::detail::InternKeyVia(keyView, keys, &worker.keyCache);
                     LogValue val{std::string(valueView)};
                     auto it = values.begin();
                     while (it != values.end() && it->first < keyId)
@@ -347,6 +346,65 @@ TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors"
     REQUIRE(allErrors[1].find("Error on line 4") != std::string::npos);
 }
 
+// Regression: when errors land past the first Stage A batch, Stage C must
+// translate the per-batch-relative line number Stage B emits into the
+// absolute (file-wide) line number before the error string reaches the sink.
+TEST_CASE(
+    "Mock parser: error line numbers stay absolute across multiple pipeline batches",
+    "[mock_parser][error_line_numbers]"
+)
+{
+    // Build a fixture where every 100th line is malformed, large enough that
+    // a tiny `batchSizeBytes` forces several Stage A batches.
+    std::string content;
+    constexpr size_t kTotalLines = 600;
+    constexpr size_t kErrorEvery = 100;
+    std::vector<size_t> expectedErrorLines;
+    for (size_t i = 1; i <= kTotalLines; ++i)
+    {
+        if (i % kErrorEvery == 0)
+        {
+            content += "!boom_" + std::to_string(i) + "\n";
+            expectedErrorLines.push_back(i);
+        }
+        else
+        {
+            content += "index=" + std::to_string(i) + "\n";
+        }
+    }
+
+    TempTextFile fixture(content, "test_kv_multi_batch_errors.log");
+    LogFile logFile(fixture.Path());
+
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = 4 * 1024;
+
+    CollectingSink sink;
+    KeyValueLineParser parser;
+    parser.ParseStreaming(logFile, sink, options, advanced);
+
+    REQUIRE_FALSE(sink.cancelled);
+    REQUIRE(sink.batches.size() >= 1);
+
+    std::vector<std::string> allErrors;
+    for (const auto &b : sink.batches)
+    {
+        for (const auto &e : b.errors)
+        {
+            allErrors.push_back(e);
+        }
+    }
+    REQUIRE(allErrors.size() == expectedErrorLines.size());
+    for (size_t i = 0; i < expectedErrorLines.size(); ++i)
+    {
+        const std::string expected = "Error on line " + std::to_string(expectedErrorLines[i]);
+        INFO("error #" << i << " text: " << allErrors[i] << ", expected to start with: " << expected);
+        CHECK(allErrors[i].find(expected) != std::string::npos);
+    }
+}
+
 TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "[mock_parser][cancellation]")
 {
     constexpr size_t kRecordCount = 200'000;
@@ -354,13 +412,12 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     LogFile logFile(fixture.Path());
 
     constexpr size_t kBatchBytes = 64 * 1024;
-    constexpr size_t kNtokens = 4;
+    constexpr unsigned int kThreads = 4;
 
     loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.batchSizeBytes = kBatchBytes;
-    advanced.ntokens = kNtokens;
-    advanced.threads = 4;
+    advanced.threads = kThreads;
 
     struct CancellingSink : CollectingSink
     {
@@ -396,8 +453,11 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     const auto latency = sink.finishedAt - sink.requestedAt;
     const auto latencyMs = std::chrono::duration<double, std::milli>(latency).count();
 
+    // The pipeline harness picks `ntokens = 2 * effectiveThreads` by default,
+    // so the upper bound on the cancellation latency is roughly
+    // `2 * kThreads * kBatchBytes` worth of pending work to drain.
     INFO(
-        "Cancellation latency = " << latencyMs << " ms (ntokens=" << kNtokens << ", batch=" << kBatchBytes << " bytes)"
+        "Cancellation latency = " << latencyMs << " ms (threads=" << kThreads << ", batch=" << kBatchBytes << " bytes)"
     );
 
     REQUIRE(latency >= std::chrono::nanoseconds{0});

@@ -29,9 +29,21 @@ public:
     /// `ParserOptions::stopToken`. GUI thread.
     std::stop_token BeginParse();
 
-    /// Non-blocking cancel; bumps generation before requesting stop so queued
-    /// OnBatch calls drop on arrival. GUI thread.
+    /// Non-blocking cancel; signals the parse's `stop_token`. Does **not**
+    /// touch the generation: the worker's drain-phase `OnBatch` /
+    /// `OnFinished` calls run *after* this returns, and they capture
+    /// whatever generation is current at the time they run. Use
+    /// `DropPendingBatches()` *after* `waitForFinished()` to invalidate the
+    /// queued lambdas they emitted. GUI thread.
     void RequestStop();
+
+    /// Bumps the sink generation so any GUI-thread lambda already queued by
+    /// `OnBatch` / `OnFinished` short-circuits on its mismatch check when it
+    /// later runs. Must be called *after* the parse has joined (i.e. after
+    /// `QFutureWatcher::waitForFinished()` returns) so the worker has no
+    /// chance to capture this new generation in a fresh queued lambda — that
+    /// is the whole point of deferring the bump. GUI thread.
+    void DropPendingBatches();
 
     /// The canonical KeyIndex (the model's LogTable's). Thread-safe.
     loglib::KeyIndex &Keys() override;

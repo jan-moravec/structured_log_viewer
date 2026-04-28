@@ -33,6 +33,15 @@ LogModel::~LogModel()
     {
         mStreamingWatcher->waitForFinished();
     }
+    // Invalidate any drain-phase OnBatch / OnFinished lambdas the worker
+    // queued between `RequestStop` and the join above: their captured
+    // generation will mismatch on the GUI thread and they'll short-circuit.
+    // ~QObject would also drop them by destroying the sink, but bumping
+    // explicitly here keeps the contract symmetric with `Clear()`.
+    if (mSink)
+    {
+        mSink->DropPendingBatches();
+    }
 }
 
 void LogModel::AddData(loglib::LogData &&logData)
@@ -57,7 +66,19 @@ void LogModel::Clear()
     // The wait also covers the case where ungated entry points (`actionOpen`,
     // `actionOpenJsonLogs`, `dropEvent`, `LoadConfiguration`) trigger a
     // `Clear()` while a streaming parse is still running.
-    const bool wasStreaming = mStreamingWatcher && mStreamingWatcher->isRunning();
+    //
+    // `mStreamingActive` (set in `BeginStreaming`, cleared in `EndStreaming`)
+    // is the source of truth here rather than `mStreamingWatcher->isRunning()`:
+    // the latter flips to `false` as soon as the worker function returns,
+    // before the queued `OnFinished` lambda reaches the GUI thread. If
+    // `Clear()` runs in that window, `DropPendingBatches()` (below) bumps
+    // the sink generation and the queued `OnFinished` is silently dropped
+    // by the generation check, so we must emit a compensating
+    // `streamingFinished(true)` ourselves. `mStreamingActive` is still
+    // `true` at that point because both setter and clearer run on the GUI
+    // thread.
+    const bool wasStreaming = mStreamingActive;
+    mStreamingActive = false;
     if (mSink)
     {
         mSink->RequestStop();
@@ -65,6 +86,22 @@ void LogModel::Clear()
     if (mStreamingWatcher)
     {
         mStreamingWatcher->waitForFinished();
+    }
+    // Order matters: bump the sink generation **after** the worker has
+    // joined, never before. The drain phase between `RequestStop` and the
+    // worker returning keeps emitting `OnBatch` / `OnFinished` (Stage C's
+    // tail flush + the unconditional `OnFinished` in `RunParserPipeline`),
+    // and each of those calls reads `mGeneration` to capture in its queued
+    // lambda. Bumping here — *after* `waitForFinished` — means those
+    // captures used the previous, now-stale generation, so the lambdas
+    // short-circuit on the GUI thread instead of running `AppendBatch` /
+    // `EndStreaming` against the model we are about to reset (which would
+    // be a use-after-free on the dangling `LogFile*` in every batched
+    // `LogLine` — observable via the `CopyLine` role on a row coming from
+    // the stale batch — and a spurious second `streamingFinished(true)`).
+    if (mSink)
+    {
+        mSink->DropPendingBatches();
     }
 
     beginResetModel();
@@ -78,11 +115,12 @@ void LogModel::Clear()
     emit lineCountChanged(0);
     emit errorCountChanged(0);
 
-    // The worker's queued `OnFinished(true)` will be discarded by the sink's
-    // generation-mismatch check (RequestStop bumped the generation before the
-    // event reaches the GUI thread), so any UI state that lives on
-    // `streamingFinished` (e.g. re-enabling the configuration menus) needs to
-    // be signalled here explicitly when we've cancelled an active parse.
+    // The worker's queued `OnFinished(true)` is discarded by the sink's
+    // generation-mismatch check (`DropPendingBatches` above bumped the
+    // generation after the worker had already captured the previous one),
+    // so any UI state that lives on `streamingFinished` (e.g. re-enabling
+    // the configuration menus) needs to be signalled here explicitly when
+    // we've cancelled an active parse.
     if (wasStreaming)
     {
         emit streamingFinished(true);
@@ -120,6 +158,12 @@ std::stop_token LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 
     emit lineCountChanged(0);
     emit errorCountChanged(0);
+
+    // Set on the GUI thread; cleared on the GUI thread by `EndStreaming` or
+    // `Clear`. Used by `Clear` to decide whether to emit a compensating
+    // `streamingFinished(true)` if the queued `OnFinished` is about to be
+    // dropped by the sink's generation check.
+    mStreamingActive = true;
 
     return mSink->BeginParse();
 }
@@ -180,6 +224,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
 void LogModel::EndStreaming(bool cancelled)
 {
+    mStreamingActive = false;
     emit streamingFinished(cancelled);
 }
 

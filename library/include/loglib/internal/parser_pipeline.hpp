@@ -1,9 +1,8 @@
 #pragma once
 
-#include "timestamp_promotion.hpp"
-#include "transparent_string_hash.hpp"
-
 #include "loglib/internal/parser_options.hpp"
+#include "loglib/internal/timestamp_promotion.hpp"
+#include "loglib/internal/transparent_string_hash.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
@@ -12,13 +11,14 @@
 #include "loglib/parser_options.hpp"
 #include "loglib/streaming_log_sink.hpp"
 
+#include <fmt/format.h>
+
 #include <oneapi/tbb/enumerable_thread_specific.h>
 #include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_pipeline.h>
 
 #include <tsl/robin_map.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -30,7 +30,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -77,11 +76,12 @@ template <class UserState> struct WorkerScratch : WorkerScratchBase
     UserState user;
 };
 
-/// Routes a key lookup through the per-worker cache when enabled. The view's
-/// bytes must outlive the cache entry on the miss path.
-inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache, bool useCache)
+/// Routes a key lookup through the per-worker cache. The view's bytes must
+/// outlive the cache entry on the miss path. Passing `cache == nullptr`
+/// falls back to a direct `KeyIndex::GetOrInsert` call.
+inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache)
 {
-    if (!useCache || cache == nullptr)
+    if (cache == nullptr)
     {
         return keys.GetOrInsert(key);
     }
@@ -94,13 +94,24 @@ inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCach
     return id;
 }
 
+/// Per-line error emitted by Stage B. `relativeLine` is the 1-based line
+/// number within the source batch (i.e. it resets to 1 at every Stage B
+/// invocation). Stage C composes the absolute `Error on line N: <body>`
+/// string by adding its running line-number cursor — Stage B cannot do this
+/// itself because it has no view of the cumulative line count.
+struct ParsedLineError
+{
+    size_t relativeLine = 0;
+    std::string body;
+};
+
 /// Parsed Stage B output. Stage C re-asserts ordering before the sink sees it.
 struct ParsedPipelineBatch
 {
     uint64_t batchIndex = 0;
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
-    std::vector<std::string> errors;
+    std::vector<ParsedLineError> errors;
     /// Source lines consumed (parsed + errors + skipped empties). Stage C uses
     /// this to advance its running line-number cursor across batches.
     size_t totalLineCount = 0;
@@ -135,7 +146,7 @@ constexpr auto kStreamFlushInterval = std::chrono::milliseconds(50);
 /// Streaming-pipeline entry point. Stage A `stageADriver(Token&) -> bool` is
 /// serial_in_order; Stage B `stageBDecoder(Token, scratch, keys, columns,
 /// out)` is parallel. Stage C coalescing, new-keys diff, inline timestamp
-/// promotion, telemetry, and stop_token cancellation are owned by the harness.
+/// promotion, and stop_token cancellation are owned by the harness.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunParserPipeline(
     LogFile &file,
@@ -169,17 +180,6 @@ void RunParserPipeline(
 
     oneapi::tbb::enumerable_thread_specific<WorkerScratch<UserState>> workers;
 
-    StageTimings *timingsOut = advanced.timings;
-    const bool collectTimings = (timingsOut != nullptr);
-    const auto wallClockStart =
-        collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    std::chrono::nanoseconds stageACpuTotal{0};
-    size_t stageABatches = 0;
-    oneapi::tbb::enumerable_thread_specific<std::chrono::nanoseconds> stageBCpuPerWorker(std::chrono::nanoseconds{0});
-    std::atomic<size_t> stageBBatches{0};
-    std::chrono::nanoseconds stageCCpuTotal{0};
-    size_t stageCBatches = 0;
-
     const bool prefersUncoalesced = sink.PrefersUncoalesced();
     StreamedBatch pending;
     bool pendingPrimed = false;
@@ -196,8 +196,6 @@ void RunParserPipeline(
             fc.stop();
             return Token{};
         }
-        const auto stageStart =
-            collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         Token token{};
         const bool produced = stageADriver(token);
         if (!produced)
@@ -205,28 +203,16 @@ void RunParserPipeline(
             fc.stop();
             return Token{};
         }
-        if (collectTimings)
-        {
-            stageACpuTotal += std::chrono::steady_clock::now() - stageStart;
-            ++stageABatches;
-        }
         return token;
     };
 
     auto stageB = [&](Token token) -> ParsedPipelineBatch {
-        const auto stageStart =
-            collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         WorkerScratch<UserState> &worker = workers.local();
         worker.EnsureTimeColumnCapacity(timeColumnsSpan.size());
 
         ParsedPipelineBatch parsed;
         stageBDecoder(std::move(token), worker, keys, timeColumnsSpan, parsed);
 
-        if (collectTimings)
-        {
-            stageBCpuPerWorker.local() += std::chrono::steady_clock::now() - stageStart;
-            stageBBatches.fetch_add(1, std::memory_order_relaxed);
-        }
         return parsed;
     };
 
@@ -257,9 +243,6 @@ void RunParserPipeline(
     };
 
     auto stageC = [&](ParsedPipelineBatch parsed) {
-        const auto stageStart =
-            collectTimings ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-
         const size_t lineNumberDelta = nextLineNumber - 1;
         if (lineNumberDelta != 0)
         {
@@ -269,23 +252,37 @@ void RunParserPipeline(
             }
         }
 
+        // Stage B's `relativeLine` is 1-based within the batch. Compose the
+        // absolute "Error on line N: ..." message here so the line-number
+        // shift on `LogLine::FileReference` and the line-number shown to the
+        // user stay in lockstep across batches.
+        auto formatErrorsInto = [&](std::vector<std::string> &out) {
+            if (parsed.errors.empty())
+            {
+                return;
+            }
+            out.reserve(out.size() + parsed.errors.size());
+            for (auto &err : parsed.errors)
+            {
+                out.push_back(
+                    fmt::format("Error on line {}: {}", err.relativeLine + lineNumberDelta, std::move(err.body))
+                );
+            }
+            parsed.errors.clear();
+        };
+
         if (prefersUncoalesced)
         {
             StreamedBatch out;
             out.lines = std::move(parsed.lines);
             out.localLineOffsets = std::move(parsed.localLineOffsets);
-            out.errors = std::move(parsed.errors);
+            formatErrorsInto(out.errors);
             out.firstLineNumber = nextLineNumber;
             emitNewKeysInto(out);
 
             nextLineNumber += parsed.totalLineCount;
 
             sink.OnBatch(std::move(out));
-            if (collectTimings)
-            {
-                stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
-                ++stageCBatches;
-            }
             return;
         }
 
@@ -310,24 +307,11 @@ void RunParserPipeline(
                 std::make_move_iterator(parsed.localLineOffsets.end())
             );
         }
-        if (!parsed.errors.empty())
-        {
-            pending.errors.insert(
-                pending.errors.end(),
-                std::make_move_iterator(parsed.errors.begin()),
-                std::make_move_iterator(parsed.errors.end())
-            );
-        }
+        formatErrorsInto(pending.errors);
 
         nextLineNumber += parsed.totalLineCount;
 
         flushPending(false);
-
-        if (collectTimings)
-        {
-            stageCCpuTotal += std::chrono::steady_clock::now() - stageStart;
-            ++stageCBatches;
-        }
     };
 
     oneapi::tbb::global_control gc(
@@ -365,23 +349,6 @@ void RunParserPipeline(
         StreamedBatch tail;
         tail.firstLineNumber = nextLineNumber;
         sink.OnBatch(std::move(tail));
-    }
-
-    if (timingsOut != nullptr)
-    {
-        timingsOut->wallClockTotal = std::chrono::steady_clock::now() - wallClockStart;
-        timingsOut->stageACpuTotal = stageACpuTotal;
-        timingsOut->stageBCpuTotal = std::chrono::nanoseconds{0};
-        for (const std::chrono::nanoseconds &perWorker : stageBCpuPerWorker)
-        {
-            timingsOut->stageBCpuTotal += perWorker;
-        }
-        timingsOut->stageCCpuTotal = stageCCpuTotal;
-        timingsOut->sinkTotal = std::chrono::nanoseconds{0};
-        timingsOut->effectiveThreads = settings.effectiveThreads;
-        timingsOut->stageABatches = stageABatches;
-        timingsOut->stageBBatches = stageBBatches.load(std::memory_order_relaxed);
-        timingsOut->stageCBatches = stageCBatches;
     }
 
     sink.OnFinished(stopToken.stop_requested());

@@ -242,6 +242,75 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
     CHECK(index.Size() == static_cast<size_t>(kKeyCount));
 }
 
+// Regression: `KeyOf` previously read the `reverse` deque without a lock
+// while `GetOrInsert` was emplace-ing into it. One writer grows the deque
+// while four readers spin on `KeyOf` and round-trip each result through
+// `Find`. Surfaces deterministically under TSan / Windows debug iterators.
+TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary", "[key_index][stress]")
+{
+    constexpr int kKeyCount = 4'096;
+    constexpr int kReaderThreads = 4;
+    constexpr int kReaderIterations = 50'000;
+
+    std::vector<std::string> keys;
+    keys.reserve(kKeyCount);
+    for (int i = 0; i < kKeyCount; ++i)
+    {
+        keys.push_back("racer_key_" + std::to_string(i));
+    }
+
+    KeyIndex index;
+    std::atomic<KeyId> highWater{0};
+    std::atomic<bool> writerDone{false};
+
+    std::thread writer([&] {
+        for (const auto &k : keys)
+        {
+            // Publish ids only after the writer finishes inserting them.
+            const KeyId id = index.GetOrInsert(k);
+            highWater.store(id + 1, std::memory_order_release);
+        }
+        writerDone.store(true, std::memory_order_release);
+    });
+
+    auto reader = [&] {
+        for (int i = 0; i < kReaderIterations; ++i)
+        {
+            const KeyId limit = highWater.load(std::memory_order_acquire);
+            if (limit == 0)
+            {
+                continue;
+            }
+            const KeyId id = static_cast<KeyId>(static_cast<unsigned>(i) % static_cast<unsigned>(limit));
+            const std::string_view view = index.KeyOf(id);
+            REQUIRE(index.Find(view) == id);
+            if (writerDone.load(std::memory_order_acquire) && i > 1024)
+            {
+                break;
+            }
+        }
+    };
+
+    std::vector<std::thread> readers;
+    readers.reserve(kReaderThreads);
+    for (int t = 0; t < kReaderThreads; ++t)
+    {
+        readers.emplace_back(reader);
+    }
+    writer.join();
+    for (auto &th : readers)
+    {
+        th.join();
+    }
+
+    REQUIRE(index.Size() == static_cast<size_t>(kKeyCount));
+    for (KeyId id = 0; id < static_cast<KeyId>(kKeyCount); ++id)
+    {
+        const std::string_view view = index.KeyOf(id);
+        CHECK(index.Find(view) == id);
+    }
+}
+
 // Heterogeneous-lookup unit test. Exercises the no-alloc fast path: a
 // `string_view` query (built from a stack `char` buffer) must succeed
 // without the caller materialising a `std::string`. The instrumentation

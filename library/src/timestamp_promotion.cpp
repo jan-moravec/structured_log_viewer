@@ -1,4 +1,4 @@
-#include "timestamp_promotion.hpp"
+#include "loglib/internal/timestamp_promotion.hpp"
 
 #include <cstring>
 #include <utility>

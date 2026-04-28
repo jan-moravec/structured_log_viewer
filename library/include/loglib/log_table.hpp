@@ -74,9 +74,20 @@ private:
     LogConfigurationManager mConfiguration;
     std::vector<std::vector<KeyId>> mColumnKeyIds;
 
-    /// KeyIds of `Type::time` columns at `BeginStreaming` snapshot time, grown
-    /// as `AppendBatch` back-fills additional time columns.
+    /// KeyIds of `Type::time` columns that were already in the configuration
+    /// snapshot at `BeginStreaming` time (and are therefore promoted inline
+    /// by Stage B of the parser pipeline). Populated once in
+    /// `RefreshSnapshotTimeKeys`; read-only thereafter.
     std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
+
+    /// KeyIds of `Type::time` columns that appeared *after* the streaming
+    /// snapshot — typically because `LogConfigurationManager::AppendKeys`
+    /// auto-promoted a freshly-seen "timestamp"/"time"/"t" key on the first
+    /// batch that carried it. Stage B of the running parser does not know
+    /// about them (the `LogConfiguration` it received does not list the
+    /// column), so every subsequent `AppendBatch` must back-fill the rows
+    /// it just appended for these columns.
+    std::unordered_set<KeyId> mPostSnapshotTimeKeys;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
 };

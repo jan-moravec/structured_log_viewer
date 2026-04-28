@@ -43,8 +43,12 @@ The project is organized into two main components: the `library` and the GUI `ap
 structured_log_viewer/
 ├── library/                  # loglib: core log handling (no Qt dependency)
 │   ├── include/loglib/       # Public library headers
-│   ├── src/                  # Library implementation (incl. private headers
-│   │                         #   like parser_pipeline.hpp / buffering_sink.hpp)
+│   │   └── internal/         # Internal-but-needed-by-tests headers
+│   │                         #   (parser_pipeline.hpp, buffering_sink.hpp,
+│   │                         #    timestamp_promotion.hpp,
+│   │                         #    transparent_string_hash.hpp,
+│   │                         #    parser_options.hpp)
+│   ├── src/                  # Library implementation (.cpp only)
 │   └── CMakeLists.txt
 ├── app/                      # Qt6 GUI application (StructuredLogViewer)
 │   ├── include/              # GUI headers
@@ -78,11 +82,11 @@ The `library` component (`loglib`) provides the core functionality for handling 
 | `loglib/log_processing.hpp`     | Timezone bootstrap (`Initialize`), `TryParseTimestamp` fast/slow paths, and the `BackfillTimestampColumn` helper used by `LogTable`.                                                                                                                                                                      |
 | `loglib/log_parser.hpp`         | `LogParser` is the format-agnostic interface (`IsValid`, `ParseStreaming`, `ToString`). The synchronous `Parse(path)` overload is implemented on the base class and routes through `ParseStreaming`.                                                                                                      |
 | `loglib/streaming_log_sink.hpp` | `StreamingLogSink` is the receiver interface for the streaming parser; one `OnStarted`, zero or more `OnBatch(StreamedBatch)`, one `OnFinished(cancelled)`.                                                                                                                                               |
-| `loglib/parser_options.hpp`     | `ParserOptions::stopToken` for cooperative cancellation and `configuration` for inline timestamp promotion. Tuning knobs (thread cap, batch size, telemetry) live behind `loglib/internal/parser_options.hpp`.                                                                                            |
+| `loglib/parser_options.hpp`     | `ParserOptions::stopToken` for cooperative cancellation and `configuration` for inline timestamp promotion. Test-only tuning knobs (thread cap, batch size) live behind `loglib/internal/parser_options.hpp`.                                                                                             |
 | `loglib/json_parser.hpp`        | `JsonParser`: the only currently shipped `LogParser`. Built on simdjson + the shared TBB pipeline.                                                                                                                                                                                                        |
 | `loglib/log_factory.hpp`        | `LogFactory` picks the right parser for a path via `IsValid` and exposes a typed `Create(Parser)` enum.                                                                                                                                                                                                   |
 
-Two helpers live in `library/src/` and are intentionally **not** part of the public API: `BufferingSink` (the sink behind synchronous `Parse(path)`) and `loglib::detail::RunParserPipeline` in `parser_pipeline.hpp` (the shared TBB pipeline harness, see [Data Flow](#data-flow)).
+Several helpers live under `library/include/loglib/internal/` and are intentionally **not** part of the public API. They are kept there (rather than next to the `.cpp`s in `library/src/`) so the unit tests in `test/lib/` can include them via the same `loglib`-prefixed include path as the public headers, without needing a per-target include-directory workaround. The most important are `BufferingSink` (`buffering_sink.hpp`, the sink behind synchronous `Parse(path)`) and `loglib::detail::RunParserPipeline` (`parser_pipeline.hpp`, the shared TBB pipeline harness — see [Data Flow](#data-flow)). `timestamp_promotion.hpp` and `transparent_string_hash.hpp` round out the set.
 
 ### GUI Application
 
@@ -130,13 +134,13 @@ LogFile  ──▶  Stage A  ──▶  Stage B  ──▶  Stage C  ──▶  
 ```
 
 1. **`LogFile` opens the file.** A `LogFile` mmaps the file and remembers the byte offset of every line boundary as the parser visits them. Because the mmap stays alive for the file's whole on-screen lifetime, every `LogLine` parsed downstream can hold `string_view`s pointing directly into it.
-1. **The shared TBB pipeline parses it.** `LogParser::ParseStreaming` is implemented on top of `loglib::detail::RunParserPipeline` (`library/src/parser_pipeline.hpp`), a three-stage `oneapi::tbb::parallel_pipeline`:
+1. **The shared TBB pipeline parses it.** `LogParser::ParseStreaming` is implemented on top of `loglib::detail::RunParserPipeline` (`library/include/loglib/internal/parser_pipeline.hpp`), a three-stage `oneapi::tbb::parallel_pipeline`:
    - **Stage A (`serial_in_order`)** carves the mmap into ~1 MiB byte-range tokens at line boundaries.
    - **Stage B (`parallel`)** decodes each token into a `ParsedPipelineBatch` of `LogLine`s. Field names are interned through a per-worker cache that hits the shared `KeyIndex` only on first sight, and configured `Type::time` columns are promoted to a `TimeStamp` inline (`PromoteLineTimestamps`) while the freshly-written values are still hot in L1.
    - **Stage C (`serial_in_order`)** assigns absolute line numbers, coalesces small batches (~1000 lines or 50 ms), diffs the `KeyIndex` to find newly seen keys, and emits a `StreamedBatch` to the sink.
-     The pipeline owns `ParserOptions::stopToken` cancellation, batch coalescing, the new-keys diff, and the optional per-stage telemetry behind `internal::AdvancedParserOptions`. A format-specific parser only supplies the Stage A/B lambdas (see [Adding a New Structured Log Format](#adding-a-new-structured-log-format)).
+     The pipeline owns `ParserOptions::stopToken` cancellation, batch coalescing, and the new-keys diff. A format-specific parser only supplies the Stage A/B lambdas (see [Adding a New Structured Log Format](#adding-a-new-structured-log-format)).
 1. **A sink consumes the batches.** Two `StreamingLogSink` implementations ship today:
-   - `BufferingSink` (private, in `library/src/`) is the sink behind the synchronous `LogParser::Parse(path)` overload. It accumulates every batch into a single `LogData` and is what tests, benchmarks, and the GUI's fall-back synchronous path use.
+   - `BufferingSink` (private, declared in `library/include/loglib/internal/buffering_sink.hpp`) is the sink behind the synchronous `LogParser::Parse(path)` overload. It accumulates every batch into a single `LogData` and is what tests, benchmarks, and the GUI's fall-back synchronous path use.
    - `QtStreamingLogSink` is the GUI bridge. Its `OnBatch(StreamedBatch)` posts a `QMetaObject::invokeMethod` lambda back to the GUI thread, which drops on a generation mismatch (see below) and otherwise calls `LogModel::AppendBatch`.
 1. **`LogModel::AppendBatch` updates the table.** It hands the batch to `LogTable::AppendBatch`, which:
    - extends the `LogConfiguration` with any `batch.newKeys` (auto-promoting names that look like timestamps to `Type::time`),
@@ -161,7 +165,7 @@ To teach the viewer a new format (CSV, logfmt, syslog, …):
    - `void ParseStreaming(LogFile&, StreamingLogSink&, ParserOptions) const` — the streaming entry point.
    - `std::string ToString(const LogLine&) const` — the inverse, used by `Edit → Copy` to round-trip a row back to the format's native text.
 
-1. **Reuse the shared pipeline** in `ParseStreaming`. Almost all of the heavy lifting lives in `loglib::detail::RunParserPipeline` (`library/src/parser_pipeline.hpp`). Define two types and two lambdas, then call:
+1. **Reuse the shared pipeline** in `ParseStreaming`. Almost all of the heavy lifting lives in `loglib::detail::RunParserPipeline` (`library/include/loglib/internal/parser_pipeline.hpp`). Define two types and two lambdas, then call:
 
    ```cpp
    detail::RunParserPipeline<Token, UserState>(file, sink, options, advanced, stageA, stageB);
@@ -174,7 +178,7 @@ To teach the viewer a new format (CSV, logfmt, syslog, …):
    - `stageA(Token& out) -> bool` produces the next token from the source; return `false` at EOF.
    - `stageB(Token, WorkerScratch<UserState>&, KeyIndex&, std::span<const TimeColumnSpec>, ParsedPipelineBatch&)` decodes one token into `parsed.lines` (built via `LogLine{sortedValues, keys, fileRef}`) and `parsed.errors`. After pushing each line, call `worker.PromoteTimestamps(parsed.lines.back(), timeColumns)` to keep the inline timestamp fast path warm. Use `detail::InternKeyVia(...)` to intern field names through the per-worker cache. Set `parsed.totalLineCount` to the number of source lines consumed (parsed + errored + skipped) so Stage C can advance its line-number cursor.
 
-   The harness owns batch coalescing, the `newKeys` diff, line-number assignment, telemetry, and stop-token handling — your parser only has to turn bytes into `(KeyId, LogValue)` pairs.
+   The harness owns batch coalescing, the `newKeys` diff, line-number assignment, and stop-token handling — your parser only has to turn bytes into `(KeyId, LogValue)` pairs.
 
 1. **Register the parser in `LogFactory`** (`library/include/loglib/log_factory.hpp` + `library/src/log_factory.cpp`):
 

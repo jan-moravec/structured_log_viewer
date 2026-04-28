@@ -25,12 +25,31 @@ std::stop_token QtStreamingLogSink::BeginParse()
 
 void QtStreamingLogSink::RequestStop()
 {
-    // Bump generation before requesting stop so any in-flight OnBatch drops.
-    mGeneration.fetch_add(1, std::memory_order_acq_rel);
+    // Cooperative cancel only — do **not** touch the generation here. The
+    // worker keeps draining for a while after this returns (Stage B parallel
+    // tasks already in flight, plus Stage C's tail flush + OnFinished), and
+    // every OnBatch / OnFinished it makes during that window reads
+    // `mGeneration` to embed in its queued lambda. If we bumped here, those
+    // reads would see the bumped value (the stop_token's request_stop has
+    // release semantics paired with the worker's acquire load, so the bump
+    // would be guaranteed visible by the time the worker observes the stop)
+    // and the queued lambdas would then *pass* the generation-mismatch check
+    // on the GUI thread — running `AppendBatch` / `EndStreaming` after the
+    // caller has already torn the model state down (use-after-free on the
+    // unmapped `LogFile`, plus a spurious second `streamingFinished`). The
+    // bump belongs on the *post-wait* side, see `DropPendingBatches`.
     if (mStopSource.has_value())
     {
         mStopSource->request_stop();
     }
+}
+
+void QtStreamingLogSink::DropPendingBatches()
+{
+    // Caller must have already joined the worker (typically via
+    // `QFutureWatcher::waitForFinished()`), so no further OnBatch /
+    // OnFinished call can race this bump and capture the new generation.
+    mGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
 loglib::KeyIndex &QtStreamingLogSink::Keys()

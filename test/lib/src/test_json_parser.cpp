@@ -1,7 +1,6 @@
 #include "common.hpp"
 
-#include "buffering_sink.hpp"
-
+#include <loglib/internal/buffering_sink.hpp>
 #include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
 #include <loglib/key_index.hpp>
@@ -68,9 +67,6 @@ TEST_CASE(
     const internal::AdvancedParserOptions advanced;
     CHECK(advanced.threads == 0u);
     CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::kDefaultBatchSizeBytes);
-    CHECK(advanced.ntokens == 0u);
-    CHECK(advanced.useThreadLocalKeyCache == true);
-    CHECK(advanced.timings == nullptr);
     CHECK(internal::AdvancedParserOptions::kDefaultMaxThreads == 8u);
     CHECK(internal::AdvancedParserOptions::kDefaultBatchSizeBytes == 1024u * 1024u);
 }
@@ -175,6 +171,66 @@ TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
     auto result = parser.Parse(testFile.GetFilePath());
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.size() == 2);
+}
+
+// Regression: `DecodeJsonBatch` used to format errors with the line number
+// *relative to the current Stage A batch*, which resets to 1 at each new
+// pipeline batch. For files larger than `batchSizeBytes` this caused every
+// error past batch 1 to report the wrong line — e.g. a malformed line at file
+// line 1500 surfacing as "Error on line 500" because it was the 500th line of
+// the second batch. The fix moves the formatting into Stage C, which knows the
+// running absolute line cursor and composes "Error on line N: <body>" itself.
+TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[json_parser][error_line_numbers]")
+{
+    loglib::JsonParser parser;
+
+    constexpr size_t kValidLines = 1000;
+    constexpr size_t kInvalidLineNumberA = 1500;
+    constexpr size_t kInvalidLineNumberB = 2500;
+
+    // Build a file with valid JSON sandwiching two malformed lines at known
+    // absolute line numbers, well past the first pipeline batch boundary.
+    // `JsonLogLine` only has a `const char *` (and a parsed-JSON) constructor,
+    // so we materialise each line as `std::string` first and pass `.c_str()`
+    // explicitly — passing a `std::string&&` would otherwise silently bind to
+    // the parsed-JSON constructor and wrap each entire line as a JSON string
+    // scalar, producing "not a JSON object" errors for every row.
+    std::vector<std::string> lineTexts;
+    lineTexts.reserve(kInvalidLineNumberB);
+    for (size_t i = 1; i <= kInvalidLineNumberB; ++i)
+    {
+        if (i == kInvalidLineNumberA || i == kInvalidLineNumberB)
+        {
+            lineTexts.emplace_back(std::string("not json line ") + std::to_string(i));
+        }
+        else
+        {
+            lineTexts.emplace_back(R"({"index": )" + std::to_string(i) + "}");
+        }
+    }
+    std::vector<TestJsonLogFile::Line> lines;
+    lines.reserve(lineTexts.size());
+    for (const std::string &text : lineTexts)
+    {
+        lines.emplace_back(text.c_str());
+    }
+    static_cast<void>(kValidLines);
+    TestJsonLogFile testFile(std::move(lines));
+
+    // Force several Stage A batches by capping `batchSizeBytes` well below
+    // the file size; the kInvalidLineNumberA line therefore lands in batch 2+.
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 8 * 1024;
+    advanced.threads = 1;
+
+    auto result = ParseWithSink(parser, testFile.GetFilePath(), options, advanced);
+
+    REQUIRE(result.errors.size() == 2);
+    const std::string expectedA = "Error on line " + std::to_string(kInvalidLineNumberA);
+    const std::string expectedB = "Error on line " + std::to_string(kInvalidLineNumberB);
+    CHECK(result.errors[0].find(expectedA) != std::string::npos);
+    CHECK(result.errors[1].find(expectedB) != std::string::npos);
 }
 
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
@@ -635,20 +691,17 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
 
 TEST_CASE(
-    "Per-worker key cache eats canonical KeyIndex::GetOrInsert calls on the hot path", "[json_parser][per_worker_cache]"
+    "Per-worker key cache holds canonical KeyIndex::GetOrInsert calls to threads x keys",
+    "[json_parser][per_worker_cache]"
 )
 {
-    // With `useThreadLocalKeyCache = true`, a 100-line stream that uses only
-    // 5 fixed keys must leave `KeyIndex::LoadGetOrInsertCount() <=
-    // effectiveThreads × 5`: the canonical lookup fires exactly once per
-    // (worker × key) pair on first sight, then every subsequent field key
-    // for that worker hits the per-worker `tsl::robin_map` cache instead.
-    //
-    // The complementary check (cache off → call count rises toward `lines ×
-    // keys` = 500) keeps the instrumentation honest: if the macro silently
-    // no-ops or the counter never increments, both halves of the test
-    // would pass trivially. A hard floor of 100 on the cache-off run
-    // catches that failure mode.
+    // A 100-line stream that uses only 5 fixed keys must leave
+    // `KeyIndex::LoadGetOrInsertCount() <= effectiveThreads × 5`: the
+    // canonical lookup fires exactly once per (worker × key) pair on first
+    // sight, then every subsequent field key for that worker hits the
+    // per-worker `tsl::robin_map` cache instead. A regression that silently
+    // disabled the cache would push the count toward `lines × keys` = 500,
+    // tripping this bound by an order of magnitude.
     using namespace loglib;
 
     constexpr size_t kLineCount = 100;
@@ -675,7 +728,6 @@ TEST_CASE(
     ParserOptions opts;
     internal::AdvancedParserOptions advanced;
     advanced.threads = kThreads;
-    advanced.useThreadLocalKeyCache = true;
 
     KeyIndex::ResetInstrumentationCounters();
     const auto cachedResult = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
@@ -692,27 +744,6 @@ TEST_CASE(
 
     // Sanity: at least the keys themselves were registered exactly once per unique key.
     CHECK(cachedResult.data.SortedKeys().size() == 5);
-
-    // Now flip the cache off and re-parse. Every field-key sighting must now traverse the
-    // canonical KeyIndex, so the counter should sit close to lines × keys (500 on this fixture).
-    internal::AdvancedParserOptions noCacheAdvanced = advanced;
-    noCacheAdvanced.useThreadLocalKeyCache = false;
-
-    KeyIndex::ResetInstrumentationCounters();
-    const auto noCacheResult = ParseWithSink(parser, testFile.GetFilePath(), opts, noCacheAdvanced);
-    const std::size_t noCacheCalls = KeyIndex::LoadGetOrInsertCount();
-
-    REQUIRE(noCacheResult.errors.empty());
-    REQUIRE(noCacheResult.data.Lines().size() == kLineCount);
-
-    INFO("cache-off run noCacheCalls=" << noCacheCalls << " expected close to lines*keys=" << (kLineCount * 5));
-    // Floor at 100 is comfortably above the cache-on bound (kThreads × 5 = 20) so the check
-    // catches a silently-stuck instrumentation counter as well as a regressed cache-off path.
-    CHECK(noCacheCalls >= 100);
-    // Hard upper bound: there is one GetOrInsert per (line × key) pair plus the worst-case
-    // dedup pass, which is bounded by the same number again. 2 × lines × keys is the loosest
-    // honest cap that still flags an unexpected explosion.
-    CHECK(noCacheCalls <= 2 * kLineCount * 5);
 }
 
 #endif // LOGLIB_KEY_INDEX_INSTRUMENTATION
@@ -720,10 +751,11 @@ TEST_CASE(
 namespace
 {
 
-// Local replicas of the transparent-hash adapters from `library/src/json_parser.cpp` so the
-// move-survival test can stand up the exact `tsl::robin_map<std::string, KeyId, ..., ...>`
-// instantiation that backs `loglib::detail::PerWorkerKeyCache`. The wrapper struct in
-// `json_parser.cpp` adds nothing beyond the map field, so its compiler-generated move
+// Local replicas of the transparent-hash adapters from
+// `loglib/internal/transparent_string_hash.hpp` so the move-survival test can stand up the
+// exact `tsl::robin_map<std::string, KeyId, ..., ...>` instantiation that backs
+// `loglib::detail::PerWorkerKeyCache` (defined in `loglib/internal/parser_pipeline.hpp`).
+// The wrapper struct adds nothing beyond the map field, so its compiler-generated move
 // constructor delegates straight through to the map's move constructor — exactly what we
 // exercise here.
 struct TestTransparentStringHash

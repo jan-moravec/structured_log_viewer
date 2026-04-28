@@ -2,6 +2,7 @@
 
 #include "loglib/log_processing.hpp"
 
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -59,6 +60,12 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
+    // Snapshot the row count *before* appending so we can later restrict the
+    // per-batch back-fill of post-snapshot time columns to the rows we just
+    // added. (For first-time post-snapshot columns we still back-fill the
+    // entire vector — the older rows pre-date the column.)
+    const size_t oldLineCount = mData.Lines().size();
+
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
     {
         mData.AppendBatch(std::move(batch.lines), std::move(batch.localLineOffsets));
@@ -69,7 +76,18 @@ void LogTable::AppendBatch(StreamedBatch batch)
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    // Back-fill time columns first seen after the streaming snapshot.
+    // Back-fill time columns that aren't covered by Stage B's inline
+    // promotion. Two cases:
+    //   1. First observation of a post-snapshot time column (i.e. a column
+    //      auto-promoted by `LogConfigurationManager::AppendKeys` mid-stream
+    //      or otherwise added after `BeginStreaming`) — back-fill *all* rows
+    //      and record `mLastBackfillRange` so the model's `dataChanged`
+    //      covers the older rows that already existed.
+    //   2. Subsequent batches for an already-known post-snapshot column —
+    //      back-fill only the freshly appended rows. We do not record
+    //      `mLastBackfillRange` here because the upcoming
+    //      `beginInsertRows`/`endInsertRows` in `LogModel::AppendBatch`
+    //      already invalidates those rows for the view.
     const auto &columns = mConfiguration.Configuration().columns;
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -81,38 +99,60 @@ void LogTable::AppendBatch(StreamedBatch batch)
             continue;
         }
 
-        bool needsBackfill = false;
+        bool stageBHandled = false;
+        bool firstObservation = false;
+        bool needsSliceBackfill = false;
         std::vector<KeyId> columnKeyIds;
         columnKeyIds.reserve(column.keys.size());
         for (const std::string &key : column.keys)
         {
             const KeyId id = mData.Keys().Find(key);
             columnKeyIds.push_back(id);
-            if (id != kInvalidKeyId && !mStageBSnapshotTimeKeys.contains(id))
+            if (id == kInvalidKeyId)
             {
-                needsBackfill = true;
+                continue;
+            }
+            if (mStageBSnapshotTimeKeys.contains(id))
+            {
+                stageBHandled = true;
+                continue;
+            }
+            if (mPostSnapshotTimeKeys.contains(id))
+            {
+                needsSliceBackfill = true;
+            }
+            else
+            {
+                firstObservation = true;
             }
         }
-        if (!needsBackfill)
+
+        if (stageBHandled)
         {
             continue;
         }
 
-        BackfillTimestampColumn(column, mData.Lines());
-
-        for (const KeyId id : columnKeyIds)
+        if (firstObservation)
         {
-            if (id != kInvalidKeyId)
+            BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()));
+            for (const KeyId id : columnKeyIds)
             {
-                mStageBSnapshotTimeKeys.insert(id);
+                if (id != kInvalidKeyId)
+                {
+                    mPostSnapshotTimeKeys.insert(id);
+                }
             }
+            if (!firstBackfilled.has_value())
+            {
+                firstBackfilled = columnIndex;
+            }
+            lastBackfilled = columnIndex;
         }
-
-        if (!firstBackfilled.has_value())
+        else if (needsSliceBackfill && oldLineCount < mData.Lines().size())
         {
-            firstBackfilled = columnIndex;
+            std::span<LogLine> slice(mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount);
+            BackfillTimestampColumn(column, slice);
         }
-        lastBackfilled = columnIndex;
     }
 
     if (firstBackfilled.has_value())
@@ -276,6 +316,10 @@ void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKey
 void LogTable::RefreshSnapshotTimeKeys()
 {
     mStageBSnapshotTimeKeys.clear();
+    // Any prior post-snapshot promotions belonged to the previous parse;
+    // reset them in lockstep with the snapshot set so a fresh parse starts
+    // from a clean slate.
+    mPostSnapshotTimeKeys.clear();
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
     {

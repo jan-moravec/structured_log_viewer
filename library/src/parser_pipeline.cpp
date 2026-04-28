@@ -1,4 +1,4 @@
-#include "parser_pipeline.hpp"
+#include "loglib/internal/parser_pipeline.hpp"
 
 #include <algorithm>
 #include <thread>
@@ -17,7 +17,7 @@ ResolvedPipelineSettings ResolvePipelineSettings(const internal::AdvancedParserO
     {
         out.effectiveThreads = 1;
     }
-    out.ntokens = advanced.ntokens != 0 ? advanced.ntokens : static_cast<size_t>(2 * out.effectiveThreads);
+    out.ntokens = static_cast<size_t>(2 * out.effectiveThreads);
     return out;
 }
 

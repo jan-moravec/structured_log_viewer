@@ -1,8 +1,7 @@
 #include "loglib/json_parser.hpp"
 
-#include "parser_pipeline.hpp"
-
 #include "loglib/internal/parser_options.hpp"
+#include "loglib/internal/parser_pipeline.hpp"
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
@@ -177,8 +176,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
     KeyIndex &keys,
     ParseCache &cache,
     bool sourceIsStable,
-    detail::PerWorkerKeyCache *keyCache,
-    bool useKeyCache
+    detail::PerWorkerKeyCache *keyCache
 )
 {
     std::vector<std::pair<KeyId, LogValue>> result;
@@ -192,8 +190,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
             continue;
         }
 
-        const KeyId keyId =
-            fk.isView ? detail::InternKeyVia(fk.view, keys, keyCache, useKeyCache) : keys.GetOrInsert(fk.owned);
+        const KeyId keyId = fk.isView ? detail::InternKeyVia(fk.view, keys, keyCache) : keys.GetOrInsert(fk.owned);
         EnsureCacheCapacity(cache, keyId);
 
         auto value = field.value();
@@ -443,7 +440,6 @@ void DecodeJsonBatch(
     KeyIndex &keys,
     LogFile &logFile,
     std::span<const detail::TimeColumnSpec> timeColumns,
-    bool useThreadLocalKeyCache,
     detail::ParsedPipelineBatch &parsed
 )
 {
@@ -511,7 +507,7 @@ void DecodeJsonBatch(
             if (result.error())
             {
                 parsed.errors.push_back(
-                    fmt::format("Error on line {}: {}", relativeLineNumber, simdjson::error_message(result.error()))
+                    detail::ParsedLineError{relativeLineNumber, std::string(simdjson::error_message(result.error()))}
                 );
                 relativeLineNumber++;
                 continue;
@@ -520,15 +516,13 @@ void DecodeJsonBatch(
             auto object = result.get_object();
             if (object.error())
             {
-                parsed.errors.push_back(fmt::format("Error on line {}: Not a JSON object.", relativeLineNumber));
+                parsed.errors.push_back(detail::ParsedLineError{relativeLineNumber, "Not a JSON object."});
                 relativeLineNumber++;
                 continue;
             }
 
             auto objectValue = object.value();
-            auto values = ParseJsonLine(
-                objectValue, keys, worker.user.cache, sourceIsStable, &worker.keyCache, useThreadLocalKeyCache
-            );
+            auto values = ParseJsonLine(objectValue, keys, worker.user.cache, sourceIsStable, &worker.keyCache);
 
             LogFileReference fileRef(logFile, 0);
             LogLine logLine(std::move(values), keys, std::move(fileRef));
@@ -546,7 +540,7 @@ void DecodeJsonBatch(
         }
         catch (const std::exception &e)
         {
-            parsed.errors.push_back(fmt::format("Error on line {}: {}", relativeLineNumber, e.what()));
+            parsed.errors.push_back(detail::ParsedLineError{relativeLineNumber, std::string(e.what())});
         }
 
         relativeLineNumber++;
@@ -629,7 +623,6 @@ void JsonParser::ParseStreaming(
 {
     const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
                                                           : internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
-    const bool useThreadLocalKeyCache = advanced.useThreadLocalKeyCache;
 
     LogFile *filePtr = &file;
     const char *fileBegin = file.Data();
@@ -663,13 +656,13 @@ void JsonParser::ParseStreaming(
         return true;
     };
 
-    auto stageB = [filePtr, useThreadLocalKeyCache](
+    auto stageB = [filePtr](
                       JsonByteRange token,
                       detail::WorkerScratch<JsonWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const detail::TimeColumnSpec> timeColumns,
                       detail::ParsedPipelineBatch &parsed
-                  ) { DecodeJsonBatch(token, worker, keys, *filePtr, timeColumns, useThreadLocalKeyCache, parsed); };
+                  ) { DecodeJsonBatch(token, worker, keys, *filePtr, timeColumns, parsed); };
 
     detail::RunParserPipeline<JsonByteRange, JsonWorkerState>(file, sink, options, advanced, stageA, stageB);
 }

@@ -75,9 +75,10 @@ const date::time_zone *CurrentZone();
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 
 /// Promotes one configured `Type::time` column over @p lines in place.
-/// Caller must ensure `column.type == Type::time`. Returns per-line failure
-/// messages.
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::vector<LogLine> &lines);
+/// Caller must ensure `column.type == Type::time`. Pass a sub-span to
+/// restrict the back-fill to a slice of a larger vector (e.g. only the rows
+/// just appended in a streaming batch). Returns per-line failure messages.
+std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines);
 
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);
 

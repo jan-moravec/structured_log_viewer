@@ -505,8 +505,15 @@ TEST_CASE(
     const LogValue thirdRowTimestamp = table.GetValue(2, 1);
     CHECK(std::holds_alternative<TimeStamp>(thirdRowTimestamp));
 
-    // A subsequent steady-state batch with no new keys must NOT re-back-fill — the time
-    // column's KeyId is now in the snapshot.
+    // A subsequent steady-state batch with no new keys must NOT re-back-fill *existing*
+    // rows — the column has already been bridged. But the running parser's Stage B was
+    // never told about the post-snapshot column (its `LogConfiguration` snapshot pre-dates
+    // it), so the new row's timestamp is still a raw string when it arrives. AppendBatch
+    // must therefore back-fill the slice of just-appended rows; otherwise rows past the
+    // first batch keep raw string timestamps. Because the slice is exactly the rows about
+    // to fire `beginInsertRows` in `LogModel::AppendBatch`, we deliberately do *not* set
+    // `mLastBackfillRange` (which would emit a redundant `dataChanged` over rows that are
+    // simultaneously being inserted into the view).
     table.AppendBatch(BuildStreamedBatch(
         keys,
         *filePtr,
@@ -515,6 +522,24 @@ TEST_CASE(
         4
     ));
     CHECK(!table.LastBackfillRange().has_value());
+    const LogValue fourthRowTimestamp = table.GetValue(3, 1);
+    CHECK(std::holds_alternative<TimeStamp>(fourthRowTimestamp));
+
+    // A second post-snapshot batch with multiple new rows confirms the slice back-fill
+    // keeps running on every batch (not just the immediate batch after first observation).
+    table.AppendBatch(BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"msg", std::string("fifth")}, {"timestamp", std::string("2024-01-15T12:34:58")}},
+            {{"msg", std::string("sixth")}, {"timestamp", std::string("2024-01-15T12:34:59")}},
+        },
+        keys.Size(),
+        5
+    ));
+    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(std::holds_alternative<TimeStamp>(table.GetValue(4, 1)));
+    CHECK(std::holds_alternative<TimeStamp>(table.GetValue(5, 1)));
 }
 
 // `LogTable::AppendBatch` no longer calls `RefreshColumnKeyIds` on every

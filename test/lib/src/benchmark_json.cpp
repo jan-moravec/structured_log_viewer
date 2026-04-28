@@ -70,29 +70,6 @@ void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, size_
     );
 }
 
-/// Emit one per-stage CPU breakdown for a streaming parse. Stage B is the
-/// parallel decode stage, so its utilisation is `stageBCpuTotal /
-/// (effectiveThreads * wallClockTotal)`.
-void ReportStageTimings(const char *label, const StageTimings &t)
-{
-    using ms = std::chrono::duration<double, std::milli>;
-    using s = std::chrono::duration<double>;
-    const double wallClockS = s(t.wallClockTotal).count();
-    const double stageAMs = ms(t.stageACpuTotal).count();
-    const double stageBS = s(t.stageBCpuTotal).count();
-    const double stageCMs = ms(t.stageCCpuTotal).count();
-    const double sinkMs = ms(t.sinkTotal).count();
-    const double denom = static_cast<double>(t.effectiveThreads) * wallClockS;
-    const double utilization = denom == 0.0 ? 0.0 : (stageBS / denom) * 100.0;
-    WARN(
-        label << " — Wall-clock: " << wallClockS << " s | Stage A CPU: " << stageAMs << " ms | Stage B CPU: " << stageBS
-              << " s (across " << t.effectiveThreads << " workers, " << utilization << " % utilisation = " << stageBS
-              << " / (" << t.effectiveThreads << " * " << wallClockS << ")) | Stage C CPU: " << stageCMs
-              << " ms | Sink: " << sinkMs << " ms | batches A/B/C=" << t.stageABatches << "/" << t.stageBBatches << "/"
-              << t.stageCBatches
-    );
-}
-
 struct ThroughputInputs
 {
     std::size_t bytes = 0;
@@ -241,23 +218,17 @@ struct StreamingRunResult
     size_t appendBatches = 0;
     size_t appendLines = 0;
     size_t rowCount = 0;
-    StageTimings timings;
 };
 
 StreamingRunResult RunStreamingFlow(
     const JsonParser &parser,
     const std::filesystem::path &configPath,
     const std::filesystem::path &logPath,
-    std::shared_ptr<const LogConfiguration> configuration,
-    bool captureTimings
+    std::shared_ptr<const LogConfiguration> configuration
 )
 {
     StreamingRunResult result;
     internal::AdvancedParserOptions advanced;
-    if (captureTimings)
-    {
-        advanced.timings = &result.timings;
-    }
 
     const auto start = std::chrono::steady_clock::now();
     {
@@ -285,9 +256,9 @@ StreamingRunResult RunStreamingFlow(
     return result;
 }
 
-/// Drive one streaming benchmark fixture: an untimed warm-up that also
-/// produces the per-stage CPU breakdown, then `samples` timed end-to-end
-/// runs through `RunTimedSamples`'s throughput overload.
+/// Drive one streaming benchmark fixture: an untimed warm-up that emits the
+/// per-batch `LogTable::AppendBatch` wall-time line, then `samples` timed
+/// end-to-end runs through `RunTimedSamples`'s throughput overload.
 void RunStreamingBenchmark(
     const char *label,
     const JsonParser &parser,
@@ -300,10 +271,9 @@ void RunStreamingBenchmark(
 )
 {
     {
-        StreamingRunResult warmup = RunStreamingFlow(parser, configPath, logPath, configuration, true);
+        StreamingRunResult warmup = RunStreamingFlow(parser, configPath, logPath, configuration);
         REQUIRE(warmup.rowCount == expectedRows);
         ReportThroughput((std::string(label) + " warm-up").c_str(), warmup.elapsed, bytes, expectedRows);
-        ReportStageTimings((std::string(label) + " warm-up").c_str(), warmup.timings);
 
         const double appendMs = std::chrono::duration<double, std::milli>(warmup.appendTotal).count();
         const double per100k =
@@ -315,7 +285,7 @@ void RunStreamingBenchmark(
     }
 
     RunTimedSamples(label, samples, {bytes, expectedRows}, [&]() {
-        StreamingRunResult run = RunStreamingFlow(parser, configPath, logPath, configuration, false);
+        StreamingRunResult run = RunStreamingFlow(parser, configPath, logPath, configuration);
         REQUIRE(run.rowCount == expectedRows);
     });
 }

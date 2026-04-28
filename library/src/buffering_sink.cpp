@@ -1,4 +1,4 @@
-#include "buffering_sink.hpp"
+#include "loglib/internal/buffering_sink.hpp"
 
 #include <iterator>
 #include <utility>

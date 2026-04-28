@@ -1,6 +1,6 @@
 #include "loglib/log_processing.hpp"
 
-#include "timestamp_promotion.hpp"
+#include "loglib/internal/timestamp_promotion.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
@@ -212,7 +212,7 @@ void Initialize(const std::filesystem::path &tzdata)
     static_cast<void>(date::current_zone());
 }
 
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::vector<LogLine> &lines)
+std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
 {
     std::vector<std::string> errors;
     if (lines.empty())

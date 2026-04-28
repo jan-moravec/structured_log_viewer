@@ -1,6 +1,6 @@
 #include "loglib/key_index.hpp"
 
-#include "transparent_string_hash.hpp"
+#include "loglib/internal/transparent_string_hash.hpp"
 
 #include <tsl/robin_map.h>
 
@@ -41,8 +41,11 @@ struct KeyIndex::Impl
     /// High-water KeyId, stored separately so `Size()` is lock-free.
     std::atomic<size_t> size{0};
 
-    /// Serialises `reverse.emplace_back` against `KeyOf` readers.
-    mutable std::mutex reverseMutex;
+    /// Serialises `reverse.emplace_back` against `KeyOf` / `SortedKeys`
+    /// readers. Element addresses are stable, but `deque::operator[]`
+    /// reads the internal chunk-pointer map which `emplace_back` can
+    /// reallocate, so concurrent access is data-race UB.
+    mutable std::shared_mutex reverseMutex;
 
     static size_t ShardIndex(std::string_view key) noexcept
     {
@@ -109,8 +112,10 @@ KeyId KeyIndex::Find(std::string_view key) const
 
 std::string_view KeyIndex::KeyOf(KeyId id) const
 {
-    // Append-only, pointer-stable deque: lock-free read after the KeyId has
-    // been observed (release-store on `size` in GetOrInsert).
+    // Shared lock excludes `GetOrInsert`'s `emplace_back` from racing with
+    // `operator[]`. The returned view remains valid after release because
+    // deque element addresses are stable across inserts.
+    std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
     return mImpl->reverse[id];
 }
 
@@ -121,7 +126,7 @@ size_t KeyIndex::Size() const
 
 std::vector<std::string> KeyIndex::SortedKeys() const
 {
-    std::scoped_lock lock(mImpl->reverseMutex);
+    std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
     std::vector<std::string> result(mImpl->reverse.begin(), mImpl->reverse.end());
     std::sort(result.begin(), result.end());
     return result;
