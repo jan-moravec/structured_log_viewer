@@ -53,7 +53,7 @@ TEST_CASE("Merge() should correctly combine files, lines and keys from two LogDa
     std::unique_ptr<LogFile> logFile2 = testLogFile2.CreateLogFile();
     KeyIndex keys2;
     // Pre-seed an extra (duplicate) key so we cover the remap-of-already-known-key path.
-    keys2.GetOrInsert("key1");
+    static_cast<void>(keys2.GetOrInsert("key1"));
     std::vector<LogLine> lines2;
     lines2.emplace_back(LogMap{{"key2", int64_t{42}}}, keys2, LogFileReference(*logFile2, 0));
 

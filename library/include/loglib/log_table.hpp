@@ -61,6 +61,12 @@ public:
     /// `AppendBatch` back-filled, or `std::nullopt` if none. Reset on entry.
     [[nodiscard]] const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const noexcept;
 
+    /// Reorders the column at @p srcIndex to @p destIndex in the underlying
+    /// configuration and keeps the column-to-KeyId cache aligned. Callers
+    /// must wrap with the corresponding Qt `beginMoveColumns` /
+    /// `endMoveColumns` notifications so attached views observe the move.
+    void MoveColumn(size_t srcIndex, size_t destIndex);
+
     /// Pre-allocation hint forwarded to the installed streaming `LogFile`; no-op otherwise.
     void ReserveLineOffsets(size_t count);
 

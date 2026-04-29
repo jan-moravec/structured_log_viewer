@@ -137,6 +137,25 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
     }
 }
 
+void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
+{
+    if (srcIndex == destIndex || srcIndex >= mConfiguration.columns.size() ||
+        destIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    auto begin = mConfiguration.columns.begin();
+    if (srcIndex > destIndex)
+    {
+        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+    }
+    else
+    {
+        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+    }
+    // The cached key set is unchanged by a pure reorder.
+}
+
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
 {
     if (newKeys.empty())

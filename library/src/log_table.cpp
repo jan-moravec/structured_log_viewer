@@ -183,6 +183,24 @@ const std::optional<std::pair<size_t, size_t>> &LogTable::LastBackfillRange() co
     return mLastBackfillRange;
 }
 
+void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
+{
+    if (srcIndex == destIndex || srcIndex >= mColumnKeyIds.size() || destIndex >= mColumnKeyIds.size())
+    {
+        return;
+    }
+    mConfiguration.MoveColumn(srcIndex, destIndex);
+    auto begin = mColumnKeyIds.begin();
+    if (srcIndex > destIndex)
+    {
+        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+    }
+    else
+    {
+        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+    }
+}
+
 void LogTable::ReserveLineOffsets(size_t count)
 {
     if (count == 0 || mData.Files().empty())

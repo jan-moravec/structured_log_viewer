@@ -3,6 +3,7 @@
 #include "qt_streaming_log_sink.hpp"
 
 #include <loglib/json_parser.hpp>
+#include <loglib/log_configuration.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
@@ -15,6 +16,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
@@ -230,6 +232,39 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             index(newRowCount - 1, lastColumn),
             {Qt::DisplayRole, static_cast<int>(LogModelItemDataRole::SortRole)}
         );
+    }
+
+    // Match the synchronous-parse path's `LogConfigurationManager::Update`
+    // semantics: every freshly-appended `Type::time` column is bubbled to
+    // position 0, so the latest-discovered timestamp ends up first. The
+    // append-only inserts above keep Qt's `beginInsertColumns` contract intact;
+    // the reorder is a separate Qt-aware step using `beginMoveColumns`.
+    if (columnsGrew)
+    {
+        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        std::vector<int> newTimestampColumnIndices;
+        for (int columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
+        {
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::time)
+            {
+                newTimestampColumnIndices.push_back(columnIndex);
+            }
+        }
+        // Process low-to-high: each move targets position 0, and because every
+        // source index is > 0 the still-unprocessed indices (which are higher)
+        // do not shift.
+        for (int srcIndex : newTimestampColumnIndices)
+        {
+            if (srcIndex == 0)
+            {
+                continue;
+            }
+            if (beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), 0))
+            {
+                mLogTable.MoveColumn(static_cast<size_t>(srcIndex), 0);
+                endMoveColumns();
+            }
+        }
     }
 
     mErrorCount += capturedErrorCount;

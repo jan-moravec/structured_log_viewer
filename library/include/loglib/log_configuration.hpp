@@ -93,6 +93,13 @@ public:
     /// Used by `LogTable::PreviewAppend` for Qt's begin-before-mutate contract.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
+    /// Moves the column at @p srcIndex to @p destIndex, shifting the
+    /// intermediate columns by one slot. Used by the streaming path to
+    /// promote freshly-discovered timestamp columns to the front (matching
+    /// the `Update` synchronous-parse behaviour) once Qt has been informed
+    /// via `beginMoveColumns`. Indices must be in `[0, columns.size())`.
+    void MoveColumn(size_t srcIndex, size_t destIndex);
+
     const LogConfiguration &Configuration() const;
 
 private:

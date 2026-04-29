@@ -259,26 +259,79 @@ void MainWindow::dropEvent(QDropEvent *event)
 {
     const QMimeData *mimeData = event->mimeData();
 
-    if (mimeData->hasUrls())
+    if (!mimeData->hasUrls())
     {
-        const QList<QUrl> urlList = mimeData->urls();
-        if (urlList.isEmpty())
+        return;
+    }
+
+    const QList<QUrl> urlList = mimeData->urls();
+    if (urlList.isEmpty())
+    {
+        return;
+    }
+
+    mModel->Clear();
+    ClearAllFilters();
+
+    std::vector<std::string> errors;
+
+    // Mirror `OpenFilesWithParser`: stream a single dropped JSON log so the
+    // GUI stays responsive and shows progress instead of freezing on the
+    // synchronous `LogFactory::Parse`. Configuration files and multi-file
+    // drops keep the existing synchronous path.
+    if (urlList.size() == 1)
+    {
+        const QString singleFile = urlList.front().toLocalFile();
+
+        bool isConfiguration = true;
+        try
         {
-            return;
+            mModel->ConfigurationManager().Load(singleFile.toStdString());
+        }
+        catch (...)
+        {
+            isConfiguration = false;
         }
 
-        mModel->Clear();
-        ClearAllFilters();
+        if (isConfiguration)
+        {
+            UpdateUi();
+        }
+        else
+        {
+            const loglib::JsonParser jsonParser;
+            bool streamed = false;
+            try
+            {
+                if (jsonParser.IsValid(singleFile.toStdString()))
+                {
+                    streamed = OpenJsonStreaming(singleFile, errors);
+                }
+            }
+            catch (...)
+            {
+                streamed = false;
+            }
 
-        std::vector<std::string> errors;
+            if (!streamed)
+            {
+                OpenFileInternal(singleFile, errors);
+            }
+        }
+    }
+    else
+    {
         for (const QUrl &url : urlList)
         {
             OpenFileInternal(url.toLocalFile(), errors);
         }
-        ShowParseErrors("Error Opening File", errors);
-
-        event->acceptProposedAction();
     }
+
+    // Streaming surfaces its own error summary from `streamingFinished`;
+    // anything queued in `errors` here is from the synchronous fallback.
+    ShowParseErrors("Error Opening File", errors);
+
+    event->acceptProposedAction();
 }
 
 void MainWindow::UpdateUi()

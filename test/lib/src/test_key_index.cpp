@@ -83,7 +83,7 @@ TEST_CASE("KeyIndex KeyOf returns string_views that are stable across further in
     // Force the underlying storage to grow well past the first entry.
     for (int i = 0; i < 1000; ++i)
     {
-        index.GetOrInsert("k" + std::to_string(i));
+        static_cast<void>(index.GetOrInsert("k" + std::to_string(i)));
     }
 
     const std::string_view firstViewAgain = index.KeyOf(firstId);
@@ -95,11 +95,11 @@ TEST_CASE("KeyIndex KeyOf returns string_views that are stable across further in
 TEST_CASE("KeyIndex SortedKeys returns a sorted, deduplicated snapshot", "[key_index]")
 {
     KeyIndex index;
-    index.GetOrInsert("delta");
-    index.GetOrInsert("alpha");
-    index.GetOrInsert("charlie");
-    index.GetOrInsert("alpha"); // duplicate insert
-    index.GetOrInsert("bravo");
+    static_cast<void>(index.GetOrInsert("delta"));
+    static_cast<void>(index.GetOrInsert("alpha"));
+    static_cast<void>(index.GetOrInsert("charlie"));
+    static_cast<void>(index.GetOrInsert("alpha")); // duplicate insert
+    static_cast<void>(index.GetOrInsert("bravo"));
 
     const std::vector<std::string> sorted = index.SortedKeys();
     REQUIRE(sorted.size() == 4);
@@ -111,12 +111,12 @@ TEST_CASE("KeyIndex Size matches insertion count", "[key_index]")
     KeyIndex index;
     for (int i = 0; i < 10; ++i)
     {
-        index.GetOrInsert("k" + std::to_string(i));
+        static_cast<void>(index.GetOrInsert("k" + std::to_string(i)));
         CHECK(index.Size() == static_cast<size_t>(i + 1));
     }
 
     // Re-inserts do not bump the count.
-    index.GetOrInsert("k0");
+    static_cast<void>(index.GetOrInsert("k0"));
     CHECK(index.Size() == 10);
 }
 
