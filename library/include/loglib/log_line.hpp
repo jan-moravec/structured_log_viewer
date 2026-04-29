@@ -20,16 +20,12 @@ namespace loglib
 /// Microsecond-precision timestamp.
 using TimeStamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>;
 
-/// One field's value. `string_view` lets the parser hand out values pointing
-/// directly into the memory-mapped log file (the file outlives every
-/// `LogLine` that references it). `string` covers the rare cases where a
-/// value cannot live in the mmap (e.g. JSON-escape-decoded strings, owned
-/// values from synchronous test helpers).
+/// One field's value. `string_view` aliases the memory-mapped log file
+/// (which outlives every referencing `LogLine`); `string` covers values
+/// that cannot live in the mmap (e.g. JSON-escape-decoded strings).
 ///
-/// The variant alternatives' indices appear in a few persistence paths
-/// (configuration JSON, on-disk caches), so adding new alternatives is
-/// safest at the end. None of the index numbers are part of the public API,
-/// however; consumers should switch on the alternative type, not the index.
+/// Adding new alternatives is safest at the end; consumers should switch
+/// on the alternative type, not the index.
 using LogValue =
     std::variant<std::string_view, std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
 

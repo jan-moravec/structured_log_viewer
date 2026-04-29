@@ -173,15 +173,7 @@ LogFileReference LogFile::CreateReference(size_t position)
 void LogFile::AppendLineOffsets(const std::vector<uint64_t> &offsets)
 {
 #ifndef NDEBUG
-    // Line-offset arrays must stay strictly monotonic — every consumer
-    // (`GetLine`, `CreateReference`, the streaming pipeline's per-batch
-    // line-number arithmetic) reads adjacent slots as `[offsets[i],
-    // offsets[i+1])` byte ranges, and a duplicate or out-of-order entry
-    // would produce a zero-length or negative-length slice that aliases
-    // the wrong line. The invariant is upheld by both `LogFile`'s own
-    // mmap-walk constructor and the parser pipeline's Stage A line
-    // boundaries, so a violation here is a programming error in a future
-    // streaming source rather than user data — assert it in debug builds.
+    // Strictly monotonic; consumers read `[offsets[i], offsets[i+1])` slices.
     if (!offsets.empty())
     {
         if (!mLineOffsets.empty())

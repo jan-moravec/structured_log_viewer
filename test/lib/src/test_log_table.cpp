@@ -126,13 +126,8 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
 
 TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]")
 {
-    // Build a `LogTable` with a non-trivial configuration (mirroring the
-    // path `LogModel::LoadConfiguration` puts user-loaded settings on),
-    // then `Reset()` it and assert the configuration columns survive.
-    // Regression for #2: `LogModel::Clear()` used to do
-    // `mLogTable = LogTable{}` which would silently revert to an empty
-    // configuration, so a `LoadConfiguration → File → Open` sequence lost
-    // the user's column layout.
+    // Regression: `Reset()` clears data but must keep the configuration
+    // (otherwise `LoadConfiguration → File → Open` would lose column layout).
     TestLogFile testFile;
     testFile.Write("line1\nline2");
     std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
@@ -353,7 +348,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
         }
     };
 
-    // Step 1: introduce {alpha, beta} via AppendBatch.
+    // {alpha, beta}.
     table.AppendBatch(BuildStreamedBatch(
         keys,
         *filePtr,
@@ -366,8 +361,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     REQUIRE(table.ColumnCount() == 2);
     pinAndCheck(table);
 
-    // Step 2: AppendBatch with one new key (gamma). It must land at index 2,
-    // alpha and beta keep their indices.
+    // +gamma at index 2; alpha/beta stay put.
     table.AppendBatch(BuildStreamedBatch(
         keys,
         *filePtr,
@@ -381,8 +375,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     CHECK(table.GetHeader(2) == "gamma");
     pinAndCheck(table);
 
-    // Step 3: a steady-state batch with NO new keys must not change the
-    // column count or any header position.
+    // No-new-keys batch leaves column count and positions unchanged.
     table.AppendBatch(BuildStreamedBatch(
         keys,
         *filePtr,
@@ -395,11 +388,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     REQUIRE(table.ColumnCount() == 3);
     pinAndCheck(table);
 
-    // Step 4: introduce two new keys at once via AppendBatch (delta, epsilon).
-    // They must appear at the end in the order Stage B observed them, never
-    // anywhere else in the existing range. Pre-existing alpha/beta/gamma keep
-    // their positions so any consumer that has cached column indices does not
-    // need to remap them.
+    // Two new keys land at the end in observation order; existing positions stable.
     table.AppendBatch(BuildStreamedBatch(
         keys,
         *filePtr,
@@ -415,14 +404,9 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     pinAndCheck(table);
 }
 
-// Same append-only contract, but driven exclusively through the legacy
-// LogTable::Update() path. Update() is also used outside streaming (e.g. when
-// MainWindow opens additional files into an already-populated LogTable), so it
-// has to honour the same invariant — already-known column indices stable, new
-// columns at the end. Note that LogConfigurationManager::Update DOES still
-// apply the timestamp auto-promotion swap for the *first* timestamp column
-// it sees on a freshly-built configuration; this test deliberately avoids
-// timestamp keys so that legacy reorder path stays out of scope.
+// Same append-only contract via the legacy `LogTable::Update()` path
+// (used when opening additional files into an already-populated LogTable).
+// Avoids timestamp keys so the auto-promotion reorder stays out of scope.
 TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table][append_only]")
 {
     TestLogFile fileA("log_file_initial.json");
@@ -593,11 +577,9 @@ TEST_CASE(
 }
 
 // Mirrors the JSON parser flow: the configuration handed to the parser
-// already declares a Type::time column, so `BuildTimeColumnSpecs` registers
-// the key up front and Stage B promotes timestamps inline. AppendBatch must
-// recognise the column as Stage-B-handled (via `mStageBSnapshotTimeKeys`)
-// and skip `BackfillTimestampColumn`; otherwise it walks every batch's lines
-// for nothing and allocates a discarded `fmt::format` error string per line.
+// AppendBatch must recognise Stage-B-handled time columns (via
+// `mStageBSnapshotTimeKeys`) and skip `BackfillTimestampColumn`; otherwise
+// it walks every batch and allocates discarded `fmt::format` error strings.
 TEST_CASE(
     "LogTable::AppendBatch -- Stage B inline promotion of configured time columns is not re-back-filled",
     "[log_table][append_batch][snapshot_time_keys]"
@@ -688,12 +670,8 @@ TEST_CASE(
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(2, 0)));
 }
 
-// `LogTable::AppendBatch` no longer calls `RefreshColumnKeyIds` on every
-// invocation — it gates the call on `!batch.newKeys.empty()` and, when keys
-// *do* arrive, restricts the patch to columns whose `keys` overlap with
-// `batch.newKeys` via `RefreshColumnKeyIdsForKeys`. For pure steady-state
-// batches that means `findCount == 0` (saving ~99 000 `Find` calls on a
-// 100-column / 1 000-batch parse with no new keys after batch 1).
+// AppendBatch gates `RefreshColumnKeyIds` on `!batch.newKeys.empty()`;
+// steady-state batches must not call `Find` at all.
 TEST_CASE(
     "LogTable::AppendBatch -- RefreshColumnKeyIds skipped on steady-state batches", "[log_table][refresh_no_alloc]"
 )
@@ -706,11 +684,8 @@ TEST_CASE(
     auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
     LogFile *filePtr = logFile.get();
 
-    // Build a single column whose `keys` list contains kKeyCount entries.
-    // Pre-task-9.0 RefreshColumnKeyIds called `Find` once per (column, key)
-    // pair on every AppendBatch invocation; post-fix, an empty `newKeys`
-    // means RefreshColumnKeyIdsForKeys returns immediately without touching
-    // the KeyIndex at all.
+    // Single column with kKeyCount keys; an empty `newKeys` must short-circuit
+    // before any `Find` call.
     LogConfiguration cfg;
     LogConfiguration::Column wide;
     wide.header = "Wide";

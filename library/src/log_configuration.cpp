@@ -144,10 +144,7 @@ size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::strin
         return 0;
     }
     EnsureKeyCacheBuilt();
-    // Mirror `AppendKeys`'s skip predicate (`IsKeyInAnyColumnCached`) plus
-    // duplicates within @p newKeys itself: the streaming harness only emits
-    // freshly-seen keys per batch, but a defensive de-dupe here keeps this
-    // helper safe to call on any input. Allocation-free for the common case.
+    // Mirror `AppendKeys`'s skip predicate plus a defensive in-input de-dupe.
     std::unordered_set<std::string_view> alreadyCounted;
     alreadyCounted.reserve(newKeys.size());
     size_t count = 0;

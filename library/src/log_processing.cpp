@@ -164,12 +164,8 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
         ) +
         std::chrono::microseconds{fractionalUs};
     out = TimeStamp{totalUs};
-    // The previous implementation rejected `time_since_epoch().count() <= 0`
-    // as a parse failure, which incorrectly classified the legitimate POSIX
-    // epoch (`1970-01-01T00:00:00Z`) and any pre-1970 timestamp as
-    // unparsable. Once we have a syntactically-valid Y/M/D/H/M/S/fraction
-    // and `ymd.ok()` succeeded, the value is parsed — even if the resulting
-    // microseconds-since-epoch is zero or negative.
+    // Syntactically valid Y/M/D/H/M/S/fraction is success; the POSIX epoch
+    // and pre-1970 timestamps are valid outputs, not failures.
     return true;
 }
 
@@ -182,10 +178,8 @@ bool TryParseGenericTimestamp(
     scratch.stream.str(scratch.str);
     out = TimeStamp{};
     scratch.stream >> date::parse(format, out);
-    // The stream-fail bit alone is the parse-success signal. The previous
-    // `time_since_epoch().count() > 0` filter rejected the POSIX epoch
-    // (`1970-01-01T00:00:00Z`) and any pre-1970 timestamp; both are
-    // legitimate parse outputs and should not be reported as failure.
+    // Stream-fail bit alone is the success signal: the POSIX epoch and
+    // pre-1970 timestamps are valid outputs.
     return !scratch.stream.fail();
 }
 
@@ -303,12 +297,6 @@ void BackfillTimestampColumn(
     TimestampParseScratch scratch;
     for (auto &line : lines)
     {
-        // Per-line `fmt::format(...)` is the dominant non-parse cost in
-        // `LogTable::AppendBatch` for streamed batches with many failed
-        // rows. The streaming path's caller (`LogTable::AppendBatch`)
-        // doesn't surface these errors anywhere — they would land in the
-        // discarded return vector — so this overload skips the format
-        // entirely when the caller passes `BackfillErrors::Discard`.
         static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch));
     }
 }

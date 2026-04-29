@@ -353,39 +353,13 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
     }
 }
 
-// Regression for #6: `pending.firstLineNumber` was primed at coalesce-prime
-// time, before the first real line was inserted. A pending batch that was
-// primed by an empty Stage B chunk and then received its first line from
-// the next chunk reported `firstLineNumber` *strictly greater* than the
-// 1-based source position of `lines.front()` (the cursor advanced past
-// errors / blanks before any line entered `pending`, and the
-// over-eager prime locked that advanced cursor in). The fix defers the
-// prime until the first non-empty `parsed.lines`, so `firstLineNumber`
-// can never overshoot the line that actually anchors the batch.
-//
-// Concretely the post-fix invariant is `firstLineNumber > 0` *and*
-// `firstLineNumber <= lines.front().FileReference().GetLineNumber() + 1`
-// (the `+1` reconciles `firstLineNumber`'s 1-based numbering with
-// `LogFileReference::GetLineNumber()`'s 0-based numbering — see the
-// `StreamedBatch::firstLineNumber` docstring). Same-batch errors before
-// the first parsed line push the *upper* bound down because
-// `firstLineNumber` then anchors on the chunk start instead of on
-// `lines.front()`; that's expected and exactly what the docstring
-// promises.
-//
-// The regression repro feeds an all-error first chunk + a normal second
-// chunk, plus a coalesced variant that mixes both kinds in a single
-// pending batch.
+// Regression for #6: `firstLineNumber` must defer its prime until the
+// first non-empty `parsed.lines`, so it never overshoots `lines.front()`.
 TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[mock_parser]")
 {
-    // 6 short error lines (~ ! + suffix), then 6 normal records. Pinning
-    // `batchSizeBytes = errorBlockBytes - 1` forces Stage A to break the
-    // token at the *last* newline of the error block (so the all-error
-    // chunk ships first and the normal records ship in a second token —
-    // setting it to exactly `errorBlockBytes` would make Stage A's
-    // post-target `memchr('\n')` jump into the records area and bundle
-    // the first record into the error chunk, defeating the all-error
-    // first-chunk repro the fix is meant to test).
+    // 6 errors then 6 records. `batchSizeBytes = errorBlockBytes - 1` makes
+    // Stage A break at the last newline of the error block so the all-error
+    // chunk ships first.
     std::string content;
     for (int i = 0; i < 6; ++i)
     {
@@ -417,17 +391,9 @@ TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[
         {
             const size_t firstObservedLine = b.lines.front().FileReference().GetLineNumber();
             CAPTURE(b.firstLineNumber, firstObservedLine);
-            // The post-fix invariant for *this* fixture (errors-only
-            // first chunk + records-only follow-up chunks): the prime is
-            // deferred to the records chunk, so `firstLineNumber` equals
-            // the 1-based source line of `lines.front()` exactly
-            // (`+ 1` reconciles `firstLineNumber`'s 1-based numbering
-            // with `LogFileReference::GetLineNumber()`'s 0-based
-            // numbering). With the pre-fix bug the prime would have
-            // fired on the errors-only chunk and locked in
-            // `firstLineNumber = 1` regardless of where the parsed lines
-            // actually started — so `1 != firstObservedLine + 1` would
-            // light up.
+            // For this fixture (errors-only chunk then records chunk),
+            // the prime fires on the records chunk so the values match
+            // exactly. The +1 reconciles 1-based vs 0-based numbering.
             CHECK(b.firstLineNumber == firstObservedLine + 1);
         }
     }

@@ -25,26 +25,20 @@ public:
     explicit QtStreamingLogSink(LogModel *model, QObject *parent = nullptr);
     ~QtStreamingLogSink() override = default;
 
-    /// Opens a fresh parse generation; returns the stop_token to install on
-    /// `ParserOptions::stopToken`. GUI thread. Renamed from `BeginParse` to
-    /// emphasise that this only *arms* the sink (bumps generation, fits a
-    /// fresh `StopSource`); the parser worker is started elsewhere.
+    /// Opens a fresh parse generation and returns the stop_token to install
+    /// on `ParserOptions::stopToken`. Only arms the sink; the worker is
+    /// spawned elsewhere. GUI thread.
     loglib::StopToken Arm();
 
-    /// Non-blocking cancel; signals the parse's `stop_token`. Does **not**
-    /// touch the generation: the worker's drain-phase `OnBatch` /
-    /// `OnFinished` calls run *after* this returns, and they capture
-    /// whatever generation is current at the time they run. Use
-    /// `DropPendingBatches()` *after* `waitForFinished()` to invalidate the
-    /// queued lambdas they emitted. GUI thread.
+    /// Non-blocking cooperative cancel. Does **not** bump the generation —
+    /// the worker's drain-phase `OnBatch`/`OnFinished` still need their
+    /// captured generation to match. Pair with `DropPendingBatches()` after
+    /// joining the worker. GUI thread.
     void RequestStop();
 
-    /// Bumps the sink generation so any GUI-thread lambda already queued by
-    /// `OnBatch` / `OnFinished` short-circuits on its mismatch check when it
-    /// later runs. Must be called *after* the parse has joined (i.e. after
-    /// `QFutureWatcher::waitForFinished()` returns) so the worker has no
-    /// chance to capture this new generation in a fresh queued lambda — that
-    /// is the whole point of deferring the bump. GUI thread.
+    /// Bumps the sink generation so already-queued GUI-thread lambdas
+    /// short-circuit. Must be called **after** `waitForFinished()` returns
+    /// so the worker cannot capture the new generation. GUI thread.
     void DropPendingBatches();
 
     /// The canonical KeyIndex (the model's LogTable's). Thread-safe.

@@ -73,22 +73,11 @@ private:
     void UpdateFilters();
     void ApplyTableStyleSheet();
 
-    /**
-     * @brief Streams a JSON log through `LogParser::ParseStreaming` on a
-     *        background thread.
-     *
-     * Locks the configuration UI for the parse, hands the model's
-     * `QtStreamingLogSink` and a freshly-installed `stop_token` to the
-     * parser, and registers the parse `QFuture` with the model so the
-     * `LogModel` itself can synchronously wait on the worker before
-     * destroying the `LogTable`/`LogFile` it borrows from. Without that
-     * synchronisation, Stage B of the TBB pipeline keeps reading from the
-     * mmap after a `Clear()` unmaps it (use-after-free).
-     *
-     * @return true if the streaming pipeline started; false if the file
-     *              could not be opened (in which case @p errors carries the
-     *              reason and the caller falls back to the synchronous path).
-     */
+    /// Streams a JSON log through `LogParser::ParseStreaming` on a background
+    /// thread, locking the configuration UI for the parse.
+    /// @return true if streaming started; false if @p file could not be
+    /// opened (in which case @p errors carries the reason and the caller
+    /// falls back to the synchronous path).
     bool OpenJsonStreaming(const QString &file, std::vector<std::string> &errors);
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();

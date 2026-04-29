@@ -34,10 +34,7 @@ void LogTable::Update(LogData &&data)
 
 void LogTable::Reset()
 {
-    // Wipe the per-parse state but leave `mConfiguration` alone. Replacing
-    // the whole `LogTable` with `LogTable{}` (the prior approach) also
-    // dropped the user-loaded `LogConfiguration`, which made `LoadConfiguration
-    // → File → Open` silently revert to an auto-derived layout.
+    // Wipe per-parse state but preserve `mConfiguration`.
     mData = LogData{};
     mStageBSnapshotTimeKeys.clear();
     mPostSnapshotTimeKeys.clear();
@@ -53,8 +50,8 @@ void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(file), std::move(noLines), KeyIndex{});
-        // Stage B promotes Type::time inline; later-discovered time columns are
-        // back-filled in `AppendBatch`.
+        // Stage B promotes Type::time inline; later-discovered time columns
+        // are back-filled in `AppendBatch`.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
@@ -64,10 +61,8 @@ void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
         mData.MarkTimestampsParsed();
     }
 
-    // Order matters: `RefreshSnapshotTimeKeys` inserts the configured
-    // time-column keys into the fresh `KeyIndex` (mirroring the parser
-    // pipeline's `BuildTimeColumnSpecs`), so `RefreshColumnKeyIds` can
-    // resolve them when it runs next.
+    // Order matters: snapshot inserts the time-column keys before the
+    // KeyId resolution runs.
     RefreshSnapshotTimeKeys();
     RefreshColumnKeyIds();
 }
@@ -81,10 +76,8 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
-    // Snapshot the row count *before* appending so we can later restrict the
-    // per-batch back-fill of post-snapshot time columns to the rows we just
-    // added. (For first-time post-snapshot columns we still back-fill the
-    // entire vector — the older rows pre-date the column.)
+    // Pre-append snapshot so per-batch back-fill restricts to the new slice.
+    // First-observation columns still back-fill all rows (older rows pre-date them).
     const size_t oldLineCount = mData.Lines().size();
 
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
@@ -97,18 +90,11 @@ void LogTable::AppendBatch(StreamedBatch batch)
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    // Back-fill time columns that aren't covered by Stage B's inline
-    // promotion. Two cases:
-    //   1. First observation of a post-snapshot time column (i.e. a column
-    //      auto-promoted by `LogConfigurationManager::AppendKeys` mid-stream
-    //      or otherwise added after `BeginStreaming`) — back-fill *all* rows
-    //      and record `mLastBackfillRange` so the model's `dataChanged`
-    //      covers the older rows that already existed.
-    //   2. Subsequent batches for an already-known post-snapshot column —
-    //      back-fill only the freshly appended rows. We do not record
-    //      `mLastBackfillRange` here because the upcoming
-    //      `beginInsertRows`/`endInsertRows` in `LogModel::AppendBatch`
-    //      already invalidates those rows for the view.
+    // Back-fill post-snapshot time columns (Stage B handles snapshot ones):
+    //   1. First observation: back-fill all rows and record `mLastBackfillRange`
+    //      so `dataChanged` covers existing rows.
+    //   2. Already-known post-snapshot column: back-fill only the appended
+    //      slice; the upcoming `beginInsertRows` already invalidates them.
     const auto &columns = mConfiguration.Configuration().columns;
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -153,9 +139,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
             continue;
         }
 
-        // The streaming hot path does not surface per-line "Failed to parse"
-        // strings anywhere, so use the `BackfillErrors::Discard` overload to
-        // skip the per-failed-row `fmt::format` allocation.
+        // Use the `Discard` overload: streaming has no consumer for per-line errors.
         if (firstObservation)
         {
             BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
@@ -189,9 +173,6 @@ LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch)
 {
     AppendBatchPreview preview;
     preview.newRowCount = mData.Lines().size() + batch.lines.size();
-    // `AppendKeys` is append-only with `IsKeyInAnyColumnCached` as the skip
-    // predicate; mirror that exactly via `CountAppendableKeys` so the
-    // predicted column count matches what `AppendBatch` would actually push.
     preview.newColumnCount =
         mConfiguration.Configuration().columns.size() + mConfiguration.CountAppendableKeys(batch.newKeys);
     return preview;
@@ -366,9 +347,6 @@ void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKey
 void LogTable::RefreshSnapshotTimeKeys()
 {
     mStageBSnapshotTimeKeys.clear();
-    // Any prior post-snapshot promotions belonged to the previous parse;
-    // reset them in lockstep with the snapshot set so a fresh parse starts
-    // from a clean slate.
     mPostSnapshotTimeKeys.clear();
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
@@ -379,11 +357,8 @@ void LogTable::RefreshSnapshotTimeKeys()
         }
         for (const std::string &key : column.keys)
         {
-            // `GetOrInsert` (not `Find`) so this also works on the fresh,
-            // empty `KeyIndex` from `BeginStreaming` — the parser pipeline's
-            // `BuildTimeColumnSpecs` does the same insert right before
-            // Stage B; doing it here just happens earlier so the snapshot
-            // holds valid `KeyId`s before the first batch arrives.
+            // `GetOrInsert` so the snapshot holds valid ids on the fresh
+            // post-`BeginStreaming` `KeyIndex` (mirrors `BuildTimeColumnSpecs`).
             const KeyId id = mData.Keys().GetOrInsert(key);
             mStageBSnapshotTimeKeys.insert(id);
         }

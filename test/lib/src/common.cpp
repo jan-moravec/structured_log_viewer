@@ -128,15 +128,13 @@ TestLogFile::~TestLogFile()
 
 std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 {
-    // Use a binary stream so std::streampos values match the byte offsets stored in
-    // LogFile::mLineOffsets on every platform (no CRLF translation).
+    // Binary stream so streampos matches LogFile's byte offsets on every
+    // platform (no CRLF translation).
     std::ifstream file(GetFilePath(), std::ios::binary);
     auto logFile = std::make_unique<LogFile>(GetFilePath());
 
-    // Scan for '\n' in the raw bytes and push one offset per
-    // line. When the file does not end with a newline, push `fileSize + 1` as the virtual
-    // terminator so GetLine's `stop - start - 1` size computation stays valid for the final
-    // line.
+    // Push one offset per '\n'; for an unterminated last line, push
+    // `fileSize + 1` as the virtual terminator (see LogFile::GetLine).
     char ch = '\0';
     std::size_t pos = 0;
     while (file.get(ch))
@@ -157,23 +155,9 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 
 void InitializeTimezoneData()
 {
-    // Walk up the ancestor chain of the current working directory looking
-    // for a sibling `tzdata/` folder. The expected invocation patterns are
-    // `ctest --preset local` (which runs each test from the build's working
-    // directory) or running the binary directly from a directory whose
-    // ancestor chain contains the staged `tzdata/` (`cmake/FetchDependencies
-    // .cmake` puts one at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata`, i.e.
-    // next to the .exe).
-    //
-    // Two stop conditions are required to keep the walk bounded:
-    //   - `parent.empty()` covers POSIX where the parent of "/" is "".
-    //   - `parent == path` covers Windows where
-    //     `std::filesystem::path("C:\\").parent_path()` returns `C:\\`
-    //     itself; the original loop relied on `REQUIRE(!path.empty())` and
-    //     never terminated when no `tzdata` ancestor existed, manifesting
-    //     as a hard hang of `tests.exe` whenever it was invoked from a CWD
-    //     outside the build tree (e.g. `build/local/bin/Release/tests.exe`
-    //     run from the repo root).
+    // Walk up the CWD ancestor chain for a sibling `tzdata/`. Both stop
+    // conditions are required: `parent.empty()` for POSIX root, and
+    // `parent == path` for Windows roots (`"C:\\"` is its own parent).
     static const auto TZ_DATA = std::filesystem::path("tzdata");
     std::filesystem::path path = std::filesystem::current_path();
     while (true)
@@ -202,7 +186,3 @@ void InitializeTimezoneData()
            "(typically `build/<preset>/bin/<config>/`)."
     );
 }
-
-// `TestJsonLogFile::Line` definitions previously lived here. They moved to
-// `test/common/src/json_log_line.cpp` (as `test_common::JsonLogLine`) so the
-// non-Catch2 `log_generator` console app can reuse them.

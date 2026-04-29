@@ -20,14 +20,9 @@ void BufferingSink::OnStarted()
 
 void BufferingSink::OnBatch(StreamedBatch batch)
 {
-    // Splice straight into mLines. Don't `reserve(mLines.size() + n)` per
-    // batch — `std::vector::reserve(n)` is only required to leave capacity
-    // "at least n" ([vector.capacity]), and the major implementations
-    // (libstdc++, libc++, MSVC STL) take that as a licence to set capacity
-    // to *exactly* n with no slack on top. Calling it once per batch would
-    // therefore turn the buffered path into O(N²/B). `insert()`, by
-    // contrast, grows the underlying storage geometrically the way every
-    // other amortised-O(1) `vector` insertion does.
+    // No per-batch `reserve(size + n)`: STL implementations take that as
+    // "exactly n", which would turn this into O(N^2/B). `insert()` grows
+    // geometrically.
     if (!batch.lines.empty())
     {
         mLines.insert(
@@ -62,8 +57,8 @@ KeyIndex &BufferingSink::Keys()
 
 LogData BufferingSink::TakeData()
 {
-    // Push line offsets into the LogFile before it moves into LogData,
-    // so GetLine(i) keeps working on the returned data.
+    // Push line offsets into the LogFile before it moves into LogData so
+    // GetLine(i) still works on the returned data.
     if (mFile && !mLineOffsets.empty())
     {
         mFile->AppendLineOffsets(mLineOffsets);

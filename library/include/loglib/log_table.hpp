@@ -32,11 +32,7 @@ public:
     /// Replaces the table's data with a freshly-merged @p data.
     void Update(LogData &&data);
 
-    /// Data-only reset: clears `Data()` and the streaming-time-key snapshots,
-    /// but leaves `Configuration()` (the user-loaded columns / formats /
-    /// filters) untouched. `LogModel::Clear()` uses this so a `File → Open` /
-    /// drag-and-drop after `LoadConfiguration` does not silently discard the
-    /// user's column layout.
+    /// Clears `Data()` and streaming-time-key snapshots; preserves `Configuration()`.
     void Reset();
 
     /// Initialises the table for an upcoming streaming parse and snapshots the
@@ -65,10 +61,7 @@ public:
     /// `AppendBatch` back-filled, or `std::nullopt` if none. Reset on entry.
     [[nodiscard]] const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const noexcept;
 
-    /// Forwards to `Data().Files().front()->ReserveLineOffsets(count)` if a
-    /// streaming `LogFile` is installed; no-op otherwise. Avoids handing the
-    /// model a non-const `LogData&` accessor for what should be a one-line
-    /// pre-allocation hint.
+    /// Pre-allocation hint forwarded to the installed streaming `LogFile`; no-op otherwise.
     void ReserveLineOffsets(size_t count);
 
     [[nodiscard]] std::string GetHeader(size_t column) const;
@@ -79,18 +72,13 @@ public:
 
     [[nodiscard]] const LogData &Data() const noexcept;
 
-    /// Mutable `KeyIndex` reference used by `QtStreamingLogSink` so it can
-    /// `GetOrInsert` field names from worker threads. Replaces the previous
-    /// mutable `Data()` accessor, which incidentally exposed every other
-    /// `LogData` member to external mutation.
+    /// Mutable `KeyIndex` for worker-thread `GetOrInsert` (used by `QtStreamingLogSink`).
     KeyIndex &Keys();
     const KeyIndex &Keys() const;
 
     const LogConfigurationManager &Configuration() const;
-    /// Non-const access is intentionally retained for the configuration
-    /// `Load` / `Save` menu actions wired through `LogModel`. Mutating the
-    /// configuration mid-streaming is forbidden — `MainWindow` gates the
-    /// configuration-edit UI for the lifetime of the active parse.
+    /// Non-const access for `Load`/`Save` menu actions. Must not be mutated
+    /// mid-streaming; `MainWindow` gates the configuration-edit UI accordingly.
     LogConfigurationManager &Configuration();
 
 private:

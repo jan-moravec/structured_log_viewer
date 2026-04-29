@@ -12,13 +12,11 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
 {
     setWindowTitle("Filter Editor");
-    // Create widgets
     mRowComboBox = new QComboBox(this);
 
     mStringLineEdit = new QLineEdit(this);
     mMatchTypeComboBox = new QComboBox(this);
 
-    // Date editor
     mBeginDateEdit = new QDateEdit(this);
     mBeginTimeEdit = new QTimeEdit(this);
     mEndDateEdit = new QDateEdit(this);
@@ -34,7 +32,6 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         mRowComboBox->addItem(QString::fromStdString(column.header));
     }
 
-    // Add match types
     mMatchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::exactly));
     mMatchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::contains));
     mMatchTypeComboBox->addItem(
@@ -42,15 +39,13 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     );
     mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::wildcard));
 
-    // Setup layout
     SetupLayout();
 
-    // Connect signals to slots
     connect(mOkButton, &QPushButton::clicked, this, &FilterEditor::OnOkClicked);
     connect(mCancelButton, &QPushButton::clicked, this, &FilterEditor::reject);
     connect(mRowComboBox, &QComboBox::currentIndexChanged, this, &FilterEditor::UpdateSelectedColumn);
 
-    // Connection between min and max timestamps
+    // Keep min/max date and time edits in sync as a contiguous range.
     QObject::connect(mBeginDateEdit, &QDateEdit::dateChanged, [this](const QDate &date) {
         mEndDateEdit->setMinimumDate(date);
     });
@@ -99,18 +94,15 @@ void FilterEditor::SetupLayout()
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
 
-    // Row selection
     QHBoxLayout *rowLayout = new QHBoxLayout();
     rowLayout->addWidget(new QLabel("Row to filter:", this));
     rowLayout->addWidget(mRowComboBox);
     mainLayout->addLayout(rowLayout);
 
-    // String to filter
     QHBoxLayout *stringLayout = new QHBoxLayout();
     stringLayout->addWidget(new QLabel("String to filter:", this));
     stringLayout->addWidget(mStringLineEdit);
 
-    // Match type selection
     QHBoxLayout *matchLayout = new QHBoxLayout();
     matchLayout->addWidget(new QLabel("Match type:", this));
     matchLayout->addWidget(mMatchTypeComboBox);
@@ -143,7 +135,6 @@ void FilterEditor::SetupLayout()
     mStackedWidget->addWidget(secondPage);
     mainLayout->addWidget(mStackedWidget);
 
-    // Buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
     buttonLayout->addWidget(mOkButton);
     buttonLayout->addWidget(mCancelButton);
@@ -189,7 +180,6 @@ void FilterEditor::OnOkClicked()
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
     if (column.type != LogConfiguration::Type::time && mStringLineEdit->text().isEmpty())
     {
-        // Validation: Don't allow empty filter string
         mStringLineEdit->setStyleSheet("border: 1px solid red");
         return;
     }
@@ -205,11 +195,9 @@ void FilterEditor::OnOkClicked()
     }
     else
     {
-        // Emit the filterSubmitted signal with all input data
         emit FilterSubmitted(mFilterID, index, GetStringToFilter(), GetMatchType());
     }
 
-    // Close the dialog with an "accepted" result
     accept();
 }
 

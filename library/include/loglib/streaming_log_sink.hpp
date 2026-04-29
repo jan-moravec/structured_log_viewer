@@ -20,19 +20,11 @@ struct StreamedBatch
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;
-    /// 1-based absolute line number of the first source line covered by
-    /// this batch. The harness primes this on the first non-empty
-    /// `parsed.lines` chunk that lands in the pending coalesce-buffer, so
-    /// when `lines` is non-empty the value is guaranteed to be in
-    /// `[1, lines.front().FileReference().GetLineNumber() + 1]` (the
-    /// upper bound is `+1` because `LogFileReference::GetLineNumber()` is
-    /// 0-based; same-batch errors that precede the first parsed line in
-    /// source order push the upper bound *down* — `firstLineNumber`
-    /// matches the chunk's *start* cursor, not the first parsed line).
-    /// When `lines` is empty (e.g. the final pre-`OnFinished` empty-tail
-    /// batch, or an errors-only batch flushed via the time cap), the
-    /// field is set to the line cursor at the point the batch was sealed
-    /// and is not guaranteed to coincide with any specific source line.
+    /// 1-based absolute line number of the batch's start cursor.
+    /// - When `lines` is non-empty: matches the chunk start, not necessarily
+    ///   the first parsed line (errors preceding it can push it lower).
+    /// - When `lines` is empty: the line cursor at the time the batch was
+    ///   sealed; not tied to any specific source line.
     size_t firstLineNumber = 0;
 };
 

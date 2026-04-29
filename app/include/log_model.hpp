@@ -47,35 +47,23 @@ public:
     void Clear();
 
     /// Resets the model and arms the bridging sink for a streaming parse
-    /// against @p file (ownership transfers). Returns the parse stop_token.
-    /// **Synchronous test variant** — does not start a worker thread; the
-    /// caller drives `JsonParser::ParseStreaming` on the calling thread.
-    /// Production code uses the two-argument overload below.
+    /// against @p file (ownership transfers); returns the parse stop_token.
+    /// **Synchronous test variant** — does not start a worker thread.
     ///
-    /// Contract: pair every call with either `EndStreaming(...)` or a
-    /// `Clear()` (which emits a compensating `streamingFinished` for the
-    /// still-open generation). Otherwise `mStreamingActive` stays on,
-    /// later `Clear()`s emit stale signals, and `MainWindow`'s
-    /// configuration-UI gating never reopens. Callers that bail out
-    /// between `BeginStreaming` and the parser worker must call
-    /// `EndStreaming(true)` (and ideally `Sink()->RequestStop()` +
-    /// `Sink()->DropPendingBatches()` for generation symmetry).
-    ///
-    /// Asserts the streaming watcher is idle. To replace an in-flight
-    /// parse, call `Clear()` first to join the worker.
+    /// Pair every call with `EndStreaming(...)` or `Clear()`; otherwise
+    /// `mStreamingActive` stays on and the GUI's configuration gate never
+    /// reopens. Asserts the streaming watcher is idle on entry.
     loglib::StopToken BeginStreaming(std::unique_ptr<loglib::LogFile> file);
 
-    /// Production overload: arms the model as above, then runs @p
-    /// parseCallable on a `QtConcurrent::run` worker and parks the
-    /// `QFuture` on the model so `Clear()` / `~LogModel` can
-    /// `waitForFinished()` before the borrowed `LogFile*` is unmapped
-    /// (TBB Stage B runs `parallel` and doesn't poll the stop_token
-    /// mid-batch, so a cooperative stop alone is insufficient).
+    /// Production overload: arms the model and runs @p parseCallable on a
+    /// `QtConcurrent::run` worker, parking the `QFuture` on the model so
+    /// `Clear()` / `~LogModel` can `waitForFinished()` before the borrowed
+    /// `LogFile*` is unmapped (cooperative stop alone is insufficient — TBB
+    /// Stage B runs in parallel without polling the token mid-batch).
     ///
-    /// @p parseCallable receives the parse `StopToken`. Throwing escapes
-    /// are caught at the worker boundary and turned into a synthetic
-    /// terminal `OnBatch` + `OnFinished(false)` so the GUI watchdog
-    /// always observes `finished()`.
+    /// @p parseCallable receives the parse `StopToken`. Exceptions escaping
+    /// it are caught at the worker boundary and converted into a synthetic
+    /// terminal `OnBatch` + `OnFinished(false)`.
     loglib::StopToken BeginStreaming(
         std::unique_ptr<loglib::LogFile> file, std::function<void(loglib::StopToken)> parseCallable
     );
@@ -125,23 +113,18 @@ private:
     loglib::LogTable mLogTable;
     QtStreamingLogSink *mSink = nullptr;
 
-    /// Background `QtConcurrent::run` future for the active parse. Owned
-    /// here so destructive model operations can `waitForFinished()` before
-    /// the worker's borrowed `LogTable`/`LogFile` pointers go away.
+    /// Future for the active parse worker; destructive ops join it before
+    /// the borrowed `LogTable`/`LogFile` pointers are torn down.
     QFutureWatcher<void> *mStreamingWatcher = nullptr;
 
-    /// Cumulative error count for the active parse. Mirrors
-    /// `mStreamingErrors.size()` so signal listeners read it cheaply.
+    /// Cumulative error count for the active parse (mirrors `mStreamingErrors.size()`).
     qsizetype mErrorCount = 0;
 
-    /// True between `BeginStreaming()` and the matching `EndStreaming()` /
-    /// `Clear()`. Both endpoints run on the GUI thread, so this flag is
-    /// race-free — unlike `mStreamingWatcher->isRunning()`, which flips off
-    /// as soon as the worker returns, *before* its queued `OnFinished`
-    /// lambda reaches the GUI thread. `Clear()` reads this to decide
-    /// whether to emit a compensating `streamingFinished` (the worker's
-    /// `OnFinished` is dropped by the sink's generation-mismatch check
-    /// after `DropPendingBatches()` bumps the generation post-join).
+    /// GUI-thread-only flag set by `BeginStreaming()`, cleared by
+    /// `EndStreaming()` / `Clear()`. Race-free unlike
+    /// `mStreamingWatcher->isRunning()`, which flips off before the queued
+    /// `OnFinished` lambda reaches the GUI thread. `Clear()` consults it to
+    /// decide whether to emit a compensating `streamingFinished`.
     bool mStreamingActive = false;
 
     std::vector<std::string> mStreamingErrors;
@@ -149,6 +132,4 @@ private:
     static QString ConvertToSingleLineCompactQString(const std::string &string);
 };
 
-// Round-trips through `QVariant` for `QSignalSpy::value(0)` in tests and
-// for cross-thread queued connections.
 Q_DECLARE_METATYPE(StreamingResult)

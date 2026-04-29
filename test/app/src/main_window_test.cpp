@@ -266,14 +266,10 @@ private slots:
         QVERIFY(!window->windowIcon().isNull());
     }
 
-    // Drive the same fixture through both the synchronous `LogParser::Parse`
-    // path (`LogModel::AddData`) and the streaming pipeline
-    // (`LogModel::BeginStreaming` + `ParseStreaming` + `EndStreaming`) and
-    // assert byte-equivalent display output. Pinned to `threads=1` so the
-    // order in which workers race on `KeyIndex::GetOrInsert` can't perturb
-    // the streaming-side `AppendKeys` insertion order — that would make the
-    // legacy (sorted) vs. streaming (insertion) column ordering diverge for
-    // reasons unrelated to per-cell parsing parity.
+    // Drive the same fixture through legacy (`AddData`) and streaming
+    // (`BeginStreaming`/`ParseStreaming`/`EndStreaming`) paths and assert
+    // byte-equivalent display output. `threads=1` keeps `AppendKeys`
+    // insertion order deterministic.
     void testStreamingParityVsLegacy()
     {
         const QStringList fixtureLines = MakeParityFixture();
@@ -319,23 +315,13 @@ private slots:
         QtStreamingLogSink *sink = streamingModel.Sink();
         QVERIFY(sink != nullptr);
 
-        // Run the parse synchronously on the test thread. Even though the
-        // production GUI runs ParseStreaming on a worker thread (so OnBatch /
-        // OnFinished cross thread boundaries), the QtStreamingLogSink always
-        // posts its sink callbacks back through QMetaObject::invokeMethod /
-        // Qt::QueuedConnection — meaning the model-side semantics (events
-        // queued onto the GUI event loop, draining on the next tick) are
-        // identical regardless of which thread the parser ran on. Driving the
-        // parse on the test thread keeps the test free of QtConcurrent /
-        // std::thread plumbing while still exercising the queued-connection
-        // delivery path that production code relies on.
+        // Run the parse on the test thread; the sink still routes every
+        // callback through QueuedConnection, so model-side semantics match
+        // the production GUI's worker-thread path.
         loglib::JsonParser parser;
         parser.ParseStreaming(*parseFile, *sink, options, advanced);
 
-        // Spin the event loop so the queued OnBatch / OnFinished invocations
-        // posted by QtStreamingLogSink during the parse above are drained
-        // before the assertions run. QSignalSpy::wait blocks until the signal
-        // is emitted (i.e. until LogModel::EndStreaming runs on the GUI side).
+        // Drain the queued OnBatch/OnFinished invocations.
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(finishedSpy.count(), 1);
@@ -676,18 +662,9 @@ private slots:
         QCOMPARE(proxy.mapToSource(proxy.index(2, 0)).row(), 2);
     }
 
-    // Regression for the Qt model contract violation in
-    // `LogModel::AppendBatch`: the original code mutated `mLogTable` *before*
-    // calling `beginInsertRows` / `beginInsertColumns`, so any proxy listening
-    // on `rowsAboutToBeInserted` / `columnsAboutToBeInserted` (notably
-    // `QSortFilterProxyModel`) saw the post-mutation `rowCount()` /
-    // `columnCount()` from the source. Qt's contract is begin-before-mutate.
-    // The fix splits `LogTable::AppendBatch` into a non-mutating
-    // `PreviewAppend` + the original `AppendBatch`, with `LogModel` calling
-    // begin → commit → end in the right order. Hook a slot to the proxy's
-    // about-to-be-inserted signals and snapshot the *source* model's count
-    // there: with the bug it equals the post-mutation count; with the fix it
-    // equals the pre-mutation count.
+    // Regression: `LogModel::AppendBatch` must fire `beginInsertRows` /
+    // `beginInsertColumns` *before* `LogTable::AppendBatch` mutates, so
+    // proxies see the pre-mutation source count in `*AboutToBeInserted`.
     void testAppendBatchFiresBeginsBeforeMutation()
     {
         const QStringList fixtureLines = MakeParityFixture();
@@ -697,15 +674,8 @@ private slots:
         LogFilterModel proxy;
         proxy.setSourceModel(&model);
 
-        // Hook the **source** model's `rowsAboutToBeInserted` /
-        // `columnsAboutToBeInserted`, not the proxy's: `QSortFilterProxyModel`
-        // delays its own `*AboutToBeInserted` until after the source has
-        // mutated (it needs the source's post-mutation rows to evaluate the
-        // filter), so a snapshot taken from the *proxy*'s slot would always
-        // see the post-mutation source count regardless of which order
-        // `LogModel::AppendBatch` fires `begin*` vs. the underlying
-        // `LogTable::AppendBatch` mutation. Listening on the source's signal
-        // makes the test directly assert Qt's begin-before-mutate contract.
+        // Hook the source model's signals, not the proxy's: the proxy delays
+        // its own `*AboutToBeInserted` until after the source has mutated.
         std::vector<int> rowCountSnapshotsAtAboutToBeInserted;
         std::vector<int> columnCountSnapshotsAtAboutToBeInserted;
         QObject::connect(
@@ -787,19 +757,10 @@ private slots:
         }
     }
 
-    // Regression: `LogModel::Clear()` used to derive `wasStreaming` from
-    // `mStreamingWatcher->isRunning()`, which races with the queued
-    // `OnFinished` lambda — the worker function returns (and the watcher
-    // flips to "not running") *before* the lambda reaches the GUI thread,
-    // so a `Clear()` in that window saw `wasStreaming == false`, the
-    // queued `OnFinished` was then dropped by the sink's generation-mismatch
-    // check after `RequestStop()` bumped the generation, and no
-    // `streamingFinished` ever arrived — leaving the configuration menus
-    // permanently disabled until the next streaming parse. Replacing the
-    // source with a GUI-thread-only flag (`mStreamingActive`) makes this
-    // case race-free; this test covers it deterministically by calling
-    // `BeginStreaming` followed immediately by `Clear()` (no parser ever
-    // runs, so we cannot rely on `OnFinished` reaching the GUI).
+    // Regression: `Clear()` must emit a compensating `streamingFinished` based
+    // on a GUI-thread flag (`mStreamingActive`), not `isRunning()` — the
+    // latter races with the queued `OnFinished` and would silently drop the
+    // signal, leaving configuration menus disabled.
     void testClearAfterBeginStreamingEmitsCompensatingFinished()
     {
         // Use a tiny in-memory file so BeginStreaming has a valid LogFile
@@ -828,32 +789,11 @@ private slots:
         QCOMPARE(finishedSpy.count(), 0);
     }
 
-    // Regression: `QtStreamingLogSink::RequestStop()` used to bump the sink
-    // generation *before* `LogModel::Clear()` waited for the worker to
-    // finish. The worker's drain-phase `OnBatch` / `OnFinished` then
-    // captured the bumped generation (the stop_token's request_stop pairs
-    // release-acquire with the worker's load), the queued GUI-thread
-    // lambdas matched it on dispatch, and they ran `AppendBatch` /
-    // `EndStreaming` *after* `Clear()` had already destroyed `mLogTable` —
-    // a use-after-free on the dangling `LogFile*` carried inside every
-    // batched `LogLine` (observable on the `CopyLine` role) plus a
-    // spurious second `streamingFinished(true)`. Triggered by drag-and-
-    // drop, multi-file open, or load-configuration while a streaming
-    // parse is still running.
-    //
-    // The fix moves the bump to `DropPendingBatches()`, called by `Clear()`
-    // *after* `waitForFinished()` returns. This test reproduces the race
-    // deterministically with a manual worker thread that waits for the
-    // stop_token to flip (i.e. `Clear()` has called `RequestStop()`),
-    // emits one `OnBatch` referencing the planted `LogFile` plus an
-    // `OnFinished(true)`, then completes a `QPromise` planted on the
-    // model so `waitForFinished()` can unblock. With the fix both queued
-    // lambdas observe a stale generation (because `DropPendingBatches`
-    // bumped it past the worker's capture) and short-circuit; without
-    // the fix the `OnBatch` lambda would push a row whose `LogLine`
-    // points at the now-unmapped file, and the `OnFinished` lambda would
-    // emit a second `streamingFinished` on top of `Clear`'s compensating
-    // one.
+    // Regression: the sink-generation bump must happen in
+    // `DropPendingBatches()` (called *after* `waitForFinished()`), not in
+    // `RequestStop()`. Otherwise drain-phase queued lambdas pass the
+    // mismatch check and run after `Clear()` has destroyed `mLogTable`
+    // (use-after-free on dangling `LogFile*` + spurious second `streamingFinished`).
     void testClearDuringStreamingDropsDrainPhaseBatch()
     {
         TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
@@ -865,14 +805,9 @@ private slots:
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         loglib::LogFile *filePtr = file.get();
 
-        // The parseCallable runs on the `QtConcurrent::run` worker that
-        // `BeginStreaming(file, parseCallable)` spawns internally. It mimics
-        // the original `QPromise`-injected timing by parking on a
-        // `std::condition_variable` until the test thread releases it,
-        // which happens AFTER the worker has emitted its drain-phase
-        // `OnBatch` + `OnFinished` (= the racy queued lambdas the fix is
-        // meant to invalidate via the post-`waitForFinished` generation
-        // bump in `LogModel::Clear`).
+        // The parseCallable parks on a CV until the test thread releases it,
+        // which happens AFTER the worker has emitted drain-phase
+        // `OnBatch` + `OnFinished` (the racy queued lambdas the fix invalidates).
         std::mutex releaseMutex;
         std::condition_variable releaseCv;
         bool released = false;
@@ -904,17 +839,9 @@ private slots:
         );
         static_cast<void>(stop);
 
-        // `Clear()` runs `RequestStop()` and then blocks on
-        // `mStreamingWatcher->waitForFinished()`. The worker is parked on
-        // `releaseCv`, so we have to release it from another thread for
-        // `Clear()` to return. Spin a tiny releaser thread that fires the
-        // condition variable a fraction after `Clear()` has had a chance
-        // to call `RequestStop()`.
+        // `Clear()` blocks on `waitForFinished()`; release the worker from a
+        // separate thread so `Clear()` can return.
         std::thread releaser([&]() {
-            // Wait for the worker to clear the stop_requested check + emit.
-            // The condition variable is only signalled once the worker has
-            // already run through `OnBatch` + `OnFinished`, mirroring the
-            // ordering the QPromise-based test guaranteed.
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             {
                 std::lock_guard lock(releaseMutex);
@@ -926,13 +853,8 @@ private slots:
         model.Clear();
         releaser.join();
 
-        // Drain the OnBatch / OnFinished lambdas the worker posted via
-        // QMetaObject::invokeMethod / Qt::QueuedConnection. With the fix
-        // both observe a stale generation and short-circuit; without it
-        // the OnBatch lambda would call AppendBatch on the cleared model
-        // (rowCount 0 -> 1, plus a UAF on the now-destroyed `LogFile`
-        // when CopyLine is queried) and the OnFinished lambda would emit
-        // a duplicate streamingFinished.
+        // Drain the queued lambdas; with the fix both observe a stale
+        // generation and short-circuit.
         QCoreApplication::processEvents();
 
         QCOMPARE(finishedSpy.count(), 1);
@@ -941,10 +863,8 @@ private slots:
     }
 
 private:
-    // Shared helper for the four ISO/timestamp fixtures: asserts that the
-    // `"timestamp"` column is auto-promoted (Type::time) and every row's
-    // DisplayRole matches the auto-promoted `%F %H:%M:%S` printFormat. Lives
-    // outside `private slots:` so moc doesn't expose it as a test method.
+    // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
+    // so moc doesn't expose it as a test method.
     void AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount)
     {
         QCOMPARE(run.finishedCount, 1);

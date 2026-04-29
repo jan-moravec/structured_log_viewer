@@ -9,11 +9,8 @@
 namespace test_common
 {
 
-// Lightweight JSON-line abstraction shared between the Catch2-based tests/
-// benchmarks and the standalone `log_generator` console app. Mirrors what
-// used to live as `TestJsonLogFile::Line` inside `test/lib/include/common.hpp`
-// but with no Catch2 dependency so binaries that don't link the test framework
-// can still consume it.
+// Lightweight JSON-line abstraction shared between Catch2-based tests/
+// benchmarks and the standalone `log_generator`; intentionally Catch2-free.
 class JsonLogLine
 {
 public:

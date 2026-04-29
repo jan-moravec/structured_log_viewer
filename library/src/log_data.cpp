@@ -137,8 +137,8 @@ void LogData::Merge(LogData &&other)
 
 void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets)
 {
-    // No per-batch `mLines.reserve(...)`: STL `reserve(n)` is "grow to exactly n",
-    // so it would reallocate every batch (O(N^2/B)). Rely on geometric growth.
+    // No per-batch `reserve` (STL grows to exactly n → O(N^2/B)); rely on
+    // geometric `push_back` growth.
     if (!lines.empty())
     {
         for (auto &line : lines)
@@ -150,12 +150,7 @@ void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> line
 
     if (!mFiles.empty() && !lineOffsets.empty())
     {
-        // Streaming `AppendBatch` always targets the *only* file installed
-        // by `LogTable::BeginStreaming`; multi-file scenarios go through
-        // `Merge` instead. If a future code path ever pushes a second file
-        // onto `mFiles` mid-stream, the front-only `AppendLineOffsets`
-        // below would silently drop offsets onto the wrong file, so pin the
-        // single-file invariant explicitly.
+        // Streaming installs exactly one file; multi-file goes through `Merge`.
         assert(mFiles.size() == 1);
         mFiles.front()->AppendLineOffsets(lineOffsets);
     }

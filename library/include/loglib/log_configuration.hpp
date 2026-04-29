@@ -29,24 +29,13 @@ struct LogConfiguration
         std::string header;
         std::vector<std::string> keys;
         std::string printFormat;
-        /// Per-cell rendering type.
+        /// Per-cell rendering type. `Type::any` renders via `printFormat`;
+        /// `Type::time` pre-parses into a `TimeStamp` for numeric sort/filter.
         ///
-        /// - `Type::any` — render the underlying `LogValue` variant
-        ///   verbatim via `printFormat`.
-        /// - `Type::time` — pre-parse into a `TimeStamp` so sorting and
-        ///   the time-range filter work numerically.
-        ///
-        /// **`Type::time` promotion is destructive**, in two ways:
-        ///   1. Stage B replaces the per-line `LogValue` with the parsed
-        ///      `TimeStamp` in place; the original string is gone.
-        ///   2. The streaming path auto-flips a `Type::any` column to
-        ///      `Type::time` when a newly-seen key matches the timestamp
-        ///      heuristic (`timestamp`, `time`, `ts`, …). Already-promoted
-        ///      rows can't be reverted without `LogTable::Reset()`.
-        ///
-        /// Invisible to GUI users (the round-tripped print form matches
-        /// the input), but visible to programmatic consumers that diff a
-        /// saved configuration against the in-memory one.
+        /// **`Type::time` promotion is destructive**: Stage B replaces the
+        /// per-line `LogValue` with the parsed `TimeStamp` in place, and the
+        /// streaming path auto-flips `Type::any` → `Type::time` for keys
+        /// matching the timestamp heuristic. Only `LogTable::Reset()` reverts.
         Type type = Type::any;
         std::vector<std::string> parseFormats;
     };
@@ -93,18 +82,15 @@ public:
     /// Rebuilds the configuration from @p logData. Not safe to call mid-stream.
     void Update(const LogData &logData);
 
-    /// Append-only extension used by the streaming path: appends any key
-    /// in @p newKeys not already configured, auto-promoting timestamp-
-    /// named keys (`timestamp`, `time`, `ts`, `@timestamp`, …) to
-    /// `Type::time`. Existing column indices stay put so Qt's
-    /// `beginInsertColumns` stays valid. **Auto-promotion is destructive
-    /// on `Column::type`** — see `LogConfiguration::Column::type`.
+    /// Append-only extension used by the streaming path: appends keys not
+    /// already configured, auto-promoting timestamp-named keys (`timestamp`,
+    /// `time`, `ts`, `@timestamp`, …) to `Type::time`. Existing column
+    /// indices stay put. \see `LogConfiguration::Column::type` for the
+    /// destructive-promotion contract.
     void AppendKeys(const std::vector<std::string> &newKeys);
 
-    /// Non-mutating count of @p newKeys an `AppendKeys` call would add as
-    /// fresh columns. Used by `LogTable::PreviewAppend` so
-    /// `LogModel::AppendBatch` can fire `beginInsertColumns` before the
-    /// underlying mutation (Qt's begin-before-mutate contract).
+    /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
+    /// Used by `LogTable::PreviewAppend` for Qt's begin-before-mutate contract.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
     const LogConfiguration &Configuration() const;

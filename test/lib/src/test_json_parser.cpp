@@ -503,7 +503,7 @@ TEST_CASE("Parse file whose last line lacks a trailing newline", "[json_parser]"
 
 TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_parser]")
 {
-    // Parse will end with first invalid line
+    // Invalid lines are reported as errors but do not abort the parse.
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
         {glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json", glz::generic_sorted_u64{{"key2", "value2"}}}
@@ -528,8 +528,7 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
 
 TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[json_parser]")
 {
-    // Parse will end with first invalid line
-
+    // Invalid lines accumulate as errors; valid ones still land in the result.
     loglib::JsonParser parser;
     TestJsonLogFile testFile(
         {glz::generic_sorted_u64{{"key1", "value1"}},
@@ -695,21 +694,16 @@ TEST_CASE(
     "[json_parser][per_worker_cache]"
 )
 {
-    // A 100-line stream that uses only 5 fixed keys must leave
-    // `KeyIndex::LoadGetOrInsertCount() <= effectiveThreads × 5`: the
-    // canonical lookup fires exactly once per (worker × key) pair on first
-    // sight, then every subsequent field key for that worker hits the
-    // per-worker `tsl::robin_map` cache instead. A regression that silently
-    // disabled the cache would push the count toward `lines × keys` = 500,
-    // tripping this bound by an order of magnitude.
+    // 100 lines, 5 fixed keys: the per-worker tsl::robin_map cache means
+    // `KeyIndex::LoadGetOrInsertCount() <= effectiveThreads × 5`. A
+    // disabled cache would balloon the count toward `lines × keys` = 500.
     using namespace loglib;
 
     constexpr size_t kLineCount = 100;
     constexpr unsigned int kThreads = 4;
 
-    // Build a fixture where every line carries the same 5 keys; the values vary so the lines
-    // are not byte-identical (avoids any hypothetical dedup short-circuit) but the key surface
-    // is locked to exactly {key1..key5}.
+    // Vary values so lines aren't byte-identical, but lock the key surface
+    // to {key1..key5}.
     std::vector<TestJsonLogFile::Line> lines;
     lines.reserve(kLineCount);
     for (size_t i = 0; i < kLineCount; ++i)
@@ -1085,17 +1079,11 @@ TEST_CASE(
 
 TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys", "[json_parser][extract_field_key]")
 {
-    // `ExtractFieldKey` uses simdjson's length-aware `field.escaped_key()` and
-    // keeps the fast/slow-path split intact: keys with no backslash become a
-    // `string_view` directly into the input; keys with any backslash byte
-    // fall back to `field.unescaped_key()` and an owned `std::string`. The
-    // four canonical key shapes below cover every observable code path; a
-    // regression would surface as a missing key in the canonical `KeyIndex`.
+    // Fast path (no backslash): view into source. Slow path (any backslash):
+    // owned `std::string` via `field.unescaped_key()`. The four shapes below
+    // cover every observable code path.
     using namespace loglib;
 
-    // Each line carries one peculiar key plus a stable value so the assertion can be
-    // keyed by line index. The raw-string contents are JSON-on-disk, i.e. backslashes
-    // are real characters in the bytes simdjson sees.
     std::vector<TestJsonLogFile::Line> lines;
     lines.emplace_back(R"({"plain": "v-plain"})");           // (a) fast path: no backslash
     lines.emplace_back(R"({"with\"quote": "v-quote"})");     // (b) slow path: escaped quote
@@ -1108,8 +1096,7 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == lines.size());
 
-    // Expected unescaped key per line, paired with the value it should reach. The keys
-    // are the post-unescape forms simdjson would produce — e.g. \u0041 collapses to A.
+    // Post-unescape form simdjson produces (e.g. \u0041 collapses to A).
     const std::vector<std::pair<std::string, std::string>> expected = {
         {"plain", "v-plain"},
         {"with\"quote", "v-quote"},
@@ -1129,21 +1116,12 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
 
 TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of EOF", "[json_parser][padding_tail]")
 {
-    // Every short fixture's last line ends within `SIMDJSON_PADDING` bytes
-    // of EOF, so Stage B's `!sourceIsStable` branch takes over and parses
-    // the line out of the per-worker `linePadded` scratch instead of the
-    // mmap directly. The slow path uses explicit `memcpy` + `memset` +
-    // length-aware `iterate` plus a one-shot `linePadded.resize(...)`
-    // sized to the largest line observed by the worker. This test
-    // exercises (1) the resize-on-grow branch when later lines are longer
-    // than earlier ones, and (2) the memcpy + memset + iterate body
-    // itself, which must produce values byte-identical to the fast path.
+    // Lines within `SIMDJSON_PADDING` of EOF go through the per-worker
+    // `linePadded` scratch instead of aliasing the mmap. Three monotonically
+    // growing payloads exercise both the resize-on-grow and the
+    // memcpy+memset+iterate body, which must match the fast path bit-for-bit.
     using namespace loglib;
 
-    // Three lines whose payloads grow monotonically, so the slow-path resize fires
-    // first on line 1, again on line 2, and not on line 3 (capacity already covers it).
-    // Padding is only ~64 bytes on Win/MSVC so even the longest line below sits well
-    // within SIMDJSON_PADDING of EOF for any reasonable file size.
     std::vector<TestJsonLogFile::Line> lines;
     lines.emplace_back(R"({"k":"a"})");                                    // shortest
     lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwx"})");             // longer
@@ -1177,25 +1155,15 @@ TEST_CASE(
     "[json_parser][duplicate_keys]"
 )
 {
-    // Above ~8 fields per line `InsertSorted` switches from its narrow-row
-    // linear back-scan to `std::lower_bound`. Duplicate-key semantics must
-    // remain identical across the threshold: when the same key appears
-    // more than once in a single JSON line, the *last* occurrence wins
-    // (matching the legacy `LogMap` insert behaviour the rest of the parser
-    // relies on).
-    //
-    // The narrow-row branch handled this by overwriting the equal-keyed slot it
-    // discovered while back-scanning. The new lower_bound branch checks the result
-    // for an exact-key match before emplacing. This test pins both branches at once
-    // by emitting one line that hits each side of the threshold and asserting that
-    // the duplicate-key value the parser keeps is the second one in document order.
+    // Above ~8 fields `InsertSorted` switches from linear back-scan to
+    // `std::lower_bound`. Last-write-wins must hold across the threshold;
+    // one wide and one narrow row pin both branches.
     using namespace loglib;
 
-    // (1) Wide row: 12 fields total, with `dup` duplicated. The 12 distinct field
-    //     positions push `out.size()` above the kInsertSortedLowerBoundThreshold (8)
-    //     well before the second `dup` arrives, so the duplicate handling exercises
-    //     the lower_bound branch. We hand-craft the JSON so simdjson preserves the
-    //     duplicate (`glz::generic_sorted_u64` would dedup at construction time).
+    // (1) Wide row: 12 fields with `dup` duplicated, exercising the
+    //     lower_bound branch (kInsertSortedLowerBoundThreshold is 8).
+    //     Hand-craft the JSON so simdjson preserves the duplicate
+    //     (`glz::generic_sorted_u64` would dedup at construction time).
     //
     // (2) Narrow row: 4 fields with `dup` duplicated. `out.size() < 8` for the
     //     entire line, so the linear back-scan branch handles it. Both rows must

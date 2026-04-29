@@ -52,7 +52,6 @@ TEST_CASE("Handle empty file", "[LogConfigurationManager]")
 
 TEST_CASE("Update with empty LogData should not modify configuration", "[LogConfigurationManager]")
 {
-    // Setup test configuration
     TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
@@ -60,20 +59,14 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
     logConfiguration.columns.push_back(defaultColumn);
     testLogConfiguration.Write(logConfiguration);
 
-    // Create a configuration and load the predefined configuration
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    // Initial configuration state
     const size_t initialColumnCount = manager.Configuration().columns.size();
 
-    // Create empty LogData
     LogData emptyLogData;
-
-    // Update with empty LogData
     manager.Update(emptyLogData);
 
-    // Verify configuration hasn't changed
     CHECK(manager.Configuration().columns.size() == initialColumnCount);
     CHECK(manager.Configuration().columns[0].header == defaultColumn.header);
     CHECK(manager.Configuration().columns[0].keys == defaultColumn.keys);
@@ -84,18 +77,15 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
 
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
 {
-    // Setup test configuration with an initial regular column
     TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back({"regular", {"regular"}, "{}", LogConfiguration::Type::any, {}});
     testLogConfiguration.Write(logConfiguration);
 
-    // Load the configuration
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    // Create LogData with mixed keys including a timestamp
     TestLogFile testLogFile;
     std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
     KeyIndex testKeys;
@@ -108,35 +98,24 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
-    // Update configuration with the new data
     manager.Update(logData);
 
-    // Verify configuration structure
     REQUIRE(manager.Configuration().columns.size() == 3);
 
-    // First column should be the timestamp
     CHECK(manager.Configuration().columns[0].header == "timestamp");
     CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::time);
 
-    // The other columns should follow
     CHECK(manager.Configuration().columns[1].header == "regular");
     CHECK(manager.Configuration().columns[2].header == "newKey");
 
-    // Verify timestamp has proper format settings
     CHECK(manager.Configuration().columns[0].printFormat == "%F %H:%M:%S");
     REQUIRE(manager.Configuration().columns[0].parseFormats.size() == 4);
     CHECK(manager.Configuration().columns[0].parseFormats[0] == "%FT%T%Ez");
 }
 
-// `IsKeyInAnyColumn` cache invalidation tests.
-//
-// The cache is private; we exercise it indirectly by observing that mutating
-// paths still produce the right column shape after a query populated it.
-// Every mutating path (`Load`, `Update`, `AppendKeys`) must flip the
-// cache-stale flag so the next query sees the freshly mutated column set.
-// A missed invalidation would either skip-add a column (false-positive
-// "already there") or double-add it (false-negative "absent" after a
-// rebuild already saw it).
+// `IsKeyInAnyColumn` cache-invalidation tests: every mutating path
+// (`Load`, `Update`, `AppendKeys`) must flip the cache-stale flag so the
+// next query reflects the new column set.
 
 TEST_CASE(
     "Cache: AppendKeys after a query sees the freshly appended key", "[LogConfigurationManager][cache_invalidation]"
@@ -144,19 +123,14 @@ TEST_CASE(
 {
     LogConfigurationManager manager;
 
-    // First AppendKeys call against an empty configuration. This builds the
-    // cache from an empty column set; the cache must stay coherent as we
-    // append a new column inside the AppendKeys loop.
+    // First AppendKeys builds the cache from an empty column set; it must
+    // stay coherent across the column appended below.
     manager.AppendKeys({"alpha"});
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "alpha");
 
-    // Second AppendKeys with a mix of the existing key + a new one. The
-    // existing-key check must hit the cache (so we do NOT add a duplicate
-    // "alpha" column) AND the new key must be added — i.e. AppendKeys keeps
-    // the in-flight cache consistent. A regression that forgets to insert the
-    // freshly added key into `mKeysInColumns` mid-loop would still be caught
-    // by the duplicate-key assertion.
+    // Existing-key check must hit the cache while the new key is added,
+    // and the duplicate "alpha" inside the call must not double-add.
     manager.AppendKeys({"alpha", "beta", "alpha"});
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "alpha");
@@ -170,16 +144,12 @@ TEST_CASE(
 {
     LogConfigurationManager manager;
 
-    // Seed via AppendKeys so the cache is built and lives across the next
-    // mutator. Without invalidation, the subsequent Update would either
-    // re-add "regular" (cache says "absent") or skip "timestamp" (cache says
-    // "present"); the assertions below catch both.
+    // Seed via AppendKeys so the cache is primed across the next mutator.
     manager.AppendKeys({"regular"});
     REQUIRE(manager.Configuration().columns.size() == 1);
 
-    // Build a LogData with a fresh timestamp key and a duplicate of the
-    // existing key. Update must (a) skip "regular" via the cache, (b) add
-    // "timestamp" as a Type::time column, and (c) shuffle it to position 0.
+    // Update must skip "regular", add "timestamp" as Type::time, and place
+    // it at position 0.
     TestLogFile testLogFile;
     std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
     KeyIndex testKeys;
@@ -218,12 +188,8 @@ TEST_CASE(
 
     LogConfigurationManager manager;
 
-    // Mutate the in-memory configuration before any Load so the cache is
-    // primed against keys that are not in the on-disk configuration. When
-    // Load replaces the configuration wholesale, a stale cache would still
-    // claim "stale_key" is present and the subsequent AppendKeys below would
-    // therefore skip adding it. The test asserts the post-Load cache reflects
-    // ONLY the loaded configuration.
+    // Prime the cache with a key that is NOT in the on-disk configuration;
+    // Load must replace the cache so the post-Load AppendKeys re-adds it.
     manager.AppendKeys({"stale_key"});
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "stale_key");
@@ -232,15 +198,13 @@ TEST_CASE(
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "loaded_key");
 
-    // The pre-Load `stale_key` is gone — AppendKeys MUST re-add it. A cache
-    // that survived Load would still claim stale_key is present and skip it.
+    // `stale_key` is gone post-Load; AppendKeys must re-add it.
     manager.AppendKeys({"stale_key", "loaded_key"});
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "loaded_key");
     CHECK(manager.Configuration().columns[1].header == "stale_key");
 
-    // A second Load against a different on-disk config replaces the column
-    // set again; the cache must once again reflect ONLY the loaded keys.
+    // A second Load again replaces the column set / cache wholesale.
     manager.Load(secondConfigOnDisk.GetFilePath());
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "other_key");
@@ -257,9 +221,8 @@ TEST_CASE(
     "[LogConfigurationManager][cache_invalidation]"
 )
 {
-    // Re-run the existing "Update with mixed keys organizes timestamp first"
-    // shape and assert the column-set parity. This is the regression boundary
-    // between the old `IsKeyInAnyColumn` free function and the cached member.
+    // Re-run the "mixed keys organizes timestamp first" shape with the
+    // cached path; regression boundary against the old free-function walk.
     TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back({"regular", {"regular"}, "{}", LogConfiguration::Type::any, {}});
@@ -292,10 +255,9 @@ TEST_CASE(
     "[LogConfigurationManager][cache_invalidation]"
 )
 {
-    // The cache mirrors `column.keys`, not `column.header`. Catch the easy
-    // mistake of caching headers instead of keys: build a column whose
-    // header and keys diverge, then assert AppendKeys does NOT double-add a
-    // column for any key already listed under another column's `keys`.
+    // The cache mirrors `column.keys`, not `column.header`. With diverging
+    // header/keys, AppendKeys must skip keys already listed under any
+    // column's `keys`.
     TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back({"display", {"raw_key", "alias"}, "{}", LogConfiguration::Type::any, {}});
@@ -306,10 +268,8 @@ TEST_CASE(
 
     manager.AppendKeys({"display", "raw_key", "alias", "fresh"});
 
-    // Existing column stays put; only "display" and "fresh" are new (header
-    // "display" is itself not in any column's keys, so it gets a column).
-    // "raw_key" and "alias" are matched against the existing column's keys
-    // and are skipped.
+    // Existing column stays; only "display" and "fresh" are added
+    // ("raw_key"/"alias" hit the keys cache).
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "display");
     CHECK(manager.Configuration().columns[1].header == "display"); // header reused; keys differ

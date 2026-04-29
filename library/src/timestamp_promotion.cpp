@@ -51,12 +51,9 @@ bool PromoteLineTimestamps(
         std::optional<LastValidTimestampParse> &lv = lastValid[i];
         LastTimestampBytesHit &bytesHit = bytesHits[i];
 
-        // Returns the field's `LogValue` by value; the caller binds it locally
-        // so that `AsStringView` can yield a view that stays valid for the
-        // remainder of the enclosing scope. Returning a `string_view` directly
-        // would dangle on the `std::string` alternative — `AsStringView` would
-        // hand back a view into the local's owned buffer, which is destroyed
-        // at function-return.
+        // Returns by value so the caller can bind it locally and feed it to
+        // `AsStringView`; returning a view directly would dangle on the
+        // `std::string` alternative.
         const auto getValueFor = [&line](KeyId keyId) -> LogValue {
             if (keyId == kInvalidKeyId)
             {

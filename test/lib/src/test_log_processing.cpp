@@ -34,7 +34,7 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
 
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
-    // Create a configuration with no timestamp columns
+    // Configuration with two non-time columns initially.
     LogConfiguration configuration;
     LogConfiguration::Column column;
     column.header = "key1";
@@ -44,16 +44,12 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     column.keys = {"key2"};
     configuration.columns.push_back(column);
 
-    // Parse timestamps
     auto errors = ParseTimestamps(logData, configuration);
-
-    // Verify no errors were returned since no timestamp columns exist
     CHECK(errors.empty());
 
     configuration.columns[0].type = LogConfiguration::Type::time;
     errors = ParseTimestamps(logData, configuration);
 
-    // All lines failed to parse the timestamp
     CHECK(errors.size() == logData.Lines().size());
 }
 
@@ -78,7 +74,7 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 
     LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
 
-    // Create a configuration with no timestamp columns
+    // Configuration with one Type::time column.
     LogConfiguration configuration;
     LogConfiguration::Column column;
     column.header = "key";
@@ -87,7 +83,6 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 
-    // Parse timestamps
     auto errors = ParseTimestamps(logData, configuration);
 
     CHECK(errors.empty());
@@ -174,10 +169,7 @@ TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496500000}});
     }
 
-    // Regression for #12: the previous implementation rejected
-    // `time_since_epoch().count() <= 0` as "parse failure", which
-    // misclassified the legitimate POSIX epoch (`1970-01-01T00:00:00Z`)
-    // and any pre-1970 timestamp.
+    // Regression for #12: epoch and pre-1970 timestamps are valid outputs.
     SECTION("Posix epoch is parsed (not reported as failure)")
     {
         TimeStamp out{};
@@ -254,8 +246,7 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
 
     SECTION("Sub-microsecond fractional precision")
     {
-        // 7+ digit fraction must round-trip to slow path so callers don't
-        // silently lose precision.
+        // 7+ digits must fall through to the slow path; no precision loss.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567", 'T', out));
     }
 
@@ -325,21 +316,18 @@ TEST_CASE("TimeStampToLocalMillisecondsSinceEpoch", "[log_processing]")
 {
     InitializeTimezoneData();
 
-    // Create a known UTC timestamp (2023-01-01 00:00:00 UTC)
+    // 2023-01-01 00:00:00 UTC.
     auto utcMicroseconds = date::sys_days{date::year{2023} / 1 / 1}.time_since_epoch();
     TimeStamp timestamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
         std::chrono::duration_cast<std::chrono::microseconds>(utcMicroseconds)
     };
 
-    // Convert to local milliseconds
     int64_t localMilliseconds = TimeStampToLocalMillisecondsSinceEpoch(timestamp);
 
-    // Get the timezone offset for verification
     static auto tz = date::current_zone();
     auto info = tz->get_info(timestamp);
     int64_t expectedOffset = std::chrono::duration_cast<std::chrono::milliseconds>(info.offset).count();
 
-    // Calculate expected milliseconds (UTC milliseconds + timezone offset)
     int64_t utcMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(utcMicroseconds).count();
     int64_t expectedMilliseconds = utcMilliseconds + expectedOffset;
 
@@ -350,19 +338,16 @@ TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
 {
     InitializeTimezoneData();
 
-    // Get the timezone for verification
     static auto tz = date::current_zone();
 
-    // Define test cases as a vector of microsecond values
     std::vector<int64_t> testMicroseconds = {
         0,                   // Epoch start time
-        -3600ll * 1000000ll, // One hour before epoch (1969-12-31 23:00:00 UTC)
-        1672574400000000ll   // 2023-01-01 12:00:00 UTC (a positive timestamp)
+        -3600ll * 1000000ll, // 1969-12-31 23:00:00 UTC
+        1672574400000000ll   // 2023-01-01 12:00:00 UTC
     };
 
     for (const auto &microseconds : testMicroseconds)
     {
-        // Calculate the expected result manually
         std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> testTime{
             std::chrono::microseconds{microseconds}
         };
@@ -371,7 +356,6 @@ TEST_CASE("UtcMicrosecondsToLocalMilliseconds", "[log_processing]")
         int64_t utcMilliseconds = microseconds / 1000;
         int64_t expectedMilliseconds = utcMilliseconds + expectedOffset;
 
-        // Test the function
         int64_t result = UtcMicrosecondsToLocalMilliseconds(microseconds);
         CHECK(result == expectedMilliseconds);
     }
@@ -381,15 +365,11 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 {
     InitializeTimezoneData();
 
-    // Create known test timestamps at different ranges
     std::vector<TimeStamp> testTimestamps = {
-        // Recent time
         std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
             std::chrono::microseconds{1672574400000000} // 2023-01-01 12:00:00 UTC
         },
-        // Epoch time
         std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{std::chrono::microseconds{0}},
-        // Pre-epoch time
         std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>{
             std::chrono::microseconds{-3600000000} // 1 hour before epoch
         }
@@ -397,19 +377,15 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 
     for (const auto &originalTimestamp : testTimestamps)
     {
-        // Convert to local milliseconds
         int64_t localMilliseconds = TimeStampToLocalMillisecondsSinceEpoch(originalTimestamp);
-
-        // Convert back to TimeStamp
         TimeStamp convertedTimestamp = LocalMillisecondsSinceEpochToTimeStamp(localMilliseconds);
 
-        // Calculate timestamps in milliseconds for comparison
         int64_t originalMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(originalTimestamp.time_since_epoch()).count();
         int64_t convertedMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(convertedTimestamp.time_since_epoch()).count();
 
-        // Verify the timestamps match (only compare millisecond precision since we're converting through milliseconds)
+        // Round-trip is millisecond-precision (the int64_t carrier).
         CHECK(originalMs == convertedMs);
     }
 }
@@ -418,19 +394,14 @@ TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
 {
     InitializeTimezoneData();
 
-    // Test with a specific known timestamp: 2023-05-15 10:30:45 UTC
-    // 1684146645000000 microseconds since epoch
+    // 2023-05-15 10:30:45 UTC.
     int64_t testMicroseconds = 1684146645000000;
 
-    // Get the expected format which should be "YYYY-MM-DD HH:MM:SS"
     std::string formattedDate = UtcMicrosecondsToDateTimeString(testMicroseconds);
 
-    // The expected format is "%F %T" which translates to "YYYY-MM-DD HH:MM:SS"
-    // We need to verify the structural format
     std::regex dateTimePattern(R"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.000)");
     CHECK(std::regex_match(formattedDate, dateTimePattern));
 
-    // Create the same timestamp manually to verify the actual values
     static auto tz = date::current_zone();
     std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{
         std::chrono::microseconds{testMicroseconds}
@@ -438,7 +409,6 @@ TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
     const date::zoned_time localTime{tz, std::chrono::round<std::chrono::milliseconds>(utcTime)};
     std::string expectedDate = date::format("%F %T", localTime);
 
-    // Verify the actual formatted output matches our expectation
     CHECK(formattedDate == expectedDate);
 }
 
@@ -446,24 +416,19 @@ TEST_CASE("TimeStampToDateTimeString", "[log_processing]")
 {
     InitializeTimezoneData();
 
-    // Test with extreme past date: 1900-01-01 00:00:00 UTC
-    // -2208988800000000 microseconds (approximately 70 years before Unix epoch)
+    // 1900-01-01 00:00:00 UTC (~70y before Unix epoch).
     TimeStamp pastDate{std::chrono::microseconds{-2208988800000000}};
     std::string pastFormatted = TimeStampToDateTimeString(pastDate);
 
-    // Verify format with regex pattern
     std::regex dateTimePattern(R"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.000)");
     CHECK(std::regex_match(pastFormatted, dateTimePattern));
 
-    // Test with extreme future date: 2100-01-01 00:00:00 UTC
-    // 4102444800000000 microseconds (approximately 130 years after Unix epoch)
+    // 2100-01-01 00:00:00 UTC (~130y after Unix epoch).
     TimeStamp futureDate{std::chrono::microseconds{4102444800000000}};
     std::string futureFormatted = TimeStampToDateTimeString(futureDate);
 
-    // Verify format
     CHECK(std::regex_match(futureFormatted, dateTimePattern));
 
-    // Manual verification of the timestamps
     static auto tz = date::current_zone();
 
     const date::zoned_time pastLocalTime{tz, std::chrono::round<std::chrono::milliseconds>(pastDate)};

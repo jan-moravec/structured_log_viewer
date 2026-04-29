@@ -81,19 +81,14 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 /// just appended in a streaming batch). Returns per-line failure messages.
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines);
 
-/// Tag for the `void` overload of `BackfillTimestampColumn` that does not
-/// build per-line "Failed to parse" strings. Used by `LogTable::AppendBatch`,
-/// which has no consumer for the error list and would otherwise pay a
-/// `fmt::format(...)` per failed row in the streaming hot path.
+/// Tag selecting the `void` overload that skips per-line "Failed to parse"
+/// formatting on the streaming hot path.
 enum class BackfillErrors : uint8_t
 {
     Discard
 };
 
-/// `void` overload — skips the per-line `fmt::format` allocation/format that
-/// the std::vector-returning overload pays for each failed parse. Use this
-/// from callers (e.g. the streaming `LogTable::AppendBatch`) that drop the
-/// error vector on the floor anyway.
+/// `void` overload of `BackfillTimestampColumn` that drops error messages.
 void BackfillTimestampColumn(
     const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
 );

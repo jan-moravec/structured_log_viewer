@@ -159,12 +159,8 @@ void RunParserPipeline(
 {
     sink.OnStarted();
 
-    // Both early-exit paths still need to honour the
-    // `StreamingLogSink` contract: at least one `OnBatch` must precede
-    // `OnFinished`. Emit a rows-empty batch with the canonical
-    // `firstLineNumber = 1` so sinks that lazily initialise on the first
-    // `OnBatch` (the contract the docstring promises) work uniformly with
-    // the streaming path.
+    // Honour the `StreamingLogSink` contract: emit at least one (possibly
+    // empty) `OnBatch` before `OnFinished` on every early-exit path.
     if (options.stopToken.stop_requested())
     {
         StreamedBatch tail;

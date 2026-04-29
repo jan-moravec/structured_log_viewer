@@ -106,16 +106,9 @@ template <class Value> LogValue ExtractStringValue(Value &value, bool sourceIsSt
 {
     // string_view path is only safe when simdjson iterates directly over the
     // mmap; the padded-scratch fallback yields views that dangle on the next line.
-    //
-    // The `raw_json_token()` -> `std::string_view` aliasing-into-source trick
-    // (and the `raw_json()` variant in `ExtractRawJsonValue` below) is
-    // pinned to the simdjson version fetched in
-    // `cmake/FetchDependencies.cmake` (currently `v4.6.3`). simdjson does
-    // not promise this aliasing across releases — when bumping the pinned
-    // tag, re-verify that `raw_json_token()` / `raw_json()` still return a
-    // `string_view` that points directly into the document buffer (i.e. no
-    // copy into the per-iterator scratch). The `[allocations]` benchmark's
-    // ≥99 % fast-path fraction is the regression signal if this changes.
+    // `raw_json_token()`/`raw_json()` aliasing into source is pinned to
+    // simdjson v4.6.3 (see `cmake/FetchDependencies.cmake`); re-verify on bump
+    // — the `[allocations]` benchmark's fast-path fraction is the regression signal.
     if (sourceIsStable)
     {
         std::string_view rawToken(value.raw_json_token());
@@ -169,12 +162,7 @@ struct ParseCache
 void EnsureCacheCapacity(ParseCache &cache, KeyId id)
 {
     const size_t needed = static_cast<size_t>(id) + 1;
-    // Grow geometrically: the previous implementation resized to exactly
-    // `needed`, which on a wide log with K columns turned the first batch
-    // into K linear `vector::resize` calls (each O(prevSize) when the
-    // capacity wasn't already sufficient). `max(needed, size * 2)` makes
-    // the amortised cost O(K) and matches the std::vector::push_back
-    // amortisation contract our hot loop expected.
+    // Geometric growth keeps the wide-log first-batch cost amortised O(K).
     auto growTo = [needed](auto &vec, auto fill) {
         if (vec.size() >= needed)
         {
@@ -488,11 +476,9 @@ void DecodeJsonBatch(
             line.remove_suffix(1);
         }
 
-        // `LogFile::GetLine` derives the line length as `stopOffset - startOffset - 1`,
-        // where the `- 1` is the trailing '\n' byte. When the final line of the file
-        // is unterminated we still owe `GetLine` that compensating byte, so push the
-        // virtual `fileSize + 1` sentinel instead of `fileSize`. Otherwise the last
-        // character of the line gets lopped off when `GetLine` is later called.
+        // `GetLine` subtracts 1 (the '\n') from the slice length; for an
+        // unterminated final line, push `fileSize + 1` as the sentinel so
+        // the last character is not lopped off.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
 
@@ -655,10 +641,7 @@ void JsonParser::ParseStreaming(
             return false;
         }
         const char *batchBegin = cursor;
-        // Compute `target` via a size-bounded advance. `cursor + batchSize`
-        // is technically UB if it lands more than one past `fileEnd` (a
-        // sub-batchSize file at default sizes always tripped this on the
-        // last batch). The size-bounded form keeps the pointer valid.
+        // Size-bounded advance: `cursor + batchSize` is UB past one-past-end.
         const size_t remaining = static_cast<size_t>(fileEnd - cursor);
         const size_t advance = std::min(batchSize, remaining);
         const char *target = cursor + advance;

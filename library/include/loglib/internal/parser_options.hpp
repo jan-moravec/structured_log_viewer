@@ -6,11 +6,8 @@ namespace loglib::internal
 {
 
 /// Tuning knobs for the streaming pipeline. A default-constructed instance
-/// reproduces the public `Parse(path)` behaviour. The struct lives behind
-/// `internal/` because production callers should never need to touch it; the
-/// fields exist so the unit tests and benchmarks can pin determinism (single
-/// thread, smaller batches) without the public `ParserOptions` surface
-/// growing test-only knobs.
+/// reproduces the public `Parse(path)` behaviour; tests and benchmarks use
+/// it to pin determinism (single thread, smaller batches).
 struct AdvancedParserOptions
 {
     /// Cap on per-process oneTBB parallelism so the parser does not monopolise

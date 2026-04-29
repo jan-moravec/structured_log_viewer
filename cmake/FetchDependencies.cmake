@@ -27,16 +27,15 @@ if(NOT USE_SYSTEM_DATE)
         FetchContent_MakeAvailable(date)
     endblock()
 
-    # Directories to store tzdata and windowsZones.xml in
+    # Stage tzdata and windowsZones.xml next to the binary so the date library
+    # can locate them at runtime via MANUAL_TZ_DB.
     set(TZDATA tzdata)
     set(TZDATA_DIR ${CMAKE_BINARY_DIR}/${TZDATA})
     set(TZDATA_FILE tzdata.tar.gz)
     set(WINDOWS_ZONES_FILE windowsZones.xml)
 
-    # Create the directories if they don't exist
     file(MAKE_DIRECTORY ${TZDATA_DIR})
 
-    # Download the latest windowsZones.xml
     if(NOT EXISTS ${TZDATA_DIR}/${WINDOWS_ZONES_FILE})
         file(
             DOWNLOAD https://raw.githubusercontent.com/unicode-org/cldr/master/common/supplemental/windowsZones.xml
@@ -45,14 +44,12 @@ if(NOT USE_SYSTEM_DATE)
         )
     endif()
 
-    # Download the latest tzdata
     if(NOT EXISTS ${CMAKE_BINARY_DIR}/${TZDATA_FILE})
         file(
             DOWNLOAD https://www.iana.org/time-zones/repository/tzdata-latest.tar.gz
             ${CMAKE_BINARY_DIR}/${TZDATA_FILE}
             SHOW_PROGRESS
         )
-        # Extract the latest tzdata
         execute_process(
             COMMAND ${CMAKE_COMMAND} -E tar xzf ${CMAKE_BINARY_DIR}/${TZDATA_FILE}
             WORKING_DIRECTORY ${TZDATA_DIR}
@@ -60,7 +57,6 @@ if(NOT USE_SYSTEM_DATE)
         )
     endif()
 
-    # Copy the timezone data next to the binary
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
         COMMAND_ERROR_IS_FATAL ANY

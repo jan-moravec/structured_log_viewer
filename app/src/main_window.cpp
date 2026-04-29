@@ -127,50 +127,32 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     mLayout->addWidget(mTableView, 1);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-    // Create the model
     mModel = new LogModel(mTableView);
-
-    // Create the view
     mTableView->setModel(mModel);
-
-    // Set selection behavior
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-
-    // Set selection mode to allow multiple selection
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
-
-    // Disable editing of individual cells
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-    // Set alternating row colors
     mTableView->setAlternatingRowColors(true);
 
     ApplyTableStyleSheet();
 
-    // Enable sorting
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
-    mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder); // Do not sort automatically
+    mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
 
-    // Resize columns to fit contents
     mTableView->resizeColumnsToContents();
 
-    // Set header customization
     mTableView->horizontalHeader()->setStyleSheet(R"(QHeaderView::section { padding: 8px; font-weight: bold; })");
     mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
     mTableView->horizontalHeader()->setStretchLastSection(true);
+    mTableView->horizontalHeader()->setHighlightSections(false);
+    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-    mTableView->horizontalHeader()->setHighlightSections(false); // No highlight on header click
-    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter); // Align headers
-
-    // Enable grid lines
     mTableView->setShowGrid(true);
-
-    // Set smooth scrolling (scroll per pixel)
     mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
@@ -217,11 +199,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         SetConfigurationUiEnabled(true);
         UpdateUi();
         UpdateStreamingStatus();
-        // Errors only get the post-parse summary on `Success` — a parse
-        // that ran to completion is the only flow where `mStreamingErrors`
-        // is the user's view of "issues encountered". Cancellation hides
-        // the summary (the user already knows what happened) and `Failed`
-        // surfaces a worker-side failure independently.
+        // Only `Success` produces a post-parse error summary; cancellation
+        // hides it and `Failed` surfaces independently.
         if (result == StreamingResult::Success)
         {
             ShowParseErrors("Error Parsing Logs", mModel->StreamingErrors());
@@ -230,8 +209,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     });
 
     QTimer::singleShot(0, [this] {
-        // Failure is reported via qCritical() rather than a modal dialog
-        // because under offscreen Qt (CI / apptest) modal dialogs hang.
+        // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
         std::vector<std::filesystem::path> searched;
         const auto tzdata = FindTzdata(searched);
 
@@ -352,8 +330,7 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         return;
     }
 
-    // Stream only single-file JSON opens; multi-file goes through the
-    // synchronous loop (the sink holds one parse generation at a time).
+    // Stream only single-file JSON opens; the sink holds one generation.
     const bool canStream = (dynamic_cast<loglib::JsonParser *>(parser.get()) != nullptr) && files.size() == 1;
 
     mModel->Clear();
@@ -365,8 +342,7 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         const bool started = OpenJsonStreaming(files.front(), errors);
         if (!started)
         {
-            // Streaming setup failed (e.g. mmap open error); fall back to
-            // synchronous JSON so the user still gets an error summary.
+            // Fall back to synchronous JSON so the user still gets a summary.
             try
             {
                 loglib::ParseResult result = parser->Parse(files.front().toStdString());
@@ -384,7 +360,7 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
             UpdateUi();
             ShowParseErrors("Error Parsing Logs", errors);
         }
-        // The streaming-started path shows its summary from `streamingFinished`.
+        // The streaming path shows its summary from `streamingFinished`.
         return;
     }
 
@@ -420,8 +396,7 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
 
 bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string> &errors)
 {
-    // Open on the GUI thread so file-open errors surface synchronously and
-    // the caller can fall back to the synchronous path.
+    // Open on the GUI thread so file-open errors are synchronous.
     std::unique_ptr<loglib::LogFile> logFile;
     try
     {
@@ -433,20 +408,15 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
         return false;
     }
 
-    // Snapshot the configuration BEFORE handing it to the parser. The
-    // `shared_ptr<const>` lets the worker read it lock-free; the GUI is
-    // gated against editing it via `SetConfigurationUiEnabled`. Snapshotting
-    // up-front means a configuration edit that sneaks past the UI gate
-    // cannot still affect the in-flight parse.
+    // Snapshot the configuration before handing it to the parser: the
+    // worker reads it lock-free, and a UI-gate-skipping edit cannot then
+    // affect the in-flight parse.
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
     mStreamingFileName = QFileInfo(file).fileName();
     if (!logFile)
     {
-        // No `LogFile` to install — fail early before flipping any of the
-        // streaming UI state. `LogModel::BeginStreaming` would otherwise
-        // accept the null and leave `mModel->Table().Data().Files()` empty,
-        // forcing us into a compensating `EndStreaming(true)` rollback.
+        // Fail early before flipping any streaming UI state.
         errors.push_back(std::string("Failed to open '") + file.toStdString() + "' for streaming");
         return false;
     }
@@ -457,24 +427,18 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
 
-    // Borrow the *same* `LogFile*` the model is about to take ownership of;
-    // emitted string_view values point into its mmap, so the file must
-    // outlive every emitted `LogLine`. Capturing the raw pointer before
-    // `std::move` is safe because `LogModel::BeginStreaming` installs the
-    // unique_ptr on the model, which keeps the `LogFile` alive at least
-    // until `Clear()` joins the worker.
+    // Borrow the same `LogFile*` the model is about to take ownership of;
+    // emitted string_view values point into its mmap. Capturing before the
+    // `std::move` is safe — the model keeps the file alive until `Clear()`
+    // joins the worker.
     loglib::LogFile *parseFile = logFile.get();
     QtStreamingLogSink *sink = mModel->Sink();
 
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
-    // `BeginStreaming(file, parseCallable)` collapses what used to be a
-    // `BeginStreaming(file)` + `SetStreamingFuture(QtConcurrent::run(...))`
-    // pair: the model now owns spawning the worker and parking the future
-    // (so there is no longer a window between "begin" and "set future"
-    // where `Clear()` had no future to wait on). Per-exception fall-through
-    // to a synthetic terminal batch lives inside the model.
+    // The model owns spawning the worker and parking the future, so
+    // `Clear()` always has a future to wait on.
     mModel->BeginStreaming(
         std::move(logFile),
         [sink, parseFile, options = std::move(options)](loglib::StopToken stopToken) mutable {
@@ -489,8 +453,7 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
 
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
 {
-    // The parser holds an immutable LogConfiguration snapshot; gate edits
-    // while streaming so they don't only affect post-streaming rows.
+    // The parser holds an immutable snapshot; gate edits while streaming.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
@@ -705,7 +668,7 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
 
 void MainWindow::OpenFileInternal(const QString &file, std::vector<std::string> &errors)
 {
-    // Attempt to load the file as a configuration first; if it fails, fall back to log parsing.
+    // Try as a configuration first; fall back to log parsing on failure.
     bool isConfiguration = true;
     try
     {

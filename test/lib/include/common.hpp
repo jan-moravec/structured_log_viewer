@@ -14,9 +14,6 @@
 class TestJsonLogFile
 {
 public:
-    // Alias the shared `JsonLogLine` so existing call sites (`TestJsonLogFile::Line`)
-    // keep compiling while the underlying type lives in `test_common` (Catch2-free)
-    // and is reusable from the standalone `log_generator` console app.
     using Line = test_common::JsonLogLine;
 
     TestJsonLogFile(std::string filePath = FILE_PATH);
