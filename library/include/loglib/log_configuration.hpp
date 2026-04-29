@@ -1,114 +1,117 @@
 #pragma once
 
-#include "log_data.hpp"
-
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace loglib
 {
 
-/**
- * @brief Represents the configuration for log data, including columns and filters.
- */
+// Forward-declared to avoid pulling the full `log_data.hpp` chain
+// (`log_file.hpp` / `key_index.hpp` / `log_line.hpp` and their robin_map
+// instantiations) into every consumer of this header. TUs that use
+// `LogData` directly include `log_data.hpp` themselves.
+class LogData;
+
 struct LogConfiguration
 {
-    /**
-     * @brief Enum to specify the type of data in a column.
-     */
     enum class Type
     {
-        any, ///< Any type of data.
-        time ///< Time-based data.
+        any,
+        time
     };
 
-    /**
-     * @brief Represents a column in the log configuration.
-     */
     struct Column
     {
-        std::string header;                    ///< The header name of the column.
-        std::vector<std::string> keys;         ///< Keys associated with the column.
-        std::string printFormat;               ///< Format string for printing the column data.
-        Type type = Type::any;                 ///< Type of the column data.
-        std::vector<std::string> parseFormats; ///< Formats for parsing the column data.
+        std::string header;
+        std::vector<std::string> keys;
+        std::string printFormat;
+        /// Per-cell rendering type. `Type::any` renders via `printFormat`;
+        /// `Type::time` pre-parses into a `TimeStamp` for numeric sort/filter.
+        ///
+        /// **`Type::time` promotion is destructive**: Stage B replaces the
+        /// per-line `LogValue` with the parsed `TimeStamp` in place, and the
+        /// streaming path auto-flips `Type::any` → `Type::time` for keys
+        /// matching the timestamp heuristic. Only `LogTable::Reset()` reverts.
+        Type type = Type::any;
+        std::vector<std::string> parseFormats;
     };
 
-    /**
-     * @brief Represents a filter for log data.
-     */
     struct LogFilter
     {
-        /**
-         * @brief Enum to specify the type of filter.
-         */
         enum class Type
         {
-            string, ///< String-based filter.
-            time    ///< Time-based filter.
+            string,
+            time
         };
 
-        /**
-         * @brief Enum to specify the matching criteria for the filter.
-         */
         enum class Match
         {
-            exactly,           ///< Exact match.
-            contains,          ///< Substring match.
-            regularExpression, ///< Regular expression match.
-            wildcard           ///< Wildcard match.
+            exactly,
+            contains,
+            regularExpression,
+            wildcard
         };
 
-        Type type;                               ///< Type of the filter.
-        int row;                                 ///< Row index to apply the filter.
-        std::optional<std::string> filterString; ///< String value for the filter.
-        std::optional<Match> matchType;          ///< Matching criteria for the filter.
-        std::optional<int64_t> filterBegin;      ///< Start range for time-based filters.
-        std::optional<int64_t> filterEnd;        ///< End range for time-based filters.
+        Type type;
+        int row;
+        std::optional<std::string> filterString;
+        std::optional<Match> matchType;
+        std::optional<int64_t> filterBegin;
+        std::optional<int64_t> filterEnd;
     };
 
-    std::vector<Column> columns;    ///< List of columns in the configuration.
-    std::vector<LogFilter> filters; ///< List of filters in the configuration.
+    std::vector<Column> columns;
+    std::vector<LogFilter> filters;
 };
 
-/**
- * @brief Manages the log configuration, including loading, saving, and updating it.
- */
+/// Manages the log configuration: loading, saving, and updating from
+/// observed data.
 class LogConfigurationManager
 {
 public:
     LogConfigurationManager() = default;
 
-    /**
-     * @brief Loads the log configuration from a file.
-     * @param path The path to the configuration file.
-     * @throws std::runtime_error if the file cannot be opened.
-     */
+    /// Throws `std::runtime_error` if the file cannot be opened.
     void Load(const std::filesystem::path &path);
-
-    /**
-     * @brief Saves the log configuration to a file.
-     * @param path The path to the configuration file.
-     * @throws std::runtime_error if the file cannot be opened.
-     */
     void Save(const std::filesystem::path &path) const;
 
-    /**
-     * @brief Updates the log configuration based on the provided log data.
-     * @param logData The log data used to update the configuration.
-     */
+    /// Rebuilds the configuration from @p logData. Not safe to call mid-stream.
     void Update(const LogData &logData);
 
-    /**
-     * @brief Retrieves the current log configuration.
-     * @return A constant reference to the log configuration.
-     */
+    /// Append-only extension used by the streaming path: appends keys not
+    /// already configured, auto-promoting timestamp-named keys (`timestamp`,
+    /// `time`, `ts`, `@timestamp`, …) to `Type::time`. Existing column
+    /// indices stay put. \see `LogConfiguration::Column::type` for the
+    /// destructive-promotion contract.
+    void AppendKeys(const std::vector<std::string> &newKeys);
+
+    /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
+    /// Used by `LogTable::PreviewAppend` for Qt's begin-before-mutate contract.
+    size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
+
+    /// Moves the column at @p srcIndex to @p destIndex, shifting the
+    /// intermediate columns by one slot. Used by the streaming path to
+    /// promote freshly-discovered timestamp columns to the front (matching
+    /// the `Update` synchronous-parse behaviour) once Qt has been informed
+    /// via `beginMoveColumns`. Indices must be in `[0, columns.size())`.
+    void MoveColumn(size_t srcIndex, size_t destIndex);
+
     const LogConfiguration &Configuration() const;
 
 private:
+    void EnsureKeyCacheBuilt() const;
+    bool IsKeyInAnyColumnCached(const std::string &key) const;
+
     LogConfiguration mConfiguration;
+
+    /// Cached "every key referenced by any column". Every mutator must flip
+    /// `mCacheStale`.
+    mutable std::unordered_set<std::string> mKeysInColumns;
+    mutable bool mCacheStale = true;
 };
 
 } // namespace loglib

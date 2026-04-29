@@ -1,0 +1,15 @@
+<RCC>
+    <qresource prefix="/fixtures">
+        <file>empty.jsonl</file>
+        <file>single_line.jsonl</file>
+        <file>value_types.jsonl</file>
+        <file>iso_t_timestamp.jsonl</file>
+        <file>iso_space_timestamp.jsonl</file>
+        <file>iso_offset_timestamp.jsonl</file>
+        <file>iso_fractional_timestamp.jsonl</file>
+        <file>alt_timestamp_keys.jsonl</file>
+        <file>mixed_columns.jsonl</file>
+        <file>invalid_lines.jsonl</file>
+        <file>mixed_tz_and_order.jsonl</file>
+    </qresource>
+</RCC>

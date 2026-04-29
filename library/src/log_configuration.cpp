@@ -1,5 +1,7 @@
 #include "loglib/log_configuration.hpp"
 
+#include "loglib/log_data.hpp"
+
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
@@ -8,19 +10,6 @@
 
 namespace
 {
-
-bool IsKeyInAnyColumn(const std::string &key, const std::vector<loglib::LogConfiguration::Column> &columns)
-{
-    for (const auto &column : columns)
-    {
-        if (std::find(column.keys.begin(), column.keys.end(), key) != column.keys.end())
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
 
 std::string ToLower(const std::string &str)
 {
@@ -41,7 +30,7 @@ bool IsTimestampKey(const std::string &key)
     );
 }
 
-// Glaze 7.x moved indentation_width out of the core opts struct into an inheritable option.
+// Glaze 7.x: indentation_width moved off of glz::opts into an inheritable option.
 struct PrettyOpts : glz::opts
 {
     uint8_t indentation_width = 4;
@@ -66,6 +55,7 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
         {
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
+        mCacheStale = true;
     }
     else
     {
@@ -95,17 +85,17 @@ void LogConfigurationManager::Save(const std::filesystem::path &path) const
 
 void LogConfigurationManager::Update(const LogData &logData)
 {
-    // Update configuration columns with new keys
-    for (const std::string &key : logData.Keys())
+    EnsureKeyCacheBuilt();
+    for (const std::string &key : logData.SortedKeys())
     {
-        if (!IsKeyInAnyColumn(key, mConfiguration.columns))
+        if (!IsKeyInAnyColumnCached(key))
         {
             if (IsTimestampKey(key))
             {
                 mConfiguration.columns.push_back(LogConfiguration::Column{
                     key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
-                // Timestamp should be the first column, all the others will be shifted
+                // Timestamps land in the first column; shift everything else right.
                 for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
                 {
                     std::swap(mConfiguration.columns[i], mConfiguration.columns[i - 1]);
@@ -117,13 +107,107 @@ void LogConfigurationManager::Update(const LogData &logData)
                     LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
                 );
             }
+            mKeysInColumns.insert(key);
         }
     }
+}
+
+void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
+{
+    // Always append — never reorder — to keep Qt's `beginInsertColumns` valid.
+    EnsureKeyCacheBuilt();
+    for (const std::string &key : newKeys)
+    {
+        if (IsKeyInAnyColumnCached(key))
+        {
+            continue;
+        }
+        if (IsTimestampKey(key))
+        {
+            mConfiguration.columns.push_back(LogConfiguration::Column{
+                key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+            });
+        }
+        else
+        {
+            mConfiguration.columns.push_back(LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
+            );
+        }
+        mKeysInColumns.insert(key);
+    }
+}
+
+void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
+{
+    if (srcIndex == destIndex || srcIndex >= mConfiguration.columns.size() ||
+        destIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    auto begin = mConfiguration.columns.begin();
+    if (srcIndex > destIndex)
+    {
+        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+    }
+    else
+    {
+        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+    }
+    // The cached key set is unchanged by a pure reorder.
+}
+
+size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
+{
+    if (newKeys.empty())
+    {
+        return 0;
+    }
+    EnsureKeyCacheBuilt();
+    // Mirror `AppendKeys`'s skip predicate plus a defensive in-input de-dupe.
+    std::unordered_set<std::string_view> alreadyCounted;
+    alreadyCounted.reserve(newKeys.size());
+    size_t count = 0;
+    for (const std::string &key : newKeys)
+    {
+        if (IsKeyInAnyColumnCached(key))
+        {
+            continue;
+        }
+        if (alreadyCounted.insert(std::string_view(key)).second)
+        {
+            ++count;
+        }
+    }
+    return count;
 }
 
 const LogConfiguration &LogConfigurationManager::Configuration() const
 {
     return mConfiguration;
+}
+
+void LogConfigurationManager::EnsureKeyCacheBuilt() const
+{
+    if (!mCacheStale)
+    {
+        return;
+    }
+    mKeysInColumns.clear();
+    mKeysInColumns.reserve(mConfiguration.columns.size() * 4);
+    for (const LogConfiguration::Column &column : mConfiguration.columns)
+    {
+        for (const std::string &key : column.keys)
+        {
+            mKeysInColumns.insert(key);
+        }
+    }
+    mCacheStale = false;
+}
+
+bool LogConfigurationManager::IsKeyInAnyColumnCached(const std::string &key) const
+{
+    EnsureKeyCacheBuilt();
+    return mKeysInColumns.find(key) != mKeysInColumns.end();
 }
 
 } // namespace loglib

@@ -8,6 +8,8 @@ option(USE_SYSTEM_MIO "Use system mandreyel mio library" OFF)
 option(USE_SYSTEM_GLAZE "Use system stephenberry Glaze library" OFF)
 option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
 option(USE_SYSTEM_ROBIN_MAP "Use system Tessil robin-map library" OFF)
+option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
+option(USE_SYSTEM_ARGPARSE "Use system p-ranav/argparse library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
@@ -20,19 +22,20 @@ if(NOT USE_SYSTEM_DATE)
     block()
         set(BUILD_TZ_LIB ON) # Enable building the time zone library
         set(MANUAL_TZ_DB ON) # Provide time zone database manually
+        set(CMAKE_POLICY_DEFAULT_CMP0069 NEW) # honour our IPO/LTO request on date-tz
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence date's `cmake_minimum_required(VERSION 3.7)` deprecation
         FetchContent_MakeAvailable(date)
     endblock()
 
-    # Directories to store tzdata and windowsZones.xml in
+    # Stage tzdata and windowsZones.xml next to the binary so the date library
+    # can locate them at runtime via MANUAL_TZ_DB.
     set(TZDATA tzdata)
     set(TZDATA_DIR ${CMAKE_BINARY_DIR}/${TZDATA})
     set(TZDATA_FILE tzdata.tar.gz)
     set(WINDOWS_ZONES_FILE windowsZones.xml)
 
-    # Create the directories if they don't exist
     file(MAKE_DIRECTORY ${TZDATA_DIR})
 
-    # Download the latest windowsZones.xml
     if(NOT EXISTS ${TZDATA_DIR}/${WINDOWS_ZONES_FILE})
         file(
             DOWNLOAD https://raw.githubusercontent.com/unicode-org/cldr/master/common/supplemental/windowsZones.xml
@@ -41,14 +44,12 @@ if(NOT USE_SYSTEM_DATE)
         )
     endif()
 
-    # Download the latest tzdata
     if(NOT EXISTS ${CMAKE_BINARY_DIR}/${TZDATA_FILE})
         file(
             DOWNLOAD https://www.iana.org/time-zones/repository/tzdata-latest.tar.gz
             ${CMAKE_BINARY_DIR}/${TZDATA_FILE}
             SHOW_PROGRESS
         )
-        # Extract the latest tzdata
         execute_process(
             COMMAND ${CMAKE_COMMAND} -E tar xzf ${CMAKE_BINARY_DIR}/${TZDATA_FILE}
             WORKING_DIRECTORY ${TZDATA_DIR}
@@ -56,7 +57,6 @@ if(NOT USE_SYSTEM_DATE)
         )
     endif()
 
-    # Copy the timezone data next to the binary
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${TZDATA_DIR} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TZDATA}
         COMMAND_ERROR_IS_FATAL ANY
@@ -69,8 +69,7 @@ if(NOT USE_SYSTEM_FMT)
     FetchContent_Declare(fmt GIT_REPOSITORY https://github.com/fmtlib/fmt.git GIT_TAG 12.1.0 SYSTEM EXCLUDE_FROM_ALL)
     FetchContent_MakeAvailable(fmt)
 
-    # SYSTEM includes don't apply to fmt's own translation units, so silence
-    # C4834 (discarded [[nodiscard]] in fmt/base.h) when fmt compiles itself.
+    # silence MSVC C4834 (discarded [[nodiscard]] in fmt/base.h) when fmt compiles itself
     if(MSVC)
         target_compile_options(fmt PRIVATE /wd4834)
     endif()
@@ -99,7 +98,10 @@ if(NOT USE_SYSTEM_MIO)
         SYSTEM
         EXCLUDE_FROM_ALL
     )
-    FetchContent_MakeAvailable(mio)
+    block()
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence mio's `cmake_minimum_required(VERSION 3.0)` deprecation
+        FetchContent_MakeAvailable(mio)
+    endblock()
 else()
     find_package(mio REQUIRED)
 endif()
@@ -126,13 +128,12 @@ if(NOT USE_SYSTEM_SIMDJSON)
         EXCLUDE_FROM_ALL
     )
     block()
-        set(SIMDJSON_BUILD_STATIC ON)
+        set(BUILD_SHARED_LIBS OFF) # static link; replaces deprecated SIMDJSON_BUILD_STATIC
         set(SIMDJSON_ENABLE_THREADS ON)
         FetchContent_MakeAvailable(simdjson)
     endblock()
 
-    # simdjson's PCH unconditionally includes <bit> (C++20); bump to C++20 to
-    # avoid MSVC STL4038.
+    # simdjson's PCH includes <bit> (C++20); bump to C++20 to avoid MSVC STL4038
     set_target_properties(simdjson PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 else()
     find_package(simdjson REQUIRED)
@@ -149,4 +150,41 @@ if(NOT USE_SYSTEM_ROBIN_MAP)
     FetchContent_MakeAvailable(robin_map)
 else()
     find_package(robin_map REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_TBB)
+    FetchContent_Declare(
+        tbb
+        GIT_REPOSITORY https://github.com/uxlfoundation/oneTBB.git
+        GIT_TAG v2022.3.0
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    block()
+        set(TBB_TEST OFF)
+        set(TBB_EXAMPLES OFF)
+        set(TBB_STRICT OFF) # don't let oneTBB's -Werror gate our build
+        set(BUILD_SHARED_LIBS ON) # parallel_pipeline relies on dynamic library state; static is unsupported upstream
+        set(TBB_VERIFY_DEPENDENCY_SIGNATURE OFF) # explicit value silences TBB's "disabled by default" WARNING
+        set(CMAKE_WARN_DEPRECATED OFF) # silence TBB's `cmake_policy(SET CMP0148 OLD)` deprecation
+        set(CMAKE_MESSAGE_LOG_LEVEL NOTICE) # hide chatty "HWLOC target ... doesn't exist" STATUS noise
+        FetchContent_MakeAvailable(tbb)
+    endblock()
+else()
+    # 2021.5 is the first release with the oneAPI-style tbb::filter_mode / tbb::parallel_pipeline API
+    find_package(TBB 2021.5 REQUIRED)
+endif()
+
+# argparse is only needed by the test/log_generator console helper (header-only)
+if(NOT USE_SYSTEM_ARGPARSE)
+    FetchContent_Declare(
+        argparse
+        GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+        GIT_TAG v3.1
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(argparse)
+else()
+    find_package(argparse REQUIRED)
 endif()

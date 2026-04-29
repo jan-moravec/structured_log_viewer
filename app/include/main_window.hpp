@@ -11,9 +11,11 @@
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QLabel>
 #include <QMainWindow>
 #include <QMimeData>
 #include <QPushButton>
+#include <QString>
 #include <QVBoxLayout>
 
 #include <memory>
@@ -71,6 +73,15 @@ private:
     void UpdateFilters();
     void ApplyTableStyleSheet();
 
+    /// Streams a JSON log through `LogParser::ParseStreaming` on a background
+    /// thread, locking the configuration UI for the parse.
+    /// @return true if streaming started; false if @p file could not be
+    /// opened (in which case @p errors carries the reason and the caller
+    /// falls back to the synchronous path).
+    bool OpenJsonStreaming(const QString &file, std::vector<std::string> &errors);
+    void SetConfigurationUiEnabled(bool enabled);
+    void UpdateStreamingStatus();
+
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
     LogFilterModel *mSortFilterProxyModel;
@@ -80,4 +91,21 @@ private:
     PreferencesEditor *mPreferencesEditor;
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
+
+    /// Status-bar label that shows "Parsing <file> — N lines, M errors"
+    /// while a streaming parse is in flight.
+    QLabel *mStatusLabel = nullptr;
+
+    /// Display name of the file currently being streamed; used to render
+    /// `mStatusLabel`. Empty when no parse is in flight.
+    QString mStreamingFileName;
+
+    /// True between `BeginStreaming` and the matching `streamingFinished`
+    /// signal. Used to gate the configuration UI and to suppress the
+    /// post-parse error summary on cancellation.
+    bool mStreamingActive = false;
+
+    /// Running line / error count snapshot for the status-bar label.
+    qsizetype mStreamingLineCount = 0;
+    qsizetype mStreamingErrorCount = 0;
 };

@@ -80,3 +80,6 @@ CMakeUserPresets.json
 
 # Build
 /build/
+
+# Third-party AI dev tasks helper (cloned alongside, not part of the project)
+/ai-dev-tasks-main/

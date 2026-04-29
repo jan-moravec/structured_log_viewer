@@ -1,76 +1,210 @@
 #include "loglib/log_processing.hpp"
 
+#include "loglib/internal/timestamp_promotion.hpp"
+
 #include <date/date.h>
 #include <date/tz.h>
 #include <fmt/format.h>
 
-namespace
-{
-
-using namespace loglib;
-
-bool ParseTimestampLine(LogLine &line, const std::string &key, const std::string &format)
-{
-    LogValue value = line.GetValue(key);
-    if (std::holds_alternative<std::string>(value))
-    {
-        const auto timeStampString = std::get<std::string>(value);
-        std::istringstream stream{timeStampString};
-        TimeStamp timestamp;
-        stream >> date::parse(format, timestamp);
-        if (stream && timestamp.time_since_epoch().count() > 0)
-        {
-            line.SetValue(key, timestamp);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-struct LastValidTimestampParse
-{
-    std::string key;
-    std::string format;
-};
-
-bool ParseTimestampLine(
-    LogLine &line, const LogConfiguration::Column &column, std::optional<LastValidTimestampParse> &lastValid
-)
-{
-    if (lastValid.has_value())
-    {
-        if (ParseTimestampLine(line, lastValid->key, lastValid->format))
-        {
-            return true;
-        }
-    }
-
-    for (const std::string &key : column.keys)
-    {
-        for (const std::string &format : column.parseFormats)
-        {
-            if (ParseTimestampLine(line, key, format))
-            {
-                lastValid = {key, format};
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-} // namespace
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <iterator>
+#include <sstream>
+#include <string>
+#include <string_view>
 
 namespace loglib
 {
 
+namespace
+{
+
+bool ParseFixedDigits(const char *p, size_t n, int &out)
+{
+    int value = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const char c = p[i];
+        if (c < '0' || c > '9')
+        {
+            return false;
+        }
+        value = value * 10 + (c - '0');
+    }
+    out = value;
+    return true;
+}
+
+} // namespace
+
+TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
+{
+    constexpr std::string_view kIsoT{"%FT%T"};
+    constexpr std::string_view kIsoSpace{"%F %T"};
+    if (format == kIsoT)
+    {
+        return TimestampFormatKind::Iso8601_T;
+    }
+    if (format == kIsoSpace)
+    {
+        return TimestampFormatKind::Iso8601_Space;
+    }
+    return TimestampFormatKind::Generic;
+}
+
+bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
+{
+    // Layout: YYYY-MM-DDsHH:MM:SS[.fff[fff]]
+    constexpr size_t kPrefixLen = 19;
+    if (sv.size() < kPrefixLen)
+    {
+        return false;
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (!ParseFixedDigits(sv.data() + 0, 4, year))
+    {
+        return false;
+    }
+    if (sv[4] != '-')
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + 5, 2, month))
+    {
+        return false;
+    }
+    if (sv[7] != '-')
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + 8, 2, day))
+    {
+        return false;
+    }
+    if (sv[10] != dateTimeSep)
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + 11, 2, hour))
+    {
+        return false;
+    }
+    if (sv[13] != ':')
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + 14, 2, minute))
+    {
+        return false;
+    }
+    if (sv[16] != ':')
+    {
+        return false;
+    }
+    if (!ParseFixedDigits(sv.data() + 17, 2, second))
+    {
+        return false;
+    }
+
+    int64_t fractionalUs = 0;
+    if (sv.size() > kPrefixLen)
+    {
+        if (sv[kPrefixLen] != '.')
+        {
+            return false;
+        }
+        const size_t fractionStart = kPrefixLen + 1;
+        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + 6);
+        size_t fractionEnd = fractionStart;
+        while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
+        {
+            ++fractionEnd;
+        }
+        const size_t fractionLen = fractionEnd - fractionStart;
+        // Empty / >6-digit fractions fall back to `date::parse`.
+        if (fractionLen == 0 || fractionEnd != sv.size())
+        {
+            return false;
+        }
+        for (size_t i = fractionStart; i < fractionEnd; ++i)
+        {
+            fractionalUs = fractionalUs * 10 + (sv[i] - '0');
+        }
+        for (size_t i = fractionLen; i < 6; ++i)
+        {
+            fractionalUs *= 10;
+        }
+    }
+
+    // Accept second == 60 to match `date::parse("%T")` leap-second handling.
+    if (hour > 23 || minute > 59 || second > 60)
+    {
+        return false;
+    }
+
+    const date::year_month_day ymd{
+        date::year{year}, date::month{static_cast<unsigned>(month)}, date::day{static_cast<unsigned>(day)}
+    };
+    if (!ymd.ok())
+    {
+        return false;
+    }
+
+    const auto days = date::sys_days{ymd};
+    const auto totalUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::seconds{hour * 3600 + minute * 60 + second}
+        ) +
+        std::chrono::microseconds{fractionalUs};
+    out = TimeStamp{totalUs};
+    // Syntactically valid Y/M/D/H/M/S/fraction is success; the POSIX epoch
+    // and pre-1970 timestamps are valid outputs, not failures.
+    return true;
+}
+
+bool TryParseGenericTimestamp(
+    std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
+)
+{
+    scratch.str.assign(sv.data(), sv.size());
+    scratch.stream.clear();
+    scratch.stream.str(scratch.str);
+    out = TimeStamp{};
+    scratch.stream >> date::parse(format, out);
+    // Stream-fail bit alone is the success signal: the POSIX epoch and
+    // pre-1970 timestamps are valid outputs.
+    return !scratch.stream.fail();
+}
+
+bool TryParseTimestamp(
+    std::string_view sv,
+    const std::string &format,
+    TimestampFormatKind kind,
+    TimestampParseScratch &scratch,
+    TimeStamp &out
+)
+{
+    switch (kind)
+    {
+    case TimestampFormatKind::Iso8601_T:
+        return TryParseIsoTimestamp(sv, 'T', out);
+    case TimestampFormatKind::Iso8601_Space:
+        return TryParseIsoTimestamp(sv, ' ', out);
+    case TimestampFormatKind::Generic:
+    default:
+        return TryParseGenericTimestamp(sv, format, scratch, out);
+    }
+}
+
 const date::time_zone *CurrentZone()
 {
-    // date::current_zone() depends on the tzdata database that `Initialize` installs, so it
-    // must not be called before Initialize returns. Caching here in a single place keeps
-    // every formatter/converter using the same zone instance.
     static const date::time_zone *tz = date::current_zone();
     return tz;
 }
@@ -78,7 +212,93 @@ const date::time_zone *CurrentZone()
 void Initialize(const std::filesystem::path &tzdata)
 {
     date::set_install(tzdata.string());
-    static_cast<void>(date::current_zone()); // Test the database
+    static_cast<void>(date::current_zone());
+}
+
+namespace
+{
+
+/// Builds the per-line scratch state shared by both `BackfillTimestampColumn`
+/// overloads. Returns `false` when @p lines is empty, in which case the
+/// caller should bail out (the spec arrays are not built).
+bool MakeBackfillState(
+    const LogConfiguration::Column &column,
+    std::span<LogLine> lines,
+    std::array<detail::TimeColumnSpec, 1> &specsOut,
+    std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
+    std::vector<detail::LastTimestampBytesHit> &bytesHitsOut
+)
+{
+    if (lines.empty())
+    {
+        return false;
+    }
+
+    const KeyIndex &keyIndex = lines.front().Keys();
+    detail::TimeColumnSpec spec;
+    spec.keyIds.reserve(column.keys.size());
+    for (const std::string &key : column.keys)
+    {
+        spec.keyIds.push_back(keyIndex.Find(key));
+    }
+    spec.parseFormats = column.parseFormats;
+    spec.formatKinds.reserve(spec.parseFormats.size());
+    for (const std::string &format : spec.parseFormats)
+    {
+        spec.formatKinds.push_back(ClassifyTimestampFormat(format));
+    }
+    specsOut[0] = std::move(spec);
+    lastValidOut.assign(1, std::nullopt);
+    bytesHitsOut.assign(1, detail::LastTimestampBytesHit{});
+    return true;
+}
+
+} // namespace
+
+std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
+{
+    std::vector<std::string> errors;
+    std::array<detail::TimeColumnSpec, 1> specs;
+    std::vector<std::optional<LastValidTimestampParse>> lastValid;
+    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
+    {
+        return errors;
+    }
+
+    TimestampParseScratch scratch;
+    for (auto &line : lines)
+    {
+        if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch))
+        {
+            errors.emplace_back(fmt::format(
+                "Failed to parse a timestamp for column '{}' from line number {}",
+                column.header,
+                line.FileReference().GetLineNumber()
+            ));
+        }
+    }
+    return errors;
+}
+
+void BackfillTimestampColumn(
+    const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
+)
+{
+    static_cast<void>(discardErrors);
+    std::array<detail::TimeColumnSpec, 1> specs;
+    std::vector<std::optional<LastValidTimestampParse>> lastValid;
+    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
+    {
+        return;
+    }
+
+    TimestampParseScratch scratch;
+    for (auto &line : lines)
+    {
+        static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch));
+    }
 }
 
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
@@ -90,17 +310,11 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
         const LogConfiguration::Column &column = configuration.columns[i];
         if (column.type == LogConfiguration::Type::time)
         {
-            std::optional<LastValidTimestampParse> lastValid;
-            for (auto &line : logData.Lines())
+            auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
+            if (!columnErrors.empty())
             {
-                if (!ParseTimestampLine(line, column, lastValid))
-                {
-                    errors.emplace_back(fmt::format(
-                        "Failed to parse a timestamp for column '{}' from line number {}",
-                        column.header,
-                        line.FileReference().GetLineNumber()
-                    ));
-                }
+                errors.reserve(errors.size() + columnErrors.size());
+                std::move(columnErrors.begin(), columnErrors.end(), std::back_inserter(errors));
             }
         }
     }

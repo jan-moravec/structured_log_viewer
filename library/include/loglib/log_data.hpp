@@ -1,5 +1,6 @@
 #pragma once
 
+#include "key_index.hpp"
 #include "log_file.hpp"
 #include "log_line.hpp"
 
@@ -10,71 +11,53 @@
 namespace loglib
 {
 
-/**
- * @brief Collection of log data loaded from log files.
- *
- */
+/// Collection of log data loaded from one or more log files. Owns the canonical
+/// `KeyIndex`; every owned `LogLine` resolves keys through it.
 class LogData
 {
 public:
-    /**
-     * @brief Empty data collection.
-     *
-     */
-    LogData() = default;
+    LogData();
 
-    /**
-     * @brief Log data collection.
-     *
-     * @param files Log file.
-     * @param lines Log lines.
-     * @param keys Log keys.
-     */
-    LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, std::vector<std::string> keys);
+    /// Constructs a `LogData` and rebinds each line's `KeyIndex` back-pointer
+    /// to @p keys, so lines built against a temporary KeyIndex stay valid.
+    LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, KeyIndex keys);
 
-    // Deleted copy constructor and copy assignment operator for efficiency.
-    LogData(LogData &) = delete;
+    LogData(const LogData &) = delete;
     LogData &operator=(const LogData &) = delete;
 
-    // Defaulted move constructor and move assignment operator.
-    LogData(LogData &&) = default;
-    LogData &operator=(LogData &&) = default;
+    /// Move ops rebind each line's `KeyIndex` back-pointer to the new owner.
+    LogData(LogData &&other) noexcept;
+    LogData &operator=(LogData &&other) noexcept;
 
-    /**
-     * @brief Get the log files.
-     *
-     * @return const reference to the vector of unique pointers to LogFile.
-     */
     const std::vector<std::unique_ptr<LogFile>> &Files() const;
     std::vector<std::unique_ptr<LogFile>> &Files();
 
-    /**
-     * @brief Get the log lines.
-     *
-     * @return const reference to the vector of LogLine objects.
-     */
     const std::vector<LogLine> &Lines() const;
     std::vector<LogLine> &Lines();
 
-    /**
-     * @brief Get the log keys.
-     *
-     * @return const reference to the vector of strings representing log keys.
-     */
-    const std::vector<std::string> &Keys() const;
-    std::vector<std::string> &Keys();
+    const KeyIndex &Keys() const;
+    KeyIndex &Keys();
 
-    /**
-     * @brief Merge another LogData object into this one.
-     *
-     * @param other The LogData object to merge into this one.
-     */
+    /// Sorted snapshot of the registered keys. Cold path.
+    std::vector<std::string> SortedKeys() const;
+
+    /// Whether Stage B already promoted timestamp columns in the parser, so
+    /// `LogTable::Update` can skip the whole-data pass.
+    bool TimestampsAlreadyParsed() const;
+    void MarkTimestampsParsed();
+
+    /// Merges @p other in place, rewiring back-pointers and remapping KeyIds
+    /// to this side's canonical `KeyIndex`.
     void Merge(LogData &&other);
+
+    /// Streaming append of a pre-parsed batch.
+    void AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets);
 
 private:
     std::vector<std::unique_ptr<LogFile>> mFiles;
     std::vector<LogLine> mLines;
-    std::vector<std::string> mKeys;
+    KeyIndex mKeys;
+    bool mTimestampsAlreadyParsed = false;
 };
 
 } // namespace loglib

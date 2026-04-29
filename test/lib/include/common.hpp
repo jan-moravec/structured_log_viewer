@@ -2,6 +2,8 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
 
+#include <test_common/json_log_line.hpp>
+
 #include <glaze/glaze.hpp>
 
 #include <filesystem>
@@ -12,17 +14,7 @@
 class TestJsonLogFile
 {
 public:
-    struct Line
-    {
-        Line(const char *line);
-        Line(glz::generic_sorted_u64 json);
-
-        using Type = std::variant<std::string, glz::generic_sorted_u64>;
-        Type data;
-
-        std::string ToString() const;
-        void Parse(std::vector<std::string> &strings, std::vector<glz::generic_sorted_u64> &jsons) const;
-    };
+    using Line = test_common::JsonLogLine;
 
     TestJsonLogFile(std::string filePath = FILE_PATH);
     TestJsonLogFile(Line line, std::string filePath = FILE_PATH);

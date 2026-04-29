@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.28)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
@@ -16,6 +16,8 @@ set(PROJECT_SOURCES
     include/main_window.hpp
     src/log_model.cpp
     include/log_model.hpp
+    src/qt_streaming_log_sink.cpp
+    include/qt_streaming_log_sink.hpp
     src/log_table_view.cpp
     include/log_table_view.hpp
     src/find_record_widget.cpp
@@ -32,9 +34,6 @@ set(PROJECT_SOURCES
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})
 
-# Define target properties for Android with Qt 6 as: set_property(TARGET app APPEND PROPERTY
-# QT_ANDROID_PACKAGE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/android) For more information, see
-# https://doc.qt.io/qt-6/qt-add-executable.html#target-creation
 target_include_directories(logapp PUBLIC ./include)
 
 target_link_libraries(logapp PUBLIC Qt${QT_VERSION_MAJOR}::Widgets loglib project_warnings)
@@ -77,5 +76,22 @@ install(
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# On Windows the TBB runtime DLL (tbb12.dll) is loaded from the directory next to the
+# executable. Copy it into the build tree so the binary can be launched directly from
+# build/, and install it next to the binary so the packaged release works too. On
+# non-Windows platforms TBB::tbb is resolved via rpath (FetchContent build) or distro
+# library paths (USE_SYSTEM_TBB=ON), so no copy step is needed.
+if(WIN32)
+    add_custom_command(
+        TARGET StructuredLogViewer
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TBB::tbb> $<TARGET_FILE_DIR:StructuredLogViewer>
+        COMMENT "Copying TBB runtime DLL next to StructuredLogViewer.exe"
+        VERBATIM
+    )
+
+    install(FILES $<TARGET_FILE:TBB::tbb> DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 qt_finalize_executable(StructuredLogViewer)

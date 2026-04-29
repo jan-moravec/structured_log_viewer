@@ -63,7 +63,6 @@ void AppearanceControl::LoadConfiguration()
         }
         else
         {
-            // Invalid style configuration
             settings.remove(CONFIGURATION_STYLE);
             mConfiguration.style.clear();
         }
@@ -77,7 +76,6 @@ void AppearanceControl::LoadConfiguration()
         }
         else
         {
-            // Invalid font configuration
             settings.remove(CONFIGURATION_FONT);
             mConfiguration.font.clear();
         }

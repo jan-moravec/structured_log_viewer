@@ -42,6 +42,7 @@ repos:
     rev: v2.4.2
     hooks:
       - id: codespell
+        args: [--ignore-words-list=merrors]
 
   - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
     rev: v1.7.12.24

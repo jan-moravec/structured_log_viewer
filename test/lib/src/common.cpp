@@ -128,15 +128,13 @@ TestLogFile::~TestLogFile()
 
 std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 {
-    // Use a binary stream so std::streampos values match the byte offsets stored in
-    // LogFile::mLineOffsets on every platform (no CRLF translation).
+    // Binary stream so streampos matches LogFile's byte offsets on every
+    // platform (no CRLF translation).
     std::ifstream file(GetFilePath(), std::ios::binary);
     auto logFile = std::make_unique<LogFile>(GetFilePath());
 
-    // Scan for '\n' in the raw bytes and push one offset per
-    // line. When the file does not end with a newline, push `fileSize + 1` as the virtual
-    // terminator so GetLine's `stop - start - 1` size computation stays valid for the final
-    // line.
+    // Push one offset per '\n'; for an unterminated last line, push
+    // `fileSize + 1` as the virtual terminator (see LogFile::GetLine).
     char ch = '\0';
     std::size_t pos = 0;
     while (file.get(ch))
@@ -157,71 +155,34 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 
 void InitializeTimezoneData()
 {
+    // Walk up the CWD ancestor chain for a sibling `tzdata/`. Both stop
+    // conditions are required: `parent.empty()` for POSIX root, and
+    // `parent == path` for Windows roots (`"C:\\"` is its own parent).
     static const auto TZ_DATA = std::filesystem::path("tzdata");
     std::filesystem::path path = std::filesystem::current_path();
     while (true)
     {
         const auto tzdataPath = path / TZ_DATA;
-        if (std::filesystem::exists(tzdataPath))
+        std::error_code ec;
+        if (std::filesystem::exists(tzdataPath, ec))
         {
             loglib::Initialize(tzdataPath);
+            return;
+        }
+        const auto parent = path.parent_path();
+        if (parent.empty() || parent == path)
+        {
             break;
         }
-        path = path.parent_path();
-        REQUIRE(!path.empty());
+        path = parent;
     }
-}
 
-TestJsonLogFile::Line::Line(const char *line)
-{
-    glz::generic_sorted_u64 json;
-    auto error = glz::read_json(json, line);
-    if (!error)
-    {
-        data = std::move(json);
-    }
-    else
-    {
-        data = std::string(line);
-    }
-}
-
-TestJsonLogFile::Line::Line(glz::generic_sorted_u64 json) : data(std::move(json))
-{
-}
-
-std::string TestJsonLogFile::Line::ToString() const
-{
-    return std::visit(
-        [](const auto &data) -> std::string {
-            using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, glz::generic_sorted_u64>)
-            {
-                return glz::write_json(data).value_or("");
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                return data;
-            }
-        },
-        data
-    );
-}
-
-void TestJsonLogFile::Line::Parse(std::vector<std::string> &strings, std::vector<glz::generic_sorted_u64> &jsons) const
-{
-    std::visit(
-        [&](const auto &data) {
-            using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, glz::generic_sorted_u64>)
-            {
-                jsons.push_back(data);
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                strings.push_back(data);
-            }
-        },
-        data
+    FAIL(
+        "InitializeTimezoneData(): no `tzdata` directory found along the "
+        "ancestor chain of the current working directory ("
+        << std::filesystem::current_path().string()
+        << "). Run the binary via `ctest --preset local` or invoke it from a "
+           "directory whose ancestor chain contains the staged `tzdata/` "
+           "(typically `build/<preset>/bin/<config>/`)."
     );
 }

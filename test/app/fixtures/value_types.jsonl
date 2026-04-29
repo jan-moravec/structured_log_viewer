@@ -1,0 +1,3 @@
+{"str":"alpha","int":-7,"uint":18446744073709551610,"dbl":3.14,"flag":true,"nul":null,"obj":{"k":"v"},"arr":[1,2,3]}
+{"str":"beta","int":0,"uint":0,"dbl":0.0,"flag":false,"nul":null,"obj":{},"arr":[]}
+{"str":"gamma","int":42,"uint":1,"dbl":-2.5,"flag":true,"nul":null,"obj":{"nested":{"deep":1}},"arr":["x","y"]}

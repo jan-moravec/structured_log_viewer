@@ -1,102 +1,100 @@
 #pragma once
 
+#include "loglib/key_index.hpp"
 #include "loglib/log_file.hpp"
 
-#include <tsl/robin_map.h>
-
 #include <chrono>
+#include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
 namespace loglib
 {
 
-/**
- * @brief Represents a timestamp for a log entry.
- *
- * The timestamp is stored with a precision of microseconds, which is generally
- * the highest precision achievable on modern systems for inter-process communication.
- */
+/// Microsecond-precision timestamp.
 using TimeStamp = std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds>;
 
-/**
- * @brief Represents a value in a log entry.
- *
- * A log value can be one of several types, including string, integer, floating-point,
- * boolean, timestamp, or an empty state (std::monostate).
- */
-using LogValue = std::variant<std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
+/// One field's value. `string_view` aliases the memory-mapped log file
+/// (which outlives every referencing `LogLine`); `string` covers values
+/// that cannot live in the mmap (e.g. JSON-escape-decoded strings).
+///
+/// Adding new alternatives is safest at the end; consumers should switch
+/// on the alternative type, not the index.
+using LogValue =
+    std::variant<std::string_view, std::string, int64_t, uint64_t, double, bool, TimeStamp, std::monostate>;
 
-/**
- * @brief Map of string keys to their corresponding log values.
- *
- */
-using LogMap = tsl::robin_map<std::string, LogValue>;
+/// Cold-path key->value map for tests and debug dumps.
+using LogMap = std::unordered_map<std::string, LogValue>;
 
-/**
- * @brief Represents a single line in a log or a single log record, consisting of key-value pairs.
- */
+/// Tag opting a `SetValue` caller into `string_view` storage. Use only when
+/// the view's bytes outlive the `LogLine` (e.g. point into the mmap).
+struct LogValueTrustView
+{
+};
+
+std::optional<std::string_view> AsStringView(const LogValue &value);
+bool HoldsString(const LogValue &value);
+LogValue ToOwnedLogValue(const LogValue &value);
+
+/// Treats `string_view` and `string` alternatives as equal when bytes match.
+bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs);
+
+/// One log record, stored as a sorted-by-`KeyId` flat vector of (KeyId, value)
+/// pairs.
 class LogLine
 {
 public:
-    /**
-     * @brief Constructs a new LogLine with the given key-value pairs.
-     *
-     * @param values A map of string keys to their corresponding log values.
-     */
-    LogLine(LogMap values, LogFileReference fileReference);
+    /// Pre-sorted ctor used by parsers. `sortedValues` must be ascending on
+    /// `pair::first` (debug-asserted). @p keys must outlive the `LogLine`.
+    LogLine(std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LogFileReference fileReference);
 
-    // Deleted copy constructor and copy assignment operator for efficiency.
-    LogLine(LogLine &) = delete;
+    /// Cold-path convenience ctor.
+    LogLine(const LogMap &values, KeyIndex &keys, LogFileReference fileReference);
+
+    LogLine(const LogLine &) = delete;
     LogLine &operator=(const LogLine &) = delete;
 
-    // Defaulted move constructor and move assignment operator.
     LogLine(LogLine &&) = default;
     LogLine &operator=(LogLine &&) = default;
 
-    /**
-     * @brief Retrieves the value associated with a given key.
-     *
-     * @param key The key to search for in the log line.
-     * @return LogValue The value associated with the key. If the key is not found,
-     *                  returns std::monostate.
-     */
+    /// Returns `std::monostate` if @p id is not present on this line.
+    LogValue GetValue(KeyId id) const;
     LogValue GetValue(const std::string &key) const;
 
-    /**
-     * @brief Sets or updates the value for a given key.
-     *
-     * @param key The key to associate with the value.
-     * @param value The value to set for the given key.
-     */
+    /// Debug builds assert that @p value is not a `string_view`.
+    void SetValue(KeyId id, LogValue value);
+
+    /// Caller promises any view in @p value outlives the `LogLine`.
+    void SetValue(KeyId id, LogValue value, LogValueTrustView trust);
+
+    /// Throws if @p key is unknown.
     void SetValue(const std::string &key, LogValue value);
 
-    /**
-     * @brief Get all the log line keys.
-     *
-     * @return std::vector<std::string> Log line keys.
-     */
     std::vector<std::string> GetKeys() const;
 
-    /**
-     * @brief Retrieves the file reference associated with this log line.
-     *
-     * @return const LogFileReference& The file reference for this log line.
-     */
-    const LogFileReference &FileReference() const;
+    /// (KeyId, LogValue) pairs in ascending KeyId order.
+    std::span<const std::pair<KeyId, LogValue>> IndexedValues() const;
 
-    /**
-     * @brief Retrieves the log line values.
-     *
-     * @return const LogMap& The map of key-value pairs for this log line.
-     */
-    const LogMap &Values() const;
-    LogMap &Values();
+    LogMap Values() const;
+
+    /// Used by `LogData::Merge`.
+    void RebindKeys(const KeyIndex &keys);
+
+    const KeyIndex &Keys() const;
+
+    const LogFileReference &FileReference() const;
+    LogFileReference &FileReference();
 
 private:
-    LogMap mValues;
-    const LogFileReference mFileReference;
+    std::vector<std::pair<KeyId, LogValue>> mValues;
+    const KeyIndex *mKeys = nullptr;
+    LogFileReference mFileReference;
 };
 
 } // namespace loglib

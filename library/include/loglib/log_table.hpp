@@ -1,13 +1,17 @@
 #pragma once
 
+#include "key_index.hpp"
 #include "log_configuration.hpp"
 #include "log_data.hpp"
+#include "log_file.hpp"
+#include "streaming_log_sink.hpp"
 
-#include <date/date.h>
-#include <date/tz.h>
-#include <fmt/format.h>
-
+#include <memory>
+#include <optional>
 #include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace loglib
 {
@@ -15,114 +19,102 @@ namespace loglib
 class LogTable
 {
 public:
-    /**
-     * @brief Default constructor for LogTable.
-     */
     LogTable() = default;
 
-    /**
-     * @brief Constructs a LogTable with the specified data and configuration.
-     *
-     * @param data The log data to be stored in the table.
-     * @param configuration The configuration manager that controls how log data is displayed.
-     */
     LogTable(LogData data, LogConfigurationManager configuration);
 
-    // Deleted copy constructor and copy assignment operator for efficiency.
     LogTable(LogTable &) = delete;
     LogTable &operator=(const LogTable &) = delete;
 
-    // Defaulted move constructor and move assignment operator.
     LogTable(LogTable &&) = default;
     LogTable &operator=(LogTable &&) = default;
 
-    /**
-     * @brief Updates the table with new log data.
-     *
-     * @param data The new log data to be merged with the existing data.
-     */
+    /// Replaces the table's data with a freshly-merged @p data.
     void Update(LogData &&data);
 
-    /**
-     * @brief Gets the header text for the specified column.
-     *
-     * @param column The index of the column.
-     * @return The header text as a string.
-     */
-    std::string GetHeader(size_t column) const;
+    /// Clears `Data()` and streaming-time-key snapshots; preserves `Configuration()`.
+    void Reset();
 
-    /**
-     * @brief Gets the total number of columns in the table.
-     *
-     * @return The number of columns.
-     */
-    size_t ColumnCount() const;
+    /// Initialises the table for an upcoming streaming parse and snapshots the
+    /// time-column KeyIds against the current configuration. `Configuration()`
+    /// is *not* mutated; callers must lock the configuration UI between this
+    /// call and the matching streaming-finished signal. @p file may be null.
+    void BeginStreaming(std::unique_ptr<LogFile> file);
 
-    /**
-     * @brief Gets the raw log value at the specified row and column.
-     *
-     * @param row The index of the row.
-     * @param column The index of the column.
-     * @return The log value at the specified position.
-     */
-    LogValue GetValue(size_t row, size_t column) const;
+    /// Splices @p batch into the table. Extends the configuration for any
+    /// `batch.newKeys`, then back-fills any newly-introduced `Type::time`
+    /// column over **all** rows. Resets `LastBackfillRange()` on entry.
+    void AppendBatch(StreamedBatch batch);
 
-    /**
-     * @brief Gets the formatted string representation of the value at the specified row and column.
-     *
-     * @param row The index of the row.
-     * @param column The index of the column.
-     * @return The formatted string representation of the value.
-     */
-    std::string GetFormattedValue(size_t row, size_t column) const;
+    /// Non-mutating preview of what `AppendBatch(batch)` would expose to a
+    /// `QAbstractTableModel`-style consumer once committed. Lets `LogModel`
+    /// call Qt's `beginInsert{Rows,Columns}` *before* the actual mutation,
+    /// honouring Qt's begin-before-mutate model contract.
+    struct AppendBatchPreview
+    {
+        size_t newRowCount = 0;
+        size_t newColumnCount = 0;
+    };
+    [[nodiscard]] AppendBatchPreview PreviewAppend(const StreamedBatch &batch) const;
 
-    /**
-     * @brief Gets the total number of rows in the table.
-     *
-     * @return The number of rows.
-     */
-    size_t RowCount() const;
+    /// Inclusive `[firstColumn, lastColumn]` columns that the most recent
+    /// `AppendBatch` back-filled, or `std::nullopt` if none. Reset on entry.
+    [[nodiscard]] const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const noexcept;
 
-    /**
-     * @brief Gets a const reference to the underlying log data.
-     *
-     * @return A const reference to the log data.
-     */
-    const LogData &Data() const;
+    /// Reorders the column at @p srcIndex to @p destIndex in the underlying
+    /// configuration and keeps the column-to-KeyId cache aligned. Callers
+    /// must wrap with the corresponding Qt `beginMoveColumns` /
+    /// `endMoveColumns` notifications so attached views observe the move.
+    void MoveColumn(size_t srcIndex, size_t destIndex);
 
-    /**
-     * @brief Gets a mutable reference to the underlying log data.
-     *
-     * @return A mutable reference to the log data.
-     */
-    LogData &Data();
+    /// Pre-allocation hint forwarded to the installed streaming `LogFile`; no-op otherwise.
+    void ReserveLineOffsets(size_t count);
 
-    /**
-     * @brief Gets a const reference to the configuration manager.
-     *
-     * @return A const reference to the configuration manager.
-     */
+    [[nodiscard]] std::string GetHeader(size_t column) const;
+    [[nodiscard]] size_t ColumnCount() const;
+    [[nodiscard]] LogValue GetValue(size_t row, size_t column) const;
+    [[nodiscard]] std::string GetFormattedValue(size_t row, size_t column) const;
+    [[nodiscard]] size_t RowCount() const;
+
+    [[nodiscard]] const LogData &Data() const noexcept;
+
+    /// Mutable `KeyIndex` for worker-thread `GetOrInsert` (used by `QtStreamingLogSink`).
+    KeyIndex &Keys();
+    const KeyIndex &Keys() const;
+
     const LogConfigurationManager &Configuration() const;
-
-    /**
-     * @brief Gets a mutable reference to the configuration manager.
-     *
-     * @return A mutable reference to the configuration manager.
-     */
+    /// Non-const access for `Load`/`Save` menu actions. Must not be mutated
+    /// mid-streaming; `MainWindow` gates the configuration-edit UI accordingly.
     LogConfigurationManager &Configuration();
 
 private:
-    /**
-     * @brief Formats a log value according to the specified format string.
-     *
-     * @param format The format string to use.
-     * @param value The log value to format.
-     * @return The formatted string representation of the value.
-     */
     static std::string FormatLogValue(const std::string &format, const LogValue &value);
+
+    void RefreshColumnKeyIds();
+    void RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys);
+    void RefreshSnapshotTimeKeys();
 
     LogData mData;
     LogConfigurationManager mConfiguration;
+    std::vector<std::vector<KeyId>> mColumnKeyIds;
+
+    /// KeyIds of `Type::time` columns that were already in the configuration
+    /// snapshot at `BeginStreaming` time (and are therefore promoted inline
+    /// by Stage B of the parser pipeline). Populated once in
+    /// `RefreshSnapshotTimeKeys`, which `GetOrInsert`s into the fresh
+    /// `KeyIndex` so the snapshot holds valid ids before Stage B runs.
+    std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
+
+    /// KeyIds of `Type::time` columns that appeared *after* the streaming
+    /// snapshot — typically because `LogConfigurationManager::AppendKeys`
+    /// auto-promoted a freshly-seen "timestamp"/"time"/"t" key on the first
+    /// batch that carried it. Stage B of the running parser does not know
+    /// about them (the `LogConfiguration` it received does not list the
+    /// column), so every subsequent `AppendBatch` must back-fill the rows
+    /// it just appended for these columns.
+    std::unordered_set<KeyId> mPostSnapshotTimeKeys;
+
+    std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
 };
 
 } // namespace loglib

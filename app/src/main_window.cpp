@@ -3,26 +3,118 @@
 
 #include "appearance_control.hpp"
 #include "filter_editor.hpp"
+#include "qt_streaming_log_sink.hpp"
 
+#include <loglib/json_parser.hpp>
+#include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
+#include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/stop_token.hpp>
 
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStandardItemModel>
+#include <QStatusBar>
+#include <QStringList>
 #include <QTableView>
 #include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <exception>
 #include <iterator>
+#include <memory>
+#include <system_error>
+#include <vector>
+
+namespace
+{
+
+// Locate the staged `tzdata/` directory. Tries (in order): next to the
+// binary, the macOS Resources/ bundle layout, $APPDIR/usr/share/tzdata
+// (Linux AppImage), then walks the CWD ancestor chain. On miss returns
+// an empty path and populates `searched` for diagnostics.
+std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
+{
+    auto pushAndCheck = [&searched](std::filesystem::path candidate) -> bool {
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(candidate, ec);
+        searched.push_back(std::move(candidate));
+        return exists && !ec;
+    };
+
+    const auto appDir = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
+    if (!appDir.empty() && pushAndCheck(appDir / "tzdata"))
+    {
+        return searched.back();
+    }
+
+#ifdef __APPLE__
+    if (!appDir.empty() && pushAndCheck(appDir.parent_path() / "Resources" / "tzdata"))
+    {
+        return searched.back();
+    }
+#endif
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+    if (const char *appImageDir = std::getenv("APPDIR"))
+    {
+        if (pushAndCheck(std::filesystem::path(appImageDir) / "usr/share/tzdata"))
+        {
+            return searched.back();
+        }
+    }
+#endif
+
+    std::error_code cwdEc;
+    auto walk = std::filesystem::current_path(cwdEc);
+    if (!cwdEc)
+    {
+        while (true)
+        {
+            if (pushAndCheck(walk / "tzdata"))
+            {
+                return searched.back();
+            }
+            const auto parent = walk.parent_path();
+            if (parent.empty() || parent == walk)
+            {
+                break;
+            }
+            walk = parent;
+        }
+    }
+
+    return {};
+}
+
+// Diagnostic for "no tzdata found" matching common.cpp's shape.
+QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &searched)
+{
+    QStringList lines;
+    lines << QStringLiteral("Could not find the `tzdata/` directory required to initialize the timezone database.");
+    lines << QStringLiteral("Searched the following candidate locations (in order):");
+    for (const auto &p : searched)
+    {
+        lines << QStringLiteral("  - %1").arg(QString::fromStdString(p.string()));
+    }
+    lines << QString();
+    lines << QStringLiteral("Run the binary from a directory that has a sibling `tzdata/` "
+                            "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
+                            "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds).");
+    return lines.join(QLatin1Char('\n'));
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -35,50 +127,32 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     mLayout->addWidget(mTableView, 1);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-    // Create the model
     mModel = new LogModel(mTableView);
-
-    // Create the view
     mTableView->setModel(mModel);
-
-    // Set selection behavior
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-
-    // Set selection mode to allow multiple selection
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
-
-    // Disable editing of individual cells
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-    // Set alternating row colors
     mTableView->setAlternatingRowColors(true);
 
     ApplyTableStyleSheet();
 
-    // Enable sorting
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
-    mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder); // Do not sort automatically
+    mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
 
-    // Resize columns to fit contents
     mTableView->resizeColumnsToContents();
 
-    // Set header customization
     mTableView->horizontalHeader()->setStyleSheet(R"(QHeaderView::section { padding: 8px; font-weight: bold; })");
     mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
     mTableView->horizontalHeader()->setStretchLastSection(true);
+    mTableView->horizontalHeader()->setHighlightSections(false);
+    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-    mTableView->horizontalHeader()->setHighlightSections(false); // No highlight on header click
-    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter); // Align headers
-
-    // Enable grid lines
     mTableView->setShowGrid(true);
-
-    // Set smooth scrolling (scroll per pixel)
     mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
@@ -108,31 +182,53 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mPreferencesEditor->activateWindow();
     });
 
+    mStatusLabel = new QLabel(this);
+    statusBar()->addPermanentWidget(mStatusLabel);
+    mStatusLabel->hide();
+
+    connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
+        mStreamingLineCount = count;
+        UpdateStreamingStatus();
+    });
+    connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
+        mStreamingErrorCount = count;
+        UpdateStreamingStatus();
+    });
+    connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
+        mStreamingActive = false;
+        SetConfigurationUiEnabled(true);
+        UpdateUi();
+        UpdateStreamingStatus();
+        // Only `Success` produces a post-parse error summary; cancellation
+        // hides it and `Failed` surfaces independently.
+        if (result == StreamingResult::Success)
+        {
+            ShowParseErrors("Error Parsing Logs", mModel->StreamingErrors());
+        }
+        mStreamingFileName.clear();
+    });
+
     QTimer::singleShot(0, [this] {
+        // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
+        std::vector<std::filesystem::path> searched;
+        const auto tzdata = FindTzdata(searched);
+
+        if (tzdata.empty())
+        {
+            const QString message = FormatTzdataNotFoundMessage(searched);
+            qCritical().noquote() << "Fatal:" << message;
+            QApplication::exit(1);
+            return;
+        }
+
         try
         {
-#ifdef _WIN32
-            const auto tzdata = std::filesystem::current_path() / std::filesystem::path("tzdata");
-#elif defined(__APPLE__)
-            // Inside a .app bundle, applicationDirPath() is <bundle>/Contents/MacOS.
-            // tzdata is shipped as <bundle>/Contents/Resources/tzdata.
-            const auto contentsDir =
-                std::filesystem::path(QCoreApplication::applicationDirPath().toStdString()).parent_path();
-            const auto tzdata = contentsDir / "Resources" / "tzdata";
-#else
-            const char *appDir = std::getenv("APPDIR");
-            const auto tzdata = appDir ? std::filesystem::path(appDir) / std::filesystem::path("usr/share/tzdata")
-                                       : std::filesystem::current_path() / std::filesystem::path("tzdata");
-#endif
             loglib::Initialize(tzdata);
         }
         catch (std::exception &e)
         {
-            QMessageBox::critical(
-                this,
-                "Fatal Error",
-                QString("An unrecoverable error occurred:\n") + e.what() + "\n\nApplication will exit."
-            );
+            qCritical().noquote() << "Fatal: failed to initialize timezone database at"
+                                  << QString::fromStdString(tzdata.string()) << ":" << e.what();
             QApplication::exit(1);
         }
     });
@@ -163,26 +259,79 @@ void MainWindow::dropEvent(QDropEvent *event)
 {
     const QMimeData *mimeData = event->mimeData();
 
-    if (mimeData->hasUrls())
+    if (!mimeData->hasUrls())
     {
-        const QList<QUrl> urlList = mimeData->urls();
-        if (urlList.isEmpty())
+        return;
+    }
+
+    const QList<QUrl> urlList = mimeData->urls();
+    if (urlList.isEmpty())
+    {
+        return;
+    }
+
+    mModel->Clear();
+    ClearAllFilters();
+
+    std::vector<std::string> errors;
+
+    // Mirror `OpenFilesWithParser`: stream a single dropped JSON log so the
+    // GUI stays responsive and shows progress instead of freezing on the
+    // synchronous `LogFactory::Parse`. Configuration files and multi-file
+    // drops keep the existing synchronous path.
+    if (urlList.size() == 1)
+    {
+        const QString singleFile = urlList.front().toLocalFile();
+
+        bool isConfiguration = true;
+        try
         {
-            return;
+            mModel->ConfigurationManager().Load(singleFile.toStdString());
+        }
+        catch (...)
+        {
+            isConfiguration = false;
         }
 
-        mModel->Clear();
-        ClearAllFilters();
+        if (isConfiguration)
+        {
+            UpdateUi();
+        }
+        else
+        {
+            const loglib::JsonParser jsonParser;
+            bool streamed = false;
+            try
+            {
+                if (jsonParser.IsValid(singleFile.toStdString()))
+                {
+                    streamed = OpenJsonStreaming(singleFile, errors);
+                }
+            }
+            catch (...)
+            {
+                streamed = false;
+            }
 
-        std::vector<std::string> errors;
+            if (!streamed)
+            {
+                OpenFileInternal(singleFile, errors);
+            }
+        }
+    }
+    else
+    {
         for (const QUrl &url : urlList)
         {
             OpenFileInternal(url.toLocalFile(), errors);
         }
-        ShowParseErrors("Error Opening File", errors);
-
-        event->acceptProposedAction();
     }
+
+    // Streaming surfaces its own error summary from `streamingFinished`;
+    // anything queued in `errors` here is from the synchronous fallback.
+    ShowParseErrors("Error Opening File", errors);
+
+    event->acceptProposedAction();
 }
 
 void MainWindow::UpdateUi()
@@ -207,8 +356,7 @@ bool MainWindow::event(QEvent *event)
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
     case QEvent::StyleChange:
-        // The table stylesheet encodes dark/light colors derived from the current palette, so
-        // it must be refreshed whenever the user switches style or system theme.
+        // Stylesheet encodes palette-derived colors; refresh on theme change.
         ApplyTableStyleSheet();
         break;
     default:
@@ -235,8 +383,39 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
         return;
     }
 
+    // Stream only single-file JSON opens; the sink holds one generation.
+    const bool canStream = (dynamic_cast<loglib::JsonParser *>(parser.get()) != nullptr) && files.size() == 1;
+
     mModel->Clear();
     ClearAllFilters();
+
+    if (canStream)
+    {
+        std::vector<std::string> errors;
+        const bool started = OpenJsonStreaming(files.front(), errors);
+        if (!started)
+        {
+            // Fall back to synchronous JSON so the user still gets a summary.
+            try
+            {
+                loglib::ParseResult result = parser->Parse(files.front().toStdString());
+                mModel->AddData(std::move(result.data));
+                errors.insert(
+                    errors.end(),
+                    std::make_move_iterator(result.errors.begin()),
+                    std::make_move_iterator(result.errors.end())
+                );
+            }
+            catch (const std::exception &e)
+            {
+                errors.push_back(std::string("Failed to parse '") + files.front().toStdString() + "': " + e.what());
+            }
+            UpdateUi();
+            ShowParseErrors("Error Parsing Logs", errors);
+        }
+        // The streaming path shows its summary from `streamingFinished`.
+        return;
+    }
 
     std::vector<std::string> errors;
     for (const QString &file : files)
@@ -266,6 +445,87 @@ void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr
 
     UpdateUi();
     ShowParseErrors("Error Parsing Logs", errors);
+}
+
+bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string> &errors)
+{
+    // Open on the GUI thread so file-open errors are synchronous.
+    std::unique_ptr<loglib::LogFile> logFile;
+    try
+    {
+        logFile = std::make_unique<loglib::LogFile>(file.toStdString());
+    }
+    catch (const std::exception &e)
+    {
+        errors.push_back(std::string("Failed to open '") + file.toStdString() + "': " + e.what());
+        return false;
+    }
+
+    // Snapshot the configuration before handing it to the parser: the
+    // worker reads it lock-free, and a UI-gate-skipping edit cannot then
+    // affect the in-flight parse.
+    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+
+    mStreamingFileName = QFileInfo(file).fileName();
+    if (!logFile)
+    {
+        // Fail early before flipping any streaming UI state.
+        errors.push_back(std::string("Failed to open '") + file.toStdString() + "' for streaming");
+        return false;
+    }
+
+    mStreamingActive = true;
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    SetConfigurationUiEnabled(false);
+    UpdateStreamingStatus();
+
+    // Borrow the same `LogFile*` the model is about to take ownership of;
+    // emitted string_view values point into its mmap. Capturing before the
+    // `std::move` is safe — the model keeps the file alive until `Clear()`
+    // joins the worker.
+    loglib::LogFile *parseFile = logFile.get();
+    QtStreamingLogSink *sink = mModel->Sink();
+
+    loglib::ParserOptions options;
+    options.configuration = std::move(cfg);
+
+    // The model owns spawning the worker and parking the future, so
+    // `Clear()` always has a future to wait on.
+    mModel->BeginStreaming(
+        std::move(logFile),
+        [sink, parseFile, options = std::move(options)](loglib::StopToken stopToken) mutable {
+            options.stopToken = stopToken;
+            loglib::JsonParser parser;
+            parser.ParseStreaming(*parseFile, *sink, options);
+        }
+    );
+
+    return true;
+}
+
+void MainWindow::SetConfigurationUiEnabled(bool enabled)
+{
+    // The parser holds an immutable snapshot; gate edits while streaming.
+    ui->actionLoadConfiguration->setEnabled(enabled);
+    ui->actionSaveConfiguration->setEnabled(enabled);
+    ui->actionPreferences->setEnabled(enabled);
+}
+
+void MainWindow::UpdateStreamingStatus()
+{
+    if (!mStreamingActive)
+    {
+        mStatusLabel->clear();
+        mStatusLabel->hide();
+        return;
+    }
+    QString text = QString("Parsing %1 - %2 lines, %3 errors")
+                       .arg(mStreamingFileName)
+                       .arg(mStreamingLineCount)
+                       .arg(mStreamingErrorCount);
+    mStatusLabel->setText(text);
+    mStatusLabel->show();
 }
 
 void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)
@@ -461,7 +721,7 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
 
 void MainWindow::OpenFileInternal(const QString &file, std::vector<std::string> &errors)
 {
-    // Attempt to load the file as a configuration first; if it fails, fall back to log parsing.
+    // Try as a configuration first; fall back to log parsing on failure.
     bool isConfiguration = true;
     try
     {

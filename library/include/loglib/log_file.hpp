@@ -1,8 +1,10 @@
 #pragma once
 
+#include <mio/mmap.hpp>
+
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
-#include <fstream>
-#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -11,107 +13,66 @@ namespace loglib
 
 class LogFile;
 
-/**
- * @brief Represents a reference to a specific line in a log file.
- *
- */
+/// Reference to a specific line in a `LogFile`.
 class LogFileReference
 {
 public:
-    /**
-     * @brief Constructs a LogFileReference object for a specific line in a log file.
-     *
-     * @param logFile The LogFile object containing the log data.
-     * @param lineNumber The line number being referenced (0-based index).
-     */
     LogFileReference(LogFile &logFile, size_t lineNumber);
 
-    /**
-     * @brief Retrieves the path to the log file being referenced.
-     *
-     * @return const std::filesystem::path& Path to the referenced log file.
-     */
     const std::filesystem::path &GetPath() const;
-
-    /**
-     * @brief Retrieves the line number being referenced.
-     *
-     * @return size_t The referenced log line number (0-based index).
-     */
     size_t GetLineNumber() const;
 
-    /**
-     * @brief Reads and retrieves the content of the referenced log line.
-     *
-     * @return std::string The content of the referenced log line.
-     */
+    void SetLineNumber(size_t lineNumber);
+
+    /// Adds @p delta to the stored line number (Stage C: relative -> absolute).
+    void ShiftLineNumber(size_t delta) noexcept;
+
     std::string GetLine() const;
 
 private:
-    LogFile &mLogFile;
-    const size_t mLineNumber = 0;
+    LogFile *mLogFile = nullptr;
+    size_t mLineNumber = 0;
 };
 
-/**
- * @brief Represents a log file, including its path and parsed line offsets.
- *
- */
+/// Memory-mapped log file. Owns the mmap for its lifetime so `LogValue`
+/// instances can hold `string_view`s into the file content. Move keeps the
+/// mapped pointer stable.
 class LogFile
 {
 public:
-    /**
-     * @brief Constructs a LogFile object with the specified file path and line offsets.
-     *
-     * @param filePath Path to the log file.
-     */
+    /// Throws `std::runtime_error` if the file cannot be opened or mapped.
     explicit LogFile(std::filesystem::path filePath);
 
-    // Deleted copy constructor and copy assignment operator for efficiency.
-    LogFile(LogFile &) = delete;
+    LogFile(const LogFile &) = delete;
     LogFile &operator=(const LogFile &) = delete;
 
-    // Defaulted move constructor and move assignment operator.
-    LogFile(LogFile &&) = default;
-    LogFile &operator=(LogFile &&) = default;
+    LogFile(LogFile &&) noexcept = default;
+    LogFile &operator=(LogFile &&) noexcept = default;
 
-    /**
-     * @brief Retrieves the path to the log file.
-     *
-     * @return const std::filesystem::path& Path to the log file.
-     */
     const std::filesystem::path &GetPath() const;
+    const char *Data() const;
+    size_t Size() const;
 
-    /**
-     * @brief Reads and retrieves a specific line from the log file.
-     *
-     * @param lineNumber The line number to retrieve (0-based index).
-     * @return std::string The content of the specified log line.
-     */
-    std::string GetLine(size_t lineNumber);
-
-    /**
-     * @brief Gets the total number of lines in the log file.
-     *
-     * @return size_t The total number of log lines.
-     */
+    /// Trailing `'\r'` is trimmed. Throws `std::out_of_range` when out of range.
+    std::string GetLine(size_t lineNumber) const;
     size_t GetLineCount() const;
 
-    /**
-     * @brief Creates a reference to a specific line in the log file.
-     *
-     * @param position Stream position of the line in the log file.
-     * @return LogFileReference Reference to the specified log line.
-     */
-    LogFileReference CreateReference(std::streampos position);
+    void ReserveLineOffsets(size_t count);
+
+    /// @param position Byte offset of the *next* line. Must be strictly
+    ///                 greater than the previously registered offset.
     LogFileReference CreateReference(size_t position);
 
-private:
-    const std::filesystem::path mPath;
-    std::ifstream mFile;
+    /// Caller must ensure offsets are strictly increasing and start past the
+    /// current last offset.
+    void AppendLineOffsets(const std::vector<uint64_t> &offsets);
 
-    // Collection of offsets indicating the start of each log line in the file.
-    // Starts from 0 and ends with the last character position in the file.
-    std::vector<std::streampos> mLineOffsets;
+private:
+    std::filesystem::path mPath;
+    mio::mmap_source mMmap;
+
+    /// Byte offsets of every line boundary plus a one-past-the-last sentinel.
+    std::vector<uint64_t> mLineOffsets;
 };
 
 } // namespace loglib

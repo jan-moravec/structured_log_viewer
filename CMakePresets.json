@@ -1,6 +1,6 @@
 {
     "version": 6,
-    "cmakeMinimumRequired": { "major": 3, "minor": 25 },
+    "cmakeMinimumRequired": { "major": 3, "minor": 28 },
 
     "configurePresets": [
         {
@@ -43,21 +43,45 @@
 
     "testPresets": [
         {
-            "name": "release",
-            "configurePreset": "release",
+            "name": "_test_base",
+            "hidden": true,
             "output":      { "outputOnFailure": true },
             "execution":   { "noTestsAction": "error", "stopOnFailure": false },
             "environment": { "QT_QPA_PLATFORM": "offscreen" }
         },
         {
+            "name": "release",
+            "displayName": "Release tests (excludes benchmarks)",
+            "description": "Default test run: unit + Qt smoke tests. Benchmarks are tagged with the `benchmark` CTest label and excluded — run them via the matching `*-benchmark` preset.",
+            "configurePreset": "release",
+            "inherits": "_test_base",
+            "filter":      { "exclude": { "label": "benchmark" } }
+        },
+        {
             "name": "debug",
-            "inherits": "release",
-            "configurePreset": "debug"
+            "configurePreset": "debug",
+            "inherits": "release"
         },
         {
             "name": "relwithdebinfo",
-            "inherits": "release",
-            "configurePreset": "relwithdebinfo"
+            "configurePreset": "relwithdebinfo",
+            "inherits": "release"
+        },
+        {
+            "name": "release-benchmark",
+            "displayName": "Release benchmarks only (verbose)",
+            "description": "Runs only the parser benchmarks (CTest label `benchmark`) verbosely so the WARN-line throughput / latency numbers are visible. See CONTRIBUTING.md `## Benchmarking` for the regression-gate convention.",
+            "configurePreset": "release",
+            "inherits": "_test_base",
+            "output":      { "outputOnFailure": true, "verbosity": "verbose" },
+            "filter":      { "include": { "label": "benchmark" } }
+        },
+        {
+            "name": "relwithdebinfo-benchmark",
+            "displayName": "RelWithDebInfo benchmarks only (verbose)",
+            "description": "Same as `release-benchmark` but against the `relwithdebinfo` build (release optimisations + debug info, useful when attaching a profiler to the benchmark fixtures).",
+            "configurePreset": "relwithdebinfo",
+            "inherits": "release-benchmark"
         }
     ],
 
