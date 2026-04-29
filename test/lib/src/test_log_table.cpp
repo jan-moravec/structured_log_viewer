@@ -3,12 +3,14 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_line.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <catch2/catch_all.hpp>
 
+#include <chrono>
 #include <utility>
 #include <vector>
 
@@ -540,6 +542,120 @@ TEST_CASE(
     CHECK(!table.LastBackfillRange().has_value());
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(4, 1)));
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(5, 1)));
+}
+
+// Mirrors the JSON parser flow: the LogConfiguration the parser is handed
+// already lists a Type::time column for "timestamp", so
+// `BuildTimeColumnSpecs` inserts the time keys into the shared KeyIndex up
+// front and Stage B promotes them inline. By the time `AppendBatch` sees
+// each batch, its lines already carry promoted `TimeStamp` values and the
+// time-column key is *not* in `batch.newKeys` (it was registered before
+// the parser pipeline captured `prevKeyCount`).
+//
+// `mStageBSnapshotTimeKeys` must contain that key's id so AppendBatch
+// recognises the column as Stage-B-handled and skips
+// `BackfillTimestampColumn`. Otherwise the back-fill walks every batch's
+// lines, calls `PromoteLineTimestamps` on values that are already
+// `TimeStamp` (returns false), and allocates a discarded `fmt::format`
+// error string per line — O(N) wasted heap allocations on the GUI thread.
+TEST_CASE(
+    "LogTable::AppendBatch -- Stage B inline promotion of configured time columns is not re-back-filled",
+    "[log_table][append_batch][snapshot_time_keys]"
+)
+{
+    InitializeTimezoneData();
+
+    TestLogFile testFile("snapshot_time_keys.json");
+    testFile.Write("");
+    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    LogFile *filePtr = logFile.get();
+
+    // Configuration with a pre-declared Type::time column for "timestamp",
+    // matching what the JSON parser is handed via `ParserOptions::configuration`.
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {"timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T", "%F %T"}}
+    );
+    cfg.columns.push_back({"msg", {"msg"}, "{}", LogConfiguration::Type::any, {}});
+    TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(logFile));
+
+    // After `BeginStreaming` the time-column key must already be resolvable
+    // through `mData.Keys()` — otherwise `mStageBSnapshotTimeKeys` could
+    // never have been populated, which is the bug this test is guarding
+    // against. (`BuildTimeColumnSpecs` in the parser pipeline performs
+    // exactly the same `GetOrInsert` against the shared `KeyIndex` before
+    // Stage B runs.)
+    KeyIndex &keys = table.Data().Keys();
+    const KeyId timestampId = keys.Find("timestamp");
+    REQUIRE(timestampId != kInvalidKeyId);
+
+    // Construct a batch the way Stage C would: lines already carry promoted
+    // `TimeStamp` values, "timestamp" is *not* in `newKeys` (it was
+    // pre-registered before `prevKeyCount` was captured), but a brand-new
+    // non-time key ("msg") is.
+    const TimeStamp ts = std::chrono::time_point_cast<std::chrono::microseconds>(
+        std::chrono::sys_days{std::chrono::year{2024} / std::chrono::January / 15} + std::chrono::hours{12} +
+        std::chrono::minutes{34} + std::chrono::seconds{56}
+    );
+
+    StreamedBatch batch = BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"timestamp", ts}, {"msg", std::string("hello")}},
+            {{"timestamp", ts}, {"msg", std::string("world")}},
+        },
+        keys.Size(),
+        1
+    );
+    REQUIRE(batch.newKeys.size() == 1);
+    CHECK(batch.newKeys.front() == "msg");
+
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.RowCount() == 2);
+    REQUIRE(table.ColumnCount() == 2);
+    CHECK(table.GetHeader(0) == "timestamp");
+    CHECK(table.GetHeader(1) == "msg");
+
+    // The time column was Stage-B-handled, so `AppendBatch` must NOT have
+    // run a back-fill over it. A non-empty `LastBackfillRange` would mean
+    // the GUI received a redundant `dataChanged` AND `BackfillTimestampColumn`
+    // burned heap allocations on per-line "Failed to parse a timestamp ..."
+    // error strings that nobody reads.
+    CHECK(!table.LastBackfillRange().has_value());
+
+    // Inline-promoted values survive intact (no monostate from a clobbering
+    // back-fill) and remain accessible through the column->KeyId cache the
+    // GUI uses.
+    CHECK(std::holds_alternative<TimeStamp>(table.GetValue(0, 0)));
+    CHECK(std::get<TimeStamp>(table.GetValue(0, 0)) == ts);
+    CHECK(std::get<std::string>(table.GetValue(0, 1)) == "hello");
+
+    // A second steady-state batch must also leave the time column alone —
+    // the slice back-fill path is just as wasteful as the first-observation
+    // path when Stage B already did the work.
+    StreamedBatch batch2 = BuildStreamedBatch(
+        keys,
+        *filePtr,
+        {
+            {{"timestamp", ts}, {"msg", std::string("again")}},
+        },
+        keys.Size(),
+        3
+    );
+    REQUIRE(batch2.newKeys.empty());
+    table.AppendBatch(std::move(batch2));
+
+    CHECK(table.RowCount() == 3);
+    CHECK(!table.LastBackfillRange().has_value());
+    CHECK(std::holds_alternative<TimeStamp>(table.GetValue(2, 0)));
 }
 
 // `LogTable::AppendBatch` no longer calls `RefreshColumnKeyIds` on every

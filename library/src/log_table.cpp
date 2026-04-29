@@ -47,8 +47,12 @@ void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
         mData.MarkTimestampsParsed();
     }
 
-    RefreshColumnKeyIds();
+    // Order matters: `RefreshSnapshotTimeKeys` inserts the configured
+    // time-column keys into the fresh `KeyIndex` (mirroring the parser
+    // pipeline's `BuildTimeColumnSpecs`), so `RefreshColumnKeyIds` can
+    // resolve them when it runs next.
     RefreshSnapshotTimeKeys();
+    RefreshColumnKeyIds();
 }
 
 void LogTable::AppendBatch(StreamedBatch batch)
@@ -329,11 +333,13 @@ void LogTable::RefreshSnapshotTimeKeys()
         }
         for (const std::string &key : column.keys)
         {
-            const KeyId id = mData.Keys().Find(key);
-            if (id != kInvalidKeyId)
-            {
-                mStageBSnapshotTimeKeys.insert(id);
-            }
+            // `GetOrInsert` (not `Find`) so this also works on the fresh,
+            // empty `KeyIndex` from `BeginStreaming` — the parser pipeline's
+            // `BuildTimeColumnSpecs` does the same insert right before
+            // Stage B; doing it here just happens earlier so the snapshot
+            // holds valid `KeyId`s before the first batch arrives.
+            const KeyId id = mData.Keys().GetOrInsert(key);
+            mStageBSnapshotTimeKeys.insert(id);
         }
     }
 }

@@ -77,7 +77,9 @@ private:
     /// KeyIds of `Type::time` columns that were already in the configuration
     /// snapshot at `BeginStreaming` time (and are therefore promoted inline
     /// by Stage B of the parser pipeline). Populated once in
-    /// `RefreshSnapshotTimeKeys`; read-only thereafter.
+    /// `RefreshSnapshotTimeKeys` — which `GetOrInsert`s into the freshly
+    /// empty `KeyIndex` so the snapshot can hold valid ids before the
+    /// parser pipeline's `BuildTimeColumnSpecs` runs. Read-only thereafter.
     std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
 
     /// KeyIds of `Type::time` columns that appeared *after* the streaming
