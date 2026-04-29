@@ -30,6 +30,9 @@ Opening multiple files at once **merges** their records into a single table. If 
 The first time you open a file, Structured Log Viewer builds the column list from the keys it sees in the JSON records:
 
 - Any key named `timestamp`, `time`, or `t` (case-insensitive) is treated as a **timestamp column**. Its values are parsed with the ISO 8601 formats `%FT%T%Ez`, `%F %T%Ez`, `%FT%T`, `%F %T` and displayed with the format `%F %H:%M:%S` in the local timezone. Timestamp columns are moved to the front of the table.
+
+  > **Note:** the heuristic is **destructive** for streaming opens. If a key matching the heuristic appears mid-parse, the corresponding column is flipped from `any` to `time` in-place and every row already in the table is back-filled with the parsed `TimeStamp`. The original raw string variant is replaced by the parsed value, so disabling the column's `time` type later (via a saved configuration) does not bring the original textual value back without re-opening the file.
+
 - All other keys become generic columns with the format `{}` (pass-through).
 
 You can persist a customized column layout and filter set via [configurations](#configurations).

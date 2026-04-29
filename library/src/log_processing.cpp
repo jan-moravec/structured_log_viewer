@@ -164,8 +164,13 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
         ) +
         std::chrono::microseconds{fractionalUs};
     out = TimeStamp{totalUs};
-    // Non-positive epochs are reported as failure (matches slow-path sentinel).
-    return out.time_since_epoch().count() > 0;
+    // The previous implementation rejected `time_since_epoch().count() <= 0`
+    // as a parse failure, which incorrectly classified the legitimate POSIX
+    // epoch (`1970-01-01T00:00:00Z`) and any pre-1970 timestamp as
+    // unparsable. Once we have a syntactically-valid Y/M/D/H/M/S/fraction
+    // and `ymd.ok()` succeeded, the value is parsed — even if the resulting
+    // microseconds-since-epoch is zero or negative.
+    return true;
 }
 
 bool TryParseGenericTimestamp(
@@ -177,7 +182,11 @@ bool TryParseGenericTimestamp(
     scratch.stream.str(scratch.str);
     out = TimeStamp{};
     scratch.stream >> date::parse(format, out);
-    return !scratch.stream.fail() && out.time_since_epoch().count() > 0;
+    // The stream-fail bit alone is the parse-success signal. The previous
+    // `time_since_epoch().count() > 0` filter rejected the POSIX epoch
+    // (`1970-01-01T00:00:00Z`) and any pre-1970 timestamp; both are
+    // legitimate parse outputs and should not be reported as failure.
+    return !scratch.stream.fail();
 }
 
 bool TryParseTimestamp(
@@ -212,12 +221,23 @@ void Initialize(const std::filesystem::path &tzdata)
     static_cast<void>(date::current_zone());
 }
 
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
+namespace
 {
-    std::vector<std::string> errors;
+
+/// Builds the per-line scratch state shared by both `BackfillTimestampColumn`
+/// overloads. Returns `false` when @p lines is empty, in which case the
+/// caller should bail out (the spec arrays are not built).
+bool MakeBackfillState(
+    const LogConfiguration::Column &column,
+    std::span<LogLine> lines,
+    std::array<detail::TimeColumnSpec, 1> &specsOut,
+    std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
+    std::vector<detail::LastTimestampBytesHit> &bytesHitsOut
+)
+{
     if (lines.empty())
     {
-        return errors;
+        return false;
     }
 
     const KeyIndex &keyIndex = lines.front().Keys();
@@ -233,12 +253,26 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
     {
         spec.formatKinds.push_back(ClassifyTimestampFormat(format));
     }
+    specsOut[0] = std::move(spec);
+    lastValidOut.assign(1, std::nullopt);
+    bytesHitsOut.assign(1, detail::LastTimestampBytesHit{});
+    return true;
+}
 
-    const std::array<detail::TimeColumnSpec, 1> specs{std::move(spec)};
-    std::vector<std::optional<LastValidTimestampParse>> lastValid(1);
-    std::vector<detail::LastTimestampBytesHit> bytesHits(1);
+} // namespace
+
+std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
+{
+    std::vector<std::string> errors;
+    std::array<detail::TimeColumnSpec, 1> specs;
+    std::vector<std::optional<LastValidTimestampParse>> lastValid;
+    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
+    {
+        return errors;
+    }
+
     TimestampParseScratch scratch;
-
     for (auto &line : lines)
     {
         if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch))
@@ -251,6 +285,32 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
         }
     }
     return errors;
+}
+
+void BackfillTimestampColumn(
+    const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
+)
+{
+    static_cast<void>(discardErrors);
+    std::array<detail::TimeColumnSpec, 1> specs;
+    std::vector<std::optional<LastValidTimestampParse>> lastValid;
+    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
+    {
+        return;
+    }
+
+    TimestampParseScratch scratch;
+    for (auto &line : lines)
+    {
+        // Per-line `fmt::format(...)` is the dominant non-parse cost in
+        // `LogTable::AppendBatch` for streamed batches with many failed
+        // rows. The streaming path's caller (`LogTable::AppendBatch`)
+        // doesn't surface these errors anywhere — they would land in the
+        // discarded return vector — so this overload skips the format
+        // entirely when the caller passes `BackfillErrors::Discard`.
+        static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch));
+    }
 }
 
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)

@@ -116,11 +116,6 @@ private:
     /// post-parse error summary on cancellation.
     bool mStreamingActive = false;
 
-    /// Errors accumulated from the streaming sink during the active parse.
-    /// Surfaced via the existing `QMessageBox` summary on
-    /// `streamingFinished(false)`.
-    std::vector<std::string> mStreamingErrors;
-
     /// Running line / error count snapshot for the status-bar label.
     qsizetype mStreamingLineCount = 0;
     qsizetype mStreamingErrorCount = 0;

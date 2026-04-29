@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -87,6 +89,15 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
 
     // Append to `reverse` first so the string address is stable before any
     // other thread can observe the new id.
+    //
+    // `KeyId` is a `uint32_t`, so the cast below would silently wrap on the
+    // ~4-billion-and-first key — and worse, the very next id after the
+    // wrap would collide with `kInvalidKeyId` (`numeric_limits<KeyId>::max()`)
+    // and start reading as a "key not found" sentinel. The realistic upper
+    // bound is the JSON field cardinality across every line in a single
+    // open, which never gets close to 2^32 in practice; pin the assumption
+    // explicitly so the failure mode is loud rather than silent.
+    assert(static_cast<uint64_t>(mImpl->reverse.size()) < static_cast<uint64_t>(kInvalidKeyId));
     const KeyId id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
     shard.map.emplace(mImpl->reverse.back(), id);
@@ -119,7 +130,7 @@ std::string_view KeyIndex::KeyOf(KeyId id) const
     return mImpl->reverse[id];
 }
 
-size_t KeyIndex::Size() const
+size_t KeyIndex::Size() const noexcept
 {
     return mImpl->size.load(std::memory_order_acquire);
 }

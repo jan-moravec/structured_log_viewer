@@ -14,7 +14,7 @@ QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent) : QObje
 {
 }
 
-loglib::StopToken QtStreamingLogSink::BeginParse()
+loglib::StopToken QtStreamingLogSink::Arm()
 {
     // Bumping the generation drops any still-queued OnBatch from a prior parse
     // before the fresh stop source is installed.
@@ -54,22 +54,24 @@ void QtStreamingLogSink::DropPendingBatches()
 
 loglib::KeyIndex &QtStreamingLogSink::Keys()
 {
-    return mModel->Table().Data().Keys();
+    return mModel->Table().Keys();
 }
 
 void QtStreamingLogSink::OnStarted()
 {
-    const uint64_t gen = mGeneration.load(std::memory_order_acquire);
-    QMetaObject::invokeMethod(
-        this,
-        [this, gen]() {
-            if (mGeneration.load(std::memory_order_acquire) != gen || !mModel)
-            {
-                return;
-            }
-        },
-        Qt::QueuedConnection
-    );
+    // Intentionally a no-op: the streaming UI state (status-bar label,
+    // configuration-menu gating, `mStreamingActive` flag) is set
+    // synchronously from `LogModel::BeginStreaming` on the GUI thread,
+    // *before* the worker is spawned, so the GUI side never needs to
+    // observe `OnStarted` to pick up the transition. Posting a queued
+    // empty lambda from this hot-path callback would just add scheduler
+    // wakeup churn to the GUI's event loop for no observable side
+    // effect.
+    //
+    // Kept as an explicit override (rather than relying on the default
+    // `StreamingLogSink::OnStarted` no-op) so that wiring it to a future
+    // `LogModel::parseStarted` signal is a one-line change should we
+    // ever want a worker-arrival-time hook on the GUI side.
 }
 
 void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)

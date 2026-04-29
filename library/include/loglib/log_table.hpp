@@ -6,10 +6,6 @@
 #include "log_file.hpp"
 #include "streaming_log_sink.hpp"
 
-#include <date/date.h>
-#include <date/tz.h>
-#include <fmt/format.h>
-
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +32,13 @@ public:
     /// Replaces the table's data with a freshly-merged @p data.
     void Update(LogData &&data);
 
+    /// Data-only reset: clears `Data()` and the streaming-time-key snapshots,
+    /// but leaves `Configuration()` (the user-loaded columns / formats /
+    /// filters) untouched. `LogModel::Clear()` uses this so a `File → Open` /
+    /// drag-and-drop after `LoadConfiguration` does not silently discard the
+    /// user's column layout.
+    void Reset();
+
     /// Initialises the table for an upcoming streaming parse and snapshots the
     /// time-column KeyIds against the current configuration. `Configuration()`
     /// is *not* mutated; callers must lock the configuration UI between this
@@ -47,20 +50,47 @@ public:
     /// column over **all** rows. Resets `LastBackfillRange()` on entry.
     void AppendBatch(StreamedBatch batch);
 
+    /// Non-mutating preview of what `AppendBatch(batch)` would expose to a
+    /// `QAbstractTableModel`-style consumer once committed. Lets `LogModel`
+    /// call Qt's `beginInsert{Rows,Columns}` *before* the actual mutation,
+    /// honouring Qt's begin-before-mutate model contract.
+    struct AppendBatchPreview
+    {
+        size_t newRowCount = 0;
+        size_t newColumnCount = 0;
+    };
+    [[nodiscard]] AppendBatchPreview PreviewAppend(const StreamedBatch &batch) const;
+
     /// Inclusive `[firstColumn, lastColumn]` columns that the most recent
     /// `AppendBatch` back-filled, or `std::nullopt` if none. Reset on entry.
-    const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const;
+    [[nodiscard]] const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const noexcept;
 
-    std::string GetHeader(size_t column) const;
-    size_t ColumnCount() const;
-    LogValue GetValue(size_t row, size_t column) const;
-    std::string GetFormattedValue(size_t row, size_t column) const;
-    size_t RowCount() const;
+    /// Forwards to `Data().Files().front()->ReserveLineOffsets(count)` if a
+    /// streaming `LogFile` is installed; no-op otherwise. Avoids handing the
+    /// model a non-const `LogData&` accessor for what should be a one-line
+    /// pre-allocation hint.
+    void ReserveLineOffsets(size_t count);
 
-    const LogData &Data() const;
-    LogData &Data();
+    [[nodiscard]] std::string GetHeader(size_t column) const;
+    [[nodiscard]] size_t ColumnCount() const;
+    [[nodiscard]] LogValue GetValue(size_t row, size_t column) const;
+    [[nodiscard]] std::string GetFormattedValue(size_t row, size_t column) const;
+    [[nodiscard]] size_t RowCount() const;
+
+    [[nodiscard]] const LogData &Data() const noexcept;
+
+    /// Mutable `KeyIndex` reference used by `QtStreamingLogSink` so it can
+    /// `GetOrInsert` field names from worker threads. Replaces the previous
+    /// mutable `Data()` accessor, which incidentally exposed every other
+    /// `LogData` member to external mutation.
+    KeyIndex &Keys();
+    const KeyIndex &Keys() const;
 
     const LogConfigurationManager &Configuration() const;
+    /// Non-const access is intentionally retained for the configuration
+    /// `Load` / `Save` menu actions wired through `LogModel`. Mutating the
+    /// configuration mid-streaming is forbidden — `MainWindow` gates the
+    /// configuration-edit UI for the lifetime of the active parse.
     LogConfigurationManager &Configuration();
 
 private:
@@ -77,9 +107,8 @@ private:
     /// KeyIds of `Type::time` columns that were already in the configuration
     /// snapshot at `BeginStreaming` time (and are therefore promoted inline
     /// by Stage B of the parser pipeline). Populated once in
-    /// `RefreshSnapshotTimeKeys` — which `GetOrInsert`s into the freshly
-    /// empty `KeyIndex` so the snapshot can hold valid ids before the
-    /// parser pipeline's `BuildTimeColumnSpecs` runs. Read-only thereafter.
+    /// `RefreshSnapshotTimeKeys`, which `GetOrInsert`s into the fresh
+    /// `KeyIndex` so the snapshot holds valid ids before Stage B runs.
     std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
 
     /// KeyIds of `Type::time` columns that appeared *after* the streaming

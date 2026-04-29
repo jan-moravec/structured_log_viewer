@@ -75,8 +75,13 @@ public:
                 return false;
             }
             const char *batchBegin = cursor;
-            const char *target = std::min(cursor + batchBytes, fileEnd);
-            if (target < fileEnd)
+            // Size-bounded advance: `cursor + batchBytes` is UB if it lands
+            // more than one past `fileEnd`, which the default batch size
+            // hits on every sub-batchSize file's final batch.
+            const size_t remaining = static_cast<size_t>(fileEnd - cursor);
+            const size_t advance = std::min(batchBytes, remaining);
+            const char *target = cursor + advance;
+            if (advance < remaining)
             {
                 const char *newline =
                     static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
@@ -268,6 +273,165 @@ std::string GenerateRecords(size_t count)
 }
 
 } // namespace
+
+// Regression for #4: Stage A used to compute `cursor + batchSize` even when
+// that pointer landed more than one past `fileEnd`, which is UB. A
+// sub-batchSize file (e.g. a single short line) tripped it on every parse.
+// The size-bounded advance form keeps the pointer valid; this test exercises
+// the smallest possible non-empty file so the only batch the harness emits
+// goes through the `advance == remaining` branch.
+TEST_CASE("Mock parser: single sub-batchSize file does not overshoot fileEnd", "[mock_parser]")
+{
+    TempTextFile fixture("level=info msg=tiny\n", "test_kv_tiny.log");
+    LogFile logFile(fixture.Path());
+
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = 4 * 1024 * 1024; // larger than the file
+
+    CollectingSink sink;
+    KeyValueLineParser parser;
+    parser.ParseStreaming(logFile, sink, options, advanced);
+
+    REQUIRE(sink.startedCount == 1);
+    REQUIRE(sink.finishedCount == 1);
+    REQUIRE_FALSE(sink.cancelled);
+    REQUIRE(sink.batches.size() == 1);
+    REQUIRE(sink.batches.front().lines.size() == 1);
+}
+
+// Regression for #5: the sink contract states the harness always emits at
+// least one `OnBatch` (possibly empty) before `OnFinished`. The early-exit
+// paths (empty file / `stop_requested` before Stage A starts) used to skip
+// `OnBatch` entirely. The two sub-cases below exercise both paths.
+TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", "[mock_parser]")
+{
+    SECTION("Empty file")
+    {
+        TempTextFile fixture(std::string{}, "test_kv_empty.log");
+        LogFile logFile(fixture.Path());
+
+        loglib::ParserOptions options;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+
+        CollectingSink sink;
+        KeyValueLineParser parser;
+        parser.ParseStreaming(logFile, sink, options, advanced);
+
+        CHECK(sink.startedCount == 1);
+        CHECK(sink.finishedCount == 1);
+        CHECK_FALSE(sink.cancelled);
+        REQUIRE(sink.batches.size() == 1);
+        CHECK(sink.batches.front().lines.empty());
+        CHECK(sink.batches.front().firstLineNumber == 1);
+    }
+
+    SECTION("Stop requested before parse starts")
+    {
+        TempTextFile fixture("level=info msg=hi\n", "test_kv_stop_before.log");
+        LogFile logFile(fixture.Path());
+
+        loglib::StopSource source;
+        source.request_stop();
+        loglib::ParserOptions options;
+        options.stopToken = source.get_token();
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+
+        CollectingSink sink;
+        KeyValueLineParser parser;
+        parser.ParseStreaming(logFile, sink, options, advanced);
+
+        CHECK(sink.startedCount == 1);
+        CHECK(sink.finishedCount == 1);
+        CHECK(sink.cancelled);
+        REQUIRE(sink.batches.size() == 1);
+        CHECK(sink.batches.front().lines.empty());
+        CHECK(sink.batches.front().firstLineNumber == 1);
+    }
+}
+
+// Regression for #6: `pending.firstLineNumber` was primed at coalesce-prime
+// time, before the first real line was inserted. A pending batch that was
+// primed by an empty Stage B chunk and then received its first line from
+// the next chunk reported `firstLineNumber` *strictly greater* than the
+// 1-based source position of `lines.front()` (the cursor advanced past
+// errors / blanks before any line entered `pending`, and the
+// over-eager prime locked that advanced cursor in). The fix defers the
+// prime until the first non-empty `parsed.lines`, so `firstLineNumber`
+// can never overshoot the line that actually anchors the batch.
+//
+// Concretely the post-fix invariant is `firstLineNumber > 0` *and*
+// `firstLineNumber <= lines.front().FileReference().GetLineNumber() + 1`
+// (the `+1` reconciles `firstLineNumber`'s 1-based numbering with
+// `LogFileReference::GetLineNumber()`'s 0-based numbering — see the
+// `StreamedBatch::firstLineNumber` docstring). Same-batch errors before
+// the first parsed line push the *upper* bound down because
+// `firstLineNumber` then anchors on the chunk start instead of on
+// `lines.front()`; that's expected and exactly what the docstring
+// promises.
+//
+// The regression repro feeds an all-error first chunk + a normal second
+// chunk, plus a coalesced variant that mixes both kinds in a single
+// pending batch.
+TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[mock_parser]")
+{
+    // 6 short error lines (~ ! + suffix), then 6 normal records. Pinning
+    // `batchSizeBytes = errorBlockBytes - 1` forces Stage A to break the
+    // token at the *last* newline of the error block (so the all-error
+    // chunk ships first and the normal records ship in a second token —
+    // setting it to exactly `errorBlockBytes` would make Stage A's
+    // post-target `memchr('\n')` jump into the records area and bundle
+    // the first record into the error chunk, defeating the all-error
+    // first-chunk repro the fix is meant to test).
+    std::string content;
+    for (int i = 0; i < 6; ++i)
+    {
+        content += "!err" + std::to_string(i) + "\n";
+    }
+    const size_t errorBlockBytes = content.size();
+    for (int i = 0; i < 6; ++i)
+    {
+        content += "level=info index=" + std::to_string(i) + "\n";
+    }
+
+    TempTextFile fixture(content, "test_kv_empty_primed.log");
+    LogFile logFile(fixture.Path());
+
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = errorBlockBytes - 1;
+
+    CollectingSink sink;
+    KeyValueLineParser parser;
+    parser.ParseStreaming(logFile, sink, options, advanced);
+
+    REQUIRE_FALSE(sink.cancelled);
+    REQUIRE(sink.batches.size() >= 1);
+    for (const auto &b : sink.batches)
+    {
+        if (!b.lines.empty())
+        {
+            const size_t firstObservedLine = b.lines.front().FileReference().GetLineNumber();
+            CAPTURE(b.firstLineNumber, firstObservedLine);
+            // The post-fix invariant for *this* fixture (errors-only
+            // first chunk + records-only follow-up chunks): the prime is
+            // deferred to the records chunk, so `firstLineNumber` equals
+            // the 1-based source line of `lines.front()` exactly
+            // (`+ 1` reconciles `firstLineNumber`'s 1-based numbering
+            // with `LogFileReference::GetLineNumber()`'s 0-based
+            // numbering). With the pre-fix bug the prime would have
+            // fired on the errors-only chunk and locked in
+            // `firstLineNumber = 1` regardless of where the parsed lines
+            // actually started — so `1 != firstObservedLine + 1` would
+            // light up.
+            CHECK(b.firstLineNumber == firstObservedLine + 1);
+        }
+    }
+}
 
 TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_parser]")
 {

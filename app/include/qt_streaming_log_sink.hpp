@@ -26,8 +26,10 @@ public:
     ~QtStreamingLogSink() override = default;
 
     /// Opens a fresh parse generation; returns the stop_token to install on
-    /// `ParserOptions::stopToken`. GUI thread.
-    loglib::StopToken BeginParse();
+    /// `ParserOptions::stopToken`. GUI thread. Renamed from `BeginParse` to
+    /// emphasise that this only *arms* the sink (bumps generation, fits a
+    /// fresh `StopSource`); the parser worker is started elsewhere.
+    loglib::StopToken Arm();
 
     /// Non-blocking cancel; signals the parse's `stop_token`. Does **not**
     /// touch the generation: the worker's drain-phase `OnBatch` /

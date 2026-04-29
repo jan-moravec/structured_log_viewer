@@ -20,14 +20,30 @@ struct StreamedBatch
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;
-    /// 1-based absolute line number of `lines.front()`.
+    /// 1-based absolute line number of the first source line covered by
+    /// this batch. The harness primes this on the first non-empty
+    /// `parsed.lines` chunk that lands in the pending coalesce-buffer, so
+    /// when `lines` is non-empty the value is guaranteed to be in
+    /// `[1, lines.front().FileReference().GetLineNumber() + 1]` (the
+    /// upper bound is `+1` because `LogFileReference::GetLineNumber()` is
+    /// 0-based; same-batch errors that precede the first parsed line in
+    /// source order push the upper bound *down* — `firstLineNumber`
+    /// matches the chunk's *start* cursor, not the first parsed line).
+    /// When `lines` is empty (e.g. the final pre-`OnFinished` empty-tail
+    /// batch, or an errors-only batch flushed via the time cap), the
+    /// field is set to the line cursor at the point the batch was sealed
+    /// and is not guaranteed to coincide with any specific source line.
     size_t firstLineNumber = 0;
 };
 
 /// Sink interface for the streaming log parser. Methods are called from a
 /// single serial-in-order worker, in this order:
 ///   1. exactly one `OnStarted()`,
-///   2. zero or more `OnBatch(...)` (always at least one, possibly empty, before finish),
+///   2. **at least one** `OnBatch(...)` — the harness *always* emits a
+///      terminal batch (possibly empty, with `lines.empty() &&
+///      errors.empty() && newKeys.empty()`) before `OnFinished`, so sinks
+///      that lazily initialise on first `OnBatch` work uniformly with
+///      empty-source / cancelled-before-Stage-A parses,
 ///   3. exactly one `OnFinished(cancelled)` — `cancelled == true` if the
 ///      parse was stopped via the `ParserOptions::stopToken`.
 class StreamingLogSink
@@ -48,7 +64,7 @@ public:
     /// When true, the harness forwards each pipeline batch straight to
     /// `OnBatch` without GUI-style coalescing. Sinks that already buffer
     /// internally (e.g. `BufferingSink`) opt in.
-    virtual bool PrefersUncoalesced() const
+    [[nodiscard]] virtual bool PrefersUncoalesced() const noexcept
     {
         return false;
     }

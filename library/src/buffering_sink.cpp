@@ -3,7 +3,7 @@
 #include <iterator>
 #include <utility>
 
-namespace loglib
+namespace loglib::internal
 {
 
 BufferingSink::BufferingSink(std::unique_ptr<LogFile> logFile) : mFile(std::move(logFile))
@@ -21,8 +21,13 @@ void BufferingSink::OnStarted()
 void BufferingSink::OnBatch(StreamedBatch batch)
 {
     // Splice straight into mLines. Don't `reserve(mLines.size() + n)` per
-    // batch — MSVC/libstdc++ implement reserve as "grow to exactly n", which
-    // would turn the buffered path into O(N²/B). insert() grows geometrically.
+    // batch — `std::vector::reserve(n)` is only required to leave capacity
+    // "at least n" ([vector.capacity]), and the major implementations
+    // (libstdc++, libc++, MSVC STL) take that as a licence to set capacity
+    // to *exactly* n with no slack on top. Calling it once per batch would
+    // therefore turn the buffered path into O(N²/B). `insert()`, by
+    // contrast, grows the underlying storage geometrically the way every
+    // other amortised-O(1) `vector` insertion does.
     if (!batch.lines.empty())
     {
         mLines.insert(
@@ -72,4 +77,4 @@ std::vector<std::string> BufferingSink::TakeErrors()
     return std::move(mErrors);
 }
 
-} // namespace loglib
+} // namespace loglib::internal

@@ -1,5 +1,6 @@
 #include "loglib/log_data.hpp"
 
+#include <cassert>
 #include <iterator>
 #include <utility>
 #include <vector>
@@ -149,6 +150,13 @@ void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> line
 
     if (!mFiles.empty() && !lineOffsets.empty())
     {
+        // Streaming `AppendBatch` always targets the *only* file installed
+        // by `LogTable::BeginStreaming`; multi-file scenarios go through
+        // `Merge` instead. If a future code path ever pushes a second file
+        // onto `mFiles` mid-stream, the front-only `AppendLineOffsets`
+        // below would silently drop offsets onto the wrong file, so pin the
+        // single-file invariant explicitly.
+        assert(mFiles.size() == 1);
         mFiles.front()->AppendLineOffsets(lineOffsets);
     }
 }

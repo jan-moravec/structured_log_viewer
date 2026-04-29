@@ -133,7 +133,7 @@ TEST_CASE("Set and update values", "[log_line]")
     // because LogLine intentionally refuses to silently grow the dictionary on the slow path.
     const std::string newKey = "newKey";
     const std::string newValue = "newValue";
-    keys.GetOrInsert(newKey);
+    static_cast<void>(keys.GetOrInsert(newKey));
     line.SetValue(newKey, newValue);
 
     REQUIRE(line.Values().size() == 2);

@@ -28,7 +28,6 @@
 #include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
-#include <QtConcurrent/QtConcurrent>
 
 #include <algorithm>
 #include <exception>
@@ -213,12 +212,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mStreamingErrorCount = count;
         UpdateStreamingStatus();
     });
-    connect(mModel, &LogModel::streamingFinished, this, [this](bool cancelled) {
+    connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
         mStreamingActive = false;
         SetConfigurationUiEnabled(true);
         UpdateUi();
         UpdateStreamingStatus();
-        if (!cancelled)
+        // Errors only get the post-parse summary on `Success` — a parse
+        // that ran to completion is the only flow where `mStreamingErrors`
+        // is the user's view of "issues encountered". Cancellation hides
+        // the summary (the user already knows what happened) and `Failed`
+        // surfaces a worker-side failure independently.
+        if (result == StreamingResult::Success)
         {
             ShowParseErrors("Error Parsing Logs", mModel->StreamingErrors());
         }
@@ -437,57 +441,48 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
     mStreamingFileName = QFileInfo(file).fileName();
+    if (!logFile)
+    {
+        // No `LogFile` to install — fail early before flipping any of the
+        // streaming UI state. `LogModel::BeginStreaming` would otherwise
+        // accept the null and leave `mModel->Table().Data().Files()` empty,
+        // forcing us into a compensating `EndStreaming(true)` rollback.
+        errors.push_back(std::string("Failed to open '") + file.toStdString() + "' for streaming");
+        return false;
+    }
+
     mStreamingActive = true;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
 
-    const loglib::StopToken stopToken = mModel->BeginStreaming(std::move(logFile));
+    // Borrow the *same* `LogFile*` the model is about to take ownership of;
+    // emitted string_view values point into its mmap, so the file must
+    // outlive every emitted `LogLine`. Capturing the raw pointer before
+    // `std::move` is safe because `LogModel::BeginStreaming` installs the
+    // unique_ptr on the model, which keeps the `LogFile` alive at least
+    // until `Clear()` joins the worker.
+    loglib::LogFile *parseFile = logFile.get();
     QtStreamingLogSink *sink = mModel->Sink();
 
-    // Borrow the *same* LogFile the model owns; emitted string_view values
-    // point into its mmap, so the file must outlive every emitted LogLine.
-    loglib::LogFile *parseFile = nullptr;
-    if (!mModel->Table().Data().Files().empty())
-    {
-        parseFile = mModel->Table().Data().Files().front().get();
-    }
-    if (parseFile == nullptr)
-    {
-        errors.push_back(std::string("Failed to install '") + file.toStdString() + "' on the streaming model");
-        mStreamingActive = false;
-        SetConfigurationUiEnabled(true);
-        UpdateStreamingStatus();
-        return false;
-    }
-
     loglib::ParserOptions options;
-    options.stopToken = stopToken;
     options.configuration = std::move(cfg);
 
-    // The future is handed to the model so it can `waitForFinished()` on the
-    // worker before destroying the `LogTable` (and the `LogFile` whose mmap
-    // the worker is reading from). Cooperative cancellation via the
-    // stop_token is not enough: Stage B of the TBB pipeline runs in parallel
-    // mode and does not check the stop_token mid-batch.
-    QFuture<void> future = QtConcurrent::run([sink, options = std::move(options), parseFile]() {
-        try
-        {
+    // `BeginStreaming(file, parseCallable)` collapses what used to be a
+    // `BeginStreaming(file)` + `SetStreamingFuture(QtConcurrent::run(...))`
+    // pair: the model now owns spawning the worker and parking the future
+    // (so there is no longer a window between "begin" and "set future"
+    // where `Clear()` had no future to wait on). Per-exception fall-through
+    // to a synthetic terminal batch lives inside the model.
+    mModel->BeginStreaming(
+        std::move(logFile),
+        [sink, parseFile, options = std::move(options)](loglib::StopToken stopToken) mutable {
+            options.stopToken = stopToken;
             loglib::JsonParser parser;
             parser.ParseStreaming(*parseFile, *sink, options);
         }
-        catch (const std::exception &e)
-        {
-            // Surface a synthetic terminal batch so failure flows through
-            // the same path as success.
-            loglib::StreamedBatch errorBatch;
-            errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
-            sink->OnBatch(std::move(errorBatch));
-            sink->OnFinished(false);
-        }
-    });
-    mModel->SetStreamingFuture(std::move(future));
+    );
 
     return true;
 }

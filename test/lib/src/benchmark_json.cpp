@@ -171,7 +171,7 @@ struct StreamSink : StreamingLogSink
 
     KeyIndex &Keys() override
     {
-        return table->Data().Keys();
+        return table->Keys();
     }
     void OnStarted() override
     {

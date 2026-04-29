@@ -13,7 +13,6 @@
 
 #include <QFile>
 #include <QFileInfo>
-#include <QPromise>
 #include <QRegularExpression>
 #include <QSignalSpy>
 #include <QString>
@@ -23,11 +22,14 @@
 #include <QtTest/QtTest>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -157,7 +159,10 @@ private:
 };
 
 // Result of running one fixture through the streaming pipeline. `cancelled`
-// mirrors the bool argument of the `streamingFinished` signal.
+// is true iff the streaming pipeline reported `StreamingResult::Cancelled`
+// (the externally-stopped path); `Success` and `Failed` both produce
+// `cancelled == false`. Tests that need to distinguish the latter two
+// should read the captured `StreamingResult` directly.
 struct StreamingRun
 {
     std::unique_ptr<LogModel> model;
@@ -199,7 +204,8 @@ StreamingRun RunStreaming(const QString &fixturePath)
     run.finishedCount = finishedSpy.count();
     if (run.finishedCount > 0)
     {
-        run.cancelled = finishedSpy.takeFirst().value(0).toBool();
+        const auto result = finishedSpy.takeFirst().value(0).value<StreamingResult>();
+        run.cancelled = (result == StreamingResult::Cancelled);
     }
     return run;
 }
@@ -334,7 +340,7 @@ private slots:
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(finishedSpy.count(), 1);
         const QList<QVariant> finishedArgs = finishedSpy.takeFirst();
-        QCOMPARE(finishedArgs.value(0).toBool(), false); // not cancelled
+        QCOMPARE(finishedArgs.value(0).value<StreamingResult>(), StreamingResult::Success);
 
         QVERIFY2(
             streamingModel.StreamingErrors().empty(), "streaming parse must produce no errors on the parity fixture"
@@ -670,6 +676,117 @@ private slots:
         QCOMPARE(proxy.mapToSource(proxy.index(2, 0)).row(), 2);
     }
 
+    // Regression for the Qt model contract violation in
+    // `LogModel::AppendBatch`: the original code mutated `mLogTable` *before*
+    // calling `beginInsertRows` / `beginInsertColumns`, so any proxy listening
+    // on `rowsAboutToBeInserted` / `columnsAboutToBeInserted` (notably
+    // `QSortFilterProxyModel`) saw the post-mutation `rowCount()` /
+    // `columnCount()` from the source. Qt's contract is begin-before-mutate.
+    // The fix splits `LogTable::AppendBatch` into a non-mutating
+    // `PreviewAppend` + the original `AppendBatch`, with `LogModel` calling
+    // begin → commit → end in the right order. Hook a slot to the proxy's
+    // about-to-be-inserted signals and snapshot the *source* model's count
+    // there: with the bug it equals the post-mutation count; with the fix it
+    // equals the pre-mutation count.
+    void testAppendBatchFiresBeginsBeforeMutation()
+    {
+        const QStringList fixtureLines = MakeParityFixture();
+        TempJsonFile fixture(fixtureLines);
+
+        LogModel model;
+        LogFilterModel proxy;
+        proxy.setSourceModel(&model);
+
+        // Hook the **source** model's `rowsAboutToBeInserted` /
+        // `columnsAboutToBeInserted`, not the proxy's: `QSortFilterProxyModel`
+        // delays its own `*AboutToBeInserted` until after the source has
+        // mutated (it needs the source's post-mutation rows to evaluate the
+        // filter), so a snapshot taken from the *proxy*'s slot would always
+        // see the post-mutation source count regardless of which order
+        // `LogModel::AppendBatch` fires `begin*` vs. the underlying
+        // `LogTable::AppendBatch` mutation. Listening on the source's signal
+        // makes the test directly assert Qt's begin-before-mutate contract.
+        std::vector<int> rowCountSnapshotsAtAboutToBeInserted;
+        std::vector<int> columnCountSnapshotsAtAboutToBeInserted;
+        QObject::connect(
+            &model,
+            &QAbstractItemModel::rowsAboutToBeInserted,
+            &model,
+            [&](const QModelIndex &, int, int) { rowCountSnapshotsAtAboutToBeInserted.push_back(model.rowCount()); }
+        );
+        QObject::connect(
+            &model,
+            &QAbstractItemModel::columnsAboutToBeInserted,
+            &model,
+            [&](const QModelIndex &, int, int) {
+                columnCountSnapshotsAtAboutToBeInserted.push_back(model.columnCount());
+            }
+        );
+
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        const loglib::StopToken stopToken = model.BeginStreaming(std::move(file));
+
+        QVERIFY(!model.Table().Data().Files().empty());
+        loglib::LogFile *parseFile = model.Table().Data().Files().front().get();
+        QVERIFY(parseFile != nullptr);
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+
+        loglib::JsonParser parser;
+        parser.ParseStreaming(*parseFile, *model.Sink(), options, advanced);
+
+        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+        QVERIFY2(finished, "streamingFinished must arrive within the timeout");
+
+        // The fixture grows the model at least once; capture the running
+        // pre-snapshot counts and assert each `*AboutToBeInserted` slot saw
+        // the count *before* that growth, not after.
+        QVERIFY2(!rowCountSnapshotsAtAboutToBeInserted.empty(), "at least one rowsAboutToBeInserted must have fired");
+        QVERIFY2(
+            !columnCountSnapshotsAtAboutToBeInserted.empty(), "at least one columnsAboutToBeInserted must have fired"
+        );
+
+        int expectedRowCount = 0;
+        for (int snapshot : rowCountSnapshotsAtAboutToBeInserted)
+        {
+            QVERIFY2(
+                snapshot == expectedRowCount,
+                qPrintable(QStringLiteral("rowsAboutToBeInserted snapshot %1 must equal pre-mutation row count %2")
+                               .arg(snapshot)
+                               .arg(expectedRowCount))
+            );
+            ++expectedRowCount; // the test fixture is small; growth is monotonic
+        }
+        // Final post-batch row count matches the fixture line count (the last
+        // batch grew the model from N-1 to N, and the snapshot before it
+        // showed N-1).
+        QCOMPARE(model.rowCount(), fixtureLines.size());
+
+        int expectedColumnCount = 0;
+        for (int snapshot : columnCountSnapshotsAtAboutToBeInserted)
+        {
+            QVERIFY2(
+                snapshot >= expectedColumnCount,
+                qPrintable(QStringLiteral("columnsAboutToBeInserted snapshot %1 must be at least the previous %2")
+                               .arg(snapshot)
+                               .arg(expectedColumnCount))
+            );
+            QVERIFY2(
+                snapshot < model.columnCount(),
+                qPrintable(QStringLiteral("columnsAboutToBeInserted snapshot %1 must be < final column count %2")
+                               .arg(snapshot)
+                               .arg(model.columnCount()))
+            );
+            expectedColumnCount = snapshot;
+        }
+    }
+
     // Regression: `LogModel::Clear()` used to derive `wasStreaming` from
     // `mStreamingWatcher->isRunning()`, which races with the queued
     // `OnFinished` lambda — the worker function returns (and the watcher
@@ -702,7 +819,7 @@ private slots:
         model.Clear();
 
         QCOMPARE(finishedSpy.count(), 1);
-        QCOMPARE(finishedSpy.takeFirst().value(0).toBool(), true); // cancelled
+        QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
 
         // A second `Clear()` after the first one already cleared the flag
         // must not emit a spurious `streamingFinished` (otherwise repeated
@@ -747,50 +864,67 @@ private slots:
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         loglib::LogFile *filePtr = file.get();
-        const loglib::StopToken stop = model.BeginStreaming(std::move(file));
 
-        // Plant a future on the model that we control from the worker
-        // thread, so `Clear()`'s `waitForFinished()` blocks until we choose
-        // to release it (mirroring the production `QtConcurrent::run`
-        // future the parser hands the model after Stage C drains).
-        QPromise<void> promise;
-        promise.start();
-        model.SetStreamingFuture(promise.future());
+        // The parseCallable runs on the `QtConcurrent::run` worker that
+        // `BeginStreaming(file, parseCallable)` spawns internally. It mimics
+        // the original `QPromise`-injected timing by parking on a
+        // `std::condition_variable` until the test thread releases it,
+        // which happens AFTER the worker has emitted its drain-phase
+        // `OnBatch` + `OnFinished` (= the racy queued lambdas the fix is
+        // meant to invalidate via the post-`waitForFinished` generation
+        // bump in `LogModel::Clear`).
+        std::mutex releaseMutex;
+        std::condition_variable releaseCv;
+        bool released = false;
+        QtStreamingLogSink *sinkBeforeBegin = model.Sink();
+        QVERIFY(sinkBeforeBegin != nullptr);
 
-        QtStreamingLogSink *sink = model.Sink();
-        QVERIFY(sink != nullptr);
+        const loglib::StopToken stop = model.BeginStreaming(
+            std::move(file),
+            [sinkBeforeBegin, filePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
+                while (!stopToken.stop_requested())
+                {
+                    std::this_thread::yield();
+                }
 
-        std::thread worker([sink, &promise, stop, filePtr]() {
-            // Wait for the GUI thread's `Clear()` to call `RequestStop()`.
-            // That is exactly the race window the original bug exploited:
-            // the worker's drain phase runs *after* the stop is requested
-            // and *before* `waitForFinished()` returns.
-            while (!stop.stop_requested())
-            {
-                std::this_thread::yield();
+                loglib::KeyIndex &keys = sinkBeforeBegin->Keys();
+                const loglib::KeyId keyId = keys.GetOrInsert("a");
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
+                loglib::LogLine line(std::move(values), keys, loglib::LogFileReference(*filePtr, 1));
+                loglib::StreamedBatch batch;
+                batch.lines.push_back(std::move(line));
+                batch.firstLineNumber = 1;
+                sinkBeforeBegin->OnBatch(std::move(batch));
+                sinkBeforeBegin->OnFinished(true);
+
+                std::unique_lock lock(releaseMutex);
+                releaseCv.wait(lock, [&]() { return released; });
             }
+        );
+        static_cast<void>(stop);
 
-            // Mirror Stage C's tail flush: a one-line `StreamedBatch`
-            // referencing the model's `LogFile` so `LogTable::AppendBatch`
-            // would observably populate a row if the lambda ever ran.
-            loglib::KeyIndex &keys = sink->Keys();
-            const loglib::KeyId keyId = keys.GetOrInsert("a");
-            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-            loglib::LogLine line(std::move(values), keys, loglib::LogFileReference(*filePtr, 1));
-            loglib::StreamedBatch batch;
-            batch.lines.push_back(std::move(line));
-            batch.firstLineNumber = 1;
-            sink->OnBatch(std::move(batch));
-            sink->OnFinished(true);
-
-            // Release `Clear()`'s `waitForFinished()` so it proceeds to
-            // `DropPendingBatches()` + `mLogTable` reset on the GUI thread.
-            promise.finish();
+        // `Clear()` runs `RequestStop()` and then blocks on
+        // `mStreamingWatcher->waitForFinished()`. The worker is parked on
+        // `releaseCv`, so we have to release it from another thread for
+        // `Clear()` to return. Spin a tiny releaser thread that fires the
+        // condition variable a fraction after `Clear()` has had a chance
+        // to call `RequestStop()`.
+        std::thread releaser([&]() {
+            // Wait for the worker to clear the stop_requested check + emit.
+            // The condition variable is only signalled once the worker has
+            // already run through `OnBatch` + `OnFinished`, mirroring the
+            // ordering the QPromise-based test guaranteed.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            {
+                std::lock_guard lock(releaseMutex);
+                released = true;
+            }
+            releaseCv.notify_all();
         });
 
         model.Clear();
-        worker.join();
+        releaser.join();
 
         // Drain the OnBatch / OnFinished lambdas the worker posted via
         // QMetaObject::invokeMethod / Qt::QueuedConnection. With the fix
@@ -802,7 +936,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(finishedSpy.count(), 1);
-        QCOMPARE(finishedSpy.takeFirst().value(0).toBool(), true); // cancelled
+        QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
         QCOMPARE(model.rowCount(), 0);
     }
 

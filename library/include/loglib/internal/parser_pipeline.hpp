@@ -159,14 +159,26 @@ void RunParserPipeline(
 {
     sink.OnStarted();
 
+    // Both early-exit paths still need to honour the
+    // `StreamingLogSink` contract: at least one `OnBatch` must precede
+    // `OnFinished`. Emit a rows-empty batch with the canonical
+    // `firstLineNumber = 1` so sinks that lazily initialise on the first
+    // `OnBatch` (the contract the docstring promises) work uniformly with
+    // the streaming path.
     if (options.stopToken.stop_requested())
     {
+        StreamedBatch tail;
+        tail.firstLineNumber = 1;
+        sink.OnBatch(std::move(tail));
         sink.OnFinished(true);
         return;
     }
 
     if (file.Size() == 0 || file.Data() == nullptr)
     {
+        StreamedBatch tail;
+        tail.firstLineNumber = 1;
+        sink.OnBatch(std::move(tail));
         sink.OnFinished(false);
         return;
     }
@@ -286,13 +298,20 @@ void RunParserPipeline(
             return;
         }
 
-        if (!pendingPrimed)
-        {
-            pending.firstLineNumber = nextLineNumber;
-            pendingPrimed = true;
-        }
+        // Defer the prime until we have a real line: `firstLineNumber` is
+        // documented (and treated by sinks) as the 1-based absolute line
+        // number of the first source line in the batch — *not* of the first
+        // chunk that hit `pending`. Priming on an all-error / all-blank chunk
+        // would set `firstLineNumber` to a value strictly less than
+        // `lines.front().FileReference().GetLineNumber()` once the next
+        // chunk's first real line lands here.
         if (!parsed.lines.empty())
         {
+            if (!pendingPrimed)
+            {
+                pending.firstLineNumber = nextLineNumber;
+                pendingPrimed = true;
+            }
             pending.lines.insert(
                 pending.lines.end(),
                 std::make_move_iterator(parsed.lines.begin()),
@@ -335,20 +354,29 @@ void RunParserPipeline(
         emitNewKeysInto(tail);
         sink.OnBatch(std::move(tail));
     }
-    else if (pendingPrimed || keys.Size() > prevKeyCount)
-    {
-        if (!pendingPrimed)
-        {
-            pending.firstLineNumber = nextLineNumber;
-            pendingPrimed = true;
-        }
-        flushPending(true);
-    }
     else
     {
-        StreamedBatch tail;
-        tail.firstLineNumber = nextLineNumber;
-        sink.OnBatch(std::move(tail));
+        // `pendingPrimed` flips on the first non-empty `parsed.lines`, but
+        // `pending.errors` and `pending.localLineOffsets` may have
+        // accumulated from earlier all-error / all-blank chunks. Drain them
+        // here so they don't silently disappear when the parser ends with
+        // no rows.
+        const bool pendingHasNonLineContent = !pending.errors.empty() || !pending.localLineOffsets.empty();
+        if (pendingPrimed || keys.Size() > prevKeyCount || pendingHasNonLineContent)
+        {
+            if (!pendingPrimed)
+            {
+                pending.firstLineNumber = nextLineNumber;
+                pendingPrimed = true;
+            }
+            flushPending(true);
+        }
+        else
+        {
+            StreamedBatch tail;
+            tail.firstLineNumber = nextLineNumber;
+            sink.OnBatch(std::move(tail));
+        }
     }
 
     sink.OnFinished(stopToken.stop_requested());

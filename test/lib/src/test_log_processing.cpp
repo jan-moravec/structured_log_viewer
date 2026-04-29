@@ -173,6 +173,24 @@ TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601
         REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.50", 'T', out));
         CHECK(out == TimeStamp{std::chrono::microseconds{1745584496500000}});
     }
+
+    // Regression for #12: the previous implementation rejected
+    // `time_since_epoch().count() <= 0` as "parse failure", which
+    // misclassified the legitimate POSIX epoch (`1970-01-01T00:00:00Z`)
+    // and any pre-1970 timestamp.
+    SECTION("Posix epoch is parsed (not reported as failure)")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("1970-01-01T00:00:00", 'T', out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{0}});
+    }
+
+    SECTION("Pre-epoch timestamp is parsed (not reported as failure)")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("1969-12-31T23:00:00", 'T', out));
+        CHECK(out == TimeStamp{std::chrono::microseconds{-3600000000ll}});
+    }
 }
 
 TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso8601_fast_path]")

@@ -45,7 +45,7 @@ loglib::ParseResult ParseWithSink(
 {
     auto logFile = std::make_unique<loglib::LogFile>(path);
     loglib::LogFile *logFilePtr = logFile.get();
-    loglib::BufferingSink sink(std::move(logFile));
+    loglib::internal::BufferingSink sink(std::move(logFile));
     parser.ParseStreaming(*logFilePtr, sink, options, advanced);
     loglib::LogData data = sink.TakeData();
     std::vector<std::string> errors = sink.TakeErrors();

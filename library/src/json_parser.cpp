@@ -106,6 +106,16 @@ template <class Value> LogValue ExtractStringValue(Value &value, bool sourceIsSt
 {
     // string_view path is only safe when simdjson iterates directly over the
     // mmap; the padded-scratch fallback yields views that dangle on the next line.
+    //
+    // The `raw_json_token()` -> `std::string_view` aliasing-into-source trick
+    // (and the `raw_json()` variant in `ExtractRawJsonValue` below) is
+    // pinned to the simdjson version fetched in
+    // `cmake/FetchDependencies.cmake` (currently `v4.6.3`). simdjson does
+    // not promise this aliasing across releases — when bumping the pinned
+    // tag, re-verify that `raw_json_token()` / `raw_json()` still return a
+    // `string_view` that points directly into the document buffer (i.e. no
+    // copy into the per-iterator scratch). The `[allocations]` benchmark's
+    // ≥99 % fast-path fraction is the regression signal if this changes.
     if (sourceIsStable)
     {
         std::string_view rawToken(value.raw_json_token());
@@ -159,16 +169,24 @@ struct ParseCache
 void EnsureCacheCapacity(ParseCache &cache, KeyId id)
 {
     const size_t needed = static_cast<size_t>(id) + 1;
-    if (cache.keyTypes.size() < needed)
-    {
-        cache.keyTypes.resize(needed, simdjson::ondemand::json_type::null);
-        cache.hasKeyType.resize(needed, false);
-    }
-    if (cache.numberTypes.size() < needed)
-    {
-        cache.numberTypes.resize(needed, simdjson::ondemand::number_type::signed_integer);
-        cache.hasNumberType.resize(needed, false);
-    }
+    // Grow geometrically: the previous implementation resized to exactly
+    // `needed`, which on a wide log with K columns turned the first batch
+    // into K linear `vector::resize` calls (each O(prevSize) when the
+    // capacity wasn't already sufficient). `max(needed, size * 2)` makes
+    // the amortised cost O(K) and matches the std::vector::push_back
+    // amortisation contract our hot loop expected.
+    auto growTo = [needed](auto &vec, auto fill) {
+        if (vec.size() >= needed)
+        {
+            return;
+        }
+        const size_t target = std::max(needed, vec.size() * 2);
+        vec.resize(target, fill);
+    };
+    growTo(cache.keyTypes, simdjson::ondemand::json_type::null);
+    growTo(cache.hasKeyType, false);
+    growTo(cache.numberTypes, simdjson::ondemand::number_type::signed_integer);
+    growTo(cache.hasNumberType, false);
 }
 
 std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
@@ -637,8 +655,14 @@ void JsonParser::ParseStreaming(
             return false;
         }
         const char *batchBegin = cursor;
-        const char *target = std::min(cursor + batchSize, fileEnd);
-        if (target < fileEnd)
+        // Compute `target` via a size-bounded advance. `cursor + batchSize`
+        // is technically UB if it lands more than one past `fileEnd` (a
+        // sub-batchSize file at default sizes always tripped this on the
+        // last batch). The size-bounded form keeps the pointer valid.
+        const size_t remaining = static_cast<size_t>(fileEnd - cursor);
+        const size_t advance = std::min(batchSize, remaining);
+        const char *target = cursor + advance;
+        if (advance < remaining)
         {
             const char *newline =
                 static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));

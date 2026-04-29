@@ -48,13 +48,17 @@ set_project_warnings(project_warnings False)
 add_subdirectory(library)
 add_subdirectory(app)
 
+# Gate test targets on `BUILD_TESTING` (default ON via `include(CTest)`). Also
+# scopes the `LOGLIB_KEY_INDEX_INSTRUMENTATION` PUBLIC compile definition from
+# `test/lib/CMakeLists.txt` to test builds, so it doesn't leak into shipped
+# binaries.
 include(CTest)
-include(Catch)
-# `test/common` ships the shared, Catch2-free helpers (JSON line abstraction +
-# random/wide log generators) consumed by both `test/lib`'s benchmarks and
-# the standalone `test/log_generator` console app. Must come before
-# `test/lib` so the `test_common` target is available there.
-add_subdirectory(test/common)
-add_subdirectory(test/lib)
-add_subdirectory(test/app)
-add_subdirectory(test/log_generator)
+if(BUILD_TESTING)
+    include(Catch)
+    # `test/common` ships the shared helpers used by `test/lib`'s benchmarks and
+    # the `test/log_generator` console app; must come before `test/lib`.
+    add_subdirectory(test/common)
+    add_subdirectory(test/lib)
+    add_subdirectory(test/app)
+    add_subdirectory(test/log_generator)
+endif()

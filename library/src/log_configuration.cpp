@@ -1,5 +1,7 @@
 #include "loglib/log_configuration.hpp"
 
+#include "loglib/log_data.hpp"
+
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
@@ -133,6 +135,34 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         }
         mKeysInColumns.insert(key);
     }
+}
+
+size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
+{
+    if (newKeys.empty())
+    {
+        return 0;
+    }
+    EnsureKeyCacheBuilt();
+    // Mirror `AppendKeys`'s skip predicate (`IsKeyInAnyColumnCached`) plus
+    // duplicates within @p newKeys itself: the streaming harness only emits
+    // freshly-seen keys per batch, but a defensive de-dupe here keeps this
+    // helper safe to call on any input. Allocation-free for the common case.
+    std::unordered_set<std::string_view> alreadyCounted;
+    alreadyCounted.reserve(newKeys.size());
+    size_t count = 0;
+    for (const std::string &key : newKeys)
+    {
+        if (IsKeyInAnyColumnCached(key))
+        {
+            continue;
+        }
+        if (alreadyCounted.insert(std::string_view(key)).second)
+        {
+            ++count;
+        }
+    }
+    return count;
 }
 
 const LogConfiguration &LogConfigurationManager::Configuration() const

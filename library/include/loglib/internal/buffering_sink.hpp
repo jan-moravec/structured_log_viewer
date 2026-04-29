@@ -9,11 +9,18 @@
 #include <string>
 #include <vector>
 
-namespace loglib
+namespace loglib::internal
 {
 
 /// `StreamingLogSink` adapter behind the synchronous `LogParser::Parse(path)`
 /// overload: accumulates every batch into a single `LogData`. One sink per parse.
+///
+/// Lives in `loglib::internal` because nothing outside the loglib library
+/// (or its unit tests) should construct one directly — synchronous callers
+/// reach it through `LogParser::Parse(path)`, streaming callers reach it
+/// through their own sink. The header sits under `library/include/loglib/
+/// internal/` so unit tests can reuse the same `loglib`-prefixed include
+/// path; the namespace pins the "private" intent.
 class BufferingSink : public StreamingLogSink
 {
 public:
@@ -27,7 +34,7 @@ public:
     void OnFinished(bool cancelled) override;
 
     /// We re-buffer batches anyway, so opt out of the harness's coalescing.
-    bool PrefersUncoalesced() const override
+    [[nodiscard]] bool PrefersUncoalesced() const noexcept override
     {
         return true;
     }
@@ -45,4 +52,4 @@ private:
     bool mFinished = false;
 };
 
-} // namespace loglib
+} // namespace loglib::internal

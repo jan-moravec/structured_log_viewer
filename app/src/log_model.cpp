@@ -2,15 +2,30 @@
 
 #include "qt_streaming_log_sink.hpp"
 
+#include <loglib/json_parser.hpp>
+#include <loglib/parser_options.hpp>
+#include <loglib/streaming_log_sink.hpp>
+
 #include <QFutureWatcher>
 #include <QModelIndex>
 #include <QString>
+#include <QThread>
 #include <QVariant>
+#include <QtConcurrent/QtConcurrent>
 
+#include <string>
 #include <utility>
 
 LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
+    // Register the enum so `streamingFinished(StreamingResult)` round-trips
+    // through queued connections and `QVariant::value<StreamingResult>()` in
+    // the test harness. Qt's metatype registry is idempotent — calling this
+    // from every constructor is cheap and guarantees registration before
+    // the first emit, regardless of which translation unit creates the
+    // model first.
+    qRegisterMetaType<StreamingResult>("StreamingResult");
+
     // Sink and watcher are parented to the model so their lifetimes track
     // the model's (and so QObject's parent-cleanup deletes them after the
     // explicit wait we run in the destructor below).
@@ -31,6 +46,16 @@ LogModel::~LogModel()
     }
     if (mStreamingWatcher)
     {
+        // `QFutureWatcher::waitForFinished()` blocks the calling thread on
+        // the worker's thread-pool task. The model lives on the GUI thread
+        // (the watcher is a child object), so this is the GUI thread
+        // joining the parser worker — which is fine here because the
+        // destructor only runs from a GUI-thread teardown path
+        // (`MainWindow` close / `Application::quit()`). Pin the assumption
+        // explicitly so a future caller from a non-GUI thread fails loudly
+        // rather than deadlocking on a queued `OnFinished` that needs the
+        // GUI event loop to run.
+        Q_ASSERT(QThread::currentThread() == thread());
         mStreamingWatcher->waitForFinished();
     }
     // Invalidate any drain-phase OnBatch / OnFinished lambdas the worker
@@ -85,6 +110,12 @@ void LogModel::Clear()
     }
     if (mStreamingWatcher)
     {
+        // Same GUI-thread join as the destructor: `Clear()` is wired
+        // exclusively to GUI-thread call sites (menu actions, drop event,
+        // `LoadConfiguration`). Asserting `currentThread() == thread()`
+        // here turns a "wait deadlock from a non-GUI caller" into an
+        // immediate debug-time abort.
+        Q_ASSERT(QThread::currentThread() == thread());
         mStreamingWatcher->waitForFinished();
     }
     // Order matters: bump the sink generation **after** the worker has
@@ -106,7 +137,11 @@ void LogModel::Clear()
 
     beginResetModel();
 
-    mLogTable = loglib::LogTable();
+    // Data-only reset: `LogTable::Reset()` drops the parsed lines but
+    // preserves the user-loaded `LogConfiguration` so a `LoadConfiguration`
+    // followed by `File → Open` (or drag-and-drop) does not silently revert
+    // to an auto-derived layout.
+    mLogTable.Reset();
     mErrorCount = 0;
     mStreamingErrors.clear();
 
@@ -123,17 +158,20 @@ void LogModel::Clear()
     // we've cancelled an active parse.
     if (wasStreaming)
     {
-        emit streamingFinished(true);
+        emit streamingFinished(StreamingResult::Cancelled);
     }
-}
-
-void LogModel::SetStreamingFuture(QFuture<void> future)
-{
-    mStreamingWatcher->setFuture(std::move(future));
 }
 
 loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
 {
+    // No active async parse: the watcher must be idle on entry. Either the
+    // previous parse completed and `EndStreaming` ran, or the caller went
+    // through `Clear()` (which joins on `waitForFinished` before returning).
+    // A non-idle watcher here means a caller is starting a second parse
+    // without joining the first — which would race the new `LogFile` mmap
+    // against the old worker that still holds the previous `LogFile*`.
+    Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
+
     beginResetModel();
 
     if (file)
@@ -142,10 +180,7 @@ loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file
         // line-offset insertions amortised O(1).
         const size_t reserveCount = file->Size() / 100;
         mLogTable.BeginStreaming(std::move(file));
-        if (reserveCount > 0 && !mLogTable.Data().Files().empty())
-        {
-            mLogTable.Data().Files().front()->ReserveLineOffsets(reserveCount);
-        }
+        mLogTable.ReserveLineOffsets(reserveCount);
     }
     else
     {
@@ -165,7 +200,51 @@ loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file
     // dropped by the sink's generation check.
     mStreamingActive = true;
 
-    return mSink->BeginParse();
+    return mSink->Arm();
+}
+
+loglib::StopToken LogModel::BeginStreaming(
+    std::unique_ptr<loglib::LogFile> file, std::function<void(loglib::StopToken)> parseCallable
+)
+{
+    // Single-arg overload owns the watcher-idle assert + state setup.
+    const loglib::StopToken stopToken = BeginStreaming(std::move(file));
+
+    if (!parseCallable)
+    {
+        // Convenience: no callable means "synchronous-driven test"; behave
+        // like the single-arg overload, leave the watcher idle.
+        return stopToken;
+    }
+
+    QtStreamingLogSink *sinkForWorker = mSink;
+    auto callable = std::move(parseCallable);
+    QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
+        try
+        {
+            callable(stopToken);
+        }
+        catch (const std::exception &e)
+        {
+            // Mirror MainWindow::OpenJsonStreaming's symmetric tail: emit a
+            // synthetic terminal batch + OnFinished(false) so the GUI's
+            // streamingFinished watchdog still observes a `finished()`.
+            loglib::StreamedBatch errorBatch;
+            errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
+            sinkForWorker->OnBatch(std::move(errorBatch));
+            sinkForWorker->OnFinished(false);
+        }
+        catch (...)
+        {
+            loglib::StreamedBatch errorBatch;
+            errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
+            sinkForWorker->OnBatch(std::move(errorBatch));
+            sinkForWorker->OnFinished(false);
+        }
+    });
+
+    mStreamingWatcher->setFuture(std::move(future));
+    return stopToken;
 }
 
 void LogModel::AppendBatch(loglib::StreamedBatch batch)
@@ -185,22 +264,37 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     const int oldRowCount = static_cast<int>(mLogTable.RowCount());
     const int oldColumnCount = static_cast<int>(mLogTable.ColumnCount());
 
-    mLogTable.AppendBatch(std::move(batch));
-
-    const int newRowCount = static_cast<int>(mLogTable.RowCount());
-    const int newColumnCount = static_cast<int>(mLogTable.ColumnCount());
+    // Qt's `QAbstractItemModel` contract: `beginInsert{Rows,Columns}` must
+    // fire **before** the underlying store grows, so attached proxies (e.g.
+    // `QSortFilterProxyModel`) snapshot the old size in their
+    // `rowsAboutToBeInserted` slot. Predict the post-mutation counts via
+    // `LogTable::PreviewAppend`, fire the begins, then commit the mutation.
+    const auto preview = mLogTable.PreviewAppend(batch);
+    const int newColumnCount = static_cast<int>(preview.newColumnCount);
+    const int newRowCount = static_cast<int>(preview.newRowCount);
+    const bool columnsGrew = newColumnCount > oldColumnCount;
+    const bool rowsGrew = newRowCount > oldRowCount;
 
     // Columns first so new headers are live when inserted rows query data().
-    if (newColumnCount > oldColumnCount)
+    if (columnsGrew)
     {
         beginInsertColumns(QModelIndex(), oldColumnCount, newColumnCount - 1);
-        endInsertColumns();
     }
-
-    if (newRowCount > oldRowCount)
+    if (rowsGrew)
     {
         beginInsertRows(QModelIndex(), oldRowCount, newRowCount - 1);
+    }
+
+    mLogTable.AppendBatch(std::move(batch));
+
+    // End in inverse order: rows close first because we opened them last.
+    if (rowsGrew)
+    {
         endInsertRows();
+    }
+    if (columnsGrew)
+    {
+        endInsertColumns();
     }
 
     if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
@@ -225,7 +319,14 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 void LogModel::EndStreaming(bool cancelled)
 {
     mStreamingActive = false;
-    emit streamingFinished(cancelled);
+    // `cancelled` only distinguishes the two outcomes the streaming sink's
+    // bool currently surfaces (clean finish vs. stop_token). The
+    // `StreamingResult::Failed` case is wired through a separate code path
+    // (`BeginStreaming(file, parseCallable)`'s exception-escape `catch`
+    // blocks emit a synthetic terminal `OnBatch` and currently route
+    // `OnFinished(false)` here — semantically a "Success" right now;
+    // upgrading those handlers to emit `Failed` is a follow-up).
+    emit streamingFinished(cancelled ? StreamingResult::Cancelled : StreamingResult::Success);
 }
 
 int LogModel::rowCount(const QModelIndex &parent) const

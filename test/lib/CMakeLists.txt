@@ -38,13 +38,18 @@ target_link_libraries(
 
 # Enable the KeyIndex call-count instrumentation so unit tests and
 # benchmarks can assert that the per-worker key cache eats canonical
-# `KeyIndex::GetOrInsert` / `KeyIndex::Find` calls. The macro is off in
-# shipped distributions; the in-repo `tests.exe` binary needs both the
-# test TU *and* the `loglib` TU that defines the static counter members
-# to see the same definition (otherwise we get unresolved-symbol link
-# errors). Setting it PUBLIC on the `loglib` target also lets the
-# increments fire during benchmark runs — two `memory_order_relaxed`
-# atomic increments per call (~1 ns each), negligible for our purposes.
+# `KeyIndex::GetOrInsert` / `KeyIndex::Find` calls. The in-repo `tests.exe`
+# binary needs both the test TU *and* the `loglib` TU that defines the
+# static counter members to see the same definition (otherwise we get
+# unresolved-symbol link errors). Setting it PUBLIC on the `loglib` target
+# also lets the increments fire during benchmark runs — two
+# `memory_order_relaxed` atomic increments per call (~1 ns each),
+# negligible for our purposes.
+#
+# Production safety: this whole `test/lib/CMakeLists.txt` is only entered
+# when `BUILD_TESTING=ON` (gated in the top-level `CMakeLists.txt`), so
+# `-DBUILD_TESTING=OFF` builds compile `loglib` *without* the macro,
+# stripping the instrumentation from shipped binaries.
 target_compile_definitions(loglib PUBLIC LOGLIB_KEY_INDEX_INSTRUMENTATION)
 
 # On Windows the TBB runtime DLL must sit next to the test executable for both

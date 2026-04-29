@@ -124,6 +124,54 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     CHECK(logTable.Data().Lines()[1].FileReference().GetPath() == newTestFile.GetFilePath());
 }
 
+TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]")
+{
+    // Build a `LogTable` with a non-trivial configuration (mirroring the
+    // path `LogModel::LoadConfiguration` puts user-loaded settings on),
+    // then `Reset()` it and assert the configuration columns survive.
+    // Regression for #2: `LogModel::Clear()` used to do
+    // `mLogTable = LogTable{}` which would silently revert to an empty
+    // configuration, so a `LoadConfiguration → File → Open` sequence lost
+    // the user's column layout.
+    TestLogFile testFile;
+    testFile.Write("line1\nline2");
+    std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
+
+    KeyIndex testKeys;
+    std::vector<LogLine> testLines;
+    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, LogFileReference(*logFile, 0));
+    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, LogFileReference(*logFile, 1));
+    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+
+    LogConfiguration logConfiguration;
+    logConfiguration.columns.push_back({"CustomA", {"key1"}, "{}", LogConfiguration::Type::any, {}});
+    logConfiguration.columns.push_back({"CustomB", {"key2"}, "{}", LogConfiguration::Type::any, {}});
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::string;
+    filter.row = 0;
+    filter.filterString = "value1";
+    filter.matchType = LogConfiguration::LogFilter::Match::contains;
+    logConfiguration.filters.push_back(filter);
+
+    TestLogConfiguration testLogConfiguration;
+    testLogConfiguration.Write(logConfiguration);
+    LogConfigurationManager manager;
+    manager.Load(testLogConfiguration.GetFilePath());
+
+    LogTable logTable(std::move(logData), std::move(manager));
+    REQUIRE(logTable.RowCount() == 2);
+    REQUIRE(logTable.ColumnCount() == 2);
+
+    logTable.Reset();
+
+    CHECK(logTable.RowCount() == 0);
+    REQUIRE(logTable.ColumnCount() == 2);
+    CHECK(logTable.GetHeader(0) == "CustomA");
+    CHECK(logTable.GetHeader(1) == "CustomB");
+    REQUIRE(logTable.Configuration().Configuration().filters.size() == 1);
+    CHECK(logTable.Configuration().Configuration().filters.front().filterString.value_or("") == "value1");
+}
+
 namespace
 {
 
@@ -183,7 +231,7 @@ TEST_CASE(
     LogTable table;
     table.BeginStreaming(std::move(logFile));
 
-    KeyIndex &keys = table.Data().Keys();
+    KeyIndex &keys = table.Keys();
     auto batchA =
         BuildStreamedBatch(keys, *filePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
     table.AppendBatch(std::move(batchA));
@@ -216,7 +264,7 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
     LogTable table;
     table.BeginStreaming(std::move(logFile));
 
-    KeyIndex &keys = table.Data().Keys();
+    KeyIndex &keys = table.Keys();
     table.AppendBatch(
         BuildStreamedBatch(keys, *filePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
     );
@@ -282,7 +330,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     LogTable table;
     table.BeginStreaming(std::move(logFile));
 
-    KeyIndex &keys = table.Data().Keys();
+    KeyIndex &keys = table.Keys();
 
     // Pin every header position observed so far. After each subsequent
     // Update/AppendBatch the test re-reads the header at each remembered
@@ -460,7 +508,7 @@ TEST_CASE(
     LogTable table;
     table.BeginStreaming(std::move(logFile));
 
-    KeyIndex &keys = table.Data().Keys();
+    KeyIndex &keys = table.Keys();
     // Batch 1: no timestamp column yet; rows carry only `msg`.
     table.AppendBatch(BuildStreamedBatch(
         keys,
@@ -544,20 +592,12 @@ TEST_CASE(
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(5, 1)));
 }
 
-// Mirrors the JSON parser flow: the LogConfiguration the parser is handed
-// already lists a Type::time column for "timestamp", so
-// `BuildTimeColumnSpecs` inserts the time keys into the shared KeyIndex up
-// front and Stage B promotes them inline. By the time `AppendBatch` sees
-// each batch, its lines already carry promoted `TimeStamp` values and the
-// time-column key is *not* in `batch.newKeys` (it was registered before
-// the parser pipeline captured `prevKeyCount`).
-//
-// `mStageBSnapshotTimeKeys` must contain that key's id so AppendBatch
-// recognises the column as Stage-B-handled and skips
-// `BackfillTimestampColumn`. Otherwise the back-fill walks every batch's
-// lines, calls `PromoteLineTimestamps` on values that are already
-// `TimeStamp` (returns false), and allocates a discarded `fmt::format`
-// error string per line — O(N) wasted heap allocations on the GUI thread.
+// Mirrors the JSON parser flow: the configuration handed to the parser
+// already declares a Type::time column, so `BuildTimeColumnSpecs` registers
+// the key up front and Stage B promotes timestamps inline. AppendBatch must
+// recognise the column as Stage-B-handled (via `mStageBSnapshotTimeKeys`)
+// and skip `BackfillTimestampColumn`; otherwise it walks every batch's lines
+// for nothing and allocates a discarded `fmt::format` error string per line.
 TEST_CASE(
     "LogTable::AppendBatch -- Stage B inline promotion of configured time columns is not re-back-filled",
     "[log_table][append_batch][snapshot_time_keys]"
@@ -570,11 +610,8 @@ TEST_CASE(
     auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
     LogFile *filePtr = logFile.get();
 
-    // Configuration with a pre-declared Type::time column for "timestamp",
-    // matching what the JSON parser is handed via `ParserOptions::configuration`.
     LogConfiguration cfg;
-    cfg.columns.push_back(
-        {"timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T", "%F %T"}}
+    cfg.columns.push_back({"timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T", "%F %T"}}
     );
     cfg.columns.push_back({"msg", {"msg"}, "{}", LogConfiguration::Type::any, {}});
     TestLogConfiguration cfgFile;
@@ -585,20 +622,16 @@ TEST_CASE(
     LogTable table({}, std::move(mgr));
     table.BeginStreaming(std::move(logFile));
 
-    // After `BeginStreaming` the time-column key must already be resolvable
-    // through `mData.Keys()` — otherwise `mStageBSnapshotTimeKeys` could
-    // never have been populated, which is the bug this test is guarding
-    // against. (`BuildTimeColumnSpecs` in the parser pipeline performs
-    // exactly the same `GetOrInsert` against the shared `KeyIndex` before
-    // Stage B runs.)
-    KeyIndex &keys = table.Data().Keys();
+    // After `BeginStreaming`, the time-column key must already be resolvable
+    // (mirroring `BuildTimeColumnSpecs`) — without this the snapshot set
+    // would be permanently empty and the bug below would not be detected.
+    KeyIndex &keys = table.Keys();
     const KeyId timestampId = keys.Find("timestamp");
     REQUIRE(timestampId != kInvalidKeyId);
 
-    // Construct a batch the way Stage C would: lines already carry promoted
-    // `TimeStamp` values, "timestamp" is *not* in `newKeys` (it was
-    // pre-registered before `prevKeyCount` was captured), but a brand-new
-    // non-time key ("msg") is.
+    // Build a batch the way Stage C would: lines already carry promoted
+    // `TimeStamp` values; "timestamp" is not in `newKeys` (pre-registered
+    // before `prevKeyCount` was captured), but a brand-new "msg" key is.
     const TimeStamp ts = std::chrono::time_point_cast<std::chrono::microseconds>(
         std::chrono::sys_days{std::chrono::year{2024} / std::chrono::January / 15} + std::chrono::hours{12} +
         std::chrono::minutes{34} + std::chrono::seconds{56}
@@ -624,21 +657,18 @@ TEST_CASE(
     CHECK(table.GetHeader(0) == "timestamp");
     CHECK(table.GetHeader(1) == "msg");
 
-    // The time column was Stage-B-handled, so `AppendBatch` must NOT have
-    // run a back-fill over it. A non-empty `LastBackfillRange` would mean
-    // the GUI received a redundant `dataChanged` AND `BackfillTimestampColumn`
-    // burned heap allocations on per-line "Failed to parse a timestamp ..."
-    // error strings that nobody reads.
+    // The time column was Stage-B-handled, so `AppendBatch` must not run a
+    // back-fill — a non-empty range here means redundant `dataChanged` plus
+    // discarded per-line `fmt::format` error strings on the GUI thread.
     CHECK(!table.LastBackfillRange().has_value());
 
-    // Inline-promoted values survive intact (no monostate from a clobbering
-    // back-fill) and remain accessible through the column->KeyId cache the
-    // GUI uses.
+    // Inline-promoted values survive intact and remain accessible through
+    // the column->KeyId cache the GUI uses.
     CHECK(std::holds_alternative<TimeStamp>(table.GetValue(0, 0)));
     CHECK(std::get<TimeStamp>(table.GetValue(0, 0)) == ts);
     CHECK(std::get<std::string>(table.GetValue(0, 1)) == "hello");
 
-    // A second steady-state batch must also leave the time column alone —
+    // A subsequent steady-state batch must also leave the time column alone:
     // the slice back-fill path is just as wasteful as the first-observation
     // path when Stage B already did the work.
     StreamedBatch batch2 = BuildStreamedBatch(
@@ -703,10 +733,10 @@ TEST_CASE(
 
     // Pre-populate every key in the KeyIndex once so each AppendBatch is a
     // pure steady-state batch (no `newKeys`, no auto-promotion).
-    KeyIndex &keys = table.Data().Keys();
+    KeyIndex &keys = table.Keys();
     for (int i = 0; i < kKeyCount; ++i)
     {
-        keys.GetOrInsert("k" + std::to_string(i));
+        static_cast<void>(keys.GetOrInsert("k" + std::to_string(i)));
     }
 
     // Reset counters so other test cases do not leak counts into us. Note:
@@ -793,11 +823,11 @@ TEST_CASE(
 
     // Pre-populate every key the columns reference except the brand-new one
     // ("k0_new") so BeginStreaming's `RefreshColumnKeyIds` walks them all.
-    KeyIndex &keys = table.Data().Keys();
-    keys.GetOrInsert("k0");
+    KeyIndex &keys = table.Keys();
+    static_cast<void>(keys.GetOrInsert("k0"));
     for (int i = 0; i < kUntouchedKeyCount; ++i)
     {
-        keys.GetOrInsert("u" + std::to_string(i));
+        static_cast<void>(keys.GetOrInsert("u" + std::to_string(i)));
     }
 
     // First batch: announce one brand-new key ("k0_new") that the "Touched"

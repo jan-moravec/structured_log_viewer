@@ -366,22 +366,22 @@ The path above assumes the `release` preset on Linux/macOS; on multi-config gene
 
 ### WARN-line convention
 
-Throughput, fast-path fraction, and cancellation latency are reported via Catch2's `WARN` macro so they appear in the output even on success. The streaming-to-`LogTable` cases (`[large]`, `[wide]`) emit four `WARN` lines per case via `RunStreamingBenchmark`:
+Throughput, fast-path fraction, and cancellation latency are reported via Catch2's `WARN` macro so they appear in the output even on success. The streaming-to-`LogTable` cases (`[large]`, `[wide]`) emit three `WARN` lines per case via `RunStreamingBenchmark`:
 
 1. **Warm-up MB/s** — single cold-cache run; informative context but **not** the regression-gate number.
-1. **Per-stage CPU breakdown** — Stage A / Stage B / Stage C / Sink wall times, plus Stage B utilisation as `stageBCpuTotal / (effectiveThreads * wallClockTotal)`.
-1. **`LogTable::AppendBatch` wall-time per 100 k lines** — the GUI-thread cost of consuming the streamed batches.
+1. **`LogTable::AppendBatch` wall-time per 100 k lines** — the GUI-thread cost of consuming the streamed batches (printed once, sourced from the warm-up run).
 1. **`RunTimedSamples` summary** — mean / low / high / stddev MB/s and lines/s across N samples (4 for the heavy fixtures).
 
 The **steady-state MB/s mean from `RunTimedSamples` — not the warm-up MB/s** — is the canonical regression-gate input. The warm-up's run-to-run variance from cache and scheduling effects easily masks single-digit-percent code changes, which is why the gate is anchored on the timed samples.
 
 ### Acceptance bar
 
+> **Note:** the bar below is a **manual review convention**, not an automated CI gate. The CI `release-benchmark` step runs the benchmarks and prints the WARN lines; reviewers (and the PR author, in the description / commit message) compare the printed numbers against the prior commit's. There is no script that fails the build on a regression — a machine-readable CSV emitter that wires into a CI compare-against-baseline step is filed as a follow-up. Until that lands, please paste the relevant WARN lines into your PR description so the reviewer can spot a regression at a glance.
+
 The convention is to capture both **before** (clean-tree baseline) and **after** (your branch tip) numbers for each gating fixture and quote them in the commit message or PR description:
 
 - `[large]` and `[wide]` — steady-state MB/s mean within ±3 % of the prior commit's number, or a documented architectural justification.
 - `[allocations]` — `string_view` fast-path fraction ≥ 99 %.
-- Stage B utilisation > 70 % and Stage A wall-clock < 5 % of total.
 - `[cancellation]` — p95 latency within ±3 % of the prior commit's number.
 
 ## Code style and pre-commit

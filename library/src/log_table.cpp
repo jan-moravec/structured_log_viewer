@@ -2,6 +2,10 @@
 
 #include "loglib/log_processing.hpp"
 
+#include <date/date.h>
+#include <date/tz.h>
+#include <fmt/format.h>
+
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,12 +23,25 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
 
 void LogTable::Update(LogData &&data)
 {
-    Configuration().Update(data);
+    mConfiguration.Update(data);
     if (!data.TimestampsAlreadyParsed())
     {
-        ParseTimestamps(data, Configuration().Configuration());
+        ParseTimestamps(data, mConfiguration.Configuration());
     }
-    Data().Merge(std::move(data));
+    mData.Merge(std::move(data));
+    RefreshColumnKeyIds();
+}
+
+void LogTable::Reset()
+{
+    // Wipe the per-parse state but leave `mConfiguration` alone. Replacing
+    // the whole `LogTable` with `LogTable{}` (the prior approach) also
+    // dropped the user-loaded `LogConfiguration`, which made `LoadConfiguration
+    // → File → Open` silently revert to an auto-derived layout.
+    mData = LogData{};
+    mStageBSnapshotTimeKeys.clear();
+    mPostSnapshotTimeKeys.clear();
+    mLastBackfillRange.reset();
     RefreshColumnKeyIds();
 }
 
@@ -136,9 +153,12 @@ void LogTable::AppendBatch(StreamedBatch batch)
             continue;
         }
 
+        // The streaming hot path does not surface per-line "Failed to parse"
+        // strings anywhere, so use the `BackfillErrors::Discard` overload to
+        // skip the per-failed-row `fmt::format` allocation.
         if (firstObservation)
         {
-            BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()));
+            BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
             for (const KeyId id : columnKeyIds)
             {
                 if (id != kInvalidKeyId)
@@ -155,7 +175,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
         else if (needsSliceBackfill && oldLineCount < mData.Lines().size())
         {
             std::span<LogLine> slice(mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount);
-            BackfillTimestampColumn(column, slice);
+            BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
         }
     }
 
@@ -165,9 +185,30 @@ void LogTable::AppendBatch(StreamedBatch batch)
     }
 }
 
-const std::optional<std::pair<size_t, size_t>> &LogTable::LastBackfillRange() const
+LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch) const
+{
+    AppendBatchPreview preview;
+    preview.newRowCount = mData.Lines().size() + batch.lines.size();
+    // `AppendKeys` is append-only with `IsKeyInAnyColumnCached` as the skip
+    // predicate; mirror that exactly via `CountAppendableKeys` so the
+    // predicted column count matches what `AppendBatch` would actually push.
+    preview.newColumnCount =
+        mConfiguration.Configuration().columns.size() + mConfiguration.CountAppendableKeys(batch.newKeys);
+    return preview;
+}
+
+const std::optional<std::pair<size_t, size_t>> &LogTable::LastBackfillRange() const noexcept
 {
     return mLastBackfillRange;
+}
+
+void LogTable::ReserveLineOffsets(size_t count)
+{
+    if (count == 0 || mData.Files().empty())
+    {
+        return;
+    }
+    mData.Files().front()->ReserveLineOffsets(count);
 }
 
 std::string LogTable::GetHeader(size_t column) const
@@ -229,14 +270,19 @@ size_t LogTable::RowCount() const
     return mData.Lines().size();
 }
 
-const LogData &LogTable::Data() const
+const LogData &LogTable::Data() const noexcept
 {
     return mData;
 }
 
-LogData &LogTable::Data()
+KeyIndex &LogTable::Keys()
 {
-    return mData;
+    return mData.Keys();
+}
+
+const KeyIndex &LogTable::Keys() const
+{
+    return mData.Keys();
 }
 
 const LogConfigurationManager &LogTable::Configuration() const

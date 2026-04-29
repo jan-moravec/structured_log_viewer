@@ -43,18 +43,18 @@ public:
 
     /// Returns the canonical id for @p key, allocating one if first-seen.
     /// Thread-safe; the input view's bytes are copied internally.
-    KeyId GetOrInsert(std::string_view key);
+    [[nodiscard]] KeyId GetOrInsert(std::string_view key);
 
     /// Returns `kInvalidKeyId` if @p key has not been inserted. Thread-safe.
-    KeyId Find(std::string_view key) const;
+    [[nodiscard]] KeyId Find(std::string_view key) const;
 
     /// Stable for the lifetime of the `KeyIndex`. UB if @p id is out of range.
-    std::string_view KeyOf(KeyId id) const;
+    [[nodiscard]] std::string_view KeyOf(KeyId id) const;
 
-    size_t Size() const;
+    [[nodiscard]] size_t Size() const noexcept;
 
     /// Cold-path snapshot under the internal lock.
-    std::vector<std::string> SortedKeys() const;
+    [[nodiscard]] std::vector<std::string> SortedKeys() const;
 
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
     /// Test-only call counters compiled in by the unit-test target.

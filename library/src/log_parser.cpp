@@ -26,7 +26,7 @@ ParseResult LogParser::Parse(const std::filesystem::path &file) const
 
     auto logFile = std::make_unique<LogFile>(file);
     LogFile *logFilePtr = logFile.get();
-    BufferingSink sink(std::move(logFile));
+    internal::BufferingSink sink(std::move(logFile));
 
     ParseStreaming(*logFilePtr, sink, ParserOptions{});
 
