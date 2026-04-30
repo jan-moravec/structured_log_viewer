@@ -14,6 +14,7 @@ add_executable(
     "src/test_log_file.cpp"
     "src/test_log_line.cpp"
     "src/test_log_processing.cpp"
+    "src/test_log_source.cpp"
     "src/test_log_table.cpp"
     "src/test_parser_pipeline.cpp"
 )

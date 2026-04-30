@@ -8,6 +8,8 @@ add_library(
     src/json_parser.cpp
     src/key_index.cpp
     src/log_parser.cpp
+    src/log_source.cpp
+    src/mapped_file_source.cpp
     src/parser_pipeline.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp

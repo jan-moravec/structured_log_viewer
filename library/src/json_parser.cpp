@@ -7,6 +7,7 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
+#include "loglib/log_source.hpp"
 
 #include <date/date.h>
 #include <fmt/format.h>
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -671,9 +673,32 @@ std::string JsonParser::ToString(const LogMap &values) const
     return SerializeJson(json);
 }
 
-void JsonParser::ParseStreaming(LogFile &file, StreamingLogSink &sink, ParserOptions options) const
+void JsonParser::ParseStreaming(LogSource &source, StreamingLogSink &sink, ParserOptions options) const
 {
-    ParseStreaming(file, sink, std::move(options), internal::AdvancedParserOptions{});
+    // Mmap fast path: bypass `LogSource::Read` entirely and drive the TBB
+    // pipeline directly over the `LogFile`'s mmap so the static-path
+    // `[large]` / `[wide]` / `[allocations]` benchmark headroom is
+    // preserved (PRD 4.9.4, task 1.4). Capability detection is the
+    // `IsMappedFile()` / `GetMappedLogFile()` virtual pair on `LogSource`;
+    // `MappedFileSource` is the only source today that returns true.
+    if (source.IsMappedFile())
+    {
+        if (LogFile *file = source.GetMappedLogFile())
+        {
+            ParseStreaming(*file, sink, std::move(options), internal::AdvancedParserOptions{});
+            return;
+        }
+    }
+
+    // Non-mmap sources (`TailingFileSource`, future stdin / TCP / UDP) go
+    // through the line-by-line streaming loop. That is implemented in
+    // task 2.5; until then this overload is unreachable for non-mmap
+    // sources and we fail loudly so a caller wiring a new source up early
+    // gets a clear diagnostic instead of silent no-op behaviour.
+    throw std::runtime_error(
+        "JsonParser::ParseStreaming(LogSource&): non-mmap-backed sources are not supported yet "
+        "(see tasks/tasks-log-stream-mode.md task 2.5)."
+    );
 }
 
 void JsonParser::ParseStreaming(
