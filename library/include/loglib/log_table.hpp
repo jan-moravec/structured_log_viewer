@@ -102,6 +102,18 @@ public:
 
     [[nodiscard]] const LogData &Data() const noexcept;
 
+    /// Drop the first @p count rows from the underlying row vectors. The
+    /// logical row range is `[file rows][stream rows]`, so file rows are
+    /// dropped first; once they are exhausted the eviction continues
+    /// into the stream rows. Used by `LogModel`'s FIFO retention-cap
+    /// machinery (PRD 4.5 / 4.10.3); callers must wrap with the
+    /// corresponding Qt `beginRemoveRows` / `endRemoveRows` notifications
+    /// so attached views observe the prefix removal.
+    ///
+    /// `count == 0` and `count >= RowCount()` are both well-defined:
+    /// the latter clears every row in source-order across both vectors.
+    void EvictPrefixRows(size_t count);
+
     /// Mutable `KeyIndex` for worker-thread `GetOrInsert` (used by `QtStreamingLogSink`).
     KeyIndex &Keys();
     const KeyIndex &Keys() const;

@@ -6,10 +6,14 @@
 
 #include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
+#include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
+#include <loglib/stream_log_line.hpp>
+#include <loglib/streaming_log_sink.hpp>
 
 #include <QFile>
 #include <QFileInfo>
@@ -860,6 +864,241 @@ private slots:
         QCOMPARE(finishedSpy.count(), 1);
         QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
         QCOMPARE(model.rowCount(), 0);
+    }
+
+    // FIFO eviction at the retention cap (PRD 4.5 / 4.10.3): feed batches of
+    // synthetic `StreamLogLine`s directly into `LogModel::AppendBatch`, asserting
+    // that:
+    //   - `RowCount()` never exceeds the cap once the cap is reached;
+    //   - `beginRemoveRows`/`rowsRemoved` fire on the prefix as new lines arrive;
+    //   - the surviving rows correspond to the *most recent* lines, not the
+    //     oldest ones (FIFO drops oldest).
+    void testRetentionCapFifoEviction()
+    {
+        LogModel model;
+        // Fresh sink + null LogFile so the StreamLogLine path takes over —
+        // mirrors what `BeginStreaming(unique_ptr<LogSource>)` does for a
+        // non-mmap source.
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        model.SetRetentionCap(100);
+
+        QSignalSpy rowsRemovedSpy(&model, &QAbstractItemModel::rowsRemoved);
+        QVERIFY(rowsRemovedSpy.isValid());
+
+        loglib::KeyIndex &keys = model.Sink()->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        Q_UNUSED(valueKey);
+
+        const size_t batchSize = 50;
+        const size_t totalLines = 500;
+        for (size_t batchStart = 0; batchStart < totalLines; batchStart += batchSize)
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = batchStart + 1;
+            batch.streamLines.reserve(batchSize);
+            // First batch must declare `value` as a new key so the column
+            // count predictor in `LogTable::PreviewAppend` matches reality.
+            if (batchStart == 0)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            for (size_t i = 0; i < batchSize; ++i)
+            {
+                const size_t lineId = batchStart + i + 1;
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+                batch.streamLines.emplace_back(
+                    std::move(values),
+                    keys,
+                    loglib::StreamLineReference("synthetic", "synthetic line", lineId)
+                );
+            }
+            model.AppendBatch(std::move(batch));
+        }
+
+        QCOMPARE(model.rowCount(), 100);
+        // 500 lines arrived, cap is 100 → 400 lines were evicted across
+        // however many batches breached the cap.
+        QVERIFY(rowsRemovedSpy.count() > 0);
+
+        // The first surviving row's `value` field must be the (500-100+1)-th
+        // line we fed (1-indexed), i.e. lineId 401.
+        const auto firstValue =
+            model.data(model.index(0, ColumnByHeader(model, QStringLiteral("value"))), LogModelItemDataRole::SortRole);
+        QCOMPARE(firstValue.toLongLong(), qint64(401));
+        const auto lastValue = model.data(
+            model.index(model.rowCount() - 1, ColumnByHeader(model, QStringLiteral("value"))),
+            LogModelItemDataRole::SortRole
+        );
+        QCOMPARE(lastValue.toLongLong(), qint64(500));
+
+        // Reset the streaming flag so model destructors don't emit a
+        // compensating cancelled signal that the test isn't watching for.
+        model.EndStreaming(false);
+    }
+
+    // Giant-batch collapse (PRD 4.10.3.iii): a batch whose row count alone
+    // exceeds the cap must collapse the head of the batch *before* it lands
+    // in `LogTable`, so per-batch eviction stays O(cap) and the visible
+    // model never breaches the cap.
+    void testRetentionCapGiantBatchCollapse()
+    {
+        LogModel model;
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        model.SetRetentionCap(1000);
+
+        loglib::KeyIndex &keys = model.Sink()->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        loglib::StreamedBatch batch;
+        batch.firstLineNumber = 1;
+        batch.newKeys.emplace_back(std::string("value"));
+        batch.streamLines.reserve(2000);
+        for (size_t i = 0; i < 2000; ++i)
+        {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(i + 1)});
+            batch.streamLines.emplace_back(
+                std::move(values), keys, loglib::StreamLineReference("synthetic", "x", i + 1)
+            );
+        }
+        model.AppendBatch(std::move(batch));
+
+        // Visible rows must equal the cap exactly (the head of the batch
+        // was collapsed pre-AppendBatch, so the whole batch never landed).
+        QCOMPARE(model.rowCount(), 1000);
+        const int valueColumn = ColumnByHeader(model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+        // Surviving rows are lines 1001..2000 in input order.
+        QCOMPARE(model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1001));
+        QCOMPARE(
+            model.data(model.index(999, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(2000)
+        );
+
+        model.EndStreaming(false);
+    }
+
+    // Sink Pause/Resume: while paused, `OnBatch` redirects into the paused
+    // buffer instead of posting per-batch QueuedConnection lambdas; on
+    // Resume the buffer is coalesced into a single batch and posted to
+    // `LogModel::AppendBatch`.
+    void testSinkPauseResumeCoalescesBufferedBatches()
+    {
+        LogModel model;
+        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        QVERIFY(lineCountSpy.isValid());
+
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        QVERIFY(sink->IsActive());
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        // Push three batches into the sink while paused — they must NOT
+        // reach the model (no `lineCountChanged` ticks observed).
+        const int batchesWhilePaused = 3;
+        const int linesPerBatch = 5;
+        for (int b = 0; b < batchesWhilePaused; ++b)
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = static_cast<size_t>(b * linesPerBatch + 1);
+            if (b == 0)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            batch.streamLines.reserve(linesPerBatch);
+            for (int i = 0; i < linesPerBatch; ++i)
+            {
+                const size_t lineId = static_cast<size_t>(b * linesPerBatch + i + 1);
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+                );
+            }
+            // Direct call to OnBatch from this thread mirrors the worker.
+            sink->OnBatch(std::move(batch));
+        }
+
+        // Drain the event loop just to be sure no QueuedConnection lambdas
+        // slipped through.
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), 0);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), batchesWhilePaused * linesPerBatch);
+
+        // Resume coalesces the three batches into a single batch and posts
+        // it via QueuedConnection; `processEvents` runs the lambda.
+        sink->Resume();
+        QVERIFY(!sink->IsPaused());
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model.rowCount(), batchesWhilePaused * linesPerBatch);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), 0);
+
+        model.EndStreaming(false);
+    }
+
+    // Pause + cap-shrink interaction (PRD 4.5.5.ii): while paused, lowering
+    // the retention cap must trim the paused buffer to `cap - visible`
+    // (preserving the visible rows). Verified via PausedLineCount().
+    void testPauseCapShrinkTrimsPausedBuffer()
+    {
+        LogModel model;
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model.Sink();
+
+        // Seed the visible model with 100 rows by feeding a batch *before* pause.
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        auto makeBatch = [&keys, valueKey](size_t firstLineId, size_t count, bool declareNewKey) {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = firstLineId;
+            if (declareNewKey)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            batch.streamLines.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                const size_t lineId = firstLineId + i;
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+                );
+            }
+            return batch;
+        };
+
+        model.SetRetentionCap(1000);
+        model.AppendBatch(makeBatch(1, 100, true));
+        QCOMPARE(model.rowCount(), 100);
+
+        sink->Pause();
+        // 500 paused-buffer rows arrive while paused (visible stays at 100).
+        sink->OnBatch(makeBatch(101, 500, false));
+        QCOMPARE(model.rowCount(), 100);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), 500);
+
+        // Lower cap to (visible + 100). Visible rows must stay; paused buffer
+        // must trim down to 100 so visible+buffered <= cap.
+        model.SetRetentionCap(100 + 100);
+        QCOMPARE(model.rowCount(), 100);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), 100);
+
+        // Resume drains the trimmed buffer, FIFO-evicting the oldest visible
+        // rows so the post-Resume visible count stays within the cap.
+        sink->Resume();
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), 200);
+
+        model.EndStreaming(false);
     }
 
 private:

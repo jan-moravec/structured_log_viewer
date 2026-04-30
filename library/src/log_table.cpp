@@ -322,6 +322,33 @@ const LogData &LogTable::Data() const noexcept
     return mData;
 }
 
+void LogTable::EvictPrefixRows(size_t count)
+{
+    if (count == 0)
+    {
+        return;
+    }
+    auto &fileLines = mData.Lines();
+    auto &streamLines = mData.StreamLines();
+    const size_t fileRowCount = fileLines.size();
+    if (count >= fileRowCount + streamLines.size())
+    {
+        fileLines.clear();
+        streamLines.clear();
+        return;
+    }
+    if (fileRowCount > 0)
+    {
+        const size_t fileDrop = std::min(count, fileRowCount);
+        fileLines.erase(fileLines.begin(), fileLines.begin() + static_cast<std::ptrdiff_t>(fileDrop));
+        count -= fileDrop;
+    }
+    if (count > 0)
+    {
+        streamLines.erase(streamLines.begin(), streamLines.begin() + static_cast<std::ptrdiff_t>(count));
+    }
+}
+
 KeyIndex &LogTable::Keys()
 {
     return mData.Keys();
