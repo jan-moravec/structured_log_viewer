@@ -16,6 +16,7 @@
 #include <QMimeData>
 #include <QPushButton>
 #include <QString>
+#include <QToolBar>
 #include <QVBoxLayout>
 
 #include <memory>
@@ -51,6 +52,7 @@ protected:
 private slots:
     void OpenFiles();
     void OpenJsonLogs();
+    void OpenLogStream();
     void SaveConfiguration();
     void LoadConfiguration();
 
@@ -64,6 +66,18 @@ private slots:
     void ClearFilter(const QString &filterID);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
+
+    /// Toggle pause / resume on the bridging sink (PRD 4.2). Slot bound to
+    /// `actionPauseStream` (toolbar / Stream menu).
+    void TogglePauseStream(bool paused);
+
+    /// Stop the active stream (PRD 4.7). Slot bound to `actionStopStream`.
+    void StopStream();
+
+    /// Source-thread rotation event re-emitted on the GUI thread by
+    /// `LogModel::rotationDetected`; flashes the brief `— rotated`
+    /// suffix in the status bar (PRD 4.8.7.v / 5.8).
+    void OnRotationDetected();
 
 private:
     void OpenFileInternal(const QString &file, std::vector<std::string> &errors);
@@ -82,6 +96,22 @@ private:
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
+    /// Re-evaluate the visibility of the stream toolbar against
+    /// `mModel->IsStreamingActive()` (4.10 task 4.12). Called from
+    /// `BeginStreaming` and `streamingFinished`.
+    void UpdateStreamToolbarVisibility();
+
+    /// Scroll the table to the most-recently-appended source row when
+    /// `actionFollowTail->isChecked()` (PRD 4.3 / task 5.7). Mapped through
+    /// the proxy model so it lands on the correct visual row even under
+    /// a sort.
+    void ScrollToNewestRowIfFollowing();
+
+    /// Re-apply the persisted `streaming/retentionLines` value to
+    /// `mModel->SetRetentionCap` (PRD 4.5.5 / task 5.12). Called from
+    /// startup and from the preferences-Ok handler.
+    void ApplyStreamingRetention();
+
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
     LogFilterModel *mSortFilterProxyModel;
@@ -96,6 +126,10 @@ private:
     /// while a streaming parse is in flight.
     QLabel *mStatusLabel = nullptr;
 
+    /// Toolbar holding Pause / Follow tail / Stop. Visible only while
+    /// `mModel->IsStreamingActive() == true` (PRD §6 *Toolbar*; task 5.3).
+    QToolBar *mStreamToolbar = nullptr;
+
     /// Display name of the file currently being streamed; used to render
     /// `mStatusLabel`. Empty when no parse is in flight.
     QString mStreamingFileName;
@@ -105,7 +139,24 @@ private:
     /// post-parse error summary on cancellation.
     bool mStreamingActive = false;
 
+    /// True while the active session was opened via **File → Open Log
+    /// Stream…** (`TailingFileSource`); false for the static-streaming
+    /// path. Drives the status-bar label (PRD §6 *Status bar*).
+    bool mLiveTailActive = false;
+
     /// Running line / error count snapshot for the status-bar label.
     qsizetype mStreamingLineCount = 0;
     qsizetype mStreamingErrorCount = 0;
+
+    /// Tracks whether the first non-empty streaming batch has landed yet
+    /// (PRD §6 *Column auto-resize during streaming*; task 5.9). Reset on
+    /// `BeginStreaming`, flipped to true on the first `lineCountChanged`
+    /// with a non-zero count. While `false` and live-tail is active,
+    /// `UpdateUi()` runs after the batch lands; thereafter, never.
+    bool mFirstStreamingBatchSeen = false;
+
+    /// True for the duration of the brief 3 s `— rotated` flash on the
+    /// status bar after a rotation event (PRD §6 *Rotation indicator*).
+    /// A `QTimer::singleShot` clears it.
+    bool mRotationFlashActive = false;
 };

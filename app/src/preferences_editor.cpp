@@ -1,12 +1,16 @@
 #include "preferences_editor.hpp"
 
 #include "appearance_control.hpp"
+#include "streaming_control.hpp"
 
 #include <QApplication>
+#include <QGroupBox>
 #include <QLabel>
 #include <QPushButton>
 #include <QStyleFactory>
 #include <QVBoxLayout>
+
+#include <cstddef>
 
 PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
 {
@@ -17,8 +21,20 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
     mFontComboBox = new QFontComboBox(this);
     mSizeSpinBox = new QSpinBox(this);
     mStyleComboBox = new QComboBox(this);
+    mStreamRetentionSpinBox = new QSpinBox(this);
 
     mSizeSpinBox->setRange(6, 72);
+
+    // Stream retention range mirrors PRD 4.5.2 (1 000 .. 1 000 000).
+    mStreamRetentionSpinBox->setRange(
+        static_cast<int>(StreamingControl::kMinRetentionLines), static_cast<int>(StreamingControl::kMaxRetentionLines)
+    );
+    mStreamRetentionSpinBox->setSingleStep(1000);
+    mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::kDefaultRetentionLines));
+    mStreamRetentionSpinBox->setToolTip(
+        "Maximum number of streamed lines kept in memory. Oldest lines are dropped when the cap "
+        "is reached. Higher values use more memory."
+    );
 
     for (const auto &style : QStyleFactory::keys())
     {
@@ -41,23 +57,52 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
         qApp->setStyle(QStyleFactory::create(styleName));
     });
 
+    // Stream retention is applied transactionally on Ok (PRD §6
+    // *Preferences*, OQ-10): the spinbox does not push live updates so a
+    // Cancel must revert. The Ok handler below mirrors the value into
+    // `StreamingControl` and emits `streamingRetentionChanged` for the
+    // `MainWindow` to apply (task 5.12).
+
     auto *layout = new QVBoxLayout(this);
-    layout->addWidget(new QLabel("Select Style:"));
-    layout->addWidget(mStyleComboBox);
-    layout->addWidget(new QLabel("Select Font:"));
-    layout->addWidget(mFontComboBox);
-    layout->addWidget(new QLabel("Select Font Size:"));
-    layout->addWidget(mSizeSpinBox);
+
+    auto *appearanceGroup = new QGroupBox("Appearance", this);
+    auto *appearanceLayout = new QVBoxLayout(appearanceGroup);
+    appearanceLayout->addWidget(new QLabel("Select Style:"));
+    appearanceLayout->addWidget(mStyleComboBox);
+    appearanceLayout->addWidget(new QLabel("Select Font:"));
+    appearanceLayout->addWidget(mFontComboBox);
+    appearanceLayout->addWidget(new QLabel("Select Font Size:"));
+    appearanceLayout->addWidget(mSizeSpinBox);
+
+    auto *streamingGroup = new QGroupBox("Streaming", this);
+    auto *streamingLayout = new QVBoxLayout(streamingGroup);
+    streamingLayout->addWidget(new QLabel("Stream retention (lines):"));
+    streamingLayout->addWidget(mStreamRetentionSpinBox);
+
+    layout->addWidget(appearanceGroup);
+    layout->addWidget(streamingGroup);
 
     QPushButton *okButton = new QPushButton("Ok", this);
     QPushButton *cancelButton = new QPushButton("Cancel", this);
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
         AppearanceControl::SaveConfiguration();
+        // Mirror the spinbox value into `StreamingControl` and persist
+        // before notifying the `MainWindow`, so an observer querying
+        // `StreamingControl::RetentionLines()` from the slot sees the new
+        // value (PRD §6 *Preferences*, OQ-10).
+        const auto retention = static_cast<size_t>(mStreamRetentionSpinBox->value());
+        StreamingControl::SetRetentionLines(retention);
+        StreamingControl::SaveConfiguration();
+        emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         close();
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
         AppearanceControl::LoadConfiguration();
+        // Revert the spinbox-edited value to the persisted one. No need
+        // to emit `streamingRetentionChanged` because the on-disk value
+        // is unchanged.
+        StreamingControl::LoadConfiguration();
         close();
     });
 
@@ -73,4 +118,5 @@ void PreferencesEditor::UpdateFields()
     mSizeSpinBox->setValue(QApplication::font().pointSize());
     mStyleComboBox->setCurrentText(QApplication::style()->name());
     mFontComboBox->setCurrentFont(qApp->font());
+    mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::RetentionLines()));
 }

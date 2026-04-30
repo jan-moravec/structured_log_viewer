@@ -4,6 +4,7 @@
 #include "appearance_control.hpp"
 #include "filter_editor.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include "streaming_control.hpp"
 
 #include <loglib/json_parser.hpp>
 #include <loglib/log_configuration.hpp>
@@ -11,6 +12,7 @@
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/stop_token.hpp>
+#include <loglib/tailing_file_source.hpp>
 
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -31,6 +33,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <system_error>
@@ -158,6 +161,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenJsonLogs, &QAction::triggered, this, &MainWindow::OpenJsonLogs);
+    connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
@@ -168,6 +172,36 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() { AddFilter(QUuid::createUuid().toString()); });
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
+
+    // Stream toolbar (PRD §6 *Toolbar*; task 5.3). Hidden until a stream
+    // is opened; the same actions are also reachable from the **Stream**
+    // menu (task 5.2).
+    mStreamToolbar = addToolBar(tr("Stream"));
+    mStreamToolbar->setObjectName("streamToolbar");
+    mStreamToolbar->addAction(ui->actionPauseStream);
+    mStreamToolbar->addAction(ui->actionFollowTail);
+    mStreamToolbar->addAction(ui->actionStopStream);
+    mStreamToolbar->setVisible(false);
+
+    connect(ui->actionPauseStream, &QAction::toggled, this, &MainWindow::TogglePauseStream);
+    connect(ui->actionStopStream, &QAction::triggered, this, &MainWindow::StopStream);
+
+    // `actionFollowTail` is a stateless toggle observed by
+    // `ScrollToNewestRowIfFollowing`; nothing to wire on its own
+    // `toggled` signal. The user-scroll signals below auto-disengage /
+    // auto-re-engage it (PRD 4.3.3).
+    connect(mTableView, &LogTableView::userScrolledAwayFromBottom, this, [this]() {
+        if (ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(false);
+        }
+    });
+    connect(mTableView, &LogTableView::userScrolledToBottom, this, [this]() {
+        if (!ui->actionFollowTail->isChecked() && mModel->IsStreamingActive())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
 
     mFindRecord = new FindRecordWidget(this);
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
@@ -181,6 +215,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mPreferencesEditor->raise();
         mPreferencesEditor->activateWindow();
     });
+    connect(
+        mPreferencesEditor,
+        &PreferencesEditor::streamingRetentionChanged,
+        this,
+        [this](qulonglong) { ApplyStreamingRetention(); }
+    );
 
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
@@ -189,6 +229,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
+        // First-batch column auto-resize (PRD §6, task 5.9). `UpdateUi`
+        // runs only on the first non-empty batch after `BeginStreaming`,
+        // so initial widths fit pre-fill rows; thereafter the user
+        // resizes manually (avoid yanking columns under the mouse).
+        if (mLiveTailActive && !mFirstStreamingBatchSeen && count > 0)
+        {
+            mFirstStreamingBatchSeen = true;
+            UpdateUi();
+        }
+        // Follow-tail auto-scroll on every batch (PRD 4.3 / task 5.7).
+        if (mModel->IsStreamingActive())
+        {
+            ScrollToNewestRowIfFollowing();
+        }
     });
     connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
         mStreamingErrorCount = count;
@@ -196,7 +250,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     });
     connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
         mStreamingActive = false;
+        mLiveTailActive = false;
+        // Reset Pause toggle so the next session starts unpaused.
+        if (ui->actionPauseStream->isChecked())
+        {
+            const QSignalBlocker blocker(ui->actionPauseStream);
+            ui->actionPauseStream->setChecked(false);
+        }
         SetConfigurationUiEnabled(true);
+        UpdateStreamToolbarVisibility();
         UpdateUi();
         UpdateStreamingStatus();
         // Only `Success` produces a post-parse error summary; cancellation
@@ -207,6 +269,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         }
         mStreamingFileName.clear();
     });
+    connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
+
+    // Pull the persisted retention cap into the model on startup so the
+    // first `OpenLogStream` honours the user's preference (task 5.12).
+    StreamingControl::LoadConfiguration();
+    ApplyStreamingRetention();
 
     QTimer::singleShot(0, [this] {
         // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
@@ -475,10 +543,13 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     }
 
     mStreamingActive = true;
+    mLiveTailActive = false;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
+    mFirstStreamingBatchSeen = false;
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
+    UpdateStreamToolbarVisibility();
 
     // Borrow the same `LogFile*` the model is about to take ownership of;
     // emitted string_view values point into its mmap. Capturing before the
@@ -504,6 +575,108 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     return true;
 }
 
+void MainWindow::OpenLogStream()
+{
+    const QString file = QFileDialog::getOpenFileName(this, "Open Log Stream...", QString(), "All Files (*.*)");
+    if (file.isEmpty())
+    {
+        return;
+    }
+
+    // Construct the source on the GUI thread so open errors are
+    // synchronous (PRD 4.1.7 — failures stay in the previous state, no
+    // streaming UI flip). Pre-fill needs to know the retention cap so it
+    // back-reads at most that many lines off disk.
+    const size_t retention = (mModel->RetentionCap() != 0)
+                                 ? mModel->RetentionCap()
+                                 : StreamingControl::RetentionLines();
+
+    std::unique_ptr<loglib::TailingFileSource> source;
+    try
+    {
+        source = std::make_unique<loglib::TailingFileSource>(
+            std::filesystem::path(file.toStdString()), retention
+        );
+    }
+    catch (const std::exception &e)
+    {
+        ShowParseErrors(
+            "Error Opening Log Stream",
+            {std::string("Failed to open '") + file.toStdString() + "' for streaming: " + e.what()}
+        );
+        return;
+    }
+
+    // Mirror the static-open reset order from `OpenFilesWithParser` so
+    // residual state (filters, Find match, paused buffer) does not leak
+    // into the new session.
+    mModel->Clear();
+    ClearAllFilters();
+
+    mStreamingFileName = QFileInfo(file).fileName();
+    mStreamingActive = true;
+    mLiveTailActive = true;
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    mFirstStreamingBatchSeen = false;
+    SetConfigurationUiEnabled(false);
+    UpdateStreamingStatus();
+    UpdateStreamToolbarVisibility();
+
+    // Snapshot the configuration so the worker reads it lock-free
+    // (matches `OpenJsonStreaming`).
+    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+
+    loglib::ParserOptions options;
+    options.configuration = std::move(cfg);
+
+    mModel->BeginStreaming(std::move(source), std::move(options));
+}
+
+void MainWindow::TogglePauseStream(bool paused)
+{
+    if (!mModel->IsStreamingActive())
+    {
+        return;
+    }
+    if (paused)
+    {
+        mModel->Sink()->Pause();
+    }
+    else
+    {
+        mModel->Sink()->Resume();
+    }
+    UpdateStreamingStatus();
+}
+
+void MainWindow::StopStream()
+{
+    if (!mModel->IsStreamingActive())
+    {
+        return;
+    }
+    // `LogModel::Clear()` runs the mandatory PRD 4.7.2.i teardown
+    // sequence (source `Stop()` → sink `RequestStop()` → worker
+    // `waitForFinished()` → flush paused buffer → `DropPendingBatches()`)
+    // and emits a compensating `streamingFinished(Cancelled)` so the
+    // GUI gating reopens.
+    mModel->Clear();
+    mStreamingFileName.clear();
+}
+
+void MainWindow::OnRotationDetected()
+{
+    // PRD §6 *Rotation indicator*: brief 3 s `— rotated` flash on the
+    // status label. A `QTimer::singleShot` clears the flag.
+    mRotationFlashActive = true;
+    UpdateStreamingStatus();
+    QTimer::singleShot(3000, this, [this]() {
+        mRotationFlashActive = false;
+        UpdateStreamingStatus();
+    });
+}
+
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
 {
     // The parser holds an immutable snapshot; gate edits while streaming.
@@ -520,12 +693,74 @@ void MainWindow::UpdateStreamingStatus()
         mStatusLabel->hide();
         return;
     }
-    QString text = QString("Parsing %1 - %2 lines, %3 errors")
-                       .arg(mStreamingFileName)
-                       .arg(mStreamingLineCount)
-                       .arg(mStreamingErrorCount);
+
+    QString text;
+    if (!mLiveTailActive)
+    {
+        // Static streaming-parse path (existing behaviour).
+        text = QString("Parsing %1 - %2 lines, %3 errors")
+                   .arg(mStreamingFileName)
+                   .arg(mStreamingLineCount)
+                   .arg(mStreamingErrorCount);
+    }
+    else if (mModel->Sink() && mModel->Sink()->IsPaused())
+    {
+        // Paused: PRD §6 status-bar wording.
+        const auto buffered = static_cast<qsizetype>(mModel->Sink()->PausedLineCount());
+        text = QString("Paused - %1 lines, %2 buffered").arg(mStreamingLineCount).arg(buffered);
+    }
+    else
+    {
+        // Running.
+        text = QString("Streaming %1 - %2 lines, %3 errors")
+                   .arg(mStreamingFileName)
+                   .arg(mStreamingLineCount)
+                   .arg(mStreamingErrorCount);
+    }
+
+    if (mLiveTailActive && mRotationFlashActive)
+    {
+        text += " - rotated";
+    }
+
     mStatusLabel->setText(text);
     mStatusLabel->show();
+}
+
+void MainWindow::UpdateStreamToolbarVisibility()
+{
+    const bool visible = mModel->IsStreamingActive() && mLiveTailActive;
+    if (mStreamToolbar)
+    {
+        mStreamToolbar->setVisible(visible);
+    }
+}
+
+void MainWindow::ScrollToNewestRowIfFollowing()
+{
+    if (!ui->actionFollowTail->isChecked())
+    {
+        return;
+    }
+    const int sourceRowCount = mModel->rowCount();
+    if (sourceRowCount <= 0)
+    {
+        return;
+    }
+    // PRD 4.3.4 — scroll to the most-recently-appended source row even
+    // when sorted by a non-time column. Mapping through the proxy makes
+    // the visual scroll land on the correct row under sort/filter.
+    const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
+    const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(sourceIndex);
+    if (proxyIndex.isValid())
+    {
+        mTableView->scrollTo(proxyIndex, QAbstractItemView::PositionAtBottom);
+    }
+}
+
+void MainWindow::ApplyStreamingRetention()
+{
+    mModel->SetRetentionCap(StreamingControl::RetentionLines());
 }
 
 void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)

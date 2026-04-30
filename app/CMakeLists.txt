@@ -30,6 +30,8 @@ set(PROJECT_SOURCES
     include/preferences_editor.hpp
     src/appearance_control.cpp
     include/appearance_control.hpp
+    src/streaming_control.cpp
+    include/streaming_control.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})

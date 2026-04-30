@@ -29,6 +29,7 @@
     </property>
     <addaction name="actionOpen"/>
     <addaction name="actionOpenJsonLogs"/>
+    <addaction name="actionOpenLogStream"/>
     <addaction name="separator"/>
     <addaction name="separator"/>
     <addaction name="actionLoadConfiguration"/>
@@ -50,6 +51,14 @@
     <addaction name="actionClearAllFilters"/>
     <addaction name="separator"/>
    </widget>
+   <widget class="QMenu" name="menuStream">
+    <property name="title">
+     <string>Stream</string>
+    </property>
+    <addaction name="actionPauseStream"/>
+    <addaction name="actionFollowTail"/>
+    <addaction name="actionStopStream"/>
+   </widget>
    <widget class="QMenu" name="menuSettings">
     <property name="title">
      <string>Settings</string>
@@ -59,6 +68,7 @@
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
    <addaction name="menuFilters"/>
+   <addaction name="menuStream"/>
    <addaction name="menuSettings"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
@@ -141,6 +151,59 @@
   <action name="actionPreferences">
    <property name="text">
     <string>Preferences...</string>
+   </property>
+  </action>
+  <action name="actionOpenLogStream">
+   <property name="text">
+    <string>Open Log Stream...</string>
+   </property>
+   <property name="toolTip">
+    <string>Open a log file in live-tailing mode (Ctrl+Shift+O)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+O</string>
+   </property>
+  </action>
+  <action name="actionPauseStream">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Pause</string>
+   </property>
+   <property name="toolTip">
+    <string>Pause / resume stream ingestion (Ctrl+Shift+P)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+P</string>
+   </property>
+  </action>
+  <action name="actionFollowTail">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Follow tail</string>
+   </property>
+   <property name="toolTip">
+    <string>Auto-scroll to newest line (Ctrl+Shift+T)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+T</string>
+   </property>
+  </action>
+  <action name="actionStopStream">
+   <property name="text">
+    <string>Stop</string>
+   </property>
+   <property name="toolTip">
+    <string>Stop the stream and freeze the visible rows (Ctrl+Shift+S)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+S</string>
    </property>
   </action>
  </widget>
