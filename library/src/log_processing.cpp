@@ -1,6 +1,7 @@
 #include "loglib/log_processing.hpp"
 
 #include "loglib/internal/timestamp_promotion.hpp"
+#include "loglib/log_file.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
@@ -255,6 +256,22 @@ bool MakeBackfillState(
 
 } // namespace
 
+namespace
+{
+
+/// Pulls the owned-string arena view from the line's referenced `LogFile`.
+/// Post-stream lines have their `OwnedString` payloads rebased onto this
+/// arena (Stage C handles streaming; the synchronous `LogLine` ctor writes
+/// directly to it). Returns an empty view when the line has no file (only
+/// happens in test fixtures).
+std::string_view OwnedArenaForBackfill(const LogLine &line) noexcept
+{
+    const LogFile *file = line.FileReference().GetFile();
+    return file != nullptr ? file->OwnedStringsView() : std::string_view{};
+}
+
+} // namespace
+
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
 {
     std::vector<std::string> errors;
@@ -269,7 +286,8 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
     TimestampParseScratch scratch;
     for (auto &line : lines)
     {
-        if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch))
+        const std::string_view ownedArena = OwnedArenaForBackfill(line);
+        if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
         {
             errors.emplace_back(fmt::format(
                 "Failed to parse a timestamp for column '{}' from line number {}",
@@ -297,7 +315,8 @@ void BackfillTimestampColumn(
     TimestampParseScratch scratch;
     for (auto &line : lines)
     {
-        static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch));
+        const std::string_view ownedArena = OwnedArenaForBackfill(line);
+        static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
     }
 }
 

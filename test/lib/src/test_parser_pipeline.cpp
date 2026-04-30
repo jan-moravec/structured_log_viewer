@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/parser_options.hpp>
 #include <loglib/internal/parser_pipeline.hpp>
 #include <loglib/internal/timestamp_promotion.hpp>
@@ -141,7 +142,7 @@ public:
                     continue;
                 }
 
-                std::vector<std::pair<loglib::KeyId, LogValue>> values;
+                std::vector<std::pair<loglib::KeyId, loglib::detail::CompactLogValue>> values;
                 values.reserve(8);
                 size_t pos = 0;
                 while (pos < line.size())
@@ -169,7 +170,18 @@ public:
                     std::string_view valueView = field.substr(eq + 1);
 
                     const loglib::KeyId keyId = loglib::detail::InternKeyVia(keyView, keys, &worker.keyCache);
-                    LogValue val{std::string(valueView)};
+
+                    // Park the value bytes in the per-batch arena and
+                    // record an `OwnedString` compact value pointing at
+                    // them. Stage C concatenates this arena onto the
+                    // `LogFile` arena and rebases the offsets on the way
+                    // out — the inline `worker.PromoteTimestamps` call
+                    // below sees the per-batch view.
+                    const auto offset = static_cast<uint64_t>(parsed.ownedStringsArena.size());
+                    parsed.ownedStringsArena.append(valueView.data(), valueView.size());
+                    auto val = loglib::detail::CompactLogValue::MakeOwnedString(
+                        offset, static_cast<uint32_t>(valueView.size())
+                    );
                     auto it = values.begin();
                     while (it != values.end() && it->first < keyId)
                     {
@@ -177,11 +189,11 @@ public:
                     }
                     if (it != values.end() && it->first == keyId)
                     {
-                        it->second = std::move(val);
+                        it->second = val;
                     }
                     else
                     {
-                        values.emplace(it, keyId, std::move(val));
+                        values.emplace(it, keyId, val);
                     }
                 }
 
@@ -193,7 +205,7 @@ public:
                 // round-trip the source bytes for the line.
                 logLine.FileReference().SetLineNumber(relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));
-                worker.PromoteTimestamps(parsed.lines.back(), timeColumns);
+                worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
                 ++relativeLineNumber;
             }

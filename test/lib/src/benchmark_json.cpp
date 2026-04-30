@@ -25,12 +25,24 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+// psapi.h needs windows.h above it.
+#include <psapi.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#endif
 
 using namespace loglib;
 using test_common::GenerateRandomJsonLogs;
@@ -160,6 +172,76 @@ void RunTimedSamples(const char *label, std::size_t samples, ThroughputInputs th
     );
 }
 
+/// Breakdown of structural bytes owned by a parsed `LogTable`. Each member
+/// counts heap bytes attributable to `loglib`'s internal data structures —
+/// the mmap'd file content is excluded because the OS shares it with the
+/// page cache.
+struct StructuralBytes
+{
+    std::size_t lines = 0;
+    std::size_t lineOffsets = 0;
+    std::size_t ownedStrings = 0;
+    std::size_t keyIndex = 0;
+
+    std::size_t Total() const noexcept
+    {
+        return lines + lineOffsets + ownedStrings + keyIndex;
+    }
+};
+
+StructuralBytes ComputeStructuralBytes(const LogTable &table)
+{
+    StructuralBytes result;
+    const LogData &data = table.Data();
+
+    for (const LogLine &line : data.Lines())
+    {
+        result.lines += line.OwnedMemoryBytes();
+    }
+    for (const auto &file : data.Files())
+    {
+        if (file)
+        {
+            result.lineOffsets += file->LineOffsetsMemoryBytes();
+            result.ownedStrings += file->OwnedStringsMemoryBytes();
+        }
+    }
+    result.keyIndex = data.Keys().EstimatedMemoryBytes();
+    return result;
+}
+
+/// Returns the process's peak working set (Windows) / max resident set
+/// size (POSIX), in bytes. Used to give an OS-level cross-check against
+/// the structural-bytes sum; varies more across runs than the structural
+/// number, hence "informational".
+std::size_t SamplePeakWorkingSetBytes()
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters{};
+    counters.cb = sizeof(counters);
+    if (::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof(counters)) != 0)
+    {
+        return static_cast<std::size_t>(counters.PeakWorkingSetSize);
+    }
+    return 0;
+#elif defined(__unix__) || defined(__APPLE__)
+    rusage usage{};
+    if (::getrusage(RUSAGE_SELF, &usage) == 0)
+    {
+#if defined(__APPLE__)
+        // Darwin reports `ru_maxrss` in bytes.
+        return static_cast<std::size_t>(usage.ru_maxrss);
+#else
+        // Linux/BSDs report `ru_maxrss` in kilobytes.
+        return static_cast<std::size_t>(usage.ru_maxrss) * 1024U;
+#endif
+    }
+    return 0;
+#else
+    return 0;
+#endif
+}
+
 /// Sink that mirrors `LogModel::OnBatch`: every batch is forwarded to
 /// `LogTable::AppendBatch`, which runs the GUI-thread back-fill loop.
 struct StreamSink : StreamingLogSink
@@ -218,24 +300,42 @@ struct StreamingRunResult
     size_t appendBatches = 0;
     size_t appendLines = 0;
     size_t rowCount = 0;
+    /// Populated only when the caller passes `captureMemory = true`. The
+    /// sample is taken with the `LogTable` still alive so the structural
+    /// byte counters reflect the steady-state post-parse layout.
+    bool memoryCaptured = false;
+    StructuralBytes structuralBytes{};
+    std::size_t peakWorkingSetBytes = 0;
+    std::size_t peakWorkingSetDeltaBytes = 0;
 };
 
 StreamingRunResult RunStreamingFlow(
     const JsonParser &parser,
     const std::filesystem::path &configPath,
     const std::filesystem::path &logPath,
-    std::shared_ptr<const LogConfiguration> configuration
+    std::shared_ptr<const LogConfiguration> configuration,
+    bool captureMemory = false
 )
 {
     StreamingRunResult result;
     internal::AdvancedParserOptions advanced;
+
+    const std::size_t peakBefore = captureMemory ? SamplePeakWorkingSetBytes() : 0;
 
     const auto start = std::chrono::steady_clock::now();
     {
         LogConfigurationManager configManager;
         configManager.Load(configPath.string());
         LogTable table(LogData{}, std::move(configManager));
+
+        // Mirror `MainWindow::OpenJsonStreaming`: one `LogFile` owned by
+        // the table, borrowed by the parser via a raw pointer. Sharing
+        // ensures Stage C's per-line offsets and the owned-string arena
+        // both land in the same `LogFile` the table will look at when
+        // accessing values (otherwise structural-bytes would
+        // under-count and `LogValue` materialisation would dangle).
         auto fileForTable = std::make_unique<LogFile>(logPath);
+        LogFile *parseFile = fileForTable.get();
         table.BeginStreaming(std::move(fileForTable));
 
         StreamSink sink;
@@ -244,21 +344,33 @@ StreamingRunResult RunStreamingFlow(
         ParserOptions opts;
         opts.configuration = configuration;
 
-        LogFile parseFile(logPath);
-        parser.ParseStreaming(parseFile, sink, opts, advanced);
+        parser.ParseStreaming(*parseFile, sink, opts, advanced);
 
         result.appendTotal = sink.appendTotal;
         result.appendBatches = sink.appendBatches;
         result.appendLines = sink.appendLines;
         result.rowCount = table.RowCount();
+
+        if (captureMemory)
+        {
+            // Sample inside the `LogTable` scope so the live data structures
+            // are still owned. `~LogTable` below frees them and would skew
+            // the working-set delta if we sampled afterwards.
+            result.structuralBytes = ComputeStructuralBytes(table);
+            const std::size_t peakAfter = SamplePeakWorkingSetBytes();
+            result.peakWorkingSetBytes = peakAfter;
+            result.peakWorkingSetDeltaBytes = peakAfter > peakBefore ? peakAfter - peakBefore : 0;
+            result.memoryCaptured = true;
+        }
     }
     result.elapsed = std::chrono::steady_clock::now() - start;
     return result;
 }
 
 /// Drive one streaming benchmark fixture: an untimed warm-up that emits the
-/// per-batch `LogTable::AppendBatch` wall-time line, then `samples` timed
-/// end-to-end runs through `RunTimedSamples`'s throughput overload.
+/// per-batch `LogTable::AppendBatch` wall-time line plus the structural-
+/// memory footprint, then `samples` timed end-to-end runs through
+/// `RunTimedSamples`'s throughput overload.
 void RunStreamingBenchmark(
     const char *label,
     const JsonParser &parser,
@@ -271,7 +383,12 @@ void RunStreamingBenchmark(
 )
 {
     {
-        StreamingRunResult warmup = RunStreamingFlow(parser, configPath, logPath, configuration);
+        // Capture memory on the warm-up run only: the structural-bytes
+        // signal is deterministic across runs, so a single sample suffices,
+        // and we avoid paying for the introspection walk on every timed
+        // sample.
+        StreamingRunResult warmup =
+            RunStreamingFlow(parser, configPath, logPath, configuration, /*captureMemory=*/true);
         REQUIRE(warmup.rowCount == expectedRows);
         ReportThroughput((std::string(label) + " warm-up").c_str(), warmup.elapsed, bytes, expectedRows);
 
@@ -282,6 +399,28 @@ void RunStreamingBenchmark(
             "LogTable::AppendBatch wall-time: " << appendMs << " ms over " << warmup.appendBatches << " batches / "
                                                 << warmup.appendLines << " lines (" << per100k << " ms / 100k lines)"
         );
+
+        if (warmup.memoryCaptured)
+        {
+            constexpr double kMiB = 1024.0 * 1024.0;
+            const double linesD = static_cast<double>(expectedRows == 0 ? 1 : expectedRows);
+            const double bytesPerLine =
+                expectedRows == 0 ? 0.0 : static_cast<double>(warmup.structuralBytes.Total()) / linesD;
+            const double fileBytesMiB = static_cast<double>(bytes) / kMiB;
+            const double structuralBytesMiB = static_cast<double>(warmup.structuralBytes.Total()) / kMiB;
+            const double structuralRatio = bytes == 0 ? 0.0 : structuralBytesMiB / fileBytesMiB;
+            WARN(
+                "Structural bytes (lines+offsets+ownedStrings+keys): "
+                << structuralBytesMiB << " MiB (" << bytesPerLine << " B/line, "
+                << static_cast<double>(warmup.structuralBytes.lines) / kMiB << " MiB lines + "
+                << static_cast<double>(warmup.structuralBytes.lineOffsets) / kMiB << " MiB offsets + "
+                << static_cast<double>(warmup.structuralBytes.ownedStrings) / kMiB << " MiB ownedStrings + "
+                << static_cast<double>(warmup.structuralBytes.keyIndex) / kMiB
+                << " MiB keys), structural/file ratio=" << structuralRatio << " | peak working set delta "
+                << static_cast<double>(warmup.peakWorkingSetDeltaBytes) / kMiB << " MiB (peak "
+                << static_cast<double>(warmup.peakWorkingSetBytes) / kMiB << " MiB)"
+            );
+        }
     }
 
     RunTimedSamples(label, samples, {bytes, expectedRows}, [&]() {
@@ -470,46 +609,59 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == logs.size());
 
+    // Phase 1 changed the per-field representation from a 48 B
+    // `std::variant` to a 16 B `CompactLogValue` whose tags are the new
+    // ground truth for "fast path vs slow path". `IsMmapSlice` /
+    // `IsOwnedString` inspect the tag without materialising a `LogValue`
+    // (which would always allocate a `std::string` for the slow path),
+    // so the per-value cost of this benchmark stays representative of
+    // the parse hot path.
     size_t lineCount = result.data.Lines().size();
     size_t totalValues = 0;
-    size_t stringViewValues = 0;
+    size_t mmapSliceValues = 0;
     size_t ownedStringValues = 0;
     for (const LogLine &line : result.data.Lines())
     {
         for (size_t i = 0; i < result.data.Keys().Size(); ++i)
         {
-            const LogValue &v = line.GetValue(static_cast<KeyId>(i));
-            if (std::holds_alternative<std::monostate>(v))
+            const KeyId id = static_cast<KeyId>(i);
+            const bool mmap = line.IsMmapSlice(id);
+            const bool owned = line.IsOwnedString(id);
+            if (mmap)
             {
-                continue;
+                ++mmapSliceValues;
+                ++totalValues;
             }
-            ++totalValues;
-            if (std::holds_alternative<std::string_view>(v))
-            {
-                ++stringViewValues;
-            }
-            else if (std::holds_alternative<std::string>(v))
+            else if (owned)
             {
                 ++ownedStringValues;
+                ++totalValues;
+            }
+            else if (!std::holds_alternative<std::monostate>(line.GetValue(id)))
+            {
+                ++totalValues;
             }
         }
     }
 
-    const size_t totalStringValues = stringViewValues + ownedStringValues;
+    const size_t totalStringValues = mmapSliceValues + ownedStringValues;
     const double fastPathFraction =
-        totalStringValues == 0 ? 0.0 : static_cast<double>(stringViewValues) / static_cast<double>(totalStringValues);
-    const size_t allocUpperBound = lineCount + ownedStringValues;
+        totalStringValues == 0 ? 0.0 : static_cast<double>(mmapSliceValues) / static_cast<double>(totalStringValues);
+    // One vector heap allocation per line (the compact-pair vector), plus
+    // *zero* per owned string (those are coalesced in the `LogFile`
+    // arena post-stream — the per-batch arena is freed when Stage C ends).
+    const size_t allocUpperBound = lineCount;
 
     WARN(
-        "Allocation footprint over " << lineCount << " lines: " << totalValues << " values, " << stringViewValues
-                                     << " string_view (fast path), " << ownedStringValues
-                                     << " std::string (slow path), fast-path fraction=" << (fastPathFraction * 100.0)
+        "Allocation footprint over " << lineCount << " lines: " << totalValues << " values, " << mmapSliceValues
+                                     << " MmapSlice (fast path), " << ownedStringValues
+                                     << " OwnedString (slow path), fast-path fraction=" << (fastPathFraction * 100.0)
                                      << "%, allocation upper bound=" << allocUpperBound << " (~"
                                      << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
                                      << "/line)"
     );
 
-    REQUIRE(stringViewValues > 0);
+    REQUIRE(mmapSliceValues > 0);
 }
 
 // Cancellation-latency benchmark. Asks for a stop after the first batch

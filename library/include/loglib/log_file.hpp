@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace loglib
@@ -28,6 +29,13 @@ public:
     void ShiftLineNumber(size_t delta) noexcept;
 
     std::string GetLine() const;
+
+    /// Direct access to the referenced `LogFile`. Used by `LogLine` to
+    /// resolve `MmapSlice` / `OwnedString` compact values into `LogValue`
+    /// variants. Mutable overload is needed for `SetValue` (writes the
+    /// owned-string arena).
+    LogFile *GetFile() noexcept;
+    const LogFile *GetFile() const noexcept;
 
 private:
     LogFile *mLogFile = nullptr;
@@ -67,12 +75,33 @@ public:
     /// current last offset.
     void AppendLineOffsets(const std::vector<uint64_t> &offsets);
 
+    /// Heap bytes owned by `mLineOffsets` (capacity, not size). Used by the
+    /// memory-footprint benchmark; not part of the parse hot path.
+    size_t LineOffsetsMemoryBytes() const noexcept;
+
+    /// Sliding view over the owned-string arena (escape-decoded values
+    /// that cannot live in the mmap). `LogLine` materialisation indexes
+    /// into this via `(offset, length)` stored in its compact values.
+    std::string_view OwnedStringsView() const noexcept;
+
+    /// Append @p bytes to the owned-string arena and return the byte
+    /// offset of the first appended byte. Single-threaded contract: the
+    /// streaming pipeline serialises arena writes through Stage C.
+    uint64_t AppendOwnedStrings(std::string_view bytes);
+
+    /// Heap bytes owned by `mOwnedStrings` (capacity).
+    size_t OwnedStringsMemoryBytes() const noexcept;
+
 private:
     std::filesystem::path mPath;
     mio::mmap_source mMmap;
 
     /// Byte offsets of every line boundary plus a one-past-the-last sentinel.
     std::vector<uint64_t> mLineOffsets;
+
+    /// Concatenated escape-decoded strings referenced by this file's
+    /// `LogLine` values via `(offset, length)`.
+    std::string mOwnedStrings;
 };
 
 } // namespace loglib

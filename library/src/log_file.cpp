@@ -78,6 +78,16 @@ std::string LogFileReference::GetLine() const
     return mLogFile->GetLine(mLineNumber);
 }
 
+LogFile *LogFileReference::GetFile() noexcept
+{
+    return mLogFile;
+}
+
+const LogFile *LogFileReference::GetFile() const noexcept
+{
+    return mLogFile;
+}
+
 LogFile::LogFile(std::filesystem::path filePath) : mPath(std::move(filePath))
 {
     if (!std::filesystem::exists(mPath))
@@ -168,6 +178,28 @@ LogFileReference LogFile::CreateReference(size_t position)
     LogFileReference reference(*this, mLineOffsets.size() - 1);
     mLineOffsets.push_back(position);
     return reference;
+}
+
+size_t LogFile::LineOffsetsMemoryBytes() const noexcept
+{
+    return mLineOffsets.capacity() * sizeof(uint64_t);
+}
+
+std::string_view LogFile::OwnedStringsView() const noexcept
+{
+    return std::string_view(mOwnedStrings);
+}
+
+uint64_t LogFile::AppendOwnedStrings(std::string_view bytes)
+{
+    const auto offset = static_cast<uint64_t>(mOwnedStrings.size());
+    mOwnedStrings.append(bytes.data(), bytes.size());
+    return offset;
+}
+
+size_t LogFile::OwnedStringsMemoryBytes() const noexcept
+{
+    return mOwnedStrings.capacity();
 }
 
 void LogFile::AppendLineOffsets(const std::vector<uint64_t> &offsets)

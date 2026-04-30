@@ -4,6 +4,7 @@ add_library(
     loglib
     STATIC
     src/buffering_sink.cpp
+    src/compact_log_value.cpp
     src/json_parser.cpp
     src/key_index.cpp
     src/log_parser.cpp

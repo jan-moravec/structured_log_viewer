@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace loglib::detail
@@ -41,12 +42,19 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfig
 /// least one column was promoted on this line. Lines that don't match any
 /// (KeyId, format) pair are left untouched — the `LogTable` mid-stream
 /// back-fill picks them up.
+///
+/// @p ownedArena is the byte buffer that any `OwnedString` compact values
+/// on @p line currently reference: during Stage B that's the per-batch
+/// staging buffer (`ParsedPipelineBatch::ownedStringsArena`); for the
+/// post-stream `BackfillTimestampColumn` path it's the file's arena
+/// (`LogFile::OwnedStringsView()`).
 bool PromoteLineTimestamps(
     LogLine &line,
     std::span<const TimeColumnSpec> timeColumns,
     std::vector<std::optional<LastValidTimestampParse>> &lastValid,
     std::vector<LastTimestampBytesHit> &bytesHits,
-    TimestampParseScratch &tsScratch
+    TimestampParseScratch &tsScratch,
+    std::string_view ownedArena
 );
 
 } // namespace loglib::detail

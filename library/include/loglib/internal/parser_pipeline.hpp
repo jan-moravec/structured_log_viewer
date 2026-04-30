@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/parser_options.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/internal/transparent_string_hash.hpp"
@@ -65,8 +66,13 @@ struct WorkerScratchBase
     }
 
     /// Called inline after pushing a `LogLine` onto its `ParsedPipelineBatch`,
-    /// while the freshly-written values are still hot in L1.
-    void PromoteTimestamps(class LogLine &line, std::span<const TimeColumnSpec> timeColumns);
+    /// while the freshly-written values are still hot in L1. @p ownedArena
+    /// is the per-batch owned-string staging buffer (Stage B's local view),
+    /// because the line's `OwnedString` compact values reference offsets
+    /// into it before Stage C rebases them onto the `LogFile` arena.
+    void PromoteTimestamps(
+        class LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena
+    );
 };
 
 /// Bolts format-specific scratch (e.g. simdjson parser + padded buffer) onto
@@ -112,18 +118,25 @@ struct ParsedPipelineBatch
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
+    /// Per-batch owned-string staging buffer. Stage B appends escape-decoded
+    /// bytes here and stamps `OwnedString` payloads with offsets into this
+    /// buffer; Stage C concatenates this into the `LogFile`'s arena and
+    /// rebases the offsets in `lines` once.
+    std::string ownedStringsArena;
     /// Source lines consumed (parsed + errors + skipped empties). Stage C uses
     /// this to advance its running line-number cursor across batches.
     size_t totalLineCount = 0;
 };
 
-inline void WorkerScratchBase::PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns)
+inline void WorkerScratchBase::PromoteTimestamps(
+    LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena
+)
 {
     if (timeColumns.empty())
     {
         return;
     }
-    PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch);
+    PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch, ownedArena);
 }
 
 /// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.
@@ -257,6 +270,18 @@ void RunParserPipeline(
             for (LogLine &line : parsed.lines)
             {
                 line.FileReference().ShiftLineNumber(lineNumberDelta);
+            }
+        }
+
+        // Rebase per-batch `OwnedString` offsets onto the canonical
+        // `LogFile` arena. Stage C is `serial_in_order`, so writing to
+        // `file.AppendOwnedStrings` is single-threaded.
+        if (!parsed.ownedStringsArena.empty())
+        {
+            const uint64_t delta = file.AppendOwnedStrings(parsed.ownedStringsArena);
+            for (LogLine &line : parsed.lines)
+            {
+                line.RebaseOwnedStringOffsets(delta);
             }
         }
 
