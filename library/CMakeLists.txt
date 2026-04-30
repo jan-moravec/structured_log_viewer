@@ -5,12 +5,14 @@ add_library(
     STATIC
     src/buffering_sink.cpp
     src/compact_log_value.cpp
+    src/file_identity.cpp
     src/json_parser.cpp
     src/key_index.cpp
     src/log_parser.cpp
     src/log_source.cpp
     src/mapped_file_source.cpp
     src/parser_pipeline.cpp
+    src/tailing_file_source.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
     src/log_data.cpp
@@ -30,5 +32,7 @@ target_link_libraries(
     # TBB is an implementation detail of the parallel JSON parsing pipeline; no public
     # loglib header exposes a TBB type, so link PRIVATE. Widen to PUBLIC if a future
     # public API ever returns a TBB type.
-    PRIVATE TBB::tbb
+    # efsw provides the cross-platform filesystem watcher used by TailingFileSource;
+    # no efsw type appears in any public loglib header, so it stays PRIVATE.
+    PRIVATE TBB::tbb efsw
 )

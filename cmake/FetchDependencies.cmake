@@ -10,6 +10,7 @@ option(USE_SYSTEM_SIMDJSON "Use system simdjson library" OFF)
 option(USE_SYSTEM_ROBIN_MAP "Use system Tessil robin-map library" OFF)
 option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
 option(USE_SYSTEM_ARGPARSE "Use system p-ranav/argparse library" OFF)
+option(USE_SYSTEM_EFSW "Use system SpartanJ/efsw library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
@@ -187,4 +188,31 @@ if(NOT USE_SYSTEM_ARGPARSE)
     FetchContent_MakeAvailable(argparse)
 else()
     find_package(argparse REQUIRED)
+endif()
+
+# efsw provides the cross-platform filesystem watcher used by the live tail
+# (TailingFileSource) — native backends (ReadDirectoryChangesW / inotify /
+# FSEvents) plus its own polling fallback. We always link the static library
+# variant (efsw-static) so on Windows MSVC there is no extra runtime DLL to
+# stage next to the executable and the /MD vs /MT runtime-library setting
+# matches the rest of the project (PRD §7 *Filesystem watcher choice*).
+if(NOT USE_SYSTEM_EFSW)
+    FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.6.1 SYSTEM EXCLUDE_FROM_ALL)
+    block()
+        # With BUILD_SHARED_LIBS=OFF, the bare `efsw` target is itself a
+        # static library (efsw's CMakeLists uses `add_library(efsw)` without
+        # an explicit type, which honours BUILD_SHARED_LIBS). We disable the
+        # parallel `efsw-static` target to avoid building the same TU twice.
+        # BUILD_TEST_APP / EFSW_INSTALL default to OFF when efsw is consumed
+        # as a sub-project, but we set them explicitly for clarity.
+        set(BUILD_SHARED_LIBS OFF)
+        set(BUILD_STATIC_LIBS OFF)
+        set(BUILD_TEST_APP OFF)
+        set(EFSW_INSTALL OFF)
+        set(VERBOSE OFF)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence efsw's older cmake_minimum_required
+        FetchContent_MakeAvailable(efsw)
+    endblock()
+else()
+    find_package(efsw REQUIRED)
 endif()

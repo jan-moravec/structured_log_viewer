@@ -18,6 +18,7 @@ add_executable(
     "src/test_log_table.cpp"
     "src/test_parser_pipeline.cpp"
     "src/test_stream_log_line.cpp"
+    "src/test_tailing_file_source.cpp"
 )
 
 target_include_directories(tests PRIVATE include)
