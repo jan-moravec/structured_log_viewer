@@ -14,6 +14,7 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_log_line.hpp>
 #include <loglib/streaming_log_sink.hpp>
+#include <loglib/tailing_file_source.hpp>
 
 #include <QFile>
 #include <QFileInfo>
@@ -30,6 +31,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -212,6 +214,65 @@ StreamingRun RunStreaming(const QString &fixturePath)
         run.cancelled = (result == StreamingResult::Cancelled);
     }
     return run;
+}
+
+// RAII helper for the live-tail smoke test: a temp directory that lives
+// for the lifetime of the test, plus an `Append` helper that opens, writes,
+// and flushes a string to a file in a single call. We don't share the
+// `TempJsonFile` helper because it pre-writes a fixed line list at
+// construction; the live-tail flow needs to *grow* the file across the
+// test's runtime so the parser actually exercises its tailing path
+// (rather than draining a static fixture).
+class TempLiveTailFile
+{
+public:
+    TempLiveTailFile()
+    {
+        QVERIFY2(mDir.isValid(), "QTemporaryDir creation must succeed");
+        mPath = mDir.filePath("live.jsonl");
+        // Touch the file so `TailingFileSource`'s open() succeeds. Pre-fill
+        // walks the existing content (zero bytes here) before tailing.
+        std::ofstream stream(mPath.toStdString(), std::ios::binary);
+        QVERIFY2(stream.is_open(), "live-tail fixture file must be openable");
+    }
+
+    QString Path() const
+    {
+        return mPath;
+    }
+
+    /// Append @p bytes and flush. The producer side of the live-tail flow.
+    void Append(const std::string &bytes) const
+    {
+        std::ofstream stream(mPath.toStdString(), std::ios::binary | std::ios::app);
+        QVERIFY2(stream.is_open(), "live-tail append must succeed");
+        stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        stream.flush();
+    }
+
+private:
+    QTemporaryDir mDir;
+    QString mPath;
+};
+
+// Wait until the model's `lineCountChanged` signal reports at least
+// @p target rows, draining the Qt event queue while we wait so the
+// QueuedConnection lambdas the parser worker posts actually run. Returns
+// `true` on success, `false` if the deadline expires (the caller usually
+// `QVERIFY2`s the result).
+bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::milliseconds deadline)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (model.rowCount() < target)
+    {
+        if (std::chrono::steady_clock::now() - start > deadline)
+        {
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
 }
 
 // Returns the column index whose header equals @p header, or -1 if none.
@@ -908,9 +969,7 @@ private slots:
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
                 batch.streamLines.emplace_back(
-                    std::move(values),
-                    keys,
-                    loglib::StreamLineReference("synthetic", "synthetic line", lineId)
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "synthetic line", lineId)
                 );
             }
             model.AppendBatch(std::move(batch));
@@ -971,9 +1030,7 @@ private slots:
         QVERIFY(valueColumn >= 0);
         // Surviving rows are lines 1001..2000 in input order.
         QCOMPARE(model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1001));
-        QCOMPARE(
-            model.data(model.index(999, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(2000)
-        );
+        QCOMPARE(model.data(model.index(999, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(2000));
 
         model.EndStreaming(false);
     }
@@ -1099,6 +1156,129 @@ private slots:
         QCOMPARE(model.rowCount(), 200);
 
         model.EndStreaming(false);
+    }
+
+    // PRD task 6.5: end-to-end Stream Mode smoke test against a temp file
+    // tailed by `TailingFileSource`. Drives the same flow `MainWindow::
+    // OpenLogStream` does (model.BeginStreaming(unique_ptr<LogSource>)) but
+    // without going through the menu so the test stays self-contained.
+    //
+    // Coverage:
+    //   - Pre-fill of 100 lines arrives at the model.
+    //   - Appending 50 more lines while running grows the model to 150.
+    //   - Pause freezes the visible model at 150 while the worker keeps
+    //     ingesting; subsequent appends land in the paused buffer.
+    //   - Resume drains the paused buffer in a single coalesced post.
+    //
+    // The retention cap is set high enough (1000) that the FIFO eviction
+    // path stays inactive — that's covered by the dedicated
+    // `testRetentionCap*` tests above.
+    void testStreamModeOpensTailFileAndAppends()
+    {
+        TempLiveTailFile fixture;
+
+        // Pre-fill: 100 lines on disk before the source opens.
+        {
+            std::string blob;
+            for (int i = 0; i < 100; ++i)
+            {
+                blob += "{\"i\":" + std::to_string(i + 1) + ",\"phase\":\"prefill\"}\n";
+            }
+            fixture.Append(blob);
+        }
+
+        LogModel model;
+        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        QVERIFY(lineCountSpy.isValid());
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        model.SetRetentionCap(1000);
+
+        // Use a fast poll cadence on the source so the test wall-clock stays
+        // small; the production default is 250 ms which would push the test
+        // budget over a CI runner's timeout for marginal benefit here.
+        loglib::TailingFileSource::Options sourceOptions;
+        sourceOptions.disableNativeWatcher = true; // poll-only for determinism
+        sourceOptions.pollInterval = std::chrono::milliseconds(25);
+        sourceOptions.heartbeatInterval = std::chrono::milliseconds(25);
+        sourceOptions.rotationDebounce = std::chrono::milliseconds(250);
+
+        auto source = std::make_unique<loglib::TailingFileSource>(
+            std::filesystem::path(fixture.Path().toStdString()), /*retentionLines=*/1000, sourceOptions
+        );
+
+        loglib::ParserOptions options;
+        // Don't pass a configuration; the auto-promote heuristics aren't the
+        // focus of this test. The model's `BeginStreaming(LogSource)`
+        // overrides `options.stopToken` with the sink's freshly-armed token.
+        loglib::StopToken stopToken = model.BeginStreaming(std::move(source), options);
+        Q_UNUSED(stopToken);
+
+        QVERIFY(model.IsStreamingActive());
+        QVERIFY2(WaitForLineCount(model, 100, std::chrono::seconds(5)), "pre-fill must arrive within 5 s");
+        QCOMPARE(model.rowCount(), 100);
+
+        // Append 50 more lines while the stream is running.
+        {
+            std::string blob;
+            for (int i = 0; i < 50; ++i)
+            {
+                blob += "{\"i\":" + std::to_string(101 + i) + ",\"phase\":\"running\"}\n";
+            }
+            fixture.Append(blob);
+        }
+        QVERIFY2(WaitForLineCount(model, 150, std::chrono::seconds(5)), "running-phase appends must arrive within 5 s");
+        QCOMPARE(model.rowCount(), 150);
+
+        // Pause: visible model freezes; subsequent appends land in the
+        // paused buffer (PRD 4.2.2.v / task 4.1).
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        {
+            std::string blob;
+            for (int i = 0; i < 50; ++i)
+            {
+                blob += "{\"i\":" + std::to_string(151 + i) + ",\"phase\":\"paused\"}\n";
+            }
+            fixture.Append(blob);
+        }
+
+        // Wait for the worker to drain the appended bytes into the paused
+        // buffer. We can't `WaitForLineCount` here because visible row
+        // count must stay frozen at 150 — the buffer is the side channel.
+        // Drain Qt events too in case any lambdas slip through (they
+        // shouldn't while paused).
+        const auto pauseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (sink->PausedLineCount() < 50 && std::chrono::steady_clock::now() < pauseDeadline)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        QCOMPARE(model.rowCount(), 150);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), 50);
+
+        // Resume coalesces the paused buffer into a single batch and posts
+        // it once. The post-Resume row count is the cap-bounded sum.
+        sink->Resume();
+        QVERIFY(!sink->IsPaused());
+        QVERIFY2(
+            WaitForLineCount(model, 200, std::chrono::seconds(5)), "Resume must coalesce paused buffer within 5 s"
+        );
+        QCOMPARE(model.rowCount(), 200);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), 0);
+
+        // Tear down cleanly. `Clear()` drives the PRD 4.7.2.i teardown
+        // sequence (Source::Stop -> sink::RequestStop -> watcher join ->
+        // DropPendingBatches) so the test exits without dangling threads.
+        model.Clear();
+        QCoreApplication::processEvents();
+
+        QVERIFY(!model.IsStreamingActive());
+        QCOMPARE(model.rowCount(), 0);
     }
 
 private:

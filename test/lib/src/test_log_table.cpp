@@ -6,6 +6,7 @@
 #include <loglib/log_line.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/stream_log_line.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -828,4 +829,143 @@ TEST_CASE(
 
     CHECK(table.RowCount() == 1);
     CHECK(table.ColumnCount() == 2);
+}
+
+namespace
+{
+
+/// Build a `StreamedBatch` of @p count synthetic `StreamLogLine` rows
+/// numbered `[firstLineId, firstLineId + count)`, each carrying a single
+/// `value` field equal to its line id. The first batch in a sequence
+/// should set @p declareNewKey so `LogTable::PreviewAppend`'s column
+/// predictor matches reality. Mirrors the helper used by the Qt-side
+/// retention tests in `main_window_test.cpp` so the library-level cases
+/// here stay symmetric with the GUI ones.
+StreamedBatch MakeStreamBatch(KeyIndex &keys, KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey)
+{
+    StreamedBatch batch;
+    batch.firstLineNumber = firstLineId;
+    if (declareNewKey)
+    {
+        batch.newKeys.emplace_back(std::string("value"));
+    }
+    batch.streamLines.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const size_t lineId = firstLineId + i;
+        std::vector<std::pair<KeyId, LogValue>> values;
+        values.emplace_back(valueKey, LogValue{static_cast<int64_t>(lineId)});
+        batch.streamLines.emplace_back(
+            std::move(values), keys, StreamLineReference{"<test>", "raw" + std::to_string(lineId), lineId}
+        );
+    }
+    return batch;
+}
+
+} // namespace
+
+// `LogTable::EvictPrefixRows` is the library-level primitive `LogModel`'s FIFO
+// retention machinery (PRD 4.5 / 4.10.3) is built on. The Qt-side tests in
+// `test/app/src/main_window_test.cpp` cover the begin/endRemoveRows wiring;
+// here we drive the row-vector mechanics directly so a regression in the
+// vector-erase path surfaces in the library test suite without needing the
+// Qt offscreen platform.
+//
+// Coverage:
+//   1. cap = 1000, feed 5000 stream lines via 50 batches of 100 lines each.
+//      After every breach the table is trimmed back to the cap; the surviving
+//      rows correspond to the most-recent (5000 - 1000 + 1) = 4001 .. 5000
+//      LineIds (FIFO drops oldest).
+//   2. Giant batch: a single 2000-line batch into a 1000-cap table. Once the
+//      head of the batch is collapsed (the same trim the GUI side performs in
+//      `LogModel::AppendBatch`) and `EvictPrefixRows` runs, the surviving
+//      rows are LineIds 1001 .. 2000.
+TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", "[log_table][retention]")
+{
+    LogTable table;
+    table.BeginStreaming(nullptr);
+
+    KeyIndex &keys = table.Keys();
+    const KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+    constexpr size_t kCap = 1000;
+    constexpr size_t kBatchSize = 100;
+    constexpr size_t kTotalLines = 5000;
+    static_assert(kTotalLines % kBatchSize == 0, "kBatchSize must evenly divide kTotalLines");
+
+    for (size_t batchStart = 0; batchStart < kTotalLines; batchStart += kBatchSize)
+    {
+        const bool declareNewKey = (batchStart == 0);
+        table.AppendBatch(MakeStreamBatch(keys, valueKey, batchStart + 1, kBatchSize, declareNewKey));
+
+        // Mirror `LogModel::AppendBatch`'s post-append trim: any rows past
+        // the cap are evicted in source order. Cap is checked *after*
+        // append because PreviewAppend would also be valid here, but the
+        // post-append form keeps the test self-contained.
+        if (table.RowCount() > kCap)
+        {
+            table.EvictPrefixRows(table.RowCount() - kCap);
+        }
+        REQUIRE(table.RowCount() <= kCap);
+    }
+
+    REQUIRE(table.RowCount() == kCap);
+    // The first surviving row's `value` is `kTotalLines - kCap + 1 = 4001`;
+    // the last is `kTotalLines = 5000`.
+    const auto firstValue = std::get<int64_t>(table.GetValue(0, 0));
+    const auto lastValue = std::get<int64_t>(table.GetValue(kCap - 1, 0));
+    CHECK(firstValue == static_cast<int64_t>(kTotalLines - kCap + 1));
+    CHECK(lastValue == static_cast<int64_t>(kTotalLines));
+}
+
+TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[log_table][retention]")
+{
+    LogTable table;
+    table.BeginStreaming(nullptr);
+
+    KeyIndex &keys = table.Keys();
+    const KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+    constexpr size_t kCap = 1000;
+    constexpr size_t kGiantBatch = 2000;
+
+    // Mirrors the GUI-side "giant-batch collapse" (PRD 4.10.3.iii): the head
+    // of the batch is dropped before it lands in `LogTable::AppendBatch`, so
+    // the visible model never breaches the cap. We do that here explicitly
+    // by building a kCap-sized batch with the right firstLineNumber offset.
+    const size_t headDrop = kGiantBatch - kCap;
+    table.AppendBatch(MakeStreamBatch(keys, valueKey, headDrop + 1, kCap, /*declareNewKey=*/true));
+
+    REQUIRE(table.RowCount() == kCap);
+    CHECK(std::get<int64_t>(table.GetValue(0, 0)) == static_cast<int64_t>(headDrop + 1));
+    CHECK(std::get<int64_t>(table.GetValue(kCap - 1, 0)) == static_cast<int64_t>(kGiantBatch));
+}
+
+TEST_CASE(
+    "LogTable::EvictPrefixRows is a no-op for count == 0 and clears for count >= RowCount", "[log_table][retention]"
+)
+{
+    LogTable table;
+    table.BeginStreaming(nullptr);
+
+    KeyIndex &keys = table.Keys();
+    const KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+    table.AppendBatch(MakeStreamBatch(keys, valueKey, 1, 5, /*declareNewKey=*/true));
+    REQUIRE(table.RowCount() == 5);
+
+    // count == 0: documented well-defined behaviour (no rows removed).
+    table.EvictPrefixRows(0);
+    REQUIRE(table.RowCount() == 5);
+    CHECK(std::get<int64_t>(table.GetValue(0, 0)) == int64_t{1});
+
+    // count == RowCount: documented to clear every row in source order.
+    table.EvictPrefixRows(5);
+    CHECK(table.RowCount() == 0);
+
+    // count > RowCount: same outcome as count == RowCount (saturating clear).
+    table.AppendBatch(MakeStreamBatch(keys, valueKey, 100, 3, /*declareNewKey=*/false));
+    REQUIRE(table.RowCount() == 3);
+    table.EvictPrefixRows(99);
+    CHECK(table.RowCount() == 0);
 }

@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(
     tests
     "src/benchmark_json.cpp"
+    "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
@@ -18,6 +19,7 @@ add_executable(
     "src/test_log_table.cpp"
     "src/test_parser_pipeline.cpp"
     "src/test_stream_log_line.cpp"
+    "src/test_stream_stop_teardown.cpp"
     "src/test_tailing_file_source.cpp"
 )
 

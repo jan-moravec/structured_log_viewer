@@ -333,7 +333,7 @@ The benchmarks live in the same `tests` binary as the unit tests but are tagged 
 
 ### Fixture inventory
 
-Six `[.][benchmark]…` cases ship today:
+Seven `[.][benchmark]…` cases ship today:
 
 | Tag                 | Coverage                                                                                                                                                              |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -343,6 +343,7 @@ Six `[.][benchmark]…` cases ship today:
 | `[get_value_micro]` | `LogLine::GetValue` slow-path (string lookup) vs fast-path (`KeyId` lookup).                                                                                          |
 | `[allocations]`     | `string_view` fast-path fraction over a 1'000-line parse. The test itself only asserts `stringViewValues > 0`; the ≥ 99 % bar is the PR-description convention.       |
 | `[cancellation]`    | Cancellation-latency over 20 runs of a 1M-line parse. The test hard-fails only above 5 s; the ±3 % p95 bar is the PR-description convention.                          |
+| `[stream_latency]`  | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms (PRD §8 success metric 1).   |
 
 ### Running
 
@@ -383,6 +384,7 @@ The convention is to capture both **before** (clean-tree baseline) and **after**
 - `[large]` and `[wide]` — steady-state MB/s mean within ±3 % of the prior commit's number, or a documented architectural justification.
 - `[allocations]` — `string_view` fast-path fraction ≥ 99 %.
 - `[cancellation]` — p95 latency within ±3 % of the prior commit's number.
+- `[stream_latency]` — median ≤ 250 ms and p95 ≤ 500 ms (the test fails on a regression rather than relying on a manual review compare). Stream-Mode PRs must also re-run `[large]` / `[wide]` / `[allocations]` / `[cancellation]` and record the numbers, since the static-path machinery and the Stream-Mode seam share the same parser and `LogTable` plumbing.
 
 ## Code style and pre-commit
 
