@@ -11,6 +11,7 @@
 #include "loglib/log_processing.hpp"
 #include "loglib/parser_options.hpp"
 #include "loglib/stop_token.hpp"
+#include "loglib/stream_log_line.hpp"
 #include "loglib/streaming_log_sink.hpp"
 
 #include <fmt/format.h>
@@ -73,6 +74,13 @@ struct WorkerScratchBase
     void PromoteTimestamps(
         class LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena
     );
+
+    /// `StreamLogLine` overload: stream lines own their values directly
+    /// (`std::string` payloads, no arena), so the per-line `ownedArena`
+    /// parameter from the `LogLine` overload is omitted. Used by the
+    /// non-mmap streaming-loop path in
+    /// `JsonParser::ParseStreaming(LogSource&, ...)` (PRD 4.6.2 / task 2.6).
+    void PromoteTimestamps(class StreamLogLine &line, std::span<const TimeColumnSpec> timeColumns);
 };
 
 /// Bolts format-specific scratch (e.g. simdjson parser + padded buffer) onto
@@ -137,6 +145,15 @@ inline void WorkerScratchBase::PromoteTimestamps(
         return;
     }
     PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch, ownedArena);
+}
+
+inline void WorkerScratchBase::PromoteTimestamps(StreamLogLine &line, std::span<const TimeColumnSpec> timeColumns)
+{
+    if (timeColumns.empty())
+    {
+        return;
+    }
+    PromoteStreamLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch);
 }
 
 /// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.

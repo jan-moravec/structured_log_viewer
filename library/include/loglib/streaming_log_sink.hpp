@@ -2,6 +2,7 @@
 
 #include "key_index.hpp"
 #include "log_line.hpp"
+#include "stream_log_line.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,9 +15,17 @@ namespace loglib
 /// One unit of work handed from the streaming parser to a `StreamingLogSink`.
 /// A "rows-empty" batch with non-empty `errors`/`newKeys` is valid; the parser
 /// always emits a final batch before `OnFinished`.
+///
+/// Two row vectors are carried side by side: `lines` for the mmap-backed
+/// static-streaming path (parsed by the TBB pipeline) and `streamLines` for
+/// the live-tail / non-mmap path (parsed by the single-threaded streaming
+/// loop in `JsonParser::ParseStreaming(LogSource&, ...)` — PRD 4.9.4 / §7
+/// *Batching and latency*). A given batch is normally one or the other; tests
+/// exercise mixed batches to verify the row dispatch (PRD 4.9.7 task 2.7).
 struct StreamedBatch
 {
     std::vector<LogLine> lines;
+    std::vector<StreamLogLine> streamLines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;

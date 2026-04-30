@@ -26,11 +26,15 @@ LogData::LogData(std::unique_ptr<LogFile> file, std::vector<LogLine> lines, KeyI
 }
 
 LogData::LogData(LogData &&other) noexcept
-    : mFiles(std::move(other.mFiles)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys)),
-      mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
+    : mFiles(std::move(other.mFiles)), mLines(std::move(other.mLines)), mStreamLines(std::move(other.mStreamLines)),
+      mKeys(std::move(other.mKeys)), mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
 {
     // The KeyIndex wrapper moved address; rebind line back-pointers to *this.
     for (auto &line : mLines)
+    {
+        line.RebindKeys(mKeys);
+    }
+    for (auto &line : mStreamLines)
     {
         line.RebindKeys(mKeys);
     }
@@ -42,9 +46,14 @@ LogData &LogData::operator=(LogData &&other) noexcept
     {
         mFiles = std::move(other.mFiles);
         mLines = std::move(other.mLines);
+        mStreamLines = std::move(other.mStreamLines);
         mKeys = std::move(other.mKeys);
         mTimestampsAlreadyParsed = other.mTimestampsAlreadyParsed;
         for (auto &line : mLines)
+        {
+            line.RebindKeys(mKeys);
+        }
+        for (auto &line : mStreamLines)
         {
             line.RebindKeys(mKeys);
         }
@@ -70,6 +79,16 @@ const std::vector<LogLine> &LogData::Lines() const
 std::vector<LogLine> &LogData::Lines()
 {
     return mLines;
+}
+
+const std::vector<StreamLogLine> &LogData::StreamLines() const
+{
+    return mStreamLines;
+}
+
+std::vector<StreamLogLine> &LogData::StreamLines()
+{
+    return mStreamLines;
 }
 
 const KeyIndex &LogData::Keys() const
@@ -158,10 +177,32 @@ void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> line
 
     if (!mFiles.empty() && !lineOffsets.empty())
     {
-        // Streaming installs exactly one file; multi-file goes through `Merge`.
+        // The mmap-backed static-streaming path installs exactly one
+        // `LogFile`; multi-file goes through `Merge`. The non-mmap streaming
+        // path (PRD 4.9.7 last paragraph) bypasses this branch entirely
+        // because it routes through the `StreamLogLine` overload below
+        // and therefore never carries a `lineOffsets` payload.
         assert(mFiles.size() == 1);
         mFiles.front()->AppendLineOffsets(lineOffsets);
     }
+}
+
+void LogData::AppendBatch(std::vector<StreamLogLine> lines)
+{
+    if (lines.empty())
+    {
+        return;
+    }
+    for (auto &line : lines)
+    {
+        line.RebindKeys(mKeys);
+        mStreamLines.push_back(std::move(line));
+    }
+    // No `mFiles.front()->AppendLineOffsets(...)` call here: stream lines
+    // own their raw bytes via `StreamLineReference` and have no parent
+    // `LogFile` to maintain offsets in. The `assert(mFiles.size() == 1)`
+    // invariant of the file-mode overload above is therefore not fired
+    // (PRD 4.9.7 last paragraph).
 }
 
 } // namespace loglib

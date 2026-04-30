@@ -19,6 +19,7 @@ add_library(
     src/log_line.cpp
     src/log_processing.cpp
     src/log_table.cpp
+    src/stream_log_line.cpp
 )
 
 target_include_directories(loglib PUBLIC ./include)

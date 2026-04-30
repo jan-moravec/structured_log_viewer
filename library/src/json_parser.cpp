@@ -3,11 +3,13 @@
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/parser_options.hpp"
 #include "loglib/internal/parser_pipeline.hpp"
+#include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
 #include "loglib/log_source.hpp"
+#include "loglib/stream_log_line.hpp"
 
 #include <date/date.h>
 #include <fmt/format.h>
@@ -16,6 +18,8 @@
 #include <simdjson.h>
 
 #include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -673,6 +677,154 @@ std::string JsonParser::ToString(const LogMap &values) const
     return SerializeJson(json);
 }
 
+namespace
+{
+
+/// Coalescing thresholds for the non-mmap streaming loop. Smaller than the
+/// TBB pipeline's `kStreamFlushLines = 1000` / `kStreamFlushInterval = 50 ms`
+/// because the live-tail target is end-to-end latency (≤ 250 ms p50 / ≤ 500
+/// ms p95 per PRD §8 success metric 1) rather than million-line throughput.
+/// PRD §7 *Batching and latency* allows up to 250 lines / 100 ms here.
+constexpr size_t kStreamLoopFlushLines = 250;
+constexpr auto kStreamLoopFlushInterval = std::chrono::milliseconds(100);
+
+/// Read buffer size for the non-mmap streaming loop. 64 KiB matches the
+/// pre-fill chunk size in `TailingFileSource` (PRD 4.1.6) and is small
+/// enough that each `LogSource::Read` returns within a couple of poll
+/// ticks even on slow CI runners.
+constexpr size_t kStreamReadBufferSize = 64 * 1024;
+
+/// Convert a `CompactLogValue` produced by `ParseJsonLine` (with
+/// `sourceIsStable = false`) back into a public `LogValue`. `MmapSlice`
+/// can never appear in this branch — the streaming caller passes a null
+/// `fileBegin`, so all string-shaped values land in `OwnedString` form
+/// referencing offsets in the per-line @p ownedArena.
+LogValue MaterialiseStreamCompactValue(const detail::CompactLogValue &value, std::string_view ownedArena)
+{
+    using detail::CompactTag;
+    switch (value.tag)
+    {
+    case CompactTag::Monostate:
+        return LogValue{std::monostate{}};
+    case CompactTag::OwnedString: {
+        if (static_cast<size_t>(value.payload) + value.aux > ownedArena.size())
+        {
+            return LogValue{std::string{}};
+        }
+        return LogValue{std::string(ownedArena.data() + value.payload, value.aux)};
+    }
+    case CompactTag::Int64:
+        return LogValue{static_cast<int64_t>(value.payload)};
+    case CompactTag::Uint64:
+        return LogValue{value.payload};
+    case CompactTag::Double:
+        return LogValue{std::bit_cast<double>(value.payload)};
+    case CompactTag::Bool:
+        return LogValue{value.payload != 0};
+    case CompactTag::Timestamp:
+        return LogValue{TimeStamp{std::chrono::microseconds{static_cast<int64_t>(value.payload)}}};
+    case CompactTag::MmapSlice:
+        // Defensive: should not happen in the streaming branch, but a
+        // future caller passing a non-null `fileBegin` would produce
+        // these. Treat as monostate to avoid pointer-into-source bugs.
+        return LogValue{std::monostate{}};
+    }
+    return LogValue{std::monostate{}};
+}
+
+/// Per-line scratch shared by the streaming loop. Holds the simdjson
+/// parser, padded-line buffer (the streaming path always falls back to
+/// the padded-copy shape because `LogSource::Read` does not promise the
+/// `simdjson::SIMDJSON_PADDING` byte slack the mmap fast path relies on),
+/// and the parse cache.
+struct StreamingLineScratch
+{
+    simdjson::ondemand::parser parser;
+    std::string linePadded;
+    size_t maxLineSize = 0;
+    ParseCache cache;
+    std::string lineOwnedArena;
+};
+
+/// Decode a single complete line into a vector of `(KeyId, LogValue)` pairs.
+/// Returns false on parse error; on success the @p out vector is populated
+/// (sorted by `KeyId`).
+bool DecodeStreamLine(
+    std::string_view line,
+    KeyIndex &keys,
+    StreamingLineScratch &scratch,
+    detail::PerWorkerKeyCache *keyCache,
+    std::vector<std::pair<KeyId, LogValue>> &out,
+    std::string &errorOut
+)
+{
+    out.clear();
+    if (line.empty())
+    {
+        return true;
+    }
+
+    try
+    {
+        scratch.lineOwnedArena.clear();
+        const size_t needed = line.size() + simdjson::SIMDJSON_PADDING;
+        if (line.size() > scratch.maxLineSize || scratch.linePadded.size() < needed)
+        {
+            scratch.maxLineSize = std::max(scratch.maxLineSize, line.size());
+            scratch.linePadded.resize(scratch.maxLineSize + simdjson::SIMDJSON_PADDING + 64);
+        }
+        std::memcpy(scratch.linePadded.data(), line.data(), line.size());
+        std::memset(scratch.linePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);
+
+        auto result = scratch.parser.iterate(scratch.linePadded.data(), line.size(), scratch.linePadded.size());
+        if (result.error())
+        {
+            errorOut = std::string(simdjson::error_message(result.error()));
+            return false;
+        }
+
+        auto object = result.get_object();
+        if (object.error())
+        {
+            errorOut = "Not a JSON object.";
+            return false;
+        }
+
+        auto objectValue = object.value();
+        // `sourceIsStable = false`: the streaming caller does not give the
+        // parser a stable view of the source bytes, so every string is
+        // copied into `lineOwnedArena` (PRD 4.9.4 — task 2.4 last
+        // paragraph). `fileBegin = nullptr` / `fileSize = 0` ensures
+        // `MakeStringCompact` cannot mistake a padded-buffer view for a
+        // mmap slice.
+        auto compactValues = ParseJsonLine(
+            objectValue,
+            keys,
+            scratch.cache,
+            /* sourceIsStable = */ false,
+            keyCache,
+            /* fileBegin = */ nullptr,
+            /* fileSize = */ 0,
+            scratch.lineOwnedArena
+        );
+
+        out.reserve(compactValues.size());
+        const std::string_view arenaView(scratch.lineOwnedArena);
+        for (const auto &entry : compactValues)
+        {
+            out.emplace_back(entry.first, MaterialiseStreamCompactValue(entry.second, arenaView));
+        }
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        errorOut = std::string(e.what());
+        return false;
+    }
+}
+
+} // namespace
+
 void JsonParser::ParseStreaming(LogSource &source, StreamingLogSink &sink, ParserOptions options) const
 {
     // Mmap fast path: bypass `LogSource::Read` entirely and drive the TBB
@@ -690,15 +842,209 @@ void JsonParser::ParseStreaming(LogSource &source, StreamingLogSink &sink, Parse
         }
     }
 
-    // Non-mmap sources (`TailingFileSource`, future stdin / TCP / UDP) go
-    // through the line-by-line streaming loop. That is implemented in
-    // task 2.5; until then this overload is unreachable for non-mmap
-    // sources and we fail loudly so a caller wiring a new source up early
-    // gets a clear diagnostic instead of silent no-op behaviour.
-    throw std::runtime_error(
-        "JsonParser::ParseStreaming(LogSource&): non-mmap-backed sources are not supported yet "
-        "(see tasks/tasks-log-stream-mode.md task 2.5)."
-    );
+    // Non-mmap streaming loop (`TailingFileSource`, future stdin / TCP /
+    // UDP). Single-threaded by design — throughput target is thousands of
+    // lines/s, not millions, so the TBB pipeline overhead is not warranted
+    // and the latency budget (PRD §7 *Batching and latency*) is tighter.
+    sink.OnStarted();
+
+    const StopToken stopToken = options.stopToken;
+    KeyIndex &keys = sink.Keys();
+
+    // Reuse the existing `BuildTimeColumnSpecs` so the snapshot
+    // time-column heuristic (PRD 4.6.2 / OQ-6) carries over to streaming
+    // for free.
+    const std::vector<detail::TimeColumnSpec> timeColumns =
+        detail::BuildTimeColumnSpecs(keys, options.configuration.get());
+    std::span<const detail::TimeColumnSpec> timeColumnsSpan(timeColumns);
+
+    detail::WorkerScratchBase promoteScratch;
+    promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
+
+    StreamingLineScratch lineScratch;
+
+    const std::string sourceName = source.DisplayName();
+
+    StreamedBatch pending;
+    bool pendingPrimed = false;
+    size_t prevKeyCount = keys.Size();
+    auto lastFlush = std::chrono::steady_clock::now();
+    size_t nextLineNumber = 1;
+
+    auto emitNewKeysInto = [&](StreamedBatch &out) {
+        const size_t currentKeyCount = keys.Size();
+        if (currentKeyCount > prevKeyCount)
+        {
+            out.newKeys.reserve(out.newKeys.size() + (currentKeyCount - prevKeyCount));
+            for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+            {
+                out.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+            }
+            prevKeyCount = currentKeyCount;
+        }
+    };
+
+    auto flushPending = [&](bool force) {
+        const auto now = std::chrono::steady_clock::now();
+        const bool sizeReached = pending.streamLines.size() >= kStreamLoopFlushLines;
+        const bool intervalReached = (now - lastFlush) >= kStreamLoopFlushInterval;
+        const bool hasContent =
+            !pending.streamLines.empty() || !pending.errors.empty() || keys.Size() > prevKeyCount;
+        if (!force && !sizeReached && !intervalReached)
+        {
+            return;
+        }
+        if (!force && !hasContent)
+        {
+            // No content yet — nothing to coalesce, just skip and let the
+            // caller try again. The terminal flush at end-of-stream still
+            // emits a final batch (see post-loop branch below).
+            lastFlush = now;
+            return;
+        }
+        emitNewKeysInto(pending);
+        sink.OnBatch(std::move(pending));
+        pending = StreamedBatch{};
+        pendingPrimed = false;
+        lastFlush = now;
+    };
+
+    // In-loop carry buffer for partial reads. PRD §7 *Line buffering*
+    // makes the source responsible for its own partial-line buffer too
+    // (rotation-discard / Stop-flush rules), but the parser still needs
+    // an in-flight boundary inside the chunk it just pulled from `Read`.
+    std::string carry;
+    std::vector<char> readBuffer(kStreamReadBufferSize);
+    std::vector<std::pair<KeyId, LogValue>> lineFields;
+    std::string lineError;
+
+    auto processLine = [&](std::string_view line) {
+        std::string_view trimmed = line;
+        if (!trimmed.empty() && trimmed.back() == '\r')
+        {
+            trimmed.remove_suffix(1);
+        }
+        const size_t lineNumber = nextLineNumber;
+        ++nextLineNumber;
+
+        if (trimmed.empty())
+        {
+            return;
+        }
+
+        const bool ok =
+            DecodeStreamLine(trimmed, keys, lineScratch, &promoteScratch.keyCache, lineFields, lineError);
+        if (!ok)
+        {
+            pending.errors.emplace_back(fmt::format("Error on line {}: {}", lineNumber, std::move(lineError)));
+            return;
+        }
+
+        StreamLineReference fileRef(sourceName, std::string(trimmed), lineNumber);
+        StreamLogLine streamLine(std::move(lineFields), keys, std::move(fileRef));
+        // Promote inline so the freshly-written values are still hot in L1
+        // (PRD 4.6.2). Mirrors the TBB pipeline's Stage B inline-promote
+        // call. `WorkerScratchBase`'s state (last-valid carry, bytes-hit
+        // cache) is shared across lines in this single-threaded loop.
+        promoteScratch.PromoteTimestamps(streamLine, timeColumnsSpan);
+
+        if (!pendingPrimed)
+        {
+            pending.firstLineNumber = lineNumber;
+            pendingPrimed = true;
+        }
+        pending.streamLines.push_back(std::move(streamLine));
+    };
+
+    bool reachedEof = false;
+    while (!reachedEof)
+    {
+        if (stopToken.stop_requested())
+        {
+            break;
+        }
+
+        const size_t read = source.Read(std::span<char>(readBuffer.data(), readBuffer.size()));
+        if (read != 0)
+        {
+            carry.append(readBuffer.data(), read);
+        }
+        else
+        {
+            if (source.IsClosed())
+            {
+                reachedEof = true;
+            }
+            else
+            {
+                // Transient EOF on a live-tail source: park until more
+                // bytes arrive, the source is stopped, or the timeout
+                // elapses (PRD 4.9.2.ii). Flush pending lines first so
+                // they don't sit in `pending` indefinitely.
+                flushPending(false);
+                source.WaitForBytes(kStreamLoopFlushInterval);
+                continue;
+            }
+        }
+
+        // Drain complete lines from the carry buffer.
+        size_t scanStart = 0;
+        while (scanStart < carry.size())
+        {
+            const size_t newlineRel = carry.find('\n', scanStart);
+            if (newlineRel == std::string::npos)
+            {
+                break;
+            }
+            std::string_view line(carry.data() + scanStart, newlineRel - scanStart);
+            processLine(line);
+            scanStart = newlineRel + 1;
+
+            if (stopToken.stop_requested())
+            {
+                break;
+            }
+        }
+        if (scanStart > 0)
+        {
+            carry.erase(0, scanStart);
+        }
+
+        flushPending(false);
+    }
+
+    // Trailing partial line. The source's own `Stop()` flush rule (PRD §7
+    // *Line buffering*) decides whether to emit this; here we mirror the
+    // mmap pipeline's "drain whatever is in carry on EOF" behaviour so a
+    // file ending without a final `\n` still surfaces its last record.
+    if (!carry.empty() && !stopToken.stop_requested())
+    {
+        std::string_view line(carry);
+        processLine(line);
+        carry.clear();
+    }
+
+    // Emit at least one final batch to honour the `StreamingLogSink`
+    // contract (`OnStarted` -> at least one `OnBatch` -> exactly one
+    // `OnFinished`). Drain any pending content unconditionally.
+    if (pendingPrimed || !pending.errors.empty() || keys.Size() > prevKeyCount)
+    {
+        if (!pendingPrimed)
+        {
+            pending.firstLineNumber = nextLineNumber;
+        }
+        emitNewKeysInto(pending);
+        sink.OnBatch(std::move(pending));
+    }
+    else
+    {
+        StreamedBatch tail;
+        tail.firstLineNumber = nextLineNumber;
+        emitNewKeysInto(tail);
+        sink.OnBatch(std::move(tail));
+    }
+
+    sink.OnFinished(stopToken.stop_requested());
 }
 
 void JsonParser::ParseStreaming(

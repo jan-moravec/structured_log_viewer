@@ -320,6 +320,65 @@ void BackfillTimestampColumn(
     }
 }
 
+namespace
+{
+
+/// Streaming sibling of `MakeBackfillState`. Resolves @p column's keys
+/// against the canonical `KeyIndex` carried by the first line.
+bool MakeStreamBackfillState(
+    const LogConfiguration::Column &column,
+    std::span<StreamLogLine> lines,
+    std::array<detail::TimeColumnSpec, 1> &specsOut,
+    std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
+    std::vector<detail::LastTimestampBytesHit> &bytesHitsOut
+)
+{
+    if (lines.empty())
+    {
+        return false;
+    }
+
+    const KeyIndex &keyIndex = lines.front().Keys();
+    detail::TimeColumnSpec spec;
+    spec.keyIds.reserve(column.keys.size());
+    for (const std::string &key : column.keys)
+    {
+        spec.keyIds.push_back(keyIndex.Find(key));
+    }
+    spec.parseFormats = column.parseFormats;
+    spec.formatKinds.reserve(spec.parseFormats.size());
+    for (const std::string &format : spec.parseFormats)
+    {
+        spec.formatKinds.push_back(ClassifyTimestampFormat(format));
+    }
+    specsOut[0] = std::move(spec);
+    lastValidOut.assign(1, std::nullopt);
+    bytesHitsOut.assign(1, detail::LastTimestampBytesHit{});
+    return true;
+}
+
+} // namespace
+
+void BackfillTimestampColumn(
+    const LogConfiguration::Column &column, std::span<StreamLogLine> lines, BackfillErrors discardErrors
+)
+{
+    static_cast<void>(discardErrors);
+    std::array<detail::TimeColumnSpec, 1> specs;
+    std::vector<std::optional<LastValidTimestampParse>> lastValid;
+    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    if (!MakeStreamBackfillState(column, lines, specs, lastValid, bytesHits))
+    {
+        return;
+    }
+
+    TimestampParseScratch scratch;
+    for (auto &line : lines)
+    {
+        static_cast<void>(detail::PromoteStreamLineTimestamps(line, specs, lastValid, bytesHits, scratch));
+    }
+}
+
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration)
 {
     std::vector<std::string> errors;
