@@ -97,9 +97,7 @@ public:
     /// `MappedFileSource`. For non-mmap sources the `LogTable` is reset
     /// without an installed `LogFile` — `StreamLogLine` rows own their raw
     /// bytes (PRD 4.9.7.ii).
-    loglib::StopToken BeginStreaming(
-        std::unique_ptr<loglib::LogSource> source, loglib::ParserOptions options = {}
-    );
+    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::LogSource> source, loglib::ParserOptions options = {});
 
     /// Appends one streamed batch and emits the corresponding
     /// rows/columns/dataChanged signals plus the line/error counters.

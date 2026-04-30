@@ -136,7 +136,8 @@ void QtStreamingLogSink::TrimPausedBufferTo(size_t maxBufferedLines)
         }
         else
         {
-            it->streamLines.erase(it->streamLines.begin(), it->streamLines.begin() + static_cast<std::ptrdiff_t>(toDrop)
+            it->streamLines.erase(
+                it->streamLines.begin(), it->streamLines.begin() + static_cast<std::ptrdiff_t>(toDrop)
             );
             // Shift the batch's start cursor forward so its `firstLineNumber`
             // still names a valid line for downstream consumers.

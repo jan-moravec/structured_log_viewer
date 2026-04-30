@@ -215,12 +215,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mPreferencesEditor->raise();
         mPreferencesEditor->activateWindow();
     });
-    connect(
-        mPreferencesEditor,
-        &PreferencesEditor::streamingRetentionChanged,
-        this,
-        [this](qulonglong) { ApplyStreamingRetention(); }
-    );
+    connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
+        ApplyStreamingRetention();
+    });
 
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
@@ -587,16 +584,13 @@ void MainWindow::OpenLogStream()
     // synchronous (PRD 4.1.7 — failures stay in the previous state, no
     // streaming UI flip). Pre-fill needs to know the retention cap so it
     // back-reads at most that many lines off disk.
-    const size_t retention = (mModel->RetentionCap() != 0)
-                                 ? mModel->RetentionCap()
-                                 : StreamingControl::RetentionLines();
+    const size_t retention =
+        (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
     std::unique_ptr<loglib::TailingFileSource> source;
     try
     {
-        source = std::make_unique<loglib::TailingFileSource>(
-            std::filesystem::path(file.toStdString()), retention
-        );
+        source = std::make_unique<loglib::TailingFileSource>(std::filesystem::path(file.toStdString()), retention);
     }
     catch (const std::exception &e)
     {

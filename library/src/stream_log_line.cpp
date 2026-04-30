@@ -139,12 +139,10 @@ void StreamLogLine::SetValue(KeyId id, LogValue value)
 {
     LogValue owning = ToOwningLogValue(std::move(value));
 
-    auto it = std::lower_bound(
-        mValues.begin(),
-        mValues.end(),
-        id,
-        [](const std::pair<KeyId, LogValue> &lhs, KeyId rhs) { return lhs.first < rhs; }
-    );
+    auto it =
+        std::lower_bound(mValues.begin(), mValues.end(), id, [](const std::pair<KeyId, LogValue> &lhs, KeyId rhs) {
+            return lhs.first < rhs;
+        });
     if (it != mValues.end() && it->first == id)
     {
         it->second = std::move(owning);

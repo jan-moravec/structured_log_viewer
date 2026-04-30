@@ -888,8 +888,7 @@ void JsonParser::ParseStreaming(LogSource &source, StreamingLogSink &sink, Parse
         const auto now = std::chrono::steady_clock::now();
         const bool sizeReached = pending.streamLines.size() >= kStreamLoopFlushLines;
         const bool intervalReached = (now - lastFlush) >= kStreamLoopFlushInterval;
-        const bool hasContent =
-            !pending.streamLines.empty() || !pending.errors.empty() || keys.Size() > prevKeyCount;
+        const bool hasContent = !pending.streamLines.empty() || !pending.errors.empty() || keys.Size() > prevKeyCount;
         if (!force && !sizeReached && !intervalReached)
         {
             return;
@@ -932,8 +931,7 @@ void JsonParser::ParseStreaming(LogSource &source, StreamingLogSink &sink, Parse
             return;
         }
 
-        const bool ok =
-            DecodeStreamLine(trimmed, keys, lineScratch, &promoteScratch.keyCache, lineFields, lineError);
+        const bool ok = DecodeStreamLine(trimmed, keys, lineScratch, &promoteScratch.keyCache, lineFields, lineError);
         if (!ok)
         {
             pending.errors.emplace_back(fmt::format("Error on line {}: {}", lineNumber, std::move(lineError)));

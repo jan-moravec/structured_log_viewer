@@ -58,9 +58,7 @@ TEST_CASE("StreamLogLine round-trips every LogValue alternative", "[stream_log_l
     sortedValues.emplace_back(doubleKey, LogValue{3.14});
     sortedValues.emplace_back(boolKey, LogValue{true});
     sortedValues.emplace_back(timeKey, LogValue{expectedTime});
-    std::sort(sortedValues.begin(), sortedValues.end(), [](const auto &a, const auto &b) {
-        return a.first < b.first;
-    });
+    std::sort(sortedValues.begin(), sortedValues.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
     StreamLogLine line(std::move(sortedValues), keys, StreamLineReference{"src", "raw", 1});
 

@@ -151,9 +151,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
         if (firstObservation)
         {
             BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
-            BackfillTimestampColumn(
-                column, std::span<StreamLogLine>(mData.StreamLines()), BackfillErrors::Discard
-            );
+            BackfillTimestampColumn(column, std::span<StreamLogLine>(mData.StreamLines()), BackfillErrors::Discard);
             for (const KeyId id : columnKeyIds)
             {
                 if (id != kInvalidKeyId)
@@ -177,8 +175,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
             if (oldStreamLineCount < mData.StreamLines().size())
             {
                 std::span<StreamLogLine> slice(
-                    mData.StreamLines().data() + oldStreamLineCount,
-                    mData.StreamLines().size() - oldStreamLineCount
+                    mData.StreamLines().data() + oldStreamLineCount, mData.StreamLines().size() - oldStreamLineCount
                 );
                 BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
             }

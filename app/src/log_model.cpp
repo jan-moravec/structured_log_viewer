@@ -225,9 +225,7 @@ loglib::StopToken LogModel::BeginStreaming(
     return stopToken;
 }
 
-loglib::StopToken LogModel::BeginStreaming(
-    std::unique_ptr<loglib::LogSource> source, loglib::ParserOptions options
-)
+loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogSource> source, loglib::ParserOptions options)
 {
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
@@ -583,8 +581,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             return QVariant(QString::fromStdString(mLogTable.Data().Lines()[row].FileReference().GetLine()));
         }
         const size_t streamRow = row - fileRowCount;
-        return QVariant(QString::fromStdString(mLogTable.Data().StreamLines()[streamRow].FileReference().GetLine())
-        );
+        return QVariant(QString::fromStdString(mLogTable.Data().StreamLines()[streamRow].FileReference().GetLine()));
     }
 
     return QVariant();
