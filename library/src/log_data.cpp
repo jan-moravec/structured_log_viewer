@@ -1,5 +1,8 @@
 #include "loglib/log_data.hpp"
 
+#include "loglib/internal/compact_log_value.hpp"
+
+#include <algorithm>
 #include <cassert>
 #include <iterator>
 #include <utility>
@@ -115,9 +118,14 @@ void LogData::Merge(LogData &&other)
     mLines.reserve(mLines.size() + other.mLines.size());
     for (auto &line : other.mLines)
     {
-        // Rewire each pair's KeyId, then re-sort since the new ids may differ in order.
-        std::vector<std::pair<KeyId, LogValue>> remapped;
-        const auto values = line.IndexedValues();
+        // Rewire each pair's KeyId via the compact span (no `LogValue`
+        // materialisation), then re-sort since the new ids may differ in
+        // order. `OwnedString` offsets stay relative to the merged-in
+        // `LogFile`, which moves into `mFiles` above with its arena bytes
+        // intact (`std::string` move swaps heap pointers, no realloc), so
+        // no rebasing is needed here.
+        const auto values = line.CompactValues();
+        std::vector<std::pair<KeyId, detail::CompactLogValue>> remapped;
         remapped.reserve(values.size());
         for (const auto &entry : values)
         {

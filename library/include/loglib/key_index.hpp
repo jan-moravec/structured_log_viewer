@@ -56,6 +56,11 @@ public:
     /// Cold-path snapshot under the internal lock.
     [[nodiscard]] std::vector<std::string> SortedKeys() const;
 
+    /// Approximate heap bytes owned by the index (shard maps + reverse
+    /// table). Used by the memory-footprint benchmark; not part of the
+    /// parse hot path.
+    [[nodiscard]] size_t EstimatedMemoryBytes() const;
+
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
     /// Test-only call counters compiled in by the unit-test target.
     static std::atomic<std::size_t> sGetOrInsertCallCount;

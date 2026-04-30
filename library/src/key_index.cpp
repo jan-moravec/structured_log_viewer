@@ -136,6 +136,42 @@ std::vector<std::string> KeyIndex::SortedKeys() const
     return result;
 }
 
+size_t KeyIndex::EstimatedMemoryBytes() const
+{
+    // Sum each shard map's bucket array and the reverse-table strings.
+    // The robin_map's per-entry overhead is approximated as 1.5x the key
+    // bytes — exact accounting would require touching the implementation
+    // detail, and this is only a benchmark signal.
+    size_t bytes = 0;
+    for (const auto &shard : mImpl->shards)
+    {
+        std::shared_lock<std::shared_mutex> lock(shard.mutex);
+        bytes += shard.map.bucket_count() * (sizeof(std::string) + sizeof(KeyId));
+        for (const auto &kv : shard.map)
+        {
+            if (kv.first.capacity() > sizeof(std::string))
+            {
+                bytes += kv.first.capacity();
+            }
+        }
+    }
+    {
+        std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
+        // `std::deque` typically uses fixed-size chunks; approximate by the
+        // string objects' size. The chunk-pointer map overhead is negligible
+        // relative to the strings themselves for any realistic key count.
+        bytes += mImpl->reverse.size() * sizeof(std::string);
+        for (const auto &s : mImpl->reverse)
+        {
+            if (s.capacity() > sizeof(std::string))
+            {
+                bytes += s.capacity();
+            }
+        }
+    }
+    return bytes;
+}
+
 #ifdef LOGLIB_KEY_INDEX_INSTRUMENTATION
 std::atomic<std::size_t> KeyIndex::sGetOrInsertCallCount{0};
 std::atomic<std::size_t> KeyIndex::sFindCallCount{0};

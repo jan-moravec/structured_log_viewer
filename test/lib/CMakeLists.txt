@@ -26,6 +26,14 @@ target_link_libraries(
     PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb
 )
 
+# `benchmark_json.cpp` calls `GetProcessMemoryInfo` to report peak working
+# set; on Windows that lives in `psapi.lib` (Windows 7+ also re-exports it
+# from `kernel32.dll`, but linking the import library is the portable form
+# across SDK versions).
+if(WIN32)
+    target_link_libraries(tests PRIVATE Psapi)
+endif()
+
 # Enable KeyIndex call-count instrumentation; PUBLIC so the test TU and
 # `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
 # at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.

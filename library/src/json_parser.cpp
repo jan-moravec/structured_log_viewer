@@ -1,5 +1,6 @@
 #include "loglib/json_parser.hpp"
 
+#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/parser_options.hpp"
 #include "loglib/internal/parser_pipeline.hpp"
 #include "loglib/log_configuration.hpp"
@@ -68,7 +69,7 @@ template <class Field> FastFieldKey ExtractFieldKey(Field &field)
 /// `std::lower_bound`. Tuned for the `[wide]` benchmark.
 constexpr size_t kInsertSortedLowerBoundThreshold = 8;
 
-void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogValue value)
+void InsertSorted(std::vector<std::pair<KeyId, detail::CompactLogValue>> &out, KeyId id, detail::CompactLogValue value)
 {
     if (out.size() < kInsertSortedLowerBoundThreshold)
     {
@@ -82,27 +83,51 @@ void InsertSorted(std::vector<std::pair<KeyId, LogValue>> &out, KeyId id, LogVal
             }
             if (prev->first == id)
             {
-                prev->second = std::move(value);
+                prev->second = value;
                 return;
             }
             it = prev;
         }
-        out.emplace(it, id, std::move(value));
+        out.emplace(it, id, value);
         return;
     }
 
-    auto it = std::lower_bound(out.begin(), out.end(), id, [](const std::pair<KeyId, LogValue> &lhs, KeyId rhs) {
-        return lhs.first < rhs;
-    });
+    auto it = std::lower_bound(
+        out.begin(),
+        out.end(),
+        id,
+        [](const std::pair<KeyId, detail::CompactLogValue> &lhs, KeyId rhs) { return lhs.first < rhs; }
+    );
     if (it != out.end() && it->first == id)
     {
-        it->second = std::move(value);
+        it->second = value;
         return;
     }
-    out.emplace(it, id, std::move(value));
+    out.emplace(it, id, value);
 }
 
-template <class Value> LogValue ExtractStringValue(Value &value, bool sourceIsStable)
+/// Promote a string view into a compact value. When @p sv aliases the
+/// mmap (i.e. lies inside `[fileBegin, fileBegin + fileSize)`), the
+/// resulting tag is `MmapSlice` (zero copy). Otherwise the bytes are
+/// appended to @p ownedArena and the tag is `OwnedString`.
+detail::CompactLogValue MakeStringCompact(
+    std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
+)
+{
+    if (sv.data() >= fileBegin && sv.data() + sv.size() <= fileBegin + fileSize)
+    {
+        const auto offset = static_cast<uint64_t>(sv.data() - fileBegin);
+        return detail::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(sv.size()));
+    }
+    const auto offset = static_cast<uint64_t>(ownedArena.size());
+    ownedArena.append(sv.data(), sv.size());
+    return detail::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
+}
+
+template <class Value>
+detail::CompactLogValue ExtractStringValue(
+    Value &value, bool sourceIsStable, const char *fileBegin, size_t fileSize, std::string &ownedArena
+)
 {
     // string_view path is only safe when simdjson iterates directly over the
     // mmap; the padded-scratch fallback yields views that dangle on the next line.
@@ -117,7 +142,7 @@ template <class Value> LogValue ExtractStringValue(Value &value, bool sourceIsSt
             std::string_view inner = rawToken.substr(1, rawToken.size() - 2);
             if (inner.find('\\') == std::string_view::npos)
             {
-                return LogValue{inner};
+                return MakeStringCompact(inner, fileBegin, fileSize, ownedArena);
             }
         }
     }
@@ -125,12 +150,19 @@ template <class Value> LogValue ExtractStringValue(Value &value, bool sourceIsSt
     std::string_view stringValue;
     if (!value.get_string().get(stringValue))
     {
-        return LogValue{std::string(stringValue)};
+        // `get_string()` on the padded-scratch fallback yields bytes inside
+        // the worker's scratch buffer (not the mmap), so `MakeStringCompact`
+        // will fall through to the `OwnedString` arena path. Same as the
+        // pre-Phase-1 `LogValue{std::string(stringValue)}` semantics.
+        return MakeStringCompact(stringValue, fileBegin, fileSize, ownedArena);
     }
-    return LogValue{std::monostate{}};
+    return detail::CompactLogValue::MakeMonostate();
 }
 
-template <class Value> LogValue ExtractRawJsonValue(Value &value, bool sourceIsStable)
+template <class Value>
+detail::CompactLogValue ExtractRawJsonValue(
+    Value &value, bool sourceIsStable, const char *fileBegin, size_t fileSize, std::string &ownedArena
+)
 {
     std::string_view rawJson;
     if (!value.raw_json().get(rawJson))
@@ -142,11 +174,15 @@ template <class Value> LogValue ExtractRawJsonValue(Value &value, bool sourceIsS
         }
         if (sourceIsStable)
         {
-            return LogValue{rawJson};
+            return MakeStringCompact(rawJson, fileBegin, fileSize, ownedArena);
         }
-        return LogValue{std::string(rawJson)};
+        // Padded-scratch fallback: `rawJson` aliases the worker's scratch
+        // buffer, copy into the per-batch arena.
+        const auto offset = static_cast<uint64_t>(ownedArena.size());
+        ownedArena.append(rawJson.data(), rawJson.size());
+        return detail::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(rawJson.size()));
     }
-    return LogValue{std::monostate{}};
+    return detail::CompactLogValue::MakeMonostate();
 }
 
 /// Per-key simdjson type cache so `value.type()` / `get_number_type()` fire
@@ -177,15 +213,18 @@ void EnsureCacheCapacity(ParseCache &cache, KeyId id)
     growTo(cache.hasNumberType, false);
 }
 
-std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
+std::vector<std::pair<KeyId, detail::CompactLogValue>> ParseJsonLine(
     simdjson::ondemand::object &object,
     KeyIndex &keys,
     ParseCache &cache,
     bool sourceIsStable,
-    detail::PerWorkerKeyCache *keyCache
+    detail::PerWorkerKeyCache *keyCache,
+    const char *fileBegin,
+    size_t fileSize,
+    std::string &ownedArena
 )
 {
-    std::vector<std::pair<KeyId, LogValue>> result;
+    std::vector<std::pair<KeyId, detail::CompactLogValue>> result;
     result.reserve(16);
 
     for (auto field : object)
@@ -210,7 +249,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                 bool b;
                 if (!value.get(b))
                 {
-                    InsertSorted(result, keyId, LogValue{b});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeBool(b));
                     continue;
                 }
                 break;
@@ -224,7 +263,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                         int64_t i;
                         if (!value.get(i))
                         {
-                            InsertSorted(result, keyId, LogValue{i});
+                            InsertSorted(result, keyId, detail::CompactLogValue::MakeInt64(i));
                             continue;
                         }
                         break;
@@ -233,7 +272,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                         uint64_t u;
                         if (!value.get(u))
                         {
-                            InsertSorted(result, keyId, LogValue{u});
+                            InsertSorted(result, keyId, detail::CompactLogValue::MakeUint64(u));
                             continue;
                         }
                         break;
@@ -242,7 +281,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                         double d;
                         if (!value.get(d))
                         {
-                            InsertSorted(result, keyId, LogValue{d});
+                            InsertSorted(result, keyId, detail::CompactLogValue::MakeDouble(d));
                             continue;
                         }
                         break;
@@ -254,20 +293,22 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                 break;
             }
             case simdjson::ondemand::json_type::string: {
-                LogValue stringValue = ExtractStringValue(value, sourceIsStable);
-                if (!std::holds_alternative<std::monostate>(stringValue))
+                detail::CompactLogValue stringValue =
+                    ExtractStringValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
+                if (stringValue.tag != detail::CompactTag::Monostate)
                 {
-                    InsertSorted(result, keyId, std::move(stringValue));
+                    InsertSorted(result, keyId, stringValue);
                     continue;
                 }
                 break;
             }
             case simdjson::ondemand::json_type::array:
             case simdjson::ondemand::json_type::object: {
-                LogValue rawValue = ExtractRawJsonValue(value, sourceIsStable);
-                if (!std::holds_alternative<std::monostate>(rawValue))
+                detail::CompactLogValue rawValue =
+                    ExtractRawJsonValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
+                if (rawValue.tag != detail::CompactTag::Monostate)
                 {
-                    InsertSorted(result, keyId, std::move(rawValue));
+                    InsertSorted(result, keyId, rawValue);
                     continue;
                 }
                 break;
@@ -275,7 +316,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
             case simdjson::ondemand::json_type::null:
                 if (value.is_null())
                 {
-                    InsertSorted(result, keyId, LogValue{std::monostate{}});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
                     continue;
                 }
                 break;
@@ -287,7 +328,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
         auto typeResult = value.type();
         if (typeResult.error())
         {
-            InsertSorted(result, keyId, LogValue{std::monostate{}});
+            InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
             continue;
         }
 
@@ -301,11 +342,11 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
             bool b;
             if (!value.get(b))
             {
-                InsertSorted(result, keyId, LogValue{b});
+                InsertSorted(result, keyId, detail::CompactLogValue::MakeBool(b));
             }
             else
             {
-                InsertSorted(result, keyId, LogValue{std::monostate{}});
+                InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
             }
             break;
         }
@@ -313,7 +354,7 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
             auto numberType = value.get_number_type();
             if (numberType.error())
             {
-                InsertSorted(result, keyId, LogValue{std::monostate{}});
+                InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
                 break;
             }
             cache.numberTypes[keyId] = numberType.value();
@@ -324,11 +365,11 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                 int64_t i;
                 if (!value.get(i))
                 {
-                    InsertSorted(result, keyId, LogValue{i});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeInt64(i));
                 }
                 else
                 {
-                    InsertSorted(result, keyId, LogValue{std::monostate{}});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
                 }
                 break;
             }
@@ -336,11 +377,11 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                 uint64_t u;
                 if (!value.get(u))
                 {
-                    InsertSorted(result, keyId, LogValue{u});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeUint64(u));
                 }
                 else
                 {
-                    InsertSorted(result, keyId, LogValue{std::monostate{}});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
                 }
                 break;
             }
@@ -348,36 +389,38 @@ std::vector<std::pair<KeyId, LogValue>> ParseJsonLine(
                 double d;
                 if (!value.get(d))
                 {
-                    InsertSorted(result, keyId, LogValue{d});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeDouble(d));
                 }
                 else
                 {
-                    InsertSorted(result, keyId, LogValue{std::monostate{}});
+                    InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
                 }
                 break;
             }
             default:
-                InsertSorted(result, keyId, LogValue{std::monostate{}});
+                InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
                 break;
             }
             break;
         }
         case simdjson::ondemand::json_type::string: {
-            LogValue stringValue = ExtractStringValue(value, sourceIsStable);
-            InsertSorted(result, keyId, std::move(stringValue));
+            detail::CompactLogValue stringValue =
+                ExtractStringValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
+            InsertSorted(result, keyId, stringValue);
             break;
         }
         case simdjson::ondemand::json_type::array:
         case simdjson::ondemand::json_type::object: {
-            LogValue rawValue = ExtractRawJsonValue(value, sourceIsStable);
-            InsertSorted(result, keyId, std::move(rawValue));
+            detail::CompactLogValue rawValue =
+                ExtractRawJsonValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
+            InsertSorted(result, keyId, rawValue);
             break;
         }
         case simdjson::ondemand::json_type::null:
-            InsertSorted(result, keyId, LogValue{std::monostate{}});
+            InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
             break;
         default:
-            InsertSorted(result, keyId, LogValue{std::monostate{}});
+            InsertSorted(result, keyId, detail::CompactLogValue::MakeMonostate());
             break;
         }
     }
@@ -526,7 +569,17 @@ void DecodeJsonBatch(
             }
 
             auto objectValue = object.value();
-            auto values = ParseJsonLine(objectValue, keys, worker.user.cache, sourceIsStable, &worker.keyCache);
+            const size_t fileSize = static_cast<size_t>(fileEnd - fileBegin);
+            auto values = ParseJsonLine(
+                objectValue,
+                keys,
+                worker.user.cache,
+                sourceIsStable,
+                &worker.keyCache,
+                fileBegin,
+                fileSize,
+                parsed.ownedStringsArena
+            );
 
             LogFileReference fileRef(logFile, 0);
             LogLine logLine(std::move(values), keys, std::move(fileRef));
@@ -540,7 +593,9 @@ void DecodeJsonBatch(
             parsed.lines.push_back(std::move(logLine));
 
             // Promote inline so the freshly-written values are still hot in L1.
-            worker.PromoteTimestamps(parsed.lines.back(), timeColumns);
+            // The line's `OwnedString` payloads still index into the per-batch
+            // arena (Stage C rebases later), so pass that arena explicitly.
+            worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
         }
         catch (const std::exception &e)
         {
