@@ -229,14 +229,19 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                 if (total > cap)
                 {
                     size_t toDrop = total - cap;
-                    // `linesDropped` is captured up-front so the counter
-                    // ticks correctly on both the whole-batch-erased branch
-                    // (it advances, `toDrop` reaches 0) and the
-                    // partial-trim branch (it stays at begin(), `toDrop`
-                    // reaches 0). Without this snapshot the partial-trim
-                    // path would silently lose lines without any user-
-                    // visible signal (PRD 4.2.2.iv).
-                    const size_t linesDropped = toDrop;
+                    // Accumulate the *actual* number of lines evicted by
+                    // the loop below so the counter ticks correctly on
+                    // both branches. A snapshot of `toDrop` up-front would
+                    // under-report on the whole-batch-erased branch when
+                    // the head is a static-content batch with more rows
+                    // than `toDrop` requires: that batch is evicted
+                    // atomically (its `localLineOffsets` may exceed
+                    // `lines`, so partial-prefix trimming would break the
+                    // invariant `LogTable::AppendBatch` relies on), so the
+                    // real drop count is `rows`, not `toDrop`. The PRD
+                    // 4.2.2.iv "dropped while paused" indicator must
+                    // surface that overshoot.
+                    size_t linesDropped = 0;
                     // Same partial-trim caveat as `TrimPausedBufferTo`:
                     // static-path batches are evicted whole (their
                     // `localLineOffsets` may be longer than `lines`), so
@@ -249,6 +254,10 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                         const bool hasStaticContent = !it->lines.empty() || !it->localLineOffsets.empty();
                         if (rows <= toDrop || hasStaticContent)
                         {
+                            // Whole batch evicted — count `rows`, which
+                            // may exceed the remaining `toDrop` for
+                            // atomic static-content batches.
+                            linesDropped += rows;
                             toDrop = (toDrop > rows) ? toDrop - rows : 0;
                             ++it;
                         }
@@ -258,6 +267,7 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                                 it->streamLines.begin(), it->streamLines.begin() + static_cast<std::ptrdiff_t>(toDrop)
                             );
                             it->firstLineNumber += toDrop;
+                            linesDropped += toDrop;
                             toDrop = 0;
                         }
                     }

@@ -1528,6 +1528,104 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    // Regression for the `linesDropped` snapshot bug (PRD 4.2.2.iv).
+    // When the head of `mPausedBatches` is a *static-content* batch
+    // (`lines` + `localLineOffsets`, reachable when **Pause** is invoked
+    // during a static-streaming parse from the **Stream** menu), the
+    // eviction loop in `OnBatch` evicts the whole batch atomically even
+    // when its row count exceeds the requested `toDrop` — the
+    // `localLineOffsets` array can be longer than `lines`, so a partial
+    // prefix trim would break the `LogTable::AppendBatch` invariant. The
+    // pre-fix counter snapshotted `toDrop` up front, under-reporting the
+    // overshoot to the status-bar "dropped while paused" indicator. The
+    // fix accumulates the *actual* lines evicted as the loop runs.
+    void testPausedDropCountReflectsStaticBatchOverEviction()
+    {
+        TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"a": 1})"),
+            QStringLiteral(R"({"a": 2})"),
+            QStringLiteral(R"({"a": 3})"),
+        });
+
+        LogModel model;
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        loglib::LogFile *filePtr = file.get();
+        static_cast<void>(model.BeginStreaming(std::move(file)));
+
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        const size_t cap = 100;
+        model.SetRetentionCap(cap);
+        QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), qulonglong(0));
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        // Step 1 — fill the paused buffer to the cap with a single
+        // *static-content* batch (`lines` + `localLineOffsets`).
+        const size_t staticBatchRows = cap; // 100
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back(std::string("value"));
+            batch.lines.reserve(staticBatchRows);
+            batch.localLineOffsets.reserve(staticBatchRows);
+            for (size_t i = 0; i < staticBatchRows; ++i)
+            {
+                const size_t lineNumber = i + 1;
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineNumber)});
+                batch.lines.emplace_back(
+                    std::move(values), keys, loglib::LogFileReference(*filePtr, lineNumber)
+                );
+                batch.localLineOffsets.push_back(static_cast<uint64_t>(lineNumber * 16));
+            }
+            sink->OnBatch(std::move(batch));
+        }
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(staticBatchRows));
+        QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), qulonglong(0));
+
+        // Step 2 — push a small live-tail batch that overflows the cap by
+        // a fraction of the static head. Pre-fix `toDrop = 30` was used
+        // as the drop count; in reality the entire 100-row static head
+        // is evicted (atomic on `hasStaticContent`), and the counter
+        // must reflect that overshoot.
+        const size_t overflowRows = 30;
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = staticBatchRows + 1;
+            batch.streamLines.reserve(overflowRows);
+            for (size_t i = 0; i < overflowRows; ++i)
+            {
+                const size_t lineId = staticBatchRows + 1 + i;
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+                );
+            }
+            sink->OnBatch(std::move(batch));
+        }
+
+        // Whole 100-row static head was evicted; only the 30-row live-tail
+        // batch survives in the buffer. Pre-fix the counter would report
+        // 30 (the snapshot of `toDrop`); post-fix it reports the actual
+        // 100 lines that left the buffer.
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(overflowRows));
+        QCOMPARE(
+            static_cast<qulonglong>(sink->PausedDropCount()), static_cast<qulonglong>(staticBatchRows)
+        );
+
+        sink->Resume();
+        QCoreApplication::processEvents();
+        model.Detach();
+        QCoreApplication::processEvents();
+    }
+
     // PRD 4.7.1 regression: `Stop` ends the streaming session but leaves
     // the most-recently-buffered rows visible (the model becomes a
     // static snapshot of what was in memory at stop time). `Detach()`
