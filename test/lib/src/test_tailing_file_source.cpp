@@ -216,6 +216,70 @@ TEST_CASE("TailingFileSource pre-fill on a file shorter than N", "[TailingFileSo
     CHECK(lines[2] == "c");
 }
 
+// Regression for C.4.2: `Prefill()` runs in the worker's prologue and
+// drops bytes into `mReadyBuffer` via `AppendBytesAndSplitLocked`. It
+// must wake `mCv` so a parser already parked in `WaitForBytes` returns
+// immediately — without the `mCv.notify_all()` at the end of `Prefill`,
+// the caller would sleep until `mOptions.pollInterval` (250 ms in
+// production, 5 s here) elapses and the worker's polling loop wakes
+// the predicate.
+//
+// Test shape: deliberately stretch `Prefill()` over many small
+// backwards reads (`prefillChunkBytes = 512`, `retentionLines` close
+// to the line count) so the test thread reliably calls `WaitForBytes`
+// *before* the pre-fill bytes land in the queue — that is the race
+// window the missing notify exposes.
+TEST_CASE("TailingFileSource Prefill notifies WaitForBytes immediately", "[TailingFileSource]")
+{
+    TempDir dir;
+    const auto path = dir.File("notify_prefill.log");
+
+    // ~500 KiB across 5 000 lines of ~100 bytes each. Walking
+    // backwards in 512-byte chunks means `Prefill` performs ~900
+    // syscalls and a ~450 KiB forward read before notifying — long
+    // enough on every realistic dev/CI machine to ensure the test
+    // thread wins the race into `WaitForBytes`.
+    std::string content;
+    constexpr int kLineCount = 5000;
+    content.reserve(kLineCount * 110);
+    for (int i = 0; i < kLineCount; ++i)
+    {
+        content += "line " + std::to_string(i) + std::string(95, 'x') + "\n";
+    }
+    Overwrite(path, content);
+
+    auto opts = FastPollOptions();
+    // `pollInterval` is deliberately fixed (per `scaled_ms.hpp`'s
+    // contract) and chosen well above any plausible `ScaledMs(...)`
+    // assertion below so a missing `notify_all()` dominates the
+    // measurement: the regression case waits the full 10 s, the fixed
+    // case wakes within the I/O cost of `Prefill()` itself.
+    opts.pollInterval = 10000ms;
+    opts.prefillChunkBytes = 512;
+
+    TailingFileSource source(path, /*retentionLines=*/kLineCount - 1, opts);
+
+    const auto waitStart = std::chrono::steady_clock::now();
+    source.WaitForBytes(ScaledMs(3000ms));
+    const auto waitElapsed = std::chrono::steady_clock::now() - waitStart;
+
+    // Generous margin for slow CI disks while still cleanly catching
+    // the 10 s regression. With the fix in place the wait returns
+    // within the I/O cost of `Prefill()` (tens of ms on a hot cache,
+    // a few hundred on a cold one).
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(waitElapsed) < ScaledMs(2000ms));
+
+    // The pre-fill bytes are now (or imminently) in the ready buffer;
+    // drain them to verify `Prefill` produced the expected lines and
+    // the wake-up was not a spurious wakeup that returned with an
+    // empty buffer.
+    const std::string drained = DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) {
+        return std::count(acc.begin(), acc.end(), '\n') >= kLineCount - 1;
+    });
+    const auto lines = SplitLines(drained);
+    CHECK(lines.size() == static_cast<size_t>(kLineCount - 1));
+}
+
 TEST_CASE(
     "TailingFileSource pre-fill aborts gracefully on a file with no newlines within the scan budget",
     "[TailingFileSource]"

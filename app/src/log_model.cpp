@@ -9,6 +9,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
+#include <QCoreApplication>
 #include <QFutureWatcher>
 #include <QMetaObject>
 #include <QModelIndex>
@@ -119,6 +120,28 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mStreamingWatcher->waitForFinished();
     }
 
+    // Step 3.4 (Detach only): drain the sink's queued meta-call events so
+    // the drain-phase `OnBatch` / `OnFinished` lambdas the worker posted
+    // between `RequestStop()` and `waitForFinished()` returning land
+    // their rows in the visible model under the still-valid generation
+    // (PRD 4.7.3). `Clear()` deliberately skips this step — the table
+    // is reset below anyway, and draining there would emit spurious
+    // `streamingFinished` / `lineCountChanged` against soon-to-be-reset
+    // state, breaking the existing `testClearDuringStreamingDropsDrainPhaseBatch`
+    // contract (drain-phase rows are dropped on the Clear path).
+    //
+    // After the drain, `mSink->IsActive()` flips to `false` iff the
+    // queued `OnFinished` lambda ran (it sets `mActive = false` and
+    // calls `EndStreaming` which already emits `streamingFinished`).
+    // Use that as the sentinel to suppress the compensating emit at the
+    // end of this function so observers see exactly one terminal signal.
+    bool finishedAlreadyEmitted = false;
+    if (!resetTable && mSink && mSink->IsActive())
+    {
+        QCoreApplication::sendPostedEvents(mSink, 0);
+        finishedAlreadyEmitted = !mSink->IsActive();
+    }
+
     // Step 3.5: any rows still in the paused buffer at this point are
     // already-parsed lines that the user expects to see. Flush them into
     // the visible model first so Stop never silently discards parsed
@@ -164,7 +187,12 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     // The worker's queued `OnFinished(true)` is now generation-stale and
     // discarded; emit a compensating `streamingFinished` so UI gating
     // (e.g. configuration menus) re-opens.
-    if (wasStreaming)
+    //
+    // On the Detach path the drain at Step 3.4 may already have delivered
+    // the queued `OnFinished` lambda (which calls `EndStreaming` and emits
+    // `streamingFinished` itself). `finishedAlreadyEmitted` dedupes so the
+    // observer always sees exactly one terminal signal.
+    if (wasStreaming && !finishedAlreadyEmitted)
     {
         emit streamingFinished(StreamingResult::Cancelled);
     }

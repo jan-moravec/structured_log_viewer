@@ -927,6 +927,91 @@ private slots:
         QCOMPARE(model.rowCount(), 0);
     }
 
+    // Regression for C.4.1 (PRD 4.7.3): `Detach()` is the API that
+    // `MainWindow::StopStream` invokes; it must preserve every row the
+    // worker has already produced — including the drain-phase `OnBatch`
+    // emitted between `RequestStop()` and `waitForFinished()` returning.
+    // The bug was that `DropPendingBatches()` bumped the generation
+    // before the GUI thread ran the queued lambdas, so the drain-phase
+    // batch was silently discarded. The fix drains queued sink events
+    // between the join and the generation bump on the Detach path
+    // *only* (Clear keeps dropping them — the table is reset anyway,
+    // see `testClearDuringStreamingDropsDrainPhaseBatch`).
+    //
+    // Test shape mirrors `testClearDuringStreamingDropsDrainPhaseBatch`
+    // but swaps `Clear()` for `Detach()` and inverts the row-count
+    // assertion (the row must survive) and the signal-count assertion
+    // (the drained `OnFinished` lambda emits the *only* terminal
+    // signal — no compensating duplicate from the teardown helper).
+    void testStopDetachPreservesDrainPhaseBatch()
+    {
+        TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
+
+        LogModel model;
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        loglib::LogFile *filePtr = file.get();
+
+        std::mutex releaseMutex;
+        std::condition_variable releaseCv;
+        bool released = false;
+        QtStreamingLogSink *sinkBeforeBegin = model.Sink();
+        QVERIFY(sinkBeforeBegin != nullptr);
+
+        const loglib::StopToken stop = model.BeginStreaming(
+            std::move(file),
+            [sinkBeforeBegin, filePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
+                while (!stopToken.stop_requested())
+                {
+                    std::this_thread::yield();
+                }
+
+                loglib::KeyIndex &keys = sinkBeforeBegin->Keys();
+                const loglib::KeyId keyId = keys.GetOrInsert("a");
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
+                loglib::LogLine line(std::move(values), keys, loglib::LogFileReference(*filePtr, 1));
+                loglib::StreamedBatch batch;
+                batch.lines.push_back(std::move(line));
+                batch.firstLineNumber = 1;
+                sinkBeforeBegin->OnBatch(std::move(batch));
+                sinkBeforeBegin->OnFinished(true);
+
+                std::unique_lock lock(releaseMutex);
+                releaseCv.wait(lock, [&]() { return released; });
+            }
+        );
+        static_cast<void>(stop);
+
+        std::thread releaser([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            {
+                std::lock_guard lock(releaseMutex);
+                released = true;
+            }
+            releaseCv.notify_all();
+        });
+
+        model.Detach();
+        releaser.join();
+
+        // The drain at Step 3.4 of `TeardownStreamingSessionInternal` has
+        // already delivered the queued `OnBatch` (so the row is in the
+        // model) *and* the queued `OnFinished` (so `streamingFinished`
+        // has already been emitted via `EndStreaming`). A follow-up
+        // `processEvents()` is still safe (any other Qt-posted work
+        // should drain too) and matches the surrounding tests' style;
+        // it must not change the observed row count or signal count.
+        QCoreApplication::processEvents();
+
+        QVERIFY(!model.IsStreamingActive());
+        QCOMPARE(model.rowCount(), 1);
+        QCOMPARE(finishedSpy.count(), 1);
+        QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
+    }
+
     // FIFO eviction at the retention cap (PRD 4.5 / 4.10.3): feed batches of
     // synthetic `StreamLogLine`s directly into `LogModel::AppendBatch`, asserting
     // that:

@@ -690,6 +690,13 @@ void TailingFileSourceImpl::Prefill()
     // partial-line buffer (set by AppendBytesAndSplitLocked) seeds the
     // tail's partial-line state per PRD 4.1.5.i.
     mReadOffset = fileSize;
+
+    // Wake any consumer parked on `WaitForBytes`. Without this notify,
+    // a parser that parked before pre-fill bytes landed in `mReadyBuffer`
+    // would sleep until `mOptions.pollInterval` (250 ms in production)
+    // expires — a measurable startup latency hit on large pre-filled
+    // files. Symmetric with `ReadMoreBytes`.
+    mCv.notify_all();
 }
 
 bool TailingFileSourceImpl::DetectAndRecoverRotation()
