@@ -655,9 +655,7 @@ TEST_CASE("TailingFileSource Stop after natural drain leaves IsClosed true", "[T
     CHECK(source.IsClosed());
 }
 
-TEST_CASE(
-    "TailingFileSource reports SourceStatus::Waiting while the file is missing", "[TailingFileSource][status]"
-)
+TEST_CASE("TailingFileSource reports SourceStatus::Waiting while the file is missing", "[TailingFileSource][status]")
 {
     // PRD 4.8.8 / §6 *Status bar*: when the watched file disappears
     // during a delete-then-recreate rotation the source transitions
@@ -680,9 +678,7 @@ TEST_CASE(
 
     // Drain the pre-fill so the worker is in its steady-state tail loop
     // before we perturb the file.
-    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
-        return acc.find("seed\n") != std::string::npos;
-    });
+    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.find("seed\n") != std::string::npos; });
 
     // Delete the file → branch (ii) → Waiting.
     std::filesystem::remove(path);

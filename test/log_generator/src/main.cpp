@@ -237,17 +237,14 @@ void ShiftBackups(const std::filesystem::path &basePath, std::size_t keepRolled)
 // re-open step failed; the caller should log and exit. We deliberately
 // use exceptions for the filesystem step so the `Rotate` caller can
 // bail cleanly rather than silently producing garbled output.
-void Rotate(
-    std::ofstream &out, const std::filesystem::path &basePath, RollStrategy strategy, std::size_t keepRolled
-)
+void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrategy strategy, std::size_t keepRolled)
 {
     out.flush();
     out.close();
 
     switch (strategy)
     {
-    case RollStrategy::Rename:
-    {
+    case RollStrategy::Rename: {
         if (keepRolled > 0)
         {
             ShiftBackups(basePath, keepRolled);
@@ -275,8 +272,7 @@ void Rotate(
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }
-    case RollStrategy::CopyTruncate:
-    {
+    case RollStrategy::CopyTruncate: {
         if (keepRolled > 0)
         {
             ShiftBackups(basePath, keepRolled);
@@ -293,8 +289,7 @@ void Rotate(
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }
-    case RollStrategy::Truncate:
-    {
+    case RollStrategy::Truncate: {
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }
@@ -306,21 +301,21 @@ void Rotate(
 int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.2.0");
-    program.add_description(
-        "Generate a JSONL log file with synthetic timestamp/level/message records. "
-        "Lines are produced until --size or --lines is reached (whichever comes first; "
-        "0 means unbounded on that axis). Pass --timeout to throttle writes and simulate "
-        "a streaming feed; pass --roll-size and/or --roll-lines to rotate the active file "
-        "in-flight (--roll-strategy controls how)."
-    );
+    program.add_description("Generate a JSONL log file with synthetic timestamp/level/message records. "
+                            "Lines are produced until --size or --lines is reached (whichever comes first; "
+                            "0 means unbounded on that axis). Pass --timeout to throttle writes and simulate "
+                            "a streaming feed; pass --roll-size and/or --roll-lines to rotate the active file "
+                            "in-flight (--roll-strategy controls how).");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
-        .help("Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = unbounded.");
+        .help("Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = "
+              "unbounded.");
 
     program.add_argument("-n", "--lines")
         .default_value(std::string{"0"})
-        .help("Total output budget in lines across all rolls. Plain integer or with suffix K/M/G (base 1000). 0 = unbounded.");
+        .help("Total output budget in lines across all rolls. Plain integer or with suffix K/M/G (base 1000). 0 = "
+              "unbounded.");
 
     program.add_argument("-o", "--output")
         .default_value(std::string{"generated.jsonl"})
@@ -342,11 +337,13 @@ int main(int argc, char *argv[])
 
     program.add_argument("--roll-size")
         .default_value(std::string{"0"})
-        .help("Rotate the active file once it reaches at least this size (B/KB/MB/GB suffix supported, base 1024). 0 disables size-triggered rotation.");
+        .help("Rotate the active file once it reaches at least this size (B/KB/MB/GB suffix supported, base 1024). 0 "
+              "disables size-triggered rotation.");
 
     program.add_argument("--roll-lines")
         .default_value(std::string{"0"})
-        .help("Rotate the active file once it has at least this many lines (K/M/G suffix supported, base 1000). 0 disables line-triggered rotation.");
+        .help("Rotate the active file once it has at least this many lines (K/M/G suffix supported, base 1000). 0 "
+              "disables line-triggered rotation.");
 
     program.add_argument("--roll-strategy")
         .default_value(std::string{"rename"})
@@ -358,7 +355,9 @@ int main(int argc, char *argv[])
     program.add_argument("--keep-rolled")
         .default_value(5)
         .scan<'i', int>()
-        .help("Number of rotated backups to keep at <output>.1 .. <output>.N. 0 deletes content on rotation (no backup).");
+        .help(
+            "Number of rotated backups to keep at <output>.1 .. <output>.N. 0 deletes content on rotation (no backup)."
+        );
 
     try
     {
@@ -441,18 +440,17 @@ int main(int argc, char *argv[])
     }
 
     std::cout << "log_generator: writing"
-              << " up to " << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes")
-              << ", " << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines")
-              << " to " << outputPath
-              << " (timeout=" << timeoutMs << "ms, seed=" << seed
+              << " up to "
+              << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "
+              << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines") << " to "
+              << outputPath << " (timeout=" << timeoutMs << "ms, seed=" << seed
               << ", append=" << (append ? "true" : "false");
     if (rollingEnabled)
     {
-        std::cout << ", roll=" << rollStrategyText
-                  << " every " << (rollBytes == 0 ? std::string{"-"} : std::to_string(rollBytes) + "B")
-                  << "/"
-                  << (rollLines == 0 ? std::string{"-"} : std::to_string(rollLines) + " lines")
-                  << ", keep " << keepRolled << " backups";
+        std::cout << ", roll=" << rollStrategyText << " every "
+                  << (rollBytes == 0 ? std::string{"-"} : std::to_string(rollBytes) + "B") << "/"
+                  << (rollLines == 0 ? std::string{"-"} : std::to_string(rollLines) + " lines") << ", keep "
+                  << keepRolled << " backups";
     }
     std::cout << ")\n";
 

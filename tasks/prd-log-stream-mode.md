@@ -114,7 +114,7 @@ The viewer must detect and recover from the following rotation patterns, *withou
 
 The detection rules:
 
-5. The viewer must use [efsw](https://github.com/SpartanJ/efsw) (or a comparable cross-platform watcher; see Technical Considerations) to receive native filesystem change notifications, with a polling fallback (`stat` every 250 ms) on file systems where the native event stream is unavailable, throttled, or known-unreliable (network shares, container bind mounts, WSL `/mnt`, FAT/exFAT, and macOS where `FSEvents` only fires at directory granularity). On filesystems where the native watcher is reliable, the poll runs as a long-period (e.g. every 5 s) heartbeat to catch dropped events. Watching a single file generally requires watching its **parent directory** on Linux (`inotify`) and macOS (`FSEvents`); the watcher implementation must filter directory events down to the open file's basename and gracefully handle the case where the parent directory has many unrelated files.
+1. The viewer must use [efsw](https://github.com/SpartanJ/efsw) (or a comparable cross-platform watcher; see Technical Considerations) to receive native filesystem change notifications, with a polling fallback (`stat` every 250 ms) on file systems where the native event stream is unavailable, throttled, or known-unreliable (network shares, container bind mounts, WSL `/mnt`, FAT/exFAT, and macOS where `FSEvents` only fires at directory granularity). On filesystems where the native watcher is reliable, the poll runs as a long-period (e.g. every 5 s) heartbeat to catch dropped events. Watching a single file generally requires watching its **parent directory** on Linux (`inotify`) and macOS (`FSEvents`); the watcher implementation must filter directory events down to the open file's basename and gracefully handle the case where the parent directory has many unrelated files.
 1. Rotation is detected by inspecting the *path* and the *open handle*. Conditions are evaluated in this order on every poll tick (and on every native event); the **first** match wins:
    1. **File-identity changed.** The path's current file index (POSIX `stat::st_ino`; Windows `nFileIndexLow:nFileIndexHigh` from `GetFileInformationByHandle`) differs from the originally-opened file's. → rename-and-create or delete-then-recreate. **Recovery:** close the old handle, open the new path, seek to offset 0, resume.
    1. **Path missing.** The path cannot be `stat`'d (`ENOENT` / `ERROR_FILE_NOT_FOUND`). → delete-then-recreate in progress, or transient. **Recovery:** enter the "waiting" state (4.8.8), retry the path every 250 ms; on first successful re-open, install the new handle, seek to offset 0, resume. If the path reappears with non-zero size between two polls, branch (i) wins on the next poll.
@@ -210,13 +210,20 @@ The detection rules:
 ## 7. Technical Considerations
 
 - **Filesystem watcher choice.** `efsw` is the suggested library: header + small static lib, native backends (`ReadDirectoryChangesW` / `inotify` / `FSEvents`) with its own polling fallback. Add it via `FetchContent` next to the existing dependencies (`cmake/FetchDependencies.cmake`), with a matching `USE_SYSTEM_EFSW=ON` knob. Note that `efsw` builds an actual static library (not header-only), so on Windows MSVC the runtime-library setting (`/MD` vs `/MT`) and CRT linkage must match the rest of the project — coordinate via `cmake/FetchDependencies.cmake`. Acceptable alternatives if `efsw` proves problematic: `Qt`'s `QFileSystemWatcher` (already a dependency, but its limits are well-known on Linux — `inotify` watch limit, no rename detection on the file itself, only on the parent directory), or a hand-rolled per-platform implementation. The poll-only fallback (4.8.5) is mandatory on filesystems where the native watcher is unreliable; on filesystems where it is reliable, the poll runs only as a long-period heartbeat to catch dropped events (avoiding double-firing on every file write).
+
 - **No mmap on the tail.** mmap is invalidated by truncation on Linux (SIGBUS on access past the post-truncation EOF), and on Windows `mio`-style mappings open the file with `dwShareMode = FILE_SHARE_READ` (no `FILE_SHARE_DELETE`), which blocks rename and unlink — exactly the operations a rotating producer needs. Behaviour on `tmpfs` and SMB / NFS mounts is unreliable. Use buffered standard I/O (`std::ifstream`, or `read(2)` / `ReadFile`) for `TailingFileSource`. (The static path's mmap of a finite file, where the producer is gone, is unaffected and stays.)
+
 - **Line buffering.** Reads can land mid-line. The tailing source must keep a partial-line buffer between reads and flush it as a single line only when a `\n` arrives. Two exceptions to the "wait for `\n`" rule:
+
   1. On rotation detection (4.8.6), the partial buffer is **discarded** — its content cannot be completed from the new file.
   1. On `LogSource::Stop()` (4.7.2.ii), the partial buffer is **flushed** as a final synthetic line, unless the stop is concurrent with a rotation (in which case (i) wins).
+
 - **Threading.** A single dedicated worker thread per `TailingFileSource` is sufficient (no TBB pipeline). The thread reads, parses, and posts batches to the GUI thread via the existing `QtStreamingLogSink` queued-connection pattern. The `TBB::global_control` block in the static-path pipeline is bypassed for the tailing path.
+
 - **Batching and latency.** Coalesce arriving lines into batches of `~250 lines or 100 ms` (whichever comes first) before posting to the GUI, mirroring the existing pipeline's Stage C coalescing (`pipeline_detail::kStreamFlushLines = 1000`, `kStreamFlushInterval = 50 ms`) — the smaller numbers chosen here trade a little more cross-thread overhead for tighter G1 latency. With the 250 ms poll-only fallback worst case, total budget = 250 ms (poll) + 100 ms (coalesce) + ε (queued connection) ≈ 350 ms p95, well under G1's 500 ms.
+
 - **`LogSource` shape.** Recommended sketch (final API at the implementer's discretion). The source is a *byte / line producer*, not a parser orchestrator:
+
   ```cpp
   class LogSource {
   public:
@@ -245,11 +252,17 @@ The detection rules:
       virtual void SetRotationCallback(std::function<void()> /*cb*/) {}
   };
   ```
+
   with `MappedFileSource::Read` returning the next slice of the mmap and `TailingFileSource::Read` returning bytes appended to the file since its last read. `LogSource::Stop()` is **distinct from** `ParserOptions::stopToken` (4.7.2.i): the source's `Stop` releases I/O so the parser's hot loop can observe the parser stop token at the next batch boundary. Both must be wired on Stop / model teardown.
+
 - **`LogFile` lifetime invariant.** The static path's `string_view`-into-mmap optimisation depends on `LogFile` outliving every `LogLine` referencing it. Stream Mode does **not** rely on this: `StreamLogLine` owns its values directly (4.9.7), so the existing `LogModel::Clear()` / `~LogModel()` `waitForFinished()` join on the streaming watcher remains the right cleanup pattern. The `mLogTable` invariant during streaming changes only insofar as the row vector now holds a mix of line types if the implementer picks a `std::variant` representation; the lifetime of the source it borrows from is owned by `LogModel` (4.10.2).
+
 - **Cross-platform file identity.** For rotation detection: POSIX `stat::st_ino`; Windows `GetFileInformationByHandle::nFileIndexLow/High`. Wrap behind a tiny helper. Falling back to "size shrunk" detection covers copytruncate; rename-and-create on filesystems where the file index isn't stable (FAT/exFAT, some network shares) is an undetected case and a documented limitation (4.8.6).
+
 - **Testing the tail.** Existing `test/lib/` Catch2 tests cover the static path. New tests must cover, at minimum: pre-fill of last N lines on a small file; pre-fill on a file shorter than N; growth detection across many small writes; rotation via rename-and-create; rotation via copytruncate; rotation while paused; FIFO eviction; cancellation via the stop token; the partial-line-on-rotation buffer discard. Most can be exercised with a synthetic temp file the test process writes to, plus a small abstraction that lets the test inject "fake clock" events into the polling fallback.
+
 - **Qt smoke tests.** `test/app/` should gain at least one stream-mode test that opens a temp file, has the test process append lines, and asserts the rows arrive in the model. Use the existing offscreen-Qt pattern.
+
 - **CI.** No new CI matrix is needed; the streaming tests must pass on Linux, Windows, and macOS using the existing `release` workflow preset. Polling-fallback timing must be tolerant of slow CI runners.
 
 ## 8. Success Metrics

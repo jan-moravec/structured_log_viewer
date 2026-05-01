@@ -30,7 +30,7 @@ void StreamingControl::LoadConfiguration()
             mConfiguration.retentionLines = static_cast<size_t>(raw);
             return;
         }
-        // Out-of-range or unparseable value: drop and fall through to the
+        // Out-of-range or unparsable value: drop and fall through to the
         // default. Avoids a corrupted setting wedging the spinbox.
         settings.remove(CONFIGURATION_RETENTION_LINES);
     }

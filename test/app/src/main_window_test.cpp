@@ -1579,9 +1579,7 @@ private slots:
                 const size_t lineNumber = i + 1;
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineNumber)});
-                batch.lines.emplace_back(
-                    std::move(values), keys, loglib::LogFileReference(*filePtr, lineNumber)
-                );
+                batch.lines.emplace_back(std::move(values), keys, loglib::LogFileReference(*filePtr, lineNumber));
                 batch.localLineOffsets.push_back(static_cast<uint64_t>(lineNumber * 16));
             }
             sink->OnBatch(std::move(batch));
@@ -1616,9 +1614,7 @@ private slots:
         // 30 (the snapshot of `toDrop`); post-fix it reports the actual
         // 100 lines that left the buffer.
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(overflowRows));
-        QCOMPARE(
-            static_cast<qulonglong>(sink->PausedDropCount()), static_cast<qulonglong>(staticBatchRows)
-        );
+        QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), static_cast<qulonglong>(staticBatchRows));
 
         sink->Resume();
         QCoreApplication::processEvents();
