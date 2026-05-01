@@ -72,8 +72,9 @@ public:
     /// Whether `Pause()` is currently in effect. GUI thread.
     [[nodiscard]] bool IsPaused() const noexcept;
 
-    /// Number of `StreamLogLine` rows currently held in the paused buffer.
-    /// Reflected in the status-bar `K buffered` indicator. GUI thread.
+    /// Number of buffered rows (both static-path `LogLine`s and live-tail
+    /// `StreamLogLine`s) currently held in the paused buffer. Reflected in
+    /// the status-bar `K buffered` indicator. GUI thread.
     [[nodiscard]] size_t PausedLineCount() const;
 
     /// Configure the retention cap used to bound the paused buffer
@@ -102,13 +103,17 @@ public:
 
 private:
     /// Coalesces one or more `StreamedBatch`es into a single move-target
-    /// batch. The first batch keeps its `firstLineNumber`; subsequent
-    /// batches' rows / errors / newKeys are concatenated. Used by
-    /// `Resume()` and `TakePausedBuffer()`.
+    /// batch. The first batch keeps its `firstLineNumber`; every other
+    /// field (`lines`, `streamLines`, `localLineOffsets`, `errors`,
+    /// `newKeys`) is concatenated. Used by `Resume()` and
+    /// `TakePausedBuffer()`. **All five vectors must be carried**:
+    /// pausing a static-streaming session (reachable from the **Stream**
+    /// menu) buffers `lines`/`localLineOffsets`-bearing batches whose
+    /// rows would otherwise be silently lost on Resume.
     static loglib::StreamedBatch CoalesceLocked(std::vector<loglib::StreamedBatch> &&batches);
 
-    /// Number of `StreamLogLine` rows currently in the buffer. Caller
-    /// must hold `mPausedMutex`.
+    /// Total buffered row count (`lines.size() + streamLines.size()`)
+    /// across the paused buffer. Caller must hold `mPausedMutex`.
     size_t PausedLineCountLocked() const;
 
     QPointer<LogModel> mModel;

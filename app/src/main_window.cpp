@@ -254,6 +254,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             const QSignalBlocker blocker(ui->actionPauseStream);
             ui->actionPauseStream->setChecked(false);
         }
+        // Reset Follow tail to its `.ui` default (checked) so the next
+        // live-tail session starts auto-scrolling — symmetric with the
+        // Pause reset above. Without this, an `userScrolledAwayFromBottom`
+        // during the previous session would leave the toggle off and the
+        // user would have to manually scroll to the bottom (or toggle
+        // the action) to re-engage auto-scroll on the new stream. The
+        // toggle has no `toggled` slot wired, so flipping it has no
+        // side effects beyond changing the value
+        // `ScrollToNewestRowIfFollowing` reads.
+        if (!ui->actionFollowTail->isChecked())
+        {
+            const QSignalBlocker blocker(ui->actionFollowTail);
+            ui->actionFollowTail->setChecked(true);
+        }
         SetConfigurationUiEnabled(true);
         UpdateStreamToolbarVisibility();
         UpdateUi();

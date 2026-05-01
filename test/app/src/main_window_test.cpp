@@ -1100,6 +1100,88 @@ private slots:
         model.EndStreaming(false);
     }
 
+    // Regression: pausing a *static-streaming* session (the **Stream** menu
+    // is reachable from both paths because `TogglePauseStream` only gates
+    // on `IsStreamingActive()`) must not silently drop the buffered rows
+    // on Resume. The bug was `CoalesceLocked` only moving `streamLines` /
+    // `errors` / `newKeys`, dropping the `lines` and `localLineOffsets`
+    // payload that the static path emits, and `PausedLineCountLocked`
+    // only summing `streamLines.size()` (so the status-bar `K buffered`
+    // would read 0 even with rows queued).
+    void testSinkPauseResumePreservesStaticLineBatches()
+    {
+        // Need a real `LogFile` because `LogFileReference` (and the model's
+        // `LogTable::AppendBatch` path that consumes `lines`) hold pointers
+        // into the file. The file's contents don't have to match what we
+        // synthesise — we never call `LogLine::Data()` / `GetValue()` on
+        // them through the table — but they must outlive the test.
+        TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"a": 1})"),
+            QStringLiteral(R"({"a": 2})"),
+            QStringLiteral(R"({"a": 3})"),
+        });
+
+        LogModel model;
+        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        QVERIFY(lineCountSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        loglib::LogFile *filePtr = file.get();
+        static_cast<void>(model.BeginStreaming(std::move(file)));
+
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        QVERIFY(sink->IsActive());
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId keyId = keys.GetOrInsert(std::string("a"));
+
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        // Push three static-path batches (`lines` + paired
+        // `localLineOffsets`) into the sink while paused.
+        const int batchesWhilePaused = 3;
+        const int linesPerBatch = 4;
+        size_t cursorOffset = 0;
+        for (int b = 0; b < batchesWhilePaused; ++b)
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = static_cast<size_t>(b * linesPerBatch + 1);
+            batch.lines.reserve(linesPerBatch);
+            batch.localLineOffsets.reserve(linesPerBatch);
+            for (int i = 0; i < linesPerBatch; ++i)
+            {
+                const size_t lineNumber = static_cast<size_t>(b * linesPerBatch + i + 1);
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
+                batch.lines.emplace_back(std::move(values), keys, loglib::LogFileReference(*filePtr, lineNumber));
+                cursorOffset += 16;
+                batch.localLineOffsets.push_back(static_cast<uint64_t>(cursorOffset));
+            }
+            sink->OnBatch(std::move(batch));
+        }
+
+        QCoreApplication::processEvents();
+        // No queued lambdas fired through (we're paused), and the buffered
+        // count must reflect the `lines` payload — not 0 as it would have
+        // with the pre-fix `PausedLineCountLocked`.
+        QCOMPARE(model.rowCount(), 0);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), batchesWhilePaused * linesPerBatch);
+
+        // Resume coalesces all three batches and posts once. Pre-fix this
+        // dropped every row because `CoalesceLocked` ignored `lines` /
+        // `localLineOffsets`; post-fix the model gains the full count.
+        sink->Resume();
+        QVERIFY(!sink->IsPaused());
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model.rowCount(), batchesWhilePaused * linesPerBatch);
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), 0);
+
+        model.EndStreaming(false);
+    }
+
     // Pause + cap-shrink interaction (PRD 4.5.5.ii): while paused, lowering
     // the retention cap must trim the paused buffer to `cap - visible`
     // (preserving the visible rows). Verified via PausedLineCount().

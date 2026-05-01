@@ -124,14 +124,20 @@ void QtStreamingLogSink::TrimPausedBufferTo(size_t maxBufferedLines)
     }
     size_t toDrop = total - maxBufferedLines;
     // Walk the buffer head-to-tail dropping whole batches, then trimming
-    // the prefix of the first surviving batch if needed.
+    // the prefix of the first surviving batch if it is a pure live-tail
+    // (`streamLines`-only) batch. Static-path batches (`lines` +
+    // `localLineOffsets`) are treated atomically: `localLineOffsets` may
+    // be longer than `lines` (the pipeline accumulates offsets from
+    // all-error chunks past the line count), so partially trimming would
+    // break the parser invariant `LogTable::AppendBatch` relies on.
     auto it = mPausedBatches.begin();
     while (it != mPausedBatches.end() && toDrop > 0)
     {
-        const size_t rows = it->streamLines.size();
-        if (rows <= toDrop)
+        const size_t rows = it->lines.size() + it->streamLines.size();
+        const bool hasStaticContent = !it->lines.empty() || !it->localLineOffsets.empty();
+        if (rows <= toDrop || hasStaticContent)
         {
-            toDrop -= rows;
+            toDrop = (toDrop > rows) ? toDrop - rows : 0;
             ++it;
         }
         else
@@ -208,13 +214,19 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                 if (total > cap)
                 {
                     size_t toDrop = total - cap;
+                    // Same partial-trim caveat as `TrimPausedBufferTo`:
+                    // static-path batches are evicted whole (their
+                    // `localLineOffsets` may be longer than `lines`), so
+                    // partial-prefix trimming is only safe on pure
+                    // live-tail batches.
                     auto it = mPausedBatches.begin();
                     while (it != mPausedBatches.end() && toDrop > 0)
                     {
-                        const size_t rows = it->streamLines.size();
-                        if (rows <= toDrop)
+                        const size_t rows = it->lines.size() + it->streamLines.size();
+                        const bool hasStaticContent = !it->lines.empty() || !it->localLineOffsets.empty();
+                        if (rows <= toDrop || hasStaticContent)
                         {
-                            toDrop -= rows;
+                            toDrop = (toDrop > rows) ? toDrop - rows : 0;
                             ++it;
                         }
                         else
@@ -283,23 +295,40 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
     {
         return out;
     }
-    // Pre-size so a long paused tail does not thrash on `push_back`.
+    // Pre-size so a long paused tail does not thrash on `push_back`. We
+    // must coalesce **every** field of `StreamedBatch` — the static-
+    // streaming path (`JsonParser::ParseStreaming(LogFile&, ...)`) emits
+    // batches whose row payload lives in `lines` + `localLineOffsets`,
+    // not in `streamLines`. The Pause action is reachable from the
+    // **Stream** menu during a static parse (the toolbar is hidden but
+    // the menu items stay enabled), so dropping `lines`/`localLineOffsets`
+    // here would silently lose every row buffered while paused.
+    size_t lineRows = 0;
     size_t streamLineRows = 0;
+    size_t lineOffsetCount = 0;
     size_t errorCount = 0;
     size_t newKeyCount = 0;
     for (const auto &batch : batches)
     {
+        lineRows += batch.lines.size();
         streamLineRows += batch.streamLines.size();
+        lineOffsetCount += batch.localLineOffsets.size();
         errorCount += batch.errors.size();
         newKeyCount += batch.newKeys.size();
     }
+    out.lines.reserve(lineRows);
     out.streamLines.reserve(streamLineRows);
+    out.localLineOffsets.reserve(lineOffsetCount);
     out.errors.reserve(errorCount);
     out.newKeys.reserve(newKeyCount);
     out.firstLineNumber = batches.front().firstLineNumber;
     for (auto &batch : batches)
     {
+        std::move(batch.lines.begin(), batch.lines.end(), std::back_inserter(out.lines));
         std::move(batch.streamLines.begin(), batch.streamLines.end(), std::back_inserter(out.streamLines));
+        std::move(
+            batch.localLineOffsets.begin(), batch.localLineOffsets.end(), std::back_inserter(out.localLineOffsets)
+        );
         std::move(batch.errors.begin(), batch.errors.end(), std::back_inserter(out.errors));
         std::move(batch.newKeys.begin(), batch.newKeys.end(), std::back_inserter(out.newKeys));
     }
@@ -308,10 +337,12 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
 
 size_t QtStreamingLogSink::PausedLineCountLocked() const
 {
+    // Both row payloads count toward the buffered total — see
+    // `CoalesceLocked` for why static-path `lines` matter here.
     size_t total = 0;
     for (const auto &batch : mPausedBatches)
     {
-        total += batch.streamLines.size();
+        total += batch.lines.size() + batch.streamLines.size();
     }
     return total;
 }
