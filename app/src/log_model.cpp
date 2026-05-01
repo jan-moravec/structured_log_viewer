@@ -29,6 +29,10 @@
 LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
+    // Required so the `sourceStatusChanged` signal can be delivered
+    // across the worker→GUI thread hop via queued invocation (Qt
+    // refuses to queue values of unregistered types).
+    qRegisterMetaType<loglib::SourceStatus>("loglib::SourceStatus");
 
     mSink = new QtStreamingLogSink(this, this);
     mStreamingWatcher = new QFutureWatcher<void>(this);
@@ -77,6 +81,20 @@ void LogModel::AddData(loglib::LogData &&logData)
 
 void LogModel::Clear()
 {
+    TeardownStreamingSessionInternal(/*resetTable=*/true);
+}
+
+void LogModel::Detach()
+{
+    // PRD 4.7.1: Stop "leaves the most-recently-buffered rows visible".
+    // Same teardown sequence as `Clear()` minus the model reset — paused
+    // rows are still flushed into the visible model so Stop never
+    // silently discards parsed content (PRD 4.7.3).
+    TeardownStreamingSessionInternal(/*resetTable=*/false);
+}
+
+void LogModel::TeardownStreamingSessionInternal(bool resetTable)
+{
     // `mStreamingActive` (GUI-thread-only) is the source of truth for
     // "still streaming"; `isRunning()` flips off before the queued
     // `OnFinished` reaches the GUI thread.
@@ -104,10 +122,11 @@ void LogModel::Clear()
     // Step 3.5: any rows still in the paused buffer at this point are
     // already-parsed lines that the user expects to see. Flush them into
     // the visible model first so Stop never silently discards parsed
-    // content (PRD 4.7.3) — even though the visible model is about to be
-    // reset on the same path. Keeping the flush honest means the
-    // streaming-errors / line counters tick before reset, so observers
-    // that listen to `lineCountChanged` see a final count.
+    // content (PRD 4.7.3). In the `Clear()` path the rows land in the
+    // model briefly and are then wiped by the reset below; the flush is
+    // still kept honest because observers listening for `lineCountChanged`
+    // see a final count before the reset-to-zero, and in the `Detach()`
+    // path (PRD 4.7.1) these are the rows the user expects to keep.
     if (mSink)
     {
         if (auto pending = mSink->TakePausedBuffer())
@@ -128,16 +147,19 @@ void LogModel::Clear()
 
     mActiveSource.reset();
 
-    beginResetModel();
+    if (resetTable)
+    {
+        beginResetModel();
 
-    mLogTable.Reset();
-    mErrorCount = 0;
-    mStreamingErrors.clear();
+        mLogTable.Reset();
+        mErrorCount = 0;
+        mStreamingErrors.clear();
 
-    endResetModel();
+        endResetModel();
 
-    emit lineCountChanged(0);
-    emit errorCountChanged(0);
+        emit lineCountChanged(0);
+        emit errorCountChanged(0);
+    }
 
     // The worker's queued `OnFinished(true)` is now generation-stale and
     // discarded; emit a compensating `streamingFinished` so UI gating
@@ -289,6 +311,28 @@ loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogSource> so
                 if (self)
                 {
                     emit self->rotationDetected();
+                }
+            },
+            Qt::QueuedConnection
+        );
+    });
+
+    // Same pattern for the status hook (PRD 4.8.8). The worker-thread
+    // callback captures a `QPointer` so a model destruction mid-hop is
+    // a graceful no-op; the queued lambda re-checks on arrival because
+    // the model may have been torn down between the `invokeMethod` call
+    // and the GUI-thread delivery.
+    source->SetStatusCallback([self](loglib::SourceStatus status) {
+        if (!self)
+        {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            self.data(),
+            [self, status]() {
+                if (self)
+                {
+                    emit self->sourceStatusChanged(status);
                 }
             },
             Qt::QueuedConnection

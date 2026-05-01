@@ -81,6 +81,31 @@ void CloseNativeHandle(detail::NativeFileHandle handle) noexcept
 #endif
 }
 
+/// Canonicalize @p path so the efsw watcher is always installed on an
+/// absolute parent directory (PRD 4.8.5 — "parent-directory granularity
+/// on Linux inotify / macOS FSEvents"). `weakly_canonical` handles the
+/// edge cases the original `parent_path().empty() → current_path()`
+/// fallback missed: relative paths (e.g. `"app.log"`), paths with `..`
+/// components, and Windows root-relative paths like `"C:foo.log"` that
+/// have an empty `parent_path()` on some `std::filesystem`
+/// implementations.
+///
+/// Falls back to the untouched input on error (bad symlink loop, out-of-
+/// memory, filesystem rejection). The fallback keeps the belt-and-braces
+/// behaviour so a pathological input still gets a best-effort watch
+/// attempt; the `parent_path().empty() → current_path()` branch in the
+/// ctor handles that remaining path.
+std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
+{
+    std::error_code ec;
+    std::filesystem::path canon = std::filesystem::weakly_canonical(path, ec);
+    if (ec || canon.empty())
+    {
+        return path;
+    }
+    return canon;
+}
+
 /// Open @p path for read with maximum producer-friendly share flags. Returns
 /// `kInvalidHandle` on failure (incl. `ENOENT` / `ERROR_FILE_NOT_FOUND`).
 detail::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
@@ -229,8 +254,8 @@ public:
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] std::string DisplayName() const;
     void SetRotationCallback(std::function<void()> callback);
+    void SetStatusCallback(std::function<void(SourceStatus)> callback);
     [[nodiscard]] size_t RotationCount() const noexcept;
-    [[nodiscard]] size_t NextLineId() const noexcept;
 
     /// Called from the efsw thread. Wakes the worker.
     void OnWatcherEvent() noexcept;
@@ -259,6 +284,11 @@ private:
     /// PRD 4.8.9 — multi-rotation debounce.
     void FireRotationCallbackIfDebounced();
 
+    /// Fires the status callback if @p status differs from the last
+    /// status we reported. Edge-triggered so a poll tick in the same
+    /// state is silent (PRD 4.8.8). Caller must NOT hold `mMutex`.
+    void FireStatusCallbackIfChanged(SourceStatus status);
+
     std::filesystem::path mPath;
     std::string mFileName; // basename used for filtering watcher events
     std::string mDisplayName;
@@ -277,14 +307,15 @@ private:
 
     std::atomic<bool> mStopRequested{false};
     std::atomic<bool> mWorkerExited{false};
-    std::atomic<size_t> mNextLineId{1};
     std::atomic<size_t> mRotationCount{0};
 
-    // Rotation callback — separate mutex so we can call user code without
-    // holding the busy `mMutex`.
+    // Rotation + status callbacks share one mutex so we can call user
+    // code without holding the busy `mMutex`.
     mutable std::mutex mCallbackMutex;
     std::function<void()> mRotationCallback;
+    std::function<void(SourceStatus)> mStatusCallback;
     std::chrono::steady_clock::time_point mLastRotationFireTime{};
+    SourceStatus mLastReportedStatus = SourceStatus::Running;
 
     // Worker-thread-only state (no lock needed):
     NativeFileHandle mHandle = kInvalidHandle;
@@ -323,8 +354,12 @@ void TailingFileWatcherListener::handleFileAction(
 TailingFileSourceImpl::TailingFileSourceImpl(
     std::filesystem::path path, size_t retentionLines, TailingFileSource::Options options
 )
-    : mPath(std::move(path)), mFileName(mPath.filename().string()), mDisplayName(mPath.string()),
-      mRetentionLines(std::max<size_t>(retentionLines, 1)), mOptions(options)
+    // Canonicalize up front so every downstream computation — basename,
+    // display name, watcher parent — sees an absolute path. Without this
+    // the filesystem watcher silently no-ops on plain `"app.log"` inputs
+    // (empty `parent_path()`, CWD-fallback brittle under `chdir`).
+    : mPath(CanonicalizeWatchedPath(std::move(path))), mFileName(mPath.filename().string()),
+      mDisplayName(mPath.string()), mRetentionLines(std::max<size_t>(retentionLines, 1)), mOptions(options)
 {
     // Open the file up front. Failure here propagates as an exception
     // (PRD 4.1.7 — open errors surface to the caller, leaving the previous
@@ -338,13 +373,23 @@ TailingFileSourceImpl::TailingFileSourceImpl(
     }
     mIdentityAtOpen = FromOpenHandle(mHandle);
 
-    // Pre-fill from disk (PRD 4.1.5–6).
-    Prefill();
+    // Pre-fill used to run here synchronously, but a multi-GB file can
+    // block the caller for seconds of backwards-newline scanning
+    // (§B.4 of the PR review). The worker thread now runs `Prefill()`
+    // in its prologue so the GUI thread only pays the ctor's
+    // `OpenForTail` + `efsw` setup cost. Open failures still throw
+    // synchronously from this ctor (PRD 4.1.7), and `Read` returns 0
+    // until pre-fill lands bytes in the queue — the parser parks on
+    // `WaitForBytes` per the existing contract.
 
     // Install the filesystem watcher unless the test harness has disabled
     // it. We watch the parent directory because Linux `inotify` and macOS
     // `FSEvents` work at directory granularity (PRD 4.8.5); the listener
-    // filters down to our basename.
+    // filters down to our basename. The ctor has already canonicalized
+    // `mPath`, so `parent_path()` is non-empty on any well-formed input;
+    // the `current_path()` fallback below is kept as a belt-and-braces
+    // second line of defence for exotic inputs where `weakly_canonical`
+    // declined (symlink loop, out-of-memory, FS rejection).
     if (!mOptions.disableNativeWatcher)
     {
         try
@@ -468,14 +513,15 @@ void TailingFileSourceImpl::SetRotationCallback(std::function<void()> callback)
     mRotationCallback = std::move(callback);
 }
 
+void TailingFileSourceImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+{
+    std::lock_guard<std::mutex> lock(mCallbackMutex);
+    mStatusCallback = std::move(callback);
+}
+
 size_t TailingFileSourceImpl::RotationCount() const noexcept
 {
     return mRotationCount.load(std::memory_order_acquire);
-}
-
-size_t TailingFileSourceImpl::NextLineId() const noexcept
-{
-    return mNextLineId.load(std::memory_order_acquire);
 }
 
 void TailingFileSourceImpl::OnWatcherEvent() noexcept
@@ -489,6 +535,16 @@ void TailingFileSourceImpl::OnWatcherEvent() noexcept
 
 void TailingFileSourceImpl::WorkerMain()
 {
+    // Pre-fill runs here rather than in the ctor so the GUI thread is
+    // never blocked on a multi-GB backwards-newline scan (§B.4 of the
+    // PR review / PRD 4.1.5–6). The stop check up front ensures a
+    // fast `Stop` immediately after construction exits cleanly without
+    // doing the work — symmetric with the body loop's stop checks.
+    if (!mStopRequested.load(std::memory_order_acquire))
+    {
+        Prefill();
+    }
+
     while (!mStopRequested.load(std::memory_order_acquire))
     {
         bool didWork = false;
@@ -574,6 +630,13 @@ void TailingFileSourceImpl::Prefill()
     std::vector<char> chunk;
     chunk.resize(mOptions.prefillChunkBytes);
 
+    // PRD §7 *Line buffering*: bound the pre-fill scan so a file with
+    // no newlines (or a pathological retentionLines on a multi-GB file)
+    // cannot wedge the ctor / the worker for an unbounded amount of
+    // time. On overflow we seek to EOF and return no lines — the
+    // producer's future writes will still appear in the tail.
+    uint64_t scannedBytes = 0;
+
     while (pos > 0 && !boundaryFound)
     {
         const uint64_t chunkSize = std::min<uint64_t>(pos, mOptions.prefillChunkBytes);
@@ -585,6 +648,7 @@ void TailingFileSourceImpl::Prefill()
             mReadOffset = fileSize;
             return;
         }
+        scannedBytes += static_cast<uint64_t>(n);
         // Walk backwards through the chunk.
         for (size_t i = static_cast<size_t>(n); i > 0; --i)
         {
@@ -598,6 +662,13 @@ void TailingFileSourceImpl::Prefill()
                     break;
                 }
             }
+        }
+        if (!boundaryFound && mOptions.prefillMaxScanBytes != 0 && scannedBytes >= mOptions.prefillMaxScanBytes)
+        {
+            // Scan budget exhausted without finding enough newlines.
+            // Yield no lines; tailing resumes from EOF.
+            mReadOffset = fileSize;
+            return;
         }
     }
 
@@ -637,6 +708,7 @@ bool TailingFileSourceImpl::DetectAndRecoverRotation()
         mHandle = OpenForTail(mPath);
         mIdentityAtOpen = FromOpenHandle(mHandle);
         mReadOffset = 0;
+        const bool wasWaiting = mWaiting;
         mWaiting = false;
 
         {
@@ -646,6 +718,12 @@ bool TailingFileSourceImpl::DetectAndRecoverRotation()
 
         mRotationCount.fetch_add(1, std::memory_order_acq_rel);
         FireRotationCallbackIfDebounced();
+        if (wasWaiting)
+        {
+            // Leaving the waiting state: tell the GUI the source is
+            // healthy again (PRD 4.8.8).
+            FireStatusCallbackIfChanged(SourceStatus::Running);
+        }
         mRotationInProgress = false;
         return true;
     }
@@ -656,8 +734,13 @@ bool TailingFileSourceImpl::DetectAndRecoverRotation()
         if (!mWaiting)
         {
             mWaiting = true;
-            std::lock_guard<std::mutex> lock(mMutex);
-            mPartialLine.clear(); // PRD 4.8.7.i — partial cannot be completed
+            {
+                std::lock_guard<std::mutex> lock(mMutex);
+                mPartialLine.clear(); // PRD 4.8.7.i — partial cannot be completed
+            }
+            // Entering the waiting state: tell the GUI to swap the
+            // status-bar label to "Source unavailable" (PRD 4.8.8).
+            FireStatusCallbackIfChanged(SourceStatus::Waiting);
         }
         // Stay in waiting. Keep the old handle open; a future poll will
         // either see the path reappear (branch i wins via identity) or
@@ -684,10 +767,19 @@ bool TailingFileSourceImpl::DetectAndRecoverRotation()
 
         mRotationCount.fetch_add(1, std::memory_order_acq_rel);
         FireRotationCallbackIfDebounced();
+        FireStatusCallbackIfChanged(SourceStatus::Running);
         mRotationInProgress = false;
         return true;
     }
-    mWaiting = false;
+    if (mWaiting)
+    {
+        // Path reappeared while the handle was still open (rare on POSIX
+        // but possible on Windows with FILE_SHARE_DELETE share mode).
+        // Just clear the waiting flag and re-announce Running so the
+        // GUI drops "Source unavailable".
+        mWaiting = false;
+        FireStatusCallbackIfChanged(SourceStatus::Running);
+    }
 
     // Branch (iii): size shrunk on the open handle (copytruncate /
     // in-place truncate). Note we use the OPEN HANDLE size, not the path
@@ -774,9 +866,6 @@ void TailingFileSourceImpl::AppendBytesAndSplitLocked(const char *data, size_t s
     }
     const size_t completeBytes = lastNewline + 1;
     mReadyBuffer.insert(mReadyBuffer.end(), mPartialLine.begin(), mPartialLine.begin() + completeBytes);
-    const size_t newlines =
-        static_cast<size_t>(std::count(mPartialLine.begin(), mPartialLine.begin() + completeBytes, '\n'));
-    mNextLineId.fetch_add(newlines, std::memory_order_acq_rel);
     mPartialLine.erase(0, completeBytes);
 }
 
@@ -791,7 +880,6 @@ void TailingFileSourceImpl::FlushPartialLineLocked()
     {
         mReadyBuffer.push_back('\n');
     }
-    mNextLineId.fetch_add(1, std::memory_order_acq_rel);
     mPartialLine.clear();
 }
 
@@ -824,6 +912,24 @@ void TailingFileSourceImpl::FireRotationCallbackIfDebounced()
     if (cb)
     {
         cb();
+    }
+}
+
+void TailingFileSourceImpl::FireStatusCallbackIfChanged(SourceStatus status)
+{
+    std::function<void(SourceStatus)> cb;
+    {
+        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        if (status == mLastReportedStatus)
+        {
+            return; // edge-trigger — only fire on actual transitions
+        }
+        mLastReportedStatus = status;
+        cb = mStatusCallback;
+    }
+    if (cb)
+    {
+        cb(status);
     }
 }
 
@@ -866,14 +972,14 @@ void TailingFileSource::SetRotationCallback(std::function<void()> callback)
     mImpl->SetRotationCallback(std::move(callback));
 }
 
+void TailingFileSource::SetStatusCallback(std::function<void(SourceStatus)> callback)
+{
+    mImpl->SetStatusCallback(std::move(callback));
+}
+
 size_t TailingFileSource::RotationCount() const noexcept
 {
     return mImpl->RotationCount();
-}
-
-size_t TailingFileSource::NextLineId() const noexcept
-{
-    return mImpl->NextLineId();
 }
 
 } // namespace loglib

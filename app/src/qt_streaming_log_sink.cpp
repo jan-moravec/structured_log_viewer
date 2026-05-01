@@ -109,6 +109,11 @@ size_t QtStreamingLogSink::PausedLineCount() const
     return PausedLineCountLocked();
 }
 
+uint64_t QtStreamingLogSink::PausedDropCount() const noexcept
+{
+    return mPausedDropCount.load(std::memory_order_acquire);
+}
+
 void QtStreamingLogSink::SetRetentionCap(size_t cap) noexcept
 {
     mRetentionCap.store(cap, std::memory_order_release);
@@ -214,6 +219,14 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                 if (total > cap)
                 {
                     size_t toDrop = total - cap;
+                    // `linesDropped` is captured up-front so the counter
+                    // ticks correctly on both the whole-batch-erased branch
+                    // (it advances, `toDrop` reaches 0) and the
+                    // partial-trim branch (it stays at begin(), `toDrop`
+                    // reaches 0). Without this snapshot the partial-trim
+                    // path would silently lose lines without any user-
+                    // visible signal (PRD 4.2.2.iv).
+                    const size_t linesDropped = toDrop;
                     // Same partial-trim caveat as `TrimPausedBufferTo`:
                     // static-path batches are evicted whole (their
                     // `localLineOffsets` may be longer than `lines`), so
@@ -240,10 +253,9 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                     }
                     if (it != mPausedBatches.begin())
                     {
-                        const size_t dropped = static_cast<size_t>(std::distance(mPausedBatches.begin(), it));
                         mPausedBatches.erase(mPausedBatches.begin(), it);
-                        mPausedDropCount.fetch_add(dropped, std::memory_order_acq_rel);
                     }
+                    mPausedDropCount.fetch_add(linesDropped, std::memory_order_acq_rel);
                 }
             }
             routedToPausedBuffer = true;

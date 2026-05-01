@@ -79,6 +79,13 @@ private slots:
     /// suffix in the status bar (PRD 4.8.7.v / 5.8).
     void OnRotationDetected();
 
+    /// Source-thread status transition re-emitted on the GUI thread by
+    /// `LogModel::sourceStatusChanged` (PRD 4.8.8 / §6 *Status bar*).
+    /// Latches `mSourceWaiting` and refreshes the status-bar label so it
+    /// shows `Source unavailable …` while the source is in
+    /// `SourceStatus::Waiting`.
+    void OnSourceStatusChanged(loglib::SourceStatus status);
+
 private:
     void OpenFileInternal(const QString &file, std::vector<std::string> &errors);
     void OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr<loglib::LogParser> parser);
@@ -159,4 +166,12 @@ private:
     /// status bar after a rotation event (PRD §6 *Rotation indicator*).
     /// A `QTimer::singleShot` clears it.
     bool mRotationFlashActive = false;
+
+    /// Latched `SourceStatus::Waiting` flag (PRD 4.8.8 / §6 *Status
+    /// bar*). Set by `OnSourceStatusChanged(Waiting)`, cleared by
+    /// `OnSourceStatusChanged(Running)` and by `streamingFinished`
+    /// (either terminal outcome — the source is no longer "waiting" if
+    /// the whole session tore down). Used by `UpdateStreamingStatus`
+    /// to render the `Source unavailable …` label variant.
+    bool mSourceWaiting = false;
 };

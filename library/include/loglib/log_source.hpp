@@ -11,6 +11,26 @@ namespace loglib
 
 class LogFile;
 
+/// Coarse state reported by a `LogSource` via `SetStatusCallback` (PRD §6
+/// *Status bar*). Surfaced to the GUI so the status-bar label can cycle
+/// between `Streaming <file>` / `Paused` / `Source unavailable …` without
+/// the GUI having to poll the source's internals.
+enum class SourceStatus
+{
+    /// The source is producing bytes (or can): the open handle is
+    /// valid and the tailing read is progressing as normal. This is
+    /// the default state and the only state finite sources
+    /// (`MappedFileSource`) ever reach.
+    Running,
+
+    /// The source is temporarily unable to produce bytes — typically
+    /// because the watched file has disappeared during a
+    /// delete-then-recreate rotation (PRD 4.8.8). The source keeps
+    /// retrying; `Running` fires again when the file reappears and is
+    /// re-opened.
+    Waiting,
+};
+
 /// Abstract byte / line producer feeding a `LogParser`. Both the existing
 /// memory-mapped finite-file path (`MappedFileSource`) and the future live
 /// tail (`TailingFileSource`, stdin / TCP / UDP / named-pipe) implement this.
@@ -75,6 +95,15 @@ public:
     /// such as `MappedFileSource`. Setting an empty callback clears any
     /// previously-installed one.
     virtual void SetRotationCallback(std::function<void()> callback);
+
+    /// Optional status-change callback. Invoked from the source's own
+    /// worker thread when the source transitions between
+    /// `SourceStatus::Running` and `SourceStatus::Waiting` (PRD 4.8.8 /
+    /// §6 *Status bar*). Edge-triggered: only called on actual
+    /// transitions, not on every poll tick. Default no-op is
+    /// appropriate for finite sources (`MappedFileSource`). Setting an
+    /// empty callback clears any previously-installed one.
+    virtual void SetStatusCallback(std::function<void(SourceStatus)> callback);
 
     /// Capability hook: returns true when this source is backed by a
     /// finite, memory-mapped `LogFile` (i.e. `MappedFileSource`). The

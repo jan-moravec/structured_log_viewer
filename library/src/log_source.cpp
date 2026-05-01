@@ -11,6 +11,13 @@ void LogSource::SetRotationCallback(std::function<void()> /*callback*/)
     // point is `TailingFileSource` (PRD 4.8.7.v).
 }
 
+void LogSource::SetStatusCallback(std::function<void(SourceStatus)> /*callback*/)
+{
+    // Default no-op: finite sources are always `SourceStatus::Running`
+    // and never transition (PRD 4.8.8). The typical override point is
+    // `TailingFileSource`.
+}
+
 bool LogSource::IsMappedFile() const noexcept
 {
     return false;

@@ -248,6 +248,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
         mStreamingActive = false;
         mLiveTailActive = false;
+        // Source is going away — drop the `Source unavailable` latch so
+        // the post-session status-bar label doesn't inherit a stale
+        // "waiting" state. Re-set naturally by the next stream's
+        // first `Waiting` transition if one arrives.
+        mSourceWaiting = false;
         // Reset Pause toggle so the next session starts unpaused.
         if (ui->actionPauseStream->isChecked())
         {
@@ -281,6 +286,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         mStreamingFileName.clear();
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
+    connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
 
     // Pull the persisted retention cap into the model on startup so the
     // first `OpenLogStream` honours the user's preference (task 5.12).
@@ -664,12 +670,15 @@ void MainWindow::StopStream()
     {
         return;
     }
-    // `LogModel::Clear()` runs the mandatory PRD 4.7.2.i teardown
+    // `LogModel::Detach()` runs the mandatory PRD 4.7.2.i teardown
     // sequence (source `Stop()` → sink `RequestStop()` → worker
     // `waitForFinished()` → flush paused buffer → `DropPendingBatches()`)
     // and emits a compensating `streamingFinished(Cancelled)` so the
-    // GUI gating reopens.
-    mModel->Clear();
+    // GUI gating reopens — but leaves the visible rows intact so the
+    // user can keep sorting / filtering / searching / copying after
+    // Stop (PRD 4.7.1). `mStreamingFileName` is cleared so a subsequent
+    // "Open…" does not inherit the old filename in status text.
+    mModel->Detach();
     mStreamingFileName.clear();
 }
 
@@ -683,6 +692,15 @@ void MainWindow::OnRotationDetected()
         mRotationFlashActive = false;
         UpdateStreamingStatus();
     });
+}
+
+void MainWindow::OnSourceStatusChanged(loglib::SourceStatus status)
+{
+    // PRD 4.8.8 / §6 *Status bar*: latch the `Waiting` state so the
+    // label keeps showing "Source unavailable …" between poll ticks
+    // (the status callback is edge-triggered, not level-triggered).
+    mSourceWaiting = (status == loglib::SourceStatus::Waiting);
+    UpdateStreamingStatus();
 }
 
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
@@ -711,6 +729,18 @@ void MainWindow::UpdateStreamingStatus()
                    .arg(mStreamingLineCount)
                    .arg(mStreamingErrorCount);
     }
+    else if (mSourceWaiting)
+    {
+        // Source unavailable: the file disappeared during a
+        // delete-then-recreate rotation (PRD 4.8.8 / §6 *Status bar*).
+        // Takes precedence over the Paused variant because Paused is
+        // a user-initiated UI state while Source unavailable surfaces
+        // an actionable environmental problem.
+        text = QString("Source unavailable - last seen %1 - %2 lines, %3 errors")
+                   .arg(mStreamingFileName)
+                   .arg(mStreamingLineCount)
+                   .arg(mStreamingErrorCount);
+    }
     else if (mModel->Sink() && mModel->Sink()->IsPaused())
     {
         // Paused: PRD §6 status-bar wording.
@@ -724,6 +754,21 @@ void MainWindow::UpdateStreamingStatus()
                    .arg(mStreamingFileName)
                    .arg(mStreamingLineCount)
                    .arg(mStreamingErrorCount);
+    }
+
+    // Paused-drop telemetry (PRD 4.2.2.iv). The counter is session-scoped
+    // and increments only while paused; once set, it stays non-zero until
+    // the stream is stopped so the user keeps seeing "lines were lost"
+    // after Resume. Appended to both Paused and Running variants of the
+    // label; the static-streaming path does not pause in practice (the
+    // toolbar is hidden), so the check is live-tail-only.
+    if (mLiveTailActive && mModel->Sink())
+    {
+        const auto dropped = static_cast<qsizetype>(mModel->Sink()->PausedDropCount());
+        if (dropped > 0)
+        {
+            text += QString(", %1 dropped while paused").arg(dropped);
+        }
     }
 
     if (mLiveTailActive && mRotationFlashActive)

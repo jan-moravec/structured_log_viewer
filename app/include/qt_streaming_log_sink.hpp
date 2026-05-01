@@ -77,6 +77,14 @@ public:
     /// the status-bar `K buffered` indicator. GUI thread.
     [[nodiscard]] size_t PausedLineCount() const;
 
+    /// Cumulative number of paused-buffer batches dropped since `Arm()`
+    /// because adding the latest batch would have breached
+    /// `mRetentionCap` (PRD 4.2.2.iv — "paused buffer drops oldest
+    /// entries"). Surfaced in the status-bar label so a long pause on a
+    /// noisy producer does not silently lose rows. Reset to 0 on `Arm()`
+    /// / `DropPendingBatches()`. Thread-safe.
+    [[nodiscard]] uint64_t PausedDropCount() const noexcept;
+
     /// Configure the retention cap used to bound the paused buffer
     /// (PRD 4.2.2.iv). `LogModel::SetRetentionCap` calls this so the
     /// worker observes the limit without crossing the thread boundary.
@@ -129,9 +137,10 @@ private:
     /// Worker reads atomically; GUI writes via `SetRetentionCap`.
     std::atomic<size_t> mRetentionCap{0};
 
-    /// Number of times the paused buffer dropped its oldest entries
-    /// because adding the latest batch would have breached
-    /// `mRetentionCap`. Exposed for tests / future status-bar telemetry.
+    /// Cumulative number of **lines** dropped from the paused buffer's
+    /// head since `Arm()` because adding the latest batch would have
+    /// breached `mRetentionCap` (PRD 4.2.2.iv). Exposed via
+    /// `PausedDropCount()` and surfaced in the status-bar label.
     std::atomic<uint64_t> mPausedDropCount{0};
 
     /// Paused-buffer mutex. The worker thread appends to / trims from

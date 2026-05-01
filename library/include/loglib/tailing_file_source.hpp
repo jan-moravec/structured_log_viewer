@@ -54,11 +54,6 @@ public:
         /// native filesystem event has fired. Default 250 ms (PRD 4.8.5).
         std::chrono::milliseconds pollInterval = std::chrono::milliseconds(250);
 
-        /// Heartbeat poll on filesystems where the native watcher is
-        /// reliable (PRD 4.8.5). Currently identical to `pollInterval`;
-        /// reserved for a future split.
-        std::chrono::milliseconds heartbeatInterval = std::chrono::milliseconds(250);
-
         /// Multiple rotations within this window collapse into a single
         /// rotation event (PRD 4.8.9).
         std::chrono::milliseconds rotationDebounce = std::chrono::milliseconds(1000);
@@ -72,6 +67,17 @@ public:
         /// `readChunkBytes` so tests can shrink it without affecting the
         /// tail-read syscall size.
         size_t prefillChunkBytes = 64 * 1024;
+
+        /// Upper bound on how many bytes pre-fill will scan backwards
+        /// while looking for the last `retentionLines` newlines before
+        /// giving up and seeking to EOF (PRD §7 *Line buffering*:
+        /// "don't blow out RAM on a pathological file"). The default of
+        /// 16 MiB protects against files with no newlines and against
+        /// an unrealistically large `retentionLines` on a multi-GB
+        /// file. On overflow, pre-fill yields zero lines and tailing
+        /// begins from EOF — new lines appended by the producer from
+        /// that point on are still captured.
+        size_t prefillMaxScanBytes = 16 * 1024 * 1024;
 
         /// Skip spawning the `efsw` watcher and rely on the polling loop
         /// only. Used by tests on CI runners where filesystem events are
@@ -122,18 +128,12 @@ public:
 
     void SetRotationCallback(std::function<void()> callback) override;
 
+    void SetStatusCallback(std::function<void(SourceStatus)> callback) override;
+
     /// Returns the number of rotations detected since construction. Used
     /// by tests (the rotation callback alone is not enough for a test to
     /// reliably observe debounce coalescing).
     [[nodiscard]] size_t RotationCount() const noexcept;
-
-    /// Returns the current session-local `LineId` cursor. Starts at 1 at
-    /// construction and increments monotonically across rotations
-    /// (PRD 4.10.4 / 4.8.7.iv). Reserved for a future overload of
-    /// `JsonParser::ParseStreaming` that wants to stamp `StreamLogLine`
-    /// instances with their LineId at parse time (task 4.8); not yet
-    /// consumed inside this PR.
-    [[nodiscard]] size_t NextLineId() const noexcept;
 
 private:
     std::unique_ptr<detail::TailingFileSourceImpl> mImpl;

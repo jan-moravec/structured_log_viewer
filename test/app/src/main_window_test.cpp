@@ -1283,7 +1283,6 @@ private slots:
         loglib::TailingFileSource::Options sourceOptions;
         sourceOptions.disableNativeWatcher = true; // poll-only for determinism
         sourceOptions.pollInterval = std::chrono::milliseconds(25);
-        sourceOptions.heartbeatInterval = std::chrono::milliseconds(25);
         sourceOptions.rotationDebounce = std::chrono::milliseconds(250);
 
         auto source = std::make_unique<loglib::TailingFileSource>(
@@ -1361,6 +1360,161 @@ private slots:
 
         QVERIFY(!model.IsStreamingActive());
         QCOMPARE(model.rowCount(), 0);
+    }
+
+    // PRD 4.2.2.iv regression: when the paused-buffer cap forces the
+    // sink to drop its oldest entries, the count of lost lines must be
+    // observable so the user knows rows were silently discarded during
+    // the pause. This test pauses, feeds enough live-tail batches to
+    // overflow the cap, and asserts both that `PausedDropCount()` > 0
+    // and that the visible+buffered total stayed within the cap.
+    void testPausedDropCountIsObservable()
+    {
+        LogModel model;
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        const size_t cap = 100;
+        model.SetRetentionCap(cap);
+
+        QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), qulonglong(0));
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        auto makeBatch = [&keys, valueKey](size_t firstLineId, size_t count, bool declareNewKey) {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = firstLineId;
+            if (declareNewKey)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            batch.streamLines.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                const size_t lineId = firstLineId + i;
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+                );
+            }
+            return batch;
+        };
+
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        // Push three 100-line batches while paused. The second and
+        // third will each tip the buffer over the cap, evicting the
+        // oldest 100 lines per batch. After the third batch the paused
+        // buffer holds the most-recent 100 lines and the counter should
+        // reflect ~200 evictions.
+        const size_t batchLines = 100;
+        const int batchesPushed = 3;
+        for (int b = 0; b < batchesPushed; ++b)
+        {
+            const bool firstBatch = (b == 0);
+            sink->OnBatch(makeBatch(static_cast<size_t>(b) * batchLines + 1, batchLines, firstBatch));
+        }
+
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(cap));
+        // Each overflow batch evicted 100 lines; two of three batches
+        // overflowed → at least 200 lines dropped. (Exactly 200 in
+        // practice; assert >= to avoid pinning the exact count against
+        // future eviction-policy tweaks.)
+        QVERIFY2(
+            sink->PausedDropCount() >= batchLines * (batchesPushed - 1),
+            qPrintable(QStringLiteral("PausedDropCount=%1 must be >= %2")
+                           .arg(static_cast<qulonglong>(sink->PausedDropCount()))
+                           .arg(static_cast<qulonglong>(batchLines * (batchesPushed - 1))))
+        );
+
+        // Resume and Detach: the counter survives Resume (it's a
+        // session-scoped history of drops). Only `Arm()` /
+        // `DropPendingBatches()` reset it.
+        const uint64_t droppedBeforeResume = sink->PausedDropCount();
+        sink->Resume();
+        QCoreApplication::processEvents();
+        QCOMPARE(sink->PausedDropCount(), droppedBeforeResume);
+
+        model.Detach();
+        QCoreApplication::processEvents();
+    }
+
+    // PRD 4.7.1 regression: `Stop` ends the streaming session but leaves
+    // the most-recently-buffered rows visible (the model becomes a
+    // static snapshot of what was in memory at stop time). `Detach()`
+    // is the API `MainWindow::StopStream` uses; `Clear()` (which fully
+    // resets the model) is reserved for the "open a new session" paths.
+    void testStopDetachPreservesRows()
+    {
+        LogModel model;
+        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        QVERIFY(lineCountSpy.isValid());
+
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QVERIFY(model.IsStreamingActive());
+
+        // Feed one batch of synthetic stream rows so `Detach` has
+        // something to preserve.
+        loglib::KeyIndex &keys = model.Sink()->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        loglib::StreamedBatch batch;
+        batch.firstLineNumber = 1;
+        batch.newKeys.emplace_back(std::string("value"));
+        const int batchSize = 7;
+        batch.streamLines.reserve(batchSize);
+        for (int i = 0; i < batchSize; ++i)
+        {
+            const size_t lineId = static_cast<size_t>(i + 1);
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+            batch.streamLines.emplace_back(
+                std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+            );
+        }
+        model.AppendBatch(std::move(batch));
+        QCOMPARE(model.rowCount(), batchSize);
+
+        // Detach: streaming flag flips off, compensating
+        // `streamingFinished(Cancelled)` fires, but the table keeps
+        // every row (PRD 4.7.1).
+        model.Detach();
+        QCoreApplication::processEvents();
+
+        QVERIFY(!model.IsStreamingActive());
+        QCOMPARE(model.rowCount(), batchSize);
+        QCOMPARE(finishedSpy.count(), 1);
+        QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
+
+        // A second Detach on an already-idle model is a no-op (no
+        // spurious `streamingFinished`, no row mutation).
+        model.Detach();
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(model.rowCount(), batchSize);
+
+        // Verify the surviving rows are still queryable (the user can
+        // still sort / filter / copy as the PRD promises).
+        const int valueColumn = ColumnByHeader(model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+        QCOMPARE(
+            model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1)
+        );
+        QCOMPARE(
+            model.data(model.index(batchSize - 1, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
+            qint64(batchSize)
+        );
+
+        // Clear() on the post-Detach state performs the full reset
+        // (no streaming active, so no second `streamingFinished`).
+        model.Clear();
+        QCOMPARE(model.rowCount(), 0);
+        QCOMPARE(finishedSpy.count(), 0);
     }
 
 private:

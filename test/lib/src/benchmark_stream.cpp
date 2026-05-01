@@ -219,7 +219,6 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     TailingFileSource::Options sourceOptions;
     sourceOptions.disableNativeWatcher = false; // exercise the native watcher path on the dev machine
     sourceOptions.pollInterval = 25ms;          // fast poll fallback so the worst case stays inside G1
-    sourceOptions.heartbeatInterval = 250ms;
     sourceOptions.rotationDebounce = 1000ms;
     sourceOptions.readChunkBytes = 64 * 1024;
     sourceOptions.prefillChunkBytes = 64 * 1024;

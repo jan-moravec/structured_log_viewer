@@ -52,7 +52,25 @@ public:
     ~LogModel() override;
 
     void AddData(loglib::LogData &&logData);
+
+    /// Tears the full model down: runs the PRD 4.7.2.i streaming
+    /// teardown order (source `Stop()` → sink `RequestStop()` → worker
+    /// `waitForFinished()` → paused-buffer flush → `DropPendingBatches()`)
+    /// **and** then resets `mLogTable`, emitting `lineCountChanged(0)` /
+    /// `errorCountChanged(0)`. Called from every "open a new session"
+    /// entry point. The compensating `streamingFinished(Cancelled)` is
+    /// emitted when this call observed `mStreamingActive == true`.
     void Clear();
+
+    /// Ends the active streaming session but **preserves the visible
+    /// rows** (PRD 4.7.1). Runs the same teardown sequence as `Clear()`
+    /// — including the paused-buffer flush so already-parsed rows land
+    /// in the model before teardown — but does *not* reset `mLogTable`.
+    /// Used by `MainWindow::StopStream` so the user can keep sorting,
+    /// filtering, searching, and copying rows after Stop. Emits the
+    /// compensating `streamingFinished(Cancelled)` when this call
+    /// observed `mStreamingActive == true`.
+    void Detach();
 
     /// Resets the model and arms the bridging sink for a streaming parse
     /// against @p file (ownership transfers); returns the parse stop_token.
@@ -175,11 +193,27 @@ signals:
     /// thread.
     void rotationDetected();
 
+    /// Emitted on the GUI thread when the active `LogSource` transitions
+    /// between `Running` and `Waiting` (PRD 4.8.8 / §6 *Status bar*).
+    /// The callback fires from the source's worker thread; the model
+    /// re-emits via a queued connection so the slot runs on the GUI
+    /// thread. `MainWindow::OnSourceStatusChanged` toggles the
+    /// `Source unavailable` status-bar variant.
+    void sourceStatusChanged(loglib::SourceStatus status);
+
 private:
     /// Resets the table and arms the sink against an *already-installed*
     /// `LogFile` (or null). Shared between the LogFile-overload and the
     /// LogSource-overload's MappedFileSource branch.
     void BeginStreamingShared(std::unique_ptr<loglib::LogFile> file);
+
+    /// Shared implementation of `Clear()` / `Detach()`. Runs the full
+    /// PRD 4.7.2.i teardown, then — if @p resetTable is true — does the
+    /// `beginResetModel` / `mLogTable.Reset` / zero-count emit sequence.
+    /// The compensating `streamingFinished(Cancelled)` is emitted last,
+    /// preserving the existing test-observed ordering (teardown → reset
+    /// → `lineCountChanged(0)` → `streamingFinished`).
+    void TeardownStreamingSessionInternal(bool resetTable);
 
     loglib::LogTable mLogTable;
     QtStreamingLogSink *mSink = nullptr;
@@ -216,3 +250,4 @@ private:
 };
 
 Q_DECLARE_METATYPE(StreamingResult)
+Q_DECLARE_METATYPE(loglib::SourceStatus)

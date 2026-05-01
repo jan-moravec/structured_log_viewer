@@ -1,13 +1,16 @@
 #include <loglib/tailing_file_source.hpp>
 
+#include <loglib_test/scaled_ms.hpp>
+
 #include <catch2/catch_all.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <random>
 #include <span>
 #include <string>
@@ -15,65 +18,11 @@
 #include <vector>
 
 using loglib::TailingFileSource;
+using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
 namespace
 {
-
-/// Read-once test-time multiplier for polling-fallback waits. Slow CI
-/// runners (Linux containerised, Windows MSVC matrix, macOS shared
-/// arm runners) can blow past the wall-clock budgets the harness picks
-/// for a developer-class workstation; rather than scattering ad-hoc
-/// `*= 2` factors through every `DrainUntil` call we read the
-/// `LOGLIB_TEST_TIME_SCALE` env var once, parse it as a double (default
-/// `1.0`), and multiply every test-only deadline through `Scaled` /
-/// `ScaledMs` (PRD §7 *CI*, task 6.1). `pollInterval` itself stays
-/// fixed at 25 ms because slowing the polls down would defeat the
-/// purpose of the harness — only the *deadlines waiting for the worker
-/// to do its thing* scale.
-double LoadTimeScale()
-{
-    // MSVC flags `std::getenv` as `unsafe` (C4996) and recommends `_dupenv_s`;
-    // the value here is read once at process start and treated as untrusted
-    // input (parsed via `strtod`, default-on-failure), so the safer-API
-    // pattern would only add noise. Suppress the warning locally rather
-    // than blanket-disable C4996 for the TU.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-    const char *raw = std::getenv("LOGLIB_TEST_TIME_SCALE");
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-    if (!raw || !*raw)
-    {
-        return 1.0;
-    }
-    char *end = nullptr;
-    const double parsed = std::strtod(raw, &end);
-    if (end == raw || parsed <= 0.0)
-    {
-        return 1.0;
-    }
-    return parsed;
-}
-
-double TimeScale()
-{
-    static const double kScale = LoadTimeScale();
-    return kScale;
-}
-
-/// Scale a `std::chrono::milliseconds` deadline by `LOGLIB_TEST_TIME_SCALE`,
-/// rounding up so a tight 25 ms budget never collapses to 0 on a 0.5x
-/// scale (we never shrink below 1 ms).
-std::chrono::milliseconds ScaledMs(std::chrono::milliseconds base)
-{
-    const double scaled = static_cast<double>(base.count()) * TimeScale();
-    const auto rounded = static_cast<long long>(scaled + 0.5);
-    return std::chrono::milliseconds(rounded < 1 ? 1 : rounded);
-}
 
 /// Test scratch directory + monotonically-named files. Each test case
 /// constructs one of these on the stack; the directory tree is removed
@@ -215,7 +164,6 @@ TailingFileSource::Options FastPollOptions()
     TailingFileSource::Options options;
     options.disableNativeWatcher = true;
     options.pollInterval = 25ms;
-    options.heartbeatInterval = 25ms;
     options.rotationDebounce = 250ms;
     options.readChunkBytes = 4 * 1024;
     options.prefillChunkBytes = 4 * 1024;
@@ -266,6 +214,55 @@ TEST_CASE("TailingFileSource pre-fill on a file shorter than N", "[TailingFileSo
     CHECK(lines[0] == "a");
     CHECK(lines[1] == "b");
     CHECK(lines[2] == "c");
+}
+
+TEST_CASE(
+    "TailingFileSource pre-fill aborts gracefully on a file with no newlines within the scan budget",
+    "[TailingFileSource]"
+)
+{
+    // PRD §7 *Line buffering*: a 2 MiB no-newline file with a 128 KiB
+    // scan budget must not wedge the ctor. `Prefill` walks backwards
+    // through `prefillChunkBytes` slices counting newlines; a file
+    // whose last `retentionLines + 1` newlines are beyond the budget
+    // (or absent entirely, as here) aborts the scan, yields zero
+    // lines, and seeks to EOF. Future appends from the producer still
+    // appear in the tail.
+    TempDir dir;
+    const auto path = dir.File("huge_line.log");
+    {
+        std::ofstream out(path, std::ios::binary);
+        REQUIRE(out.is_open());
+        const std::string blob(2 * 1024 * 1024, 'x'); // 2 MiB, no '\n'
+        out.write(blob.data(), static_cast<std::streamsize>(blob.size()));
+    }
+
+    auto opts = FastPollOptions();
+    opts.prefillMaxScanBytes = 128 * 1024; // well below the file size
+    opts.prefillChunkBytes = 32 * 1024;    // smaller than the budget
+
+    const auto ctorStart = std::chrono::steady_clock::now();
+    TailingFileSource source(path, /*retentionLines=*/100, opts);
+    const auto ctorElapsed = std::chrono::steady_clock::now() - ctorStart;
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < ScaledMs(500ms));
+
+    // No pre-fill lines should surface — the 2 MiB blob has no '\n',
+    // so the scan aborts without finding any line boundary. We give
+    // the worker a scheduling slice so any spurious pre-fill bytes
+    // would land in the queue before we sample it.
+    std::this_thread::sleep_for(ScaledMs(50ms));
+    std::array<char, 1024> buf{};
+    const size_t drained = source.Read(std::span<char>(buf));
+    CHECK(drained == 0);
+
+    // Tailing still works: appending a complete line produces it.
+    Append(path, "\nafter\n");
+    const auto post = DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) {
+        return acc.find("after\n") != std::string::npos;
+    });
+    CHECK(post.find("after\n") != std::string::npos);
+    // The 2 MiB "xxx…" prefix must NOT have been synthesized into a line.
+    CHECK(post.find("xxxxx") == std::string::npos);
 }
 
 TEST_CASE("TailingFileSource detects growth across many small writes", "[TailingFileSource]")
@@ -592,4 +589,87 @@ TEST_CASE("TailingFileSource Stop after natural drain leaves IsClosed true", "[T
     std::array<char, 8> buf{};
     CHECK(source.Read(std::span<char>(buf)) == 0);
     CHECK(source.IsClosed());
+}
+
+TEST_CASE(
+    "TailingFileSource reports SourceStatus::Waiting while the file is missing", "[TailingFileSource][status]"
+)
+{
+    // PRD 4.8.8 / §6 *Status bar*: when the watched file disappears
+    // during a delete-then-recreate rotation the source transitions
+    // into `Waiting` so the GUI can swap the status-bar label to
+    // "Source unavailable …". A subsequent re-create lifts the source
+    // back into `Running`. Edge-triggered — a single delete/create pair
+    // produces exactly one `Waiting` and one `Running` observation.
+    TempDir dir;
+    const auto path = dir.File("status.log");
+    Overwrite(path, "seed\n");
+
+    std::mutex statusMu;
+    std::vector<loglib::SourceStatus> observed;
+
+    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    source.SetStatusCallback([&](loglib::SourceStatus s) {
+        std::lock_guard<std::mutex> lock(statusMu);
+        observed.push_back(s);
+    });
+
+    // Drain the pre-fill so the worker is in its steady-state tail loop
+    // before we perturb the file.
+    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
+        return acc.find("seed\n") != std::string::npos;
+    });
+
+    // Delete the file → branch (ii) → Waiting.
+    std::filesystem::remove(path);
+
+    auto waitingDeadline = std::chrono::steady_clock::now() + ScaledMs(2000ms);
+    while (std::chrono::steady_clock::now() < waitingDeadline)
+    {
+        {
+            std::lock_guard<std::mutex> lock(statusMu);
+            if (!observed.empty() && observed.back() == loglib::SourceStatus::Waiting)
+            {
+                break;
+            }
+        }
+        std::array<char, 256> buf{};
+        source.Read(std::span<char>(buf));
+        std::this_thread::sleep_for(ScaledMs(25ms));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(statusMu);
+        REQUIRE_FALSE(observed.empty());
+        CHECK(observed.front() == loglib::SourceStatus::Waiting);
+    }
+
+    // Re-create the file — branch (i) / (ii-reopened) → Running.
+    Overwrite(path, "after\n");
+
+    auto runningDeadline = std::chrono::steady_clock::now() + ScaledMs(2000ms);
+    while (std::chrono::steady_clock::now() < runningDeadline)
+    {
+        {
+            std::lock_guard<std::mutex> lock(statusMu);
+            if (!observed.empty() && observed.back() == loglib::SourceStatus::Running)
+            {
+                break;
+            }
+        }
+        std::array<char, 256> buf{};
+        source.Read(std::span<char>(buf));
+        std::this_thread::sleep_for(ScaledMs(25ms));
+    }
+
+    std::lock_guard<std::mutex> lock(statusMu);
+    REQUIRE(observed.size() >= 2);
+    CHECK(observed.back() == loglib::SourceStatus::Running);
+
+    // Edge-triggered: no duplicate Running→Running or Waiting→Waiting
+    // emissions.
+    for (size_t i = 1; i < observed.size(); ++i)
+    {
+        CHECK(observed[i] != observed[i - 1]);
+    }
 }

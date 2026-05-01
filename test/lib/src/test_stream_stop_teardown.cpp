@@ -16,12 +16,13 @@
 #include <loglib/streaming_log_sink.hpp>
 #include <loglib/tailing_file_source.hpp>
 
+#include <loglib_test/scaled_ms.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -36,46 +37,11 @@ using loglib::StopSource;
 using loglib::StreamedBatch;
 using loglib::StreamingLogSink;
 using loglib::TailingFileSource;
+using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
 namespace
 {
-
-double LoadTimeScale()
-{
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-    const char *raw = std::getenv("LOGLIB_TEST_TIME_SCALE");
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-    if (!raw || !*raw)
-    {
-        return 1.0;
-    }
-    char *end = nullptr;
-    const double parsed = std::strtod(raw, &end);
-    if (end == raw || parsed <= 0.0)
-    {
-        return 1.0;
-    }
-    return parsed;
-}
-
-double TimeScale()
-{
-    static const double kScale = LoadTimeScale();
-    return kScale;
-}
-
-std::chrono::milliseconds ScaledMs(std::chrono::milliseconds base)
-{
-    const double scaled = static_cast<double>(base.count()) * TimeScale();
-    const auto rounded = static_cast<long long>(scaled + 0.5);
-    return std::chrono::milliseconds(rounded < 1 ? 1 : rounded);
-}
 
 class TempDir
 {
@@ -151,7 +117,6 @@ TailingFileSource::Options TestOptions()
     TailingFileSource::Options options;
     options.disableNativeWatcher = true;
     options.pollInterval = ScaledMs(25ms);
-    options.heartbeatInterval = ScaledMs(25ms);
     options.rotationDebounce = ScaledMs(250ms);
     options.readChunkBytes = 64 * 1024;
     options.prefillChunkBytes = 64 * 1024;
