@@ -1502,9 +1502,7 @@ private slots:
         // still sort / filter / copy as the PRD promises).
         const int valueColumn = ColumnByHeader(model, QStringLiteral("value"));
         QVERIFY(valueColumn >= 0);
-        QCOMPARE(
-            model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1)
-        );
+        QCOMPARE(model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1));
         QCOMPARE(
             model.data(model.index(batchSize - 1, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(batchSize)
@@ -1515,6 +1513,180 @@ private slots:
         model.Clear();
         QCOMPARE(model.rowCount(), 0);
         QCOMPARE(finishedSpy.count(), 0);
+    }
+
+    // Ordering regression: `Resume()` must deliver the coalesced paused
+    // buffer **before** any subsequent `OnBatch` (running on the worker
+    // thread, observing the now-cleared `mPaused`) can land in the model.
+    //
+    // The pre-fix `Resume()` cleared `mPaused` synchronously and then
+    // posted the coalesced buffer via `Qt::QueuedConnection`. Between
+    // those two steps a worker `OnBatch` could see `mPaused == false`,
+    // skip the buffer, and post its own newer batch — also via
+    // `QueuedConnection`. The Qt event queue is FIFO, but because both
+    // posts happen from different threads ordering depends entirely on
+    // wall-clock arrival, so the newer batch could be processed first.
+    //
+    // The synchronous-Resume contract this test pins down is the
+    // strongest: after `Resume()` returns, the paused-buffer rows are
+    // already in the model — so any later `OnBatch` (queued or direct)
+    // necessarily lands after them. We don't try to win the worker race
+    // here; the synchronous contract removes the race entirely.
+    void testResumeDeliversBufferedBatchSynchronouslyForOrdering()
+    {
+        LogModel model;
+        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        auto makeStreamBatch = [&keys, valueKey](size_t firstLineId, size_t count, bool declareNewKey) {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = firstLineId;
+            if (declareNewKey)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            batch.streamLines.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                const size_t lineId = firstLineId + i;
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+                );
+            }
+            return batch;
+        };
+
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        const size_t pausedCount = 8;
+        sink->OnBatch(makeStreamBatch(1, pausedCount, true));
+        QCOMPARE(static_cast<size_t>(sink->PausedLineCount()), pausedCount);
+        QCOMPARE(model.rowCount(), 0);
+
+        // Synchronous-Resume contract: the coalesced paused buffer must
+        // already be in the model the instant `Resume()` returns. Pre-
+        // fix this required `processEvents()` to run the queued lambda;
+        // post-fix it's `mModel->AppendBatch(...)` called inline.
+        sink->Resume();
+        QVERIFY(!sink->IsPaused());
+        QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount);
+        QCOMPARE(static_cast<size_t>(sink->PausedLineCount()), 0);
+
+        // Drive a follow-up `OnBatch` directly (mirroring a worker that
+        // fires immediately after `mPaused` was cleared) — its rows must
+        // append *after* the paused-buffer rows because Resume already
+        // delivered them. With the pre-fix code a queued post-Resume
+        // batch could arrive at the model first if it happened to land
+        // in the Qt queue before the Resume lambda; this test would not
+        // trigger that exact race, but the synchronous contract makes
+        // the inversion impossible by construction. We assert the
+        // resulting row order matches the input order.
+        const size_t followupCount = 4;
+        sink->OnBatch(makeStreamBatch(pausedCount + 1, followupCount, false));
+        QCoreApplication::processEvents();
+        QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount + followupCount);
+
+        const int valueColumn = ColumnByHeader(model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+        // Row 0 must be the first paused-buffer line (lineId == 1) —
+        // not the post-Resume batch's first line (lineId == 9).
+        QCOMPARE(model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1));
+        // Last row is the post-Resume batch's last line.
+        QCOMPARE(
+            model
+                .data(
+                    model.index(static_cast<int>(pausedCount + followupCount) - 1, valueColumn),
+                    LogModelItemDataRole::SortRole
+                )
+                .toLongLong(),
+            static_cast<qint64>(pausedCount + followupCount)
+        );
+
+        model.EndStreaming(false);
+    }
+
+    // Bug 2 regression: `actionPauseStream` is checkable and lives in
+    // both the toolbar and the **Stream** menu. The menu stays reachable
+    // even with the toolbar hidden. Without an explicit disable while
+    // idle, a menu click would flip the action's checked state before
+    // `TogglePauseStream`'s `IsStreamingActive()` early-return runs;
+    // the toggle then survives into the next session — and the teardown
+    // path *cannot* unstick it because `LogModel::Clear()` only emits
+    // `streamingFinished` when the prior session was still active.
+    //
+    // The fix disables the three Stream actions whenever the toolbar
+    // is hidden, and force-unchecks `actionPauseStream` defensively so
+    // a stuck checked state from any other path can never persist.
+    void testStreamMenuActionsDisabledWhileIdle()
+    {
+        QAction *pauseAction = window->findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QAction *stopAction = window->findChild<QAction *>(QStringLiteral("actionStopStream"));
+        QVERIFY(pauseAction != nullptr);
+        QVERIFY(followAction != nullptr);
+        QVERIFY(stopAction != nullptr);
+
+        // Idle at startup: no stream has been opened yet, the toolbar is
+        // hidden, and the Stream menu actions must be disabled so a
+        // user click on the menu cannot flip the checked state.
+        QVERIFY(!pauseAction->isEnabled());
+        QVERIFY(!followAction->isEnabled());
+        QVERIFY(!stopAction->isEnabled());
+        QVERIFY(!pauseAction->isChecked());
+
+        // `trigger()` ignores disabled actions (Qt won't deliver the
+        // `triggered` / `toggled` signals on a disabled action), so even
+        // a programmatic activation while idle leaves the checked state
+        // alone. This is the user-facing guarantee.
+        pauseAction->trigger();
+        QVERIFY(!pauseAction->isChecked());
+    }
+
+    // Companion to `testStreamMenuActionsDisabledWhileIdle`: even if
+    // some external path manages to flip `actionPauseStream` checked
+    // (a future caller that programmatically re-enables and checks
+    // the action; a test that pokes the QAction directly), the
+    // `streamingFinished` slot must clear that stale state at the
+    // next session boundary. This validates that my new disable-gate
+    // in `UpdateStreamToolbarVisibility` did not interfere with the
+    // existing Pause-toggle reset in the slot.
+    void testStaleCheckedPauseClearedOnTeardown()
+    {
+        QAction *pauseAction = window->findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        QVERIFY(pauseAction != nullptr);
+
+        // Simulate the bug condition: forcibly enable the action and
+        // set it checked while idle (matching the Stream-menu click
+        // that the pre-fix code allowed).
+        pauseAction->setEnabled(true);
+        pauseAction->setChecked(true);
+        QVERIFY(pauseAction->isChecked());
+
+        // Drive a streaming session and tear it down. `Detach()` emits
+        // a compensating `streamingFinished(Cancelled)` whose slot
+        // (in `MainWindow`) resets the Pause toggle and refreshes the
+        // toolbar gating. This is the existing reset path that must
+        // keep working alongside the new disabled-while-idle invariant.
+        LogModel *model = window->findChild<LogModel *>();
+        QVERIFY(model != nullptr);
+
+        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        model->Detach();
+        QCoreApplication::processEvents();
+
+        // After teardown the action is back to its idle baseline:
+        // unchecked (cleared by the `streamingFinished` slot) and
+        // disabled (by `UpdateStreamToolbarVisibility` since the
+        // toolbar is no longer visible). The next legitimate session
+        // will re-enable it from a clean baseline.
+        QVERIFY(!pauseAction->isChecked());
+        QVERIFY(!pauseAction->isEnabled());
     }
 
 private:

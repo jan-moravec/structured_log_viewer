@@ -6,6 +6,7 @@
 #include <loglib/log_table.hpp>
 
 #include <QMetaObject>
+#include <QThread>
 
 #include <algorithm>
 #include <iterator>
@@ -68,34 +69,43 @@ void QtStreamingLogSink::Pause() noexcept
 
 void QtStreamingLogSink::Resume()
 {
-    if (!mPaused.exchange(false, std::memory_order_acq_rel))
-    {
-        return; // already running
-    }
+    Q_ASSERT(QThread::currentThread() == thread());
 
+    // Drain the paused buffer **before** clearing `mPaused` so the worker
+    // never observes the unpaused state with batches still sitting in the
+    // buffer. Otherwise the following sequence would invert ordering:
+    //   1. GUI: `mPaused.exchange(false)` (older code path)
+    //   2. Worker: `OnBatch` reads `mPaused == false`, skips the buffer,
+    //      posts batch_N+1 via `QueuedConnection`.
+    //   3. GUI: `invokeMethod(... Qt::QueuedConnection)` posts the
+    //      coalesced paused batch — *behind* batch_N+1 in the queue.
+    //   4. Event loop runs batch_N+1 first, then the older paused rows.
+    // Since `Resume()` already runs on the GUI thread, deliver the
+    // coalesced batch synchronously: there is no other GUI-thread work
+    // racing with it, and any worker batches posted after `mPaused` is
+    // cleared land in the Qt queue *after* this synchronous call returns
+    // — preserving FIFO order without the QueuedConnection round-trip.
     std::vector<loglib::StreamedBatch> drained;
     {
         std::lock_guard<std::mutex> lock(mPausedMutex);
+        if (!mPaused.load(std::memory_order_acquire))
+        {
+            return; // already running
+        }
         drained.swap(mPausedBatches);
+        // Clear under the lock so a concurrent `OnBatch` either appended
+        // its batch to the (now-emptied) buffer before we swapped — in
+        // which case we already own it — or it sees `mPaused == false`
+        // on its next check and posts via QueuedConnection (correctly
+        // ordered after this synchronous AppendBatch).
+        mPaused.store(false, std::memory_order_release);
     }
-    if (drained.empty())
+
+    if (drained.empty() || !mModel)
     {
         return;
     }
-
-    auto coalesced = std::make_shared<loglib::StreamedBatch>(CoalesceLocked(std::move(drained)));
-    const uint64_t gen = mGeneration.load(std::memory_order_acquire);
-    QMetaObject::invokeMethod(
-        this,
-        [this, gen, coalesced]() {
-            if (mGeneration.load(std::memory_order_acquire) != gen || !mModel)
-            {
-                return;
-            }
-            mModel->AppendBatch(std::move(*coalesced));
-        },
-        Qt::QueuedConnection
-    );
+    mModel->AppendBatch(CoalesceLocked(std::move(drained)));
 }
 
 bool QtStreamingLogSink::IsPaused() const noexcept

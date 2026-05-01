@@ -183,6 +183,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     mStreamToolbar->addAction(ui->actionStopStream);
     mStreamToolbar->setVisible(false);
 
+    // The toolbar is hidden between sessions but the same actions live
+    // in the **Stream** menu (`menuStream` in `main_window.ui`), which
+    // stays reachable. Without an explicit disable, an idle-time menu
+    // click on `actionPauseStream` (checkable) flips its checked state
+    // before `TogglePauseStream`'s `IsStreamingActive` early-return
+    // runs; the toggle then survives into the next session, which the
+    // teardown path *cannot* unstick because `LogModel::Clear()` only
+    // emits `streamingFinished` (where the toggle is reset) when the
+    // prior session was still active — which it isn't after a `Detach()`
+    // or a previous full teardown. Disabling the actions while idle
+    // makes the only legal entry point the toolbar (which is in turn
+    // gated on `IsStreamingActive`), so the checked state can never
+    // leak across sessions. `UpdateStreamToolbarVisibility` keeps the
+    // enabled flag in sync with the toolbar visibility for the rest of
+    // the lifecycle.
+    ui->actionPauseStream->setEnabled(false);
+    ui->actionFollowTail->setEnabled(false);
+    ui->actionStopStream->setEnabled(false);
+
     connect(ui->actionPauseStream, &QAction::toggled, this, &MainWindow::TogglePauseStream);
     connect(ui->actionStopStream, &QAction::triggered, this, &MainWindow::StopStream);
 
@@ -782,11 +801,34 @@ void MainWindow::UpdateStreamingStatus()
 
 void MainWindow::UpdateStreamToolbarVisibility()
 {
-    const bool visible = mModel->IsStreamingActive() && mLiveTailActive;
+    // Use the MainWindow's own `mStreamingActive` (set on entry to
+    // `OpenLogStream` / `OpenJsonStreaming`, cleared in the
+    // `streamingFinished` slot before this call) rather than
+    // `mModel->IsStreamingActive()`. The model flag is only set inside
+    // `BeginStreaming`, which runs *after* the existing call sites here
+    // — so reading the model flag here would always return `false` on
+    // open and the toolbar would never become visible until something
+    // else triggered another call.
+    const bool visible = mStreamingActive && mLiveTailActive;
     if (mStreamToolbar)
     {
         mStreamToolbar->setVisible(visible);
     }
+    // Gate the menu actions on the toolbar's visibility so a Stream-menu
+    // click while idle (the menu items remain reachable even with the
+    // toolbar hidden) cannot pre-flip a checkable action's state into
+    // the next session. Without this guard `actionPauseStream` can land
+    // checked before `BeginStreaming` runs, leaving the toolbar showing
+    // "Paused" while the sink is genuinely running.
+    //
+    // The companion reset of the action's *checked* state at session
+    // boundaries lives in the `streamingFinished` slot above (see the
+    // `QSignalBlocker(actionPauseStream)` block) — keeping the logic in
+    // one place avoids two slightly-different uncheck pathways racing
+    // against each other.
+    ui->actionPauseStream->setEnabled(visible);
+    ui->actionFollowTail->setEnabled(visible);
+    ui->actionStopStream->setEnabled(visible);
 }
 
 void MainWindow::ScrollToNewestRowIfFollowing()
