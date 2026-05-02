@@ -5,6 +5,7 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "preferences_editor.hpp"
+#include "stream_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_parser.hpp>
@@ -45,6 +46,15 @@ public:
     void dropEvent(QDropEvent *event) override;
 
     void UpdateUi();
+
+    /// Re-apply the persisted `streaming/newestFirst` value to the
+    /// `StreamOrderProxyModel`, the `LogTableView`'s tail edge, and
+    /// the `alternatingRowColors` toggle. Public so tests can drive
+    /// the apply path directly without simulating the full
+    /// preferences-editor round-trip; production calls this from
+    /// startup and from the preferences-editor's
+    /// `streamingDisplayOrderChanged` signal. Idempotent.
+    void ApplyStreamingDisplayOrder();
 
 protected:
     bool event(QEvent *event) override;
@@ -121,6 +131,7 @@ private:
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
+    StreamOrderProxyModel *mStreamOrderProxyModel;
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
@@ -133,7 +144,7 @@ private:
     /// while a streaming parse is in flight.
     QLabel *mStatusLabel = nullptr;
 
-    /// Toolbar holding Pause / Follow tail / Stop. Visible only while
+    /// Toolbar holding Pause / Follow newest / Stop. Visible only while
     /// `mModel->IsStreamingActive() == true` (PRD §6 *Toolbar*; task 5.3).
     QToolBar *mStreamToolbar = nullptr;
 

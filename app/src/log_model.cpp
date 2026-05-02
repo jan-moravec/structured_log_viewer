@@ -641,6 +641,16 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             value
         );
     }
+    else if (role == LogModelItemDataRole::InsertionOrderRole)
+    {
+        // Source-model row index; the `StreamOrderProxyModel` sorts by
+        // this role with `Qt::DescendingOrder` so the most-recently-
+        // appended row lands at proxy row 0 in newest-first mode.
+        // Independent of `index.column()` — sorting always yields the
+        // same row order regardless of which column was nominally used
+        // to drive the sort.
+        return QVariant(index.row());
+    }
     else if (role == LogModelItemDataRole::CopyLine)
     {
         // Branch on the row's variant (PRD 4.9.7.ii / 4.10.4.iii). The

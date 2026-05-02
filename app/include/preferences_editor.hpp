@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFontComboBox>
 #include <QSpinBox>
@@ -21,9 +22,17 @@ signals:
     /// picks up the new value immediately (PRD 4.5.5 / task 5.12).
     void streamingRetentionChanged(qulonglong retentionLines);
 
+    /// Emitted on Ok after `StreamingControl::SaveConfiguration()` has
+    /// committed the **Show newest lines first** flag. `MainWindow`
+    /// re-applies it to `StreamOrderProxyModel` so the visible order
+    /// flips immediately, including for a stream that is already in
+    /// flight.
+    void streamingDisplayOrderChanged(bool newestFirst);
+
 private:
     QComboBox *mStyleComboBox;
     QFontComboBox *mFontComboBox;
     QSpinBox *mSizeSpinBox;
     QSpinBox *mStreamRetentionSpinBox;
+    QCheckBox *mStreamNewestFirstCheckBox;
 };

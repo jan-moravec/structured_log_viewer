@@ -25,7 +25,14 @@ enum LogModelItemDataRole
 {
     UserRole = Qt::UserRole,
     SortRole,
-    CopyLine
+    CopyLine,
+    /// Returns the source-model row index (`index.row()`) regardless of
+    /// column. Used by the `StreamOrderProxyModel` to reverse the visual
+    /// order of streamed lines (newest-first mode) without touching the
+    /// user-clicked column sort that lives on the outer
+    /// `LogFilterModel`. Comparing this role with `Qt::DescendingOrder`
+    /// places the most-recently-appended row at proxy row 0.
+    InsertionOrderRole,
 };
 
 /// Outcome reported by `LogModel::streamingFinished`: clean completion vs.

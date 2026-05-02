@@ -23,13 +23,19 @@ public:
     static constexpr size_t kMinRetentionLines = 1'000;
     static constexpr size_t kMaxRetentionLines = 1'000'000;
 
+    /// Default for the **Show newest lines first** stream toggle.
+    /// Off by default so the existing append-at-bottom behaviour is
+    /// preserved for users who do not opt in.
+    static constexpr bool kDefaultNewestFirst = false;
+
     /// Persist the in-memory configuration to `QSettings` under
-    /// `streaming/retentionLines` (Ok handler).
+    /// `streaming/retentionLines` and `streaming/newestFirst` (Ok
+    /// handler).
     static void SaveConfiguration();
 
     /// Reload the in-memory configuration from `QSettings` (Cancel handler /
-    /// startup). Falls back to `kDefaultRetentionLines` when no value has
-    /// been persisted yet.
+    /// startup). Falls back to `kDefaultRetentionLines` /
+    /// `kDefaultNewestFirst` when no value has been persisted yet.
     static void LoadConfiguration();
 
     /// In-memory retention cap. Mutated by the spinbox while the
@@ -41,10 +47,20 @@ public:
     /// — call `SaveConfiguration` from the Ok handler.
     static void SetRetentionLines(size_t value);
 
+    /// In-memory **Show newest lines first** flag. Mutated by the
+    /// preferences-dialog checkbox; committed to / reverted from
+    /// `QSettings` by Save / LoadConfiguration.
+    static bool IsNewestFirst();
+
+    /// Update the in-memory newest-first flag. Does not persist to
+    /// `QSettings` — call `SaveConfiguration` from the Ok handler.
+    static void SetNewestFirst(bool value);
+
 private:
     struct Configuration
     {
         size_t retentionLines = kDefaultRetentionLines;
+        bool newestFirst = kDefaultNewestFirst;
     };
 
     static Configuration mConfiguration;

@@ -186,7 +186,7 @@
     <bool>true</bool>
    </property>
    <property name="text">
-    <string>Follow tail</string>
+    <string>Follow newest</string>
    </property>
    <property name="toolTip">
     <string>Auto-scroll to newest line (Ctrl+Shift+T)</string>

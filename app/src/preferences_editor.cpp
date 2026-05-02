@@ -22,6 +22,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
     mSizeSpinBox = new QSpinBox(this);
     mStyleComboBox = new QComboBox(this);
     mStreamRetentionSpinBox = new QSpinBox(this);
+    mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
 
     mSizeSpinBox->setRange(6, 72);
 
@@ -34,6 +35,10 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
     mStreamRetentionSpinBox->setToolTip(
         "Maximum number of streamed lines kept in memory. Oldest lines are dropped when the cap "
         "is reached. Higher values use more memory."
+    );
+    mStreamNewestFirstCheckBox->setToolTip(
+        "When enabled, new lines appear at the top of the stream view (oldest at the bottom). "
+        "Follow newest then keeps the top of the view pinned to the most recent line."
     );
 
     for (const auto &style : QStyleFactory::keys())
@@ -78,6 +83,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
     auto *streamingLayout = new QVBoxLayout(streamingGroup);
     streamingLayout->addWidget(new QLabel("Stream retention (lines):"));
     streamingLayout->addWidget(mStreamRetentionSpinBox);
+    streamingLayout->addWidget(mStreamNewestFirstCheckBox);
 
     layout->addWidget(appearanceGroup);
     layout->addWidget(streamingGroup);
@@ -87,14 +93,25 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
         AppearanceControl::SaveConfiguration();
-        // Mirror the spinbox value into `StreamingControl` and persist
+        // Mirror the dialog's edits into `StreamingControl` and persist
         // before notifying the `MainWindow`, so an observer querying
-        // `StreamingControl::RetentionLines()` from the slot sees the new
-        // value (PRD §6 *Preferences*, OQ-10).
+        // `StreamingControl::RetentionLines()` /
+        // `StreamingControl::IsNewestFirst()` from a slot sees the new
+        // values (PRD §6 *Preferences*, OQ-10).
         const auto retention = static_cast<size_t>(mStreamRetentionSpinBox->value());
+        const bool newestFirst = mStreamNewestFirstCheckBox->isChecked();
+        const bool newestFirstChanged = (newestFirst != StreamingControl::IsNewestFirst());
         StreamingControl::SetRetentionLines(retention);
+        StreamingControl::SetNewestFirst(newestFirst);
         StreamingControl::SaveConfiguration();
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
+        // Only notify on a real toggle so the chain
+        // (`StreamOrderProxyModel::SetReversed` → re-sort → tail-edge
+        // flip on the `LogTableView`) does not run on every Ok click.
+        if (newestFirstChanged)
+        {
+            emit streamingDisplayOrderChanged(newestFirst);
+        }
         close();
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
@@ -119,4 +136,5 @@ void PreferencesEditor::UpdateFields()
     mStyleComboBox->setCurrentText(QApplication::style()->name());
     mFontComboBox->setCurrentFont(qApp->font());
     mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::RetentionLines()));
+    mStreamNewestFirstCheckBox->setChecked(StreamingControl::IsNewestFirst());
 }

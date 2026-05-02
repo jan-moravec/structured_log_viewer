@@ -139,8 +139,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     ApplyTableStyleSheet();
 
+    // Two-stage proxy chain: the inner `StreamOrderProxyModel` flips
+    // the row order when **Show newest lines first** is enabled (its
+    // sort role is `InsertionOrderRole`, independent of any user
+    // column sort); the outer `LogFilterModel` filters and supports
+    // user-clicked column sorts using `SortRole`. The two layers never
+    // share sort state, so a column sort and the newest-first flag
+    // can coexist without fighting (the column sort wins on the
+    // visible row order; clearing it falls back to the proxy's
+    // reversed order).
+    mStreamOrderProxyModel = new StreamOrderProxyModel(this);
+    mStreamOrderProxyModel->setSourceModel(mModel);
+
     mSortFilterProxyModel = new LogFilterModel(this);
-    mSortFilterProxyModel->setSourceModel(mModel);
+    mSortFilterProxyModel->setSourceModel(mStreamOrderProxyModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
@@ -208,14 +220,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // `actionFollowTail` is a stateless toggle observed by
     // `ScrollToNewestRowIfFollowing`; nothing to wire on its own
     // `toggled` signal. The user-scroll signals below auto-disengage /
-    // auto-re-engage it (PRD 4.3.3).
-    connect(mTableView, &LogTableView::userScrolledAwayFromBottom, this, [this]() {
+    // auto-re-engage it (PRD 4.3.3). The "tail edge" the table view
+    // tracks is bottom in the default orientation and top when
+    // **Show newest lines first** is enabled — that flip lives in
+    // `ApplyStreamingDisplayOrder` so this wiring stays orientation-
+    // agnostic.
+    connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
         if (ui->actionFollowTail->isChecked())
         {
             ui->actionFollowTail->setChecked(false);
         }
     });
-    connect(mTableView, &LogTableView::userScrolledToBottom, this, [this]() {
+    connect(mTableView, &LogTableView::userScrolledToTail, this, [this]() {
         if (!ui->actionFollowTail->isChecked() && mModel->IsStreamingActive())
         {
             ui->actionFollowTail->setChecked(true);
@@ -237,6 +253,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
+    connect(mPreferencesEditor, &PreferencesEditor::streamingDisplayOrderChanged, this, [this](bool) {
+        ApplyStreamingDisplayOrder();
+    });
 
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
@@ -254,7 +273,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             mFirstStreamingBatchSeen = true;
             UpdateUi();
         }
-        // Follow-tail auto-scroll on every batch (PRD 4.3 / task 5.7).
+        // Follow newest auto-scroll on every batch (PRD 4.3 / task 5.7).
         if (mModel->IsStreamingActive())
         {
             ScrollToNewestRowIfFollowing();
@@ -278,9 +297,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             const QSignalBlocker blocker(ui->actionPauseStream);
             ui->actionPauseStream->setChecked(false);
         }
-        // Reset Follow tail to its `.ui` default (checked) so the next
+        // Reset Follow newest to its `.ui` default (checked) so the next
         // live-tail session starts auto-scrolling — symmetric with the
-        // Pause reset above. Without this, an `userScrolledAwayFromBottom`
+        // Pause reset above. Without this, an `userScrolledAwayFromTail`
         // during the previous session would leave the toggle off and the
         // user would have to manually scroll to the bottom (or toggle
         // the action) to re-engage auto-scroll on the new stream. The
@@ -307,10 +326,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
 
-    // Pull the persisted retention cap into the model on startup so the
-    // first `OpenLogStream` honours the user's preference (task 5.12).
+    // Pull the persisted streaming preferences into the model and the
+    // proxy on startup so the first `OpenLogStream` honours the user's
+    // choices (task 5.12 for retention; symmetric wiring for the
+    // newest-first toggle added later).
     StreamingControl::LoadConfiguration();
     ApplyStreamingRetention();
+    ApplyStreamingDisplayOrder();
 
     QTimer::singleShot(0, [this] {
         // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
@@ -843,19 +865,58 @@ void MainWindow::ScrollToNewestRowIfFollowing()
         return;
     }
     // PRD 4.3.4 — scroll to the most-recently-appended source row even
-    // when sorted by a non-time column. Mapping through the proxy makes
-    // the visual scroll land on the correct row under sort/filter.
+    // when sorted by a non-time column. Mapping through both proxy
+    // layers (StreamOrder → LogFilter) makes the visual scroll land
+    // on the correct row under reverse-order, sort, and filter.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
-    const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(sourceIndex);
-    if (proxyIndex.isValid())
+    const QModelIndex midIndex = mStreamOrderProxyModel->mapFromSource(sourceIndex);
+    const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
+    if (!proxyIndex.isValid())
     {
-        mTableView->scrollTo(proxyIndex, QAbstractItemView::PositionAtBottom);
+        return;
     }
+    // In newest-first mode the most-recently-appended row sits at the
+    // *top* of the view (proxy row 0), so Follow newest must scroll to
+    // the top edge instead of the bottom. The `LogTableView`'s
+    // `TailEdge` is kept in sync with this orientation by
+    // `ApplyStreamingDisplayOrder` so the user-scroll detection also
+    // tracks the right edge.
+    const auto position = mStreamOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop
+                                                               : QAbstractItemView::PositionAtBottom;
+    mTableView->scrollTo(proxyIndex, position);
 }
 
 void MainWindow::ApplyStreamingRetention()
 {
     mModel->SetRetentionCap(StreamingControl::RetentionLines());
+}
+
+void MainWindow::ApplyStreamingDisplayOrder()
+{
+    const bool newestFirst = StreamingControl::IsNewestFirst();
+    mStreamOrderProxyModel->SetReversed(newestFirst);
+    mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
+    // Alternating row colours are keyed off the **visual** row index
+    // by Qt — perfect when new rows append at the bottom and existing
+    // rows keep their visual positions, but newest-first inserts at
+    // proxy row 0 and shifts every existing row's parity on every
+    // batch, so each arriving line flips every visible row's tone.
+    // We tried overriding the per-cell `Alternate` flag in a custom
+    // delegate to pin colours to source-row parity; in practice the
+    // CSS-based table style (`alternate-background-color`) bypassed
+    // the override and the rows still flickered, so we just turn the
+    // alternation off in newest-first mode and accept a single base
+    // colour there. Default mode keeps the visual reading aid.
+    mTableView->setAlternatingRowColors(!newestFirst);
+    // Re-pin the view to the (potentially new) tail edge if Follow
+    // tail is currently engaged so the user does not have to scroll
+    // manually after toggling the preference. Keeps behaviour
+    // consistent with the implicit `scrollTo` that `lineCountChanged`
+    // would otherwise need to wait for.
+    if (mModel->IsStreamingActive())
+    {
+        ScrollToNewestRowIfFollowing();
+    }
 }
 
 void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)

@@ -44,10 +44,10 @@ A toolbar appears above the table while a stream is running, mirroring the **Str
 | Action         | Shortcut       | Notes                                                                   |
 | -------------- | -------------- | ----------------------------------------------------------------------- |
 | Pause / Resume | `Ctrl+Shift+P` | Pause freezes the visible table; new lines accumulate in memory.        |
-| Follow tail    | `Ctrl+Shift+T` | Toggle auto-scroll. Auto-disengages when you scroll up to read history. |
+| Follow newest  | `Ctrl+Shift+T` | Toggle auto-scroll. Auto-disengages when you scroll up to read history. |
 | Stop           | `Ctrl+Shift+S` | Ends the session and leaves the rows visible as a static snapshot.      |
 
-**Pause** and **Follow tail** are independent toggles. The status bar shows `Paused — N lines, K buffered` while paused, where `K` is the number of lines that arrived during the pause but have not yet been promoted to the visible table. **Resume** drains the buffer in a single batch.
+**Pause** and **Follow newest** are independent toggles. The status bar shows `Paused — N lines, K buffered` while paused, where `K` is the number of lines that arrived during the pause but have not yet been promoted to the visible table. **Resume** drains the buffer in a single batch.
 
 ### Retention cap
 
@@ -171,7 +171,7 @@ Changes preview live. Click **Ok** to persist them (stored via `QSettings` under
 | Find                       | `Ctrl+F`       |
 | Copy selected rows as JSON | `Ctrl+C`       |
 | Pause / Resume stream      | `Ctrl+Shift+P` |
-| Toggle Follow tail         | `Ctrl+Shift+T` |
+| Toggle Follow newest       | `Ctrl+Shift+T` |
 | Stop stream                | `Ctrl+Shift+S` |
 
 ## Troubleshooting

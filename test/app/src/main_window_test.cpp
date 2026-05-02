@@ -3,6 +3,8 @@
 #include "log_table_view.hpp"
 #include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include "stream_order_proxy_model.hpp"
+#include "streaming_control.hpp"
 
 #include <loglib/internal/parser_options.hpp>
 #include <loglib/json_parser.hpp>
@@ -19,11 +21,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QScopeGuard>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QWheelEvent>
 #include <QtTest/QtTest>
 
 #include <algorithm>
@@ -1866,6 +1871,518 @@ private slots:
         // will re-enable it from a clean baseline.
         QVERIFY(!pauseAction->isChecked());
         QVERIFY(!pauseAction->isEnabled());
+    }
+
+    // Regression: hovering over table cells (and other Qt-internal,
+    // layout-driven scrollbar updates) must not auto-disengage the
+    // **Follow newest** toggle. Pre-fix, `LogTableView` connected the
+    // verticalScrollBar's `valueChanged` signal directly to the
+    // edge-trigger lambda — so any programmatic value change (e.g. an
+    // `endInsertRows` clamp, a hover/repaint-induced scroll adjustment,
+    // a viewport-size update) flipped `mAtTailEdge` from true to false
+    // and emitted `userScrolledAwayFromTail`, which the `MainWindow`
+    // then dutifully translated into "uncheck Follow newest" — even
+    // though the user never scrolled.
+    //
+    // The fix gates `userScrolledAwayFromTail` /
+    // `userScrolledToTail` emissions on a user-input depth counter
+    // that's only non-zero during real wheel / keyboard / scrollbar-
+    // mouse events. A bare programmatic `setValue` to the middle of
+    // the range — the closest in-process simulation of a hover-
+    // triggered internal scroll update — must therefore leave the
+    // toggle alone.
+    void testFollowTailIgnoresProgrammaticScrollbarChanges()
+    {
+        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        QVERIFY(followAction != nullptr);
+        QVERIFY(tableView != nullptr);
+
+        // Enable + check the toggle from the simulated streaming-active
+        // baseline (the production path enables it when a stream opens
+        // via `UpdateStreamToolbarVisibility`). We bypass the gate here
+        // because the test only needs the toggle's checked state to
+        // observe the scrollbar→toggle wiring in isolation.
+        followAction->setEnabled(true);
+        followAction->setChecked(true);
+        QVERIFY(followAction->isChecked());
+
+        // Force the scrollbar into a valid range so `setValue` can push
+        // the slider somewhere genuinely "not at bottom". Without this
+        // setup the maximum stays at 0 and the at-bottom check is
+        // trivially true regardless of value.
+        QScrollBar *scrollBar = tableView->verticalScrollBar();
+        QVERIFY(scrollBar != nullptr);
+        scrollBar->setRange(0, 1000);
+        scrollBar->setValue(scrollBar->maximum());
+
+        QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        QVERIFY(awaySpy.isValid());
+
+        // Programmatic value change to the middle of the range — the
+        // in-process equivalent of a layout-driven scroll adjustment
+        // that Qt fires on hover / repaint. Pre-fix this flipped
+        // `actionFollowTail` to unchecked.
+        scrollBar->setValue(scrollBar->maximum() / 2);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(awaySpy.count(), 0);
+        QVERIFY(followAction->isChecked());
+    }
+
+    // The **Show newest lines first** preference flips the
+    // `StreamOrderProxyModel` into reversed mode: the highest source
+    // row index (the most-recently-appended streamed line) lands at
+    // proxy row 0 and the oldest at the bottom of the visible model.
+    // Drives the proxy directly (no Preferences dialog round-trip)
+    // because the dialog's Ok handler is just a thin wrapper around
+    // `StreamOrderProxyModel::SetReversed` plus the persisted
+    // `streaming/newestFirst` setting — exercising the proxy here
+    // covers the contract that the GUI relies on.
+    void testNewestFirstReversesProxyOrder()
+    {
+        StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QVERIFY(streamOrderProxy != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(!streamOrderProxy->IsReversed());
+
+        // Drive a tiny streaming session with three rows so the proxy
+        // has something to reorder. `valueKey` plus a per-line integer
+        // gives us a deterministic identifier we can read back via
+        // `data(SortRole)` to assert the visible row order.
+        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        loglib::StreamedBatch batch;
+        batch.firstLineNumber = 1;
+        batch.newKeys.emplace_back(std::string("value"));
+        for (int64_t lineId = 1; lineId <= 3; ++lineId)
+        {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(valueKey, loglib::LogValue{lineId});
+            batch.streamLines.emplace_back(
+                std::move(values), keys, loglib::StreamLineReference("synthetic", "x", static_cast<size_t>(lineId))
+            );
+        }
+        sink->OnBatch(std::move(batch));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const int valueColumn = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+
+        // Default (oldest-first) order: proxy row 0 == source row 0
+        // == lineId 1, proxy row 2 == source row 2 == lineId 3.
+        QCOMPARE(
+            streamOrderProxy
+                ->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
+            qint64(1)
+        );
+        QCOMPARE(
+            streamOrderProxy
+                ->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
+            qint64(3)
+        );
+
+        streamOrderProxy->SetReversed(true);
+        QVERIFY(streamOrderProxy->IsReversed());
+
+        // Reversed order: proxy row 0 carries the *most-recently-
+        // appended* line (lineId 3), and proxy row 2 the oldest
+        // (lineId 1). The source model (`model`) is untouched — only
+        // the proxy mapping flips, so the underlying append-order
+        // contract continues to hold.
+        QCOMPARE(
+            streamOrderProxy
+                ->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
+            qint64(3)
+        );
+        QCOMPARE(
+            streamOrderProxy
+                ->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
+            qint64(1)
+        );
+
+        // Toggling back leaves the source order intact and restores
+        // the identity mapping (idempotency contract for
+        // `SetReversed`).
+        streamOrderProxy->SetReversed(false);
+        QVERIFY(!streamOrderProxy->IsReversed());
+        QCOMPARE(
+            streamOrderProxy
+                ->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
+            qint64(1)
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Regression for incremental streaming: `QSortFilterProxyModel`
+    // does not reliably keep descending-by-insertion-order stable
+    // across successive `rowsInserted` unless we queue an explicit
+    // `sort()` after each structural change. **Show newest lines
+    // first** enables reversed mode before any data (matching session
+    // startup); the second batch must land with its newest line at
+    // proxy row 0, not stuck under the first batch.
+    void testNewestFirstIncrementalBatchesKeepNewestAtTop()
+    {
+        StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QVERIFY(streamOrderProxy != nullptr);
+        QVERIFY(model != nullptr);
+
+        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        streamOrderProxy->SetReversed(true);
+        QVERIFY(streamOrderProxy->IsReversed());
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        auto makeBatch = [&keys, valueKey](int64_t firstLineId, int count, bool declareNewKey) {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = static_cast<size_t>(firstLineId);
+            if (declareNewKey)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            batch.streamLines.reserve(static_cast<size_t>(count));
+            for (int i = 0; i < count; ++i)
+            {
+                const int64_t lineId = firstLineId + static_cast<int64_t>(i);
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{lineId});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", static_cast<size_t>(lineId))
+                );
+            }
+            return batch;
+        };
+
+        sink->OnBatch(makeBatch(1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const int valueColumn = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+
+        QCOMPARE(
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
+            qint64(3)
+        );
+
+        sink->OnBatch(makeBatch(4, 2, false));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        QCOMPARE(
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
+            qint64(5)
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Companion to `testNewestFirstReversesProxyOrder`: the user-input
+    // gate on the `LogTableView` must follow the configured tail edge
+    // when **Show newest lines first** is enabled. Specifically:
+    //
+    //   - With `TailEdge::Top`, "at tail" is `value <= minimum` (the
+    //     newest row sits at proxy row 0, which is at the top of the
+    //     scroll viewport).
+    //   - A user scrolling down (away from the top) must edge-trigger
+    //     `userScrolledAwayFromTail` so `MainWindow` disengages
+    //     Follow newest.
+    //   - A user scrolling back to the top must edge-trigger
+    //     `userScrolledToTail` so Follow newest re-engages.
+    //
+    // The companion `testFollowTailIgnoresProgrammaticScrollbarChanges`
+    // already covers the bottom edge; this test pins down the top edge
+    // contract introduced by the newest-first feature.
+    void testTailEdgeTopFollowsScrollbarMinimum()
+    {
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+
+        tableView->SetTailEdge(LogTableView::TailEdge::Top);
+        QCOMPARE(tableView->GetTailEdge(), LogTableView::TailEdge::Top);
+
+        QScrollBar *scrollBar = tableView->verticalScrollBar();
+        QVERIFY(scrollBar != nullptr);
+        scrollBar->setRange(0, 1000);
+        scrollBar->setValue(scrollBar->minimum());
+
+        // Programmatic value change to the middle: must not flip the
+        // toggle (mirrors the bottom-edge programmatic-scroll test).
+        QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
+        QVERIFY(awaySpy.isValid());
+        QVERIFY(toSpy.isValid());
+
+        scrollBar->setValue(scrollBar->maximum() / 2);
+        QCoreApplication::processEvents();
+        QCOMPARE(awaySpy.count(), 0);
+        QCOMPARE(toSpy.count(), 0);
+
+        // Reset the view to "at tail" (top) so the next user-initiated
+        // event can flip the edge tracking. We bypass the user-input
+        // gate by re-seeding via `SetTailEdge`, which is the production
+        // path the `MainWindow` takes when `ApplyStreamingDisplayOrder`
+        // re-orients the view.
+        scrollBar->setValue(scrollBar->minimum());
+        QCoreApplication::processEvents();
+        tableView->SetTailEdge(LogTableView::TailEdge::Top);
+
+        // Simulate a real user wheel-scroll down. `wheelEvent` on the
+        // viewport sets `mNextValueChangeIsUser`, so the resulting
+        // `valueChanged` *is* attributed to the user — and because
+        // the tail edge is Top, leaving the minimum must emit
+        // `userScrolledAwayFromTail`.
+        QWheelEvent wheelDown(
+            QPointF(10, 10),                 // position in viewport
+            tableView->viewport()->mapToGlobal(QPointF(10, 10)),
+            QPoint(0, -120),                 // pixelDelta (downward)
+            QPoint(0, -120),                 // angleDelta (downward)
+            Qt::NoButton,
+            Qt::NoModifier,
+            Qt::NoScrollPhase,
+            false
+        );
+        QCoreApplication::sendEvent(tableView->viewport(), &wheelDown);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(awaySpy.count(), 1);
+        QCOMPARE(toSpy.count(), 0);
+    }
+
+    // Regression for the user-reported "Follow newest never auto-
+    // disables when I scroll manually" bug: the previous
+    // `installEventFilter`-based user-input gate ran *before* the
+    // scrollbar processed the event, so direct interactions with the
+    // scrollbar widget (drag, arrow / track click, Page Up / Down,
+    // Home / End) saw `mUserInteractionDepth` flip back to zero
+    // before `valueChanged` actually fired — and the edge transition
+    // was therefore treated as programmatic, not user-initiated.
+    //
+    // The fix replaces the filter with a connection to
+    // `QAbstractSlider::actionTriggered`, which fires synchronously
+    // *before* the slider value is updated. `triggerAction(...)` is
+    // the public API the same internal handlers (mouse press on the
+    // arrows, key press on the slider) ultimately call, so driving
+    // it directly here is the closest in-process equivalent of the
+    // user clicking the scrollbar.
+    void testFollowNewestDisengagesOnScrollbarAction()
+    {
+        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        QVERIFY(followAction != nullptr);
+        QVERIFY(tableView != nullptr);
+
+        followAction->setEnabled(true);
+        followAction->setChecked(true);
+        QVERIFY(followAction->isChecked());
+
+        QScrollBar *scrollBar = tableView->verticalScrollBar();
+        QVERIFY(scrollBar != nullptr);
+        scrollBar->setRange(0, 1000);
+        scrollBar->setValue(scrollBar->maximum());
+
+        QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        QVERIFY(awaySpy.isValid());
+
+        // `triggerAction(SliderToMinimum)` mirrors a Home keypress on
+        // the scrollbar: the slider emits `actionTriggered`, our slot
+        // sets `mNextValueChangeIsUser`, then the action proper
+        // updates the slider value and fires `valueChanged` — which
+        // now sees the user flag and emits `userScrolledAwayFromTail`.
+        scrollBar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(awaySpy.count(), 1);
+        QVERIFY(!followAction->isChecked());
+    }
+
+    // Companion to `testFollowNewestDisengagesOnScrollbarAction`:
+    // **Show newest lines first** mode preserves the user's reading
+    // position when new lines arrive. Without preservation each
+    // incoming batch grows the proxy's row count above the user's
+    // current viewport row, the scrollbar value stays where it was,
+    // and the visible content visually shifts down by the new rows'
+    // height. With preservation the view records the topmost visible
+    // row + its pixel offset before the structural change and
+    // re-aligns the scrollbar after, so the row stays at the same
+    // pixel position from the user's perspective (chat-app pattern).
+    void testNewestFirstPreservesReadingPositionAcrossBatches()
+    {
+        StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QVERIFY(streamOrderProxy != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+
+        // The preservation hook is the **Follow newest OFF, user is
+        // reading** path. In production a real scroll-away would
+        // disengage Follow newest via `userScrolledAwayFromTail`; the
+        // test bypasses that path by writing the scrollbar value
+        // programmatically below, so we have to uncheck the action
+        // up front to match the same end state.
+        followAction->setEnabled(true);
+        followAction->setChecked(false);
+
+        // Force a known viewport size so `visualRect` / `indexAt`
+        // produce meaningful pixel coordinates and the scrollbar
+        // reaches a non-zero range below.
+        tableView->resize(400, 200);
+        tableView->show();
+        QCoreApplication::processEvents();
+
+        // Reverse the proxy and orient the table view's tail edge so
+        // the preservation hook (which only fires for `TailEdge::Top`)
+        // is in the right configuration. Mirrors what
+        // `MainWindow::ApplyStreamingDisplayOrder` does in production.
+        streamOrderProxy->SetReversed(true);
+        tableView->SetTailEdge(LogTableView::TailEdge::Top);
+
+        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        auto makeBatch = [&keys, valueKey](int64_t firstLineId, int count, bool declareNewKey) {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = static_cast<size_t>(firstLineId);
+            if (declareNewKey)
+            {
+                batch.newKeys.emplace_back(std::string("value"));
+            }
+            batch.streamLines.reserve(static_cast<size_t>(count));
+            for (int i = 0; i < count; ++i)
+            {
+                const int64_t lineId = firstLineId + static_cast<int64_t>(i);
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(valueKey, loglib::LogValue{lineId});
+                batch.streamLines.emplace_back(
+                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", static_cast<size_t>(lineId))
+                );
+            }
+            return batch;
+        };
+
+        // Seed the model with enough rows that the viewport is
+        // genuinely scrollable.
+        sink->OnBatch(makeBatch(1, 50, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 50);
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        QVERIFY(vbar != nullptr);
+        if (vbar->maximum() == 0)
+        {
+            QSKIP("offscreen layout did not produce a scrollable viewport for the seeded rows");
+        }
+
+        // Scroll to the middle so the view is *not* at the
+        // configured tail edge — preservation only kicks in here.
+        const int midValue = vbar->maximum() / 2;
+        vbar->setValue(midValue);
+        QCoreApplication::processEvents();
+        QVERIFY(vbar->value() > 0);
+
+        // Capture the topmost visible row (mapped through both
+        // proxies down to the source model) and the scrollbar value
+        // at the start of the structural change.
+        const QModelIndex topProxyBefore = tableView->indexAt(QPoint(0, 1));
+        QVERIFY2(topProxyBefore.isValid(), "indexAt(0,1) must land inside a row");
+        const int valueBefore = vbar->value();
+
+        // Push another batch. In reversed mode the new rows land at
+        // the visual top of the proxy; without preservation the
+        // scrollbar value stays at `valueBefore` and the visible
+        // content slides down by the new rows' total height. With
+        // preservation the scrollbar advances by that same amount so
+        // the previously-visible content stays put.
+        sink->OnBatch(makeBatch(51, 5, false));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 55);
+
+        const int valueAfter = vbar->value();
+        QVERIFY2(
+            valueAfter > valueBefore,
+            qPrintable(QStringLiteral("scrollbar value should advance to compensate for the new top rows; "
+                                      "before=%1 after=%2")
+                           .arg(valueBefore)
+                           .arg(valueAfter))
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: the alternating-row colours used to flip on every
+    // newest-first batch arrival because Qt's stock `alternateRowColors`
+    // is keyed off the visual row index and a top-insert shifts every
+    // existing row's parity. We initially tried to pin the parity to
+    // the source row in a custom delegate, but the CSS-based table
+    // stylesheet (`alternate-background-color`) bypassed the
+    // delegate's `QStyleOptionViewItem::Alternate` override and the
+    // rows kept flickering. The accepted fallback is to disable
+    // alternating rows entirely while newest-first is active and let
+    // the table render with a single base tone there; the default
+    // bottom-tail mode keeps the visual reading aid because rows
+    // append at the bottom (visual parity is stable).
+    //
+    // This test asserts the toggle in `MainWindow::ApplyStreamingDisplayOrder`
+    // mirrors the persisted `StreamingControl::IsNewestFirst()` value
+    // both ways. We poke the preference, fire the apply path, and
+    // read back `QTableView::alternatingRowColors`.
+    void testAlternatingRowColoursDisabledInNewestFirstMode()
+    {
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+
+        const bool originalNewestFirst = StreamingControl::IsNewestFirst();
+        auto restoreNewestFirst =
+            qScopeGuard([originalNewestFirst]() { StreamingControl::SetNewestFirst(originalNewestFirst); });
+
+        // Default-mode baseline: alternation is on so users still get
+        // the lighter/darker reading aid while reading static logs or
+        // a bottom-tail stream.
+        StreamingControl::SetNewestFirst(false);
+        window->ApplyStreamingDisplayOrder();
+        QVERIFY2(tableView->alternatingRowColors(), "default bottom-tail mode should keep alternating row colours on");
+
+        // Newest-first flips the toggle off — see the comment in
+        // `ApplyStreamingDisplayOrder` for the rationale.
+        StreamingControl::SetNewestFirst(true);
+        window->ApplyStreamingDisplayOrder();
+        QVERIFY2(
+            !tableView->alternatingRowColors(), "newest-first mode should disable alternating row colours to avoid the "
+                                                "row-parity flicker on every incoming batch"
+        );
+
+        // Toggling back restores the reading aid (no-op for users who
+        // never enabled newest-first, but covers the "I tried it,
+        // didn't like it, switched back" path).
+        StreamingControl::SetNewestFirst(false);
+        window->ApplyStreamingDisplayOrder();
+        QVERIFY2(
+            tableView->alternatingRowColors(),
+            "switching newest-first off should re-enable alternating row colours"
+        );
     }
 
 private:
