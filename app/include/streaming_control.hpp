@@ -3,8 +3,7 @@
 #include <cstddef>
 
 /// Persistence facade for the **Streaming** group of `PreferencesEditor`.
-/// Mirrors `AppearanceControl`'s Ok/Cancel transactional pattern (PRD §6
-/// *Preferences*, OQ-10): the preferences editor mutates the live config
+/// Mirrors `AppearanceControl`'s Ok/Cancel transactional pattern: the preferences editor mutates the live config
 /// in-memory; `SaveConfiguration` (Ok) commits to `QSettings`,
 /// `LoadConfiguration` (Cancel / startup) reverts to the on-disk value.
 ///
@@ -14,11 +13,14 @@
 class StreamingControl
 {
 public:
-    /// Default retention cap surfaced in the Preferences spinbox. Mirrors
-    /// `LogModel::kDefaultRetentionLines` (PRD 4.5.2).
+    /// Default retention cap surfaced in the Preferences spinbox. Also
+    /// the fallback that `LogModel::BeginStreaming(StreamLineSource, ...)`
+    /// applies when no other value has been set, so this constant is
+    /// the single source of truth for the default cap across both the
+    /// preferences UI and the model layer.
     static constexpr size_t kDefaultRetentionLines = 10'000;
 
-    /// Allowed retention range surfaced by the spinbox. Mirrors PRD 4.5.2
+    /// Allowed retention range surfaced by the spinbox. Mirrors 
     /// (`1 000 .. 1 000 000`).
     static constexpr size_t kMinRetentionLines = 1'000;
     static constexpr size_t kMaxRetentionLines = 1'000'000;

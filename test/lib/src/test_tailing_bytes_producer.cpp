@@ -158,7 +158,7 @@ std::vector<std::string> SplitLines(std::string_view text)
 
 /// Test-default options: no native watcher, short polling cadence so
 /// the test wall-clock stays small. The polling interval matches the
-/// 250 ms heartbeat the PRD calls out, scaled down 10x for tests.
+/// 250 ms heartbeat the  out, scaled down 10x for tests.
 TailingBytesProducer::Options FastPollOptions()
 {
     TailingBytesProducer::Options options;
@@ -285,7 +285,7 @@ TEST_CASE(
     "[TailingBytesProducer]"
 )
 {
-    // PRD §7 *Line buffering*: a 2 MiB no-newline file with a 128 KiB
+    // : a 2 MiB no-newline file with a 128 KiB
     // scan budget must not wedge the ctor. `Prefill` walks backwards
     // through `prefillChunkBytes` slices counting newlines; a file
     // whose last `retentionLines + 1` newlines are beyond the budget
@@ -499,7 +499,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     CHECK(firstLines[0] == "complete");
 
     // Rotate via in-place truncate. The partial "incomplete" must be
-    // discarded (PRD 4.8.7.i / §7 *Line buffering*).
+    // discarded.
     Overwrite(path, "");
     std::this_thread::sleep_for(ScaledMs(50ms));
     Append(path, "after\n");
@@ -530,7 +530,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
     CHECK(preLines[0] == "first");
 
     // Now Stop. The partial-line buffer must be flushed as a synthetic
-    // last line (PRD 4.7.2.ii).
+    // last line.
     source.Stop();
 
     auto post = DrainUntil(source, ScaledMs(1000ms), [&](const std::string & /*acc*/) { return source.IsClosed(); });
@@ -562,10 +562,10 @@ TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle fil
     const auto elapsed = std::chrono::steady_clock::now() - waitStart;
 
     CHECK(waitReturned.load(std::memory_order_acquire));
-    // The PRD 8.6 budget is 500 ms for stop teardown including I/O
-    // unwind; on this idle source we expect well under that. Scale the
-    // budget by `LOGLIB_TEST_TIME_SCALE` for slow CI runners — the PRD
-    // budget itself is fixed, but we don't want to flake on a 10x-slow
+    // The budget is 500 ms for stop teardown including I/O unwind; on this
+    // idle source we expect well under that. Scale the budget by
+    // `LOGLIB_TEST_TIME_SCALE` for slow CI runners -- the documented budget
+    // itself is fixed, but we don't want to flake on a 10x-slow
     // shared-runner CPU.
     CHECK(elapsed < ScaledMs(500ms));
 }
@@ -595,7 +595,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
     // against the size-shrunk window). Each rotation flips the path's
     // inode, so the worker observes every one regardless of CI scheduling
     // jitter. We then assert on the *callback fire* count: the debounce
-    // collapses all three into one user-visible rotation event (PRD 4.8.9).
+    // collapses all three into one user-visible rotation event.
     for (int i = 0; i < 3; ++i)
     {
         const auto rotated = dir.File("debounce.log." + std::to_string(i));
@@ -613,7 +613,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
 
     // The internal RotationCount counts every detected rotation; the
     // external callback fires at most once per debounce window. The
-    // callback assertion is the PRD-mandated semantic; the count
+    // callback assertion is the documented semantic; the count
     // assertion proves the worker actually observed each event (so the
     // debounce isn't trivially satisfied by missed events).
     CHECK(source.RotationCount() >= 3);
@@ -649,7 +649,7 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
     }
     CHECK(source.IsClosed());
 
-    // Subsequent Read returns 0 with IsClosed true (PRD 4.9.2.i bullet 3).
+    // Subsequent Read returns 0 with IsClosed true.
     std::array<char, 8> buf{};
     CHECK(source.Read(std::span<char>(buf)) == 0);
     CHECK(source.IsClosed());
@@ -657,7 +657,7 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
 
 TEST_CASE("TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status]")
 {
-    // PRD 4.8.8 / §6 *Status bar*: when the watched file disappears
+    //  / §6 *Status bar*: when the watched file disappears
     // during a delete-then-recreate rotation the source transitions
     // into `Waiting` so the GUI can swap the status-bar label to
     // "Source unavailable …". A subsequent re-create lifts the source

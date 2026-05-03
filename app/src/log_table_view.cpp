@@ -20,7 +20,7 @@ LogTableView::LogTableView(QWidget *parent) : QTableView(parent)
 
     // Edge-triggered emission of `userScrolledAwayFromTail` /
     // `userScrolledToTail` so the `MainWindow` only flips the
-    // **Follow newest** toggle on transition (PRD 4.3.3). The handler
+    // **Follow newest** toggle on transition. The handler
     // is gated on `mNextValueChangeIsUser` so non-user value changes
     // (programmatic `scrollTo`, value clamping driven by
     // `endInsertRows`, hover/repaint-induced internal scroll updates,
@@ -113,7 +113,7 @@ void LogTableView::keyPressEvent(QKeyEvent *event)
     // may synchronously update the vertical scrollbar from inside Qt's
     // base implementation. Mark the next `valueChanged` as
     // user-initiated so a resulting "no longer at tail" transition is
-    // treated as a real scroll away (PRD 4.3.3). The flag is cleared
+    // treated as a real scroll away. The flag is cleared
     // unconditionally on the way out so a key event that doesn't
     // happen to scroll cannot leak its "user" attribution onto the
     // *next* (potentially programmatic) value change.

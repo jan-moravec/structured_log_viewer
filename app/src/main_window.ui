@@ -28,7 +28,6 @@
      <string>File</string>
     </property>
     <addaction name="actionOpen"/>
-    <addaction name="actionOpenJsonLogs"/>
     <addaction name="actionOpenLogStream"/>
     <addaction name="separator"/>
     <addaction name="separator"/>
@@ -97,11 +96,6 @@
    </property>
    <property name="toolTip">
     <string>Load Configuration...</string>
-   </property>
-  </action>
-  <action name="actionOpenJsonLogs">
-   <property name="text">
-    <string>Open JSON Logs...</string>
    </property>
   </action>
   <action name="actionSaveConfiguration">

@@ -11,7 +11,7 @@
 #include <string_view>
 #include <utility>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 namespace
@@ -197,4 +197,4 @@ bool PromoteLineTimestamps(
     return anyPromoted;
 }
 
-} // namespace loglib::detail
+} // namespace loglib::internal

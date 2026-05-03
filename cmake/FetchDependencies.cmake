@@ -195,7 +195,7 @@ endif()
 # FSEvents) plus its own polling fallback. We always link the static library
 # variant (efsw-static) so on Windows MSVC there is no extra runtime DLL to
 # stage next to the executable and the /MD vs /MT runtime-library setting
-# matches the rest of the project (PRD §7 *Filesystem watcher choice*).
+# matches the rest of the project.
 if(NOT USE_SYSTEM_EFSW)
     FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.6.1 SYSTEM EXCLUDE_FROM_ALL)
     block()

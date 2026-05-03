@@ -10,12 +10,11 @@
 #include <windows.h>
 #endif
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 /// Cross-platform "is this the same file as last time?" identity used by
-/// `TailingBytesProducer` rotation detection (PRD 4.8.6 / §7 *Cross-platform
-/// file identity*).
+/// `TailingBytesProducer` rotation detection.
 ///
 /// On POSIX the identity is `(st_dev, st_ino)`; on Windows it is the
 /// volume serial number combined with `nFileIndexHigh:nFileIndexLow`
@@ -24,7 +23,7 @@ namespace loglib::detail
 /// (e.g. for cross-volume rotation detection) does not require an ABI
 /// change.
 ///
-/// **FAT/exFAT and some SMB caveat (PRD 4.8.6 last paragraph).** On
+/// **FAT/exFAT and some SMB caveat.** On
 /// filesystems where the file index is not stable across rename, the
 /// identity comparison is unreliable. The size-shrunk branch (4.8.6.iii)
 /// covers `copytruncate` on those filesystems; rename-and-create
@@ -78,4 +77,4 @@ using NativeFileHandle = int; // POSIX file descriptor
 /// invalid (`-1` / `INVALID_HANDLE_VALUE`) or the OS call fails.
 [[nodiscard]] FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept;
 
-} // namespace loglib::detail
+} // namespace loglib::internal

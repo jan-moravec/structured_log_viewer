@@ -43,6 +43,14 @@ public:
     /// Toggles the reversed view. No-op when @p reversed already matches
     /// the current state. Triggers Qt's standard sort/refresh signals so
     /// any attached view updates immediately.
+    ///
+    /// **Do not call this directly from production code** — go through
+    /// `MainWindow::ApplyStreamingDisplayOrder`, which is the single
+    /// sync point for the newest-first orientation (proxy reversal,
+    /// `LogTableView` tail edge, and alternating-row-colours toggle
+    /// all need to move together; calling `SetReversed` in isolation
+    /// leaves the table view's Follow-tail anchor pointing at the
+    /// wrong edge).
     void SetReversed(bool reversed);
 
     /// Whether the proxy is currently in the reversed (newest-first)

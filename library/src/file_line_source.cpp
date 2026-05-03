@@ -17,14 +17,6 @@ FileLineSource::FileLineSource(std::unique_ptr<LogFile> file) : mOwnedFile(std::
     mFile = mOwnedFile.get();
 }
 
-FileLineSource::FileLineSource(LogFile &file) noexcept : mFile(&file)
-{
-    // Borrowing constructor: `mOwnedFile` stays empty so `ReleaseFile()`
-    // returns null. The caller (`BufferingSink` for `LogParser::Parse`,
-    // the parser's `LogFile&` shim for the static GUI path) keeps the
-    // referenced file alive for the source's lifetime.
-}
-
 FileLineSource::~FileLineSource() = default;
 
 const std::filesystem::path &FileLineSource::Path() const noexcept

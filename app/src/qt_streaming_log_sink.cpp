@@ -197,7 +197,7 @@ void QtStreamingLogSink::OnStarted()
 
 void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
 {
-    // Worker-side Pause check (PRD 4.2.2.v / 4.10.1): redirect parsed
+    // Worker-side Pause check: redirect parsed
     // batches into the paused buffer rather than posting per-batch
     // `Qt::QueuedConnection` lambdas so the Qt event-queue doesn't
     // accumulate as a third unbounded memory pool invisible to
@@ -212,11 +212,11 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
         if (mPaused.load(std::memory_order_acquire))
         {
             mPausedBatches.push_back(std::move(batch));
-            // Keep the buffered + visible total within `cap` (PRD 4.2.2.iv).
+            // Keep the buffered + visible total within `cap`.
             // The visible row count is the model's, but we cannot read it
             // from the worker thread; pessimistically bound the buffer alone
             // to `cap`. The visible count is recouped on Resume by FIFO
-            // eviction in `LogModel::AppendBatch` (PRD 4.10.3). This is the
+            // eviction in `LogModel::AppendBatch`. This is the
             // "paused buffer drops oldest" half of 4.2.2.iv; the GUI side
             // additionally calls `TrimPausedBufferTo` from
             // `LogModel::SetRetentionCap` to trim against the *combined*
@@ -236,9 +236,9 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                     // atomically (its `localLineOffsets` may exceed
                     // `lines`, so partial-prefix trimming would break the
                     // invariant `LogTable::AppendBatch` relies on), so the
-                    // real drop count is `rows`, not `toDrop`. The PRD
-                    // 4.2.2.iv "dropped while paused" indicator must
-                    // surface that overshoot.
+                    // real drop count is `rows`, not `toDrop`. The
+                    // "dropped while paused" indicator must surface
+                    // that overshoot.
                     size_t linesDropped = 0;
                     // Same partial-trim caveat as `TrimPausedBufferTo`:
                     // static-path batches are evicted whole (their

@@ -13,7 +13,7 @@ namespace loglib
 class LineSource;
 }
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 /// Discriminator for the 16-byte compact internal value representation.
@@ -189,4 +189,4 @@ private:
 
 static_assert(sizeof(CompactLineFields) == 16, "CompactLineFields must stay 16 bytes (Phase 2 RAM target)");
 
-} // namespace loglib::detail
+} // namespace loglib::internal

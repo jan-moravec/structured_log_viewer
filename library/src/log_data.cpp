@@ -88,6 +88,30 @@ const FileLineSource *LogData::FrontFileSource() const noexcept
     return dynamic_cast<const FileLineSource *>(mSources.front().get());
 }
 
+FileLineSource *LogData::BackFileSource() noexcept
+{
+    for (auto it = mSources.rbegin(); it != mSources.rend(); ++it)
+    {
+        if (auto *fs = dynamic_cast<FileLineSource *>(it->get()); fs != nullptr)
+        {
+            return fs;
+        }
+    }
+    return nullptr;
+}
+
+const FileLineSource *LogData::BackFileSource() const noexcept
+{
+    for (auto it = mSources.rbegin(); it != mSources.rend(); ++it)
+    {
+        if (const auto *fs = dynamic_cast<const FileLineSource *>(it->get()); fs != nullptr)
+        {
+            return fs;
+        }
+    }
+    return nullptr;
+}
+
 StreamLineSource *LogData::FrontStreamSource() noexcept
 {
     if (mSources.empty())
@@ -172,7 +196,7 @@ void LogData::Merge(LogData &&other)
         // source's arena, which moved into `mSources` above with its
         // bytes intact, so no rebasing is needed here.
         const auto values = line.CompactValues();
-        std::vector<std::pair<KeyId, detail::CompactLogValue>> remapped;
+        std::vector<std::pair<KeyId, internal::CompactLogValue>> remapped;
         remapped.reserve(values.size());
         for (const auto &entry : values)
         {
@@ -206,12 +230,14 @@ void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> line
 
     if (!lineOffsets.empty())
     {
-        // The static-file streaming path installs exactly one
-        // `FileLineSource`; multi-file goes through `Merge`. The
-        // live-tail streaming path passes an empty `lineOffsets` (its
-        // `StreamLineSource` owns per-line bytes directly) and so
-        // bypasses this branch.
-        FileLineSource *fileSource = FrontFileSource();
+        // Route per-batch line offsets to the *most recently appended*
+        // `FileLineSource`. For a single-file session this is the only
+        // file source (= `FrontFileSource()`); for sequential multi-
+        // file streaming (`LogModel::AppendStreaming`) it points at the
+        // currently-streamed file. The live-tail streaming path passes
+        // empty `lineOffsets` (its `StreamLineSource` owns per-line
+        // bytes directly) and so bypasses this branch.
+        FileLineSource *fileSource = BackFileSource();
         assert(fileSource != nullptr);
         if (fileSource != nullptr)
         {

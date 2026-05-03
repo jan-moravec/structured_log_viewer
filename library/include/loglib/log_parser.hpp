@@ -12,8 +12,7 @@ namespace loglib
 {
 
 class FileLineSource;
-class LogFile;
-class StreamingLogSink;
+class LogParseSink;
 class StreamLineSource;
 
 /// Buffered output of a synchronous parse.
@@ -25,9 +24,12 @@ struct ParseResult
 
 /// Base class for log-format parsers. New formats implement `IsValid`,
 /// the two `ParseStreaming(LineSource&, ...)` virtuals, and `ToString`.
-/// The convenience entry points (`Parse(path)` and the `LogFile&`
-/// `ParseStreaming` shim) are non-virtual wrappers that route through
-/// the static-file virtual.
+///
+/// The synchronous "parse a file to a `ParseResult`" helper used to
+/// live here as `Parse(path)`; it is now the free function
+/// `loglib::ParseFile(parser, path)` declared in `loglib/parse_file.hpp`.
+/// Production GUI code never goes through that helper -- the static-file
+/// open path runs through the streaming entry below.
 class LogParser
 {
 public:
@@ -35,31 +37,22 @@ public:
 
     virtual bool IsValid(const std::filesystem::path &file) const = 0;
 
-    /// Synchronous parse: routes through `ParseStreaming` into a `BufferingSink`.
-    ParseResult Parse(const std::filesystem::path &file) const;
-
     /// Static-file streaming entry point: emits `LogLine`s tagged with
     /// `&source` (a long-lived `FileLineSource`, typically owned by the
     /// caller's sink). The synchronous `Parse(path)` routes through this
     /// virtual so the emitted line pointers never alias a stack-local
     /// borrowing wrapper.
     virtual void
-    ParseStreaming(FileLineSource &source, StreamingLogSink &sink, ParserOptions options = {}) const = 0;
+    ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /// Live-tail streaming entry point: emits `LogLine`s tagged with
     /// `&source` (a long-lived `StreamLineSource`, typically owned by
     /// the caller's `LogTable`). Each emitted line carries the 1-based
     /// monotonic id assigned by `StreamLineSource::AppendLine` so the
     /// model layer can resolve the row's raw bytes via the source long
-    /// after parsing has moved on (PRD 4.10.4).
+    /// after parsing has moved on.
     virtual void
-    ParseStreaming(StreamLineSource &source, StreamingLogSink &sink, ParserOptions options = {}) const = 0;
-
-    /// Backward-compatible overload for the static-file path: wraps @p
-    /// file in a borrowing `FileLineSource` and forwards to the
-    /// source-based virtual. The caller retains ownership of @p file;
-    /// the wrapper is stack-local.
-    void ParseStreaming(LogFile &file, StreamingLogSink &sink, ParserOptions options = {}) const;
+    ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /// Renders a parsed line back to the parser's native text form.
     virtual std::string ToString(const LogLine &line) const = 0;

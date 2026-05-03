@@ -7,6 +7,7 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <cassert>
 #include <span>
 #include <string>
 #include <string_view>
@@ -44,7 +45,7 @@ void LogTable::Reset()
     RefreshColumnKeyIds();
 }
 
-void LogTable::BeginStreaming(std::unique_ptr<FileLineSource> source)
+void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mLastBackfillRange.reset();
 
@@ -52,8 +53,9 @@ void LogTable::BeginStreaming(std::unique_ptr<FileLineSource> source)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
-        // Stage B promotes Type::time inline; later-discovered time columns
-        // are back-filled in `AppendBatch`.
+        // Both pipelines (`RunStaticParserPipeline` Stage B and
+        // `RunStreamingParseLoop`) promote `Type::time` inline; later-
+        // discovered time columns are back-filled in `AppendBatch`.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
@@ -69,28 +71,30 @@ void LogTable::BeginStreaming(std::unique_ptr<FileLineSource> source)
     RefreshColumnKeyIds();
 }
 
-void LogTable::BeginStreaming(std::unique_ptr<StreamLineSource> source)
+void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
 {
+    assert(source != nullptr);
+    if (source == nullptr)
+    {
+        return;
+    }
+
     mLastBackfillRange.reset();
 
-    if (source)
-    {
-        std::vector<LogLine> noLines;
-        LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
-        // Streaming pipeline promotes `Type::time` inline (see
-        // `RunStreamingParserToLogLines`); later-discovered time columns
-        // are back-filled in `AppendBatch`.
-        fresh.MarkTimestampsParsed();
-        mData = std::move(fresh);
-    }
-    else
-    {
-        mData = LogData{};
-        mData.MarkTimestampsParsed();
-    }
+    // Splice the new source into the session's source list. The
+    // existing `mData.mLines` / `mData.mKeys` are preserved, which is
+    // the whole point: rows from prior files stay visible and the
+    // KeyIndex stays canonical so the next parser worker sees the same
+    // KeyIds as the previous one (columns line up). The parser worker
+    // for @p source emits `LogLine`s tagged with `&*source`, so per-
+    // row byte resolution dispatches correctly across files.
+    mData.Sources().push_back(std::move(source));
 
-    RefreshSnapshotTimeKeys();
-    RefreshColumnKeyIds();
+    // The snapshot time-column KeyIds and column-key cache stay valid:
+    // the configuration is gated for the duration of the session, and
+    // any post-snapshot time keys discovered during the prior file's
+    // parse are still tracked in `mPostSnapshotTimeKeys` for inline
+    // back-fill in subsequent `AppendBatch` calls.
 }
 
 void LogTable::AppendBatch(StreamedBatch batch)
@@ -324,7 +328,7 @@ void LogTable::EvictPrefixRows(size_t count)
     // Tell the source to release per-line storage for the rows we're
     // about to drop. Sources that don't support eviction (e.g.
     // `FileLineSource` — the file is mmap'd in its entirety) treat the
-    // call as a no-op (PRD 4.5 / 4.10.3).
+    // call as a no-op.
     auto evictSource = [&](size_t firstSurvivingLineId) {
         for (auto &source : mData.Sources())
         {

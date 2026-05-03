@@ -10,7 +10,7 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/streaming_log_sink.hpp>
+#include <loglib/log_parse_sink.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -886,8 +886,8 @@ StreamedBatch MakeStreamBatch(
         const size_t publishedId = streamSource.AppendLine("raw" + std::to_string(lineId), std::string{});
         REQUIRE(publishedId == lineId);
 
-        std::vector<std::pair<KeyId, detail::CompactLogValue>> compactValues;
-        compactValues.emplace_back(valueKey, detail::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        std::vector<std::pair<KeyId, internal::CompactLogValue>> compactValues;
+        compactValues.emplace_back(valueKey, internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
@@ -896,7 +896,7 @@ StreamedBatch MakeStreamBatch(
 } // namespace
 
 // `LogTable::EvictPrefixRows` is the library-level primitive `LogModel`'s FIFO
-// retention machinery (PRD 4.5 / 4.10.3) is built on. The Qt-side tests in
+// retention machinery is built on. The Qt-side tests in
 // `test/app/src/main_window_test.cpp` cover the begin/endRemoveRows wiring;
 // here we drive the row-vector mechanics directly so a regression in the
 // vector-erase path surfaces in the library test suite without needing the
@@ -964,7 +964,7 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
     constexpr size_t kCap = 1000;
     constexpr size_t kGiantBatch = 2000;
 
-    // Mirrors the GUI-side "giant-batch collapse" (PRD 4.10.3.iii): the head
+    // Mirrors the GUI-side "giant-batch collapse": the head
     // of the batch is dropped before it lands in `LogTable::AppendBatch`, so
     // the visible model never breaches the cap. The synthesized rows are
     // numbered to match what the GUI side would have surfaced after head
@@ -1017,4 +1017,93 @@ TEST_CASE(
     REQUIRE(table.RowCount() == 3);
     table.EvictPrefixRows(99);
     CHECK(table.RowCount() == 0);
+}
+
+// `AppendStreaming` is the multi-file streaming-append entry point used
+// by the GUI's sequential file-queue open flow. It must (i) install the
+// new source without resetting `mData`, (ii) reuse the existing
+// `KeyIndex` so columns line up across files, and (iii) make per-batch
+// line offsets land in the *new* source via `LogData::BackFileSource()`.
+TEST_CASE(
+    "LogTable::AppendStreaming -- multi-file accumulation preserves rows and routes offsets to the back source",
+    "[log_table][append_streaming]"
+)
+{
+    // Declare *both* `TestLogFile`s above `LogTable`: their dtors run
+    // `std::filesystem::remove` (throwing variant); on Windows you cannot
+    // delete an mmap'd file, so they must outlive the table that holds
+    // the mmap.
+    TestLogFile fileA("multifile_a.json");
+    fileA.Write("alpha\nbeta\n");
+    TestLogFile fileB("multifile_b.json");
+    fileB.Write("gamma\ndelta\n");
+
+    auto sourceA = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fileA.GetFilePath()));
+    FileLineSource *sourceAPtr = sourceA.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(sourceA));
+    KeyIndex &keys = table.Keys();
+
+    // First file's batch: one row, two new keys. We don't push any
+    // `localLineOffsets` here -- this test focuses on `AppendStreaming`'s
+    // routing of the *next* batch's offsets, not on first-file accounting.
+    StreamedBatch batchA;
+    batchA.firstLineNumber = 1;
+    batchA.lines.push_back(MakeLine(keys, *sourceAPtr, {{"key1", std::string("a1")}, {"key2", std::string("a2")}}));
+    batchA.newKeys.emplace_back("key1");
+    batchA.newKeys.emplace_back("key2");
+    table.AppendBatch(std::move(batchA));
+
+    const KeyId k1 = keys.Find(std::string("key1"));
+    const KeyId k2 = keys.Find(std::string("key2"));
+    REQUIRE(k1 != kInvalidKeyId);
+    REQUIRE(k2 != kInvalidKeyId);
+
+    REQUIRE(table.RowCount() == 1);
+    REQUIRE(table.Data().Sources().size() == 1);
+    REQUIRE(table.Data().FrontFileSource() == sourceAPtr);
+    REQUIRE(table.Data().BackFileSource() == sourceAPtr);
+
+    const size_t fileAOffsetCountBefore = sourceAPtr->File().GetLineCount();
+
+    // Append a second file. Existing rows / KeyIndex / column cache must
+    // survive.
+    auto sourceB = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fileB.GetFilePath()));
+    FileLineSource *sourceBPtr = sourceB.get();
+
+    table.AppendStreaming(std::move(sourceB));
+
+    CHECK(table.RowCount() == 1);
+    REQUIRE(table.Data().Sources().size() == 2);
+    CHECK(table.Data().FrontFileSource() == sourceAPtr);
+    CHECK(table.Data().BackFileSource() == sourceBPtr);
+
+    // KeyIndex survived -- the same KeyIds reused below.
+    CHECK(keys.Find(std::string("key1")) == k1);
+    CHECK(keys.Find(std::string("key2")) == k2);
+
+    // Second file's batch: one row using the existing keys (no newKeys)
+    // plus a per-line offset that must land in fileB, not fileA.
+    StreamedBatch batchB;
+    batchB.firstLineNumber = 1;
+    batchB.lines.push_back(MakeLine(keys, *sourceBPtr, {{"key1", std::string("b1")}, {"key2", std::string("b2")}}));
+    // The `LogFile` ctor seeds `mLineOffsets = [0]`, so any strictly
+    // greater offset suffices to test routing.
+    batchB.localLineOffsets = {6};
+    table.AppendBatch(std::move(batchB));
+
+    CHECK(table.RowCount() == 2);
+    CHECK(table.ColumnCount() == 2);
+
+    // The new offset landed in fileB, leaving fileA's offset table
+    // untouched.
+    CHECK(sourceAPtr->File().GetLineCount() == fileAOffsetCountBefore);
+    CHECK(sourceBPtr->File().GetLineCount() == 1);
+
+    // Cross-file row resolution: row 0 came from fileA, row 1 from fileB.
+    const auto &line0 = table.Data().Lines()[0];
+    const auto &line1 = table.Data().Lines()[1];
+    CHECK(line0.Source() == sourceAPtr);
+    CHECK(line1.Source() == sourceBPtr);
 }

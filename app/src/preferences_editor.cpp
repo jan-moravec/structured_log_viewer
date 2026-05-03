@@ -26,7 +26,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
 
     mSizeSpinBox->setRange(6, 72);
 
-    // Stream retention range mirrors PRD 4.5.2 (1 000 .. 1 000 000).
+    // Stream retention range mirrors  (1 000 .. 1 000 000).
     mStreamRetentionSpinBox->setRange(
         static_cast<int>(StreamingControl::kMinRetentionLines), static_cast<int>(StreamingControl::kMaxRetentionLines)
     );
@@ -62,8 +62,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
         qApp->setStyle(QStyleFactory::create(styleName));
     });
 
-    // Stream retention is applied transactionally on Ok (PRD §6
-    // *Preferences*, OQ-10): the spinbox does not push live updates so a
+    // Stream retention is applied transactionally on Ok: the spinbox does not push live updates so a
     // Cancel must revert. The Ok handler below mirrors the value into
     // `StreamingControl` and emits `streamingRetentionChanged` for the
     // `MainWindow` to apply (task 5.12).
@@ -97,7 +96,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
         // before notifying the `MainWindow`, so an observer querying
         // `StreamingControl::RetentionLines()` /
         // `StreamingControl::IsNewestFirst()` from a slot sees the new
-        // values (PRD §6 *Preferences*, OQ-10).
+        // values.
         const auto retention = static_cast<size_t>(mStreamRetentionSpinBox->value());
         const bool newestFirst = mStreamNewestFirstCheckBox->isChecked();
         const bool newestFirstChanged = (newestFirst != StreamingControl::IsNewestFirst());

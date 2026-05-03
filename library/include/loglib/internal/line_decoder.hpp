@@ -1,7 +1,7 @@
 #pragma once
 
 #include "loglib/internal/compact_log_value.hpp"
-#include "loglib/internal/parser_pipeline.hpp"
+#include "loglib/internal/parse_runtime.hpp"
 #include "loglib/key_index.hpp"
 
 #include <concepts>
@@ -10,11 +10,11 @@
 #include <utility>
 #include <vector>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 /// Format-specific record decoder used by the streaming pipeline.
-/// `RunStreamingParserToLogLines` in `parser_pipeline.hpp` feeds the
+/// `RunStreamingParseLoop` in `streaming_parse_loop.hpp` feeds the
 /// decoder one record at a time and stays format-agnostic; per-format
 /// code (JSON, future logfmt / CSV / syslog / key=value) implements
 /// this concept.
@@ -55,4 +55,4 @@ concept CompactLineDecoder = requires(
     } -> std::convertible_to<bool>;
 };
 
-} // namespace loglib::detail
+} // namespace loglib::internal

@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 /// Per-worker per-time-column same-bytes short-circuit, exploiting the common
@@ -57,4 +57,4 @@ bool PromoteLineTimestamps(
     std::string_view ownedArena
 );
 
-} // namespace loglib::detail
+} // namespace loglib::internal

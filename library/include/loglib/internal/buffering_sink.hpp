@@ -3,7 +3,7 @@
 #include "loglib/file_line_source.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_data.hpp"
-#include "loglib/streaming_log_sink.hpp"
+#include "loglib/log_parse_sink.hpp"
 
 #include <memory>
 #include <string>
@@ -12,9 +12,9 @@
 namespace loglib::internal
 {
 
-/// `StreamingLogSink` adapter behind the synchronous `LogParser::Parse(path)`
+/// `LogParseSink` adapter behind the synchronous `LogParser::Parse(path)`
 /// overload: accumulates every batch into a single `LogData`. One sink per parse.
-class BufferingSink : public StreamingLogSink
+class BufferingSink : public LogParseSink
 {
 public:
     /// Takes ownership of @p source and routes batches into an internal

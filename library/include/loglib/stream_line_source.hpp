@@ -26,8 +26,7 @@ class BytesProducer;
 ///
 /// Design notes:
 ///
-///   - The byte producer (`BytesProducer`, to be renamed `BytesProducer` in
-///     a follow-up phase) drives I/O — `Read` / `WaitForBytes` /
+///   - The `BytesProducer` drives I/O -- `Read` / `WaitForBytes` /
 ///     `Stop` / rotation- and status-callbacks. The parser drains it,
 ///     splits into lines, and calls `AppendLine` once per record.
 ///
@@ -40,7 +39,7 @@ class BytesProducer;
 ///     tests may drive it directly.
 ///
 ///   - LineId convention: 1-based monotonic ids assigned by
-///     `AppendLine` (PRD 4.10.4).
+///     `AppendLine`.
 ///
 ///   - Thread-safety: every `LineSource` virtual is callable from any
 ///     thread. The parser worker thread mutates the source via
@@ -128,7 +127,7 @@ private:
     /// virtual and by `AppendLine` / `EvictBefore`. Held only while
     /// reading or mutating the deques; callers receive copies (raw
     /// line) or `string_view`s that remain valid as long as the deque
-    /// entry hasn't been evicted (PRD 4.10.4).
+    /// entry hasn't been evicted.
     mutable std::mutex mLock;
 
     /// Raw line text (no trailing `\n` / `\r`). `std::deque` push_back

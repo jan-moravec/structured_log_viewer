@@ -46,7 +46,7 @@ public slots:
 
 signals:
     /// Emitted when the user manually scrolls **away** from the
-    /// configured tail edge (PRD 4.3.3 — VS Code terminal pattern).
+    /// configured tail edge.
     /// Wired to `MainWindow` to auto-disengage the **Follow newest**
     /// toggle. The "tail edge" is the bottom of the view in the
     /// default append-at-bottom orientation and the top of the view
@@ -64,7 +64,7 @@ signals:
 
     /// Emitted when the user manually scrolls back to the configured
     /// tail edge. Wired to `MainWindow` to auto-re-engage the
-    /// **Follow newest** toggle (PRD 4.3.3). Same user-input gate as
+    /// **Follow newest** toggle. Same user-input gate as
     /// `userScrolledAwayFromTail`.
     void userScrolledToTail();
 

@@ -1,6 +1,7 @@
 #include "log_model.hpp"
 
 #include "qt_streaming_log_sink.hpp"
+#include "streaming_control.hpp"
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/parsers/json_parser.hpp>
@@ -9,7 +10,7 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/streaming_log_sink.hpp>
+#include <loglib/log_parse_sink.hpp>
 
 #include <QCoreApplication>
 #include <QFutureWatcher>
@@ -23,6 +24,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,7 +43,7 @@ LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 
 LogModel::~LogModel()
 {
-    // Mandatory teardown order from PRD 4.7.2.i:
+    // Mandatory teardown order from :
     //   1. Producer `Stop()` so any blocking Read / WaitForBytes returns.
     //   2. `mSink->RequestStop()` triggers the parser's stopToken; the
     //      hot loop sees it on the next batch boundary.
@@ -71,26 +73,17 @@ LogModel::~LogModel()
     }
 }
 
-void LogModel::AddData(loglib::LogData &&logData)
-{
-    beginResetModel();
-
-    mLogTable.Update(std::move(logData));
-
-    endResetModel();
-}
-
-void LogModel::Clear()
+void LogModel::Reset()
 {
     TeardownStreamingSessionInternal(/*resetTable=*/true);
 }
 
-void LogModel::Detach()
+void LogModel::StopAndKeepRows()
 {
-    // PRD 4.7.1: Stop "leaves the most-recently-buffered rows visible".
-    // Same teardown sequence as `Clear()` minus the model reset — paused
+    // Stop "leaves the most-recently-buffered rows visible".
+    // Same teardown sequence as `Reset()` minus the model reset — paused
     // rows are still flushed into the visible model so Stop never
-    // silently discards parsed content (PRD 4.7.3).
+    // silently discards parsed content.
     TeardownStreamingSessionInternal(/*resetTable=*/false);
 }
 
@@ -103,7 +96,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     mStreamingActive = false;
 
     // Step 1: release I/O so a worker parked in `Read`/`WaitForBytes`
-    // returns immediately (PRD 4.7.2.i).
+    // returns immediately.
     if (loglib::BytesProducer *producer = ActiveProducer(); producer != nullptr)
     {
         producer->Stop();
@@ -120,15 +113,16 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mStreamingWatcher->waitForFinished();
     }
 
-    // Step 3.4 (Detach only): drain the sink's queued meta-call events so
-    // the drain-phase `OnBatch` / `OnFinished` lambdas the worker posted
-    // between `RequestStop()` and `waitForFinished()` returning land
-    // their rows in the visible model under the still-valid generation
-    // (PRD 4.7.3). `Clear()` deliberately skips this step — the table
-    // is reset below anyway, and draining there would emit spurious
-    // `streamingFinished` / `lineCountChanged` against soon-to-be-reset
-    // state, breaking the existing `testClearDuringStreamingDropsDrainPhaseBatch`
-    // contract (drain-phase rows are dropped on the Clear path).
+    // Step 3.4 (StopAndKeepRows only): drain the sink's queued meta-call
+    // events so the drain-phase `OnBatch` / `OnFinished` lambdas the
+    // worker posted between `RequestStop()` and `waitForFinished()`
+    // returning land their rows in the visible model under the
+    // still-valid generation. `Reset()` deliberately skips this step --
+    // the table is reset below anyway, and draining there would emit
+    // spurious `streamingFinished` / `lineCountChanged` against
+    // soon-to-be-reset state, breaking the existing
+    // `testResetDuringStreamingDropsDrainPhaseBatch` contract
+    // (drain-phase rows are dropped on the Reset path).
     //
     // After the drain, `mSink->IsActive()` flips to `false` iff the
     // queued `OnFinished` lambda ran (it sets `mActive = false` and
@@ -145,11 +139,12 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     // Step 3.5: any rows still in the paused buffer at this point are
     // already-parsed lines that the user expects to see. Flush them into
     // the visible model first so Stop never silently discards parsed
-    // content (PRD 4.7.3). In the `Clear()` path the rows land in the
-    // model briefly and are then wiped by the reset below; the flush is
-    // still kept honest because observers listening for `lineCountChanged`
-    // see a final count before the reset-to-zero, and in the `Detach()`
-    // path (PRD 4.7.1) these are the rows the user expects to keep.
+    // content. In the `Reset()` path the rows land in the model briefly
+    // and are then wiped by the reset below; the flush is still kept
+    // honest because observers listening for `lineCountChanged` see a
+    // final count before the reset-to-zero, and in the
+    // `StopAndKeepRows()` path these are the rows the user expects to
+    // keep.
     if (mSink)
     {
         if (auto pending = mSink->TakePausedBuffer())
@@ -186,7 +181,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     // discarded; emit a compensating `streamingFinished` so UI gating
     // (e.g. configuration menus) re-opens.
     //
-    // On the Detach path the drain at Step 3.4 may already have delivered
+    // On the StopAndKeepRows path the drain at Step 3.4 may already have delivered
     // the queued `OnFinished` lambda (which calls `EndStreaming` and emits
     // `streamingFinished` itself). `finishedAlreadyEmitted` dedupes so the
     // observer always sees exactly one terminal signal.
@@ -196,38 +191,27 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     }
 }
 
-void LogModel::BeginStreamingShared(std::unique_ptr<loglib::FileLineSource> source)
+void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
 {
     beginResetModel();
 
-    if (source)
+    // FileLineSource fast path: pre-reserve per-line offsets based on
+    // the mmap size so per-batch offset inserts stay amortised O(1).
+    // Streaming sources have no fixed length; the hint is a no-op for
+    // them anyway, so no branch is needed past the dynamic_cast probe.
+    std::optional<size_t> reserveCount;
+    if (auto *fileSource = dynamic_cast<loglib::FileLineSource *>(source.get()); fileSource != nullptr)
     {
-        // ~100 bytes/line matches the benchmark fixture; keeps per-batch
-        // line-offset insertions amortised O(1).
-        const size_t reserveCount = source->File().Size() / 100;
-        mLogTable.BeginStreaming(std::move(source));
-        mLogTable.ReserveLineOffsets(reserveCount);
+        // ~100 bytes/line matches the benchmark fixture.
+        reserveCount = fileSource->File().Size() / 100;
     }
-    else
-    {
-        mLogTable.BeginStreaming(std::unique_ptr<loglib::FileLineSource>{});
-    }
-    mErrorCount = 0;
-    mStreamingErrors.clear();
-
-    endResetModel();
-
-    emit lineCountChanged(0);
-    emit errorCountChanged(0);
-
-    mStreamingActive = true;
-}
-
-void LogModel::BeginStreamingShared(std::unique_ptr<loglib::StreamLineSource> source)
-{
-    beginResetModel();
 
     mLogTable.BeginStreaming(std::move(source));
+    if (reserveCount.has_value())
+    {
+        mLogTable.ReserveLineOffsets(*reserveCount);
+    }
+
     mErrorCount = 0;
     mStreamingErrors.clear();
 
@@ -248,16 +232,39 @@ loglib::BytesProducer *LogModel::ActiveProducer() noexcept
     return nullptr;
 }
 
-loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::StreamLineSource> source)
+namespace
 {
-    Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    BeginStreamingShared(std::move(source));
-
-    return mSink->Arm();
+/// Wraps @p workerBody in the standard parser-worker boundary handler.
+/// Catches both `std::exception` and unknown exceptions, converting
+/// them into a synthetic terminal `OnBatch` (with a "Streaming parse
+/// failed: ..." error) plus `OnFinished(false)` so the GUI watchdog
+/// always observes a `finished()` regardless of how the worker exited.
+template <class Body> void RunParserWorkerWithBoundary(QtStreamingLogSink *sink, Body &&workerBody)
+{
+    try
+    {
+        std::forward<Body>(workerBody)();
+    }
+    catch (const std::exception &e)
+    {
+        loglib::StreamedBatch errorBatch;
+        errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
+        sink->OnBatch(std::move(errorBatch));
+        sink->OnFinished(false);
+    }
+    catch (...)
+    {
+        loglib::StreamedBatch errorBatch;
+        errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
+        sink->OnBatch(std::move(errorBatch));
+        sink->OnFinished(false);
+    }
 }
 
-loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::FileLineSource> source)
+} // namespace
+
+loglib::StopToken LogModel::BeginStreamingForSyncTest(std::unique_ptr<loglib::LineSource> source)
 {
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
@@ -270,7 +277,7 @@ loglib::StopToken LogModel::BeginStreaming(
     std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
 )
 {
-    const loglib::StopToken stopToken = BeginStreaming(std::move(source));
+    const loglib::StopToken stopToken = BeginStreamingForSyncTest(std::move(source));
 
     if (!parseCallable)
     {
@@ -281,26 +288,42 @@ loglib::StopToken LogModel::BeginStreaming(
     QtStreamingLogSink *sinkForWorker = mSink;
     auto callable = std::move(parseCallable);
     QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
-        try
-        {
-            callable(stopToken);
-        }
-        catch (const std::exception &e)
-        {
-            // Synthetic terminal batch + OnFinished so the GUI watchdog
-            // always observes a `finished()`.
-            loglib::StreamedBatch errorBatch;
-            errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
-            sinkForWorker->OnBatch(std::move(errorBatch));
-            sinkForWorker->OnFinished(false);
-        }
-        catch (...)
-        {
-            loglib::StreamedBatch errorBatch;
-            errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
-            sinkForWorker->OnBatch(std::move(errorBatch));
-            sinkForWorker->OnFinished(false);
-        }
+        RunParserWorkerWithBoundary(sinkForWorker, [&] { callable(stopToken); });
+    });
+
+    mStreamingWatcher->setFuture(std::move(future));
+    return stopToken;
+}
+
+loglib::StopToken LogModel::AppendStreaming(
+    std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
+)
+{
+    Q_ASSERT(source);
+    Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
+
+    // Reserve before splicing the source in: ~100 bytes/line matches the
+    // benchmark fixture and keeps per-batch line-offset insertions
+    // amortised O(1).
+    const size_t reserveCount = source->File().Size() / 100;
+    mLogTable.AppendStreaming(std::move(source));
+    mLogTable.ReserveLineOffsets(reserveCount);
+
+    // Re-arm the sink for the new worker without resetting accumulated
+    // counters or wiping rows. `Arm()` bumps the generation so any
+    // straggler events from the previous file's parser short-circuit.
+    const loglib::StopToken stopToken = mSink->Arm();
+    mStreamingActive = true;
+
+    if (!parseCallable)
+    {
+        return stopToken;
+    }
+
+    QtStreamingLogSink *sinkForWorker = mSink;
+    auto callable = std::move(parseCallable);
+    QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
+        RunParserWorkerWithBoundary(sinkForWorker, [&] { callable(stopToken); });
     });
 
     mStreamingWatcher->setFuture(std::move(future));
@@ -315,7 +338,7 @@ loglib::StopToken LogModel::BeginStreaming(
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
     // Subscribe to the producer's rotation / status hooks before handing
-    // the source off (PRD 4.8.7.v / 4.8.8). The callbacks fire from the
+    // the source off. The callbacks fire from the
     // producer's worker thread; we re-emit via a queued connection so the
     // GUI sees them on the model's thread. `QPointer` makes a model
     // destruction mid-hop a graceful no-op.
@@ -363,37 +386,22 @@ loglib::StopToken LogModel::BeginStreaming(
     const loglib::StopToken stopToken = mSink->Arm();
     options.stopToken = stopToken;
 
-    // Apply the configured retention cap to the sink's paused buffer
-    // (PRD 4.2.2.iv). Default to `kDefaultRetentionLines` when the model
-    // has not been configured yet — the live-tail entry point should
-    // never be unbounded.
+    // Apply the configured retention cap to the sink's paused buffer.
+    // Default to `StreamingControl::kDefaultRetentionLines` when the
+    // model has not been configured yet -- the live-tail entry point
+    // should never be unbounded.
     if (mRetentionCap == 0)
     {
-        mRetentionCap = kDefaultRetentionLines;
+        mRetentionCap = StreamingControl::kDefaultRetentionLines;
     }
     mSink->SetRetentionCap(mRetentionCap);
 
     QFuture<void> future =
         QtConcurrent::run([sinkForWorker, streamSourcePtr, capturedOptions = std::move(options)]() mutable {
-            try
-            {
+            RunParserWorkerWithBoundary(sinkForWorker, [&] {
                 loglib::JsonParser parser;
                 parser.ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
-            }
-            catch (const std::exception &e)
-            {
-                loglib::StreamedBatch errorBatch;
-                errorBatch.errors.emplace_back(std::string("Streaming parse failed: ") + e.what());
-                sinkForWorker->OnBatch(std::move(errorBatch));
-                sinkForWorker->OnFinished(false);
-            }
-            catch (...)
-            {
-                loglib::StreamedBatch errorBatch;
-                errorBatch.errors.emplace_back("Streaming parse failed: unknown exception");
-                sinkForWorker->OnBatch(std::move(errorBatch));
-                sinkForWorker->OnFinished(false);
-            }
+            });
         });
 
     mStreamingWatcher->setFuture(std::move(future));
@@ -414,7 +422,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         batch.errors.clear();
     }
 
-    // Giant-batch collapse (PRD 4.10.3.iii): if the batch alone exceeds
+    // Giant-batch collapse: if the batch alone exceeds
     // the retention cap, drop the head of the batch *before* it lands in
     // `LogTable`, so per-batch eviction stays O(cap) and the visible
     // model never breaches the cap. Live-tail batches arrive through
@@ -439,10 +447,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     int newColumnCount = static_cast<int>(preview.newColumnCount);
     int newRowCount = static_cast<int>(preview.newRowCount);
 
-    // FIFO eviction (PRD 4.5 / 4.10.3): if the predicted row count
+    // FIFO eviction: if the predicted row count
     // exceeds the cap, drop the oldest rows from the model *before*
     // inserting the new batch, so the visible model stays within the
-    // cap. Order is `remove` → `insert` (mirrors the PRD wording).
+    // cap. Order is `remove` → `insert` (mirrors the ).
     int dropCount = 0;
     if (mRetentionCap != 0 && newRowCount > 0 && static_cast<size_t>(newRowCount) > mRetentionCap)
     {
@@ -650,7 +658,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
     else if (role == LogModelItemDataRole::CopyLine)
     {
-        // Branch on the row's variant (PRD 4.9.7.ii / 4.10.4.iii). The
+        // Branch on the row's variant. The
         // After the LogLine consolidation both static- and live-tail rows
         // route through `LineSource::RawLine(lineId)`. The `LineSource *`
         // on each `LogLine` disambiguates which storage holds the bytes
@@ -762,9 +770,9 @@ void LogModel::SetRetentionCap(size_t cap)
 
     if (!paused)
     {
-        // Running: trim visible rows down to the new cap immediately
-        // (PRD 4.5.5.i). Raising the cap has no immediate effect because
-        // we cannot un-evict already-dropped rows.
+        // Running: trim visible rows down to the new cap immediately.
+        // Raising the cap has no immediate effect because we cannot
+        // un-evict already-dropped rows.
         if (visible > cap)
         {
             const size_t dropCount = visible - cap;
@@ -776,8 +784,7 @@ void LogModel::SetRetentionCap(size_t cap)
         return;
     }
 
-    // Paused: leave visible rows alone (PRD 4.5.5.ii — Pause suspends FIFO
-    // eviction on visible rows). Trim the paused buffer to `cap - visible`
+    // Paused: leave visible rows alone. Trim the paused buffer to `cap - visible`
     // so the visible+buffered total stays within `cap`.
     const size_t maxBuffered = (visible >= cap) ? 0 : (cap - visible);
     if (mSink)

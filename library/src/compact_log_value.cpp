@@ -12,7 +12,7 @@
 #include <utility>
 #include <variant>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 CompactLogValue CompactLogValue::MakeMonostate() noexcept
@@ -365,4 +365,4 @@ void CompactLineFields::ShrinkToFit()
     mCapacity = mSize;
 }
 
-} // namespace loglib::detail
+} // namespace loglib::internal

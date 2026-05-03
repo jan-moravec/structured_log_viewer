@@ -20,8 +20,8 @@
 
 namespace loglib
 {
-using detail::TransparentStringEqual;
-using detail::TransparentStringHash;
+using internal::TransparentStringEqual;
+using internal::TransparentStringHash;
 
 struct KeyIndex::Impl
 {

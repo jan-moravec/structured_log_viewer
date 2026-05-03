@@ -53,18 +53,29 @@ public:
     /// Typed accessor for the front source iff it is a `FileLineSource`.
     /// Returns `nullptr` otherwise (empty source list, or front source
     /// is a `StreamLineSource`). Used by the static-file branches that
-    /// still need direct `LogFile` access — `LogTable::ReserveLineOffsets`,
-    /// `LogData::AppendBatch(lines, lineOffsets)`. Multi-file static
-    /// loads have not landed yet, so single-source is the common shape.
+    /// still need direct `LogFile` access — `LogTable::ReserveLineOffsets`
+    /// in particular targets the *first* installed file source (the
+    /// initial `BeginStreaming` payload). Subsequent multi-file streaming
+    /// appends route per-batch line offsets via `BackFileSource()`.
     [[nodiscard]] FileLineSource *FrontFileSource() noexcept;
     [[nodiscard]] const FileLineSource *FrontFileSource() const noexcept;
+
+    /// Most-recently appended `FileLineSource` (last entry in `Sources()`
+    /// that is a `FileLineSource`), or `nullptr` if none. Used by
+    /// `AppendBatch(lines, lineOffsets)` to route per-batch line offsets
+    /// to the source the active streaming session is currently writing
+    /// into. For single-file sessions this is identical to
+    /// `FrontFileSource()`; for sequential multi-file streaming (the
+    /// `LogModel::AppendStreaming` flow) it tracks the in-flight file.
+    [[nodiscard]] FileLineSource *BackFileSource() noexcept;
+    [[nodiscard]] const FileLineSource *BackFileSource() const noexcept;
 
     /// Mirror of `FrontFileSource` for the live-tail path. Returns the
     /// first installed `StreamLineSource` (the streaming pipeline only
     /// installs one — multi-stream sessions are not in scope) or
     /// nullptr when the table is empty / file-only. Used by
     /// `LogModel`'s stop-on-clear path to access the byte producer
-    /// owned by the source (PRD 4.10.4).
+    /// owned by the source.
     [[nodiscard]] StreamLineSource *FrontStreamSource() noexcept;
     [[nodiscard]] const StreamLineSource *FrontStreamSource() const noexcept;
 

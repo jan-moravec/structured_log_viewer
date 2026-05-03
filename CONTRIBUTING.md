@@ -44,10 +44,13 @@ structured_log_viewer/
 ├── library/                  # loglib: core log handling (no Qt dependency)
 │   ├── include/loglib/       # Public library headers
 │   │   └── internal/         # Internal-but-needed-by-tests headers
-│   │                         #   (parser_pipeline.hpp, buffering_sink.hpp,
+│   │                         #   (static_parser_pipeline.hpp,
+│   │                         #    streaming_parse_loop.hpp,
+│   │                         #    parse_runtime.hpp,
+│   │                         #    buffering_sink.hpp,
 │   │                         #    timestamp_promotion.hpp,
 │   │                         #    transparent_string_hash.hpp,
-│   │                         #    parser_options.hpp)
+│   │                         #    advanced_parser_options.hpp)
 │   ├── src/                  # Library implementation (.cpp only)
 │   └── CMakeLists.txt
 ├── app/                      # Qt6 GUI application (StructuredLogViewer)
@@ -73,20 +76,20 @@ The `library` component (`loglib`) provides the core functionality for handling 
 
 | Header                          | Role                                                                                                                                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `loglib/log_file.hpp`           | `LogFile` memory-maps a log on disk and tracks line offsets. It owns the mmap for its full lifetime so `LogValue`s elsewhere can hold `string_view`s into it. `LogFileReference` is a `(LogFile*, line)` pair attached to every parsed line.                                                              |
+| `loglib/log_file.hpp`           | `LogFile` memory-maps a log on disk, tracks line offsets, and owns the per-session arena that escape-decoded `OwnedString` values reference. It outlives every `LogLine` parsed from it so values backed by `MmapSlice` / `OwnedString` stay valid. The polymorphic `LineSource` interface (with `FileLineSource` over `LogFile` and `StreamLineSource` over a live `BytesProducer`) is what `LogLine`s actually carry.                              |
 | `loglib/key_index.hpp`          | `KeyIndex` is an append-only intern table mapping a JSON field name (`"timestamp"`, `"level"`, …) to a dense `KeyId`. It is thread-safe; the parsing pipeline shares a single `KeyIndex` across all workers and the GUI's `LogTable` keeps it for the table's lifetime.                                   |
-| `loglib/log_line.hpp`           | `LogValue` is the per-field `std::variant` (`string_view`, `string`, `int64_t`, `uint64_t`, `double`, `bool`, `TimeStamp`, `monostate`). `LogLine` holds one record as a sorted vector of `(KeyId, LogValue)` plus its `LogFileReference`. `string_view` values point straight into the `LogFile`'s mmap. |
+| `loglib/log_line.hpp`           | `LogLine` holds one parsed record as a sorted vector of `(KeyId, internal::CompactLogValue)` pairs plus a `(LineSource *, lineId)` pair. `CompactLogValue` is a 16-byte union (mmap slice / owned-string offset / int / uint / double / bool / timestamp / monostate); the `LineSource` resolves the row's raw bytes regardless of whether they came from an mmap or from a live byte producer. |
 | `loglib/log_data.hpp`           | `LogData` owns the `KeyIndex`, all `LogLine`s, and the `LogFile`(s) they reference. It supports `Merge` for opening multiple files and `AppendBatch` for the streaming path.                                                                                                                              |
 | `loglib/log_configuration.hpp`  | `LogConfiguration` describes the visible columns (header, JSON keys, print format, `Type::any` vs `Type::time`, time-parse formats, filters). `LogConfigurationManager` loads/saves it and grows the layout during streaming via `AppendKeys`.                                                            |
 | `loglib/log_table.hpp`          | `LogTable` pairs a `LogData` with a `LogConfigurationManager` and resolves what to render in cell `(row, column)`. It owns the `BeginStreaming` / `AppendBatch` state machine that the GUI model drives, and back-fills timestamp columns mid-stream as new keys appear.                                  |
 | `loglib/log_processing.hpp`     | Timezone bootstrap (`Initialize`), `TryParseTimestamp` fast/slow paths, and the `BackfillTimestampColumn` helper used by `LogTable`.                                                                                                                                                                      |
-| `loglib/log_parser.hpp`         | `LogParser` is the format-agnostic interface (`IsValid`, `ParseStreaming`, `ToString`). The synchronous `Parse(path)` overload is implemented on the base class and routes through `ParseStreaming`.                                                                                                      |
-| `loglib/streaming_log_sink.hpp` | `StreamingLogSink` is the receiver interface for the streaming parser; one `OnStarted`, zero or more `OnBatch(StreamedBatch)`, one `OnFinished(cancelled)`.                                                                                                                                               |
-| `loglib/parser_options.hpp`     | `ParserOptions::stopToken` for cooperative cancellation and `configuration` for inline timestamp promotion. Test-only tuning knobs (thread cap, batch size) live behind `loglib/internal/parser_options.hpp`.                                                                                             |
+| `loglib/log_parser.hpp`         | `LogParser` is the format-agnostic interface (`IsValid`, `ParseStreaming`, `ToString`). Streaming is the only ingestion path the parser exposes; the synchronous "parse a file to a `ParseResult`" helper lives outside the base class as the free function `loglib::ParseFile(parser, path)` in `loglib/parse_file.hpp`. |
+| `loglib/log_parse_sink.hpp` | `LogParseSink` is the receiver interface for the streaming parser; one `OnStarted`, zero or more `OnBatch(StreamedBatch)`, one `OnFinished(cancelled)`.                                                                                                                                               |
+| `loglib/parser_options.hpp`     | `ParserOptions::stopToken` for cooperative cancellation and `configuration` for inline timestamp promotion. Test-only tuning knobs (thread cap, batch size) live behind `loglib/internal/advanced_parser_options.hpp`.                                                                                             |
 | `loglib/json_parser.hpp`        | `JsonParser`: the only currently shipped `LogParser`. Built on simdjson + the shared TBB pipeline.                                                                                                                                                                                                        |
-| `loglib/log_factory.hpp`        | `LogFactory` picks the right parser for a path via `IsValid` and exposes a typed `Create(Parser)` enum.                                                                                                                                                                                                   |
+| `loglib/log_factory.hpp`        | `LogFactory::Create(Parser)` is the typed factory for the shipping `LogParser` implementations. The auto-detecting `loglib::ParseFile(path)` overload (in `loglib/parse_file.hpp`) probes every entry of the `Parser` enum via its `IsValid` content sniff and dispatches to the first match.            |
 
-Several helpers live under `library/include/loglib/internal/` and are intentionally **not** part of the public API. They are kept there (rather than next to the `.cpp`s in `library/src/`) so the unit tests in `test/lib/` can include them via the same `loglib`-prefixed include path as the public headers, without needing a per-target include-directory workaround. The most important are `BufferingSink` (`buffering_sink.hpp`, the sink behind synchronous `Parse(path)`) and `loglib::detail::RunParserPipeline` (`parser_pipeline.hpp`, the shared TBB pipeline harness — see [Data Flow](#data-flow)). `timestamp_promotion.hpp` and `transparent_string_hash.hpp` round out the set.
+Several helpers live under `library/include/loglib/internal/` and are intentionally **not** part of the public API. They are kept there (rather than next to the `.cpp`s in `library/src/`) so the unit tests in `test/lib/` can include them via the same `loglib`-prefixed include path as the public headers, without needing a per-target include-directory workaround. The most important are `BufferingSink` (`buffering_sink.hpp`, the sink behind the `loglib::ParseFile(parser, path)` free helper), `loglib::internal::RunStaticParserPipeline` (`static_parser_pipeline.hpp`, the TBB pipeline used for static-file parses — see [Data Flow](#data-flow)), and `loglib::internal::RunStreamingParseLoop` (`streaming_parse_loop.hpp`, the single-threaded loop used for live tailing). The shared scratch types they both use live in `parse_runtime.hpp`; `timestamp_promotion.hpp` and `transparent_string_hash.hpp` round out the set.
 
 ### GUI Application
 
@@ -94,10 +97,10 @@ The `app` component is a Qt 6 Widgets application. It uses `loglib` for parsing 
 
 The Qt-side classes that wrap `loglib` are:
 
-- `LogModel` (`app/include/log_model.hpp`) — a `QAbstractTableModel` that owns the `LogTable`. It exposes `BeginStreaming` / `AppendBatch` / `EndStreaming` for the streaming path and `AddData` for the synchronous path, and emits `lineCountChanged` / `errorCountChanged` / `streamingFinished` so the main window's status bar can tick along while parsing.
-- `QtStreamingLogSink` (`app/include/qt_streaming_log_sink.hpp`) — the bridge that turns a `loglib::StreamingLogSink` callback running on a TBB worker thread into a `LogModel::AppendBatch` call on the GUI thread (`Qt::QueuedConnection`). It owns a generation counter so a fresh `BeginParse()` (or a `RequestStop()`) drops any still-queued batches from a previous parse.
+- `LogModel` (`app/include/log_model.hpp`) — a `QAbstractTableModel` that owns the `LogTable`. Population is always streaming-driven: `BeginStreaming` / `AppendStreaming` (multi-file static open) install line sources and arm a parser worker, `AppendBatch` splices each `StreamedBatch` into the table, and `EndStreaming` finalises the session. The model emits `lineCountChanged` / `errorCountChanged` / `streamingFinished` so the main window's status bar can tick along while parsing.
+- `QtStreamingLogSink` (`app/include/qt_streaming_log_sink.hpp`) — the bridge that turns a `loglib::LogParseSink` callback running on a TBB worker thread into a `LogModel::AppendBatch` call on the GUI thread (`Qt::QueuedConnection`). It owns a generation counter so a fresh `Arm()` (or a `RequestStop()`) drops any still-queued batches from a previous parse.
 - `LogFilterModel` (`app/include/log_filter_model.hpp`) — the `QSortFilterProxyModel` over `LogModel` that implements the multi-column filter set described in the [user guide](doc/README.md#filtering).
-- `MainWindow` (`app/include/main_window.hpp`) — orchestrates everything: open dialogs, drag & drop, the find bar, the filter editor, the preferences editor, and (for single-file JSON opens) the streaming pipeline orchestration in `OpenJsonStreaming`.
+- `MainWindow` (`app/include/main_window.hpp`) — orchestrates everything: open dialogs, drag & drop, the find bar, the filter editor, the preferences editor, and the sequential file-queue open flow (`StartStreamingOpenQueue` / `StreamNextPendingFile`) that drives `LogModel::BeginStreaming` for the first file and `LogModel::AppendStreaming` for the rest.
 
 ### Data Flow
 
@@ -105,12 +108,12 @@ A JSON log line takes the same path through the codebase whether you opened the 
 
 ```text
                     mmap                          per-batch
-LogFile  ──▶  Stage A  ──▶  Stage B  ──▶  Stage C  ──▶  StreamingLogSink
+LogFile  ──▶  Stage A  ──▶  Stage B  ──▶  Stage C  ──▶  LogParseSink
                                                               │
                                                 ┌─────────────┴──────────────┐
                                                 ▼                            ▼
                                           BufferingSink              QtStreamingLogSink
-                                          (sync Parse)               (Qt::QueuedConnection)
+                                          (loglib::ParseFile)        (Qt::QueuedConnection)
                                                                             │
                                                                             ▼
                                                                   LogModel::AppendBatch
@@ -134,25 +137,25 @@ LogFile  ──▶  Stage A  ──▶  Stage B  ──▶  Stage C  ──▶  
 ```
 
 1. **`LogFile` opens the file.** A `LogFile` mmaps the file and remembers the byte offset of every line boundary as the parser visits them. Because the mmap stays alive for the file's whole on-screen lifetime, every `LogLine` parsed downstream can hold `string_view`s pointing directly into it.
-1. **The shared TBB pipeline parses it.** `LogParser::ParseStreaming` is implemented on top of `loglib::detail::RunParserPipeline` (`library/include/loglib/internal/parser_pipeline.hpp`), a three-stage `oneapi::tbb::parallel_pipeline`:
+1. **The shared TBB pipeline parses it.** `LogParser::ParseStreaming` is implemented on top of `loglib::internal::RunStaticParserPipeline` (`library/include/loglib/internal/static_parser_pipeline.hpp`), a three-stage `oneapi::tbb::parallel_pipeline`:
    - **Stage A (`serial_in_order`)** carves the mmap into ~1 MiB byte-range tokens at line boundaries.
    - **Stage B (`parallel`)** decodes each token into a `ParsedPipelineBatch` of `LogLine`s. Field names are interned through a per-worker cache that hits the shared `KeyIndex` only on first sight, and configured `Type::time` columns are promoted to a `TimeStamp` inline (`PromoteLineTimestamps`) while the freshly-written values are still hot in L1.
    - **Stage C (`serial_in_order`)** assigns absolute line numbers, coalesces small batches (~1000 lines or 50 ms), diffs the `KeyIndex` to find newly seen keys, and emits a `StreamedBatch` to the sink.
      The pipeline owns `ParserOptions::stopToken` cancellation, batch coalescing, and the new-keys diff. A format-specific parser only supplies the Stage A/B lambdas (see [Adding a New Structured Log Format](#adding-a-new-structured-log-format)).
-1. **A sink consumes the batches.** Two `StreamingLogSink` implementations ship today:
-   - `BufferingSink` (private, declared in `library/include/loglib/internal/buffering_sink.hpp`) is the sink behind the synchronous `LogParser::Parse(path)` overload. It accumulates every batch into a single `LogData` and is what tests, benchmarks, and the GUI's fall-back synchronous path use.
+1. **A sink consumes the batches.** Two `LogParseSink` implementations ship today:
+   - `BufferingSink` (declared in `library/include/loglib/internal/buffering_sink.hpp`) is the sink behind the synchronous `loglib::ParseFile(parser, path)` free helper in `loglib/parse_file.hpp`. It accumulates every batch into a single `LogData` and is what tests and any non-GUI caller that wants a one-shot `LogData` use. Production GUI code never reaches it -- the static-file open path always streams.
    - `QtStreamingLogSink` is the GUI bridge. Its `OnBatch(StreamedBatch)` posts a `QMetaObject::invokeMethod` lambda back to the GUI thread, which drops on a generation mismatch (see below) and otherwise calls `LogModel::AppendBatch`.
 1. **`LogModel::AppendBatch` updates the table.** It hands the batch to `LogTable::AppendBatch`, which:
    - extends the `LogConfiguration` with any `batch.newKeys` (auto-promoting names that look like timestamps to `Type::time`),
    - back-fills any *newly* introduced time column over **all** rows so users never see a half-parsed timestamp column,
    - and reports the column range it back-filled via `LastBackfillRange()` so the model emits a single `dataChanged` for those cells.
      The model then emits `beginInsertColumns` / `beginInsertRows` for the rows and columns that grew, plus `lineCountChanged` / `errorCountChanged` so `MainWindow` can tick the status-bar label `Parsing <file> — N lines, M errors`.
-1. **The view renders the rows.** `LogFilterModel` (`QSortFilterProxyModel`) applies the active filters, and `LogTableView` renders the surviving rows. The `Edit → Copy` shortcut pulls the original JSON text via `LogFileReference::GetLine` so the row round-trips back to disk format.
+1. **The view renders the rows.** `LogFilterModel` (`QSortFilterProxyModel`) applies the active filters, and `LogTableView` renders the surviving rows. The `Edit → Copy` shortcut pulls the original log text via `LogLine::Source()->RawLine(lineId)` so the row round-trips back to its on-disk (or on-tail) format.
 
 A few cross-cutting invariants hold this together:
 
-- **The `LogFile` outlives every `LogLine` that quotes it.** That is why `LogModel::Clear()` and `~LogModel()` block on the streaming `QFuture` before tearing down the `LogTable`: the cooperative `stop_token` only halts Stage A, but Stage B tasks already in flight keep reading from the mmap.
-- **The parser sees a snapshot of the configuration.** `MainWindow::OpenJsonStreaming` snapshots `LogConfiguration` into a `shared_ptr<const>` and gates the configuration menus for the duration of the parse, so a configuration edit racing past the UI gate cannot still affect the in-flight parse.
+- **The `LogFile` outlives every `LogLine` that quotes it.** That is why `LogModel::Reset()` / `LogModel::StopAndKeepRows()` and `~LogModel()` block on the streaming `QFuture` before tearing down the `LogTable`: the cooperative `stop_token` only halts Stage A, but Stage B tasks already in flight keep reading from the mmap.
+- **The parser sees a snapshot of the configuration.** `MainWindow::StreamNextPendingFile` snapshots `LogConfiguration` into a `shared_ptr<const>` for each file in the open queue and gates the configuration menus for the duration of the parse, so a configuration edit racing past the UI gate cannot still affect the in-flight parse.
 - **`KeyIndex` is the single source of truth for column identity** across the streaming workers, the `LogConfigurationManager`, and `LogTable`'s back-fill logic. It is append-only and assigns dense ids, so it doubles as an index into per-key arrays.
 
 ### Adding a New Structured Log Format
@@ -161,14 +164,15 @@ To teach the viewer a new format (CSV, logfmt, syslog, …):
 
 1. **Subclass `loglib::LogParser`.** Add `library/include/loglib/<format>_parser.hpp` for the public surface and `library/src/<format>_parser.cpp` for the implementation, then implement:
 
-   - `bool IsValid(const std::filesystem::path &) const` — a cheap content sniff (read one or two leading lines). `LogFactory::Parse` calls this in order to auto-detect the format, so it must be fast and false-positive-free.
-   - `void ParseStreaming(LogFile&, StreamingLogSink&, ParserOptions) const` — the streaming entry point.
+   - `bool IsValid(const std::filesystem::path &) const` — a cheap content sniff (read one or two leading lines). The auto-detecting `loglib::ParseFile(path)` overload calls this when probing parsers, so it must be fast and false-positive-free.
+   - `void ParseStreaming(FileLineSource&, LogParseSink&, ParserOptions) const` — the static-file streaming entry point. The TBB pipeline runs over the source's underlying mmap.
+   - `void ParseStreaming(StreamLineSource&, LogParseSink&, ParserOptions) const` — the live-tail streaming entry point. Reads bytes from `source.Producer()` and appends each parsed line to `source` so the row keeps a stable id.
    - `std::string ToString(const LogLine&) const` — the inverse, used by `Edit → Copy` to round-trip a row back to the format's native text.
 
-1. **Reuse the shared pipeline** in `ParseStreaming`. Almost all of the heavy lifting lives in `loglib::detail::RunParserPipeline` (`library/include/loglib/internal/parser_pipeline.hpp`). Define two types and two lambdas, then call:
+1. **Reuse the shared pipeline** in `ParseStreaming`. Almost all of the heavy lifting lives in `loglib::internal::RunStaticParserPipeline` (`library/include/loglib/internal/static_parser_pipeline.hpp`). Define two types and two lambdas, then call:
 
    ```cpp
-   detail::RunParserPipeline<Token, UserState>(file, sink, options, advanced, stageA, stageB);
+   internal::RunStaticParserPipeline<Token, UserState>(source, sink, options, advanced, stageA, stageB);
    ```
 
    Where:
@@ -176,7 +180,7 @@ To teach the viewer a new format (CSV, logfmt, syslog, …):
    - `Token` is your Stage A unit of work (e.g. `JsonByteRange` for `JsonParser` — typically a `[bytesBegin, bytesEnd)` slice of the mmap).
    - `UserState` is the format-specific per-worker scratch (e.g. a `simdjson::ondemand::parser` and its padded buffer for JSON, a CSV row-splitter for CSV). It is bolted onto `WorkerScratchBase`, which already provides the per-worker `KeyIndex` cache and timestamp-parse scratch.
    - `stageA(Token& out) -> bool` produces the next token from the source; return `false` at EOF.
-   - `stageB(Token, WorkerScratch<UserState>&, KeyIndex&, std::span<const TimeColumnSpec>, ParsedPipelineBatch&)` decodes one token into `parsed.lines` (built via `LogLine{sortedValues, keys, fileRef}`) and `parsed.errors`. After pushing each line, call `worker.PromoteTimestamps(parsed.lines.back(), timeColumns)` to keep the inline timestamp fast path warm. Use `detail::InternKeyVia(...)` to intern field names through the per-worker cache. Set `parsed.totalLineCount` to the number of source lines consumed (parsed + errored + skipped) so Stage C can advance its line-number cursor.
+   - `stageB(Token, WorkerScratch<UserState>&, KeyIndex&, std::span<const TimeColumnSpec>, ParsedPipelineBatch&)` decodes one token into `parsed.lines` (built via `LogLine{sortedValues, keys, fileRef}`) and `parsed.errors`. After pushing each line, call `worker.PromoteTimestamps(parsed.lines.back(), timeColumns)` to keep the inline timestamp fast path warm. Use `internal::InternKeyVia(...)` to intern field names through the per-worker cache. Set `parsed.totalLineCount` to the number of source lines consumed (parsed + errored + skipped) so Stage C can advance its line-number cursor.
 
    The harness owns batch coalescing, the `newKeys` diff, line-number assignment, and stop-token handling — your parser only has to turn bytes into `(KeyId, LogValue)` pairs.
 
@@ -186,7 +190,7 @@ To teach the viewer a new format (CSV, logfmt, syslog, …):
    - Extend `LogFactory::Create` to instantiate it.
      Files that match `IsValid` are then auto-detected by `File → Open…`.
 
-1. **Optional GUI affordance.** If you want a "force this parser" entry like `File → Open JSON Logs…`, add a `QAction` in `app/src/main_window.cpp` that calls `OpenFilesWithParser("…", std::make_unique<YourParser>())`. The streaming-on-the-GUI-thread path (`MainWindow::OpenJsonStreaming`) is currently wired specifically to `JsonParser`; either generalise that branch or fall back to the synchronous `LogParser::Parse(path)` path (which still routes through your `ParseStreaming` via the internal `BufferingSink`).
+1. **Optional GUI affordance.** All `File → Open…` paths now run through `MainWindow::StartStreamingOpenQueue`, which always uses `JsonParser` for the streaming worker. To force a different parser through the GUI, parameterise the queue's `parseCallable` factory on a `LogParser` reference (similar to the existing `parser.ParseStreaming(*fileSourcePtr, *sink, options)` call site) and pick the parser per-format up front.
 
 1. **Tests.** Add Catch2 unit tests under `test/lib/` mirroring `test/lib/src/test_json_parser.cpp`, and pipeline tests under `test/lib/src/test_parser_pipeline.cpp` if you want coverage of the cancellation / coalescing / new-keys paths. For Qt Test smoke coverage, add fixtures under `test/app/fixtures/` and reference them from `fixtures.qrc`. The shared helpers in `test/common/` are useful for generating synthetic data.
 
@@ -316,7 +320,7 @@ The two presets are intentionally split because `ctest --preset release -L bench
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tests`         | Catch2 unit tests for `loglib` (parsers, the streaming pipeline, `LogTable`, `LogConfiguration`, `KeyIndex`, timestamp parsing) **and** the parser/lookup micro-benchmarks. The benchmark cases are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. |
 | `apptest`       | Qt Test smoke tests that drive a real `MainWindow` in offscreen mode against the JSONL fixtures embedded in `test/app/fixtures/`. Registered as a single CTest entry.                                                                                                                                                              |
-| `log_generator` | Standalone JSONL fixture generator (manual UI smoke testing); not run by CTest. Supports `--lines` / `--size` stop conditions, `--timeout` throttling, and in-flight `--roll-strategy {rename,copytruncate,truncate}` for driving Stream Mode rotation tests against `TailingFileSource` (PRD 4.8.6).                              |
+| `log_generator` | Standalone JSONL fixture generator (manual UI smoke testing); not run by CTest. Supports `--lines` / `--size` stop conditions, `--timeout` throttling, and in-flight `--roll-strategy {rename,copytruncate,truncate}` for driving Stream Mode rotation tests against `TailingFileSource`.                              |
 
 ### Common pitfalls
 
@@ -343,7 +347,7 @@ Seven `[.][benchmark]…` cases ship today:
 | `[get_value_micro]` | `LogLine::GetValue` slow-path (string lookup) vs fast-path (`KeyId` lookup).                                                                                          |
 | `[allocations]`     | `string_view` fast-path fraction over a 1'000-line parse. The test itself only asserts `stringViewValues > 0`; the ≥ 99 % bar is the PR-description convention.       |
 | `[cancellation]`    | Cancellation-latency over 20 runs of a 1M-line parse. The test hard-fails only above 5 s; the ±3 % p95 bar is the PR-description convention.                          |
-| `[stream_latency]`  | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms (PRD §8 success metric 1).   |
+| `[stream_latency]`  | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms.   |
 
 ### Running
 

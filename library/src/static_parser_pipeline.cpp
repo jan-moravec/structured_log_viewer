@@ -1,18 +1,18 @@
-#include "loglib/internal/parser_pipeline.hpp"
+#include "loglib/internal/static_parser_pipeline.hpp"
 
 #include <algorithm>
 #include <thread>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
-ResolvedPipelineSettings ResolvePipelineSettings(const internal::AdvancedParserOptions &advanced)
+ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &advanced)
 {
     ResolvedPipelineSettings out;
     out.effectiveThreads =
         advanced.threads != 0
             ? advanced.threads
-            : std::min(std::thread::hardware_concurrency(), internal::AdvancedParserOptions::kDefaultMaxThreads);
+            : std::min(std::thread::hardware_concurrency(), AdvancedParserOptions::kDefaultMaxThreads);
     if (out.effectiveThreads == 0)
     {
         out.effectiveThreads = 1;
@@ -21,4 +21,4 @@ ResolvedPipelineSettings ResolvePipelineSettings(const internal::AdvancedParserO
     return out;
 }
 
-} // namespace loglib::detail
+} // namespace loglib::internal

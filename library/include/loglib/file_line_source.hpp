@@ -29,18 +29,13 @@ class LogFile;
 class FileLineSource final : public LineSource
 {
 public:
-    /// Owning ctor: takes ownership of @p file for the source's
-    /// lifetime. Throws `std::invalid_argument` if @p file is null.
+    /// Takes ownership of @p file for the source's lifetime. Throws
+    /// `std::invalid_argument` if @p file is null. Ownership can be
+    /// transferred downstream (typically into `LogData::mSources`) via
+    /// `ReleaseFile`; after release the source still resolves bytes
+    /// against the released `LogFile` for as long as the new owner
+    /// keeps it alive.
     explicit FileLineSource(std::unique_ptr<LogFile> file);
-
-    /// Borrowing ctor: caller must keep @p file alive for the
-    /// source's lifetime. Used by the parser's `LogFile&` overloads —
-    /// the `BufferingSink` and the `JsonParser::ParseStreaming(LogFile&,
-    /// ...)` shim wrap a caller-owned `LogFile` in a stack-local
-    /// borrowing source so all `LogLine`s end up tagged with a
-    /// `LineSource *` at construction time. `ReleaseFile()` returns
-    /// `nullptr` in this mode.
-    explicit FileLineSource(LogFile &file) noexcept;
 
     ~FileLineSource() override;
 
@@ -76,13 +71,13 @@ public:
     [[nodiscard]] const LogFile &File() const noexcept;
 
     /// Release the underlying `LogFile`, transferring ownership to the
-    /// caller. After the call this source still functions for byte
-    /// resolution against the released file (the caller is responsible
-    /// for keeping it alive at least as long as any `LogLine` referring
-    /// back through this source) — `File()` continues to return a
-    /// non-null reference. The intended use is the `BufferingSink`
-    /// take-data transition in the static path: the file moves into
-    /// `LogData::mSources` while this source is destroyed.
+    /// caller. After the call this source still resolves bytes against
+    /// the released file (the caller is responsible for keeping it alive
+    /// at least as long as any `LogLine` referring back through this
+    /// source) — `File()` continues to return a non-null reference. The
+    /// intended use is the static-path take-data transition where the
+    /// file migrates into `LogData::mSources` and this source is then
+    /// destroyed.
     [[nodiscard]] std::unique_ptr<LogFile> ReleaseFile() noexcept;
 
 private:

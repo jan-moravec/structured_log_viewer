@@ -1,6 +1,6 @@
-// Stop-teardown coverage for `TailingBytesProducer` + `JsonParser::ParseStreaming`
-// (PRD §8 success metric 6 / task 6.3). The PRD budget for stopping a live
-// stream is 500 ms from `BytesProducer::Stop()` to the parser worker joining; on
+// Stop-teardown coverage for `TailingBytesProducer` + `JsonParser::ParseStreaming`.
+// The documented budget for stopping a live stream is 500 ms from
+// `BytesProducer::Stop()` to the parser worker joining; on
 // an idle source we expect *well* under that, while a worker mid-decode of a
 // 100 KiB-buffered batch still has to honour the same budget.
 //
@@ -14,7 +14,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/streaming_log_sink.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
 #include <memory>
@@ -38,7 +38,7 @@ using loglib::KeyIndex;
 using loglib::ParserOptions;
 using loglib::StopSource;
 using loglib::StreamedBatch;
-using loglib::StreamingLogSink;
+using loglib::LogParseSink;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
 using loglib_test::ScaledMs;
@@ -89,7 +89,7 @@ void Append(const std::filesystem::path &path, std::string_view text)
 /// Test sink that counts incoming batches and reports `OnFinished` so the
 /// test can assert the parser exited cleanly. We can't reuse the GUI's
 /// `QtStreamingLogSink` here because the library tests don't link Qt.
-struct CountingSink final : StreamingLogSink
+struct CountingSink final : LogParseSink
 {
     KeyIndex keys;
     std::atomic<size_t> batchCount{0};
@@ -129,7 +129,7 @@ TailingBytesProducer::Options TestOptions()
 
 } // namespace
 
-// PRD §8 success metric 6: a worker parked in `WaitForBytes` on an idle
+//  success metric 6: a worker parked in `WaitForBytes` on an idle
 // producer must observe `BytesProducer::Stop()` and unwind in <= 500 ms. This
 // is the typical case (the parser flushes between reads and parks until
 // new bytes / the deadline / Stop). The end-to-end timed window covers
@@ -174,13 +174,13 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
 
     CHECK(sink.finished.load(std::memory_order_acquire));
     INFO("Stop teardown elapsed: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms");
-    // PRD §8 success metric 6: ≤ 500 ms. We allow `LOGLIB_TEST_TIME_SCALE`
-    // to widen the budget on slow CI runners — the PRD value is a
+    //  success metric 6: ≤ 500 ms. We allow `LOGLIB_TEST_TIME_SCALE`
+    // to widen the budget on slow CI runners — the  is a
     // developer-class-machine target, not a hard real-time bound.
     CHECK(elapsed < ScaledMs(500ms));
 }
 
-// PRD §8 success metric 6 (2nd half): a worker mid-decoding a 100 KiB
+//  success metric 6 (2nd half): a worker mid-decoding a 100 KiB
 // buffered batch must still observe Stop within the same budget. We
 // pre-write a 100 KiB JSONL block before the parser starts, so the
 // parser's hot loop is busy decoding (rather than parked in

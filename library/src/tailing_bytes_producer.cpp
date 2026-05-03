@@ -54,12 +54,12 @@ namespace
 // `INVALID_HANDLE_VALUE` is a `reinterpret_cast<HANDLE>((LONG_PTR)-1)`, which
 // is not a constant expression in MSVC's C++23 mode (C2131). Fall back to a
 // plain `const` global; the alias is internal-linkage either way.
-const detail::NativeFileHandle kInvalidHandle = INVALID_HANDLE_VALUE;
+const internal::NativeFileHandle kInvalidHandle = INVALID_HANDLE_VALUE;
 #else
-constexpr detail::NativeFileHandle kInvalidHandle = -1;
+constexpr internal::NativeFileHandle kInvalidHandle = -1;
 #endif
 
-bool IsValidHandle(detail::NativeFileHandle handle) noexcept
+bool IsValidHandle(internal::NativeFileHandle handle) noexcept
 {
 #if defined(_WIN32)
     return handle != INVALID_HANDLE_VALUE && handle != nullptr;
@@ -68,7 +68,7 @@ bool IsValidHandle(detail::NativeFileHandle handle) noexcept
 #endif
 }
 
-void CloseNativeHandle(detail::NativeFileHandle handle) noexcept
+void CloseNativeHandle(internal::NativeFileHandle handle) noexcept
 {
     if (!IsValidHandle(handle))
     {
@@ -82,8 +82,7 @@ void CloseNativeHandle(detail::NativeFileHandle handle) noexcept
 }
 
 /// Canonicalize @p path so the efsw watcher is always installed on an
-/// absolute parent directory (PRD 4.8.5 — "parent-directory granularity
-/// on Linux inotify / macOS FSEvents"). `weakly_canonical` handles the
+/// absolute parent directory. `weakly_canonical` handles the
 /// edge cases the original `parent_path().empty() → current_path()`
 /// fallback missed: relative paths (e.g. `"app.log"`), paths with `..`
 /// components, and Windows root-relative paths like `"C:foo.log"` that
@@ -108,11 +107,11 @@ std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
 
 /// Open @p path for read with maximum producer-friendly share flags. Returns
 /// `kInvalidHandle` on failure (incl. `ENOENT` / `ERROR_FILE_NOT_FOUND`).
-detail::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
+internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
 {
 #if defined(_WIN32)
     // FILE_SHARE_DELETE is critical: without it, the producer cannot rename
-    // or unlink the file (PRD §7 *No mmap on the tail*). FILE_FLAG_SEQUENTIAL_SCAN
+    // or unlink the file. FILE_FLAG_SEQUENTIAL_SCAN
     // hints the cache manager to read ahead.
     return ::CreateFileW(
         path.c_str(),
@@ -131,7 +130,7 @@ detail::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
 /// Sample the open handle's current size in bytes. Returns `std::nullopt`
 /// if the OS call failed (typical when the handle has been closed or the
 /// underlying inode is gone).
-std::optional<uint64_t> SizeOfOpenHandle(detail::NativeFileHandle handle) noexcept
+std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noexcept
 {
     if (!IsValidHandle(handle))
     {
@@ -158,7 +157,7 @@ std::optional<uint64_t> SizeOfOpenHandle(detail::NativeFileHandle handle) noexce
 /// not advance any persistent file pointer (uses `pread` / overlapped
 /// `ReadFile`). Returns the number of bytes actually read; a short read
 /// is normal at EOF. Returns -1 on hard error.
-ssize_type ReadAtOffset(detail::NativeFileHandle handle, void *out, size_t size, uint64_t offset) noexcept
+ssize_type ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size, uint64_t offset) noexcept
 {
     if (!IsValidHandle(handle) || size == 0)
     {
@@ -206,7 +205,7 @@ ssize_type ReadAtOffset(detail::NativeFileHandle handle, void *out, size_t size,
 
 } // namespace
 
-namespace detail
+namespace internal
 {
 
 class TailingBytesProducerImpl;
@@ -281,12 +280,12 @@ private:
     /// substantial consumption.
     void CompactReadyBufferIfNeededLocked();
     /// Fires the rotation callback if 1s has elapsed since the last fire.
-    /// PRD 4.8.9 — multi-rotation debounce.
+    ///  — multi-rotation debounce.
     void FireRotationCallbackIfDebounced();
 
     /// Fires the status callback if @p status differs from the last
     /// status we reported. Edge-triggered so a poll tick in the same
-    /// state is silent (PRD 4.8.8). Caller must NOT hold `mMutex`.
+    /// state is silent. Caller must NOT hold `mMutex`.
     void FireStatusCallbackIfChanged(SourceStatus status);
 
     std::filesystem::path mPath;
@@ -361,10 +360,9 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
     : mPath(CanonicalizeWatchedPath(std::move(path))), mFileName(mPath.filename().string()),
       mDisplayName(mPath.string()), mRetentionLines(std::max<size_t>(retentionLines, 1)), mOptions(options)
 {
-    // Open the file up front. Failure here propagates as an exception
-    // (PRD 4.1.7 — open errors surface to the caller, leaving the previous
-    // session intact). Transient ENOENT during tailing is handled by the
-    // rotation branch (ii), not here.
+    // Open the file up front. Failure here propagates as an exception.
+    // Transient ENOENT during tailing is handled by the rotation branch
+    // (ii), not here.
     mHandle = OpenForTail(mPath);
     if (!IsValidHandle(mHandle))
     {
@@ -378,13 +376,13 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
     // (§B.4 of the PR review). The worker thread now runs `Prefill()`
     // in its prologue so the GUI thread only pays the ctor's
     // `OpenForTail` + `efsw` setup cost. Open failures still throw
-    // synchronously from this ctor (PRD 4.1.7), and `Read` returns 0
+    // synchronously from this ctor, and `Read` returns 0
     // until pre-fill lands bytes in the queue — the parser parks on
     // `WaitForBytes` per the existing contract.
 
     // Install the filesystem watcher unless the test harness has disabled
     // it. We watch the parent directory because Linux `inotify` and macOS
-    // `FSEvents` work at directory granularity (PRD 4.8.5); the listener
+    // `FSEvents` work at directory granularity; the listener
     // filters down to our basename. The ctor has already canonicalized
     // `mPath`, so `parent_path()` is non-empty on any well-formed input;
     // the `current_path()` fallback below is kept as a belt-and-braces
@@ -537,7 +535,7 @@ void TailingBytesProducerImpl::WorkerMain()
 {
     // Pre-fill runs here rather than in the ctor so the GUI thread is
     // never blocked on a multi-GB backwards-newline scan (§B.4 of the
-    // PR review / PRD 4.1.5–6). The stop check up front ensures a
+    // PR review / –6). The stop check up front ensures a
     // fast `Stop` immediately after construction exits cleanly without
     // doing the work — symmetric with the body loop's stop checks.
     if (!mStopRequested.load(std::memory_order_acquire))
@@ -591,7 +589,7 @@ void TailingBytesProducerImpl::WorkerMain()
     }
 
     // Stop has been requested. Flush the partial-line buffer as a final
-    // synthetic line unless we are mid-rotation (PRD 4.7.2.ii).
+    // synthetic line unless we are mid-rotation.
     {
         std::lock_guard<std::mutex> lock(mMutex);
         if (!mRotationInProgress)
@@ -621,7 +619,7 @@ void TailingBytesProducerImpl::Prefill()
 
     // Walk backwards in `prefillChunkBytes` slices, counting newlines until
     // we have N+1 (so the byte after the (N+1)-th newline from the end is
-    // the start of the last N complete lines). PRD 4.1.5-6.
+    // the start of the last N complete lines). 
     const size_t targetNewlines = mRetentionLines + 1;
     uint64_t pos = fileSize;
     size_t newlinesSeen = 0;
@@ -630,7 +628,7 @@ void TailingBytesProducerImpl::Prefill()
     std::vector<char> chunk;
     chunk.resize(mOptions.prefillChunkBytes);
 
-    // PRD §7 *Line buffering*: bound the pre-fill scan so a file with
+    // : bound the pre-fill scan so a file with
     // no newlines (or a pathological retentionLines on a multi-GB file)
     // cannot wedge the ctor / the worker for an unbounded amount of
     // time. On overflow we seek to EOF and return no lines — the
@@ -688,7 +686,7 @@ void TailingBytesProducerImpl::Prefill()
     // The tailing read continues from the end of the file as observed at
     // pre-fill time. Bytes [lineStart, fileSize) have been processed; the
     // partial-line buffer (set by AppendBytesAndSplitLocked) seeds the
-    // tail's partial-line state per PRD 4.1.5.i.
+    // tail's partial-line state.1.5.i.
     mReadOffset = fileSize;
 
     // Wake any consumer parked on `WaitForBytes`. Without this notify,
@@ -720,7 +718,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
 
         {
             std::lock_guard<std::mutex> lock(mMutex);
-            mPartialLine.clear(); // PRD 4.8.7.i
+            mPartialLine.clear(); // 
         }
 
         mRotationCount.fetch_add(1, std::memory_order_acq_rel);
@@ -728,7 +726,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         if (wasWaiting)
         {
             // Leaving the waiting state: tell the GUI the source is
-            // healthy again (PRD 4.8.8).
+            // healthy again.
             FireStatusCallbackIfChanged(SourceStatus::Running);
         }
         mRotationInProgress = false;
@@ -743,10 +741,10 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
             mWaiting = true;
             {
                 std::lock_guard<std::mutex> lock(mMutex);
-                mPartialLine.clear(); // PRD 4.8.7.i — partial cannot be completed
+                mPartialLine.clear(); //  — partial cannot be completed
             }
             // Entering the waiting state: tell the GUI to swap the
-            // status-bar label to "Source unavailable" (PRD 4.8.8).
+            // status-bar label to "Source unavailable".
             FireStatusCallbackIfChanged(SourceStatus::Waiting);
         }
         // Stay in waiting. Keep the old handle open; a future poll will
@@ -798,7 +796,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         mRotationInProgress = true;
 
         // Recovery: seek to 0 on the existing handle. Do NOT re-open per
-        // PRD 4.8.6.iii (the producer may rely on the share mode).
+        //  (the producer may rely on the share mode).
         mReadOffset = 0;
 
         {
@@ -940,10 +938,10 @@ void TailingBytesProducerImpl::FireStatusCallbackIfChanged(SourceStatus status)
     }
 }
 
-} // namespace detail
+} // namespace internal
 
 TailingBytesProducer::TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options)
-    : mImpl(std::make_unique<detail::TailingBytesProducerImpl>(std::move(path), retentionLines, options))
+    : mImpl(std::make_unique<internal::TailingBytesProducerImpl>(std::move(path), retentionLines, options))
 {
 }
 

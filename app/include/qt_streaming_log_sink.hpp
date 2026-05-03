@@ -1,7 +1,7 @@
 #pragma once
 
 #include <loglib/stop_token.hpp>
-#include <loglib/streaming_log_sink.hpp>
+#include <loglib/log_parse_sink.hpp>
 
 #include <QObject>
 #include <QPointer>
@@ -15,13 +15,13 @@
 
 class LogModel;
 
-/// Qt adapter that forwards `loglib::StreamingLogSink` callbacks from a TBB
+/// Qt adapter that forwards `loglib::LogParseSink` callbacks from a TBB
 /// worker thread to a `LogModel` on the GUI thread. Generation/stop-source
 /// owned by the GUI thread; worker callbacks post via QueuedConnection and
 /// drop on generation mismatch. The parse thread itself is owned by the
 /// caller (typically `MainWindow` via `QtConcurrent::run`).
 ///
-/// Live-tail Pause/Resume (PRD 4.2.2.v / 4.10.1):
+/// Live-tail Pause/Resume:
 ///   While `Pause()` is in effect, the worker-side `OnBatch` redirects
 ///   parsed batches into an internal `mPausedBatches` vector instead of
 ///   posting per-batch `QueuedConnection` lambdas. `Resume()` coalesces
@@ -29,7 +29,7 @@ class LogModel;
 ///   paused buffer is bounded (4.2.2.iv) by the configured retention cap
 ///   so an indefinitely-paused viewer attached to a noisy producer cannot
 ///   OOM.
-class QtStreamingLogSink : public QObject, public loglib::StreamingLogSink
+class QtStreamingLogSink : public QObject, public loglib::LogParseSink
 {
     Q_OBJECT
 
@@ -55,7 +55,7 @@ public:
     /// paused buffer. GUI thread.
     void DropPendingBatches();
 
-    /// Returns true while a stream is armed but `EndStreaming` /
+    /// Returns true while a stream is armed but `EndStreaming` / model
     /// `DropPendingBatches` has not run yet. GUI thread; used by
     /// `MainWindow` to gate the streaming toolbar visibility (task 4.12).
     [[nodiscard]] bool IsActive() const noexcept;
@@ -79,26 +79,24 @@ public:
 
     /// Cumulative number of paused-buffer batches dropped since `Arm()`
     /// because adding the latest batch would have breached
-    /// `mRetentionCap` (PRD 4.2.2.iv — "paused buffer drops oldest
-    /// entries"). Surfaced in the status-bar label so a long pause on a
+    /// `mRetentionCap`. Surfaced in the status-bar label so a long pause on a
     /// noisy producer does not silently lose rows. Reset to 0 on `Arm()`
     /// / `DropPendingBatches()`. Thread-safe.
     [[nodiscard]] uint64_t PausedDropCount() const noexcept;
 
-    /// Configure the retention cap used to bound the paused buffer
-    /// (PRD 4.2.2.iv). `LogModel::SetRetentionCap` calls this so the
-    /// worker observes the limit without crossing the thread boundary.
-    /// `cap == 0` disables the bound. GUI thread (worker reads atomically).
+    /// Configure the retention cap used to bound the paused buffer.
+    /// `LogModel::SetRetentionCap` calls this so the worker observes the
+    /// limit without crossing the thread boundary. `cap == 0` disables the
+    /// bound. GUI thread (worker reads atomically).
     void SetRetentionCap(size_t cap) noexcept;
 
     /// Trim the paused buffer to at most @p maxBufferedLines rows by
-    /// dropping the oldest entries (PRD 4.5.5.ii — "trims the paused buffer
-    /// per 4.3 so the invariant holds"). GUI thread.
+    /// dropping the oldest entries. GUI thread.
     void TrimPausedBufferTo(size_t maxBufferedLines);
 
     /// Drains the paused buffer into a single coalesced batch and returns
     /// it. Used by `LogModel`'s teardown path to flush already-parsed
-    /// rows into the visible model before tear-down (PRD 4.7.3). Empty
+    /// rows into the visible model before tear-down. Empty
     /// optional means the buffer was already empty.
     std::optional<loglib::StreamedBatch> TakePausedBuffer();
 
@@ -138,7 +136,7 @@ private:
 
     /// Cumulative number of **lines** dropped from the paused buffer's
     /// head since `Arm()` because adding the latest batch would have
-    /// breached `mRetentionCap` (PRD 4.2.2.iv). Exposed via
+    /// breached `mRetentionCap`. Exposed via
     /// `PausedDropCount()` and surfaced in the status-bar label.
     std::atomic<uint64_t> mPausedDropCount{0};
 

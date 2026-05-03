@@ -226,9 +226,9 @@ namespace
 bool MakeBackfillState(
     const LogConfiguration::Column &column,
     std::span<LogLine> lines,
-    std::array<detail::TimeColumnSpec, 1> &specsOut,
+    std::array<internal::TimeColumnSpec, 1> &specsOut,
     std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
-    std::vector<detail::LastTimestampBytesHit> &bytesHitsOut
+    std::vector<internal::LastTimestampBytesHit> &bytesHitsOut
 )
 {
     if (lines.empty())
@@ -237,7 +237,7 @@ bool MakeBackfillState(
     }
 
     const KeyIndex &keyIndex = lines.front().Keys();
-    detail::TimeColumnSpec spec;
+    internal::TimeColumnSpec spec;
     spec.keyIds.reserve(column.keys.size());
     for (const std::string &key : column.keys)
     {
@@ -251,7 +251,7 @@ bool MakeBackfillState(
     }
     specsOut[0] = std::move(spec);
     lastValidOut.assign(1, std::nullopt);
-    bytesHitsOut.assign(1, detail::LastTimestampBytesHit{});
+    bytesHitsOut.assign(1, internal::LastTimestampBytesHit{});
     return true;
 }
 
@@ -279,9 +279,9 @@ std::string_view OwnedArenaForBackfill(const LogLine & /*line*/) noexcept
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
 {
     std::vector<std::string> errors;
-    std::array<detail::TimeColumnSpec, 1> specs;
+    std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
-    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    std::vector<internal::LastTimestampBytesHit> bytesHits;
     if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
     {
         return errors;
@@ -291,7 +291,7 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
     for (auto &line : lines)
     {
         const std::string_view ownedArena = OwnedArenaForBackfill(line);
-        if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
+        if (!internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
         {
             errors.emplace_back(fmt::format(
                 "Failed to parse a timestamp for column '{}' from line number {}",
@@ -308,9 +308,9 @@ void BackfillTimestampColumn(
 )
 {
     static_cast<void>(discardErrors);
-    std::array<detail::TimeColumnSpec, 1> specs;
+    std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
-    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    std::vector<internal::LastTimestampBytesHit> bytesHits;
     if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
     {
         return;
@@ -320,7 +320,7 @@ void BackfillTimestampColumn(
     for (auto &line : lines)
     {
         const std::string_view ownedArena = OwnedArenaForBackfill(line);
-        static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
+        static_cast<void>(internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
     }
 }
 

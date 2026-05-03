@@ -8,7 +8,7 @@
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/compact_log_value.hpp>
-#include <loglib/internal/parser_options.hpp>
+#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
@@ -18,7 +18,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/streaming_log_sink.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
 #include <QFile>
@@ -81,62 +81,19 @@ private:
     QString mPath;
 };
 
-// Returns a deterministic JSONL fixture exercising every public LogValue
-// alternative the streaming path can produce, plus a few keys that appear
-// in some lines but not others (so the column-extension contract is tested
-// end to end). Keys are intentionally ordered so the *insertion order*
-// (streaming AppendKeys) and the *sorted order* (legacy Update) match —
-// otherwise the per-cell comparison would have to be column-name keyed
-// rather than column-index keyed.
+// Returns a deterministic JSONL fixture used by the
+// `*AboutToBeInserted` regression test below. Keys are intentionally
+// alphabetic so the parser's per-batch insertion order matches a
+// sorted-order column layout, which keeps the assertion shape simple.
 QStringList MakeParityFixture()
 {
     return QStringList{
-        // line 1: introduces a, b, c (alphabetic — matches sorted-order from
-        // legacy Update and insertion-order from streaming AppendKeys).
         QStringLiteral(R"({"a": "alpha", "b": 1, "c": 3.14})"),
         QStringLiteral(R"({"a": "beta",  "b": 2, "c": 2.71})"),
-        // line 3: introduces d (still alphabetic-after-existing).
         QStringLiteral(R"({"a": "gamma", "b": 3, "c": 1.41, "d": true})"),
         QStringLiteral(R"({"a": "delta", "b": 4, "c": 0.0,  "d": false})"),
         QStringLiteral(R"({"a": "eps",   "b": 5})"),
     };
-}
-
-// Captures (rowCount, columnCount, header→column map, per-(row, header)
-// display value) so the legacy-vs-streaming comparison stays robust against
-// configuration column ordering decisions. Using the display role (the same
-// one the table view actually paints) means we are validating exactly what
-// the user sees, not internal storage details.
-struct ModelSnapshot
-{
-    int rowCount = 0;
-    std::vector<std::string> headers;
-    std::vector<std::vector<std::string>> cellsByHeaderIndex;
-};
-
-ModelSnapshot Snapshot(LogModel &model)
-{
-    ModelSnapshot snap;
-    snap.rowCount = model.rowCount();
-    const int columnCount = model.columnCount();
-    snap.headers.reserve(static_cast<size_t>(columnCount));
-    for (int col = 0; col < columnCount; ++col)
-    {
-        snap.headers.push_back(model.headerData(col, Qt::Horizontal, Qt::DisplayRole).toString().toStdString());
-    }
-
-    snap.cellsByHeaderIndex.assign(static_cast<size_t>(snap.rowCount), {});
-    for (int row = 0; row < snap.rowCount; ++row)
-    {
-        snap.cellsByHeaderIndex[static_cast<size_t>(row)].reserve(static_cast<size_t>(columnCount));
-        for (int col = 0; col < columnCount; ++col)
-        {
-            snap.cellsByHeaderIndex[static_cast<size_t>(row)].push_back(
-                model.data(model.index(row, col), Qt::DisplayRole).toString().toStdString()
-            );
-        }
-    }
-    return snap;
 }
 
 // Extracts a Qt resource (e.g. ":/fixtures/empty.jsonl") into a unique
@@ -197,7 +154,7 @@ StreamingRun RunStreaming(const QString &fixturePath)
     auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
     auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
-    const loglib::StopToken stopToken = run.model->BeginStreaming(std::move(fileSource));
+    const loglib::StopToken stopToken = run.model->BeginStreamingForSyncTest(std::move(fileSource));
 
     {
         loglib::ParserOptions options;
@@ -305,7 +262,7 @@ loglib::StreamLineSource &BeginSyntheticStreamSession(LogModel &model)
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path("synthetic"), nullptr);
     loglib::StreamLineSource *streamPtr = streamSource.get();
-    static_cast<void>(model.BeginStreaming(std::move(streamSource)));
+    static_cast<void>(model.BeginStreamingForSyncTest(std::move(streamSource)));
     return *streamPtr;
 }
 
@@ -338,8 +295,8 @@ loglib::StreamedBatch MakeSyntheticBatch(
         const size_t publishedId = streamSource.AppendLine("synthetic line " + std::to_string(lineId), std::string{});
         Q_ASSERT(publishedId == lineId);
         Q_UNUSED(publishedId);
-        std::vector<std::pair<loglib::KeyId, loglib::detail::CompactLogValue>> compactValues;
-        compactValues.emplace_back(valueKey, loglib::detail::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> compactValues;
+        compactValues.emplace_back(valueKey, loglib::internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
@@ -385,127 +342,6 @@ private slots:
     void testWindowIcon()
     {
         QVERIFY(!window->windowIcon().isNull());
-    }
-
-    // Drive the same fixture through legacy (`AddData`) and streaming
-    // (`BeginStreaming`/`ParseStreaming`/`EndStreaming`) paths and assert
-    // byte-equivalent display output. `threads=1` keeps `AppendKeys`
-    // insertion order deterministic.
-    void testStreamingParityVsLegacy()
-    {
-        const QStringList fixtureLines = MakeParityFixture();
-        TempJsonFile fixture(fixtureLines);
-
-        // ---- Legacy path: synchronous parse, AddData. ----
-        loglib::JsonParser legacyParser;
-        loglib::ParseResult legacyResult = legacyParser.Parse(fixture.Path().toStdString());
-        QVERIFY2(legacyResult.errors.empty(), "legacy parse must produce no errors on the parity fixture");
-
-        LogModel legacyModel;
-        legacyModel.AddData(std::move(legacyResult.data));
-        const ModelSnapshot legacySnap = Snapshot(legacyModel);
-        QCOMPARE(legacySnap.rowCount, fixtureLines.size());
-
-        // ---- Streaming path: BeginStreaming + ParseStreaming + EndStreaming
-        // via the QtStreamingLogSink GUI bridge. ----
-        LogModel streamingModel;
-        QSignalSpy finishedSpy(&streamingModel, &LogModel::streamingFinished);
-        QVERIFY(finishedSpy.isValid());
-
-        // BeginStreaming installs the LogFile on the model. The parser must
-        // borrow the *same* LogFile (mirroring `MainWindow::OpenJsonStreaming`)
-        // so the std::string_view-typed LogValues Stage B emits stay live for
-        // the lifetime of the model — opening a second mmap on the parser
-        // side would dangle them as soon as the parser thread ran out.
-        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
-        loglib::FileLineSource *parseSource = fileSource.get();
-        const loglib::StopToken stopToken = streamingModel.BeginStreaming(std::move(fileSource));
-
-        QVERIFY(!streamingModel.Table().Data().Sources().empty());
-
-        // Stage B parallelism is pinned to 1 so the canonical KeyIndex sees
-        // keys in file order (a, b, c, d). The legacy LogConfigurationManager::
-        // Update walks SortedKeys() (alphabetic) — both produce the same
-        // column order on this fixture only because we authored it that way.
-        loglib::ParserOptions options;
-        options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
-
-        QtStreamingLogSink *sink = streamingModel.Sink();
-        QVERIFY(sink != nullptr);
-
-        // Run the parse on the test thread; the sink still routes every
-        // callback through QueuedConnection, so model-side semantics match
-        // the production GUI's worker-thread path.
-        loglib::JsonParser parser;
-        parser.ParseStreaming(*parseSource, *sink, options, advanced);
-
-        // Drain the queued OnBatch/OnFinished invocations.
-        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
-        QVERIFY2(finished, "streamingFinished must arrive within the timeout");
-        QCOMPARE(finishedSpy.count(), 1);
-        const QList<QVariant> finishedArgs = finishedSpy.takeFirst();
-        QCOMPARE(finishedArgs.value(0).value<StreamingResult>(), StreamingResult::Success);
-
-        QVERIFY2(
-            streamingModel.StreamingErrors().empty(), "streaming parse must produce no errors on the parity fixture"
-        );
-
-        const ModelSnapshot streamingSnap = Snapshot(streamingModel);
-
-        // ---- Parity assertions. ----
-        QCOMPARE(streamingSnap.rowCount, legacySnap.rowCount);
-
-        // Compare headers as a set (the configuration-derivation paths are
-        // independent: legacy Update walks SortedKeys, streaming AppendKeys
-        // walks the per-batch newKeys slice). Then compare per-cell using
-        // header name as the join key, so a column-order skew (which would
-        // be a configuration-side bug, not a parsing-side one) is reported
-        // distinctly from an actual data mismatch.
-        std::vector<std::string> legacyHeadersSorted = legacySnap.headers;
-        std::vector<std::string> streamingHeadersSorted = streamingSnap.headers;
-        std::sort(legacyHeadersSorted.begin(), legacyHeadersSorted.end());
-        std::sort(streamingHeadersSorted.begin(), streamingHeadersSorted.end());
-        QCOMPARE(streamingHeadersSorted, legacyHeadersSorted);
-
-        std::map<std::string, int> legacyHeaderIndex;
-        for (size_t i = 0; i < legacySnap.headers.size(); ++i)
-        {
-            legacyHeaderIndex[legacySnap.headers[i]] = static_cast<int>(i);
-        }
-        std::map<std::string, int> streamingHeaderIndex;
-        for (size_t i = 0; i < streamingSnap.headers.size(); ++i)
-        {
-            streamingHeaderIndex[streamingSnap.headers[i]] = static_cast<int>(i);
-        }
-
-        for (int row = 0; row < legacySnap.rowCount; ++row)
-        {
-            for (const auto &[header, legacyCol] : legacyHeaderIndex)
-            {
-                const auto it = streamingHeaderIndex.find(header);
-                QVERIFY2(
-                    it != streamingHeaderIndex.end(),
-                    qPrintable(QStringLiteral("streaming model missing header '%1'").arg(QString::fromStdString(header))
-                    )
-                );
-                const int streamingCol = it->second;
-                const std::string legacyCell =
-                    legacySnap.cellsByHeaderIndex[static_cast<size_t>(row)][static_cast<size_t>(legacyCol)];
-                const std::string streamingCell =
-                    streamingSnap.cellsByHeaderIndex[static_cast<size_t>(row)][static_cast<size_t>(streamingCol)];
-                QVERIFY2(
-                    legacyCell == streamingCell,
-                    qPrintable(QStringLiteral("row=%1 header='%2' legacy='%3' streaming='%4'")
-                                   .arg(row)
-                                   .arg(QString::fromStdString(header))
-                                   .arg(QString::fromStdString(legacyCell))
-                                   .arg(QString::fromStdString(streamingCell)))
-                );
-            }
-        }
     }
 
     void testFixture_Empty()
@@ -820,7 +656,7 @@ private slots:
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *parseSource = fileSource.get();
-        const loglib::StopToken stopToken = model.BeginStreaming(std::move(fileSource));
+        const loglib::StopToken stopToken = model.BeginStreamingForSyncTest(std::move(fileSource));
 
         QVERIFY(!model.Table().Data().Sources().empty());
 
@@ -878,11 +714,11 @@ private slots:
         }
     }
 
-    // Regression: `Clear()` must emit a compensating `streamingFinished` based
+    // Regression: `Reset()` must emit a compensating `streamingFinished` based
     // on a GUI-thread flag (`mStreamingActive`), not `isRunning()` — the
     // latter races with the queued `OnFinished` and would silently drop the
     // signal, leaving configuration menus disabled.
-    void testClearAfterBeginStreamingEmitsCompensatingFinished()
+    void testResetAfterBeginStreamingEmitsCompensatingFinished()
     {
         // Use a tiny in-memory file so BeginStreaming has a valid LogFile
         // to install on the model.
@@ -894,29 +730,29 @@ private slots:
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
-        static_cast<void>(model.BeginStreaming(std::move(fileSource)));
+        static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
         // No parser is started, so `EndStreaming` will never fire on its own.
-        // `Clear()` must emit `streamingFinished(true)` itself based on the
+        // `Reset()` must emit `streamingFinished(true)` itself based on the
         // GUI-thread flag set by `BeginStreaming`.
-        model.Clear();
+        model.Reset();
 
         QCOMPARE(finishedSpy.count(), 1);
         QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
 
-        // A second `Clear()` after the first one already cleared the flag
+        // A second `Reset()` after the first one already cleared the flag
         // must not emit a spurious `streamingFinished` (otherwise repeated
         // user-driven file opens would emit duplicate signals).
-        model.Clear();
+        model.Reset();
         QCOMPARE(finishedSpy.count(), 0);
     }
 
     // Regression: the sink-generation bump must happen in
     // `DropPendingBatches()` (called *after* `waitForFinished()`), not in
     // `RequestStop()`. Otherwise drain-phase queued lambdas pass the
-    // mismatch check and run after `Clear()` has destroyed `mLogTable`
+    // mismatch check and run after `Reset()` has destroyed `mLogTable`
     // (use-after-free on dangling `LogFile*` + spurious second `streamingFinished`).
-    void testClearDuringStreamingDropsDrainPhaseBatch()
+    void testResetDuringStreamingDropsDrainPhaseBatch()
     {
         TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
@@ -962,8 +798,8 @@ private slots:
         );
         static_cast<void>(stop);
 
-        // `Clear()` blocks on `waitForFinished()`; release the worker from a
-        // separate thread so `Clear()` can return.
+        // `Reset()` blocks on `waitForFinished()`; release the worker from a
+        // separate thread so `Reset()` can return.
         std::thread releaser([&]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             {
@@ -973,7 +809,7 @@ private slots:
             releaseCv.notify_all();
         });
 
-        model.Clear();
+        model.Reset();
         releaser.join();
 
         // Drain the queued lambdas; with the fix both observe a stale
@@ -985,23 +821,23 @@ private slots:
         QCOMPARE(model.rowCount(), 0);
     }
 
-    // Regression for C.4.1 (PRD 4.7.3): `Detach()` is the API that
+    // Regression for C.4.1: `StopAndKeepRows()` is the API that
     // `MainWindow::StopStream` invokes; it must preserve every row the
     // worker has already produced — including the drain-phase `OnBatch`
     // emitted between `RequestStop()` and `waitForFinished()` returning.
     // The bug was that `DropPendingBatches()` bumped the generation
     // before the GUI thread ran the queued lambdas, so the drain-phase
     // batch was silently discarded. The fix drains queued sink events
-    // between the join and the generation bump on the Detach path
-    // *only* (Clear keeps dropping them — the table is reset anyway,
-    // see `testClearDuringStreamingDropsDrainPhaseBatch`).
+    // between the join and the generation bump on the StopAndKeepRows path
+    // *only* (Reset keeps dropping them — the table is reset anyway,
+    // see `testResetDuringStreamingDropsDrainPhaseBatch`).
     //
-    // Test shape mirrors `testClearDuringStreamingDropsDrainPhaseBatch`
-    // but swaps `Clear()` for `Detach()` and inverts the row-count
+    // Test shape mirrors `testResetDuringStreamingDropsDrainPhaseBatch`
+    // but swaps `Reset()` for `StopAndKeepRows()` and inverts the row-count
     // assertion (the row must survive) and the signal-count assertion
     // (the drained `OnFinished` lambda emits the *only* terminal
     // signal — no compensating duplicate from the teardown helper).
-    void testStopDetachPreservesDrainPhaseBatch()
+    void testStopAndKeepRowsPreservesDrainPhaseBatch()
     {
         TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
@@ -1053,7 +889,7 @@ private slots:
             releaseCv.notify_all();
         });
 
-        model.Detach();
+        model.StopAndKeepRows();
         releaser.join();
 
         // The drain at Step 3.4 of `TeardownStreamingSessionInternal` has
@@ -1071,7 +907,7 @@ private slots:
         QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
     }
 
-    // FIFO eviction at the retention cap (PRD 4.5 / 4.10.3): feed batches of
+    // FIFO eviction at the retention cap: feed batches of
     // synthetic `LogLine`s directly into `LogModel::AppendBatch`, asserting
     // that:
     //   - `RowCount()` never exceeds the cap once the cap is reached;
@@ -1124,7 +960,7 @@ private slots:
         model.EndStreaming(false);
     }
 
-    // Giant-batch collapse (PRD 4.10.3.iii): a batch whose row count alone
+    // Giant-batch collapse: a batch whose row count alone
     // exceeds the cap must collapse the head of the batch *before* it lands
     // in `LogTable`, so per-batch eviction stays O(cap) and the visible
     // model never breaches the cap.
@@ -1219,11 +1055,11 @@ private slots:
     // would read 0 even with rows queued).
     void testSinkPauseResumePreservesStaticLineBatches()
     {
-        // Need a real `LogFile` because `LogFileReference` (and the model's
-        // `LogTable::AppendBatch` path that consumes `lines`) hold pointers
-        // into the file. The file's contents don't have to match what we
-        // synthesise — we never call `LogLine::Data()` / `GetValue()` on
-        // them through the table — but they must outlive the test.
+        // Need a real `LogFile` because the `FileLineSource` (and the
+        // model's `LogTable::AppendBatch` path that consumes `lines`) hold
+        // pointers into the file. The file's contents don't have to match
+        // what we synthesise -- we never call `LogLine::GetValue()` on them
+        // through the table -- but they must outlive the test.
         TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"a": 1})"),
             QStringLiteral(R"({"a": 2})"),
@@ -1237,7 +1073,7 @@ private slots:
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *sourcePtr = fileSource.get();
-        static_cast<void>(model.BeginStreaming(std::move(fileSource)));
+        static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
@@ -1292,7 +1128,7 @@ private slots:
         model.EndStreaming(false);
     }
 
-    // Pause + cap-shrink interaction (PRD 4.5.5.ii): while paused, lowering
+    // Pause + cap-shrink interaction: while paused, lowering
     // the retention cap must trim the paused buffer to `cap - visible`
     // (preserving the visible rows). Verified via PausedLineCount().
     void testPauseCapShrinkTrimsPausedBuffer()
@@ -1329,7 +1165,7 @@ private slots:
         model.EndStreaming(false);
     }
 
-    // PRD task 6.5: end-to-end Stream Mode smoke test against a temp file
+    //  6.5: end-to-end Stream Mode smoke test against a temp file
     // tailed by `TailingBytesProducer`. Drives the same flow `MainWindow::
     // OpenLogStream` does (model.BeginStreaming(unique_ptr<BytesProducer>)) but
     // without going through the menu so the test stays self-contained.
@@ -1403,7 +1239,7 @@ private slots:
         QCOMPARE(model.rowCount(), 150);
 
         // Pause: visible model freezes; subsequent appends land in the
-        // paused buffer (PRD 4.2.2.v / task 4.1).
+        // paused buffer.
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
         sink->Pause();
@@ -1442,17 +1278,17 @@ private slots:
         QCOMPARE(model.rowCount(), 200);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), 0);
 
-        // Tear down cleanly. `Clear()` drives the PRD 4.7.2.i teardown
+        // Tear down cleanly. `Reset()` drives the teardown
         // sequence (Source::Stop -> sink::RequestStop -> watcher join ->
         // DropPendingBatches) so the test exits without dangling threads.
-        model.Clear();
+        model.Reset();
         QCoreApplication::processEvents();
 
         QVERIFY(!model.IsStreamingActive());
         QCOMPARE(model.rowCount(), 0);
     }
 
-    // PRD 4.2.2.iv regression: when the paused-buffer cap forces the
+    //  regression: when the paused-buffer cap forces the
     // sink to drop its oldest entries, the count of lost lines must be
     // observable so the user knows rows were silently discarded during
     // the pause. This test pauses, feeds enough live-tail batches to
@@ -1511,11 +1347,11 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(sink->PausedDropCount(), droppedBeforeResume);
 
-        model.Detach();
+        model.StopAndKeepRows();
         QCoreApplication::processEvents();
     }
 
-    // Regression for the `linesDropped` snapshot bug (PRD 4.2.2.iv).
+    // Regression for the `linesDropped` snapshot bug.
     // When the head of `mPausedBatches` is a *static-content* batch
     // (`lines` + `localLineOffsets`, reachable when **Pause** is invoked
     // during a static-streaming parse from the **Stream** menu), the
@@ -1538,7 +1374,7 @@ private slots:
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *sourcePtr = fileSource.get();
-        static_cast<void>(model.BeginStreaming(std::move(fileSource)));
+        static_cast<void>(model.BeginStreamingForSyncTest(std::move(fileSource)));
 
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
@@ -1593,9 +1429,9 @@ private slots:
             {
                 const size_t lineId = staticBatchRows + 1 + i;
                 static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
-                std::vector<std::pair<loglib::KeyId, loglib::detail::CompactLogValue>> compactValues;
+                std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> compactValues;
                 compactValues.emplace_back(
-                    valueKey, loglib::detail::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
+                    valueKey, loglib::internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
                 );
                 batch.lines.emplace_back(std::move(compactValues), keys, liveTailSource, lineId);
             }
@@ -1611,16 +1447,16 @@ private slots:
 
         sink->Resume();
         QCoreApplication::processEvents();
-        model.Detach();
+        model.StopAndKeepRows();
         QCoreApplication::processEvents();
     }
 
-    // PRD 4.7.1 regression: `Stop` ends the streaming session but leaves
+    //  regression: `Stop` ends the streaming session but leaves
     // the most-recently-buffered rows visible (the model becomes a
-    // static snapshot of what was in memory at stop time). `Detach()`
-    // is the API `MainWindow::StopStream` uses; `Clear()` (which fully
+    // static snapshot of what was in memory at stop time). `StopAndKeepRows()`
+    // is the API `MainWindow::StopStream` uses; `Reset()` (which fully
     // resets the model) is reserved for the "open a new session" paths.
-    void testStopDetachPreservesRows()
+    void testStopAndKeepRowsPreservesRows()
     {
         LogModel model;
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
@@ -1631,7 +1467,7 @@ private slots:
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         QVERIFY(model.IsStreamingActive());
 
-        // Feed one batch of synthetic stream rows so `Detach` has
+        // Feed one batch of synthetic stream rows so `StopAndKeepRows` has
         // something to preserve.
         loglib::KeyIndex &keys = model.Sink()->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
@@ -1642,10 +1478,10 @@ private slots:
         ));
         QCOMPARE(model.rowCount(), batchSize);
 
-        // Detach: streaming flag flips off, compensating
+        // StopAndKeepRows: streaming flag flips off, compensating
         // `streamingFinished(Cancelled)` fires, but the table keeps
-        // every row (PRD 4.7.1).
-        model.Detach();
+        // every row.
+        model.StopAndKeepRows();
         QCoreApplication::processEvents();
 
         QVERIFY(!model.IsStreamingActive());
@@ -1653,14 +1489,14 @@ private slots:
         QCOMPARE(finishedSpy.count(), 1);
         QCOMPARE(finishedSpy.takeFirst().value(0).value<StreamingResult>(), StreamingResult::Cancelled);
 
-        // A second Detach on an already-idle model is a no-op (no
+        // A second StopAndKeepRows on an already-idle model is a no-op (no
         // spurious `streamingFinished`, no row mutation).
-        model.Detach();
+        model.StopAndKeepRows();
         QCOMPARE(finishedSpy.count(), 0);
         QCOMPARE(model.rowCount(), batchSize);
 
         // Verify the surviving rows are still queryable (the user can
-        // still sort / filter / copy as the PRD promises).
+        // still sort / filter / copy as the ).
         const int valueColumn = ColumnByHeader(model, QStringLiteral("value"));
         QVERIFY(valueColumn >= 0);
         QCOMPARE(model.data(model.index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(), qint64(1));
@@ -1669,9 +1505,9 @@ private slots:
             qint64(batchSize)
         );
 
-        // Clear() on the post-Detach state performs the full reset
+        // Reset() on the post-StopAndKeepRows state performs the full reset
         // (no streaming active, so no second `streamingFinished`).
-        model.Clear();
+        model.Reset();
         QCOMPARE(model.rowCount(), 0);
         QCOMPARE(finishedSpy.count(), 0);
     }
@@ -1761,7 +1597,7 @@ private slots:
     // idle, a menu click would flip the action's checked state before
     // `TogglePauseStream`'s `IsStreamingActive()` early-return runs;
     // the toggle then survives into the next session — and the teardown
-    // path *cannot* unstick it because `LogModel::Clear()` only emits
+    // path *cannot* unstick it because `LogModel::Reset()` only emits
     // `streamingFinished` when the prior session was still active.
     //
     // The fix disables the three Stream actions whenever the toolbar
@@ -1812,7 +1648,7 @@ private slots:
         pauseAction->setChecked(true);
         QVERIFY(pauseAction->isChecked());
 
-        // Drive a streaming session and tear it down. `Detach()` emits
+        // Drive a streaming session and tear it down. `StopAndKeepRows()` emits
         // a compensating `streamingFinished(Cancelled)` whose slot
         // (in `MainWindow`) resets the Pause toggle and refreshes the
         // toolbar gating. This is the existing reset path that must
@@ -1820,8 +1656,8 @@ private slots:
         LogModel *model = window->findChild<LogModel *>();
         QVERIFY(model != nullptr);
 
-        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::FileLineSource>{}));
-        model->Detach();
+        static_cast<void>(model->BeginStreamingForSyncTest(std::unique_ptr<loglib::LineSource>{}));
+        model->StopAndKeepRows();
         QCoreApplication::processEvents();
 
         // After teardown the action is back to its idle baseline:

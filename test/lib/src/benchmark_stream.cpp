@@ -1,9 +1,9 @@
-// Stream-Mode end-to-end latency benchmark (PRD §8 success metric 1, task 6.4).
+// Stream-Mode end-to-end latency benchmark.
 //
 // Goal: prove the G1 budget — median <= 250 ms, p95 <= 500 ms — for the
 // wall-clock delta between a producer's `write() + fflush()` and a row
 // landing in the consumer-side `OnBatch`. The latency budget chain (per
-// PRD §7 *Batching and latency*) is poll/event <= 250 ms + coalesce <= 100 ms
+// ) is poll/event <= 250 ms + coalesce <= 100 ms
 // + queued-connection epsilon ~ 350 ms p95 worst-case; this benchmark
 // measures the *parser-side* portion of that chain (no Qt event loop) and
 // asserts a tighter budget appropriate for that scope.
@@ -20,7 +20,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/streaming_log_sink.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
 #include <memory>
@@ -47,7 +47,7 @@ using loglib::KeyIndex;
 using loglib::ParserOptions;
 using loglib::StopSource;
 using loglib::StreamedBatch;
-using loglib::StreamingLogSink;
+using loglib::LogParseSink;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
 using namespace std::chrono_literals;
@@ -98,7 +98,7 @@ private:
 /// driver can compute the per-line delta. `lineId` is the canonical match
 /// key (the parser stamps it on the emitted `LogLine` via
 /// `StreamLineSource::AppendLine`).
-struct LatencyMeasuringSink final : StreamingLogSink
+struct LatencyMeasuringSink final : LogParseSink
 {
     KeyIndex keys;
     std::mutex mu;
@@ -192,16 +192,16 @@ double Percentile(std::vector<double> sorted, double pct)
 
 #define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
-// PRD §8 success metric 1: writer-to-row latency. The producer writes
+//  success metric 1: writer-to-row latency. The producer writes
 // `kLines` lines at a steady rate (well below the 10 000 lines/s target the
-// PRD calls out, so we measure the steady-state floor — not a saturation
+//  out, so we measure the steady-state floor — not a saturation
 // scenario) and the consumer's parser drains them in real time. We then
 // compute median / p95 / max of the per-line deltas and assert against the
-// PRD budget.
+// 
 //
 // We do **not** drive a Qt event loop here — this benchmark measures the
 // parser-side latency only. The full GUI-included budget (~350 ms p95,
-// per PRD §7 *Batching and latency*) is verified by the offscreen Qt smoke
+//) is verified by the offscreen Qt smoke
 // test in `test/app/src/main_window_test.cpp` (task 6.5).
 TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
 {
@@ -333,7 +333,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
                                              << " ms, max = " << maxLatency << " ms"
     );
 
-    // PRD §8 success metric 1. The numbers feed straight into the
+    //  success metric 1. The numbers feed straight into the
     // contributor benchmarking docs (CONTRIBUTING.md `## Benchmarking`).
     CHECK(median <= 250.0);
     CHECK(p95 <= 500.0);

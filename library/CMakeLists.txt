@@ -3,14 +3,15 @@ cmake_minimum_required(VERSION 3.28)
 add_library(
     loglib
     STATIC
+    src/batch_coalescer.cpp
     src/buffering_sink.cpp
     src/bytes_producer.cpp
     src/compact_log_value.cpp
     src/file_identity.cpp
     src/file_line_source.cpp
     src/key_index.cpp
-    src/log_parser.cpp
-    src/parser_pipeline.cpp
+    src/parse_file.cpp
+    src/static_parser_pipeline.cpp
     src/stream_line_source.cpp
     src/tailing_bytes_producer.cpp
     src/timestamp_promotion.cpp

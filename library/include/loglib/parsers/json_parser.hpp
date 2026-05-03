@@ -3,7 +3,7 @@
 #include "../log_line.hpp"
 #include "../log_parser.hpp"
 #include "../parser_options.hpp"
-#include "../streaming_log_sink.hpp"
+#include "../log_parse_sink.hpp"
 
 #include <filesystem>
 #include <string>
@@ -12,7 +12,6 @@ namespace loglib
 {
 
 class FileLineSource;
-class LogFile;
 class StreamLineSource;
 
 namespace internal
@@ -31,22 +30,14 @@ public:
     /// each `LogLine` produced is tagged with `&source` and its absolute
     /// 0-based file-line id. Default `AdvancedParserOptions` are used.
     void
-    ParseStreaming(FileLineSource &source, StreamingLogSink &sink, ParserOptions options = {}) const override;
+    ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /// Live-tail streaming parse against a long-lived `StreamLineSource`.
     /// Each line read from `source.Producer()` is appended to @p source
     /// and surfaced as a `LogLine` tagged with `&source` and the
-    /// just-published 1-based monotonic line id (PRD 4.10.4).
-    void ParseStreaming(StreamLineSource &source, StreamingLogSink &sink, ParserOptions options = {})
+    /// just-published 1-based monotonic line id.
+    void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {})
         const override;
-
-    // Bring the base-class `ParseStreaming(LogFile&, ...)` non-virtual
-    // wrapper into the derived scope so callers (tests, MainWindow,
-    // benchmarks) can keep writing `parser.ParseStreaming(file, sink,
-    // opts)` without having to qualify with `LogParser::`. C++ name-hiding
-    // would otherwise occlude every base-class overload as soon as we
-    // declared the source-based `ParseStreaming` here.
-    using LogParser::ParseStreaming;
 
     /// Streaming parse with the internal tuning knobs (benchmarks / bisects).
     /// Same semantics as the 3-arg overload, plus an
@@ -54,7 +45,7 @@ public:
     /// the public API.
     void ParseStreaming(
         FileLineSource &source,
-        StreamingLogSink &sink,
+        LogParseSink &sink,
         ParserOptions options,
         internal::AdvancedParserOptions advanced
     ) const;

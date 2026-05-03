@@ -15,18 +15,18 @@ namespace loglib
 class LineSource;
 
 /// One log record, stored as a sorted-by-`KeyId` flat vector of
-/// `(KeyId, detail::CompactLogValue)` pairs. Each compact value is 16 B
+/// `(KeyId, internal::CompactLogValue)` pairs. Each compact value is 16 B
 /// (vs the public `LogValue` variant's ~48 B); strings are
 /// `(offset, length)` pairs resolved through the owning `LineSource`
 /// (file mmap or per-line stream arena).
 ///
 /// The `LineSource * + size_t lineId` pair on every `LogLine` is the
-/// session-wide successor of the old `LogFileReference`: it disposes
-/// of the static-vs-streaming bifurcation, addresses the line within
+/// session-wide row-identity primitive: it addresses the line within
 /// the source's id space (file lines: 0-based; stream lines: 1-based
-/// monotonic from `StreamLineSource::AppendLine`), and gives all the
-/// `LogValue` materialisation calls a single dispatch point through
-/// the source's virtuals.
+/// monotonic from `StreamLineSource::AppendLine`) and gives every
+/// `LogValue` materialisation call a single dispatch point through the
+/// source's virtuals -- no static-vs-streaming bifurcation in the
+/// `LogLine` ABI.
 class LogLine
 {
 public:
@@ -48,7 +48,7 @@ public:
     /// `pair::first`. `OwnedString` payloads must already be relative
     /// to the arena that ultimately owns them.
     LogLine(
-        std::vector<std::pair<KeyId, detail::CompactLogValue>> sortedValues,
+        std::vector<std::pair<KeyId, internal::CompactLogValue>> sortedValues,
         const KeyIndex &keys,
         LineSource &source,
         size_t lineId
@@ -90,7 +90,7 @@ public:
     /// Internal: span over the compact storage. Used by hot paths inside
     /// `loglib` (parser pipeline, `LogData::Merge`) that want to walk
     /// fields without materialising a `LogValue` per pair.
-    std::span<const std::pair<KeyId, detail::CompactLogValue>> CompactValues() const noexcept;
+    std::span<const std::pair<KeyId, internal::CompactLogValue>> CompactValues() const noexcept;
 
     LogMap Values() const;
 
@@ -110,8 +110,7 @@ public:
 
     /// Mutator for the parser's TBB pipeline: Stage C shifts every
     /// line's id by the running line cursor so per-batch relative ids
-    /// become absolute. Replaces today's
-    /// `LogFileReference::ShiftLineNumber`.
+    /// become absolute.
     void ShiftLineId(size_t delta) noexcept;
 
     /// Mutator for the parser's per-batch decode stage when it needs
@@ -135,9 +134,7 @@ public:
     void RebaseOwnedStringOffsets(uint64_t delta) noexcept;
 
     /// Internal: returns true when @p id is stored as an `MmapSlice`
-    /// (zero-copy fast path). Replaces today's
-    /// `holds_alternative<string_view>` check used by the `[allocations]`
-    /// benchmark.
+    /// (zero-copy fast path). Used by the `[allocations]` benchmark.
     bool IsMmapSlice(KeyId id) const noexcept;
 
     /// Internal: returns true when @p id is stored as an `OwnedString`
@@ -147,9 +144,9 @@ public:
 private:
     /// Hot path: linear scan over the small (typically <=8 entry) sorted
     /// span via `lower_bound`. Returns `nullptr` if @p id is absent.
-    const detail::CompactLogValue *FindCompact(KeyId id) const noexcept;
+    const internal::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
-    detail::CompactLineFields mValues;
+    internal::CompactLineFields mValues;
     const KeyIndex *mKeys = nullptr;
     LineSource *mSource = nullptr;
     size_t mLineId = 0;

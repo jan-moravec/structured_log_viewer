@@ -12,10 +12,9 @@ namespace loglib_test
 /// a developer-class workstation; rather than scattering ad-hoc `*= 2`
 /// factors through every `DrainUntil` / `wait_for` call, we read the
 /// `LOGLIB_TEST_TIME_SCALE` env var once, parse it as a double (default
-/// `1.0`), and multiply every test-only deadline through `ScaledMs`
-/// (PRD §7 *CI*, task 6.1). Fixed constants like `pollInterval`
-/// deliberately do **not** scale — only the deadlines waiting for the
-/// worker to do its thing.
+/// `1.0`), and multiply every test-only deadline through `ScaledMs`.
+/// Fixed constants like `pollInterval` deliberately do **not** scale --
+/// only the deadlines waiting for the worker to do its thing.
 inline double LoadTimeScale() noexcept
 {
     // MSVC flags `std::getenv` as `unsafe` (C4996) and recommends

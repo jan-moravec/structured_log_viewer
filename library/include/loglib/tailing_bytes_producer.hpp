@@ -13,33 +13,33 @@
 namespace loglib
 {
 
-namespace detail
+namespace internal
 {
 class TailingBytesProducerImpl; // pimpl forward decl
 }
 
 /// `BytesProducer` over a file that is being **actively written to**.
-/// Produces the last `N` complete lines on disk first (pre-fill, PRD
-/// 4.1.5–6) and then appends new lines as the producer writes them,
-/// surviving the rotation patterns enumerated in PRD 4.8.1–4.
+/// Produces the last `N` complete lines on disk first (pre-fill) and then
+/// appends new lines as the producer writes them,
+/// surviving the rotation patterns enumerated in –4.
 ///
-/// **Design summary** (PRD §7 / task 3.x):
+/// **Design summary**:
 ///   - Buffered POSIX `read(2)` / Windows `ReadFile` via `std::ifstream`.
-///     **No mmap** on the tail (PRD §7 *No mmap on the tail*) — rotations
+///     **No mmap** on the tail — rotations
 ///     would invalidate the mapping or block the producer.
 ///   - One dedicated worker thread per producer, spawned at construction.
 ///     The worker polls the file size at a configurable cadence (default
 ///     250 ms) and is also signalled by `efsw` filesystem events so that
 ///     the typical wake latency is the watcher's, not the polling
-///     fallback's (PRD §7 *Batching and latency*).
+///     fallback's.
 ///   - Rotation detection runs in branch order (i identity / ii missing /
-///     iii size shrunk) per PRD 4.8.6; rapid bursts (<1 s) collapse into
-///     a single rotation event (PRD 4.8.9).
+///     iii size shrunk).8.6; rapid bursts (<1 s) collapse into
+///     a single rotation event.
 ///   - `Read(span)` drains a per-producer byte queue (only complete lines
 ///     ever land in it; the partial-line buffer lives separately and is
-///     discarded on rotation / flushed on `Stop` per PRD §7
+///     discarded on rotation / flushed on `Stop`
 ///     *Line buffering*).
-///   - `Stop()` is distinct from `ParserOptions::stopToken` (PRD 4.7.2.i):
+///   - `Stop()` is distinct from `ParserOptions::stopToken`:
 ///     `Stop` releases I/O so the parser hot loop can observe the token
 ///     at the next batch boundary.
 class TailingBytesProducer final : public BytesProducer
@@ -47,19 +47,19 @@ class TailingBytesProducer final : public BytesProducer
 public:
     /// Tuning knobs exposed to tests so that the polling fallback / rotation
     /// debounce / I/O chunk size can be made deterministic on slow CI
-    /// runners (PRD §7 *CI*, task 6.1).
+    /// runners.
     struct Options
     {
         /// How often the worker re-evaluates the rotation branches when no
-        /// native filesystem event has fired. Default 250 ms (PRD 4.8.5).
+        /// native filesystem event has fired. Default 250 ms.
         std::chrono::milliseconds pollInterval = std::chrono::milliseconds(250);
 
         /// Multiple rotations within this window collapse into a single
-        /// rotation event (PRD 4.8.9).
+        /// rotation event.
         std::chrono::milliseconds rotationDebounce = std::chrono::milliseconds(1000);
 
         /// Bytes per `read()` syscall. 64 KiB matches the pre-fill chunk
-        /// (PRD 4.1.6) and is large enough to amortise syscall cost while
+        /// and is large enough to amortise syscall cost while
         /// keeping the partial-line buffer's worst case bounded.
         size_t readChunkBytes = 64 * 1024;
 
@@ -70,8 +70,7 @@ public:
 
         /// Upper bound on how many bytes pre-fill will scan backwards
         /// while looking for the last `retentionLines` newlines before
-        /// giving up and seeking to EOF (PRD §7 *Line buffering*:
-        /// "don't blow out RAM on a pathological file"). The default of
+        /// giving up and seeking to EOF. The default of
         /// 16 MiB protects against files with no newlines and against
         /// an unrealistically large `retentionLines` on a multi-GB
         /// file. On overflow, pre-fill yields zero lines and tailing
@@ -112,12 +111,12 @@ public:
 
     /// Park until at least one byte is available, the timeout elapses, or
     /// `Stop()` is called. Spurious wakeups allowed — callers re-check via
-    /// `Read` (PRD 4.9.2.ii).
+    /// `Read`.
     void WaitForBytes(std::chrono::milliseconds timeout) override;
 
     /// Unblock any in-flight `Read` / `WaitForBytes`, flush the partial
     /// line as a synthetic last line if no rotation is concurrently in
-    /// progress (PRD 4.7.2.ii / §7 *Line buffering*), and signal the
+    /// progress, and signal the
     /// worker to exit. Idempotent. Safe from any thread, including the
     /// GUI thread during model teardown.
     void Stop() noexcept override;
@@ -136,7 +135,7 @@ public:
     [[nodiscard]] size_t RotationCount() const noexcept;
 
 private:
-    std::unique_ptr<detail::TailingBytesProducerImpl> mImpl;
+    std::unique_ptr<internal::TailingBytesProducerImpl> mImpl;
 };
 
 } // namespace loglib

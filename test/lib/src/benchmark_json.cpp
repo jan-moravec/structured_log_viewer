@@ -6,7 +6,7 @@
 #include "common.hpp"
 
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/parser_options.hpp>
+#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_factory.hpp>
@@ -14,6 +14,7 @@
 #include <loglib/log_line.hpp>
 #include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
 
@@ -243,7 +244,7 @@ std::size_t SamplePeakWorkingSetBytes()
 
 /// Sink that mirrors `LogModel::OnBatch`: every batch is forwarded to
 /// `LogTable::AppendBatch`, which runs the GUI-thread back-fill loop.
-struct StreamSink : StreamingLogSink
+struct StreamSink : LogParseSink
 {
     LogTable *table = nullptr;
     std::chrono::steady_clock::duration appendTotal{};
@@ -433,9 +434,10 @@ void RunStreamingBenchmark(
 
 #define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
-// Synchronous-Parse coverage for `BufferingSink` (the sink behind
-// `LogParser::Parse(path)`, used by tests and `Edit -> Copy`). Small fixture
-// because the synchronous path is not the GUI hot path — the `[large]` and
+// Synchronous-Parse coverage for `BufferingSink` (the sink behind the
+// `loglib::ParseFile(parser, path)` free helper, used by tests and any
+// non-GUI caller that wants a one-shot `LogData`). Small fixture because
+// the synchronous path is not the GUI hot path -- the `[large]` and
 // `[wide]` cases below cover that.
 TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_sync]")
 {
@@ -448,7 +450,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
     {
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath());
+        ParseResult warmup = ParseFile(parser, testFile.GetFilePath());
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -457,7 +459,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
     RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {bytes, logs.size()}, [&]() {
         LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath());
+        ParseResult result = ParseFile(parser, testFile.GetFilePath());
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
         REQUIRE(result.errors.empty());
         table.Update(std::move(result.data));
@@ -538,7 +540,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    ParseResult result = parser.Parse(testFile.GetFilePath());
+    ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     const LogData &data = result.data;
     const std::vector<LogLine> &lines = data.Lines();
@@ -605,7 +607,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    ParseResult result = parser.Parse(testFile.GetFilePath());
+    ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == logs.size());
 
@@ -676,7 +678,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    struct LatencySink : StreamingLogSink
+    struct LatencySink : LogParseSink
     {
         KeyIndex keys;
         loglib::StopSource stop;
@@ -714,11 +716,11 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 
     for (int i = 0; i < kIterations; ++i)
     {
-        LogFile file(testFile.GetFilePath());
+        FileLineSource source(std::make_unique<LogFile>(testFile.GetFilePath()));
         LatencySink sink;
         ParserOptions opts;
         opts.stopToken = sink.stop.get_token();
-        parser.ParseStreaming(file, sink, opts);
+        parser.ParseStreaming(source, sink, opts);
         REQUIRE(sink.cancelled);
         REQUIRE(sink.requestedAt.time_since_epoch().count() != 0);
         const auto latency = std::chrono::duration<double, std::micro>(sink.finishedAt - sink.requestedAt).count();

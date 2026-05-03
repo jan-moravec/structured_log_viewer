@@ -1,12 +1,11 @@
 #pragma once
 
-#include "file_line_source.hpp"
 #include "key_index.hpp"
+#include "line_source.hpp"
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 #include "log_file.hpp"
-#include "stream_line_source.hpp"
-#include "streaming_log_sink.hpp"
+#include "log_parse_sink.hpp"
 
 #include <memory>
 #include <optional>
@@ -44,26 +43,36 @@ public:
     /// Clears `Data()` and streaming-time-key snapshots; preserves `Configuration()`.
     void Reset();
 
-    /// Initialises the table for an upcoming static-streaming parse and
-    /// snapshots the time-column KeyIds against the current configuration.
-    /// `Configuration()` is *not* mutated; callers must lock the
-    /// configuration UI between this call and the matching streaming-
-    /// finished signal. @p source may be null (`mData` is reset to empty).
-    /// `LogTable` takes ownership of @p source for the lifetime of the
-    /// session; the parser worker emits `LogLine`s tagged with that source
-    /// so each row's raw bytes stay resolvable through
-    /// `LineSource::RawLine` after parsing has moved on.
-    void BeginStreaming(std::unique_ptr<FileLineSource> source);
+    /// Initialises the table for an upcoming streaming parse and
+    /// snapshots the time-column KeyIds against the current
+    /// configuration. `Configuration()` is *not* mutated; callers must
+    /// lock the configuration UI between this call and the matching
+    /// streaming-finished signal. @p source may be null (`mData` is
+    /// reset to empty). `LogTable` takes ownership of @p source for the
+    /// lifetime of the session; the parser worker emits `LogLine`s
+    /// tagged with that source so each row's raw bytes stay resolvable
+    /// through `LineSource::RawLine` after parsing has moved on.
+    ///
+    /// The same entry point covers both modes:
+    ///   * `FileLineSource` (mmap-backed static file): the table simply
+    ///     holds the source while the TBB pipeline drives over the
+    ///     underlying mmap.
+    ///   * `StreamLineSource` (live tail): the parser thread mutates
+    ///     the source via `AppendLine` / `AppendOwnedBytes` while the
+    ///     GUI thread resolves bytes through it concurrently
+    ///     (`StreamLineSource` is internally thread-safe).
+    void BeginStreaming(std::unique_ptr<LineSource> source);
 
-    /// `BeginStreaming` overload for the live-tail / non-mmap path.
-    /// `LogTable` takes ownership of @p source so the parser worker
-    /// can mutate it via `AppendLine` / `AppendOwnedBytes` while the
-    /// GUI thread reads through `LogLine::Source()->RawLine` /
-    /// `ResolveOwnedBytes` (StreamLineSource is internally
-    /// thread-safe). The session is reset to "stream-only": no
-    /// `FileLineSource` is installed, and `Lines()` is initially
-    /// empty. @p source may be null (`mData` is reset to empty).
-    void BeginStreaming(std::unique_ptr<StreamLineSource> source);
+    /// **Multi-file streaming append.** Adds @p source to the existing
+    /// session's source list without resetting `mData`, the `KeyIndex`,
+    /// or the time-column snapshot. The next streaming parse drives
+    /// over @p source and routes its per-batch line offsets to it via
+    /// `LogData::BackFileSource()`; the rows accumulated from prior
+    /// `BeginStreaming` / `AppendStreaming` calls stay visible. Used by
+    /// the GUI's sequential multi-file open flow
+    /// (`LogModel::AppendStreaming`). `source` must be non-null. The
+    /// existing `KeyIndex` is reused so columns line up across files.
+    void AppendStreaming(std::unique_ptr<LineSource> source);
 
     /// Splices @p batch into the table. Extends the configuration for any
     /// `batch.newKeys`, then back-fills any newly-introduced `Type::time`
@@ -107,7 +116,7 @@ public:
     /// logical row range is `[file rows][stream rows]`, so file rows are
     /// dropped first; once they are exhausted the eviction continues
     /// into the stream rows. Used by `LogModel`'s FIFO retention-cap
-    /// machinery (PRD 4.5 / 4.10.3); callers must wrap with the
+    /// machinery; callers must wrap with the
     /// corresponding Qt `beginRemoveRows` / `endRemoveRows` notifications
     /// so attached views observe the prefix removal.
     ///

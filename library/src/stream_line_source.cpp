@@ -56,7 +56,7 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
     }
     // The deque entry is stable across concurrent `AppendLine`s for as
     // long as it isn't evicted, so the returned view remains valid past
-    // the lock release. PRD 4.10.4 asks callers not to retain it past
+    // the lock release.  asks callers not to retain it past
     // the next `EvictBefore` for the same line id.
     return std::string_view(arena.data() + offset, length);
 }

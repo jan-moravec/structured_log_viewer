@@ -58,20 +58,20 @@ namespace
 /// Append @p sv to @p source's owned-bytes arena for @p lineId and
 /// return a compact `OwnedString` value pointing at the just-appended
 /// bytes. Used by the cold-path ctors and `SetValue`.
-detail::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
+internal::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
 {
     const uint64_t offset = source.AppendOwnedBytes(lineId, sv);
-    return detail::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
+    return internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
 }
 
-detail::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t lineId, const LogValue &value)
+internal::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t lineId, const LogValue &value)
 {
     return std::visit(
-        [&](const auto &alt) -> detail::CompactLogValue {
+        [&](const auto &alt) -> internal::CompactLogValue {
             using T = std::decay_t<decltype(alt)>;
             if constexpr (std::is_same_v<T, std::monostate>)
             {
-                return detail::CompactLogValue::MakeMonostate();
+                return internal::CompactLogValue::MakeMonostate();
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
             {
@@ -85,7 +85,7 @@ detail::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t lineId
                     alt.data() + alt.size() <= stable.data() + stable.size())
                 {
                     const auto offset = static_cast<uint64_t>(alt.data() - stable.data());
-                    return detail::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
+                    return internal::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
                 }
                 return PromoteToOwnedString(source, lineId, alt);
             }
@@ -95,28 +95,28 @@ detail::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t lineId
             }
             else if constexpr (std::is_same_v<T, int64_t>)
             {
-                return detail::CompactLogValue::MakeInt64(alt);
+                return internal::CompactLogValue::MakeInt64(alt);
             }
             else if constexpr (std::is_same_v<T, uint64_t>)
             {
-                return detail::CompactLogValue::MakeUint64(alt);
+                return internal::CompactLogValue::MakeUint64(alt);
             }
             else if constexpr (std::is_same_v<T, double>)
             {
-                return detail::CompactLogValue::MakeDouble(alt);
+                return internal::CompactLogValue::MakeDouble(alt);
             }
             else if constexpr (std::is_same_v<T, bool>)
             {
-                return detail::CompactLogValue::MakeBool(alt);
+                return internal::CompactLogValue::MakeBool(alt);
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                return detail::CompactLogValue::MakeTimestamp(alt);
+                return internal::CompactLogValue::MakeTimestamp(alt);
             }
             else
             {
                 static_assert(std::is_same_v<T, void>, "non-exhaustive visitor!");
-                return detail::CompactLogValue::MakeMonostate();
+                return internal::CompactLogValue::MakeMonostate();
             }
         },
         value
@@ -145,7 +145,7 @@ LogLine::LogLine(
 }
 
 LogLine::LogLine(
-    std::vector<std::pair<KeyId, detail::CompactLogValue>> sortedValues,
+    std::vector<std::pair<KeyId, internal::CompactLogValue>> sortedValues,
     const KeyIndex &keys,
     LineSource &source,
     size_t lineId
@@ -167,7 +167,7 @@ LogLine::LogLine(
 LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId)
     : mValues(static_cast<uint32_t>(values.size())), mKeys(&keys), mSource(&source), mLineId(lineId)
 {
-    std::vector<std::pair<KeyId, detail::CompactLogValue>> staging;
+    std::vector<std::pair<KeyId, internal::CompactLogValue>> staging;
     staging.reserve(values.size());
     for (const auto &[key, value] : values)
     {
@@ -177,7 +177,7 @@ LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_
     mValues.AssignSorted(staging.data(), static_cast<uint32_t>(staging.size()));
 }
 
-const detail::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
+const internal::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
 {
     // Linear forward scan: typical line has <= 8 fields and the data is
     // sorted ascending; bailing on `entry.first > id` keeps it branch-light.
@@ -199,7 +199,7 @@ const detail::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
 
 LogValue LogLine::GetValue(KeyId id) const
 {
-    const detail::CompactLogValue *compact = FindCompact(id);
+    const internal::CompactLogValue *compact = FindCompact(id);
     if (compact == nullptr)
     {
         return LogValue{std::monostate{}};
@@ -234,7 +234,7 @@ void LogLine::SetValue(KeyId id, LogValue value)
 void LogLine::SetValue(KeyId id, LogValue value, LogValueTrustView /*trust*/)
 {
     assert(mSource != nullptr);
-    detail::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
+    internal::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
     auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     uint32_t lo = 0;
@@ -302,9 +302,9 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
     return result;
 }
 
-std::span<const std::pair<KeyId, detail::CompactLogValue>> LogLine::CompactValues() const noexcept
+std::span<const std::pair<KeyId, internal::CompactLogValue>> LogLine::CompactValues() const noexcept
 {
-    return std::span<const std::pair<KeyId, detail::CompactLogValue>>(mValues.Data(), mValues.Size());
+    return std::span<const std::pair<KeyId, internal::CompactLogValue>>(mValues.Data(), mValues.Size());
 }
 
 LogMap LogLine::Values() const
@@ -369,19 +369,19 @@ void LogLine::RebaseOwnedStringOffsets(uint64_t delta) noexcept
     {
         return;
     }
-    detail::RebaseOwnedStringOffsets(mValues.Data(), mValues.Size(), delta);
+    internal::RebaseOwnedStringOffsets(mValues.Data(), mValues.Size(), delta);
 }
 
 bool LogLine::IsMmapSlice(KeyId id) const noexcept
 {
-    const detail::CompactLogValue *compact = FindCompact(id);
-    return compact != nullptr && compact->tag == detail::CompactTag::MmapSlice;
+    const internal::CompactLogValue *compact = FindCompact(id);
+    return compact != nullptr && compact->tag == internal::CompactTag::MmapSlice;
 }
 
 bool LogLine::IsOwnedString(KeyId id) const noexcept
 {
-    const detail::CompactLogValue *compact = FindCompact(id);
-    return compact != nullptr && compact->tag == detail::CompactTag::OwnedString;
+    const internal::CompactLogValue *compact = FindCompact(id);
+    return compact != nullptr && compact->tag == internal::CompactTag::OwnedString;
 }
 
 } // namespace loglib

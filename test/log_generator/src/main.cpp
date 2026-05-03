@@ -3,7 +3,7 @@
 // count or a target line count is reached. Supports streaming throttling via
 // `--timeout` and in-flight file rotation (`rename` / `copytruncate` /
 // `truncate`) via the `--roll-*` flags so it can drive `TailingBytesProducer`
-// rotation tests (PRD 4.8.6 / §7 *Rotation patterns*) and the GUI's Stream
+// rotation tests and the GUI's Stream
 // Mode smoke tests end-to-end.
 //
 // Each emitted record is stamped with a monotonic, session-global,
@@ -161,18 +161,17 @@ std::uint64_t ParseCount(std::string text)
 enum class RollStrategy
 {
     /// `mv path -> path.1`, then create a fresh `path`. Triggers
-    /// `TailingBytesProducer` rotation branch (i) — identity change
-    /// (PRD 4.8.6.i). The default and the most realistic logrotate
-    /// emulation.
+    /// `TailingBytesProducer` rotation branch (i) -- identity change.
+    /// The default and the most realistic logrotate emulation.
     Rename,
     /// `cp path -> path.1`, then truncate `path` in place. Triggers
-    /// rotation branch (iii) — size shrunk (PRD 4.8.6.iii). Models the
+    /// rotation branch (iii) — size shrunk. Models the
     /// `copytruncate` logrotate option used when the producer cannot be
     /// signalled to reopen.
     CopyTruncate,
     /// Truncate `path` in place with no backup. Also triggers branch
     /// (iii); useful for stress-testing the partial-line-buffer discard
-    /// path on rotation (PRD 4.8.7.i / §7 *Line buffering*).
+    /// path on rotation.
     Truncate,
 };
 
@@ -348,9 +347,9 @@ int main(int argc, char *argv[])
     program.add_argument("--roll-strategy")
         .default_value(std::string{"rename"})
         .choices("rename", "copytruncate", "truncate")
-        .help("Rotation strategy. 'rename' (mv path -> path.1, recreate path; PRD 4.8.6.i identity change), "
-              "'copytruncate' (cp path path.1, then truncate path in place; PRD 4.8.6.iii size shrunk), "
-              "'truncate' (in-place truncate, no backup; PRD 4.8.6.iii size shrunk).");
+        .help("Rotation strategy. 'rename' (mv path -> path.1, recreate path;  identity change), "
+              "'copytruncate' (cp path path.1, then truncate path in place;  size shrunk), "
+              "'truncate' (in-place truncate, no backup;  size shrunk).");
 
     program.add_argument("--keep-rolled")
         .default_value(5)

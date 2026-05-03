@@ -9,7 +9,6 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/log_configuration.hpp>
-#include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/stop_token.hpp>
@@ -174,7 +173,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
-    connect(ui->actionOpenJsonLogs, &QAction::triggered, this, &MainWindow::OpenJsonLogs);
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
@@ -187,7 +185,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
-    // Stream toolbar (PRD §6 *Toolbar*; task 5.3). Hidden until a stream
+    // Stream toolbar. Hidden until a stream
     // is opened; the same actions are also reachable from the **Stream**
     // menu (task 5.2).
     mStreamToolbar = addToolBar(tr("Stream"));
@@ -203,9 +201,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // click on `actionPauseStream` (checkable) flips its checked state
     // before `TogglePauseStream`'s `IsStreamingActive` early-return
     // runs; the toggle then survives into the next session, which the
-    // teardown path *cannot* unstick because `LogModel::Clear()` only
+    // teardown path *cannot* unstick because `LogModel::Reset()` only
     // emits `streamingFinished` (where the toggle is reset) when the
-    // prior session was still active — which it isn't after a `Detach()`
+    // prior session was still active — which it isn't after a `StopAndKeepRows()`
     // or a previous full teardown. Disabling the actions while idle
     // makes the only legal entry point the toolbar (which is in turn
     // gated on `IsStreamingActive`), so the checked state can never
@@ -222,7 +220,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // `actionFollowTail` is a stateless toggle observed by
     // `ScrollToNewestRowIfFollowing`; nothing to wire on its own
     // `toggled` signal. The user-scroll signals below auto-disengage /
-    // auto-re-engage it (PRD 4.3.3). The "tail edge" the table view
+    // auto-re-engage it. The "tail edge" the table view
     // tracks is bottom in the default orientation and top when
     // **Show newest lines first** is enabled — that flip lives in
     // `ApplyStreamingDisplayOrder` so this wiring stays orientation-
@@ -266,16 +264,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
-        // First-batch column auto-resize (PRD §6, task 5.9). `UpdateUi`
+        // First-batch column auto-resize. `UpdateUi`
         // runs only on the first non-empty batch after `BeginStreaming`,
         // so initial widths fit pre-fill rows; thereafter the user
         // resizes manually (avoid yanking columns under the mouse).
-        if (mLiveTailActive && !mFirstStreamingBatchSeen && count > 0)
+        if (IsLiveTailSession() && !mFirstStreamingBatchSeen && count > 0)
         {
             mFirstStreamingBatchSeen = true;
             UpdateUi();
         }
-        // Follow newest auto-scroll on every batch (PRD 4.3 / task 5.7).
+        // Follow newest auto-scroll on every batch.
         if (mModel->IsStreamingActive())
         {
             ScrollToNewestRowIfFollowing();
@@ -286,13 +284,36 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         UpdateStreamingStatus();
     });
     connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
-        mStreamingActive = false;
-        mLiveTailActive = false;
+        mSessionMode = SessionMode::Idle;
         // Source is going away — drop the `Source unavailable` latch so
         // the post-session status-bar label doesn't inherit a stale
         // "waiting" state. Re-set naturally by the next stream's
         // first `Waiting` transition if one arrives.
         mSourceWaiting = false;
+
+        // Multi-file static open: `result == Success` advances the
+        // queue. Cancellation drains the queue (matches Stop-stream
+        // semantics: user wants to stop). Failed (worker exception)
+        // also drains so the user can see the error and retry. The
+        // `mSessionMode` re-arm happens inside
+        // `StreamNextPendingFile` when it actually starts the next
+        // file's parse.
+        if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
+        {
+            StreamNextPendingFile();
+            // `StreamNextPendingFile` re-armed `mSessionMode` if
+            // it actually dispatched a follow-up; on a clean
+            // re-arm there is nothing else to reset on the GUI.
+            if (IsSessionActive())
+            {
+                return;
+            }
+        }
+        else if (!mPendingOpenFiles.isEmpty())
+        {
+            mPendingOpenFiles.clear();
+        }
+
         // Reset Pause toggle so the next session starts unpaused.
         if (ui->actionPauseStream->isChecked())
         {
@@ -321,7 +342,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         // hides it and `Failed` surfaces independently.
         if (result == StreamingResult::Success)
         {
-            ShowParseErrors("Error Parsing Logs", mModel->StreamingErrors());
+            std::vector<std::string> errors = mModel->StreamingErrors();
+            // Fold in any per-file open failures accumulated by the
+            // queue while it was draining.
+            errors.insert(
+                errors.end(),
+                std::make_move_iterator(mPendingOpenErrors.begin()),
+                std::make_move_iterator(mPendingOpenErrors.end())
+            );
+            mPendingOpenErrors.clear();
+            ShowParseErrors("Error Parsing Logs", errors);
+        }
+        else
+        {
+            mPendingOpenErrors.clear();
         }
         mStreamingFileName.clear();
     });
@@ -398,66 +432,26 @@ void MainWindow::dropEvent(QDropEvent *event)
         return;
     }
 
-    mModel->Clear();
-    ClearAllFilters();
-
-    std::vector<std::string> errors;
-
-    // Mirror `OpenFilesWithParser`: stream a single dropped JSON log so the
-    // GUI stays responsive and shows progress instead of freezing on the
-    // synchronous `LogFactory::Parse`. Configuration files and multi-file
-    // drops keep the existing synchronous path.
+    // Single-file drop: keep the historical "drop a config file to load
+    // it" affordance. Multi-file drops always stream.
     if (urlList.size() == 1)
     {
         const QString singleFile = urlList.front().toLocalFile();
-
-        bool isConfiguration = true;
-        try
-        {
-            mModel->ConfigurationManager().Load(singleFile.toStdString());
-        }
-        catch (...)
-        {
-            isConfiguration = false;
-        }
-
-        if (isConfiguration)
+        if (TryLoadAsConfiguration(singleFile))
         {
             UpdateUi();
-        }
-        else
-        {
-            const loglib::JsonParser jsonParser;
-            bool streamed = false;
-            try
-            {
-                if (jsonParser.IsValid(singleFile.toStdString()))
-                {
-                    streamed = OpenJsonStreaming(singleFile, errors);
-                }
-            }
-            catch (...)
-            {
-                streamed = false;
-            }
-
-            if (!streamed)
-            {
-                OpenFileInternal(singleFile, errors);
-            }
+            event->acceptProposedAction();
+            return;
         }
     }
-    else
+
+    QStringList files;
+    files.reserve(urlList.size());
+    for (const QUrl &url : urlList)
     {
-        for (const QUrl &url : urlList)
-        {
-            OpenFileInternal(url.toLocalFile(), errors);
-        }
+        files.append(url.toLocalFile());
     }
-
-    // Streaming surfaces its own error summary from `streamingFinished`;
-    // anything queued in `errors` here is from the synchronous fallback.
-    ShowParseErrors("Error Opening File", errors);
+    StartStreamingOpenQueue(std::move(files));
 
     event->acceptProposedAction();
 }
@@ -495,144 +489,124 @@ bool MainWindow::event(QEvent *event)
 
 void MainWindow::OpenFiles()
 {
-    OpenFilesWithParser("Select Log Files", nullptr);
-}
-
-void MainWindow::OpenJsonLogs()
-{
-    OpenFilesWithParser("Select JSON Log Files", loglib::LogFactory::Create(loglib::LogFactory::Parser::Json));
-}
-
-void MainWindow::OpenFilesWithParser(const QString &dialogTitle, std::unique_ptr<loglib::LogParser> parser)
-{
-    const QStringList files = QFileDialog::getOpenFileNames(this, dialogTitle, QString(), "All Files (*.*)");
+    const QStringList files = QFileDialog::getOpenFileNames(this, "Select Log Files", QString(), "All Files (*.*)");
     if (files.isEmpty())
     {
         return;
     }
 
-    // Stream only single-file JSON opens; the sink holds one generation.
-    const bool canStream = (dynamic_cast<loglib::JsonParser *>(parser.get()) != nullptr) && files.size() == 1;
-
-    mModel->Clear();
-    ClearAllFilters();
-
-    if (canStream)
+    // Single-file open: keep the historical "drop a config file to load
+    // it" affordance. Multi-file selections always stream.
+    if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
     {
-        std::vector<std::string> errors;
-        const bool started = OpenJsonStreaming(files.front(), errors);
-        if (!started)
-        {
-            // Fall back to synchronous JSON so the user still gets a summary.
-            try
-            {
-                loglib::ParseResult result = parser->Parse(files.front().toStdString());
-                mModel->AddData(std::move(result.data));
-                errors.insert(
-                    errors.end(),
-                    std::make_move_iterator(result.errors.begin()),
-                    std::make_move_iterator(result.errors.end())
-                );
-            }
-            catch (const std::exception &e)
-            {
-                errors.push_back(std::string("Failed to parse '") + files.front().toStdString() + "': " + e.what());
-            }
-            UpdateUi();
-            ShowParseErrors("Error Parsing Logs", errors);
-        }
-        // The streaming path shows its summary from `streamingFinished`.
+        UpdateUi();
         return;
     }
 
-    std::vector<std::string> errors;
-    for (const QString &file : files)
-    {
-        if (parser)
-        {
-            try
-            {
-                loglib::ParseResult result = parser->Parse(file.toStdString());
-                mModel->AddData(std::move(result.data));
-                errors.insert(
-                    errors.end(),
-                    std::make_move_iterator(result.errors.begin()),
-                    std::make_move_iterator(result.errors.end())
-                );
-            }
-            catch (const std::exception &e)
-            {
-                errors.push_back(std::string("Failed to parse '") + file.toStdString() + "': " + e.what());
-            }
-        }
-        else
-        {
-            OpenFileInternal(file, errors);
-        }
-    }
-
-    UpdateUi();
-    ShowParseErrors("Error Parsing Logs", errors);
+    StartStreamingOpenQueue(files);
 }
 
-bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string> &errors)
+bool MainWindow::TryLoadAsConfiguration(const QString &file)
 {
-    // Open on the GUI thread so file-open errors are synchronous.
-    std::unique_ptr<loglib::LogFile> logFile;
     try
     {
-        logFile = std::make_unique<loglib::LogFile>(file.toStdString());
+        mModel->ConfigurationManager().Load(file.toStdString());
+        return true;
     }
-    catch (const std::exception &e)
+    catch (...)
     {
-        errors.push_back(std::string("Failed to open '") + file.toStdString() + "': " + e.what());
         return false;
     }
+}
 
-    // Snapshot the configuration before handing it to the parser: the
-    // worker reads it lock-free, and a UI-gate-skipping edit cannot then
-    // affect the in-flight parse.
-    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+void MainWindow::StartStreamingOpenQueue(QStringList files)
+{
+    // Reset session state before the queue starts so residual rows /
+    // filters / paused buffer never leak into the new session.
+    mModel->Reset();
+    ClearAllFilters();
 
-    mStreamingFileName = QFileInfo(file).fileName();
-    if (!logFile)
+    mPendingOpenFiles = std::move(files);
+    mPendingOpenErrors.clear();
+
+    StreamNextPendingFile();
+}
+
+void MainWindow::StreamNextPendingFile()
+{
+    while (!mPendingOpenFiles.isEmpty())
     {
-        // Fail early before flipping any streaming UI state.
-        errors.push_back(std::string("Failed to open '") + file.toStdString() + "' for streaming");
-        return false;
-    }
+        const QString file = mPendingOpenFiles.takeFirst();
 
-    mStreamingActive = true;
-    mLiveTailActive = false;
-    mStreamingLineCount = 0;
-    mStreamingErrorCount = 0;
-    mFirstStreamingBatchSeen = false;
-    SetConfigurationUiEnabled(false);
-    UpdateStreamingStatus();
-    UpdateStreamToolbarVisibility();
+        // Open on the GUI thread so file-open errors are synchronous.
+        // Failed opens are accumulated and the queue continues with the
+        // next file; the summary is surfaced once the queue drains.
+        std::unique_ptr<loglib::LogFile> logFile;
+        try
+        {
+            logFile = std::make_unique<loglib::LogFile>(file.toStdString());
+        }
+        catch (const std::exception &e)
+        {
+            mPendingOpenErrors.push_back(std::string("Failed to open '") + file.toStdString() + "': " + e.what());
+            continue;
+        }
 
-    QtStreamingLogSink *sink = mModel->Sink();
+        // Snapshot the configuration so the parser worker reads it
+        // lock-free, and a UI-gate-skipping edit cannot affect the
+        // in-flight parse.
+        auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
-    loglib::ParserOptions options;
-    options.configuration = std::move(cfg);
+        // The session is "first" when no streaming session is currently
+        // active; subsequent files in the queue append to it.
+        const bool isFirstFileInSession = !IsSessionActive();
 
-    // Construct the long-lived `FileLineSource` here so the worker
-    // captures a stable pointer to it: the model takes ownership and
-    // installs it in `LogTable` for the lifetime of the session, so
-    // every emitted `LogLine` references a source that outlives the
-    // parse (PRD 4.9.4).
-    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
-    loglib::FileLineSource *fileSourcePtr = fileSource.get();
-    mModel->BeginStreaming(
-        std::move(fileSource),
-        [sink, fileSourcePtr, options = std::move(options)](loglib::StopToken stopToken) mutable {
+        mStreamingFileName = QFileInfo(file).fileName();
+        if (isFirstFileInSession)
+        {
+            mSessionMode = SessionMode::Static;
+            mStreamingLineCount = 0;
+            mStreamingErrorCount = 0;
+            mFirstStreamingBatchSeen = false;
+            SetConfigurationUiEnabled(false);
+            UpdateStreamToolbarVisibility();
+        }
+        UpdateStreamingStatus();
+
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        QtStreamingLogSink *sink = mModel->Sink();
+
+        loglib::ParserOptions options;
+        options.configuration = std::move(cfg);
+
+        auto parseCallable = [sink, fileSourcePtr,
+                              options = std::move(options)](loglib::StopToken stopToken) mutable {
             options.stopToken = stopToken;
             loglib::JsonParser parser;
             parser.ParseStreaming(*fileSourcePtr, *sink, options);
-        }
-    );
+        };
 
-    return true;
+        if (isFirstFileInSession)
+        {
+            mModel->BeginStreaming(std::move(fileSource), std::move(parseCallable));
+        }
+        else
+        {
+            mModel->AppendStreaming(std::move(fileSource), std::move(parseCallable));
+        }
+        return;
+    }
+
+    // Queue exhausted via fallthrough (every remaining file failed to
+    // open). Surface accumulated errors immediately if no streaming
+    // session was ever armed; otherwise the post-parse summary in
+    // `streamingFinished` will fold them in.
+    if (!IsSessionActive() && !mPendingOpenErrors.empty())
+    {
+        ShowParseErrors("Error Opening File", mPendingOpenErrors);
+        mPendingOpenErrors.clear();
+    }
 }
 
 void MainWindow::OpenLogStream()
@@ -644,8 +618,7 @@ void MainWindow::OpenLogStream()
     }
 
     // Construct the source on the GUI thread so open errors are
-    // synchronous (PRD 4.1.7 — failures stay in the previous state, no
-    // streaming UI flip). Pre-fill needs to know the retention cap so it
+    // synchronous. Pre-fill needs to know the retention cap so it
     // back-reads at most that many lines off disk.
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
@@ -668,12 +641,11 @@ void MainWindow::OpenLogStream()
     // Mirror the static-open reset order from `OpenFilesWithParser` so
     // residual state (filters, Find match, paused buffer) does not leak
     // into the new session.
-    mModel->Clear();
+    mModel->Reset();
     ClearAllFilters();
 
     mStreamingFileName = QFileInfo(file).fileName();
-    mStreamingActive = true;
-    mLiveTailActive = true;
+    mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
@@ -692,7 +664,7 @@ void MainWindow::OpenLogStream()
     // `StreamLineSource`: the model installs it in `LogTable`, the
     // parser worker emits `LogLine`s tagged with it, and the GUI
     // resolves each row's raw bytes via `LineSource::RawLine` after
-    // parsing has moved on (PRD 4.9.7.ii / 4.10.4).
+    // parsing has moved on.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     mModel->BeginStreaming(std::move(streamSource), std::move(options));
 }
@@ -720,21 +692,21 @@ void MainWindow::StopStream()
     {
         return;
     }
-    // `LogModel::Detach()` runs the mandatory PRD 4.7.2.i teardown
+    // `LogModel::StopAndKeepRows()` runs the mandatory teardown
     // sequence (source `Stop()` → sink `RequestStop()` → worker
     // `waitForFinished()` → flush paused buffer → `DropPendingBatches()`)
     // and emits a compensating `streamingFinished(Cancelled)` so the
     // GUI gating reopens — but leaves the visible rows intact so the
     // user can keep sorting / filtering / searching / copying after
-    // Stop (PRD 4.7.1). `mStreamingFileName` is cleared so a subsequent
+    // Stop. `mStreamingFileName` is cleared so a subsequent
     // "Open…" does not inherit the old filename in status text.
-    mModel->Detach();
+    mModel->StopAndKeepRows();
     mStreamingFileName.clear();
 }
 
 void MainWindow::OnRotationDetected()
 {
-    // PRD §6 *Rotation indicator*: brief 3 s `— rotated` flash on the
+    // : brief 3 s `— rotated` flash on the
     // status label. A `QTimer::singleShot` clears the flag.
     mRotationFlashActive = true;
     UpdateStreamingStatus();
@@ -746,7 +718,7 @@ void MainWindow::OnRotationDetected()
 
 void MainWindow::OnSourceStatusChanged(loglib::SourceStatus status)
 {
-    // PRD 4.8.8 / §6 *Status bar*: latch the `Waiting` state so the
+    //  / §6 *Status bar*: latch the `Waiting` state so the
     // label keeps showing "Source unavailable …" between poll ticks
     // (the status callback is edge-triggered, not level-triggered).
     mSourceWaiting = (status == loglib::SourceStatus::Waiting);
@@ -763,7 +735,7 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
 
 void MainWindow::UpdateStreamingStatus()
 {
-    if (!mStreamingActive)
+    if (!IsSessionActive())
     {
         mStatusLabel->clear();
         mStatusLabel->hide();
@@ -771,7 +743,7 @@ void MainWindow::UpdateStreamingStatus()
     }
 
     QString text;
-    if (!mLiveTailActive)
+    if (!IsLiveTailSession())
     {
         // Static streaming-parse path (existing behaviour).
         text = QString("Parsing %1 - %2 lines, %3 errors")
@@ -782,7 +754,7 @@ void MainWindow::UpdateStreamingStatus()
     else if (mSourceWaiting)
     {
         // Source unavailable: the file disappeared during a
-        // delete-then-recreate rotation (PRD 4.8.8 / §6 *Status bar*).
+        // delete-then-recreate rotation.
         // Takes precedence over the Paused variant because Paused is
         // a user-initiated UI state while Source unavailable surfaces
         // an actionable environmental problem.
@@ -793,7 +765,7 @@ void MainWindow::UpdateStreamingStatus()
     }
     else if (mModel->Sink() && mModel->Sink()->IsPaused())
     {
-        // Paused: PRD §6 status-bar wording.
+        // Paused:  status-bar wording.
         const auto buffered = static_cast<qsizetype>(mModel->Sink()->PausedLineCount());
         text = QString("Paused - %1 lines, %2 buffered").arg(mStreamingLineCount).arg(buffered);
     }
@@ -806,13 +778,13 @@ void MainWindow::UpdateStreamingStatus()
                    .arg(mStreamingErrorCount);
     }
 
-    // Paused-drop telemetry (PRD 4.2.2.iv). The counter is session-scoped
+    // Paused-drop telemetry. The counter is session-scoped
     // and increments only while paused; once set, it stays non-zero until
     // the stream is stopped so the user keeps seeing "lines were lost"
     // after Resume. Appended to both Paused and Running variants of the
     // label; the static-streaming path does not pause in practice (the
     // toolbar is hidden), so the check is live-tail-only.
-    if (mLiveTailActive && mModel->Sink())
+    if (IsLiveTailSession() && mModel->Sink())
     {
         const auto dropped = static_cast<qsizetype>(mModel->Sink()->PausedDropCount());
         if (dropped > 0)
@@ -821,7 +793,7 @@ void MainWindow::UpdateStreamingStatus()
         }
     }
 
-    if (mLiveTailActive && mRotationFlashActive)
+    if (IsLiveTailSession() && mRotationFlashActive)
     {
         text += " - rotated";
     }
@@ -832,15 +804,15 @@ void MainWindow::UpdateStreamingStatus()
 
 void MainWindow::UpdateStreamToolbarVisibility()
 {
-    // Use the MainWindow's own `mStreamingActive` (set on entry to
-    // `OpenLogStream` / `OpenJsonStreaming`, cleared in the
+    // Use the MainWindow's own `mSessionMode` (set on entry to
+    // `OpenLogStream` / `StreamNextPendingFile`, cleared in the
     // `streamingFinished` slot before this call) rather than
     // `mModel->IsStreamingActive()`. The model flag is only set inside
     // `BeginStreaming`, which runs *after* the existing call sites here
     // — so reading the model flag here would always return `false` on
     // open and the toolbar would never become visible until something
     // else triggered another call.
-    const bool visible = mStreamingActive && mLiveTailActive;
+    const bool visible = IsLiveTailSession();
     if (mStreamToolbar)
     {
         mStreamToolbar->setVisible(visible);
@@ -873,7 +845,7 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     {
         return;
     }
-    // PRD 4.3.4 — scroll to the most-recently-appended source row even
+    //  — scroll to the most-recently-appended source row even
     // when sorted by a non-time column. Mapping through both proxy
     // layers (StreamOrder → LogFilter) makes the visual scroll land
     // on the correct row under reverse-order, sort, and filter.
@@ -902,11 +874,18 @@ void MainWindow::ApplyStreamingRetention()
 
 void MainWindow::ApplyStreamingDisplayOrder()
 {
+    // See header for why these three pieces have to move together.
     const bool newestFirst = StreamingControl::IsNewestFirst();
+
+    // (1) Proxy: flip the sort direction on InsertionOrderRole.
     mStreamOrderProxyModel->SetReversed(newestFirst);
+
+    // (2) Table view: anchor Follow-tail + user-scroll detection on
+    //     the right edge.
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
-    // Alternating row colours are keyed off the **visual** row index
-    // by Qt — perfect when new rows append at the bottom and existing
+
+    // (3) Alternating row colours are keyed off the **visual** row index
+    // by Qt -- perfect when new rows append at the bottom and existing
     // rows keep their visual positions, but newest-first inserts at
     // proxy row 0 and shifts every existing row's parity on every
     // batch, so each arriving line flips every visible row's tone.
@@ -917,6 +896,7 @@ void MainWindow::ApplyStreamingDisplayOrder()
     // alternation off in newest-first mode and accept a single base
     // colour there. Default mode keeps the visual reading aid.
     mTableView->setAlternatingRowColors(!newestFirst);
+
     // Re-pin the view to the (potentially new) tail edge if Follow
     // tail is currently engaged so the user does not have to scroll
     // manually after toggling the preference. Keeps behaviour
@@ -966,7 +946,7 @@ void MainWindow::LoadConfiguration()
     {
         try
         {
-            mModel->Clear();
+            mModel->Reset();
             mModel->ConfigurationManager().Load(file.toStdString());
             UpdateUi();
         }
@@ -1117,40 +1097,6 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     filter.filterEnd = endTimeStamp;
 
     AddLogFilter(filterID, filter);
-}
-
-void MainWindow::OpenFileInternal(const QString &file, std::vector<std::string> &errors)
-{
-    // Try as a configuration first; fall back to log parsing on failure.
-    bool isConfiguration = true;
-    try
-    {
-        mModel->ConfigurationManager().Load(file.toStdString());
-    }
-    catch (...)
-    {
-        isConfiguration = false;
-    }
-
-    if (!isConfiguration)
-    {
-        try
-        {
-            loglib::ParseResult result = loglib::LogFactory::Parse(file.toStdString());
-            mModel->AddData(std::move(result.data));
-            errors.insert(
-                errors.end(),
-                std::make_move_iterator(result.errors.begin()),
-                std::make_move_iterator(result.errors.end())
-            );
-        }
-        catch (const std::exception &e)
-        {
-            errors.push_back(std::string("Failed to open '") + file.toStdString() + "': " + e.what());
-        }
-    }
-
-    UpdateUi();
 }
 
 void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter)

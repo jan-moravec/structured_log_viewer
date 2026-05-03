@@ -62,7 +62,7 @@ void StreamOrderProxyModel::SetReversed(bool reversed)
     // a row-index sort — the column argument is incidental, since the
     // role's value is identical for every column on a given row.
     // `sort(-1)` clears the proxy's sort state and falls back to the
-    // identity mapping (PRD-equivalent of "natural append order").
+    // identity mapping.
     if (mReversed)
     {
         sort(0, Qt::DescendingOrder);

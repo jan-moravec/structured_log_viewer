@@ -14,7 +14,7 @@
 #include <unistd.h>
 #endif
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 namespace
@@ -107,4 +107,4 @@ FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept
 #endif
 }
 
-} // namespace loglib::detail
+} // namespace loglib::internal
