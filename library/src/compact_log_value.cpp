@@ -1,5 +1,6 @@
 #include "loglib/internal/compact_log_value.hpp"
 
+#include "loglib/line_source.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 
@@ -77,35 +78,34 @@ CompactLogValue CompactLogValue::MakeTimestamp(TimeStamp value) noexcept
     return v;
 }
 
-LogValue CompactLogValue::Materialise(const LogFile *file) const
+LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) const
 {
     switch (tag)
     {
     case CompactTag::Monostate:
         return LogValue{std::monostate{}};
     case CompactTag::MmapSlice: {
-        if (file == nullptr)
+        if (source == nullptr)
         {
             return LogValue{std::monostate{}};
         }
-        const char *base = file->Data();
-        if (base == nullptr)
+        const std::string_view bytes = source->ResolveMmapBytes(payload, aux, lineId);
+        if (bytes.empty() && aux != 0)
         {
             return LogValue{std::monostate{}};
         }
-        return LogValue{std::string_view(base + payload, aux)};
+        return LogValue{bytes};
     }
     case CompactTag::OwnedString: {
-        if (file == nullptr)
+        if (source == nullptr)
         {
             return LogValue{std::string{}};
         }
-        const std::string_view arena = file->OwnedStringsView();
-        if (payload + aux > arena.size())
-        {
-            return LogValue{std::string{}};
-        }
-        return LogValue{std::string(arena.data() + payload, aux)};
+        const std::string_view bytes = source->ResolveOwnedBytes(payload, aux, lineId);
+        // Materialise as `std::string` so the caller owns the bytes — a
+        // stream source's per-line arena can be evicted later, but a
+        // returned `std::string` is independent of source lifetime.
+        return LogValue{std::string(bytes)};
     }
     case CompactTag::Int64:
         return LogValue{static_cast<int64_t>(payload)};

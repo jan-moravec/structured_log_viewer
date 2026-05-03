@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/file_line_source.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_processing.hpp>
 
@@ -25,14 +26,15 @@ TEST_CASE("Initialize function should correctly set up timezone database with a 
 TEST_CASE("ParseTimestamps errors", "[log_processing]")
 {
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    auto source = testLogFile.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"key1", std::string("value2")}}, testKeys, LogFileReference(*logFile, 1));
-    testLines.emplace_back(LogMap{{"key2", int64_t{42}}}, testKeys, LogFileReference(*logFile, 2));
+    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
+    testLines.emplace_back(LogMap{{"key1", std::string("value2")}}, testKeys, *sourcePtr, 1);
+    testLines.emplace_back(LogMap{{"key2", int64_t{42}}}, testKeys, *sourcePtr, 2);
 
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     // Configuration with two non-time columns initially.
     LogConfiguration configuration;
@@ -56,23 +58,24 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
 TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 {
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    auto source = testLogFile.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
     testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, LogFileReference(*logFile, 0)
+        LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, *sourcePtr, 0
     );
     testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, LogFileReference(*logFile, 1)
+        LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, *sourcePtr, 1
     );
     testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, LogFileReference(*logFile, 2)
+        LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, *sourcePtr, 2
     );
     testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, LogFileReference(*logFile, 3)
+        LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, *sourcePtr, 3
     );
 
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     // Configuration with one Type::time column.
     LogConfiguration configuration;

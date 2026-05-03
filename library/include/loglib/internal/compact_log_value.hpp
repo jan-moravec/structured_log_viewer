@@ -10,7 +10,7 @@
 
 namespace loglib
 {
-class LogFile;
+class LineSource;
 }
 
 namespace loglib::detail
@@ -18,14 +18,14 @@ namespace loglib::detail
 
 /// Discriminator for the 16-byte compact internal value representation.
 /// Mirrors today's `LogValue` `std::variant` alternatives, but stores
-/// strings as `(offset, length)` pairs into either a `LogFile`'s mmap or
-/// the same `LogFile`'s owned-string arena rather than as a 16-byte view
-/// or 32/40-byte `std::string`.
+/// strings as `(offset, length)` pairs resolved through the owning
+/// `LineSource` (file mmap, per-line stream arena, …) rather than as a
+/// 16-byte view or 32/40-byte `std::string`.
 enum class CompactTag : uint8_t
 {
     Monostate = 0,
-    MmapSlice,   ///< payload = byte offset into `LogFile::Data()`, aux = length
-    OwnedString, ///< payload = byte offset into `LogFile::OwnedStringsView()`, aux = length
+    MmapSlice,   ///< payload = byte offset into `LineSource::ResolveMmapBytes`, aux = length
+    OwnedString, ///< payload = byte offset into `LineSource::ResolveOwnedBytes`, aux = length
     Int64,
     Uint64,
     Double,
@@ -57,10 +57,13 @@ struct CompactLogValue
     static CompactLogValue MakeBool(bool value) noexcept;
     static CompactLogValue MakeTimestamp(TimeStamp value) noexcept;
 
-    /// Materialise into the public `LogValue` variant. @p file provides the
-    /// `MmapSlice` and `OwnedString` byte storage; passing `nullptr` is
-    /// safe and yields `monostate` for those tags.
-    LogValue Materialise(const LogFile *file) const;
+    /// Materialise into the public `LogValue` variant. @p source provides
+    /// the `MmapSlice` and `OwnedString` byte storage via
+    /// `LineSource::ResolveMmapBytes` / `ResolveOwnedBytes`; @p lineId
+    /// addresses the per-line arena for stream sources (file sources
+    /// ignore it). Passing `nullptr` source is safe and yields
+    /// `monostate` for the string tags.
+    LogValue Materialise(const LineSource *source, size_t lineId) const;
 };
 
 static_assert(sizeof(CompactLogValue) == 16, "CompactLogValue must stay 16 bytes (Phase 1 RAM target)");

@@ -2,7 +2,7 @@
 // in a loop, writing one record per output line until either a target byte
 // count or a target line count is reached. Supports streaming throttling via
 // `--timeout` and in-flight file rotation (`rename` / `copytruncate` /
-// `truncate`) via the `--roll-*` flags so it can drive `TailingFileSource`
+// `truncate`) via the `--roll-*` flags so it can drive `TailingBytesProducer`
 // rotation tests (PRD 4.8.6 / §7 *Rotation patterns*) and the GUI's Stream
 // Mode smoke tests end-to-end.
 //
@@ -10,7 +10,7 @@
 // 0-based line index under the `line_number` field. The counter is
 // unaffected by rotation, so a consumer that observes a gap in the
 // sequence can conclude that a line was dropped end-to-end (across the
-// producer's `write()`, the rotation handler, the `TailingFileSource`
+// producer's `write()`, the rotation handler, the `TailingBytesProducer`
 // partial-line buffer, and the GUI thread queue).
 
 #include <test_common/json_log_line.hpp>
@@ -161,7 +161,7 @@ std::uint64_t ParseCount(std::string text)
 enum class RollStrategy
 {
     /// `mv path -> path.1`, then create a fresh `path`. Triggers
-    /// `TailingFileSource` rotation branch (i) — identity change
+    /// `TailingBytesProducer` rotation branch (i) — identity change
     /// (PRD 4.8.6.i). The default and the most realistic logrotate
     /// emulation.
     Rename,
@@ -285,7 +285,7 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
             // tailing consumer observes the size-shrunk signal.
         }
         // In-place truncate via re-open with `trunc`: the dropped
-        // content is what triggers `TailingFileSource` branch (iii).
+        // content is what triggers `TailingBytesProducer` branch (iii).
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }

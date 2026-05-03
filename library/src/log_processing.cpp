@@ -1,6 +1,7 @@
 #include "loglib/log_processing.hpp"
 
 #include "loglib/internal/timestamp_promotion.hpp"
+#include "loglib/line_source.hpp"
 #include "loglib/log_file.hpp"
 
 #include <date/date.h>
@@ -259,15 +260,18 @@ bool MakeBackfillState(
 namespace
 {
 
-/// Pulls the owned-string arena view from the line's referenced `LogFile`.
-/// Post-stream lines have their `OwnedString` payloads rebased onto this
-/// arena (Stage C handles streaming; the synchronous `LogLine` ctor writes
-/// directly to it). Returns an empty view when the line has no file (only
-/// happens in test fixtures).
-std::string_view OwnedArenaForBackfill(const LogLine &line) noexcept
+/// Returns an empty view: `BackfillTimestampColumn` over a `LogLine`
+/// span flows through `PromoteLineTimestamps`, which now resolves the
+/// per-line owned-bytes arena via the line's `LineSource` directly
+/// (`source->ResolveOwnedBytes(offset, length, lineId)`). The
+/// `ownedArena` parameter only matters during Stage B / Stage C of the
+/// parser pipeline, where the per-batch staging buffer carries
+/// `OwnedString` payloads before they are rebased onto the canonical
+/// source arena. This backfill path runs after the pipeline, when
+/// every payload is already source-relative.
+std::string_view OwnedArenaForBackfill(const LogLine & /*line*/) noexcept
 {
-    const LogFile *file = line.FileReference().GetFile();
-    return file != nullptr ? file->OwnedStringsView() : std::string_view{};
+    return std::string_view{};
 }
 
 } // namespace
@@ -292,7 +296,7 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
             errors.emplace_back(fmt::format(
                 "Failed to parse a timestamp for column '{}' from line number {}",
                 column.header,
-                line.FileReference().GetLineNumber()
+                line.LineId()
             ));
         }
     }
@@ -317,65 +321,6 @@ void BackfillTimestampColumn(
     {
         const std::string_view ownedArena = OwnedArenaForBackfill(line);
         static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
-    }
-}
-
-namespace
-{
-
-/// Streaming sibling of `MakeBackfillState`. Resolves @p column's keys
-/// against the canonical `KeyIndex` carried by the first line.
-bool MakeStreamBackfillState(
-    const LogConfiguration::Column &column,
-    std::span<StreamLogLine> lines,
-    std::array<detail::TimeColumnSpec, 1> &specsOut,
-    std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
-    std::vector<detail::LastTimestampBytesHit> &bytesHitsOut
-)
-{
-    if (lines.empty())
-    {
-        return false;
-    }
-
-    const KeyIndex &keyIndex = lines.front().Keys();
-    detail::TimeColumnSpec spec;
-    spec.keyIds.reserve(column.keys.size());
-    for (const std::string &key : column.keys)
-    {
-        spec.keyIds.push_back(keyIndex.Find(key));
-    }
-    spec.parseFormats = column.parseFormats;
-    spec.formatKinds.reserve(spec.parseFormats.size());
-    for (const std::string &format : spec.parseFormats)
-    {
-        spec.formatKinds.push_back(ClassifyTimestampFormat(format));
-    }
-    specsOut[0] = std::move(spec);
-    lastValidOut.assign(1, std::nullopt);
-    bytesHitsOut.assign(1, detail::LastTimestampBytesHit{});
-    return true;
-}
-
-} // namespace
-
-void BackfillTimestampColumn(
-    const LogConfiguration::Column &column, std::span<StreamLogLine> lines, BackfillErrors discardErrors
-)
-{
-    static_cast<void>(discardErrors);
-    std::array<detail::TimeColumnSpec, 1> specs;
-    std::vector<std::optional<LastValidTimestampParse>> lastValid;
-    std::vector<detail::LastTimestampBytesHit> bytesHits;
-    if (!MakeStreamBackfillState(column, lines, specs, lastValid, bytesHits))
-    {
-        return;
-    }
-
-    TimestampParseScratch scratch;
-    for (auto &line : lines)
-    {
-        static_cast<void>(detail::PromoteStreamLineTimestamps(line, specs, lastValid, bytesHits, scratch));
     }
 }
 

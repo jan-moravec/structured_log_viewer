@@ -1,4 +1,4 @@
-#include <loglib/tailing_file_source.hpp>
+#include <loglib/tailing_bytes_producer.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 
@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-using loglib::TailingFileSource;
+using loglib::TailingBytesProducer;
 using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
@@ -87,7 +87,7 @@ void Overwrite(const std::filesystem::path &path, std::string_view text)
 /// `deadline` elapses. This is the standard "wait for the worker to
 /// produce expected output" helper used throughout the test file.
 template <typename Predicate>
-std::string DrainUntil(TailingFileSource &source, std::chrono::milliseconds deadline, Predicate predicate)
+std::string DrainUntil(TailingBytesProducer &source, std::chrono::milliseconds deadline, Predicate predicate)
 {
     std::string accumulated;
     const auto start = std::chrono::steady_clock::now();
@@ -159,9 +159,9 @@ std::vector<std::string> SplitLines(std::string_view text)
 /// Test-default options: no native watcher, short polling cadence so
 /// the test wall-clock stays small. The polling interval matches the
 /// 250 ms heartbeat the PRD calls out, scaled down 10x for tests.
-TailingFileSource::Options FastPollOptions()
+TailingBytesProducer::Options FastPollOptions()
 {
-    TailingFileSource::Options options;
+    TailingBytesProducer::Options options;
     options.disableNativeWatcher = true;
     options.pollInterval = 25ms;
     options.rotationDebounce = 250ms;
@@ -172,7 +172,7 @@ TailingFileSource::Options FastPollOptions()
 
 } // namespace
 
-TEST_CASE("TailingFileSource pre-fill of last N complete lines on a small file", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small file", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("preset_lines.log");
@@ -184,7 +184,7 @@ TEST_CASE("TailingFileSource pre-fill of last N complete lines on a small file",
     }
     Overwrite(path, content);
 
-    TailingFileSource source(path, /*retentionLines=*/20, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/20, FastPollOptions());
 
     const std::string drained = DrainUntil(source, ScaledMs(1000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 20;
@@ -197,13 +197,13 @@ TEST_CASE("TailingFileSource pre-fill of last N complete lines on a small file",
     CHECK(source.DisplayName() == path.string());
 }
 
-TEST_CASE("TailingFileSource pre-fill on a file shorter than N", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("short.log");
     Overwrite(path, "a\nb\nc\n");
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     const std::string drained = DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 3;
@@ -229,7 +229,7 @@ TEST_CASE("TailingFileSource pre-fill on a file shorter than N", "[TailingFileSo
 // to the line count) so the test thread reliably calls `WaitForBytes`
 // *before* the pre-fill bytes land in the queue — that is the race
 // window the missing notify exposes.
-TEST_CASE("TailingFileSource Prefill notifies WaitForBytes immediately", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("notify_prefill.log");
@@ -257,7 +257,7 @@ TEST_CASE("TailingFileSource Prefill notifies WaitForBytes immediately", "[Taili
     opts.pollInterval = 10000ms;
     opts.prefillChunkBytes = 512;
 
-    TailingFileSource source(path, /*retentionLines=*/kLineCount - 1, opts);
+    TailingBytesProducer source(path, /*retentionLines=*/kLineCount - 1, opts);
 
     const auto waitStart = std::chrono::steady_clock::now();
     source.WaitForBytes(ScaledMs(3000ms));
@@ -281,8 +281,8 @@ TEST_CASE("TailingFileSource Prefill notifies WaitForBytes immediately", "[Taili
 }
 
 TEST_CASE(
-    "TailingFileSource pre-fill aborts gracefully on a file with no newlines within the scan budget",
-    "[TailingFileSource]"
+    "TailingBytesProducer pre-fill aborts gracefully on a file with no newlines within the scan budget",
+    "[TailingBytesProducer]"
 )
 {
     // PRD §7 *Line buffering*: a 2 MiB no-newline file with a 128 KiB
@@ -306,7 +306,7 @@ TEST_CASE(
     opts.prefillChunkBytes = 32 * 1024;    // smaller than the budget
 
     const auto ctorStart = std::chrono::steady_clock::now();
-    TailingFileSource source(path, /*retentionLines=*/100, opts);
+    TailingBytesProducer source(path, /*retentionLines=*/100, opts);
     const auto ctorElapsed = std::chrono::steady_clock::now() - ctorStart;
     CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < ScaledMs(500ms));
 
@@ -329,13 +329,13 @@ TEST_CASE(
     CHECK(post.find("xxxxx") == std::string::npos);
 }
 
-TEST_CASE("TailingFileSource detects growth across many small writes", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer detects growth across many small writes", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("growth.log");
     Overwrite(path, ""); // start empty
 
-    TailingFileSource source(path, /*retentionLines=*/10, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/10, FastPollOptions());
 
     constexpr int kCount = 25;
     std::thread writer([&] {
@@ -359,7 +359,7 @@ TEST_CASE("TailingFileSource detects growth across many small writes", "[Tailing
     }
 }
 
-TEST_CASE("TailingFileSource recovers from rename-and-create rotation", "[TailingFileSource][rotation]")
+TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[TailingBytesProducer][rotation]")
 {
     TempDir dir;
     const auto path = dir.File("rotate.log");
@@ -367,7 +367,7 @@ TEST_CASE("TailingFileSource recovers from rename-and-create rotation", "[Tailin
     Overwrite(path, "pre1\npre2\n");
 
     std::atomic<int> rotationFires{0};
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Drain pre-rotation lines.
@@ -394,14 +394,14 @@ TEST_CASE("TailingFileSource recovers from rename-and-create rotation", "[Tailin
     CHECK(source.RotationCount() >= 1);
 }
 
-TEST_CASE("TailingFileSource recovers from copytruncate rotation", "[TailingFileSource][rotation]")
+TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingBytesProducer][rotation]")
 {
     TempDir dir;
     const auto path = dir.File("copytrunc.log");
     Overwrite(path, "old1\nold2\nold3\n");
 
     std::atomic<int> rotationFires{0};
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Drain pre-rotation.
@@ -425,13 +425,13 @@ TEST_CASE("TailingFileSource recovers from copytruncate rotation", "[TailingFile
     CHECK(rotationFires.load(std::memory_order_acquire) >= 1);
 }
 
-TEST_CASE("TailingFileSource recovers from in-place truncate", "[TailingFileSource][rotation]")
+TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytesProducer][rotation]")
 {
     TempDir dir;
     const auto path = dir.File("inplace_trunc.log");
     Overwrite(path, "x1\nx2\nx3\n");
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 3;
@@ -452,15 +452,15 @@ TEST_CASE("TailingFileSource recovers from in-place truncate", "[TailingFileSour
 }
 
 TEST_CASE(
-    "TailingFileSource keeps ingesting while the consumer is paused (rotation included)",
-    "[TailingFileSource][rotation]"
+    "TailingBytesProducer keeps ingesting while the consumer is paused (rotation included)",
+    "[TailingBytesProducer][rotation]"
 )
 {
     TempDir dir;
     const auto path = dir.File("paused.log");
     Overwrite(path, "p1\np2\n");
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     // The "consumer" never calls Read while we rotate; ingestion (and
     // rotation detection) must still happen on the worker.
@@ -481,14 +481,14 @@ TEST_CASE(
     CHECK(lines[3] == "q2");
 }
 
-TEST_CASE("TailingFileSource discards partial line on rotation", "[TailingFileSource][rotation]")
+TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingBytesProducer][rotation]")
 {
     TempDir dir;
     const auto path = dir.File("partial_rot.log");
     // Note: no trailing newline → "incomplete" stays in the partial-line buffer.
     Overwrite(path, "complete\nincomplete");
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     // Drain "complete" first.
     auto first = DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
@@ -514,13 +514,13 @@ TEST_CASE("TailingFileSource discards partial line on rotation", "[TailingFileSo
     CHECK(post.find("incomplete") == std::string::npos);
 }
 
-TEST_CASE("TailingFileSource flushes the partial line on Stop", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("partial_stop.log");
     Overwrite(path, "first\ntrailing-no-newline");
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     auto pre = DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
@@ -540,13 +540,13 @@ TEST_CASE("TailingFileSource flushes the partial line on Stop", "[TailingFileSou
     CHECK(source.IsClosed());
 }
 
-TEST_CASE("TailingFileSource Stop unblocks WaitForBytes parked on an idle file", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle file", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("idle.log");
     Overwrite(path, ""); // empty; worker will park waiting for growth
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
 
     std::atomic<bool> waitReturned{false};
     const auto waitStart = std::chrono::steady_clock::now();
@@ -570,7 +570,7 @@ TEST_CASE("TailingFileSource Stop unblocks WaitForBytes parked on an idle file",
     CHECK(elapsed < ScaledMs(500ms));
 }
 
-TEST_CASE("TailingFileSource debounces rapid rotations within 1 s", "[TailingFileSource][rotation]")
+TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[TailingBytesProducer][rotation]")
 {
     TempDir dir;
     const auto path = dir.File("debounce.log");
@@ -583,7 +583,7 @@ TEST_CASE("TailingFileSource debounces rapid rotations within 1 s", "[TailingFil
     opts.pollInterval = 5ms;
 
     std::atomic<int> rotationFires{0};
-    TailingFileSource source(path, /*retentionLines=*/100, opts);
+    TailingBytesProducer source(path, /*retentionLines=*/100, opts);
     source.SetRotationCallback([&] { rotationFires.fetch_add(1, std::memory_order_release); });
 
     // Wait for pre-fill to consume the seed and for the worker to settle
@@ -620,21 +620,21 @@ TEST_CASE("TailingFileSource debounces rapid rotations within 1 s", "[TailingFil
     CHECK(rotationFires.load(std::memory_order_acquire) == 1);
 }
 
-TEST_CASE("TailingFileSource throws on initial open failure", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("does_not_exist.log");
 
-    CHECK_THROWS_AS(TailingFileSource(path, 100, FastPollOptions()), std::system_error);
+    CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), std::system_error);
 }
 
-TEST_CASE("TailingFileSource Stop after natural drain leaves IsClosed true", "[TailingFileSource]")
+TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("simple.log");
     Overwrite(path, "only\n");
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
     auto drained = DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
@@ -655,7 +655,7 @@ TEST_CASE("TailingFileSource Stop after natural drain leaves IsClosed true", "[T
     CHECK(source.IsClosed());
 }
 
-TEST_CASE("TailingFileSource reports SourceStatus::Waiting while the file is missing", "[TailingFileSource][status]")
+TEST_CASE("TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status]")
 {
     // PRD 4.8.8 / §6 *Status bar*: when the watched file disappears
     // during a delete-then-recreate rotation the source transitions
@@ -670,7 +670,7 @@ TEST_CASE("TailingFileSource reports SourceStatus::Waiting while the file is mis
     std::mutex statusMu;
     std::vector<loglib::SourceStatus> observed;
 
-    TailingFileSource source(path, /*retentionLines=*/100, FastPollOptions());
+    TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
     source.SetStatusCallback([&](loglib::SourceStatus s) {
         std::lock_guard<std::mutex> lock(statusMu);
         observed.push_back(s);

@@ -1,4 +1,4 @@
-#include "loglib/tailing_file_source.hpp"
+#include "loglib/tailing_bytes_producer.hpp"
 
 #include "loglib/internal/file_identity.hpp"
 
@@ -209,14 +209,14 @@ ssize_type ReadAtOffset(detail::NativeFileHandle handle, void *out, size_t size,
 namespace detail
 {
 
-class TailingFileSourceImpl;
+class TailingBytesProducerImpl;
 
 /// efsw listener glue. Filters parent-directory events down to the
 /// basename of our open file and forwards to the source.
-class TailingFileWatcherListener final : public efsw::FileWatchListener
+class TailingBytesProducerWatcherListener final : public efsw::FileWatchListener
 {
 public:
-    TailingFileWatcherListener(TailingFileSourceImpl *impl, std::string filename) noexcept
+    TailingBytesProducerWatcherListener(TailingBytesProducerImpl *impl, std::string filename) noexcept
         : mImpl(impl), mFilename(std::move(filename))
     {
     }
@@ -230,23 +230,23 @@ public:
     ) override;
 
 private:
-    TailingFileSourceImpl *mImpl;
+    TailingBytesProducerImpl *mImpl;
     std::string mFilename;
 };
 
-/// Pimpl for `TailingFileSource`. Owns the worker thread, the mutex /
+/// Pimpl for `TailingBytesProducer`. Owns the worker thread, the mutex /
 /// cv pair guarding the byte queue, and the efsw watcher.
-class TailingFileSourceImpl
+class TailingBytesProducerImpl
 {
 public:
-    TailingFileSourceImpl(std::filesystem::path path, size_t retentionLines, TailingFileSource::Options options);
+    TailingBytesProducerImpl(std::filesystem::path path, size_t retentionLines, TailingBytesProducer::Options options);
 
-    ~TailingFileSourceImpl();
+    ~TailingBytesProducerImpl();
 
-    TailingFileSourceImpl(const TailingFileSourceImpl &) = delete;
-    TailingFileSourceImpl &operator=(const TailingFileSourceImpl &) = delete;
-    TailingFileSourceImpl(TailingFileSourceImpl &&) = delete;
-    TailingFileSourceImpl &operator=(TailingFileSourceImpl &&) = delete;
+    TailingBytesProducerImpl(const TailingBytesProducerImpl &) = delete;
+    TailingBytesProducerImpl &operator=(const TailingBytesProducerImpl &) = delete;
+    TailingBytesProducerImpl(TailingBytesProducerImpl &&) = delete;
+    TailingBytesProducerImpl &operator=(TailingBytesProducerImpl &&) = delete;
 
     size_t Read(std::span<char> buffer);
     void WaitForBytes(std::chrono::milliseconds timeout);
@@ -293,7 +293,7 @@ private:
     std::string mFileName; // basename used for filtering watcher events
     std::string mDisplayName;
     size_t mRetentionLines;
-    TailingFileSource::Options mOptions;
+    TailingBytesProducer::Options mOptions;
 
     mutable std::mutex mMutex;
     std::condition_variable mCv;
@@ -326,14 +326,14 @@ private:
     // efsw integration. Declared here so worker can reference, destroyed
     // from the dtor (after worker join) so the listener can never fire on
     // a half-destroyed impl.
-    std::unique_ptr<TailingFileWatcherListener> mWatcherListener;
+    std::unique_ptr<TailingBytesProducerWatcherListener> mWatcherListener;
     std::unique_ptr<efsw::FileWatcher> mWatcher;
     efsw::WatchID mWatchID = 0;
 
     std::thread mWorker;
 };
 
-void TailingFileWatcherListener::handleFileAction(
+void TailingBytesProducerWatcherListener::handleFileAction(
     efsw::WatchID /*watchid*/,
     const std::string & /*dir*/,
     const std::string &filename,
@@ -351,8 +351,8 @@ void TailingFileWatcherListener::handleFileAction(
     }
 }
 
-TailingFileSourceImpl::TailingFileSourceImpl(
-    std::filesystem::path path, size_t retentionLines, TailingFileSource::Options options
+TailingBytesProducerImpl::TailingBytesProducerImpl(
+    std::filesystem::path path, size_t retentionLines, TailingBytesProducer::Options options
 )
     // Canonicalize up front so every downstream computation — basename,
     // display name, watcher parent — sees an absolute path. Without this
@@ -369,7 +369,7 @@ TailingFileSourceImpl::TailingFileSourceImpl(
     if (!IsValidHandle(mHandle))
     {
         const std::error_code ec(errno, std::generic_category());
-        throw std::system_error(ec, "TailingFileSource: failed to open '" + mDisplayName + "'");
+        throw std::system_error(ec, "TailingBytesProducer: failed to open '" + mDisplayName + "'");
     }
     mIdentityAtOpen = FromOpenHandle(mHandle);
 
@@ -395,7 +395,7 @@ TailingFileSourceImpl::TailingFileSourceImpl(
         try
         {
             mWatcher = std::make_unique<efsw::FileWatcher>();
-            mWatcherListener = std::make_unique<TailingFileWatcherListener>(this, mFileName);
+            mWatcherListener = std::make_unique<TailingBytesProducerWatcherListener>(this, mFileName);
 
             std::filesystem::path parent = mPath.parent_path();
             if (parent.empty())
@@ -425,7 +425,7 @@ TailingFileSourceImpl::TailingFileSourceImpl(
     mWorker = std::thread([this] { WorkerMain(); });
 }
 
-TailingFileSourceImpl::~TailingFileSourceImpl()
+TailingBytesProducerImpl::~TailingBytesProducerImpl()
 {
     Stop();
     if (mWorker.joinable())
@@ -444,7 +444,7 @@ TailingFileSourceImpl::~TailingFileSourceImpl()
     CloseHandle();
 }
 
-size_t TailingFileSourceImpl::Read(std::span<char> buffer)
+size_t TailingBytesProducerImpl::Read(std::span<char> buffer)
 {
     if (buffer.empty())
     {
@@ -464,7 +464,7 @@ size_t TailingFileSourceImpl::Read(std::span<char> buffer)
     return toCopy;
 }
 
-void TailingFileSourceImpl::WaitForBytes(std::chrono::milliseconds timeout)
+void TailingBytesProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
 {
     std::unique_lock<std::mutex> lock(mMutex);
     const auto predicate = [&] {
@@ -479,7 +479,7 @@ void TailingFileSourceImpl::WaitForBytes(std::chrono::milliseconds timeout)
     mCv.wait_for(lock, timeout, predicate);
 }
 
-void TailingFileSourceImpl::Stop() noexcept
+void TailingBytesProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))
     {
@@ -492,7 +492,7 @@ void TailingFileSourceImpl::Stop() noexcept
     mCv.notify_all();
 }
 
-bool TailingFileSourceImpl::IsClosed() const noexcept
+bool TailingBytesProducerImpl::IsClosed() const noexcept
 {
     if (!mWorkerExited.load(std::memory_order_acquire))
     {
@@ -502,29 +502,29 @@ bool TailingFileSourceImpl::IsClosed() const noexcept
     return (mReadyBuffer.size() - mReadyConsumed) == 0;
 }
 
-std::string TailingFileSourceImpl::DisplayName() const
+std::string TailingBytesProducerImpl::DisplayName() const
 {
     return mDisplayName;
 }
 
-void TailingFileSourceImpl::SetRotationCallback(std::function<void()> callback)
+void TailingBytesProducerImpl::SetRotationCallback(std::function<void()> callback)
 {
     std::lock_guard<std::mutex> lock(mCallbackMutex);
     mRotationCallback = std::move(callback);
 }
 
-void TailingFileSourceImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TailingBytesProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
 {
     std::lock_guard<std::mutex> lock(mCallbackMutex);
     mStatusCallback = std::move(callback);
 }
 
-size_t TailingFileSourceImpl::RotationCount() const noexcept
+size_t TailingBytesProducerImpl::RotationCount() const noexcept
 {
     return mRotationCount.load(std::memory_order_acquire);
 }
 
-void TailingFileSourceImpl::OnWatcherEvent() noexcept
+void TailingBytesProducerImpl::OnWatcherEvent() noexcept
 {
     {
         std::lock_guard<std::mutex> lock(mMutex);
@@ -533,7 +533,7 @@ void TailingFileSourceImpl::OnWatcherEvent() noexcept
     mCv.notify_all();
 }
 
-void TailingFileSourceImpl::WorkerMain()
+void TailingBytesProducerImpl::WorkerMain()
 {
     // Pre-fill runs here rather than in the ctor so the GUI thread is
     // never blocked on a multi-GB backwards-newline scan (§B.4 of the
@@ -609,7 +609,7 @@ void TailingFileSourceImpl::WorkerMain()
     mCv.notify_all();
 }
 
-void TailingFileSourceImpl::Prefill()
+void TailingBytesProducerImpl::Prefill()
 {
     const auto sizeOpt = SizeOfOpenHandle(mHandle);
     if (!sizeOpt.has_value() || *sizeOpt == 0)
@@ -699,7 +699,7 @@ void TailingFileSourceImpl::Prefill()
     mCv.notify_all();
 }
 
-bool TailingFileSourceImpl::DetectAndRecoverRotation()
+bool TailingBytesProducerImpl::DetectAndRecoverRotation()
 {
     const FileIdentity pathId = FromPath(mPath);
     const FileIdentity handleId = FromOpenHandle(mHandle);
@@ -815,7 +815,7 @@ bool TailingFileSourceImpl::DetectAndRecoverRotation()
     return false;
 }
 
-size_t TailingFileSourceImpl::ReadMoreBytes()
+size_t TailingBytesProducerImpl::ReadMoreBytes()
 {
     const auto sizeOpt = SizeOfOpenHandle(mHandle);
     if (!sizeOpt.has_value())
@@ -846,7 +846,7 @@ size_t TailingFileSourceImpl::ReadMoreBytes()
     return static_cast<size_t>(n);
 }
 
-void TailingFileSourceImpl::CloseHandle() noexcept
+void TailingBytesProducerImpl::CloseHandle() noexcept
 {
     if (IsValidHandle(mHandle))
     {
@@ -855,7 +855,7 @@ void TailingFileSourceImpl::CloseHandle() noexcept
     mHandle = kInvalidHandle;
 }
 
-void TailingFileSourceImpl::AppendBytesAndSplitLocked(const char *data, size_t size)
+void TailingBytesProducerImpl::AppendBytesAndSplitLocked(const char *data, size_t size)
 {
     if (size == 0)
     {
@@ -876,7 +876,7 @@ void TailingFileSourceImpl::AppendBytesAndSplitLocked(const char *data, size_t s
     mPartialLine.erase(0, completeBytes);
 }
 
-void TailingFileSourceImpl::FlushPartialLineLocked()
+void TailingBytesProducerImpl::FlushPartialLineLocked()
 {
     if (mPartialLine.empty())
     {
@@ -890,7 +890,7 @@ void TailingFileSourceImpl::FlushPartialLineLocked()
     mPartialLine.clear();
 }
 
-void TailingFileSourceImpl::CompactReadyBufferIfNeededLocked()
+void TailingBytesProducerImpl::CompactReadyBufferIfNeededLocked()
 {
     // Compact when half the buffer (or 64 KiB, whichever larger) has been
     // consumed. Erasing the prefix is O(remaining); the threshold ensures
@@ -903,7 +903,7 @@ void TailingFileSourceImpl::CompactReadyBufferIfNeededLocked()
     }
 }
 
-void TailingFileSourceImpl::FireRotationCallbackIfDebounced()
+void TailingBytesProducerImpl::FireRotationCallbackIfDebounced()
 {
     const auto now = std::chrono::steady_clock::now();
     std::function<void()> cb;
@@ -922,7 +922,7 @@ void TailingFileSourceImpl::FireRotationCallbackIfDebounced()
     }
 }
 
-void TailingFileSourceImpl::FireStatusCallbackIfChanged(SourceStatus status)
+void TailingBytesProducerImpl::FireStatusCallbackIfChanged(SourceStatus status)
 {
     std::function<void(SourceStatus)> cb;
     {
@@ -942,49 +942,49 @@ void TailingFileSourceImpl::FireStatusCallbackIfChanged(SourceStatus status)
 
 } // namespace detail
 
-TailingFileSource::TailingFileSource(std::filesystem::path path, size_t retentionLines, Options options)
-    : mImpl(std::make_unique<detail::TailingFileSourceImpl>(std::move(path), retentionLines, options))
+TailingBytesProducer::TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options)
+    : mImpl(std::make_unique<detail::TailingBytesProducerImpl>(std::move(path), retentionLines, options))
 {
 }
 
-TailingFileSource::~TailingFileSource() = default;
+TailingBytesProducer::~TailingBytesProducer() = default;
 
-size_t TailingFileSource::Read(std::span<char> buffer)
+size_t TailingBytesProducer::Read(std::span<char> buffer)
 {
     return mImpl->Read(buffer);
 }
 
-void TailingFileSource::WaitForBytes(std::chrono::milliseconds timeout)
+void TailingBytesProducer::WaitForBytes(std::chrono::milliseconds timeout)
 {
     mImpl->WaitForBytes(timeout);
 }
 
-void TailingFileSource::Stop() noexcept
+void TailingBytesProducer::Stop() noexcept
 {
     mImpl->Stop();
 }
 
-bool TailingFileSource::IsClosed() const noexcept
+bool TailingBytesProducer::IsClosed() const noexcept
 {
     return mImpl->IsClosed();
 }
 
-std::string TailingFileSource::DisplayName() const
+std::string TailingBytesProducer::DisplayName() const
 {
     return mImpl->DisplayName();
 }
 
-void TailingFileSource::SetRotationCallback(std::function<void()> callback)
+void TailingBytesProducer::SetRotationCallback(std::function<void()> callback)
 {
     mImpl->SetRotationCallback(std::move(callback));
 }
 
-void TailingFileSource::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TailingBytesProducer::SetStatusCallback(std::function<void(SourceStatus)> callback)
 {
     mImpl->SetStatusCallback(std::move(callback));
 }
 
-size_t TailingFileSource::RotationCount() const noexcept
+size_t TailingBytesProducer::RotationCount() const noexcept
 {
     return mImpl->RotationCount();
 }

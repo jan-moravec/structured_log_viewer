@@ -14,12 +14,16 @@
 
 #include "common.hpp"
 
-#include <loglib/json_parser.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
+#include <loglib/log_line.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
+#include <loglib/stream_line_source.hpp>
 #include <loglib/streaming_log_sink.hpp>
-#include <loglib/tailing_file_source.hpp>
+#include <loglib/tailing_bytes_producer.hpp>
+
+#include <memory>
 
 #include <catch2/catch_all.hpp>
 
@@ -44,7 +48,8 @@ using loglib::ParserOptions;
 using loglib::StopSource;
 using loglib::StreamedBatch;
 using loglib::StreamingLogSink;
-using loglib::TailingFileSource;
+using loglib::StreamLineSource;
+using loglib::TailingBytesProducer;
 using namespace std::chrono_literals;
 
 namespace
@@ -91,7 +96,8 @@ private:
 /// Sink that timestamps every line as it arrives, paired with a side-channel
 /// vector of producer-side `write()`-completion timestamps so the benchmark
 /// driver can compute the per-line delta. `lineId` is the canonical match
-/// key (the parser stamps it on the `StreamLineReference`).
+/// key (the parser stamps it on the emitted `LogLine` via
+/// `StreamLineSource::AppendLine`).
 struct LatencyMeasuringSink final : StreamingLogSink
 {
     KeyIndex keys;
@@ -113,10 +119,10 @@ struct LatencyMeasuringSink final : StreamingLogSink
     {
         const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(mu);
-        arrivals.reserve(arrivals.size() + batch.streamLines.size());
-        for (const auto &streamLine : batch.streamLines)
+        arrivals.reserve(arrivals.size() + batch.lines.size());
+        for (const auto &line : batch.lines)
         {
-            arrivals.emplace_back(streamLine.FileReference().GetLineNumber(), now);
+            arrivals.emplace_back(line.LineId(), now);
         }
     }
     void OnFinished(bool /*cancelled*/) override
@@ -216,14 +222,17 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     constexpr int kLines = 200;
     constexpr auto kInterLineDelay = 10ms;
 
-    TailingFileSource::Options sourceOptions;
+    TailingBytesProducer::Options sourceOptions;
     sourceOptions.disableNativeWatcher = false; // exercise the native watcher path on the dev machine
     sourceOptions.pollInterval = 25ms;          // fast poll fallback so the worst case stays inside G1
     sourceOptions.rotationDebounce = 1000ms;
     sourceOptions.readChunkBytes = 64 * 1024;
     sourceOptions.prefillChunkBytes = 64 * 1024;
 
-    auto source = std::make_unique<TailingFileSource>(path, /*retentionLines=*/kLines * 2, sourceOptions);
+    auto tailProducer = std::make_unique<TailingBytesProducer>(path, /*retentionLines=*/kLines * 2, sourceOptions);
+    TailingBytesProducer *producerPtr = tailProducer.get();
+    auto streamSource = std::make_unique<StreamLineSource>(path, std::move(tailProducer));
+    StreamLineSource *streamPtr = streamSource.get();
 
     LatencyMeasuringSink sink;
     StopSource stopSource;
@@ -231,8 +240,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     options.stopToken = stopSource.get_token();
 
     JsonParser parser;
-    TailingFileSource *sourcePtr = source.get();
-    std::thread worker([&] { parser.ParseStreaming(*sourcePtr, sink, std::move(options)); });
+    std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
     // Open the file with the C stdio API so we can `fflush` per line; the
     // C++ `std::ofstream` flush is buffered by the streambuf even after
@@ -279,7 +287,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
         std::this_thread::sleep_for(20ms);
     }
 
-    sourcePtr->Stop();
+    producerPtr->Stop();
     stopSource.request_stop();
     worker.join();
 

@@ -4,7 +4,6 @@
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 #include "log_line.hpp"
-#include "stream_log_line.hpp"
 
 #include <date/tz.h>
 
@@ -92,18 +91,6 @@ enum class BackfillErrors : uint8_t
 /// `void` overload of `BackfillTimestampColumn` that drops error messages.
 void BackfillTimestampColumn(
     const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
-);
-
-/// `StreamLogLine` overload of `BackfillTimestampColumn`. Mirrors the
-/// `LogLine` path: walks @p lines, looks up each configured key id, tries
-/// the column's `parseFormats` against the value's string bytes (which on
-/// `StreamLogLine` are owned `std::string`s — no mmap arena indirection),
-/// and on success swaps the value for the parsed `TimeStamp` via
-/// `StreamLogLine::SetValue`. Used by `LogTable::AppendBatch` when a new
-/// `Type::time` column is observed mid-stream and the existing rows must
-/// be back-filled (PRD 4.6.2). Errors are dropped on the streaming hot path.
-void BackfillTimestampColumn(
-    const LogConfiguration::Column &column, std::span<StreamLogLine> lines, BackfillErrors discardErrors
 );
 
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);

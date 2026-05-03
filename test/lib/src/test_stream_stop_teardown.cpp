@@ -1,20 +1,23 @@
-// Stop-teardown coverage for `TailingFileSource` + `JsonParser::ParseStreaming`
+// Stop-teardown coverage for `TailingBytesProducer` + `JsonParser::ParseStreaming`
 // (PRD §8 success metric 6 / task 6.3). The PRD budget for stopping a live
-// stream is 500 ms from `LogSource::Stop()` to the parser worker joining; on
+// stream is 500 ms from `BytesProducer::Stop()` to the parser worker joining; on
 // an idle source we expect *well* under that, while a worker mid-decode of a
 // 100 KiB-buffered batch still has to honour the same budget.
 //
 // These tests deliberately drive the full source -> parser -> sink chain
 // (not just the source on its own — `test_tailing_file_source.cpp` covers
-// `TailingFileSource::Stop` in isolation) so any regression in the parser
+// `TailingBytesProducer::Stop` in isolation) so any regression in the parser
 // stop-token plumbing surfaces here.
 
-#include <loglib/json_parser.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
+#include <loglib/stream_line_source.hpp>
 #include <loglib/streaming_log_sink.hpp>
-#include <loglib/tailing_file_source.hpp>
+#include <loglib/tailing_bytes_producer.hpp>
+
+#include <memory>
 
 #include <loglib_test/scaled_ms.hpp>
 
@@ -36,7 +39,8 @@ using loglib::ParserOptions;
 using loglib::StopSource;
 using loglib::StreamedBatch;
 using loglib::StreamingLogSink;
-using loglib::TailingFileSource;
+using loglib::StreamLineSource;
+using loglib::TailingBytesProducer;
 using loglib_test::ScaledMs;
 using namespace std::chrono_literals;
 
@@ -102,7 +106,7 @@ struct CountingSink final : StreamingLogSink
     }
     void OnBatch(StreamedBatch batch) override
     {
-        rowCount.fetch_add(batch.streamLines.size(), std::memory_order_relaxed);
+        rowCount.fetch_add(batch.lines.size(), std::memory_order_relaxed);
         batchCount.fetch_add(1, std::memory_order_relaxed);
     }
     void OnFinished(bool cancelled) override
@@ -112,9 +116,9 @@ struct CountingSink final : StreamingLogSink
     }
 };
 
-TailingFileSource::Options TestOptions()
+TailingBytesProducer::Options TestOptions()
 {
-    TailingFileSource::Options options;
+    TailingBytesProducer::Options options;
     options.disableNativeWatcher = true;
     options.pollInterval = ScaledMs(25ms);
     options.rotationDebounce = ScaledMs(250ms);
@@ -126,10 +130,10 @@ TailingFileSource::Options TestOptions()
 } // namespace
 
 // PRD §8 success metric 6: a worker parked in `WaitForBytes` on an idle
-// producer must observe `LogSource::Stop()` and unwind in <= 500 ms. This
+// producer must observe `BytesProducer::Stop()` and unwind in <= 500 ms. This
 // is the typical case (the parser flushes between reads and parks until
 // new bytes / the deadline / Stop). The end-to-end timed window covers
-// `LogSource::Stop()` through `ParserOptions::stopToken.request_stop()`,
+// `BytesProducer::Stop()` through `ParserOptions::stopToken.request_stop()`,
 // `joinable thread join`, and `OnFinished`.
 TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown]")
 {
@@ -138,7 +142,10 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     // Start with one line so the parser drains pre-fill, then parks.
     Append(path, "{\"a\":1}\n");
 
-    auto source = std::make_unique<TailingFileSource>(path, /*retentionLines=*/100, TestOptions());
+    auto producer = std::make_unique<TailingBytesProducer>(path, /*retentionLines=*/100, TestOptions());
+    TailingBytesProducer *producerPtr = producer.get();
+    auto streamSource = std::make_unique<StreamLineSource>(path, std::move(producer));
+    StreamLineSource *streamPtr = streamSource.get();
 
     CountingSink sink;
     StopSource stopSource;
@@ -150,8 +157,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     // dependency). The worker's hot loop polls the parser stop-token at
     // every batch boundary and on every `WaitForBytes` wake.
     JsonParser parser;
-    TailingFileSource *sourcePtr = source.get();
-    std::thread worker([&] { parser.ParseStreaming(*sourcePtr, sink, std::move(options)); });
+    std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
     // Give the worker time to drain pre-fill and park. The test's correctness
     // doesn't depend on this sleep — Stop() is observed even if the worker
@@ -161,7 +167,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     std::this_thread::sleep_for(ScaledMs(100ms));
 
     const auto stopStart = std::chrono::steady_clock::now();
-    sourcePtr->Stop();
+    producerPtr->Stop();
     stopSource.request_stop();
     worker.join();
     const auto elapsed = std::chrono::steady_clock::now() - stopStart;
@@ -200,7 +206,10 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
         Append(path, blob);
     }
 
-    auto source = std::make_unique<TailingFileSource>(path, /*retentionLines=*/2000, TestOptions());
+    auto producer = std::make_unique<TailingBytesProducer>(path, /*retentionLines=*/2000, TestOptions());
+    TailingBytesProducer *producerPtr = producer.get();
+    auto streamSource = std::make_unique<StreamLineSource>(path, std::move(producer));
+    StreamLineSource *streamPtr = streamSource.get();
 
     CountingSink sink;
     StopSource stopSource;
@@ -208,8 +217,7 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     options.stopToken = stopSource.get_token();
 
     JsonParser parser;
-    TailingFileSource *sourcePtr = source.get();
-    std::thread worker([&] { parser.ParseStreaming(*sourcePtr, sink, std::move(options)); });
+    std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
     // Don't wait — Stop the worker as soon as possible so we hit it
     // mid-decode rather than after natural drain. A short sleep ensures
@@ -218,7 +226,7 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     std::this_thread::sleep_for(ScaledMs(5ms));
 
     const auto stopStart = std::chrono::steady_clock::now();
-    sourcePtr->Stop();
+    producerPtr->Stop();
     stopSource.request_stop();
     worker.join();
     const auto elapsed = std::chrono::steady_clock::now() - stopStart;

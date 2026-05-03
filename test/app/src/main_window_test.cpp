@@ -6,17 +6,20 @@
 #include "stream_order_proxy_model.hpp"
 #include "streaming_control.hpp"
 
+#include <loglib/file_line_source.hpp>
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/parser_options.hpp>
-#include <loglib/json_parser.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_line.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
-#include <loglib/stream_log_line.hpp>
+#include <loglib/stream_line_source.hpp>
 #include <loglib/streaming_log_sink.hpp>
-#include <loglib/tailing_file_source.hpp>
+#include <loglib/tailing_bytes_producer.hpp>
 
 #include <QFile>
 #include <QFileInfo>
@@ -192,20 +195,18 @@ StreamingRun RunStreaming(const QString &fixturePath)
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
     auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
-    const loglib::StopToken stopToken = run.model->BeginStreaming(std::move(file));
+    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    loglib::FileLineSource *fileSourcePtr = fileSource.get();
+    const loglib::StopToken stopToken = run.model->BeginStreaming(std::move(fileSource));
 
-    auto &files = run.model->Table().Data().Files();
-    if (!files.empty())
     {
-        loglib::LogFile *parseFile = files.front().get();
-
         loglib::ParserOptions options;
         options.stopToken = stopToken;
         loglib::internal::AdvancedParserOptions advanced;
         advanced.threads = 1;
 
         loglib::JsonParser parser;
-        parser.ParseStreaming(*parseFile, *run.model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
     }
 
     if (finishedSpy.count() == 0)
@@ -235,7 +236,7 @@ public:
     {
         QVERIFY2(mDir.isValid(), "QTemporaryDir creation must succeed");
         mPath = mDir.filePath("live.jsonl");
-        // Touch the file so `TailingFileSource`'s open() succeeds. Pre-fill
+        // Touch the file so `TailingBytesProducer`'s open() succeeds. Pre-fill
         // walks the existing content (zero bytes here) before tailing.
         std::ofstream stream(mPath.toStdString(), std::ios::binary);
         QVERIFY2(stream.is_open(), "live-tail fixture file must be openable");
@@ -292,6 +293,56 @@ int ColumnByHeader(const LogModel &model, const QString &header)
         }
     }
     return -1;
+}
+
+// Arms @p model for a live-tail-style synthetic-batch session by
+// installing a no-producer `StreamLineSource` so subsequent
+// `LogLine`s constructed for synthetic batches have a valid
+// `LineSource *` to point at. Returns the installed source by
+// reference for callers that publish raw bytes via `AppendLine`.
+loglib::StreamLineSource &BeginSyntheticStreamSession(LogModel &model)
+{
+    auto streamSource =
+        std::make_unique<loglib::StreamLineSource>(std::filesystem::path("synthetic"), nullptr);
+    loglib::StreamLineSource *streamPtr = streamSource.get();
+    static_cast<void>(model.BeginStreaming(std::move(streamSource)));
+    return *streamPtr;
+}
+
+// Builds one synthetic streaming batch carrying @p count `LogLine`
+// rows with line ids `[firstLineId, firstLineId + count)`, each
+// holding a single int64 value field equal to its line id under
+// @p valueKey. Each row's raw bytes are also published into
+// @p streamSource so `RawLine(lineId)` round-trips. Set
+// @p declareNewKey on the first batch in a sequence so
+// `LogTable::PreviewAppend`'s column predictor matches reality.
+loglib::StreamedBatch MakeSyntheticBatch(
+    loglib::StreamLineSource &streamSource,
+    loglib::KeyIndex &keys,
+    loglib::KeyId valueKey,
+    size_t firstLineId,
+    size_t count,
+    bool declareNewKey
+)
+{
+    loglib::StreamedBatch batch;
+    batch.firstLineNumber = firstLineId;
+    if (declareNewKey)
+    {
+        batch.newKeys.emplace_back(std::string("value"));
+    }
+    batch.lines.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const size_t lineId = firstLineId + i;
+        const size_t publishedId = streamSource.AppendLine("synthetic line " + std::to_string(lineId), std::string{});
+        Q_ASSERT(publishedId == lineId);
+        Q_UNUSED(publishedId);
+        std::vector<std::pair<loglib::KeyId, loglib::detail::CompactLogValue>> compactValues;
+        compactValues.emplace_back(valueKey, loglib::detail::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
+    }
+    return batch;
 }
 
 } // namespace
@@ -367,11 +418,11 @@ private slots:
         // the lifetime of the model — opening a second mmap on the parser
         // side would dangle them as soon as the parser thread ran out.
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        const loglib::StopToken stopToken = streamingModel.BeginStreaming(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *parseSource = fileSource.get();
+        const loglib::StopToken stopToken = streamingModel.BeginStreaming(std::move(fileSource));
 
-        QVERIFY(!streamingModel.Table().Data().Files().empty());
-        loglib::LogFile *parseFile = streamingModel.Table().Data().Files().front().get();
-        QVERIFY(parseFile != nullptr);
+        QVERIFY(!streamingModel.Table().Data().Sources().empty());
 
         // Stage B parallelism is pinned to 1 so the canonical KeyIndex sees
         // keys in file order (a, b, c, d). The legacy LogConfigurationManager::
@@ -389,7 +440,7 @@ private slots:
         // callback through QueuedConnection, so model-side semantics match
         // the production GUI's worker-thread path.
         loglib::JsonParser parser;
-        parser.ParseStreaming(*parseFile, *sink, options, advanced);
+        parser.ParseStreaming(*parseSource, *sink, options, advanced);
 
         // Drain the queued OnBatch/OnFinished invocations.
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
@@ -767,11 +818,11 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        const loglib::StopToken stopToken = model.BeginStreaming(std::move(file));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *parseSource = fileSource.get();
+        const loglib::StopToken stopToken = model.BeginStreaming(std::move(fileSource));
 
-        QVERIFY(!model.Table().Data().Files().empty());
-        loglib::LogFile *parseFile = model.Table().Data().Files().front().get();
-        QVERIFY(parseFile != nullptr);
+        QVERIFY(!model.Table().Data().Sources().empty());
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
@@ -779,7 +830,7 @@ private slots:
         advanced.threads = 1;
 
         loglib::JsonParser parser;
-        parser.ParseStreaming(*parseFile, *model.Sink(), options, advanced);
+        parser.ParseStreaming(*parseSource, *model.Sink(), options, advanced);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -842,7 +893,8 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        static_cast<void>(model.BeginStreaming(std::move(file)));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        static_cast<void>(model.BeginStreaming(std::move(fileSource)));
 
         // No parser is started, so `EndStreaming` will never fire on its own.
         // `Clear()` must emit `streamingFinished(true)` itself based on the
@@ -873,7 +925,8 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        loglib::LogFile *filePtr = file.get();
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
 
         // The parseCallable parks on a CV until the test thread releases it,
         // which happens AFTER the worker has emitted drain-phase
@@ -885,8 +938,8 @@ private slots:
         QVERIFY(sinkBeforeBegin != nullptr);
 
         const loglib::StopToken stop = model.BeginStreaming(
-            std::move(file),
-            [sinkBeforeBegin, filePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
+            std::move(fileSource),
+            [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
                 while (!stopToken.stop_requested())
                 {
                     std::this_thread::yield();
@@ -896,7 +949,7 @@ private slots:
                 const loglib::KeyId keyId = keys.GetOrInsert("a");
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-                loglib::LogLine line(std::move(values), keys, loglib::LogFileReference(*filePtr, 1));
+                loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
                 loglib::StreamedBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
@@ -957,7 +1010,8 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        loglib::LogFile *filePtr = file.get();
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
 
         std::mutex releaseMutex;
         std::condition_variable releaseCv;
@@ -966,8 +1020,8 @@ private slots:
         QVERIFY(sinkBeforeBegin != nullptr);
 
         const loglib::StopToken stop = model.BeginStreaming(
-            std::move(file),
-            [sinkBeforeBegin, filePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
+            std::move(fileSource),
+            [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
                 while (!stopToken.stop_requested())
                 {
                     std::this_thread::yield();
@@ -977,7 +1031,7 @@ private slots:
                 const loglib::KeyId keyId = keys.GetOrInsert("a");
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(int64_t{1}));
-                loglib::LogLine line(std::move(values), keys, loglib::LogFileReference(*filePtr, 1));
+                loglib::LogLine line(std::move(values), keys, *sourcePtr, 1);
                 loglib::StreamedBatch batch;
                 batch.lines.push_back(std::move(line));
                 batch.firstLineNumber = 1;
@@ -1018,7 +1072,7 @@ private slots:
     }
 
     // FIFO eviction at the retention cap (PRD 4.5 / 4.10.3): feed batches of
-    // synthetic `StreamLogLine`s directly into `LogModel::AppendBatch`, asserting
+    // synthetic `LogLine`s directly into `LogModel::AppendBatch`, asserting
     // that:
     //   - `RowCount()` never exceeds the cap once the cap is reached;
     //   - `beginRemoveRows`/`rowsRemoved` fire on the prefix as new lines arrive;
@@ -1027,10 +1081,10 @@ private slots:
     void testRetentionCapFifoEviction()
     {
         LogModel model;
-        // Fresh sink + null LogFile so the StreamLogLine path takes over —
-        // mirrors what `BeginStreaming(unique_ptr<LogSource>)` does for a
-        // non-mmap source.
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        // Install a no-producer `StreamLineSource` so synthetic
+        // `LogLine`s constructed below have a valid `LineSource *` to
+        // bind to.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         model.SetRetentionCap(100);
 
         QSignalSpy rowsRemovedSpy(&model, &QAbstractItemModel::rowsRemoved);
@@ -1038,31 +1092,15 @@ private slots:
 
         loglib::KeyIndex &keys = model.Sink()->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        Q_UNUSED(valueKey);
 
         const size_t batchSize = 50;
         const size_t totalLines = 500;
         for (size_t batchStart = 0; batchStart < totalLines; batchStart += batchSize)
         {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = batchStart + 1;
-            batch.streamLines.reserve(batchSize);
-            // First batch must declare `value` as a new key so the column
-            // count predictor in `LogTable::PreviewAppend` matches reality.
-            if (batchStart == 0)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            for (size_t i = 0; i < batchSize; ++i)
-            {
-                const size_t lineId = batchStart + i + 1;
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "synthetic line", lineId)
-                );
-            }
-            model.AppendBatch(std::move(batch));
+            const bool declareNewKey = (batchStart == 0);
+            model.AppendBatch(
+                MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
+            );
         }
 
         QCOMPARE(model.rowCount(), 100);
@@ -1093,25 +1131,18 @@ private slots:
     void testRetentionCapGiantBatchCollapse()
     {
         LogModel model;
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         model.SetRetentionCap(1000);
 
         loglib::KeyIndex &keys = model.Sink()->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        loglib::StreamedBatch batch;
-        batch.firstLineNumber = 1;
-        batch.newKeys.emplace_back(std::string("value"));
-        batch.streamLines.reserve(2000);
-        for (size_t i = 0; i < 2000; ++i)
-        {
-            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(i + 1)});
-            batch.streamLines.emplace_back(
-                std::move(values), keys, loglib::StreamLineReference("synthetic", "x", i + 1)
-            );
-        }
-        model.AppendBatch(std::move(batch));
+        // Build the giant 2000-line batch. The model's giant-batch
+        // collapse drops the head of `batch.lines` before forwarding
+        // to `LogTable::AppendBatch`.
+        model.AppendBatch(
+            MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/2000, /*declareNewKey=*/true)
+        );
 
         // Visible rows must equal the cap exactly (the head of the batch
         // was collapsed pre-AppendBatch, so the whole batch never landed).
@@ -1135,7 +1166,7 @@ private slots:
         QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
         QVERIFY(sink->IsActive());
@@ -1152,24 +1183,12 @@ private slots:
         const int linesPerBatch = 5;
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = static_cast<size_t>(b * linesPerBatch + 1);
-            if (b == 0)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            batch.streamLines.reserve(linesPerBatch);
-            for (int i = 0; i < linesPerBatch; ++i)
-            {
-                const size_t lineId = static_cast<size_t>(b * linesPerBatch + i + 1);
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
-                );
-            }
+            const size_t firstLineId = static_cast<size_t>(b * linesPerBatch + 1);
+            const bool declareNewKey = (b == 0);
             // Direct call to OnBatch from this thread mirrors the worker.
-            sink->OnBatch(std::move(batch));
+            sink->OnBatch(MakeSyntheticBatch(
+                streamSource, keys, valueKey, firstLineId, static_cast<size_t>(linesPerBatch), declareNewKey
+            ));
         }
 
         // Drain the event loop just to be sure no QueuedConnection lambdas
@@ -1216,8 +1235,9 @@ private slots:
         QVERIFY(lineCountSpy.isValid());
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        loglib::LogFile *filePtr = file.get();
-        static_cast<void>(model.BeginStreaming(std::move(file)));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        static_cast<void>(model.BeginStreaming(std::move(fileSource)));
 
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
@@ -1245,7 +1265,7 @@ private slots:
                 const size_t lineNumber = static_cast<size_t>(b * linesPerBatch + i + 1);
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
-                batch.lines.emplace_back(std::move(values), keys, loglib::LogFileReference(*filePtr, lineNumber));
+                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
                 cursorOffset += 16;
                 batch.localLineOffsets.push_back(static_cast<uint64_t>(cursorOffset));
             }
@@ -1278,40 +1298,19 @@ private slots:
     void testPauseCapShrinkTrimsPausedBuffer()
     {
         LogModel model;
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         QtStreamingLogSink *sink = model.Sink();
 
-        // Seed the visible model with 100 rows by feeding a batch *before* pause.
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        auto makeBatch = [&keys, valueKey](size_t firstLineId, size_t count, bool declareNewKey) {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = firstLineId;
-            if (declareNewKey)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            batch.streamLines.reserve(count);
-            for (size_t i = 0; i < count; ++i)
-            {
-                const size_t lineId = firstLineId + i;
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
-                );
-            }
-            return batch;
-        };
-
         model.SetRetentionCap(1000);
-        model.AppendBatch(makeBatch(1, 100, true));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 100, /*declareNewKey=*/true));
         QCOMPARE(model.rowCount(), 100);
 
         sink->Pause();
         // 500 paused-buffer rows arrive while paused (visible stays at 100).
-        sink->OnBatch(makeBatch(101, 500, false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 101, 500, /*declareNewKey=*/false));
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), 500);
 
@@ -1331,8 +1330,8 @@ private slots:
     }
 
     // PRD task 6.5: end-to-end Stream Mode smoke test against a temp file
-    // tailed by `TailingFileSource`. Drives the same flow `MainWindow::
-    // OpenLogStream` does (model.BeginStreaming(unique_ptr<LogSource>)) but
+    // tailed by `TailingBytesProducer`. Drives the same flow `MainWindow::
+    // OpenLogStream` does (model.BeginStreaming(unique_ptr<BytesProducer>)) but
     // without going through the menu so the test stays self-contained.
     //
     // Coverage:
@@ -1370,20 +1369,21 @@ private slots:
         // Use a fast poll cadence on the source so the test wall-clock stays
         // small; the production default is 250 ms which would push the test
         // budget over a CI runner's timeout for marginal benefit here.
-        loglib::TailingFileSource::Options sourceOptions;
+        loglib::TailingBytesProducer::Options sourceOptions;
         sourceOptions.disableNativeWatcher = true; // poll-only for determinism
         sourceOptions.pollInterval = std::chrono::milliseconds(25);
         sourceOptions.rotationDebounce = std::chrono::milliseconds(250);
 
-        auto source = std::make_unique<loglib::TailingFileSource>(
-            std::filesystem::path(fixture.Path().toStdString()), /*retentionLines=*/1000, sourceOptions
-        );
+        std::filesystem::path filePath(fixture.Path().toStdString());
+        auto source =
+            std::make_unique<loglib::TailingBytesProducer>(filePath, /*retentionLines=*/1000, sourceOptions);
+        auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
 
         loglib::ParserOptions options;
         // Don't pass a configuration; the auto-promote heuristics aren't the
-        // focus of this test. The model's `BeginStreaming(LogSource)`
+        // focus of this test. The model's `BeginStreaming(StreamLineSource)`
         // overrides `options.stopToken` with the sink's freshly-armed token.
-        loglib::StopToken stopToken = model.BeginStreaming(std::move(source), options);
+        loglib::StopToken stopToken = model.BeginStreaming(std::move(streamSource), options);
         Q_UNUSED(stopToken);
 
         QVERIFY(model.IsStreamingActive());
@@ -1461,7 +1461,7 @@ private slots:
     void testPausedDropCountIsObservable()
     {
         LogModel model;
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
 
@@ -1472,26 +1472,6 @@ private slots:
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-
-        auto makeBatch = [&keys, valueKey](size_t firstLineId, size_t count, bool declareNewKey) {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = firstLineId;
-            if (declareNewKey)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            batch.streamLines.reserve(count);
-            for (size_t i = 0; i < count; ++i)
-            {
-                const size_t lineId = firstLineId + i;
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
-                );
-            }
-            return batch;
-        };
 
         sink->Pause();
         QVERIFY(sink->IsPaused());
@@ -1506,7 +1486,9 @@ private slots:
         for (int b = 0; b < batchesPushed; ++b)
         {
             const bool firstBatch = (b == 0);
-            sink->OnBatch(makeBatch(static_cast<size_t>(b) * batchLines + 1, batchLines, firstBatch));
+            sink->OnBatch(MakeSyntheticBatch(
+                streamSource, keys, valueKey, static_cast<size_t>(b) * batchLines + 1, batchLines, firstBatch
+            ));
         }
 
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(cap));
@@ -1554,8 +1536,9 @@ private slots:
 
         LogModel model;
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
-        loglib::LogFile *filePtr = file.get();
-        static_cast<void>(model.BeginStreaming(std::move(file)));
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        static_cast<void>(model.BeginStreaming(std::move(fileSource)));
 
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
@@ -1584,7 +1567,7 @@ private slots:
                 const size_t lineNumber = i + 1;
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineNumber)});
-                batch.lines.emplace_back(std::move(values), keys, loglib::LogFileReference(*filePtr, lineNumber));
+                batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
                 batch.localLineOffsets.push_back(static_cast<uint64_t>(lineNumber * 16));
             }
             sink->OnBatch(std::move(batch));
@@ -1596,20 +1579,25 @@ private slots:
         // a fraction of the static head. Pre-fix `toDrop = 30` was used
         // as the drop count; in reality the entire 100-row static head
         // is evicted (atomic on `hasStaticContent`), and the counter
-        // must reflect that overshoot.
+        // must reflect that overshoot. Build the live-tail rows as
+        // `LogLine`s referencing a no-producer `StreamLineSource` we
+        // wire up directly (not via the model — the model is mid-static-
+        // session here).
         const size_t overflowRows = 30;
+        loglib::StreamLineSource liveTailSource(std::filesystem::path("synthetic"), nullptr);
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = staticBatchRows + 1;
-            batch.streamLines.reserve(overflowRows);
+            batch.lines.reserve(overflowRows);
             for (size_t i = 0; i < overflowRows; ++i)
             {
                 const size_t lineId = staticBatchRows + 1 + i;
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
+                static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
+                std::vector<std::pair<loglib::KeyId, loglib::detail::CompactLogValue>> compactValues;
+                compactValues.emplace_back(
+                    valueKey, loglib::detail::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
                 );
+                batch.lines.emplace_back(std::move(compactValues), keys, liveTailSource, lineId);
             }
             sink->OnBatch(std::move(batch));
         }
@@ -1640,7 +1628,7 @@ private slots:
         QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         QVERIFY(model.IsStreamingActive());
 
         // Feed one batch of synthetic stream rows so `Detach` has
@@ -1648,21 +1636,10 @@ private slots:
         loglib::KeyIndex &keys = model.Sink()->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        loglib::StreamedBatch batch;
-        batch.firstLineNumber = 1;
-        batch.newKeys.emplace_back(std::string("value"));
         const int batchSize = 7;
-        batch.streamLines.reserve(batchSize);
-        for (int i = 0; i < batchSize; ++i)
-        {
-            const size_t lineId = static_cast<size_t>(i + 1);
-            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-            batch.streamLines.emplace_back(
-                std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
-            );
-        }
-        model.AppendBatch(std::move(batch));
+        model.AppendBatch(MakeSyntheticBatch(
+            streamSource, keys, valueKey, /*firstLineId=*/1, static_cast<size_t>(batchSize), /*declareNewKey=*/true
+        ));
         QCOMPARE(model.rowCount(), batchSize);
 
         // Detach: streaming flag flips off, compensating
@@ -1719,37 +1696,18 @@ private slots:
     void testResumeDeliversBufferedBatchSynchronouslyForOrdering()
     {
         LogModel model;
-        static_cast<void>(model.BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         QtStreamingLogSink *sink = model.Sink();
         QVERIFY(sink != nullptr);
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        auto makeStreamBatch = [&keys, valueKey](size_t firstLineId, size_t count, bool declareNewKey) {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = firstLineId;
-            if (declareNewKey)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            batch.streamLines.reserve(count);
-            for (size_t i = 0; i < count; ++i)
-            {
-                const size_t lineId = firstLineId + i;
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineId)});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", lineId)
-                );
-            }
-            return batch;
-        };
 
         sink->Pause();
         QVERIFY(sink->IsPaused());
 
         const size_t pausedCount = 8;
-        sink->OnBatch(makeStreamBatch(1, pausedCount, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, pausedCount, /*declareNewKey=*/true));
         QCOMPARE(static_cast<size_t>(sink->PausedLineCount()), pausedCount);
         QCOMPARE(model.rowCount(), 0);
 
@@ -1772,7 +1730,9 @@ private slots:
         // the inversion impossible by construction. We assert the
         // resulting row order matches the input order.
         const size_t followupCount = 4;
-        sink->OnBatch(makeStreamBatch(pausedCount + 1, followupCount, false));
+        sink->OnBatch(MakeSyntheticBatch(
+            streamSource, keys, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false
+        ));
         QCoreApplication::processEvents();
         QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount + followupCount);
 
@@ -1860,7 +1820,7 @@ private slots:
         LogModel *model = window->findChild<LogModel *>();
         QVERIFY(model != nullptr);
 
-        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::FileLineSource>{}));
         model->Detach();
         QCoreApplication::processEvents();
 
@@ -1951,24 +1911,13 @@ private slots:
         // has something to reorder. `valueKey` plus a per-line integer
         // gives us a deterministic identifier we can read back via
         // `data(SortRole)` to assert the visible row order.
-        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
         QtStreamingLogSink *sink = model->Sink();
         QVERIFY(sink != nullptr);
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        loglib::StreamedBatch batch;
-        batch.firstLineNumber = 1;
-        batch.newKeys.emplace_back(std::string("value"));
-        for (int64_t lineId = 1; lineId <= 3; ++lineId)
-        {
-            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(valueKey, loglib::LogValue{lineId});
-            batch.streamLines.emplace_back(
-                std::move(values), keys, loglib::StreamLineReference("synthetic", "x", static_cast<size_t>(lineId))
-            );
-        }
-        sink->OnBatch(std::move(batch));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -2040,7 +1989,7 @@ private slots:
         QVERIFY(streamOrderProxy != nullptr);
         QVERIFY(model != nullptr);
 
-        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
         QtStreamingLogSink *sink = model->Sink();
         QVERIFY(sink != nullptr);
 
@@ -2050,27 +1999,7 @@ private slots:
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-        auto makeBatch = [&keys, valueKey](int64_t firstLineId, int count, bool declareNewKey) {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = static_cast<size_t>(firstLineId);
-            if (declareNewKey)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            batch.streamLines.reserve(static_cast<size_t>(count));
-            for (int i = 0; i < count; ++i)
-            {
-                const int64_t lineId = firstLineId + static_cast<int64_t>(i);
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{lineId});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", static_cast<size_t>(lineId))
-                );
-            }
-            return batch;
-        };
-
-        sink->OnBatch(makeBatch(1, 3, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
@@ -2082,7 +2011,7 @@ private slots:
             qint64(3)
         );
 
-        sink->OnBatch(makeBatch(4, 2, false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 4, 2, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
@@ -2257,35 +2186,16 @@ private slots:
         streamOrderProxy->SetReversed(true);
         tableView->SetTailEdge(LogTableView::TailEdge::Top);
 
-        static_cast<void>(model->BeginStreaming(std::unique_ptr<loglib::LogFile>{}));
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
         QtStreamingLogSink *sink = model->Sink();
         QVERIFY(sink != nullptr);
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        auto makeBatch = [&keys, valueKey](int64_t firstLineId, int count, bool declareNewKey) {
-            loglib::StreamedBatch batch;
-            batch.firstLineNumber = static_cast<size_t>(firstLineId);
-            if (declareNewKey)
-            {
-                batch.newKeys.emplace_back(std::string("value"));
-            }
-            batch.streamLines.reserve(static_cast<size_t>(count));
-            for (int i = 0; i < count; ++i)
-            {
-                const int64_t lineId = firstLineId + static_cast<int64_t>(i);
-                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(valueKey, loglib::LogValue{lineId});
-                batch.streamLines.emplace_back(
-                    std::move(values), keys, loglib::StreamLineReference("synthetic", "x", static_cast<size_t>(lineId))
-                );
-            }
-            return batch;
-        };
 
         // Seed the model with enough rows that the viewport is
         // genuinely scrollable.
-        sink->OnBatch(makeBatch(1, 50, true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 50, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 50);
 
@@ -2316,7 +2226,7 @@ private slots:
         // content slides down by the new rows' total height. With
         // preservation the scrollbar advances by that same amount so
         // the previously-visible content stays put.
-        sink->OnBatch(makeBatch(51, 5, false));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 51, 5, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 55);
 

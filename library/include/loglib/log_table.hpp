@@ -1,10 +1,11 @@
 #pragma once
 
+#include "file_line_source.hpp"
 #include "key_index.hpp"
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 #include "log_file.hpp"
-#include "stream_log_line.hpp"
+#include "stream_line_source.hpp"
 #include "streaming_log_sink.hpp"
 
 #include <memory>
@@ -17,29 +18,13 @@
 namespace loglib
 {
 
-/// Row dispatch (PRD 4.9.7):
+/// Row dispatch:
 ///
-/// `LogTable` exposes a single logical row range mapping to either a
-/// `LogLine` (mmap-backed static path) or a `StreamLogLine` (streaming
-/// `LogSource` path) under the hood. The PRD allows three implementations
-/// for the per-row representation:
-///   1. `std::variant<LogLine, StreamLogLine>` per row,
-///   2. a thin `ILogRecord` interface,
-///   3. a templated `LogTable`.
-/// We picked (1)-equivalent **logically** but implemented it as **two
-/// parallel vectors** in `LogData` (`Lines()` for `LogLine`, `StreamLines()`
-/// for `StreamLogLine`). Reasons:
-///   - The static-path hot loops (`BackfillTimestampColumn` over a
-///     `std::span<LogLine>`, the `[allocations]` benchmark's `IsMmapSlice`
-///     traversal, `LogData::Merge`'s `CompactValues` walk) keep their
-///     existing typed signatures and avoid the variant-tag dispatch on
-///     every row access.
-///   - In practice a session is either all-file or all-stream. The
-///     parallel-vector representation has zero overhead in either case.
-///   - Mixed-row tests (PRD task 2.7) still work: file rows are at indices
-///     `[0, Lines().size())` and stream rows follow at
-///     `[Lines().size(), RowCount())`. The variant is "logical" rather
-///     than physical.
+/// `LogTable` exposes a single logical row range backed by a single
+/// `std::vector<LogLine>` regardless of whether the session was opened
+/// from a static file (`FileLineSource`) or a live stream
+/// (`StreamLineSource`). Each `LogLine` carries its own `LineSource *`
+/// so value resolution stays uniform across both paths.
 class LogTable
 {
 public:
@@ -59,11 +44,26 @@ public:
     /// Clears `Data()` and streaming-time-key snapshots; preserves `Configuration()`.
     void Reset();
 
-    /// Initialises the table for an upcoming streaming parse and snapshots the
-    /// time-column KeyIds against the current configuration. `Configuration()`
-    /// is *not* mutated; callers must lock the configuration UI between this
-    /// call and the matching streaming-finished signal. @p file may be null.
-    void BeginStreaming(std::unique_ptr<LogFile> file);
+    /// Initialises the table for an upcoming static-streaming parse and
+    /// snapshots the time-column KeyIds against the current configuration.
+    /// `Configuration()` is *not* mutated; callers must lock the
+    /// configuration UI between this call and the matching streaming-
+    /// finished signal. @p source may be null (`mData` is reset to empty).
+    /// `LogTable` takes ownership of @p source for the lifetime of the
+    /// session; the parser worker emits `LogLine`s tagged with that source
+    /// so each row's raw bytes stay resolvable through
+    /// `LineSource::RawLine` after parsing has moved on.
+    void BeginStreaming(std::unique_ptr<FileLineSource> source);
+
+    /// `BeginStreaming` overload for the live-tail / non-mmap path.
+    /// `LogTable` takes ownership of @p source so the parser worker
+    /// can mutate it via `AppendLine` / `AppendOwnedBytes` while the
+    /// GUI thread reads through `LogLine::Source()->RawLine` /
+    /// `ResolveOwnedBytes` (StreamLineSource is internally
+    /// thread-safe). The session is reset to "stream-only": no
+    /// `FileLineSource` is installed, and `Lines()` is initially
+    /// empty. @p source may be null (`mData` is reset to empty).
+    void BeginStreaming(std::unique_ptr<StreamLineSource> source);
 
     /// Splices @p batch into the table. Extends the configuration for any
     /// `batch.newKeys`, then back-fills any newly-introduced `Type::time`
@@ -101,6 +101,7 @@ public:
     [[nodiscard]] size_t RowCount() const;
 
     [[nodiscard]] const LogData &Data() const noexcept;
+    [[nodiscard]] LogData &Data() noexcept;
 
     /// Drop the first @p count rows from the underlying row vectors. The
     /// logical row range is `[file rows][stream rows]`, so file rows are

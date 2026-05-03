@@ -1,12 +1,15 @@
 #include "common.hpp"
 
+#include <loglib/file_line_source.hpp>
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/bytes_producer.hpp>
 #include <loglib/log_table.hpp>
-#include <loglib/stream_log_line.hpp>
+#include <loglib/stream_line_source.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -22,15 +25,16 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     // Setup test data
     TestLogFile testFile;
     testFile.Write("line1\nline2");
-    std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
+    auto source = testFile.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
 
     // Create test log lines
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, LogFileReference(*logFile, 1));
+    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
+    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, *sourcePtr, 1);
 
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     // Create test configuration
     LogConfiguration logConfiguration;
@@ -51,14 +55,18 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     CHECK(logTable.GetHeader(1) == "Header2");
     CHECK(std::get<std::string>(logTable.GetValue(0, 0)) == "value1");
     CHECK(std::get<std::string>(logTable.GetValue(1, 1)) == "value2");
-    REQUIRE(logTable.Data().Files().size() == 1);
+    REQUIRE(logTable.Data().Sources().size() == 1);
     REQUIRE(logTable.Data().Lines().size() == 2);
-    CHECK(logTable.Data().Lines()[0].FileReference().GetLineNumber() == 0);
-    CHECK(logTable.Data().Lines()[0].FileReference().GetLine() == "line1");
-    CHECK(logTable.Data().Lines()[0].FileReference().GetPath() == testFile.GetFilePath());
-    CHECK(logTable.Data().Lines()[1].FileReference().GetLineNumber() == 1);
-    CHECK(logTable.Data().Lines()[1].FileReference().GetLine() == "line2");
-    CHECK(logTable.Data().Lines()[1].FileReference().GetPath() == testFile.GetFilePath());
+    const auto &line0 = logTable.Data().Lines()[0];
+    const auto &line1 = logTable.Data().Lines()[1];
+    REQUIRE(line0.Source() != nullptr);
+    REQUIRE(line1.Source() != nullptr);
+    CHECK(line0.LineId() == 0);
+    CHECK(line0.Source()->RawLine(line0.LineId()) == "line1");
+    CHECK(line0.Source()->Path() == testFile.GetFilePath());
+    CHECK(line1.LineId() == 1);
+    CHECK(line1.Source()->RawLine(line1.LineId()) == "line2");
+    CHECK(line1.Source()->Path() == testFile.GetFilePath());
 }
 
 TEST_CASE("Update LogTable with new LogData", "[log_table]")
@@ -68,14 +76,15 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
 
     // Setup initial test data
     testFile.Write("file1\nfile2");
-    std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
+    auto source = testFile.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
 
     // Create initial log lines
     KeyIndex initialKeys;
     std::vector<LogLine> initialLines;
-    initialLines.emplace_back(LogMap{{"key1", std::string("value1")}}, initialKeys, LogFileReference(*logFile, 0));
+    initialLines.emplace_back(LogMap{{"key1", std::string("value1")}}, initialKeys, *sourcePtr, 0);
 
-    LogData initialData(std::move(logFile), std::move(initialLines), std::move(initialKeys));
+    LogData initialData(std::move(source), std::move(initialLines), std::move(initialKeys));
 
     // Create initial configuration
     LogConfiguration logConfiguration;
@@ -96,14 +105,15 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
 
     // Create new test data to update with
     newTestFile.Write("newfile1\nnewfile2");
-    std::unique_ptr<LogFile> newLogFile = newTestFile.CreateLogFile();
+    auto newSource = newTestFile.CreateFileLineSource();
+    FileLineSource *newSourcePtr = newSource.get();
 
     // Create new log lines with new keys
     KeyIndex newKeys;
     std::vector<LogLine> newLines;
-    newLines.emplace_back(LogMap{{"key2", std::string("value2")}}, newKeys, LogFileReference(*newLogFile, 0));
+    newLines.emplace_back(LogMap{{"key2", std::string("value2")}}, newKeys, *newSourcePtr, 0);
 
-    LogData newData(std::move(newLogFile), std::move(newLines), std::move(newKeys));
+    LogData newData(std::move(newSource), std::move(newLines), std::move(newKeys));
 
     // Update the LogTable with the new data
     logTable.Update(std::move(newData));
@@ -115,14 +125,18 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     CHECK(logTable.GetHeader(1) == "key2"); // New column should be added with default header matching key name
     CHECK(std::get<std::string>(logTable.GetValue(0, 0)) == "value1");
     CHECK(std::get<std::string>(logTable.GetValue(1, 1)) == "value2");
-    REQUIRE(logTable.Data().Files().size() == 2);
+    REQUIRE(logTable.Data().Sources().size() == 2);
     REQUIRE(logTable.Data().Lines().size() == 2);
-    CHECK(logTable.Data().Lines()[0].FileReference().GetLineNumber() == 0);
-    CHECK(logTable.Data().Lines()[0].FileReference().GetLine() == "file1");
-    CHECK(logTable.Data().Lines()[0].FileReference().GetPath() == testFile.GetFilePath());
-    CHECK(logTable.Data().Lines()[1].FileReference().GetLineNumber() == 0);
-    CHECK(logTable.Data().Lines()[1].FileReference().GetLine() == "newfile1");
-    CHECK(logTable.Data().Lines()[1].FileReference().GetPath() == newTestFile.GetFilePath());
+    const auto &line0 = logTable.Data().Lines()[0];
+    const auto &line1 = logTable.Data().Lines()[1];
+    REQUIRE(line0.Source() != nullptr);
+    REQUIRE(line1.Source() != nullptr);
+    CHECK(line0.LineId() == 0);
+    CHECK(line0.Source()->RawLine(line0.LineId()) == "file1");
+    CHECK(line0.Source()->Path() == testFile.GetFilePath());
+    CHECK(line1.LineId() == 0);
+    CHECK(line1.Source()->RawLine(line1.LineId()) == "newfile1");
+    CHECK(line1.Source()->Path() == newTestFile.GetFilePath());
 }
 
 TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]")
@@ -131,13 +145,14 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     // (otherwise `LoadConfiguration → File → Open` would lose column layout).
     TestLogFile testFile;
     testFile.Write("line1\nline2");
-    std::unique_ptr<LogFile> logFile = testFile.CreateLogFile();
+    auto source = testFile.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
 
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, LogFileReference(*logFile, 1));
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    testLines.emplace_back(LogMap{{"key1", std::string("value1")}}, testKeys, *sourcePtr, 0);
+    testLines.emplace_back(LogMap{{"key2", std::string("value2")}}, testKeys, *sourcePtr, 1);
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back({"CustomA", {"key1"}, "{}", LogConfiguration::Type::any, {}});
@@ -173,7 +188,7 @@ namespace
 
 // Helper that builds a LogLine bound to @p keys, inserting each (key, value) pair via
 // GetOrInsert so the test does not have to spell KeyIds explicitly.
-LogLine MakeLine(KeyIndex &keys, LogFile &file, const std::vector<std::pair<std::string, LogValue>> &fields)
+LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair<std::string, LogValue>> &fields)
 {
     std::vector<std::pair<KeyId, LogValue>> sorted;
     sorted.reserve(fields.size());
@@ -182,13 +197,13 @@ LogLine MakeLine(KeyIndex &keys, LogFile &file, const std::vector<std::pair<std:
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
     std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-    return LogLine(std::move(sorted), keys, LogFileReference(file, 0));
+    return LogLine(std::move(sorted), keys, source, 0);
 }
 
 // Helper that snapshots a column → KeyId range from a given KeyIndex into a StreamedBatch::newKeys.
 StreamedBatch BuildStreamedBatch(
     KeyIndex &keys,
-    LogFile &file,
+    LineSource &source,
     const std::vector<std::vector<std::pair<std::string, LogValue>>> &lines,
     size_t prevKeyCount,
     size_t firstLineNumber
@@ -199,7 +214,7 @@ StreamedBatch BuildStreamedBatch(
     batch.lines.reserve(lines.size());
     for (const auto &fields : lines)
     {
-        batch.lines.push_back(MakeLine(keys, file, fields));
+        batch.lines.push_back(MakeLine(keys, source, fields));
     }
     const size_t currentKeyCount = keys.Size();
     if (currentKeyCount > prevKeyCount)
@@ -221,15 +236,15 @@ TEST_CASE(
 {
     TestLogFile testFile("steady.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
     auto batchA =
-        BuildStreamedBatch(keys, *filePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
+        BuildStreamedBatch(keys, *sourcePtr, {{{"key1", std::string("v1a")}, {"key2", std::string("v2a")}}}, 0, 1);
     table.AppendBatch(std::move(batchA));
 
     REQUIRE(table.RowCount() == 1);
@@ -238,7 +253,7 @@ TEST_CASE(
     const std::string secondHeader = table.GetHeader(1);
 
     auto batchB = BuildStreamedBatch(
-        keys, *filePtr, {{{"key1", std::string("v1b")}, {"key2", std::string("v2b")}}}, keys.Size(), 2
+        keys, *sourcePtr, {{{"key1", std::string("v1b")}, {"key2", std::string("v2b")}}}, keys.Size(), 2
     );
     REQUIRE(batchB.newKeys.empty());
     table.AppendBatch(std::move(batchB));
@@ -254,22 +269,22 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
 {
     TestLogFile testFile("append_columns.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
     table.AppendBatch(
-        BuildStreamedBatch(keys, *filePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
+        BuildStreamedBatch(keys, *sourcePtr, {{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}}, 0, 1)
     );
     REQUIRE(table.ColumnCount() == 2);
     const std::string alphaHeader = table.GetHeader(0);
     const std::string betaHeader = table.GetHeader(1);
 
     table.AppendBatch(BuildStreamedBatch(
-        keys, *filePtr, {{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}}, keys.Size() - 1, 2
+        keys, *sourcePtr, {{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}}, keys.Size() - 1, 2
     ));
 
     REQUIRE(table.ColumnCount() == 3);
@@ -283,10 +298,10 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
 {
     TestLogFile testFile("empty_rows.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
 
     LogTable table;
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     StreamedBatch errorOnly;
     errorOnly.firstLineNumber = 1;
@@ -320,11 +335,11 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
 {
     TestLogFile testFile("append_only.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
 
@@ -352,7 +367,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // {alpha, beta}.
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"alpha", std::string("a1")}, {"beta", std::string("b1")}},
         },
@@ -365,7 +380,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // +gamma at index 2; alpha/beta stay put.
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"alpha", std::string("a2")}, {"gamma", std::string("g1")}},
         },
@@ -379,7 +394,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // No-new-keys batch leaves column count and positions unchanged.
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"alpha", std::string("a3")}, {"beta", std::string("b3")}, {"gamma", std::string("g3")}},
         },
@@ -392,7 +407,7 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
     // Two new keys land at the end in observation order; existing positions stable.
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"delta", std::string("d1")}, {"epsilon", std::string("e1")}},
         },
@@ -415,15 +430,16 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     TestLogFile fileC("log_file_third.json");
 
     fileA.Write("a1\n");
-    auto logFileA = fileA.CreateLogFile();
+    auto sourceA = fileA.CreateFileLineSource();
+    FileLineSource *sourceAPtr = sourceA.get();
 
     KeyIndex keysA;
     std::vector<LogLine> linesA;
     linesA.emplace_back(
-        LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, LogFileReference(*logFileA, 0)
+        LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, *sourceAPtr, 0
     );
 
-    LogData dataA(std::move(logFileA), std::move(linesA), std::move(keysA));
+    LogData dataA(std::move(sourceA), std::move(linesA), std::move(keysA));
 
     LogConfiguration cfg;
     cfg.columns.push_back({"alpha", {"alpha"}, "{}", LogConfiguration::Type::any, {}});
@@ -441,15 +457,16 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     // Update with a separate LogData that introduces a single new key (gamma).
     // gamma must land at index 2; alpha and beta keep their positions.
     fileB.Write("b1\n");
-    auto logFileB = fileB.CreateLogFile();
+    auto sourceB = fileB.CreateFileLineSource();
+    FileLineSource *sourceBPtr = sourceB.get();
 
     KeyIndex keysB;
     std::vector<LogLine> linesB;
     linesB.emplace_back(
-        LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, LogFileReference(*logFileB, 0)
+        LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, *sourceBPtr, 0
     );
 
-    LogData dataB(std::move(logFileB), std::move(linesB), std::move(keysB));
+    LogData dataB(std::move(sourceB), std::move(linesB), std::move(keysB));
     table.Update(std::move(dataB));
 
     REQUIRE(table.ColumnCount() == 3);
@@ -460,15 +477,16 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     // Update with a third LogData that introduces yet another key (delta).
     // delta lands at index 3; everything else stays put.
     fileC.Write("c1\n");
-    auto logFileC = fileC.CreateLogFile();
+    auto sourceC = fileC.CreateFileLineSource();
+    FileLineSource *sourceCPtr = sourceC.get();
 
     KeyIndex keysC;
     std::vector<LogLine> linesC;
     linesC.emplace_back(
-        LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, LogFileReference(*logFileC, 0)
+        LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, *sourceCPtr, 0
     );
 
-    LogData dataC(std::move(logFileC), std::move(linesC), std::move(keysC));
+    LogData dataC(std::move(sourceC), std::move(linesC), std::move(keysC));
     table.Update(std::move(dataC));
 
     REQUIRE(table.ColumnCount() == 4);
@@ -487,17 +505,17 @@ TEST_CASE(
 
     TestLogFile testFile("backfill.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     LogTable table;
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
     // Batch 1: no timestamp column yet; rows carry only `msg`.
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"msg", std::string("first")}},
             {{"msg", std::string("second")}},
@@ -517,7 +535,7 @@ TEST_CASE(
     // also gets parsed by the same back-fill (because its KeyId is not yet in the snapshot).
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"msg", std::string("third")}, {"timestamp", std::string("2024-01-15T12:34:56")}},
         },
@@ -551,7 +569,7 @@ TEST_CASE(
     // simultaneously being inserted into the view).
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {{{"msg", std::string("fourth")}, {"timestamp", std::string("2024-01-15T12:34:57")}}},
         keys.Size(),
         4
@@ -564,7 +582,7 @@ TEST_CASE(
     // keeps running on every batch (not just the immediate batch after first observation).
     table.AppendBatch(BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"msg", std::string("fifth")}, {"timestamp", std::string("2024-01-15T12:34:58")}},
             {{"msg", std::string("sixth")}, {"timestamp", std::string("2024-01-15T12:34:59")}},
@@ -590,8 +608,8 @@ TEST_CASE(
 
     TestLogFile testFile("snapshot_time_keys.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
     cfg.columns.push_back({"timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T", "%F %T"}}
@@ -603,7 +621,7 @@ TEST_CASE(
     mgr.Load(cfgFile.GetFilePath());
 
     LogTable table({}, std::move(mgr));
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     // After `BeginStreaming`, the time-column key must already be resolvable
     // (mirroring `BuildTimeColumnSpecs`) — without this the snapshot set
@@ -622,7 +640,7 @@ TEST_CASE(
 
     StreamedBatch batch = BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"timestamp", ts}, {"msg", std::string("hello")}},
             {{"timestamp", ts}, {"msg", std::string("world")}},
@@ -656,7 +674,7 @@ TEST_CASE(
     // path when Stage B already did the work.
     StreamedBatch batch2 = BuildStreamedBatch(
         keys,
-        *filePtr,
+        *sourcePtr,
         {
             {{"timestamp", ts}, {"msg", std::string("again")}},
         },
@@ -682,8 +700,8 @@ TEST_CASE(
 
     TestLogFile testFile("refresh_no_alloc.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     // Single column with kKeyCount keys; an empty `newKeys` must short-circuit
     // before any `Find` call.
@@ -705,7 +723,7 @@ TEST_CASE(
     mgr.Load(cfgFile.GetFilePath());
 
     LogTable table({}, std::move(mgr));
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     // Pre-populate every key in the KeyIndex once so each AppendBatch is a
     // pure steady-state batch (no `newKeys`, no auto-promotion).
@@ -726,7 +744,7 @@ TEST_CASE(
     {
         StreamedBatch batch;
         batch.firstLineNumber = static_cast<size_t>(batchIdx + 1);
-        batch.lines.push_back(MakeLine(keys, *filePtr, {{"k0", std::string("steady")}}));
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0", std::string("steady")}}));
         REQUIRE(batch.newKeys.empty());
         table.AppendBatch(std::move(batch));
     }
@@ -766,8 +784,8 @@ TEST_CASE(
 
     TestLogFile testFile("refresh_no_alloc_incremental.json");
     testFile.Write("");
-    auto logFile = std::make_unique<LogFile>(testFile.GetFilePath());
-    LogFile *filePtr = logFile.get();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
 
@@ -795,7 +813,7 @@ TEST_CASE(
     mgr.Load(cfgFile.GetFilePath());
 
     LogTable table({}, std::move(mgr));
-    table.BeginStreaming(std::move(logFile));
+    table.BeginStreaming(std::move(source));
 
     // Pre-populate every key the columns reference except the brand-new one
     // ("k0_new") so BeginStreaming's `RefreshColumnKeyIds` walks them all.
@@ -814,7 +832,7 @@ TEST_CASE(
     StreamedBatch batch;
     batch.firstLineNumber = 1;
     batch.newKeys = {"k0_new"};
-    batch.lines.push_back(MakeLine(keys, *filePtr, {{"k0_new", std::string("hello")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0_new", std::string("hello")}}));
     table.AppendBatch(std::move(batch));
 
     // Expected Find calls: exactly `Touched.keys.size() == 2` (one for "k0",
@@ -834,14 +852,26 @@ TEST_CASE(
 namespace
 {
 
-/// Build a `StreamedBatch` of @p count synthetic `StreamLogLine` rows
-/// numbered `[firstLineId, firstLineId + count)`, each carrying a single
+/// Build a `StreamedBatch` of @p count synthetic `LogLine` rows
+/// referencing @p streamSource and numbered
+/// `[firstLineId, firstLineId + count)`, each carrying a single
 /// `value` field equal to its line id. The first batch in a sequence
 /// should set @p declareNewKey so `LogTable::PreviewAppend`'s column
 /// predictor matches reality. Mirrors the helper used by the Qt-side
 /// retention tests in `main_window_test.cpp` so the library-level cases
 /// here stay symmetric with the GUI ones.
-StreamedBatch MakeStreamBatch(KeyIndex &keys, KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey)
+///
+/// Each row is also published into @p streamSource via `AppendLine`
+/// so `LineSource::RawLine` round-trips. Tests expect the source's
+/// next-line id to track @p firstLineId.
+StreamedBatch MakeStreamBatch(
+    StreamLineSource &streamSource,
+    KeyIndex &keys,
+    KeyId valueKey,
+    size_t firstLineId,
+    size_t count,
+    bool declareNewKey
+)
 {
     StreamedBatch batch;
     batch.firstLineNumber = firstLineId;
@@ -849,15 +879,16 @@ StreamedBatch MakeStreamBatch(KeyIndex &keys, KeyId valueKey, size_t firstLineId
     {
         batch.newKeys.emplace_back(std::string("value"));
     }
-    batch.streamLines.reserve(count);
+    batch.lines.reserve(count);
     for (size_t i = 0; i < count; ++i)
     {
         const size_t lineId = firstLineId + i;
-        std::vector<std::pair<KeyId, LogValue>> values;
-        values.emplace_back(valueKey, LogValue{static_cast<int64_t>(lineId)});
-        batch.streamLines.emplace_back(
-            std::move(values), keys, StreamLineReference{"<test>", "raw" + std::to_string(lineId), lineId}
-        );
+        const size_t publishedId = streamSource.AppendLine("raw" + std::to_string(lineId), std::string{});
+        REQUIRE(publishedId == lineId);
+
+        std::vector<std::pair<KeyId, detail::CompactLogValue>> compactValues;
+        compactValues.emplace_back(valueKey, detail::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
 }
@@ -882,8 +913,10 @@ StreamedBatch MakeStreamBatch(KeyIndex &keys, KeyId valueKey, size_t firstLineId
 //      rows are LineIds 1001 .. 2000.
 TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", "[log_table][retention]")
 {
+    auto streamSource = std::make_unique<StreamLineSource>(std::filesystem::path("<test>"), nullptr);
+    StreamLineSource &streamSourceRef = *streamSource;
     LogTable table;
-    table.BeginStreaming(nullptr);
+    table.BeginStreaming(std::move(streamSource));
 
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
@@ -896,7 +929,7 @@ TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", 
     for (size_t batchStart = 0; batchStart < kTotalLines; batchStart += kBatchSize)
     {
         const bool declareNewKey = (batchStart == 0);
-        table.AppendBatch(MakeStreamBatch(keys, valueKey, batchStart + 1, kBatchSize, declareNewKey));
+        table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, batchStart + 1, kBatchSize, declareNewKey));
 
         // Mirror `LogModel::AppendBatch`'s post-append trim: any rows past
         // the cap are evicted in source order. Cap is checked *after*
@@ -920,8 +953,10 @@ TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", 
 
 TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[log_table][retention]")
 {
+    auto streamSource = std::make_unique<StreamLineSource>(std::filesystem::path("<test>"), nullptr);
+    StreamLineSource &streamSourceRef = *streamSource;
     LogTable table;
-    table.BeginStreaming(nullptr);
+    table.BeginStreaming(std::move(streamSource));
 
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
@@ -931,10 +966,19 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
 
     // Mirrors the GUI-side "giant-batch collapse" (PRD 4.10.3.iii): the head
     // of the batch is dropped before it lands in `LogTable::AppendBatch`, so
-    // the visible model never breaches the cap. We do that here explicitly
-    // by building a kCap-sized batch with the right firstLineNumber offset.
+    // the visible model never breaches the cap. The synthesized rows are
+    // numbered to match what the GUI side would have surfaced after head
+    // drop; the source's first AppendLine bumps `mNextLineId` past the
+    // head-dropped range so the published id matches.
     const size_t headDrop = kGiantBatch - kCap;
-    table.AppendBatch(MakeStreamBatch(keys, valueKey, headDrop + 1, kCap, /*declareNewKey=*/true));
+    for (size_t i = 0; i < headDrop; ++i)
+    {
+        streamSourceRef.AppendLine("dropped" + std::to_string(i + 1), std::string{});
+    }
+    streamSourceRef.EvictBefore(headDrop + 1);
+    table.AppendBatch(
+        MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, kCap, /*declareNewKey=*/true)
+    );
 
     REQUIRE(table.RowCount() == kCap);
     CHECK(std::get<int64_t>(table.GetValue(0, 0)) == static_cast<int64_t>(headDrop + 1));
@@ -946,12 +990,14 @@ TEST_CASE(
 )
 {
     LogTable table;
-    table.BeginStreaming(nullptr);
+    auto streamSource = std::make_unique<StreamLineSource>(std::filesystem::path("synthetic"), nullptr);
+    StreamLineSource &streamSourceRef = *streamSource;
+    table.BeginStreaming(std::move(streamSource));
 
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-    table.AppendBatch(MakeStreamBatch(keys, valueKey, 1, 5, /*declareNewKey=*/true));
+    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, 1, 5, /*declareNewKey=*/true));
     REQUIRE(table.RowCount() == 5);
 
     // count == 0: documented well-defined behaviour (no rows removed).
@@ -964,7 +1010,10 @@ TEST_CASE(
     CHECK(table.RowCount() == 0);
 
     // count > RowCount: same outcome as count == RowCount (saturating clear).
-    table.AppendBatch(MakeStreamBatch(keys, valueKey, 100, 3, /*declareNewKey=*/false));
+    // After the prior `EvictPrefixRows(5)` the source has cleared lines 1..5,
+    // so its next-to-publish lineId is 6 — match it here so `MakeStreamBatch`'s
+    // `AppendLine`-publishes-monotonic invariant holds.
+    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, 6, 3, /*declareNewKey=*/false));
     REQUIRE(table.RowCount() == 3);
     table.EvictPrefixRows(99);
     CHECK(table.RowCount() == 0);

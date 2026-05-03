@@ -158,7 +158,7 @@ private:
     bool mStreamingActive = false;
 
     /// True while the active session was opened via **File → Open Log
-    /// Stream…** (`TailingFileSource`); false for the static-streaming
+    /// Stream…** (`TailingBytesProducer`); false for the static-streaming
     /// path. Drives the status-bar label (PRD §6 *Status bar*).
     bool mLiveTailActive = false;
 

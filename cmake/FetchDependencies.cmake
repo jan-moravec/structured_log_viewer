@@ -191,7 +191,7 @@ else()
 endif()
 
 # efsw provides the cross-platform filesystem watcher used by the live tail
-# (TailingFileSource) — native backends (ReadDirectoryChangesW / inotify /
+# (TailingBytesProducer) — native backends (ReadDirectoryChangesW / inotify /
 # FSEvents) plus its own polling fallback. We always link the static library
 # variant (efsw-static) so on Windows MSVC there is no extra runtime DLL to
 # stage next to the executable and the /MD vs /MT runtime-library setting

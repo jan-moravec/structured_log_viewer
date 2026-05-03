@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loglib/file_line_source.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/parser_options.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
@@ -9,9 +10,11 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
+#include "loglib/bytes_producer.hpp"
+#include "loglib/log_value.hpp"
 #include "loglib/parser_options.hpp"
 #include "loglib/stop_token.hpp"
-#include "loglib/stream_log_line.hpp"
+#include "loglib/stream_line_source.hpp"
 #include "loglib/streaming_log_sink.hpp"
 
 #include <fmt/format.h>
@@ -74,13 +77,6 @@ struct WorkerScratchBase
     void PromoteTimestamps(
         class LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena
     );
-
-    /// `StreamLogLine` overload: stream lines own their values directly
-    /// (`std::string` payloads, no arena), so the per-line `ownedArena`
-    /// parameter from the `LogLine` overload is omitted. Used by the
-    /// non-mmap streaming-loop path in
-    /// `JsonParser::ParseStreaming(LogSource&, ...)` (PRD 4.6.2 / task 2.6).
-    void PromoteTimestamps(class StreamLogLine &line, std::span<const TimeColumnSpec> timeColumns);
 };
 
 /// Bolts format-specific scratch (e.g. simdjson parser + padded buffer) onto
@@ -147,15 +143,6 @@ inline void WorkerScratchBase::PromoteTimestamps(
     PromoteLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch, ownedArena);
 }
 
-inline void WorkerScratchBase::PromoteTimestamps(StreamLogLine &line, std::span<const TimeColumnSpec> timeColumns)
-{
-    if (timeColumns.empty())
-    {
-        return;
-    }
-    PromoteStreamLineTimestamps(line, timeColumns, lastValidTimestamps, lastBytesHits, tsScratch);
-}
-
 /// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.
 struct ResolvedPipelineSettings
 {
@@ -171,15 +158,37 @@ namespace pipeline_detail
 constexpr size_t kStreamFlushLines = 1000;
 constexpr auto kStreamFlushInterval = std::chrono::milliseconds(50);
 
+/// Coalescing thresholds for the non-mmap streaming loop driven by
+/// `RunStreamingParser`. Smaller than the TBB pipeline's
+/// `kStreamFlushLines` / `kStreamFlushInterval` because the live-tail
+/// target is end-to-end latency (≤ 250 ms p50 / ≤ 500 ms p95 per PRD
+/// §8 success metric 1) rather than million-line throughput. PRD §7
+/// *Batching and latency* allows up to 250 lines / 100 ms here.
+constexpr size_t kStreamLoopFlushLines = 250;
+constexpr auto kStreamLoopFlushInterval = std::chrono::milliseconds(100);
+
+/// Read buffer size for the non-mmap streaming loop. 64 KiB matches the
+/// pre-fill chunk size in `TailingBytesProducer` (PRD 4.1.6) and is small
+/// enough that each `BytesProducer::Read` returns within a couple of poll
+/// ticks even on slow CI runners.
+constexpr size_t kStreamReadBufferSize = 64 * 1024;
+
 } // namespace pipeline_detail
 
 /// Streaming-pipeline entry point. Stage A `stageADriver(Token&) -> bool` is
 /// serial_in_order; Stage B `stageBDecoder(Token, scratch, keys, columns,
 /// out)` is parallel. Stage C coalescing, new-keys diff, inline timestamp
 /// promotion, and stop_token cancellation are owned by the harness.
+///
+/// @p source is the static-file source the pipeline drives against. Stage
+/// B's decoder uses `source.File()` for direct mmap access and stamps
+/// each `LogLine` it builds with `&source` and the line's absolute
+/// `lineId`. Stage C rebases per-batch `OwnedString` payloads into
+/// `source.File()`'s session-global arena once per batch (single-
+/// threaded write).
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunParserPipeline(
-    LogFile &file,
+    FileLineSource &source,
     StreamingLogSink &sink,
     const ParserOptions &options,
     const internal::AdvancedParserOptions &advanced,
@@ -187,6 +196,8 @@ void RunParserPipeline(
     StageBDecoder &&stageBDecoder
 )
 {
+    LogFile &file = source.File();
+
     sink.OnStarted();
 
     // Honour the `StreamingLogSink` contract: emit at least one (possibly
@@ -286,7 +297,7 @@ void RunParserPipeline(
         {
             for (LogLine &line : parsed.lines)
             {
-                line.FileReference().ShiftLineNumber(lineNumberDelta);
+                line.ShiftLineId(lineNumberDelta);
             }
         }
 
@@ -304,7 +315,7 @@ void RunParserPipeline(
 
         // Stage B's `relativeLine` is 1-based within the batch. Compose the
         // absolute "Error on line N: ..." message here so the line-number
-        // shift on `LogLine::FileReference` and the line-number shown to the
+        // shift on each `LogLine`'s id and the line-number shown to the
         // user stay in lockstep across batches.
         auto formatErrorsInto = [&](std::vector<std::string> &out) {
             if (parsed.errors.empty())
@@ -341,8 +352,8 @@ void RunParserPipeline(
         // number of the first source line in the batch — *not* of the first
         // chunk that hit `pending`. Priming on an all-error / all-blank chunk
         // would set `firstLineNumber` to a value strictly less than
-        // `lines.front().FileReference().GetLineNumber()` once the next
-        // chunk's first real line lands here.
+        // `lines.front().LineId()` once the next chunk's first real line
+        // lands here.
         if (!parsed.lines.empty())
         {
             if (!pendingPrimed)
@@ -415,6 +426,237 @@ void RunParserPipeline(
             tail.firstLineNumber = nextLineNumber;
             sink.OnBatch(std::move(tail));
         }
+    }
+
+    sink.OnFinished(stopToken.stop_requested());
+}
+
+/// Format-agnostic streaming-loop entry point that emits the unified
+/// `LogLine` row type backed by a long-lived `StreamLineSource`. Drains
+/// `source.Producer()` line-by-line, hands each non-blank line to
+/// @p decoder (which must satisfy the `CompactLineDecoder` concept —
+/// see `internal/line_decoder.hpp`), atomically commits the resulting
+/// `(rawText, ownedArena)` to @p source, and constructs a `LogLine`
+/// referencing the just-published `lineId`. Coalesces rows into
+/// `StreamedBatch::lines` and honours the `StreamingLogSink` contract
+/// (PRD §7 *Batching and latency*: up to
+/// `pipeline_detail::kStreamLoopFlushLines` rows or
+/// `kStreamLoopFlushInterval` per batch).
+///
+/// Single-threaded by design — the live-tail target is thousands of
+/// lines/s, not millions, so the TBB pipeline overhead is not warranted
+/// and the latency budget (≤ 250 ms p50 / ≤ 500 ms p95) is tighter.
+///
+/// `source` is mutated on the parser thread (`AppendLine` /
+/// `AppendOwnedBytes`) and read concurrently from the GUI thread via
+/// `LogLine::Source()->RawLine` / `ResolveOwnedBytes`. The
+/// `StreamLineSource`'s deque storage and per-source mutex make this
+/// safe (PRD 4.10.4).
+template <class Decoder>
+void RunStreamingParserToLogLines(
+    StreamLineSource &source, Decoder &decoder, StreamingLogSink &sink, const ParserOptions &options
+)
+{
+    sink.OnStarted();
+
+    BytesProducer *producer = source.Producer();
+    if (producer == nullptr)
+    {
+        // No byte producer attached — typical for unit tests that drive
+        // the source's API directly. Honour the sink contract with one
+        // empty terminal batch and finish.
+        StreamedBatch tail;
+        tail.firstLineNumber = 1;
+        sink.OnBatch(std::move(tail));
+        sink.OnFinished(false);
+        return;
+    }
+
+    const StopToken stopToken = options.stopToken;
+    KeyIndex &keys = sink.Keys();
+
+    const std::vector<TimeColumnSpec> timeColumns = BuildTimeColumnSpecs(keys, options.configuration.get());
+    std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
+
+    WorkerScratchBase promoteScratch;
+    promoteScratch.EnsureTimeColumnCapacity(timeColumns.size());
+
+    StreamedBatch pending;
+    bool pendingPrimed = false;
+    size_t prevKeyCount = keys.Size();
+    auto lastFlush = std::chrono::steady_clock::now();
+    size_t nextLineNumber = 1;
+
+    auto emitNewKeysInto = [&](StreamedBatch &out) {
+        const size_t currentKeyCount = keys.Size();
+        if (currentKeyCount > prevKeyCount)
+        {
+            out.newKeys.reserve(out.newKeys.size() + (currentKeyCount - prevKeyCount));
+            for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
+            {
+                out.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+            }
+            prevKeyCount = currentKeyCount;
+        }
+    };
+
+    auto flushPending = [&](bool force) {
+        const auto now = std::chrono::steady_clock::now();
+        const bool sizeReached = pending.lines.size() >= pipeline_detail::kStreamLoopFlushLines;
+        const bool intervalReached = (now - lastFlush) >= pipeline_detail::kStreamLoopFlushInterval;
+        const bool hasContent = !pending.lines.empty() || !pending.errors.empty() || keys.Size() > prevKeyCount;
+        if (!force && !sizeReached && !intervalReached)
+        {
+            return;
+        }
+        if (!force && !hasContent)
+        {
+            lastFlush = now;
+            return;
+        }
+        emitNewKeysInto(pending);
+        sink.OnBatch(std::move(pending));
+        pending = StreamedBatch{};
+        pendingPrimed = false;
+        lastFlush = now;
+    };
+
+    std::string carry;
+    std::vector<char> readBuffer(pipeline_detail::kStreamReadBufferSize);
+
+    // Reused per line: cleared at the top of every `processLine`. Move-
+    // transferred into the source on success so the source's deque
+    // storage owns the bytes thereafter.
+    std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
+    std::string ownedArena;
+    std::string lineError;
+
+    auto processLine = [&](std::string_view line) {
+        std::string_view trimmed = line;
+        if (!trimmed.empty() && trimmed.back() == '\r')
+        {
+            trimmed.remove_suffix(1);
+        }
+        const size_t lineNumber = nextLineNumber;
+        ++nextLineNumber;
+
+        if (trimmed.empty())
+        {
+            return;
+        }
+
+        const bool ok =
+            decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
+        if (!ok)
+        {
+            pending.errors.emplace_back(fmt::format("Error on line {}: {}", lineNumber, std::move(lineError)));
+            return;
+        }
+
+        // Compact values produced by the decoder are unsorted (the JSON
+        // path emits them in source order); the `LogLine` hot-path
+        // ctor's `is_sorted` debug assertion needs ascending KeyIds.
+        std::sort(compactValues.begin(), compactValues.end(), [](const auto &a, const auto &b) {
+            return a.first < b.first;
+        });
+
+        // Atomic commit to the source: `AppendLine` move-transfers both
+        // the raw bytes and the per-line owned arena under the source's
+        // mutex, so any concurrent reader on the GUI thread observes
+        // the line either fully written or not at all (PRD 4.10.4).
+        const size_t lineId = source.AppendLine(std::string(trimmed), std::move(ownedArena));
+        ownedArena.clear();
+
+        LogLine logLine(std::move(compactValues), keys, source, lineId);
+        // Inline timestamp promotion mirrors the TBB pipeline. The
+        // `string_view{}` arena tells `ExtractStringBytes` to resolve
+        // `OwnedString` payloads through the line's `LineSource *` —
+        // which, for stream sources, dispatches to
+        // `StreamLineSource::ResolveOwnedBytes` (PRD 4.6.2).
+        promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
+
+        if (!pendingPrimed)
+        {
+            pending.firstLineNumber = lineNumber;
+            pendingPrimed = true;
+        }
+        pending.lines.push_back(std::move(logLine));
+    };
+
+    bool reachedEof = false;
+    while (!reachedEof)
+    {
+        if (stopToken.stop_requested())
+        {
+            break;
+        }
+
+        const size_t read = producer->Read(std::span<char>(readBuffer.data(), readBuffer.size()));
+        if (read != 0)
+        {
+            carry.append(readBuffer.data(), read);
+        }
+        else
+        {
+            if (producer->IsClosed())
+            {
+                reachedEof = true;
+            }
+            else
+            {
+                flushPending(false);
+                producer->WaitForBytes(pipeline_detail::kStreamLoopFlushInterval);
+                continue;
+            }
+        }
+
+        size_t scanStart = 0;
+        while (scanStart < carry.size())
+        {
+            const size_t newlineRel = carry.find('\n', scanStart);
+            if (newlineRel == std::string::npos)
+            {
+                break;
+            }
+            std::string_view line(carry.data() + scanStart, newlineRel - scanStart);
+            processLine(line);
+            scanStart = newlineRel + 1;
+
+            if (stopToken.stop_requested())
+            {
+                break;
+            }
+        }
+        if (scanStart > 0)
+        {
+            carry.erase(0, scanStart);
+        }
+
+        flushPending(false);
+    }
+
+    if (!carry.empty() && !stopToken.stop_requested())
+    {
+        std::string_view line(carry);
+        processLine(line);
+        carry.clear();
+    }
+
+    if (pendingPrimed || !pending.errors.empty() || keys.Size() > prevKeyCount)
+    {
+        if (!pendingPrimed)
+        {
+            pending.firstLineNumber = nextLineNumber;
+        }
+        emitNewKeysInto(pending);
+        sink.OnBatch(std::move(pending));
+    }
+    else
+    {
+        StreamedBatch tail;
+        tail.firstLineNumber = nextLineNumber;
+        emitNewKeysInto(tail);
+        sink.OnBatch(std::move(tail));
     }
 
     sink.OnFinished(stopToken.stop_requested());

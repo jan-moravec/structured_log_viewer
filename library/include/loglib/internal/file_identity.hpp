@@ -14,7 +14,7 @@ namespace loglib::detail
 {
 
 /// Cross-platform "is this the same file as last time?" identity used by
-/// `TailingFileSource` rotation detection (PRD 4.8.6 / §7 *Cross-platform
+/// `TailingBytesProducer` rotation detection (PRD 4.8.6 / §7 *Cross-platform
 /// file identity*).
 ///
 /// On POSIX the identity is `(st_dev, st_ino)`; on Windows it is the

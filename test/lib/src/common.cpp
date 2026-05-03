@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -142,15 +143,20 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
         ++pos;
         if (ch == '\n')
         {
-            logFile->CreateReference(pos);
+            logFile->RegisterLineEnd(pos);
         }
     }
     if (pos > 0 && ch != '\n')
     {
-        logFile->CreateReference(pos + 1);
+        logFile->RegisterLineEnd(pos + 1);
     }
 
     return logFile;
+}
+
+std::unique_ptr<loglib::FileLineSource> TestLogFile::CreateFileLineSource() const
+{
+    return std::make_unique<loglib::FileLineSource>(CreateLogFile());
 }
 
 void InitializeTimezoneData()

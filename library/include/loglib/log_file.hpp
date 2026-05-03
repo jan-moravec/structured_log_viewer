@@ -12,39 +12,13 @@
 namespace loglib
 {
 
-class LogFile;
-
-/// Reference to a specific line in a `LogFile`.
-class LogFileReference
-{
-public:
-    LogFileReference(LogFile &logFile, size_t lineNumber);
-
-    const std::filesystem::path &GetPath() const;
-    size_t GetLineNumber() const;
-
-    void SetLineNumber(size_t lineNumber);
-
-    /// Adds @p delta to the stored line number (Stage C: relative -> absolute).
-    void ShiftLineNumber(size_t delta) noexcept;
-
-    std::string GetLine() const;
-
-    /// Direct access to the referenced `LogFile`. Used by `LogLine` to
-    /// resolve `MmapSlice` / `OwnedString` compact values into `LogValue`
-    /// variants. Mutable overload is needed for `SetValue` (writes the
-    /// owned-string arena).
-    LogFile *GetFile() noexcept;
-    const LogFile *GetFile() const noexcept;
-
-private:
-    LogFile *mLogFile = nullptr;
-    size_t mLineNumber = 0;
-};
-
 /// Memory-mapped log file. Owns the mmap for its lifetime so `LogValue`
 /// instances can hold `string_view`s into the file content. Move keeps the
 /// mapped pointer stable.
+///
+/// `LogFile` is the byte-and-arena container; addressing of individual
+/// log records is the job of `FileLineSource` (which wraps a `LogFile`)
+/// and `LogLine` (which carries a `LineSource * + size_t lineId` pair).
 class LogFile
 {
 public:
@@ -67,9 +41,13 @@ public:
 
     void ReserveLineOffsets(size_t count);
 
-    /// @param position Byte offset of the *next* line. Must be strictly
-    ///                 greater than the previously registered offset.
-    LogFileReference CreateReference(size_t position);
+    /// Records the byte offset of the *next* line as a single
+    /// strictly-increasing entry on `mLineOffsets`. @p position must
+    /// be strictly greater than the previously registered offset.
+    /// Used by tests that build a `LogFile`'s offset table by hand
+    /// after writing the underlying file; the parser pipeline uses
+    /// `AppendLineOffsets` for batched updates instead.
+    void RegisterLineEnd(size_t position);
 
     /// Caller must ensure offsets are strictly increasing and start past the
     /// current last offset.

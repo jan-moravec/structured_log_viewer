@@ -1,8 +1,7 @@
 #pragma once
 
 #include <loglib/log_data.hpp>
-#include <loglib/log_file.hpp>
-#include <loglib/log_source.hpp>
+#include <loglib/bytes_producer.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
@@ -37,7 +36,8 @@ enum LogModelItemDataRole
 
 /// Outcome reported by `LogModel::streamingFinished`: clean completion vs.
 /// external cancel vs. worker failure (the exception-escape `catch` paths
-/// in `LogModel::BeginStreaming(file, parseCallable)` map to `Failed`).
+/// in `LogModel::BeginStreaming(FileLineSource, parseCallable)` map to
+/// `Failed`).
 enum class StreamingResult : int
 {
     Success = 0,
@@ -50,8 +50,8 @@ class LogModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
-    /// Default retention cap used by `BeginStreaming(LogSource, ...)` when
-    /// no other value has been set. Mirrors PRD 4.5.2 (`N = 10 000`,
+    /// Default retention cap used by `BeginStreaming(StreamLineSource, ...)`
+    /// when no other value has been set. Mirrors PRD 4.5.2 (`N = 10 000`,
     /// allowed range 1 000 .. 1 000 000).
     static constexpr size_t kDefaultRetentionLines = 10'000;
 
@@ -80,32 +80,35 @@ public:
     void Detach();
 
     /// Resets the model and arms the bridging sink for a streaming parse
-    /// against @p file (ownership transfers); returns the parse stop_token.
-    /// **Synchronous test variant** — does not start a worker thread.
+    /// against @p source (ownership transfers); returns the parse
+    /// stop_token. **Synchronous test variant** — does not start a worker
+    /// thread.
     ///
     /// Pair every call with `EndStreaming(...)` or `Clear()`; otherwise
     /// `mStreamingActive` stays on and the GUI's configuration gate never
     /// reopens. Asserts the streaming watcher is idle on entry.
-    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::LogFile> file);
+    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::FileLineSource> source);
 
-    /// Production overload: arms the model and runs @p parseCallable on a
-    /// `QtConcurrent::run` worker, parking the `QFuture` on the model so
-    /// `Clear()` / `~LogModel` can `waitForFinished()` before the borrowed
-    /// `LogFile*` is unmapped (cooperative stop alone is insufficient — TBB
-    /// Stage B runs in parallel without polling the token mid-batch).
+    /// Production overload for the static-file path: arms the model and
+    /// runs @p parseCallable on a `QtConcurrent::run` worker, parking the
+    /// `QFuture` on the model so `Clear()` / `~LogModel` can
+    /// `waitForFinished()` before the borrowed `LogFile*` is unmapped
+    /// (cooperative stop alone is insufficient — TBB Stage B runs in
+    /// parallel without polling the token mid-batch).
     ///
     /// @p parseCallable receives the parse `StopToken`. Exceptions escaping
     /// it are caught at the worker boundary and converted into a synthetic
     /// terminal `OnBatch` + `OnFinished(false)`.
     loglib::StopToken BeginStreaming(
-        std::unique_ptr<loglib::LogFile> file, std::function<void(loglib::StopToken)> parseCallable
+        std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
     );
 
     /// Live-tail entry point. Takes ownership of @p source for the session
     /// lifetime, arms the sink, and spawns a `QtConcurrent::run` worker
     /// that drives `JsonParser::ParseStreaming(*source, *sink, options)`.
     /// Behavior on stop / model teardown is the mandatory PRD 4.7.2.i
-    /// order: `LogSource::Stop()` → parser `stopToken.request_stop()` →
+    /// order: `BytesProducer::Stop()` (on the producer owned by the
+    /// `StreamLineSource`) → parser `stopToken.request_stop()` →
     /// `mStreamingWatcher->waitForFinished()` → sink
     /// `DropPendingBatches()`. The two stop signals are deliberately
     /// distinct because the parser's stop token alone does not unblock a
@@ -115,23 +118,32 @@ public:
     /// worker captures it. `options.configuration` (if non-null) is
     /// snapshotted by the parser's hot loop.
     ///
-    /// For `MappedFileSource` inputs the wrapper extracts the underlying
-    /// `LogFile` (`ReleaseFile()`), installs it in `LogTable` so the
-    /// existing line-offsets / `LogFileReference::GetLine()` machinery
-    /// keeps working, then re-wraps the borrowed file in a fresh borrowing
-    /// `MappedFileSource`. For non-mmap sources the `LogTable` is reset
-    /// without an installed `LogFile` — `StreamLogLine` rows own their raw
-    /// bytes (PRD 4.9.7.ii).
-    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::LogSource> source, loglib::ParserOptions options = {});
+    /// The `StreamLineSource` is installed into `LogTable` and outlives
+    /// every `LogLine` it owns; the worker emits `LogLine`s tagged with
+    /// that source so each row stays resolvable via `LineSource::RawLine`
+    /// after parsing has moved on (PRD 4.9.7.ii / 4.10.4).
+    loglib::StopToken BeginStreaming(
+        std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options
+    );
+
+    /// **Synchronous test variant** for the live-tail path. Installs
+    /// @p source into the table and arms the sink; does not start a
+    /// worker thread. Pair every call with `EndStreaming(...)` or
+    /// `Clear()`. Mirrors the static-file `BeginStreaming(unique_ptr<
+    /// FileLineSource>)` overload above; callers that drive synthetic
+    /// `LogLine` batches via `AppendBatch` use this to install a
+    /// long-lived source the synthetic lines can reference.
+    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::StreamLineSource> source);
 
     /// Appends one streamed batch and emits the corresponding
     /// rows/columns/dataChanged signals plus the line/error counters.
     /// FIFO eviction (PRD 4.5 / 4.10.3) runs before insertion when the
     /// configured retention cap is set: the prefix of the model is
     /// dropped via `beginRemoveRows` / `endRemoveRows` so the visible
-    /// rows + appended rows fit. Giant batches (`batch.streamLines >
-    /// retentionCap`) collapse the head of the batch directly, keeping
-    /// per-batch eviction O(cap) rather than O(batch).
+    /// rows + appended rows fit. Giant batches
+    /// (`batch.lines.size() > retentionCap`) collapse the head of the
+    /// batch directly, keeping per-batch eviction O(cap) rather than
+    /// O(batch).
     void AppendBatch(loglib::StreamedBatch batch);
 
     /// Finalises the streaming parse and emits `streamingFinished`.
@@ -171,7 +183,7 @@ public:
     ///     visible+buffered total stays within `cap` (4.5.5.ii).
     ///   - **Idle**: just record the value for the next `BeginStreaming`.
     /// `cap == 0` is treated as "unbounded" (back-compat with the
-    /// pre-streaming static path; the live-tail entry point applies
+    /// static-file path; the live-tail entry point applies
     /// `kDefaultRetentionLines` if no value has been set).
     void SetRetentionCap(size_t cap);
 
@@ -192,7 +204,7 @@ signals:
     /// `StreamingResult` for the outcome encoding.
     void streamingFinished(StreamingResult result);
 
-    /// Emitted on the GUI thread when the active `LogSource` reports a
+    /// Emitted on the GUI thread when the active `BytesProducer` reports a
     /// rotation event (PRD 4.8.7.v). The `MainWindow` consumes this to
     /// flash the brief `— rotated` suffix in the status bar (5.8). The
     /// callback fires from the source's worker thread; the model
@@ -200,7 +212,7 @@ signals:
     /// thread.
     void rotationDetected();
 
-    /// Emitted on the GUI thread when the active `LogSource` transitions
+    /// Emitted on the GUI thread when the active `BytesProducer` transitions
     /// between `Running` and `Waiting` (PRD 4.8.8 / §6 *Status bar*).
     /// The callback fires from the source's worker thread; the model
     /// re-emits via a queued connection so the slot runs on the GUI
@@ -209,10 +221,20 @@ signals:
     void sourceStatusChanged(loglib::SourceStatus status);
 
 private:
-    /// Resets the table and arms the sink against an *already-installed*
-    /// `LogFile` (or null). Shared between the LogFile-overload and the
-    /// LogSource-overload's MappedFileSource branch.
-    void BeginStreamingShared(std::unique_ptr<loglib::LogFile> file);
+    /// Static-file variant of the shared `BeginStreaming` setup: installs
+    /// @p source (or no source, for the synthetic-batch test path) into
+    /// `LogTable`, resets the model and arms the sink. The parser worker
+    /// emits `LogLine`s tagged with @p source so the model layer can
+    /// resolve each row's raw bytes via `LineSource::RawLine` after
+    /// parsing has moved on (PRD 4.9.4).
+    void BeginStreamingShared(std::unique_ptr<loglib::FileLineSource> source);
+
+    /// Live-tail variant of `BeginStreamingShared`: hands a long-lived
+    /// `StreamLineSource` to `LogTable`. The parser worker emits
+    /// `LogLine`s tagged with @p source so the model layer can resolve
+    /// each row's raw bytes via `LineSource::RawLine` after parsing has
+    /// moved on (PRD 4.10.4).
+    void BeginStreamingShared(std::unique_ptr<loglib::StreamLineSource> source);
 
     /// Shared implementation of `Clear()` / `Detach()`. Runs the full
     /// PRD 4.7.2.i teardown, then — if @p resetTable is true — does the
@@ -226,13 +248,15 @@ private:
     QtStreamingLogSink *mSink = nullptr;
 
     /// Future for the active parse worker; destructive ops join it before
-    /// the borrowed `LogTable`/`LogFile` pointers are torn down.
+    /// the borrowed `LogTable`/`LineSource` references are torn down.
     QFutureWatcher<void> *mStreamingWatcher = nullptr;
 
-    /// Live `LogSource` for the active streaming session (LogSource
-    /// overload only). Owned by the model so the mandatory PRD 4.7.2.i
-    /// teardown order can call `Stop()` before joining the worker.
-    std::unique_ptr<loglib::LogSource> mActiveSource;
+    /// Returns the live byte producer for the active streaming session
+    /// (`LogTable::Data().FrontStreamSource()->Producer()` for live-tail
+    /// sessions). Returns nullptr for static-file sessions and when no
+    /// session is active. Used by the PRD 4.7.2.i teardown to call
+    /// `Stop()` before joining the worker.
+    [[nodiscard]] loglib::BytesProducer *ActiveProducer() noexcept;
 
     /// Cumulative error count for the active parse (mirrors `mStreamingErrors.size()`).
     qsizetype mErrorCount = 0;
@@ -248,9 +272,10 @@ private:
 
     /// Configurable retention cap (PRD 4.5). `0` means unbounded
     /// (static-path / sync-test-variant default). Live-tail
-    /// `BeginStreaming(LogSource, ...)` applies `kDefaultRetentionLines`
-    /// when this is still 0 at session start. `SetRetentionCap` updates
-    /// this and applies the in-flight trim rules.
+    /// `BeginStreaming(StreamLineSource, ...)` applies
+    /// `kDefaultRetentionLines` when this is still 0 at session start.
+    /// `SetRetentionCap` updates this and applies the in-flight trim
+    /// rules.
     size_t mRetentionCap = 0;
 
     static QString ConvertToSingleLineCompactQString(const std::string &string);

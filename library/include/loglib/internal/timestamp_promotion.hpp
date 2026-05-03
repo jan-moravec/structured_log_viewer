@@ -4,7 +4,6 @@
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_processing.hpp"
-#include "loglib/stream_log_line.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -56,23 +55,6 @@ bool PromoteLineTimestamps(
     std::vector<LastTimestampBytesHit> &bytesHits,
     TimestampParseScratch &tsScratch,
     std::string_view ownedArena
-);
-
-/// `StreamLogLine` overload of `PromoteLineTimestamps`. Stream lines own
-/// their values directly (no `MmapSlice` / `OwnedString` arena
-/// indirection — see `stream_log_line.hpp`), so the @p ownedArena
-/// parameter is not needed; the helper reads strings via
-/// `StreamLogLine::GetValue` and writes promoted timestamps via
-/// `StreamLogLine::SetValue`. Returns true iff at least one column was
-/// promoted on this line. Used by `WorkerScratchBase::PromoteTimestamps`
-/// when driving the streaming-loop parser path
-/// (`JsonParser::ParseStreaming(LogSource&, ...)` non-mmap branch).
-bool PromoteStreamLineTimestamps(
-    StreamLogLine &line,
-    std::span<const TimeColumnSpec> timeColumns,
-    std::vector<std::optional<LastValidTimestampParse>> &lastValid,
-    std::vector<LastTimestampBytesHit> &bytesHits,
-    TimestampParseScratch &tsScratch
 );
 
 } // namespace loglib::detail

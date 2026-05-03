@@ -87,16 +87,14 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     manager.Load(testLogConfiguration.GetFilePath());
 
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(
-        LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, LogFileReference(*logFile, 0)
-    );
+    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
+    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, *source, 0);
+    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
 
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     manager.Update(logData);
 
@@ -151,14 +149,12 @@ TEST_CASE(
     // Update must skip "regular", add "timestamp" as Type::time, and place
     // it at position 0.
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(
-        LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, LogFileReference(*logFile, 0)
-    );
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
+    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     manager.Update(logData);
 
@@ -232,15 +228,13 @@ TEST_CASE(
     manager.Load(testLogConfiguration.GetFilePath());
 
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, LogFileReference(*logFile, 0));
-    testLines.emplace_back(
-        LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, LogFileReference(*logFile, 0)
-    );
-    LogData logData(std::move(logFile), std::move(testLines), std::move(testKeys));
+    testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
+    testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, *source, 0);
+    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     manager.Update(logData);
 

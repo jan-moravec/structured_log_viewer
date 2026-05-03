@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/file_line_source.hpp>
 #include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/parser_options.hpp>
 #include <loglib/internal/parser_pipeline.hpp>
@@ -25,10 +26,10 @@
 #include <utility>
 #include <vector>
 
+using loglib::FileLineSource;
 using loglib::KeyIndex;
 using loglib::LogConfiguration;
 using loglib::LogFile;
-using loglib::LogFileReference;
 using loglib::LogLine;
 using loglib::LogValue;
 using loglib::StreamedBatch;
@@ -56,13 +57,14 @@ public:
     };
 
     void ParseStreaming(
-        LogFile &file,
+        FileLineSource &source,
         StreamingLogSink &sink,
         const loglib::ParserOptions &options,
         const loglib::internal::AdvancedParserOptions &advanced
     ) const
     {
-        LogFile *filePtr = &file;
+        FileLineSource *sourcePtr = &source;
+        LogFile &file = source.File();
         const char *fileBegin = file.Data();
         const char *fileEnd = (fileBegin != nullptr) ? fileBegin + file.Size() : nullptr;
         const size_t batchBytes = advanced.batchSizeBytes != 0
@@ -97,7 +99,7 @@ public:
             return true;
         };
 
-        auto stageB = [filePtr, fileBegin](
+        auto stageB = [sourcePtr, fileBegin](
                           ByteRange token,
                           loglib::detail::WorkerScratch<WorkerState> &worker,
                           KeyIndex &keys,
@@ -197,13 +199,11 @@ public:
                     }
                 }
 
-                LogFileReference fileRef(*filePtr, 0);
-                LogLine logLine(std::move(values), keys, std::move(fileRef));
                 // 0-based offset within the batch so that, after Stage C
-                // shifts by the running cursor, `LogFileReference::GetLine`
-                // (which calls `LogFile::GetLine(N)` with `N` 0-based) can
-                // round-trip the source bytes for the line.
-                logLine.FileReference().SetLineNumber(relativeLineNumber - 1);
+                // shifts every line's id by the running line cursor (via
+                // `LogLine::ShiftLineId`), `LogFile::GetLine(N)` round-trips
+                // the source bytes for the line.
+                LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));
                 worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
@@ -213,7 +213,7 @@ public:
             parsed.totalLineCount = relativeLineNumber - 1;
         };
 
-        loglib::detail::RunParserPipeline<ByteRange, WorkerState>(file, sink, options, advanced, stageA, stageB);
+        loglib::detail::RunParserPipeline<ByteRange, WorkerState>(source, sink, options, advanced, stageA, stageB);
     }
 };
 
@@ -304,7 +304,8 @@ TEST_CASE("Mock parser: single sub-batchSize file does not overshoot fileEnd", "
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -330,7 +331,8 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
 
         CollectingSink sink;
         KeyValueLineParser parser;
-        parser.ParseStreaming(logFile, sink, options, advanced);
+        FileLineSource source(logFile);
+        parser.ParseStreaming(source, sink, options, advanced);
 
         CHECK(sink.startedCount == 1);
         CHECK(sink.finishedCount == 1);
@@ -345,16 +347,17 @@ TEST_CASE("Mock parser: empty and early-stopped parses still emit one OnBatch", 
         TempTextFile fixture("level=info msg=hi\n", "test_kv_stop_before.log");
         LogFile logFile(fixture.Path());
 
-        loglib::StopSource source;
-        source.request_stop();
+        loglib::StopSource stopSource;
+        stopSource.request_stop();
         loglib::ParserOptions options;
-        options.stopToken = source.get_token();
+        options.stopToken = stopSource.get_token();
         loglib::internal::AdvancedParserOptions advanced;
         advanced.threads = 1;
 
         CollectingSink sink;
         KeyValueLineParser parser;
-        parser.ParseStreaming(logFile, sink, options, advanced);
+        FileLineSource source(logFile);
+        parser.ParseStreaming(source, sink, options, advanced);
 
         CHECK(sink.startedCount == 1);
         CHECK(sink.finishedCount == 1);
@@ -393,7 +396,8 @@ TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(sink.batches.size() >= 1);
@@ -401,7 +405,7 @@ TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[
     {
         if (!b.lines.empty())
         {
-            const size_t firstObservedLine = b.lines.front().FileReference().GetLineNumber();
+            const size_t firstObservedLine = b.lines.front().LineId();
             CAPTURE(b.firstLineNumber, firstObservedLine);
             // For this fixture (errors-only chunk then records chunk),
             // the prime fires on the records chunk so the values match
@@ -424,7 +428,8 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     REQUIRE(sink.startedCount == 1);
     REQUIRE(sink.finishedCount == 1);
@@ -468,7 +473,8 @@ TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors"
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     REQUIRE_FALSE(sink.cancelled);
 
@@ -525,7 +531,8 @@ TEST_CASE(
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     REQUIRE_FALSE(sink.cancelled);
     REQUIRE(sink.batches.size() >= 1);
@@ -589,7 +596,8 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
     options.stopToken = sink.stop.get_token();
 
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     REQUIRE(sink.cancelled);
     const auto latency = sink.finishedAt - sink.requestedAt;
@@ -632,7 +640,8 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
 
     CollectingSink sink;
     KeyValueLineParser parser;
-    parser.ParseStreaming(logFile, sink, options, advanced);
+    FileLineSource source(logFile);
+    parser.ParseStreaming(source, sink, options, advanced);
 
     size_t promoted = 0;
     size_t totalLines = 0;

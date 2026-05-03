@@ -1,6 +1,6 @@
 #pragma once
 
-#include "log_source.hpp"
+#include "bytes_producer.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -15,19 +15,19 @@ namespace loglib
 
 namespace detail
 {
-class TailingFileSourceImpl; // pimpl forward decl
+class TailingBytesProducerImpl; // pimpl forward decl
 }
 
-/// `LogSource` over a file that is being **actively written to**. Produces
-/// the last `N` complete lines on disk first (pre-fill, PRD 4.1.5–6) and
-/// then appends new lines as the producer writes them, surviving the
-/// rotation patterns enumerated in PRD 4.8.1–4.
+/// `BytesProducer` over a file that is being **actively written to**.
+/// Produces the last `N` complete lines on disk first (pre-fill, PRD
+/// 4.1.5–6) and then appends new lines as the producer writes them,
+/// surviving the rotation patterns enumerated in PRD 4.8.1–4.
 ///
 /// **Design summary** (PRD §7 / task 3.x):
 ///   - Buffered POSIX `read(2)` / Windows `ReadFile` via `std::ifstream`.
 ///     **No mmap** on the tail (PRD §7 *No mmap on the tail*) — rotations
 ///     would invalidate the mapping or block the producer.
-///   - One dedicated worker thread per source, spawned at construction.
+///   - One dedicated worker thread per producer, spawned at construction.
 ///     The worker polls the file size at a configurable cadence (default
 ///     250 ms) and is also signalled by `efsw` filesystem events so that
 ///     the typical wake latency is the watcher's, not the polling
@@ -35,14 +35,14 @@ class TailingFileSourceImpl; // pimpl forward decl
 ///   - Rotation detection runs in branch order (i identity / ii missing /
 ///     iii size shrunk) per PRD 4.8.6; rapid bursts (<1 s) collapse into
 ///     a single rotation event (PRD 4.8.9).
-///   - `Read(span)` drains a per-source byte queue (only complete lines
+///   - `Read(span)` drains a per-producer byte queue (only complete lines
 ///     ever land in it; the partial-line buffer lives separately and is
 ///     discarded on rotation / flushed on `Stop` per PRD §7
 ///     *Line buffering*).
 ///   - `Stop()` is distinct from `ParserOptions::stopToken` (PRD 4.7.2.i):
 ///     `Stop` releases I/O so the parser hot loop can observe the token
 ///     at the next batch boundary.
-class TailingFileSource final : public LogSource
+class TailingBytesProducer final : public BytesProducer
 {
 public:
     /// Tuning knobs exposed to tests so that the polling fallback / rotation
@@ -94,14 +94,14 @@ public:
     /// be opened on the initial attempt; transient missing-path errors
     /// during tailing are recovered by branch (ii) of the rotation
     /// detector and do **not** propagate as exceptions.
-    TailingFileSource(std::filesystem::path path, size_t retentionLines, Options options = Options{});
+    TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options = Options{});
 
-    ~TailingFileSource() override;
+    ~TailingBytesProducer() override;
 
-    TailingFileSource(const TailingFileSource &) = delete;
-    TailingFileSource &operator=(const TailingFileSource &) = delete;
-    TailingFileSource(TailingFileSource &&) = delete;
-    TailingFileSource &operator=(TailingFileSource &&) = delete;
+    TailingBytesProducer(const TailingBytesProducer &) = delete;
+    TailingBytesProducer &operator=(const TailingBytesProducer &) = delete;
+    TailingBytesProducer(TailingBytesProducer &&) = delete;
+    TailingBytesProducer &operator=(TailingBytesProducer &&) = delete;
 
     /// Drain up to `buffer.size()` bytes from the byte queue. Returns 0 on
     /// transient EOF (`IsClosed() == false`) — caller is expected to park
@@ -136,7 +136,7 @@ public:
     [[nodiscard]] size_t RotationCount() const noexcept;
 
 private:
-    std::unique_ptr<detail::TailingFileSourceImpl> mImpl;
+    std::unique_ptr<detail::TailingBytesProducerImpl> mImpl;
 };
 
 } // namespace loglib

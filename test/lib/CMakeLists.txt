@@ -7,6 +7,7 @@ add_executable(
     "src/benchmark_json.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"
+    "src/test_file_line_source.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
     "src/test_log_configuration.cpp"
@@ -15,12 +16,11 @@ add_executable(
     "src/test_log_file.cpp"
     "src/test_log_line.cpp"
     "src/test_log_processing.cpp"
-    "src/test_log_source.cpp"
     "src/test_log_table.cpp"
     "src/test_parser_pipeline.cpp"
-    "src/test_stream_log_line.cpp"
+    "src/test_stream_line_source.cpp"
     "src/test_stream_stop_teardown.cpp"
-    "src/test_tailing_file_source.cpp"
+    "src/test_tailing_bytes_producer.cpp"
 )
 
 target_include_directories(tests PRIVATE include)

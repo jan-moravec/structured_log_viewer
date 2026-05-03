@@ -6,13 +6,15 @@
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 
-#include <loglib/json_parser.hpp>
+#include <loglib/file_line_source.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/stop_token.hpp>
-#include <loglib/tailing_file_source.hpp>
+#include <loglib/stream_line_source.hpp>
+#include <loglib/tailing_bytes_producer.hpp>
 
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -609,24 +611,24 @@ bool MainWindow::OpenJsonStreaming(const QString &file, std::vector<std::string>
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
 
-    // Borrow the same `LogFile*` the model is about to take ownership of;
-    // emitted string_view values point into its mmap. Capturing before the
-    // `std::move` is safe — the model keeps the file alive until `Clear()`
-    // joins the worker.
-    loglib::LogFile *parseFile = logFile.get();
     QtStreamingLogSink *sink = mModel->Sink();
 
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
-    // The model owns spawning the worker and parking the future, so
-    // `Clear()` always has a future to wait on.
+    // Construct the long-lived `FileLineSource` here so the worker
+    // captures a stable pointer to it: the model takes ownership and
+    // installs it in `LogTable` for the lifetime of the session, so
+    // every emitted `LogLine` references a source that outlives the
+    // parse (PRD 4.9.4).
+    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
+    loglib::FileLineSource *fileSourcePtr = fileSource.get();
     mModel->BeginStreaming(
-        std::move(logFile),
-        [sink, parseFile, options = std::move(options)](loglib::StopToken stopToken) mutable {
+        std::move(fileSource),
+        [sink, fileSourcePtr, options = std::move(options)](loglib::StopToken stopToken) mutable {
             options.stopToken = stopToken;
             loglib::JsonParser parser;
-            parser.ParseStreaming(*parseFile, *sink, options);
+            parser.ParseStreaming(*fileSourcePtr, *sink, options);
         }
     );
 
@@ -648,10 +650,11 @@ void MainWindow::OpenLogStream()
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
-    std::unique_ptr<loglib::TailingFileSource> source;
+    std::filesystem::path filePath(file.toStdString());
+    std::unique_ptr<loglib::TailingBytesProducer> source;
     try
     {
-        source = std::make_unique<loglib::TailingFileSource>(std::filesystem::path(file.toStdString()), retention);
+        source = std::make_unique<loglib::TailingBytesProducer>(filePath, retention);
     }
     catch (const std::exception &e)
     {
@@ -685,7 +688,13 @@ void MainWindow::OpenLogStream()
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
-    mModel->BeginStreaming(std::move(source), std::move(options));
+    // Wrap the byte producer (`TailingBytesProducer`) in a long-lived
+    // `StreamLineSource`: the model installs it in `LogTable`, the
+    // parser worker emits `LogLine`s tagged with it, and the GUI
+    // resolves each row's raw bytes via `LineSource::RawLine` after
+    // parsing has moved on (PRD 4.9.7.ii / 4.10.4).
+    auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
+    mModel->BeginStreaming(std::move(streamSource), std::move(options));
 }
 
 void MainWindow::TogglePauseStream(bool paused)

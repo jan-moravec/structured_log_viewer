@@ -2,11 +2,13 @@
 
 #include "qt_streaming_log_sink.hpp"
 
-#include <loglib/json_parser.hpp>
+#include <loglib/file_line_source.hpp>
+#include <loglib/parsers/json_parser.hpp>
+#include <loglib/line_source.hpp>
 #include <loglib/log_configuration.hpp>
-#include <loglib/log_source.hpp>
-#include <loglib/mapped_file_source.hpp>
+#include <loglib/bytes_producer.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/stream_line_source.hpp>
 #include <loglib/streaming_log_sink.hpp>
 
 #include <QCoreApplication>
@@ -19,9 +21,7 @@
 #include <QVariant>
 #include <QtConcurrent/QtConcurrent>
 
-#include <algorithm>
 #include <cstddef>
-#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -42,17 +42,17 @@ LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
 LogModel::~LogModel()
 {
     // Mandatory teardown order from PRD 4.7.2.i:
-    //   1. `LogSource::Stop()` so any blocking Read / WaitForBytes returns.
+    //   1. Producer `Stop()` so any blocking Read / WaitForBytes returns.
     //   2. `mSink->RequestStop()` triggers the parser's stopToken; the
     //      hot loop sees it on the next batch boundary.
     //   3. `mStreamingWatcher->waitForFinished()` joins the worker so
-    //      the borrowed `LogFile*` (and the `mActiveSource`) outlive
-    //      every in-flight Stage B / DecodeStreamLine call.
+    //      the long-lived `LineSource` installed in `mLogTable` outlives
+    //      every in-flight Stage B / RunStreamingParser call.
     //   4. `mSink->DropPendingBatches()` bumps the generation so any
     //      drain-phase queued lambdas short-circuit.
-    if (mActiveSource)
+    if (loglib::BytesProducer *producer = ActiveProducer(); producer != nullptr)
     {
-        mActiveSource->Stop();
+        producer->Stop();
     }
     if (mSink)
     {
@@ -104,9 +104,9 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
 
     // Step 1: release I/O so a worker parked in `Read`/`WaitForBytes`
     // returns immediately (PRD 4.7.2.i).
-    if (mActiveSource)
+    if (loglib::BytesProducer *producer = ActiveProducer(); producer != nullptr)
     {
-        mActiveSource->Stop();
+        producer->Stop();
     }
     // Step 2: cooperative parser stop (separate from the I/O stop above).
     if (mSink)
@@ -161,14 +161,12 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     // Step 4: bump generation **after** join: drain-phase
     // `OnBatch`/`OnFinished` captured the previous generation; bumping here
     // makes their queued lambdas short-circuit instead of running against
-    // the reset model (use-after-free on the dangling `LogFile*` + spurious
-    // second signal).
+    // the reset model (use-after-free on the dangling `LineSource*` +
+    // spurious second signal).
     if (mSink)
     {
         mSink->DropPendingBatches();
     }
-
-    mActiveSource.reset();
 
     if (resetTable)
     {
@@ -198,21 +196,21 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     }
 }
 
-void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LogFile> file)
+void LogModel::BeginStreamingShared(std::unique_ptr<loglib::FileLineSource> source)
 {
     beginResetModel();
 
-    if (file)
+    if (source)
     {
         // ~100 bytes/line matches the benchmark fixture; keeps per-batch
         // line-offset insertions amortised O(1).
-        const size_t reserveCount = file->Size() / 100;
-        mLogTable.BeginStreaming(std::move(file));
+        const size_t reserveCount = source->File().Size() / 100;
+        mLogTable.BeginStreaming(std::move(source));
         mLogTable.ReserveLineOffsets(reserveCount);
     }
     else
     {
-        mLogTable.BeginStreaming(nullptr);
+        mLogTable.BeginStreaming(std::unique_ptr<loglib::FileLineSource>{});
     }
     mErrorCount = 0;
     mStreamingErrors.clear();
@@ -225,20 +223,54 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LogFile> file)
     mStreamingActive = true;
 }
 
-loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogFile> file)
+void LogModel::BeginStreamingShared(std::unique_ptr<loglib::StreamLineSource> source)
+{
+    beginResetModel();
+
+    mLogTable.BeginStreaming(std::move(source));
+    mErrorCount = 0;
+    mStreamingErrors.clear();
+
+    endResetModel();
+
+    emit lineCountChanged(0);
+    emit errorCountChanged(0);
+
+    mStreamingActive = true;
+}
+
+loglib::BytesProducer *LogModel::ActiveProducer() noexcept
+{
+    if (loglib::StreamLineSource *streamSource = mLogTable.Data().FrontStreamSource(); streamSource != nullptr)
+    {
+        return streamSource->Producer();
+    }
+    return nullptr;
+}
+
+loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::StreamLineSource> source)
 {
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    BeginStreamingShared(std::move(file));
+    BeginStreamingShared(std::move(source));
+
+    return mSink->Arm();
+}
+
+loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::FileLineSource> source)
+{
+    Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
+
+    BeginStreamingShared(std::move(source));
 
     return mSink->Arm();
 }
 
 loglib::StopToken LogModel::BeginStreaming(
-    std::unique_ptr<loglib::LogFile> file, std::function<void(loglib::StopToken)> parseCallable
+    std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
 )
 {
-    const loglib::StopToken stopToken = BeginStreaming(std::move(file));
+    const loglib::StopToken stopToken = BeginStreaming(std::move(source));
 
     if (!parseCallable)
     {
@@ -275,40 +307,58 @@ loglib::StopToken LogModel::BeginStreaming(
     return stopToken;
 }
 
-loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogSource> source, loglib::ParserOptions options)
+loglib::StopToken LogModel::BeginStreaming(
+    std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options
+)
 {
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    // For mmap-backed sources we keep the existing static-path data flow:
-    // the LogTable owns the LogFile (so `LogData::AppendBatch(lines,
-    // lineOffsets)` can call `mFiles.front()->AppendLineOffsets`), and the
-    // source itself becomes a *borrowing* wrapper over that file. Without
-    // this re-wrap the parser's `IsMappedFile()` fast path would fall
-    // through to the slow streaming loop the moment we released the file
-    // out of the source.
-    std::unique_ptr<loglib::LogFile> mappedFile;
-    if (source->IsMappedFile())
+    // Subscribe to the producer's rotation / status hooks before handing
+    // the source off (PRD 4.8.7.v / 4.8.8). The callbacks fire from the
+    // producer's worker thread; we re-emit via a queued connection so the
+    // GUI sees them on the model's thread. `QPointer` makes a model
+    // destruction mid-hop a graceful no-op.
+    QPointer<LogModel> self(this);
+    if (loglib::BytesProducer *producer = source->Producer(); producer != nullptr)
     {
-        if (auto *mapped = dynamic_cast<loglib::MappedFileSource *>(source.get()))
-        {
-            mappedFile = mapped->ReleaseFile();
-        }
+        producer->SetRotationCallback([self]() {
+            if (!self)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self.data(),
+                [self]() {
+                    if (self)
+                    {
+                        emit self->rotationDetected();
+                    }
+                },
+                Qt::QueuedConnection
+            );
+        });
+        producer->SetStatusCallback([self](loglib::SourceStatus status) {
+            if (!self)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self.data(),
+                [self, status]() {
+                    if (self)
+                    {
+                        emit self->sourceStatusChanged(status);
+                    }
+                },
+                Qt::QueuedConnection
+            );
+        });
     }
 
-    if (mappedFile)
-    {
-        loglib::LogFile &fileRef = *mappedFile;
-        BeginStreamingShared(std::move(mappedFile));
-        // Re-wrap as a borrowing source so the parser still finds the file
-        // via `GetMappedLogFile()`. The borrowing ctor's `mOwnedFile` is
-        // empty, so `Stop()` only flips the atomic — no double-free risk.
-        source = std::make_unique<loglib::MappedFileSource>(fileRef);
-    }
-    else
-    {
-        BeginStreamingShared(nullptr);
-    }
+    QtStreamingLogSink *sinkForWorker = mSink;
+    loglib::StreamLineSource *streamSourcePtr = source.get();
+    BeginStreamingShared(std::move(source));
 
     const loglib::StopToken stopToken = mSink->Arm();
     options.stopToken = stopToken;
@@ -323,60 +373,12 @@ loglib::StopToken LogModel::BeginStreaming(std::unique_ptr<loglib::LogSource> so
     }
     mSink->SetRetentionCap(mRetentionCap);
 
-    // Subscribe to the source's rotation hook before handing it to the
-    // worker (PRD 4.8.7.v). The callback fires from the source's worker
-    // thread; we re-emit via a queued connection so the GUI sees it on
-    // the model's thread.
-    QPointer<LogModel> self(this);
-    source->SetRotationCallback([self]() {
-        if (!self)
-        {
-            return;
-        }
-        QMetaObject::invokeMethod(
-            self.data(),
-            [self]() {
-                if (self)
-                {
-                    emit self->rotationDetected();
-                }
-            },
-            Qt::QueuedConnection
-        );
-    });
-
-    // Same pattern for the status hook (PRD 4.8.8). The worker-thread
-    // callback captures a `QPointer` so a model destruction mid-hop is
-    // a graceful no-op; the queued lambda re-checks on arrival because
-    // the model may have been torn down between the `invokeMethod` call
-    // and the GUI-thread delivery.
-    source->SetStatusCallback([self](loglib::SourceStatus status) {
-        if (!self)
-        {
-            return;
-        }
-        QMetaObject::invokeMethod(
-            self.data(),
-            [self, status]() {
-                if (self)
-                {
-                    emit self->sourceStatusChanged(status);
-                }
-            },
-            Qt::QueuedConnection
-        );
-    });
-
-    mActiveSource = std::move(source);
-
-    QtStreamingLogSink *sinkForWorker = mSink;
-    loglib::LogSource *sourcePtr = mActiveSource.get();
     QFuture<void> future =
-        QtConcurrent::run([sinkForWorker, sourcePtr, capturedOptions = std::move(options)]() mutable {
+        QtConcurrent::run([sinkForWorker, streamSourcePtr, capturedOptions = std::move(options)]() mutable {
             try
             {
                 loglib::JsonParser parser;
-                parser.ParseStreaming(*sourcePtr, *sinkForWorker, std::move(capturedOptions));
+                parser.ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
             }
             catch (const std::exception &e)
             {
@@ -415,15 +417,15 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // Giant-batch collapse (PRD 4.10.3.iii): if the batch alone exceeds
     // the retention cap, drop the head of the batch *before* it lands in
     // `LogTable`, so per-batch eviction stays O(cap) and the visible
-    // model never breaches the cap. Only applies to live-tail
-    // (`StreamLogLine`) batches; the static `LogLine` path is finite and
-    // not subject to retention.
-    if (mRetentionCap != 0 && batch.streamLines.size() > mRetentionCap)
+    // model never breaches the cap. Live-tail batches arrive through
+    // `BeginStreaming(unique_ptr<StreamLineSource>, ...)` with
+    // `mRetentionCap` set to a sane default; the static-file
+    // `BeginStreaming(unique_ptr<FileLineSource>, ...)` entry leaves it
+    // at `0`, so finite parses never trigger the collapse.
+    if (mRetentionCap != 0 && batch.lines.size() > mRetentionCap)
     {
-        const size_t toDrop = batch.streamLines.size() - mRetentionCap;
-        batch.streamLines.erase(
-            batch.streamLines.begin(), batch.streamLines.begin() + static_cast<std::ptrdiff_t>(toDrop)
-        );
+        const size_t toDrop = batch.lines.size() - mRetentionCap;
+        batch.lines.erase(batch.lines.begin(), batch.lines.begin() + static_cast<std::ptrdiff_t>(toDrop));
         batch.firstLineNumber += toDrop;
     }
 
@@ -543,11 +545,6 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 void LogModel::EndStreaming(bool cancelled)
 {
     mStreamingActive = false;
-    // Release the source so a follow-up `BeginStreaming` does not see a
-    // stale pointer; the worker is already done by the time `OnFinished`
-    // reaches the GUI thread (Stage C delivers the terminal batch from
-    // the same worker that's about to exit).
-    mActiveSource.reset();
     // The sink's bool only distinguishes clean finish vs. stop_token;
     // `StreamingResult::Failed` is a follow-up wiring task.
     emit streamingFinished(cancelled ? StreamingResult::Cancelled : StreamingResult::Success);
@@ -654,16 +651,15 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     else if (role == LogModelItemDataRole::CopyLine)
     {
         // Branch on the row's variant (PRD 4.9.7.ii / 4.10.4.iii). The
-        // logical row range is `[file rows][stream rows]`, mirroring
-        // `LogTable::RowCount`'s dispatch.
+        // After the LogLine consolidation both static- and live-tail rows
+        // route through `LineSource::RawLine(lineId)`. The `LineSource *`
+        // on each `LogLine` disambiguates which storage holds the bytes
+        // (mmap arena vs. per-line owned buffer).
         const size_t row = static_cast<size_t>(index.row());
-        const size_t fileRowCount = mLogTable.Data().Lines().size();
-        if (row < fileRowCount)
-        {
-            return QVariant(QString::fromStdString(mLogTable.Data().Lines()[row].FileReference().GetLine()));
-        }
-        const size_t streamRow = row - fileRowCount;
-        return QVariant(QString::fromStdString(mLogTable.Data().StreamLines()[streamRow].FileReference().GetLine()));
+        const auto &line = mLogTable.Data().Lines()[row];
+        const loglib::LineSource *source = line.Source();
+        const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
+        return QVariant(QString::fromStdString(raw));
     }
 
     return QVariant();

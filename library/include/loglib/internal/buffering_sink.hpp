@@ -1,8 +1,8 @@
 #pragma once
 
+#include "loglib/file_line_source.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_data.hpp"
-#include "loglib/log_file.hpp"
 #include "loglib/streaming_log_sink.hpp"
 
 #include <memory>
@@ -17,8 +17,11 @@ namespace loglib::internal
 class BufferingSink : public StreamingLogSink
 {
 public:
-    /// Takes ownership of @p logFile and routes batches into an internal `KeyIndex`.
-    explicit BufferingSink(std::unique_ptr<LogFile> logFile);
+    /// Takes ownership of @p source and routes batches into an internal
+    /// `KeyIndex`. The owned source's `LogFile` is the canonical arena for
+    /// `OwnedString` payload concatenation; line-offset pushes come in
+    /// through `OnBatch`.
+    explicit BufferingSink(std::unique_ptr<FileLineSource> source);
 
     KeyIndex &Keys() override;
 
@@ -37,7 +40,7 @@ public:
     std::vector<std::string> TakeErrors();
 
 private:
-    std::unique_ptr<LogFile> mFile;
+    std::unique_ptr<FileLineSource> mSource;
     KeyIndex mKeys;
     std::vector<LogLine> mLines;
     std::vector<uint64_t> mLineOffsets;

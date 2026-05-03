@@ -1,12 +1,14 @@
 #include "loglib/internal/buffering_sink.hpp"
 
+#include "loglib/log_file.hpp"
+
 #include <iterator>
 #include <utility>
 
 namespace loglib::internal
 {
 
-BufferingSink::BufferingSink(std::unique_ptr<LogFile> logFile) : mFile(std::move(logFile))
+BufferingSink::BufferingSink(std::unique_ptr<FileLineSource> source) : mSource(std::move(source))
 {
 }
 
@@ -57,14 +59,14 @@ KeyIndex &BufferingSink::Keys()
 
 LogData BufferingSink::TakeData()
 {
-    // Push line offsets into the LogFile before it moves into LogData so
-    // GetLine(i) still works on the returned data.
-    if (mFile && !mLineOffsets.empty())
+    // Push line offsets into the LogFile before the source moves into
+    // LogData so `GetLine(i)` still works on the returned data.
+    if (mSource && !mLineOffsets.empty())
     {
-        mFile->AppendLineOffsets(mLineOffsets);
+        mSource->File().AppendLineOffsets(mLineOffsets);
         mLineOffsets.clear();
     }
-    return LogData(std::move(mFile), std::move(mLines), std::move(mKeys));
+    return LogData(std::move(mSource), std::move(mLines), std::move(mKeys));
 }
 
 std::vector<std::string> BufferingSink::TakeErrors()

@@ -1,5 +1,6 @@
 #include "loglib/log_table.hpp"
 
+#include "loglib/file_line_source.hpp"
 #include "loglib/log_processing.hpp"
 
 #include <date/date.h>
@@ -43,14 +44,14 @@ void LogTable::Reset()
     RefreshColumnKeyIds();
 }
 
-void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
+void LogTable::BeginStreaming(std::unique_ptr<FileLineSource> source)
 {
     mLastBackfillRange.reset();
 
-    if (file)
+    if (source)
     {
         std::vector<LogLine> noLines;
-        LogData fresh(std::move(file), std::move(noLines), KeyIndex{});
+        LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
         // Stage B promotes Type::time inline; later-discovered time columns
         // are back-filled in `AppendBatch`.
         fresh.MarkTimestampsParsed();
@@ -68,6 +69,30 @@ void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
     RefreshColumnKeyIds();
 }
 
+void LogTable::BeginStreaming(std::unique_ptr<StreamLineSource> source)
+{
+    mLastBackfillRange.reset();
+
+    if (source)
+    {
+        std::vector<LogLine> noLines;
+        LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
+        // Streaming pipeline promotes `Type::time` inline (see
+        // `RunStreamingParserToLogLines`); later-discovered time columns
+        // are back-filled in `AppendBatch`.
+        fresh.MarkTimestampsParsed();
+        mData = std::move(fresh);
+    }
+    else
+    {
+        mData = LogData{};
+        mData.MarkTimestampsParsed();
+    }
+
+    RefreshSnapshotTimeKeys();
+    RefreshColumnKeyIds();
+}
+
 void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
@@ -77,20 +102,14 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
-    // Pre-append snapshot so per-batch back-fill restricts to the new slice.
-    // First-observation columns still back-fill all rows (older rows pre-date
-    // them) — across **both** row vectors when streaming is mixed with the
-    // file path (test 2.7).
+    // Pre-append snapshot so per-batch back-fill restricts to the new
+    // slice. First-observation columns still back-fill all rows (older
+    // rows pre-date them).
     const size_t oldLineCount = mData.Lines().size();
-    const size_t oldStreamLineCount = mData.StreamLines().size();
 
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
     {
         mData.AppendBatch(std::move(batch.lines), std::move(batch.localLineOffsets));
-    }
-    if (!batch.streamLines.empty())
-    {
-        mData.AppendBatch(std::move(batch.streamLines));
     }
 
     if (!batch.newKeys.empty())
@@ -151,7 +170,6 @@ void LogTable::AppendBatch(StreamedBatch batch)
         if (firstObservation)
         {
             BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
-            BackfillTimestampColumn(column, std::span<StreamLogLine>(mData.StreamLines()), BackfillErrors::Discard);
             for (const KeyId id : columnKeyIds)
             {
                 if (id != kInvalidKeyId)
@@ -172,13 +190,6 @@ void LogTable::AppendBatch(StreamedBatch batch)
                 std::span<LogLine> slice(mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount);
                 BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
             }
-            if (oldStreamLineCount < mData.StreamLines().size())
-            {
-                std::span<StreamLogLine> slice(
-                    mData.StreamLines().data() + oldStreamLineCount, mData.StreamLines().size() - oldStreamLineCount
-                );
-                BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
-            }
         }
     }
 
@@ -191,12 +202,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
 LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch) const
 {
     AppendBatchPreview preview;
-    // Predicted row count includes both row kinds. Today the streaming GUI
-    // path always picks one or the other for a given session, but tests and
-    // future multi-source designs may mix them; the preview must reflect the
-    // post-`AppendBatch` row count regardless (PRD G7 / 4.9.7).
-    preview.newRowCount =
-        mData.Lines().size() + mData.StreamLines().size() + batch.lines.size() + batch.streamLines.size();
+    preview.newRowCount = mData.Lines().size() + batch.lines.size();
     preview.newColumnCount =
         mConfiguration.Configuration().columns.size() + mConfiguration.CountAppendableKeys(batch.newKeys);
     return preview;
@@ -227,11 +233,14 @@ void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
 
 void LogTable::ReserveLineOffsets(size_t count)
 {
-    if (count == 0 || mData.Files().empty())
+    if (count == 0)
     {
         return;
     }
-    mData.Files().front()->ReserveLineOffsets(count);
+    if (FileLineSource *fileSource = mData.FrontFileSource(); fileSource != nullptr)
+    {
+        fileSource->File().ReserveLineOffsets(count);
+    }
 }
 
 std::string LogTable::GetHeader(size_t column) const
@@ -246,75 +255,60 @@ size_t LogTable::ColumnCount() const
 
 LogValue LogTable::GetValue(size_t row, size_t column) const
 {
-    if (column >= mColumnKeyIds.size())
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
     {
         return std::monostate{};
     }
-    const size_t fileRowCount = mData.Lines().size();
-    const auto resolveValue = [&](auto &&getter) -> LogValue {
-        for (const KeyId id : mColumnKeyIds[column])
+    const auto &line = mData.Lines()[row];
+    for (const KeyId id : mColumnKeyIds[column])
+    {
+        if (id == kInvalidKeyId)
         {
-            if (id == kInvalidKeyId)
-            {
-                continue;
-            }
-            LogValue value = getter(id);
-            if (!std::holds_alternative<std::monostate>(value))
-            {
-                return value;
-            }
+            continue;
         }
-        return std::monostate{};
-    };
-    if (row < fileRowCount)
-    {
-        const auto &line = mData.Lines()[row];
-        return resolveValue([&](KeyId id) { return line.GetValue(id); });
+        LogValue value = line.GetValue(id);
+        if (!std::holds_alternative<std::monostate>(value))
+        {
+            return value;
+        }
     }
-    const size_t streamRow = row - fileRowCount;
-    const auto &line = mData.StreamLines()[streamRow];
-    return resolveValue([&](KeyId id) { return line.GetValue(id); });
+    return std::monostate{};
 }
 
 std::string LogTable::GetFormattedValue(size_t row, size_t column) const
 {
-    if (column >= mColumnKeyIds.size())
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
     {
         return "";
     }
     const std::string &printFormat = mConfiguration.Configuration().columns.at(column).printFormat;
-    const size_t fileRowCount = mData.Lines().size();
-    const auto resolveFormatted = [&](auto &&getter) -> std::string {
-        for (const KeyId id : mColumnKeyIds[column])
-        {
-            if (id == kInvalidKeyId)
-            {
-                continue;
-            }
-            LogValue value = getter(id);
-            if (!std::holds_alternative<std::monostate>(value))
-            {
-                return FormatLogValue(printFormat, value);
-            }
-        }
-        return std::string{};
-    };
-    if (row < fileRowCount)
+    const auto &line = mData.Lines()[row];
+    for (const KeyId id : mColumnKeyIds[column])
     {
-        const auto &line = mData.Lines()[row];
-        return resolveFormatted([&](KeyId id) { return line.GetValue(id); });
+        if (id == kInvalidKeyId)
+        {
+            continue;
+        }
+        LogValue value = line.GetValue(id);
+        if (!std::holds_alternative<std::monostate>(value))
+        {
+            return FormatLogValue(printFormat, value);
+        }
     }
-    const size_t streamRow = row - fileRowCount;
-    const auto &line = mData.StreamLines()[streamRow];
-    return resolveFormatted([&](KeyId id) { return line.GetValue(id); });
+    return std::string{};
 }
 
 size_t LogTable::RowCount() const
 {
-    return mData.Lines().size() + mData.StreamLines().size();
+    return mData.Lines().size();
 }
 
 const LogData &LogTable::Data() const noexcept
+{
+    return mData;
+}
+
+LogData &LogTable::Data() noexcept
 {
     return mData;
 }
@@ -325,25 +319,39 @@ void LogTable::EvictPrefixRows(size_t count)
     {
         return;
     }
-    auto &fileLines = mData.Lines();
-    auto &streamLines = mData.StreamLines();
-    const size_t fileRowCount = fileLines.size();
-    if (count >= fileRowCount + streamLines.size())
+    auto &lines = mData.Lines();
+
+    // Tell the source to release per-line storage for the rows we're
+    // about to drop. Sources that don't support eviction (e.g.
+    // `FileLineSource` — the file is mmap'd in its entirety) treat the
+    // call as a no-op (PRD 4.5 / 4.10.3).
+    auto evictSource = [&](size_t firstSurvivingLineId) {
+        for (auto &source : mData.Sources())
+        {
+            if (source != nullptr && source->SupportsEviction())
+            {
+                source->EvictBefore(firstSurvivingLineId);
+            }
+        }
+    };
+
+    if (count >= lines.size())
     {
-        fileLines.clear();
-        streamLines.clear();
+        // Use the next id past the last live row so the source clears
+        // every entry it currently holds.
+        size_t firstSurvivingLineId = 0;
+        if (!lines.empty())
+        {
+            firstSurvivingLineId = lines.back().LineId() + 1;
+        }
+        lines.clear();
+        evictSource(firstSurvivingLineId);
         return;
     }
-    if (fileRowCount > 0)
-    {
-        const size_t fileDrop = std::min(count, fileRowCount);
-        fileLines.erase(fileLines.begin(), fileLines.begin() + static_cast<std::ptrdiff_t>(fileDrop));
-        count -= fileDrop;
-    }
-    if (count > 0)
-    {
-        streamLines.erase(streamLines.begin(), streamLines.begin() + static_cast<std::ptrdiff_t>(count));
-    }
+
+    const size_t firstSurvivingLineId = lines[count].LineId();
+    lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(count));
+    evictSource(firstSurvivingLineId);
 }
 
 KeyIndex &LogTable::Keys()

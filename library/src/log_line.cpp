@@ -1,10 +1,11 @@
 #include "loglib/log_line.hpp"
 
 #include "loglib/internal/compact_log_value.hpp"
-#include "loglib/log_file.hpp"
+#include "loglib/line_source.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -54,24 +55,16 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 namespace
 {
 
-/// Append @p sv to @p file's owned-string arena and return a compact
-/// `OwnedString` value pointing at the just-appended bytes. Used by
-/// `SetValue` and the cold-path `LogValue` ctor when the input is not
-/// an mmap-slice view.
-detail::CompactLogValue PromoteToOwnedString(LogFile *file, std::string_view sv)
+/// Append @p sv to @p source's owned-bytes arena for @p lineId and
+/// return a compact `OwnedString` value pointing at the just-appended
+/// bytes. Used by the cold-path ctors and `SetValue`.
+detail::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
 {
-    if (file == nullptr)
-    {
-        // No file -> we can't park bytes anywhere. Return monostate so
-        // the caller can decide what to do; a nullptr `LogFile*` is only
-        // used by tests that build dummy `LogLine`s without a file.
-        return detail::CompactLogValue::MakeMonostate();
-    }
-    const uint64_t offset = file->AppendOwnedStrings(sv);
+    const uint64_t offset = source.AppendOwnedBytes(lineId, sv);
     return detail::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
 }
 
-detail::CompactLogValue MakeCompactFromVariant(LogFile *file, const LogValue &value)
+detail::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t lineId, const LogValue &value)
 {
     return std::visit(
         [&](const auto &alt) -> detail::CompactLogValue {
@@ -82,21 +75,23 @@ detail::CompactLogValue MakeCompactFromVariant(LogFile *file, const LogValue &va
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
             {
-                if (file != nullptr)
+                // MmapSlice fast path: when the view aliases the
+                // source's stable byte range, we can stamp an offset
+                // into it and skip the arena copy. Stream sources
+                // return an empty stable-bytes span and fall through
+                // to `PromoteToOwnedString`.
+                const std::span<const char> stable = source.StableBytes();
+                if (!stable.empty() && alt.data() >= stable.data() &&
+                    alt.data() + alt.size() <= stable.data() + stable.size())
                 {
-                    const char *base = file->Data();
-                    const size_t size = file->Size();
-                    if (base != nullptr && alt.data() >= base && alt.data() + alt.size() <= base + size)
-                    {
-                        const auto offset = static_cast<uint64_t>(alt.data() - base);
-                        return detail::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
-                    }
+                    const auto offset = static_cast<uint64_t>(alt.data() - stable.data());
+                    return detail::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
                 }
-                return PromoteToOwnedString(file, alt);
+                return PromoteToOwnedString(source, lineId, alt);
             }
             else if constexpr (std::is_same_v<T, std::string>)
             {
-                return PromoteToOwnedString(file, alt);
+                return PromoteToOwnedString(source, lineId, alt);
             }
             else if constexpr (std::is_same_v<T, int64_t>)
             {
@@ -131,28 +126,31 @@ detail::CompactLogValue MakeCompactFromVariant(LogFile *file, const LogValue &va
 } // namespace
 
 LogLine::LogLine(
-    std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LogFileReference fileReference
+    std::vector<std::pair<KeyId, LogValue>> sortedValues,
+    const KeyIndex &keys,
+    LineSource &source,
+    size_t lineId
 )
-    : mValues(static_cast<uint32_t>(sortedValues.size())), mKeys(&keys), mFileReference(std::move(fileReference))
+    : mValues(static_cast<uint32_t>(sortedValues.size())), mKeys(&keys), mSource(&source), mLineId(lineId)
 {
 #ifndef NDEBUG
     assert(std::is_sorted(sortedValues.begin(), sortedValues.end(), [](const auto &a, const auto &b) {
         return a.first < b.first;
     }));
 #endif
-    LogFile *file = mFileReference.GetFile();
     for (auto &entry : sortedValues)
     {
-        mValues.EmplaceBack(entry.first, MakeCompactFromVariant(file, entry.second));
+        mValues.EmplaceBack(entry.first, MakeCompactFromVariant(source, lineId, entry.second));
     }
 }
 
 LogLine::LogLine(
     std::vector<std::pair<KeyId, detail::CompactLogValue>> sortedValues,
     const KeyIndex &keys,
-    LogFileReference fileReference
+    LineSource &source,
+    size_t lineId
 )
-    : mKeys(&keys), mFileReference(std::move(fileReference))
+    : mKeys(&keys), mSource(&source), mLineId(lineId)
 {
 #ifndef NDEBUG
     assert(std::is_sorted(sortedValues.begin(), sortedValues.end(), [](const auto &a, const auto &b) {
@@ -166,15 +164,14 @@ LogLine::LogLine(
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
 }
 
-LogLine::LogLine(const LogMap &values, KeyIndex &keys, LogFileReference fileReference)
-    : mValues(static_cast<uint32_t>(values.size())), mKeys(&keys), mFileReference(std::move(fileReference))
+LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_t lineId)
+    : mValues(static_cast<uint32_t>(values.size())), mKeys(&keys), mSource(&source), mLineId(lineId)
 {
-    LogFile *file = mFileReference.GetFile();
     std::vector<std::pair<KeyId, detail::CompactLogValue>> staging;
     staging.reserve(values.size());
     for (const auto &[key, value] : values)
     {
-        staging.emplace_back(keys.GetOrInsert(key), MakeCompactFromVariant(file, value));
+        staging.emplace_back(keys.GetOrInsert(key), MakeCompactFromVariant(source, lineId, value));
     }
     std::sort(staging.begin(), staging.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
     mValues.AssignSorted(staging.data(), static_cast<uint32_t>(staging.size()));
@@ -207,7 +204,7 @@ LogValue LogLine::GetValue(KeyId id) const
     {
         return LogValue{std::monostate{}};
     }
-    return compact->Materialise(mFileReference.GetFile());
+    return compact->Materialise(mSource, mLineId);
 }
 
 LogValue LogLine::GetValue(const std::string &key) const
@@ -236,7 +233,8 @@ void LogLine::SetValue(KeyId id, LogValue value)
 
 void LogLine::SetValue(KeyId id, LogValue value, LogValueTrustView /*trust*/)
 {
-    detail::CompactLogValue compact = MakeCompactFromVariant(mFileReference.GetFile(), value);
+    assert(mSource != nullptr);
+    detail::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
     auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     uint32_t lo = 0;
@@ -296,11 +294,10 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
 {
     std::vector<std::pair<KeyId, LogValue>> result;
     result.reserve(mValues.Size());
-    const LogFile *file = mFileReference.GetFile();
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        result.emplace_back(entry.first, entry.second.Materialise(file));
+        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId));
     }
     return result;
 }
@@ -318,11 +315,10 @@ LogMap LogLine::Values() const
     {
         return snapshot;
     }
-    const LogFile *file = mFileReference.GetFile();
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        snapshot.emplace(std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(file));
+        snapshot.emplace(std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId));
     }
     return snapshot;
 }
@@ -337,14 +333,24 @@ const KeyIndex &LogLine::Keys() const
     return *mKeys;
 }
 
-const LogFileReference &LogLine::FileReference() const
+LineSource *LogLine::Source() const noexcept
 {
-    return mFileReference;
+    return mSource;
 }
 
-LogFileReference &LogLine::FileReference()
+size_t LogLine::LineId() const noexcept
 {
-    return mFileReference;
+    return mLineId;
+}
+
+void LogLine::ShiftLineId(size_t delta) noexcept
+{
+    mLineId += delta;
+}
+
+void LogLine::SetLineId(size_t lineId) noexcept
+{
+    mLineId = lineId;
 }
 
 size_t LogLine::OwnedMemoryBytes() const

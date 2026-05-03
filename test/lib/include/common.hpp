@@ -1,4 +1,5 @@
-#include <loglib/json_parser.hpp>
+#include <loglib/file_line_source.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
 
@@ -58,6 +59,11 @@ public:
     const std::string &GetFilePath() const;
     void Write(const std::string &content) const;
     std::unique_ptr<loglib::LogFile> CreateLogFile() const;
+
+    /// Convenience helper that wraps `CreateLogFile()` in a
+    /// `FileLineSource`. Used by tests that need to pass a `LineSource&`
+    /// into a `LogLine` ctor.
+    std::unique_ptr<loglib::FileLineSource> CreateFileLineSource() const;
 
 private:
     static constexpr char FILE_PATH[] = "test_file.json";

@@ -5,8 +5,9 @@
 
 #include "common.hpp"
 
+#include <loglib/file_line_source.hpp>
 #include <loglib/internal/parser_options.hpp>
-#include <loglib/json_parser.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -198,13 +199,11 @@ StructuralBytes ComputeStructuralBytes(const LogTable &table)
     {
         result.lines += line.OwnedMemoryBytes();
     }
-    for (const auto &file : data.Files())
+    if (const FileLineSource *fileSource = data.FrontFileSource())
     {
-        if (file)
-        {
-            result.lineOffsets += file->LineOffsetsMemoryBytes();
-            result.ownedStrings += file->OwnedStringsMemoryBytes();
-        }
+        const LogFile &file = fileSource->File();
+        result.lineOffsets += file.LineOffsetsMemoryBytes();
+        result.ownedStrings += file.OwnedStringsMemoryBytes();
     }
     result.keyIndex = data.Keys().EstimatedMemoryBytes();
     return result;
@@ -328,15 +327,16 @@ StreamingRunResult RunStreamingFlow(
         configManager.Load(configPath.string());
         LogTable table(LogData{}, std::move(configManager));
 
-        // Mirror `MainWindow::OpenJsonStreaming`: one `LogFile` owned by
-        // the table, borrowed by the parser via a raw pointer. Sharing
-        // ensures Stage C's per-line offsets and the owned-string arena
-        // both land in the same `LogFile` the table will look at when
-        // accessing values (otherwise structural-bytes would
-        // under-count and `LogValue` materialisation would dangle).
-        auto fileForTable = std::make_unique<LogFile>(logPath);
-        LogFile *parseFile = fileForTable.get();
-        table.BeginStreaming(std::move(fileForTable));
+        // Mirror `MainWindow::OpenJsonStreaming`: one `FileLineSource`
+        // (wrapping a `LogFile`) owned by the table, with the same source
+        // borrowed by the parser. Sharing ensures Stage C's per-line
+        // offsets and the owned-string arena both land in the same
+        // `LogFile` the table will look at when accessing values
+        // (otherwise structural-bytes would under-count and `LogValue`
+        // materialisation would dangle).
+        auto sourceForTable = std::make_unique<FileLineSource>(std::make_unique<LogFile>(logPath));
+        FileLineSource *parseSource = sourceForTable.get();
+        table.BeginStreaming(std::move(sourceForTable));
 
         StreamSink sink;
         sink.table = &table;
@@ -344,7 +344,7 @@ StreamingRunResult RunStreamingFlow(
         ParserOptions opts;
         opts.configuration = configuration;
 
-        parser.ParseStreaming(*parseFile, sink, opts, advanced);
+        parser.ParseStreaming(*parseSource, sink, opts, advanced);
 
         result.appendTotal = sink.appendTotal;
         result.appendBatches = sink.appendBatches;
