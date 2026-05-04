@@ -185,6 +185,19 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     mErrorCount = 0;
     mStreamingErrors.clear();
 
+    // Every new session starts unbounded. The live-tail entry point
+    // re-applies its retention cap after returning from here; static
+    // paths (`BeginStreaming(FileLineSource, ...)`, `AppendStreaming`)
+    // leave the cap at 0 so `AppendBatch`'s FIFO-evict logic stays
+    // dormant for finite parses. Without this reset a prior stream
+    // session's cap would leak into a subsequent static open and
+    // silently discard rows past the cap.
+    mRetentionCap = 0;
+    if (mSink)
+    {
+        mSink->SetRetentionCap(0);
+    }
+
     endResetModel();
 
     emit lineCountChanged(0);
@@ -353,12 +366,16 @@ loglib::StopToken LogModel::BeginStreaming(
     const loglib::StopToken stopToken = mSink->Arm();
     options.stopToken = stopToken;
 
-    // The live-tail entry point is never unbounded: fall back to the
-    // default retention cap if the model has not been configured.
-    if (mRetentionCap == 0)
+    // The live-tail entry point is never unbounded. `BeginStreamingShared`
+    // just zeroed the cap (fresh-session baseline), so load the user's
+    // configured retention from `StreamingControl` here -- falling back
+    // to `DEFAULT_RETENTION_LINES` only when nothing sensible is on disk.
+    size_t cap = StreamingControl::RetentionLines();
+    if (cap == 0)
     {
-        mRetentionCap = StreamingControl::DEFAULT_RETENTION_LINES;
+        cap = StreamingControl::DEFAULT_RETENTION_LINES;
     }
+    mRetentionCap = cap;
     mSink->SetRetentionCap(mRetentionCap);
 
     QFuture<void> future =

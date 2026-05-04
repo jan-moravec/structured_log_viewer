@@ -265,7 +265,6 @@ MainWindow::MainWindow(QWidget *parent)
         UpdateStreamingStatus();
     });
     connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
-        mSessionMode = SessionMode::Idle;
         // Drop the `Source unavailable` latch so the post-session label
         // doesn't inherit a stale "waiting" state. The next stream's
         // first `Waiting` transition will re-set it.
@@ -273,18 +272,30 @@ MainWindow::MainWindow(QWidget *parent)
 
         // Multi-file static open: Success advances the queue;
         // Cancelled / Failed drain it so the user can react.
+        //
+        // `mSessionMode` stays at its pre-finish value (`Static`) across
+        // the dispatch below so `StreamNextPendingFile` correctly treats
+        // the next file as a continuation -- `isFirstFileInSession`
+        // there reads `!IsSessionActive()`, so clearing the mode early
+        // would route every follow-up file through `BeginStreaming`
+        // (which resets the model) instead of `AppendStreaming`,
+        // silently discarding the previously-parsed rows.
         if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
         {
             StreamNextPendingFile();
-            if (IsSessionActive())
+            if (mModel->IsStreamingActive())
             {
                 return;
             }
+            // Fallthrough: every remaining queued file failed to open.
+            // The session is truly over; drop to the cleanup below.
         }
         else if (!mPendingOpenFiles.isEmpty())
         {
             mPendingOpenFiles.clear();
         }
+
+        mSessionMode = SessionMode::Idle;
 
         // Reset Pause / Follow-tail to their defaults so the next
         // session starts unpaused with auto-scroll engaged. Neither
