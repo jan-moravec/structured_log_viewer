@@ -307,44 +307,71 @@ loglib::StreamedBatch MakeSyntheticBatch(
 }
 
 // Locate a UI-file-declared `QAction` by `objectName`. Tries
-// `QObject::findChild` first; falls back to walking the menu bar's
-// menus and matching `objectName()` against their `actions()` list.
+// `QObject::findChild` first; falls back to scanning every QAction
+// reachable from `window` — both as a QObject descendant and via
+// every child widget's `actions()` list.
 //
-// Why the fallback exists: on the GitHub-hosted Linux runner with
+// Why the fallbacks exist: on the GitHub-hosted Linux runner with
 // Qt 6.8 + the offscreen QPA plugin, `mainWindow->findChild<QAction
-// *>(name)` reliably returns nullptr for actions declared inside
-// `<widget class="QMainWindow">` even though they exist as
-// `ui->actionXxx` and are wired into menus and toolbars
-// (Windows / macOS with the same Qt build are unaffected). The
-// `<addaction>` registrations in the .ui file place the actions
-// into the menu bar's menus, so walking that hierarchy finds them
-// reliably.
+// *>(name)` has been observed to return nullptr for actions declared
+// inside `<widget class="QMainWindow">` even though they exist as
+// `ui->actionXxx` and are wired into menus and toolbars (Windows /
+// macOS with the same Qt build are unaffected). The
+// `QWidget::actions()` list is populated unconditionally by
+// `QMenu::addAction` / `QToolBar::addAction` and is therefore the
+// most reliable route to the target action regardless of how the
+// QObject parent / child graph looks on a given platform.
 QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
 {
     if (QAction *direct = window->findChild<QAction *>(name))
     {
         return direct;
     }
-    QMenuBar *menuBar = window->menuBar();
-    if (menuBar == nullptr)
+
+    // Scan every QAction descendant by hand. Catches the edge case
+    // where `findChild`'s name-filter path returns null even though
+    // the action is in the child list.
+    const QList<QAction *> allActions = window->findChildren<QAction *>();
+    for (QAction *action : allActions)
     {
-        return nullptr;
+        if (action != nullptr && action->objectName() == name)
+        {
+            return action;
+        }
     }
-    for (QAction *menuAction : menuBar->actions())
+
+    // Walk every descendant widget's `actions()` list. `menuStream ->
+    // addAction(actionPauseStream)` (from the generated `setupUi`)
+    // and `mStreamToolbar->addAction(ui->actionPauseStream)` (from
+    // the `MainWindow` constructor) both feed into that list, which
+    // lives on the widget itself rather than going through the
+    // QObject child graph.
+    const QList<QWidget *> widgets = window->findChildren<QWidget *>();
+    for (QWidget *widget : widgets)
     {
-        QMenu *menu = menuAction->menu();
-        if (menu == nullptr)
+        if (widget == nullptr)
         {
             continue;
         }
-        for (QAction *child : menu->actions())
+        const QList<QAction *> widgetActions = widget->actions();
+        for (QAction *action : widgetActions)
         {
-            if (child->objectName() == name)
+            if (action != nullptr && action->objectName() == name)
             {
-                return child;
+                return action;
             }
         }
     }
+
+    // Check the MainWindow's own actions() list too, for symmetry.
+    for (QAction *action : window->actions())
+    {
+        if (action != nullptr && action->objectName() == name)
+        {
+            return action;
+        }
+    }
+
     return nullptr;
 }
 
