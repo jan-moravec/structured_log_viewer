@@ -2,9 +2,9 @@
 
 #include "loglib/bytes_producer.hpp"
 #include "loglib/file_line_source.hpp"
+#include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
-#include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
@@ -78,7 +78,9 @@ template <class Field> FastFieldKey ExtractFieldKey(Field &field)
 /// `std::lower_bound`. Tuned for the `[wide]` benchmark.
 constexpr size_t kInsertSortedLowerBoundThreshold = 8;
 
-void InsertSorted(std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value)
+void InsertSorted(
+    std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
+)
 {
     if (out.size() < kInsertSortedLowerBoundThreshold)
     {

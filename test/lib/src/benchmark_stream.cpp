@@ -9,13 +9,13 @@
 
 #include "common.hpp"
 
-#include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/log_parse_sink.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
 #include <memory>
@@ -39,10 +39,10 @@
 
 using loglib::JsonParser;
 using loglib::KeyIndex;
+using loglib::LogParseSink;
 using loglib::ParserOptions;
 using loglib::StopSource;
 using loglib::StreamedBatch;
-using loglib::LogParseSink;
 using loglib::StreamLineSource;
 using loglib::TailingBytesProducer;
 using namespace std::chrono_literals;

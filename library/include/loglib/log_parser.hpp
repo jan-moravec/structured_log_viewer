@@ -35,13 +35,11 @@ public:
 
     /// Static-file streaming entry. Emitted `LogLine`s carry @p source
     /// and the line's 0-based file id.
-    virtual void
-    ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
+    virtual void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /// Live-tail streaming entry. Emitted `LogLine`s carry @p source
     /// and the 1-based monotonic id assigned by `AppendLine`.
-    virtual void
-    ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
+    virtual void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /// Renders a parsed line back to the parser's native text form.
     virtual std::string ToString(const LogLine &line) const = 0;

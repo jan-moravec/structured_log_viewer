@@ -617,7 +617,9 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
     CHECK(source.IsClosed());
 }
 
-TEST_CASE("TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status]")
+TEST_CASE(
+    "TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status]"
+)
 {
     // When the watched file disappears the source transitions to
     // `Waiting`; a subsequent re-create lifts it back to `Running`.

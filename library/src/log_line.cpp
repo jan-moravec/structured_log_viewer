@@ -123,10 +123,7 @@ internal::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t line
 } // namespace
 
 LogLine::LogLine(
-    std::vector<std::pair<KeyId, LogValue>> sortedValues,
-    const KeyIndex &keys,
-    LineSource &source,
-    size_t lineId
+    std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LineSource &source, size_t lineId
 )
     : mValues(static_cast<uint32_t>(sortedValues.size())), mKeys(&keys), mSource(&source), mLineId(lineId)
 {

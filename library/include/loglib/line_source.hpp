@@ -47,13 +47,13 @@ public:
     /// Resolve a `CompactTag::MmapSlice` payload. Returns an empty view
     /// when `BytesAreStable() == false`. `lineId` is unused by mmap
     /// sources but part of the interface for per-line-arena sources.
-    [[nodiscard]] virtual std::string_view
-    ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept = 0;
+    [[nodiscard]] virtual std::string_view ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId)
+        const noexcept = 0;
 
     /// Resolve a `CompactTag::OwnedString` payload. View is valid
     /// until @p lineId is evicted. Out-of-range returns an empty view.
-    [[nodiscard]] virtual std::string_view
-    ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept = 0;
+    [[nodiscard]] virtual std::string_view ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId)
+        const noexcept = 0;
 
     /// Bytes a parser may safely emit `MmapSlice` payloads against.
     /// `FileLineSource` returns the file mmap; `StreamLineSource`

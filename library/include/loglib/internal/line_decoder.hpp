@@ -38,9 +38,7 @@ concept CompactLineDecoder = requires(
     std::string &outOwnedArena,
     std::string &outError
 ) {
-    {
-        decoder.DecodeCompact(line, keys, keyCache, outValues, outOwnedArena, outError)
-    } -> std::convertible_to<bool>;
+    { decoder.DecodeCompact(line, keys, keyCache, outValues, outOwnedArena, outError) } -> std::convertible_to<bool>;
 };
 
 } // namespace loglib::internal

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <loglib/log_data.hpp>
 #include <loglib/bytes_producer.hpp>
+#include <loglib/log_data.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
-#include <loglib/log_parse_sink.hpp>
 
 #include <QAbstractTableModel>
 #include <QFuture>
@@ -88,9 +88,7 @@ public:
     ///
     /// `options.stopToken` is overwritten by `Sink()->Arm()` before
     /// the worker captures it.
-    loglib::StopToken BeginStreaming(
-        std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options
-    );
+    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options);
 
     /// Test-only: install @p source, arm the sink, and return the stop
     /// token without spawning a worker. Pair every call with

@@ -7,7 +7,6 @@
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -16,6 +15,7 @@
 #include <loglib/log_table.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 
 #include <test_common/log_generator.hpp>

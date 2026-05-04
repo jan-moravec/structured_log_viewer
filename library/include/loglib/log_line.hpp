@@ -31,10 +31,7 @@ public:
     /// arena; views inside `StableBytes()` are stored zero-copy as
     /// `MmapSlice`.
     LogLine(
-        std::vector<std::pair<KeyId, LogValue>> sortedValues,
-        const KeyIndex &keys,
-        LineSource &source,
-        size_t lineId
+        std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LineSource &source, size_t lineId
     );
 
     /// Hot-path ctor: pre-built compact values, ascending on

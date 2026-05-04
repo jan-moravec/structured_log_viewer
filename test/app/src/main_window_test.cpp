@@ -7,18 +7,18 @@
 #include "streaming_control.hpp"
 
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/log_parse_sink.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
 #include <QFile>
@@ -259,8 +259,7 @@ int ColumnByHeader(const LogModel &model, const QString &header)
 // reference for callers that publish raw bytes via `AppendLine`.
 loglib::StreamLineSource &BeginSyntheticStreamSession(LogModel &model)
 {
-    auto streamSource =
-        std::make_unique<loglib::StreamLineSource>(std::filesystem::path("synthetic"), nullptr);
+    auto streamSource = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("synthetic"), nullptr);
     loglib::StreamLineSource *streamPtr = streamSource.get();
     static_cast<void>(model.BeginStreamingForSyncTest(std::move(streamSource)));
     return *streamPtr;
@@ -296,7 +295,9 @@ loglib::StreamedBatch MakeSyntheticBatch(
         Q_ASSERT(publishedId == lineId);
         Q_UNUSED(publishedId);
         std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> compactValues;
-        compactValues.emplace_back(valueKey, loglib::internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        compactValues.emplace_back(
+            valueKey, loglib::internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
+        );
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
@@ -934,8 +935,7 @@ private slots:
         for (size_t batchStart = 0; batchStart < totalLines; batchStart += batchSize)
         {
             const bool declareNewKey = (batchStart == 0);
-            model.AppendBatch(
-                MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
+            model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
             );
         }
 
@@ -1202,8 +1202,7 @@ private slots:
         sourceOptions.rotationDebounce = std::chrono::milliseconds(250);
 
         std::filesystem::path filePath(fixture.Path().toStdString());
-        auto source =
-            std::make_unique<loglib::TailingBytesProducer>(filePath, /*retentionLines=*/1000, sourceOptions);
+        auto source = std::make_unique<loglib::TailingBytesProducer>(filePath, /*retentionLines=*/1000, sourceOptions);
         auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
 
         loglib::ParserOptions options;
@@ -1557,9 +1556,9 @@ private slots:
         // the inversion impossible by construction. We assert the
         // resulting row order matches the input order.
         const size_t followupCount = 4;
-        sink->OnBatch(MakeSyntheticBatch(
-            streamSource, keys, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false
-        ));
+        sink->OnBatch(
+            MakeSyntheticBatch(streamSource, keys, valueKey, pausedCount + 1, followupCount, /*declareNewKey=*/false)
+        );
         QCoreApplication::processEvents();
         QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount + followupCount);
 
@@ -1754,14 +1753,12 @@ private slots:
         // Default (oldest-first) order: proxy row 0 == source row 0
         // == lineId 1, proxy row 2 == source row 2 == lineId 3.
         QCOMPARE(
-            streamOrderProxy
-                ->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(1)
         );
         QCOMPARE(
-            streamOrderProxy
-                ->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
+            streamOrderProxy->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(3)
         );
@@ -1775,14 +1772,12 @@ private slots:
         // the proxy mapping flips, so the underlying append-order
         // contract continues to hold.
         QCOMPARE(
-            streamOrderProxy
-                ->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(3)
         );
         QCOMPARE(
-            streamOrderProxy
-                ->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
+            streamOrderProxy->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(1)
         );
@@ -1793,8 +1788,7 @@ private slots:
         streamOrderProxy->SetReversed(false);
         QVERIFY(!streamOrderProxy->IsReversed());
         QCOMPARE(
-            streamOrderProxy
-                ->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(1)
         );
@@ -1834,7 +1828,8 @@ private slots:
         QVERIFY(valueColumn >= 0);
 
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
             qint64(3)
         );
 
@@ -1843,7 +1838,8 @@ private slots:
         QCOMPARE(model->rowCount(), 5);
 
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
+            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+                .toLongLong(),
             qint64(5)
         );
 
@@ -1906,10 +1902,10 @@ private slots:
         // the tail edge is Top, leaving the minimum must emit
         // `userScrolledAwayFromTail`.
         QWheelEvent wheelDown(
-            QPointF(10, 10),                 // position in viewport
+            QPointF(10, 10), // position in viewport
             tableView->viewport()->mapToGlobal(QPointF(10, 10)),
-            QPoint(0, -120),                 // pixelDelta (downward)
-            QPoint(0, -120),                 // angleDelta (downward)
+            QPoint(0, -120), // pixelDelta (downward)
+            QPoint(0, -120), // angleDelta (downward)
             Qt::NoButton,
             Qt::NoModifier,
             Qt::NoScrollPhase,
@@ -2107,8 +2103,9 @@ private slots:
         StreamingControl::SetNewestFirst(true);
         window->ApplyStreamingDisplayOrder();
         QVERIFY2(
-            !tableView->alternatingRowColors(), "newest-first mode should disable alternating row colours to avoid the "
-                                                "row-parity flicker on every incoming batch"
+            !tableView->alternatingRowColors(),
+            "newest-first mode should disable alternating row colours to avoid the "
+            "row-parity flicker on every incoming batch"
         );
 
         // Toggling back restores the reading aid (no-op for users who
@@ -2117,8 +2114,7 @@ private slots:
         StreamingControl::SetNewestFirst(false);
         window->ApplyStreamingDisplayOrder();
         QVERIFY2(
-            tableView->alternatingRowColors(),
-            "switching newest-first off should re-enable alternating row colours"
+            tableView->alternatingRowColors(), "switching newest-first off should re-enable alternating row colours"
         );
     }
 

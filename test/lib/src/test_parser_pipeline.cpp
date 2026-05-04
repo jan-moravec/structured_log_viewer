@@ -1,17 +1,17 @@
 #include "common.hpp"
 
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/static_parser_pipeline.hpp>
 #include <loglib/internal/timestamp_promotion.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
-#include <loglib/log_parse_sink.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -31,9 +31,9 @@ using loglib::KeyIndex;
 using loglib::LogConfiguration;
 using loglib::LogFile;
 using loglib::LogLine;
+using loglib::LogParseSink;
 using loglib::LogValue;
 using loglib::StreamedBatch;
-using loglib::LogParseSink;
 
 namespace
 {
@@ -213,7 +213,9 @@ public:
             parsed.totalLineCount = relativeLineNumber - 1;
         };
 
-        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(source, sink, options, advanced, stageA, stageB);
+        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(
+            source, sink, options, advanced, stageA, stageB
+        );
     }
 };
 

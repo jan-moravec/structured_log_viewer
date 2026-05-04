@@ -14,7 +14,9 @@
 
 using namespace loglib;
 
-TEST_CASE("Constructor should correctly initialize LogData with a single source and provided lines and keys", "[LogData]")
+TEST_CASE(
+    "Constructor should correctly initialize LogData with a single source and provided lines and keys", "[LogData]"
+)
 {
     TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();

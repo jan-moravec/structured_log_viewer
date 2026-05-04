@@ -11,11 +11,7 @@ namespace loglib::internal
 BatchCoalescer::BatchCoalescer(
     LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval
 ) noexcept
-    : mSink(sink),
-      mKeys(keys),
-      mPrevKeyCount(keys.Size()),
-      mFlushLines(flushLines),
-      mFlushInterval(flushInterval),
+    : mSink(sink), mKeys(keys), mPrevKeyCount(keys.Size()), mFlushLines(flushLines), mFlushInterval(flushInterval),
       mLastFlush(std::chrono::steady_clock::now())
 {
 }
@@ -56,8 +52,7 @@ bool BatchCoalescer::TryFlush(bool force)
         }
         // Threshold reached but nothing to ship: tick the timer and
         // skip rather than burden the sink with an empty batch.
-        const bool hasContent =
-            !mPending.lines.empty() || !mPending.errors.empty() || mKeys.Size() > mPrevKeyCount;
+        const bool hasContent = !mPending.lines.empty() || !mPending.errors.empty() || mKeys.Size() > mPrevKeyCount;
         if (!hasContent)
         {
             mLastFlush = now;
@@ -75,8 +70,8 @@ bool BatchCoalescer::TryFlush(bool force)
 
 void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
 {
-    const bool hasContent = mPrimed || mKeys.Size() > mPrevKeyCount || !mPending.errors.empty() ||
-                            !mPending.localLineOffsets.empty();
+    const bool hasContent =
+        mPrimed || mKeys.Size() > mPrevKeyCount || !mPending.errors.empty() || !mPending.localLineOffsets.empty();
     if (hasContent)
     {
         if (!mPrimed)

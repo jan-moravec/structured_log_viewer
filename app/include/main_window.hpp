@@ -168,8 +168,14 @@ private:
     };
     SessionMode mSessionMode = SessionMode::Idle;
 
-    [[nodiscard]] bool IsSessionActive() const noexcept { return mSessionMode != SessionMode::Idle; }
-    [[nodiscard]] bool IsLiveTailSession() const noexcept { return mSessionMode == SessionMode::LiveTail; }
+    [[nodiscard]] bool IsSessionActive() const noexcept
+    {
+        return mSessionMode != SessionMode::Idle;
+    }
+    [[nodiscard]] bool IsLiveTailSession() const noexcept
+    {
+        return mSessionMode == SessionMode::LiveTail;
+    }
 
     /// Running line / error counts shown in the status bar.
     qsizetype mStreamingLineCount = 0;

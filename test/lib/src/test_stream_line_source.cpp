@@ -98,7 +98,7 @@ TEST_CASE("StreamLineSource: ResolveOwnedBytes resolves per-line arenas", "[Stre
     // Per-line owned-bytes arena: the parser writes escape-decoded bytes
     // into a per-line scratch and stamps `OwnedString` payloads with
     // offsets into it. `StreamLineSource` stores that scratch verbatim.
-    const std::string lineOneArena = "alphabeta";        // 0..4 = "alpha", 5..8 = "beta"
+    const std::string lineOneArena = "alphabeta";         // 0..4 = "alpha", 5..8 = "beta"
     const std::string lineTwoArena = "gammadeltaepsilon"; // 0..4 = "gamma", 5..9 = "delta", 10..16 = "epsilon"
 
     const size_t id1 = source.AppendLine("raw 1", lineOneArena);

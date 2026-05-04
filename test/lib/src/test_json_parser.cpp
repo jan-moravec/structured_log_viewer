@@ -1,21 +1,21 @@
 #include "common.hpp"
 
+#include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/buffering_sink.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/parsers/json_parser.hpp>
+#include <loglib/internal/buffering_sink.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/log_parser.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/parse_file.hpp>
-#include <loglib/bytes_producer.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/log_parse_sink.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/date.h>
@@ -1300,13 +1300,12 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    const std::string payload =
-        R"({"k":"hello","n":1})"
-        "\n"
-        R"({"k":"world","n":2})"
-        "\n"
-        R"({"k":"three","n":3})"
-        "\n";
+    const std::string payload = R"({"k":"hello","n":1})"
+                                "\n"
+                                R"({"k":"world","n":2})"
+                                "\n"
+                                R"({"k":"three","n":3})"
+                                "\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -1361,12 +1360,11 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    const std::string payload =
-        R"({"k":"ok"})"
-        "\n"
-        "not-json\n"
-        R"({"k":"second"})"
-        "\n";
+    const std::string payload = R"({"k":"ok"})"
+                                "\n"
+                                "not-json\n"
+                                R"({"k":"second"})"
+                                "\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 

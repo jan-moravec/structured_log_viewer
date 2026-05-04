@@ -1,16 +1,16 @@
 #include "common.hpp"
 
+#include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/log_processing.hpp>
-#include <loglib/bytes_producer.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/stream_line_source.hpp>
-#include <loglib/log_parse_sink.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -435,9 +435,7 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     KeyIndex keysA;
     std::vector<LogLine> linesA;
-    linesA.emplace_back(
-        LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, *sourceAPtr, 0
-    );
+    linesA.emplace_back(LogMap{{"alpha", std::string("a1")}, {"beta", std::string("b1")}}, keysA, *sourceAPtr, 0);
 
     LogData dataA(std::move(sourceA), std::move(linesA), std::move(keysA));
 
@@ -462,9 +460,7 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     KeyIndex keysB;
     std::vector<LogLine> linesB;
-    linesB.emplace_back(
-        LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, *sourceBPtr, 0
-    );
+    linesB.emplace_back(LogMap{{"alpha", std::string("a2")}, {"gamma", std::string("g1")}}, keysB, *sourceBPtr, 0);
 
     LogData dataB(std::move(sourceB), std::move(linesB), std::move(keysB));
     table.Update(std::move(dataB));
@@ -482,9 +478,7 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     KeyIndex keysC;
     std::vector<LogLine> linesC;
-    linesC.emplace_back(
-        LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, *sourceCPtr, 0
-    );
+    linesC.emplace_back(LogMap{{"beta", std::string("b3")}, {"delta", std::string("d1")}}, keysC, *sourceCPtr, 0);
 
     LogData dataC(std::move(sourceC), std::move(linesC), std::move(keysC));
     table.Update(std::move(dataC));
@@ -865,12 +859,7 @@ namespace
 /// so `LineSource::RawLine` round-trips. Tests expect the source's
 /// next-line id to track @p firstLineId.
 StreamedBatch MakeStreamBatch(
-    StreamLineSource &streamSource,
-    KeyIndex &keys,
-    KeyId valueKey,
-    size_t firstLineId,
-    size_t count,
-    bool declareNewKey
+    StreamLineSource &streamSource, KeyIndex &keys, KeyId valueKey, size_t firstLineId, size_t count, bool declareNewKey
 )
 {
     StreamedBatch batch;
@@ -976,9 +965,7 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
         streamSourceRef.AppendLine("dropped" + std::to_string(i + 1), std::string{});
     }
     streamSourceRef.EvictBefore(headDrop + 1);
-    table.AppendBatch(
-        MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, kCap, /*declareNewKey=*/true)
-    );
+    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, kCap, /*declareNewKey=*/true));
 
     REQUIRE(table.RowCount() == kCap);
     CHECK(std::get<int64_t>(table.GetValue(0, 0)) == static_cast<int64_t>(headDrop + 1));

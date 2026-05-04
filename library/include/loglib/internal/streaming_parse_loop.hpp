@@ -46,9 +46,7 @@ constexpr size_t kStreamingReadBufferSize = 64 * 1024;
 /// thread and read concurrently by the GUI; `StreamLineSource`'s
 /// internal mutex + deque storage make that safe.
 template <class Decoder>
-void RunStreamingParseLoop(
-    StreamLineSource &source, Decoder &decoder, LogParseSink &sink, const ParserOptions &options
-)
+void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseSink &sink, const ParserOptions &options)
 {
     sink.OnStarted();
 

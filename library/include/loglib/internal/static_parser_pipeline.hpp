@@ -14,9 +14,9 @@
 
 #include <fmt/format.h>
 
+#include <oneapi/tbb/enumerable_thread_specific.h>
 #include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_pipeline.h>
-#include <oneapi/tbb/enumerable_thread_specific.h>
 
 #include <chrono>
 #include <cstddef>

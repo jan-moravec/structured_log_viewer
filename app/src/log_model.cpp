@@ -3,14 +3,14 @@
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 
+#include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/parsers/json_parser.hpp>
 #include <loglib/line_source.hpp>
 #include <loglib/log_configuration.hpp>
-#include <loglib/bytes_producer.hpp>
-#include <loglib/parser_options.hpp>
-#include <loglib/stream_line_source.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/parser_options.hpp>
+#include <loglib/parsers/json_parser.hpp>
+#include <loglib/stream_line_source.hpp>
 
 #include <QCoreApplication>
 #include <QFutureWatcher>

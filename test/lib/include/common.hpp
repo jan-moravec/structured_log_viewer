@@ -1,7 +1,7 @@
 #include <loglib/file_line_source.hpp>
-#include <loglib/parsers/json_parser.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/parsers/json_parser.hpp>
 
 #include <test_common/json_log_line.hpp>
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <loglib/stop_token.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/stop_token.hpp>
 
 #include <QObject>
 #include <QPointer>

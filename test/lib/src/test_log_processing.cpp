@@ -62,18 +62,10 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
     FileLineSource *sourcePtr = source.get();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
-    testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, *sourcePtr, 0
-    );
-    testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, *sourcePtr, 1
-    );
-    testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, *sourcePtr, 2
-    );
-    testLines.emplace_back(
-        LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, *sourcePtr, 3
-    );
+    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25T12:34:56+00:00")}}, testKeys, *sourcePtr, 0);
+    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25 12:34:56+00:00")}}, testKeys, *sourcePtr, 1);
+    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25T12:34:56")}}, testKeys, *sourcePtr, 2);
+    testLines.emplace_back(LogMap{{"key", std::string("2025-04-25 12:34:56")}}, testKeys, *sourcePtr, 3);
 
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 

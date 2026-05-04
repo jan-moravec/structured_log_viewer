@@ -50,11 +50,11 @@ public:
     [[nodiscard]] const std::filesystem::path &Path() const noexcept override;
     [[nodiscard]] std::string RawLine(size_t lineId) const override;
 
-    [[nodiscard]] std::string_view
-    ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept override;
+    [[nodiscard]] std::string_view ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId)
+        const noexcept override;
 
-    [[nodiscard]] std::string_view
-    ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept override;
+    [[nodiscard]] std::string_view ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId)
+        const noexcept override;
 
     [[nodiscard]] std::span<const char> StableBytes() const noexcept override;
 

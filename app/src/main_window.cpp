@@ -7,10 +7,10 @@
 #include "streaming_control.hpp"
 
 #include <loglib/file_line_source.hpp>
-#include <loglib/parsers/json_parser.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -537,8 +537,7 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
-        auto parseCallable = [sink, fileSourcePtr,
-                              options = std::move(options)](loglib::StopToken stopToken) mutable {
+        auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](loglib::StopToken stopToken) mutable {
             options.stopToken = stopToken;
             loglib::JsonParser parser;
             parser.ParseStreaming(*fileSourcePtr, *sink, options);
@@ -782,8 +781,8 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     // In newest-first mode the latest row is at proxy row 0, so we
     // must scroll to the top edge. The view's `TailEdge` is kept in
     // sync by `ApplyStreamingDisplayOrder`.
-    const auto position = mStreamOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop
-                                                               : QAbstractItemView::PositionAtBottom;
+    const auto position =
+        mStreamOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
     mTableView->scrollTo(proxyIndex, position);
 }
 

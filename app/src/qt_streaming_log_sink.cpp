@@ -216,9 +216,7 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                         }
                         else
                         {
-                            it->lines.erase(
-                                it->lines.begin(), it->lines.begin() + static_cast<std::ptrdiff_t>(toDrop)
-                            );
+                            it->lines.erase(it->lines.begin(), it->lines.begin() + static_cast<std::ptrdiff_t>(toDrop));
                             it->firstLineNumber += toDrop;
                             linesDropped += toDrop;
                             toDrop = 0;
