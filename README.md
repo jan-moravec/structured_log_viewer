@@ -7,7 +7,12 @@
 
 Structured Log Viewer is a C++ application consisting of a reusable library (`loglib`) for handling structured log data and a Qt-based GUI (`StructuredLogViewer`) for viewing, searching, and filtering the logs.
 
-Currently, only JSON Lines (one JSON object per line) logs are supported.
+Two ingestion modes are available:
+
+- **Static mode** (`File → Open…`, drag & drop) opens one or more finished log files and parses them in parallel with the TBB pipeline. Use this for post-mortem analysis of complete logs.
+- **Stream Mode** (`File → Open Log Stream…`) tails a single file that is still being written, pre-fills the last *N* complete lines, then appends every new line as it arrives. It survives `logrotate` rotations, supports Pause / Follow newest / Stop, and bounds memory via a configurable retention cap. Use this when watching a live service.
+
+Currently, only JSON Lines (one JSON object per line) logs are supported in both modes.
 
 ## Application
 
