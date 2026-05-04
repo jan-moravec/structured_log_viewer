@@ -42,13 +42,13 @@ bool ParseFixedDigits(const char *p, size_t n, int &out)
 
 TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
 {
-    constexpr std::string_view kIsoT{"%FT%T"};
-    constexpr std::string_view kIsoSpace{"%F %T"};
-    if (format == kIsoT)
+    constexpr std::string_view ISO_T{"%FT%T"};
+    constexpr std::string_view ISO_SPACE{"%F %T"};
+    if (format == ISO_T)
     {
         return TimestampFormatKind::Iso8601_T;
     }
-    if (format == kIsoSpace)
+    if (format == ISO_SPACE)
     {
         return TimestampFormatKind::Iso8601_Space;
     }
@@ -58,8 +58,8 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
 bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
 {
     // Layout: YYYY-MM-DDsHH:MM:SS[.fff[fff]]
-    constexpr size_t kPrefixLen = 19;
-    if (sv.size() < kPrefixLen)
+    constexpr size_t PREFIX_LEN = 19;
+    if (sv.size() < PREFIX_LEN)
     {
         return false;
     }
@@ -116,13 +116,13 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     int64_t fractionalUs = 0;
-    if (sv.size() > kPrefixLen)
+    if (sv.size() > PREFIX_LEN)
     {
-        if (sv[kPrefixLen] != '.')
+        if (sv[PREFIX_LEN] != '.')
         {
             return false;
         }
-        const size_t fractionStart = kPrefixLen + 1;
+        const size_t fractionStart = PREFIX_LEN + 1;
         const size_t maxFractionEnd = std::min(sv.size(), fractionStart + 6);
         size_t fractionEnd = fractionStart;
         while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')

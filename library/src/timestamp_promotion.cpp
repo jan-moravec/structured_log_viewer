@@ -36,7 +36,7 @@ std::optional<std::string_view> ExtractStringBytes(
     const LogLine &line, KeyId keyId, std::string_view ownedArena
 ) noexcept
 {
-    if (keyId == kInvalidKeyId)
+    if (keyId == INVALID_KEY_ID)
     {
         return std::nullopt;
     }

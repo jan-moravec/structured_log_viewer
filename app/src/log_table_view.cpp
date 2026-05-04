@@ -12,7 +12,8 @@
 #include <QScrollBar>
 #include <QWheelEvent>
 
-LogTableView::LogTableView(QWidget *parent) : QTableView(parent)
+LogTableView::LogTableView(QWidget *parent)
+    : QTableView(parent)
 {
     setAcceptDrops(true);
 

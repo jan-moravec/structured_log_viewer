@@ -49,7 +49,8 @@ void HintSequential(const mio::mmap_source &mmap)
 
 } // namespace
 
-LogFile::LogFile(std::filesystem::path filePath) : mPath(std::move(filePath))
+LogFile::LogFile(std::filesystem::path filePath)
+    : mPath(std::move(filePath))
 {
     if (!std::filesystem::exists(mPath))
     {

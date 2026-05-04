@@ -134,7 +134,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
         {
             const KeyId id = mData.Keys().Find(key);
             columnKeyIds.push_back(id);
-            if (id == kInvalidKeyId)
+            if (id == INVALID_KEY_ID)
             {
                 continue;
             }
@@ -164,7 +164,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
             BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
             for (const KeyId id : columnKeyIds)
             {
-                if (id != kInvalidKeyId)
+                if (id != INVALID_KEY_ID)
                 {
                     mPostSnapshotTimeKeys.insert(id);
                 }
@@ -254,7 +254,7 @@ LogValue LogTable::GetValue(size_t row, size_t column) const
     const auto &line = mData.Lines()[row];
     for (const KeyId id : mColumnKeyIds[column])
     {
-        if (id == kInvalidKeyId)
+        if (id == INVALID_KEY_ID)
         {
             continue;
         }
@@ -277,7 +277,7 @@ std::string LogTable::GetFormattedValue(size_t row, size_t column) const
     const auto &line = mData.Lines()[row];
     for (const KeyId id : mColumnKeyIds[column])
     {
-        if (id == kInvalidKeyId)
+        if (id == INVALID_KEY_ID)
         {
             continue;
         }

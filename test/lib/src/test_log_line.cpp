@@ -63,9 +63,13 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
                 const auto &actual = std::get<T>(resultMap.at(key));
 
                 if constexpr (std::is_same_v<T, double>)
+                {
                     CHECK(actual == Catch::Approx(expected));
+                }
                 else
+                {
                     CHECK(actual == expected);
+                }
             },
             expectedValue
         );

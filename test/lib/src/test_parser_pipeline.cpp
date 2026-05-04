@@ -69,7 +69,7 @@ public:
         const char *fileEnd = (fileBegin != nullptr) ? fileBegin + file.Size() : nullptr;
         const size_t batchBytes = advanced.batchSizeBytes != 0
                                       ? advanced.batchSizeBytes
-                                      : loglib::internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
+                                      : loglib::internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
         const char *cursor = fileBegin;
 
         auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
@@ -411,8 +411,8 @@ TEST_CASE("Mock parser: firstLineNumber matches the first line in the batch", "[
 
 TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_parser]")
 {
-    constexpr size_t kRecordCount = 5'000;
-    TempTextFile fixture(GenerateRecords(kRecordCount));
+    constexpr size_t RECORD_COUNT = 5'000;
+    TempTextFile fixture(GenerateRecords(RECORD_COUNT));
     loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.batchSizeBytes = 8 * 1024;
@@ -438,14 +438,14 @@ TEST_CASE("Mock parser: multi-batch parse emits LogLines and newKeys", "[mock_pa
             allNewKeys.push_back(k);
         }
     }
-    REQUIRE(totalLines == kRecordCount);
+    REQUIRE(totalLines == RECORD_COUNT);
 
     std::sort(allNewKeys.begin(), allNewKeys.end());
     REQUIRE(allNewKeys == std::vector<std::string>{"index", "level", "msg"});
 
     LogValue lastIndex = sink.batches.back().lines.back().GetValue("index");
     REQUIRE(std::holds_alternative<std::string>(lastIndex));
-    REQUIRE(std::get<std::string>(lastIndex) == std::to_string(kRecordCount - 1));
+    REQUIRE(std::get<std::string>(lastIndex) == std::to_string(RECORD_COUNT - 1));
 }
 
 TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors", "[mock_parser]")
@@ -495,12 +495,12 @@ TEST_CASE(
     // Build a fixture where every 100th line is malformed, large enough that
     // a tiny `batchSizeBytes` forces several Stage A batches.
     std::string content;
-    constexpr size_t kTotalLines = 600;
-    constexpr size_t kErrorEvery = 100;
+    constexpr size_t TOTAL_LINES = 600;
+    constexpr size_t ERROR_EVERY = 100;
     std::vector<size_t> expectedErrorLines;
-    for (size_t i = 1; i <= kTotalLines; ++i)
+    for (size_t i = 1; i <= TOTAL_LINES; ++i)
     {
-        if (i % kErrorEvery == 0)
+        if (i % ERROR_EVERY == 0)
         {
             content += "!boom_" + std::to_string(i) + "\n";
             expectedErrorLines.push_back(i);
@@ -544,15 +544,15 @@ TEST_CASE(
 
 TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "[mock_parser][cancellation]")
 {
-    constexpr size_t kRecordCount = 200'000;
-    TempTextFile fixture(GenerateRecords(kRecordCount));
-    constexpr size_t kBatchBytes = 64 * 1024;
-    constexpr unsigned int kThreads = 4;
+    constexpr size_t RECORD_COUNT = 200'000;
+    TempTextFile fixture(GenerateRecords(RECORD_COUNT));
+    constexpr size_t BATCH_BYTES = 64 * 1024;
+    constexpr unsigned int THREADS = 4;
 
     loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = kBatchBytes;
-    advanced.threads = kThreads;
+    advanced.batchSizeBytes = BATCH_BYTES;
+    advanced.threads = THREADS;
 
     struct CancellingSink : CollectingSink
     {
@@ -591,9 +591,9 @@ TEST_CASE("Mock parser: cancellation latency bounded by ntokens x batch size", "
 
     // The pipeline harness picks `ntokens = 2 * effectiveThreads` by default,
     // so the upper bound on the cancellation latency is roughly
-    // `2 * kThreads * kBatchBytes` worth of pending work to drain.
+    // `2 * THREADS * BATCH_BYTES` worth of pending work to drain.
     INFO(
-        "Cancellation latency = " << latencyMs << " ms (threads=" << kThreads << ", batch=" << kBatchBytes << " bytes)"
+        "Cancellation latency = " << latencyMs << " ms (threads=" << THREADS << ", batch=" << BATCH_BYTES << " bytes)"
     );
 
     REQUIRE(latency >= std::chrono::nanoseconds{0});

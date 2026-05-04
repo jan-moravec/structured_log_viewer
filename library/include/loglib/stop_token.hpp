@@ -38,7 +38,8 @@ public:
 private:
     friend class StopSource;
 
-    explicit StopToken(std::shared_ptr<std::atomic<bool>> state) noexcept : mState(std::move(state))
+    explicit StopToken(std::shared_ptr<std::atomic<bool>> state) noexcept
+        : mState(std::move(state))
     {
     }
 
@@ -53,7 +54,8 @@ private:
 class StopSource
 {
 public:
-    StopSource() : mState(std::make_shared<std::atomic<bool>>(false))
+    StopSource()
+        : mState(std::make_shared<std::atomic<bool>>(false))
     {
     }
 

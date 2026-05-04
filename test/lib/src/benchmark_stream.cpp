@@ -141,14 +141,14 @@ struct ProducerWrite
 
 void RunProducer(
     FILE *fp,
-    int kLines,
+    int lineCount,
     std::chrono::microseconds interLineDelay,
     std::vector<ProducerWrite> &writes,
     std::atomic<bool> &producerDone
 )
 {
-    writes.reserve(static_cast<size_t>(kLines));
-    for (int i = 0; i < kLines; ++i)
+    writes.reserve(static_cast<size_t>(lineCount));
+    for (int i = 0; i < lineCount; ++i)
     {
         const size_t lineId = static_cast<size_t>(i + 1);
         // Stamp the line with its own id so the consumer can match
@@ -187,7 +187,7 @@ double Percentile(std::vector<double> sorted, double pct)
 
 #define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
-// Writer-to-row latency. The producer writes `kLines` at a steady rate
+// Writer-to-row latency. The producer writes `LINE_COUNT` at a steady rate
 // well below saturation; the consumer's parser drains in real time. We
 // then assert median/p95/max of the per-line deltas. The full GUI
 // latency is verified separately by the offscreen Qt smoke test in
@@ -208,8 +208,8 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     // measurement actually stresses the coalesce window, not just the
     // syscall round-trip). The interval is 10 ms so total wall-time is
     // ~2 s — short enough for CI but long enough for a stable percentile.
-    constexpr int kLines = 200;
-    constexpr auto kInterLineDelay = 10ms;
+    constexpr int LINE_COUNT = 200;
+    constexpr auto INTER_LINE_DELAY = 10ms;
 
     TailingBytesProducer::Options sourceOptions;
     sourceOptions.disableNativeWatcher = false;
@@ -218,7 +218,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     sourceOptions.readChunkBytes = 64 * 1024;
     sourceOptions.prefillChunkBytes = 64 * 1024;
 
-    auto tailProducer = std::make_unique<TailingBytesProducer>(path, /*retentionLines=*/kLines * 2, sourceOptions);
+    auto tailProducer = std::make_unique<TailingBytesProducer>(path, /*retentionLines=*/LINE_COUNT * 2, sourceOptions);
     TailingBytesProducer *producerPtr = tailProducer.get();
     auto streamSource = std::make_unique<StreamLineSource>(path, std::move(tailProducer));
     StreamLineSource *streamPtr = streamSource.get();
@@ -251,7 +251,11 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     std::atomic<bool> producerDone{false};
     std::thread producer([&] {
         RunProducer(
-            fp, kLines, std::chrono::duration_cast<std::chrono::microseconds>(kInterLineDelay), writes, producerDone
+            fp,
+            LINE_COUNT,
+            std::chrono::duration_cast<std::chrono::microseconds>(INTER_LINE_DELAY),
+            writes,
+            producerDone
         );
     });
 
@@ -269,7 +273,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     while (std::chrono::steady_clock::now() < deadline)
     {
         std::lock_guard<std::mutex> lock(sink.mu);
-        if (static_cast<int>(sink.arrivals.size()) >= kLines)
+        if (static_cast<int>(sink.arrivals.size()) >= LINE_COUNT)
         {
             break;
         }
@@ -284,7 +288,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
 
     // Match write timestamps against arrivals via lineId; compute deltas.
     std::vector<double> latenciesMs;
-    latenciesMs.reserve(static_cast<size_t>(kLines));
+    latenciesMs.reserve(static_cast<size_t>(LINE_COUNT));
     {
         std::lock_guard<std::mutex> lock(sink.mu);
         // Convert arrivals into a sorted-by-lineId snapshot so the lookup is

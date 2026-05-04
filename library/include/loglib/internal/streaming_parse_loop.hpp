@@ -28,18 +28,18 @@ namespace loglib::internal
 
 /// Coalescing thresholds for the live-tail loop. Tighter than the
 /// static pipeline because we optimise for latency, not throughput.
-constexpr size_t kStreamingBatchFlushLines = 250;
-constexpr auto kStreamingBatchFlushInterval = std::chrono::milliseconds(100);
+constexpr size_t STREAMING_BATCH_FLUSH_LINES = 250;
+constexpr auto STREAMING_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(100);
 
 /// Read buffer size for the live-tail loop. Matches `TailingBytesProducer`'s
 /// pre-fill chunk; small enough that each `Read` returns promptly.
-constexpr size_t kStreamingReadBufferSize = 64 * 1024;
+constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 
 /// Format-agnostic live-tail entry point. Drains `source.Producer()`
 /// line-by-line, hands each non-blank line to @p decoder (must
 /// satisfy `CompactLineDecoder`), commits `(rawText, ownedArena)` to
 /// @p source, and emits `LogLine`s into batches throttled by
-/// `kStreamingBatchFlush*`.
+/// `STREAMING_BATCH_FLUSH_*`.
 ///
 /// Single-threaded: the target is thousands of lines/s, so TBB
 /// overhead is not warranted. `source` is mutated on the parser
@@ -51,7 +51,7 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
     sink.OnStarted();
 
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, kStreamingBatchFlushLines, kStreamingBatchFlushInterval);
+    BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL);
 
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)
@@ -73,7 +73,7 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
     size_t nextLineNumber = 1;
 
     std::string carry;
-    std::vector<char> readBuffer(kStreamingReadBufferSize);
+    std::vector<char> readBuffer(STREAMING_READ_BUFFER_SIZE);
 
     // Reused per line; move-transferred into the source on success.
     std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
@@ -146,7 +146,7 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
             else
             {
                 coalescer.TryFlush(false);
-                producer->WaitForBytes(kStreamingBatchFlushInterval);
+                producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
                 continue;
             }
         }

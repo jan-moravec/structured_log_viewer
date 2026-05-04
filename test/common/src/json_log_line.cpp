@@ -20,7 +20,8 @@ JsonLogLine::JsonLogLine(const char *line)
     }
 }
 
-JsonLogLine::JsonLogLine(glz::generic_sorted_u64 json) : data(std::move(json))
+JsonLogLine::JsonLogLine(glz::generic_sorted_u64 json)
+    : data(std::move(json))
 {
 }
 

@@ -207,7 +207,7 @@ namespace
 /// copyable and trivially destructible (KeyId is `uint32_t`,
 /// CompactLogValue is a POD), so we can use raw `operator new`/`delete`
 /// to skip the per-element ctor/dtor that `std::vector` would run.
-constexpr size_t kPairBytes = sizeof(std::pair<KeyId, CompactLogValue>);
+constexpr size_t PAIR_BYTES = sizeof(std::pair<KeyId, CompactLogValue>);
 
 std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
 {
@@ -215,7 +215,7 @@ std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
     {
         return nullptr;
     }
-    void *raw = ::operator new(static_cast<size_t>(capacity) * kPairBytes);
+    void *raw = ::operator new(static_cast<size_t>(capacity) * PAIR_BYTES);
     return static_cast<std::pair<KeyId, CompactLogValue> *>(raw);
 }
 
@@ -283,7 +283,7 @@ void CompactLineFields::Reserve(uint32_t capacity)
     auto *fresh = AllocatePairs(capacity);
     if (mSize > 0)
     {
-        std::memcpy(fresh, mData, static_cast<size_t>(mSize) * kPairBytes);
+        std::memcpy(fresh, mData, static_cast<size_t>(mSize) * PAIR_BYTES);
     }
     DeallocatePairs(mData);
     mData = fresh;
@@ -300,7 +300,7 @@ void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
     }
     if (count > 0)
     {
-        std::memcpy(mData, values, static_cast<size_t>(count) * kPairBytes);
+        std::memcpy(mData, values, static_cast<size_t>(count) * PAIR_BYTES);
     }
     mSize = count;
 }
@@ -328,7 +328,7 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
     }
     if (position < mSize)
     {
-        std::memmove(mData + position + 1, mData + position, static_cast<size_t>(mSize - position) * kPairBytes);
+        std::memmove(mData + position + 1, mData + position, static_cast<size_t>(mSize - position) * PAIR_BYTES);
     }
     mData[position] = {key, value};
     ++mSize;
@@ -344,7 +344,7 @@ void CompactLineFields::Set(uint32_t position, CompactLogValue value) noexcept
 
 size_t CompactLineFields::OwnedMemoryBytes() const noexcept
 {
-    return static_cast<size_t>(mCapacity) * kPairBytes;
+    return static_cast<size_t>(mCapacity) * PAIR_BYTES;
 }
 
 void CompactLineFields::ShrinkToFit()
@@ -361,7 +361,7 @@ void CompactLineFields::ShrinkToFit()
         return;
     }
     auto *fresh = AllocatePairs(mSize);
-    std::memcpy(fresh, mData, static_cast<size_t>(mSize) * kPairBytes);
+    std::memcpy(fresh, mData, static_cast<size_t>(mSize) * PAIR_BYTES);
     DeallocatePairs(mData);
     mData = fresh;
     mCapacity = mSize;

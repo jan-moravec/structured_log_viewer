@@ -29,7 +29,8 @@
 #include <utility>
 #include <vector>
 
-LogModel::LogModel(QObject *parent) : QAbstractTableModel{parent}
+LogModel::LogModel(QObject *parent)
+    : QAbstractTableModel{parent}
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
     // `sourceStatusChanged` crosses the worker→GUI thread boundary via
@@ -356,7 +357,7 @@ loglib::StopToken LogModel::BeginStreaming(
     // default retention cap if the model has not been configured.
     if (mRetentionCap == 0)
     {
-        mRetentionCap = StreamingControl::kDefaultRetentionLines;
+        mRetentionCap = StreamingControl::DEFAULT_RETENTION_LINES;
     }
     mSink->SetRetentionCap(mRetentionCap);
 

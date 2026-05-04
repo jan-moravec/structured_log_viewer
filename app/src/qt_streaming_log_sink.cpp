@@ -13,7 +13,8 @@
 #include <memory>
 #include <utility>
 
-QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent) : QObject(parent), mModel(model)
+QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent)
+    : QObject(parent), mModel(model)
 {
 }
 

@@ -403,23 +403,23 @@ void RunStreamingBenchmark(
 
         if (warmup.memoryCaptured)
         {
-            constexpr double kMiB = 1024.0 * 1024.0;
+            constexpr double MIB = 1024.0 * 1024.0;
             const double linesD = static_cast<double>(expectedRows == 0 ? 1 : expectedRows);
             const double bytesPerLine =
                 expectedRows == 0 ? 0.0 : static_cast<double>(warmup.structuralBytes.Total()) / linesD;
-            const double fileBytesMiB = static_cast<double>(bytes) / kMiB;
-            const double structuralBytesMiB = static_cast<double>(warmup.structuralBytes.Total()) / kMiB;
+            const double fileBytesMiB = static_cast<double>(bytes) / MIB;
+            const double structuralBytesMiB = static_cast<double>(warmup.structuralBytes.Total()) / MIB;
             const double structuralRatio = bytes == 0 ? 0.0 : structuralBytesMiB / fileBytesMiB;
             WARN(
                 "Structural bytes (lines+offsets+ownedStrings+keys): "
                 << structuralBytesMiB << " MiB (" << bytesPerLine << " B/line, "
-                << static_cast<double>(warmup.structuralBytes.lines) / kMiB << " MiB lines + "
-                << static_cast<double>(warmup.structuralBytes.lineOffsets) / kMiB << " MiB offsets + "
-                << static_cast<double>(warmup.structuralBytes.ownedStrings) / kMiB << " MiB ownedStrings + "
-                << static_cast<double>(warmup.structuralBytes.keyIndex) / kMiB
+                << static_cast<double>(warmup.structuralBytes.lines) / MIB << " MiB lines + "
+                << static_cast<double>(warmup.structuralBytes.lineOffsets) / MIB << " MiB offsets + "
+                << static_cast<double>(warmup.structuralBytes.ownedStrings) / MIB << " MiB ownedStrings + "
+                << static_cast<double>(warmup.structuralBytes.keyIndex) / MIB
                 << " MiB keys), structural/file ratio=" << structuralRatio << " | peak working set delta "
-                << static_cast<double>(warmup.peakWorkingSetDeltaBytes) / kMiB << " MiB (peak "
-                << static_cast<double>(warmup.peakWorkingSetBytes) / kMiB << " MiB)"
+                << static_cast<double>(warmup.peakWorkingSetDeltaBytes) / MIB << " MiB (peak "
+                << static_cast<double>(warmup.peakWorkingSetBytes) / MIB << " MiB)"
             );
         }
     }
@@ -551,7 +551,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     for (size_t i = 0; i < kKeys.size(); ++i)
     {
         const KeyId id = data.Keys().Find(kKeys[i]);
-        REQUIRE(id != kInvalidKeyId);
+        REQUIRE(id != INVALID_KEY_ID);
         keyIds[i] = id;
     }
 
@@ -710,11 +710,11 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         }
     };
 
-    constexpr int kIterations = 20;
+    constexpr int ITERATIONS = 20;
     std::vector<double> latenciesUs;
-    latenciesUs.reserve(kIterations);
+    latenciesUs.reserve(ITERATIONS);
 
-    for (int i = 0; i < kIterations; ++i)
+    for (int i = 0; i < ITERATIONS; ++i)
     {
         FileLineSource source(std::make_unique<LogFile>(testFile.GetFilePath()));
         LatencySink sink;
@@ -732,7 +732,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     const double p95 = latenciesUs[(latenciesUs.size() * 95) / 100];
     const double maxLatency = latenciesUs.back();
     WARN(
-        "Cancellation latency over " << kIterations << " runs (us): median=" << median << ", p95=" << p95
+        "Cancellation latency over " << ITERATIONS << " runs (us): median=" << median << ", p95=" << p95
                                      << ", max=" << maxLatency
     );
     REQUIRE(maxLatency < 5'000'000.0);

@@ -8,7 +8,8 @@
 namespace loglib
 {
 
-FileLineSource::FileLineSource(std::unique_ptr<LogFile> file) : mOwnedFile(std::move(file))
+FileLineSource::FileLineSource(std::unique_ptr<LogFile> file)
+    : mOwnedFile(std::move(file))
 {
     if (mOwnedFile == nullptr)
     {

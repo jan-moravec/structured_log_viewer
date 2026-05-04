@@ -176,11 +176,11 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     const auto path = dir.File("buffered.log");
 
     // ~100 KiB buffered batch: 1500 lines x ~70 bytes each.
-    constexpr int kLines = 1500;
+    constexpr int LINE_COUNT = 1500;
     {
         std::string blob;
         blob.reserve(100 * 1024);
-        for (int i = 0; i < kLines; ++i)
+        for (int i = 0; i < LINE_COUNT; ++i)
         {
             blob += "{\"i\":" + std::to_string(i) + ",\"msg\":\"line ";
             blob += std::to_string(i);

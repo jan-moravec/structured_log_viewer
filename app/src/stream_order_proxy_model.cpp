@@ -2,7 +2,8 @@
 
 #include "log_model.hpp"
 
-StreamOrderProxyModel::StreamOrderProxyModel(QObject *parent) : QSortFilterProxyModel{parent}
+StreamOrderProxyModel::StreamOrderProxyModel(QObject *parent)
+    : QSortFilterProxyModel{parent}
 {
     // Compare on the bare source row index; the downstream
     // `LogFilterModel` sorts on `SortRole`, so the two proxies'

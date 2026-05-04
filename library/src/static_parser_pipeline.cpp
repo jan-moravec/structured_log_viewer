@@ -12,7 +12,7 @@ ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &ad
     out.effectiveThreads =
         advanced.threads != 0
             ? advanced.threads
-            : std::min(std::thread::hardware_concurrency(), AdvancedParserOptions::kDefaultMaxThreads);
+            : std::min(std::thread::hardware_concurrency(), AdvancedParserOptions::DEFAULT_MAX_THREADS);
     if (out.effectiveThreads == 0)
     {
         out.effectiveThreads = 1;

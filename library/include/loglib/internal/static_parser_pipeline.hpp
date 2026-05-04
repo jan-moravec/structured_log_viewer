@@ -30,8 +30,8 @@ namespace loglib::internal
 {
 
 /// Coalescing thresholds for the static TBB pipeline.
-constexpr size_t kStaticBatchFlushLines = 1000;
-constexpr auto kStaticBatchFlushInterval = std::chrono::milliseconds(50);
+constexpr size_t STATIC_BATCH_FLUSH_LINES = 1000;
+constexpr auto STATIC_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(50);
 
 /// Stage B per-line error. `relativeLine` is 1-based within the batch;
 /// Stage C composes the absolute "Error on line N: ..." wrapper using
@@ -88,7 +88,7 @@ void RunStaticParserPipeline(
     sink.OnStarted();
 
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, kStaticBatchFlushLines, kStaticBatchFlushInterval);
+    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL);
 
     // Sink contract: at least one `OnBatch` before `OnFinished` on
     // every early-exit path.

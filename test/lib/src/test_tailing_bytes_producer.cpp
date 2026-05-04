@@ -167,6 +167,26 @@ TailingBytesProducer::Options FastPollOptions()
     return options;
 }
 
+/// Block until `source.RotationCount() >= target` or `deadline`
+/// elapses. Tests use this to synchronise on rotation observation
+/// instead of guessing how long a busy runner takes to schedule the
+/// worker thread between two filesystem operations.
+[[nodiscard]] bool WaitForRotationCount(
+    const TailingBytesProducer &source, size_t target, std::chrono::milliseconds deadline
+)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (source.RotationCount() < target)
+    {
+        if (std::chrono::steady_clock::now() - start >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    return true;
+}
+
 } // namespace
 
 TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small file", "[TailingBytesProducer]")
@@ -238,9 +258,9 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
     // chunks, `Prefill` runs ~900 syscalls before notifying — easily
     // enough for the test thread to win the race into `WaitForBytes`.
     std::string content;
-    constexpr int kLineCount = 5000;
-    content.reserve(kLineCount * 110);
-    for (int i = 0; i < kLineCount; ++i)
+    constexpr int LINE_COUNT = 5000;
+    content.reserve(LINE_COUNT * 110);
+    for (int i = 0; i < LINE_COUNT; ++i)
     {
         content += "line " + std::to_string(i) + std::string(95, 'x') + "\n";
     }
@@ -253,7 +273,7 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
     opts.pollInterval = 10000ms;
     opts.prefillChunkBytes = 512;
 
-    TailingBytesProducer source(path, /*retentionLines=*/kLineCount - 1, opts);
+    TailingBytesProducer source(path, /*retentionLines=*/LINE_COUNT - 1, opts);
 
     const auto waitStart = std::chrono::steady_clock::now();
     source.WaitForBytes(ScaledMs(3000ms));
@@ -264,10 +284,10 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
 
     // Verify the wake wasn't spurious by draining the expected lines.
     const std::string drained = DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) {
-        return std::count(acc.begin(), acc.end(), '\n') >= kLineCount - 1;
+        return std::count(acc.begin(), acc.end(), '\n') >= LINE_COUNT - 1;
     });
     const auto lines = SplitLines(drained);
-    CHECK(lines.size() == static_cast<size_t>(kLineCount - 1));
+    CHECK(lines.size() == static_cast<size_t>(LINE_COUNT - 1));
 }
 
 TEST_CASE(
@@ -321,9 +341,9 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
 
     TailingBytesProducer source(path, /*retentionLines=*/10, FastPollOptions());
 
-    constexpr int kCount = 25;
+    constexpr int COUNT = 25;
     std::thread writer([&] {
-        for (int i = 0; i < kCount; ++i)
+        for (int i = 0; i < COUNT; ++i)
         {
             Append(path, "g" + std::to_string(i) + "\n");
             std::this_thread::sleep_for(ScaledMs(5ms));
@@ -331,13 +351,13 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
     });
 
     const std::string drained = DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) {
-        return std::count(acc.begin(), acc.end(), '\n') >= kCount;
+        return std::count(acc.begin(), acc.end(), '\n') >= COUNT;
     });
     writer.join();
 
     const auto lines = SplitLines(drained);
-    REQUIRE(lines.size() >= static_cast<size_t>(kCount));
-    for (int i = 0; i < kCount; ++i)
+    REQUIRE(lines.size() >= static_cast<size_t>(COUNT));
+    for (int i = 0; i < COUNT; ++i)
     {
         CHECK(lines[i] == "g" + std::to_string(i));
     }
@@ -450,7 +470,12 @@ TEST_CASE(
     // rotation detection) must still happen on the worker.
     std::this_thread::sleep_for(ScaledMs(50ms)); // let pre-fill settle
     Overwrite(path, "");                         // truncate
-    std::this_thread::sleep_for(ScaledMs(50ms));
+    // Synchronise on rotation observation. Without this, the new
+    // file ("q1\nq2\n", 6 bytes) and the original ("p1\np2\n", 6
+    // bytes) are byte-for-byte the same length, so a busy macOS CI
+    // runner that misses the size-0 poll window would never see the
+    // rotation branch fire.
+    REQUIRE(WaitForRotationCount(source, 1, ScaledMs(2000ms)));
     Append(path, "q1\nq2\n");
     std::this_thread::sleep_for(ScaledMs(100ms)); // poll tick + read
 

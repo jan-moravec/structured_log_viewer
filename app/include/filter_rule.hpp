@@ -8,7 +8,8 @@
 class FilterRule
 {
 public:
-    FilterRule(int filteredColumn) : mFilteredColumn(filteredColumn)
+    FilterRule(int filteredColumn)
+        : mFilteredColumn(filteredColumn)
     {
     }
     virtual ~FilterRule() = default;

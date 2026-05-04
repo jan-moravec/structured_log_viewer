@@ -73,9 +73,9 @@ TEST_CASE(
 
     const internal::AdvancedParserOptions advanced;
     CHECK(advanced.threads == 0u);
-    CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::kDefaultBatchSizeBytes);
-    CHECK(internal::AdvancedParserOptions::kDefaultMaxThreads == 8u);
-    CHECK(internal::AdvancedParserOptions::kDefaultBatchSizeBytes == 1024u * 1024u);
+    CHECK(advanced.batchSizeBytes == internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES);
+    CHECK(internal::AdvancedParserOptions::DEFAULT_MAX_THREADS == 8u);
+    CHECK(internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES == 1024u * 1024u);
 }
 
 TEST_CASE("Validate non-existent file", "[json_parser]")
@@ -191,9 +191,9 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
 {
     loglib::JsonParser parser;
 
-    constexpr size_t kValidLines = 1000;
-    constexpr size_t kInvalidLineNumberA = 1500;
-    constexpr size_t kInvalidLineNumberB = 2500;
+    constexpr size_t VALID_LINES = 1000;
+    constexpr size_t INVALID_LINE_NUMBER_A = 1500;
+    constexpr size_t INVALID_LINE_NUMBER_B = 2500;
 
     // Build a file with valid JSON sandwiching two malformed lines at known
     // absolute line numbers, well past the first pipeline batch boundary.
@@ -203,10 +203,10 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     // the parsed-JSON constructor and wrap each entire line as a JSON string
     // scalar, producing "not a JSON object" errors for every row.
     std::vector<std::string> lineTexts;
-    lineTexts.reserve(kInvalidLineNumberB);
-    for (size_t i = 1; i <= kInvalidLineNumberB; ++i)
+    lineTexts.reserve(INVALID_LINE_NUMBER_B);
+    for (size_t i = 1; i <= INVALID_LINE_NUMBER_B; ++i)
     {
-        if (i == kInvalidLineNumberA || i == kInvalidLineNumberB)
+        if (i == INVALID_LINE_NUMBER_A || i == INVALID_LINE_NUMBER_B)
         {
             lineTexts.emplace_back(std::string("not json line ") + std::to_string(i));
         }
@@ -221,11 +221,11 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     {
         lines.emplace_back(text.c_str());
     }
-    static_cast<void>(kValidLines);
+    static_cast<void>(VALID_LINES);
     TestJsonLogFile testFile(std::move(lines));
 
     // Force several Stage A batches by capping `batchSizeBytes` well below
-    // the file size; the kInvalidLineNumberA line therefore lands in batch 2+.
+    // the file size; the INVALID_LINE_NUMBER_A line therefore lands in batch 2+.
     loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.batchSizeBytes = 8 * 1024;
@@ -234,8 +234,8 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     auto result = ParseWithSink(parser, testFile.GetFilePath(), options, advanced);
 
     REQUIRE(result.errors.size() == 2);
-    const std::string expectedA = "Error on line " + std::to_string(kInvalidLineNumberA);
-    const std::string expectedB = "Error on line " + std::to_string(kInvalidLineNumberB);
+    const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
+    const std::string expectedB = "Error on line " + std::to_string(INVALID_LINE_NUMBER_B);
     CHECK(result.errors[0].find(expectedA) != std::string::npos);
     CHECK(result.errors[1].find(expectedB) != std::string::npos);
 }
@@ -644,12 +644,12 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     std::mt19937 rng(0xC0FFEE);
     std::uniform_int_distribution<int> levelDist(0, 4);
     std::uniform_int_distribution<int> intDist(-1'000, 1'000);
-    static constexpr std::array<const char *, 5> kLevels = {"trace", "debug", "info", "warning", "error"};
+    static constexpr std::array<const char *, 5> LEVELS = {"trace", "debug", "info", "warning", "error"};
     for (size_t i = 0; i < 5'000; ++i)
     {
         glz::generic_sorted_u64 json;
         json["index"] = static_cast<int64_t>(i);
-        json["level"] = std::string(kLevels[levelDist(rng)]);
+        json["level"] = std::string(LEVELS[levelDist(rng)]);
         json["component"] = std::string("component_") + std::to_string(i % 7);
         json["message"] = std::string("event ") + std::to_string(i) + " — value " + std::to_string(intDist(rng));
         json["counter"] = static_cast<int64_t>(intDist(rng));
@@ -706,14 +706,14 @@ TEST_CASE(
     // disabled cache would balloon the count toward `lines × keys` = 500.
     using namespace loglib;
 
-    constexpr size_t kLineCount = 100;
-    constexpr unsigned int kThreads = 4;
+    constexpr size_t LINE_COUNT = 100;
+    constexpr unsigned int THREADS = 4;
 
     // Vary values so lines aren't byte-identical, but lock the key surface
     // to {key1..key5}.
     std::vector<TestJsonLogFile::Line> lines;
-    lines.reserve(kLineCount);
-    for (size_t i = 0; i < kLineCount; ++i)
+    lines.reserve(LINE_COUNT);
+    for (size_t i = 0; i < LINE_COUNT; ++i)
     {
         glz::generic_sorted_u64 json;
         json["key1"] = static_cast<int64_t>(i);
@@ -728,20 +728,20 @@ TEST_CASE(
     JsonParser parser;
     ParserOptions opts;
     internal::AdvancedParserOptions advanced;
-    advanced.threads = kThreads;
+    advanced.threads = THREADS;
 
     KeyIndex::ResetInstrumentationCounters();
     const auto cachedResult = ParseWithSink(parser, testFile.GetFilePath(), opts, advanced);
     const std::size_t cachedCalls = KeyIndex::LoadGetOrInsertCount();
 
     REQUIRE(cachedResult.errors.empty());
-    REQUIRE(cachedResult.data.Lines().size() == kLineCount);
+    REQUIRE(cachedResult.data.Lines().size() == LINE_COUNT);
 
     // Upper bound: every Stage B worker may pay one canonical lookup per fresh key before its
     // local cache is populated. effectiveThreads × keys is the worst case; the actual number is
     // typically smaller because not every worker runs and not every worker sees every key.
-    INFO("cached run cachedCalls=" << cachedCalls << " bound=" << (kThreads * 5));
-    CHECK(cachedCalls <= static_cast<std::size_t>(kThreads) * 5);
+    INFO("cached run cachedCalls=" << cachedCalls << " bound=" << (THREADS * 5));
+    CHECK(cachedCalls <= static_cast<std::size_t>(THREADS) * 5);
 
     // Sanity: at least the keys themselves were registered exactly once per unique key.
     CHECK(cachedResult.data.SortedKeys().size() == 5);
@@ -885,15 +885,15 @@ TEST_CASE(
 
     InitializeTimezoneData();
 
-    constexpr size_t kLineCount = 1'000;
+    constexpr size_t LINE_COUNT = 1'000;
 
     // Build 1 000 lines spaced 1 ms apart so each line carries a distinct timestamp string.
     // Mixing fields per line keeps the per-key type cache from short-circuiting in a way
     // that could mask a regression in the promotion path.
     const auto base = std::chrono::system_clock::now();
     std::vector<TestJsonLogFile::Line> lines;
-    lines.reserve(kLineCount);
-    for (size_t i = 0; i < kLineCount; ++i)
+    lines.reserve(LINE_COUNT);
+    for (size_t i = 0; i < LINE_COUNT; ++i)
     {
         glz::generic_sorted_u64 json;
         json["timestamp"] = FormatIsoTimestamp(base + std::chrono::milliseconds(static_cast<int64_t>(i)));
@@ -924,10 +924,10 @@ TEST_CASE(
     const ParseResult result = ParseWithSink(parser, testFile.GetFilePath(), opts);
 
     REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == kLineCount);
+    REQUIRE(result.data.Lines().size() == LINE_COUNT);
 
     const KeyId timestampKeyId = result.data.Keys().Find("timestamp");
-    REQUIRE(timestampKeyId != kInvalidKeyId);
+    REQUIRE(timestampKeyId != INVALID_KEY_ID);
 
     // Every line's `timestamp` value must be a fully-promoted `TimeStamp` (no leftover
     // strings that the GUI back-fill loop would have to take a second pass on for
@@ -942,8 +942,8 @@ TEST_CASE(
             ++promoted;
         }
     }
-    INFO("promoted=" << promoted << " of " << kLineCount);
-    CHECK(promoted == kLineCount);
+    INFO("promoted=" << promoted << " of " << LINE_COUNT);
+    CHECK(promoted == LINE_COUNT);
 }
 
 TEST_CASE(
@@ -987,7 +987,7 @@ TEST_CASE(
     REQUIRE(result.data.Lines().size() == 5);
 
     const KeyId timestampKeyId = result.data.Keys().Find("timestamp");
-    REQUIRE(timestampKeyId != kInvalidKeyId);
+    REQUIRE(timestampKeyId != INVALID_KEY_ID);
 
     CHECK(std::holds_alternative<TimeStamp>(result.data.Lines()[0].GetValue(timestampKeyId)));
     CHECK_FALSE(std::holds_alternative<TimeStamp>(result.data.Lines()[1].GetValue(timestampKeyId)));
@@ -1010,7 +1010,7 @@ TEST_CASE(
     // `json_parser.cpp`'s empty-line handling).
     using namespace loglib;
 
-    constexpr size_t kEmptyLineCount = 100;
+    constexpr size_t EMPTY_LINE_COUNT = 100;
 
     // Layout: 5 valid lines, 100 blank lines, 5 valid lines. Absolute line numbers
     // observed by the consumer are 0-based indices into `LogFile::mLineOffsets`
@@ -1019,12 +1019,12 @@ TEST_CASE(
     // (`LogFile::GetLineCount`, which counts every consumed source line including
     // the blanks) must be 110.
     std::vector<std::string> raw;
-    raw.reserve(5 + kEmptyLineCount + 5);
+    raw.reserve(5 + EMPTY_LINE_COUNT + 5);
     for (size_t i = 0; i < 5; ++i)
     {
         raw.emplace_back(std::string(R"({"key":"value-)") + std::to_string(i + 1) + R"("})");
     }
-    for (size_t i = 0; i < kEmptyLineCount; ++i)
+    for (size_t i = 0; i < EMPTY_LINE_COUNT; ++i)
     {
         raw.emplace_back("");
     }
@@ -1115,7 +1115,7 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
     {
         INFO("i=" << i << " expected key=" << expected[i].first << " value=" << expected[i].second);
         const KeyId keyId = result.data.Keys().Find(expected[i].first);
-        REQUIRE(keyId != kInvalidKeyId);
+        REQUIRE(keyId != INVALID_KEY_ID);
         const LogValue value = result.data.Lines()[i].GetValue(keyId);
         CHECK(AsStringView(value) == std::string_view{expected[i].second});
     }
@@ -1141,7 +1141,7 @@ TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of E
     REQUIRE(result.data.Lines().size() == lines.size());
 
     const KeyId keyId = result.data.Keys().Find("k");
-    REQUIRE(keyId != kInvalidKeyId);
+    REQUIRE(keyId != INVALID_KEY_ID);
 
     const std::vector<std::string> expectedValues = {
         "a",
@@ -1168,7 +1168,7 @@ TEST_CASE(
     using namespace loglib;
 
     // (1) Wide row: 12 fields with `dup` duplicated, exercising the
-    //     lower_bound branch (kInsertSortedLowerBoundThreshold is 8).
+    //     lower_bound branch (INSERT_SORTED_LOWER_BOUND_THRESHOLD is 8).
     //     Hand-craft the JSON so simdjson preserves the duplicate
     //     (`glz::generic_sorted_u64` would dedup at construction time).
     //
@@ -1188,7 +1188,7 @@ TEST_CASE(
     REQUIRE(result.data.Lines().size() == lines.size());
 
     const KeyId dupKey = result.data.Keys().Find("dup");
-    REQUIRE(dupKey != kInvalidKeyId);
+    REQUIRE(dupKey != INVALID_KEY_ID);
 
     // Wide row exercises the lower_bound branch.
     {
@@ -1215,7 +1215,8 @@ namespace
 class InMemoryProducer final : public loglib::BytesProducer
 {
 public:
-    explicit InMemoryProducer(std::string bytes) : mBytes(std::move(bytes))
+    explicit InMemoryProducer(std::string bytes)
+        : mBytes(std::move(bytes))
     {
     }
 
@@ -1337,14 +1338,14 @@ TEST_CASE(
 
     // String values resolve through the source's per-line owned arena.
     const KeyId kKey = sink.keys.Find("k");
-    REQUIRE(kKey != kInvalidKeyId);
+    REQUIRE(kKey != INVALID_KEY_ID);
     CHECK(AsStringView(lines[0]->GetValue(kKey)) == std::string_view{"hello"});
     CHECK(AsStringView(lines[1]->GetValue(kKey)) == std::string_view{"world"});
     CHECK(AsStringView(lines[2]->GetValue(kKey)) == std::string_view{"three"});
 
     // Numeric values round-trip too, via the hot-path compact-storage path.
     const KeyId nKey = sink.keys.Find("n");
-    REQUIRE(nKey != kInvalidKeyId);
+    REQUIRE(nKey != INVALID_KEY_ID);
     CHECK(std::get<int64_t>(lines[0]->GetValue(nKey)) == 1);
     CHECK(std::get<int64_t>(lines[2]->GetValue(nKey)) == 3);
 

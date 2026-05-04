@@ -622,7 +622,7 @@ TEST_CASE(
     // would be permanently empty and the bug below would not be detected.
     KeyIndex &keys = table.Keys();
     const KeyId timestampId = keys.Find("timestamp");
-    REQUIRE(timestampId != kInvalidKeyId);
+    REQUIRE(timestampId != INVALID_KEY_ID);
 
     // Build a batch the way Stage C would: lines already carry promoted
     // `TimeStamp` values; "timestamp" is not in `newKeys` (pre-registered
@@ -689,23 +689,23 @@ TEST_CASE(
     "LogTable::AppendBatch -- RefreshColumnKeyIds skipped on steady-state batches", "[log_table][refresh_no_alloc]"
 )
 {
-    constexpr int kKeyCount = 100;
-    constexpr int kBatches = 1'000;
+    constexpr int KEY_COUNT = 100;
+    constexpr int BATCHES = 1'000;
 
     TestLogFile testFile("refresh_no_alloc.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
 
-    // Single column with kKeyCount keys; an empty `newKeys` must short-circuit
+    // Single column with KEY_COUNT keys; an empty `newKeys` must short-circuit
     // before any `Find` call.
     LogConfiguration cfg;
     LogConfiguration::Column wide;
     wide.header = "Wide";
     wide.printFormat = "{}";
     wide.type = LogConfiguration::Type::any;
-    wide.keys.reserve(kKeyCount);
-    for (int i = 0; i < kKeyCount; ++i)
+    wide.keys.reserve(KEY_COUNT);
+    for (int i = 0; i < KEY_COUNT; ++i)
     {
         wide.keys.push_back("k" + std::to_string(i));
     }
@@ -722,19 +722,19 @@ TEST_CASE(
     // Pre-populate every key in the KeyIndex once so each AppendBatch is a
     // pure steady-state batch (no `newKeys`, no auto-promotion).
     KeyIndex &keys = table.Keys();
-    for (int i = 0; i < kKeyCount; ++i)
+    for (int i = 0; i < KEY_COUNT; ++i)
     {
         static_cast<void>(keys.GetOrInsert("k" + std::to_string(i)));
     }
 
     // Reset counters so other test cases do not leak counts into us. Note:
     // BeginStreaming above runs the *full* RefreshColumnKeyIds (which does
-    // pay the kKeyCount Find calls) — but that is expected and not what we
+    // pay the KEY_COUNT Find calls) — but that is expected and not what we
     // are measuring here. We are measuring the per-batch AppendBatch
     // contribution in the steady state.
     KeyIndex::ResetInstrumentationCounters();
 
-    for (int batchIdx = 0; batchIdx < kBatches; ++batchIdx)
+    for (int batchIdx = 0; batchIdx < BATCHES; ++batchIdx)
     {
         StreamedBatch batch;
         batch.firstLineNumber = static_cast<size_t>(batchIdx + 1);
@@ -749,14 +749,14 @@ TEST_CASE(
     // is exactly zero.
     const std::size_t findCount = KeyIndex::LoadFindCount();
     INFO(
-        "Find calls = " << findCount << " over " << kBatches << " AppendBatch calls × " << kKeyCount
+        "Find calls = " << findCount << " over " << BATCHES << " AppendBatch calls × " << KEY_COUNT
                         << " keys (expected 0 post-task-9.0)"
     );
     CHECK(findCount == 0);
 
     // Sanity: the lines actually accumulated and the column count did not
     // grow (no `newKeys` arrived).
-    CHECK(table.RowCount() == static_cast<size_t>(kBatches));
+    CHECK(table.RowCount() == static_cast<size_t>(BATCHES));
     CHECK(table.ColumnCount() == 1);
 }
 
@@ -774,7 +774,7 @@ TEST_CASE(
     "LogTable::AppendBatch -- RefreshColumnKeyIdsForKeys skips columns without overlap", "[log_table][refresh_no_alloc]"
 )
 {
-    constexpr int kUntouchedKeyCount = 50;
+    constexpr int UNTOUCHED_KEY_COUNT = 50;
 
     TestLogFile testFile("refresh_no_alloc_incremental.json");
     testFile.Write("");
@@ -794,8 +794,8 @@ TEST_CASE(
     untouched.header = "Untouched";
     untouched.printFormat = "{}";
     untouched.type = LogConfiguration::Type::any;
-    untouched.keys.reserve(kUntouchedKeyCount);
-    for (int i = 0; i < kUntouchedKeyCount; ++i)
+    untouched.keys.reserve(UNTOUCHED_KEY_COUNT);
+    for (int i = 0; i < UNTOUCHED_KEY_COUNT; ++i)
     {
         untouched.keys.push_back("u" + std::to_string(i));
     }
@@ -813,7 +813,7 @@ TEST_CASE(
     // ("k0_new") so BeginStreaming's `RefreshColumnKeyIds` walks them all.
     KeyIndex &keys = table.Keys();
     static_cast<void>(keys.GetOrInsert("k0"));
-    for (int i = 0; i < kUntouchedKeyCount; ++i)
+    for (int i = 0; i < UNTOUCHED_KEY_COUNT; ++i)
     {
         static_cast<void>(keys.GetOrInsert("u" + std::to_string(i)));
     }
@@ -910,34 +910,34 @@ TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", 
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-    constexpr size_t kCap = 1000;
-    constexpr size_t kBatchSize = 100;
-    constexpr size_t kTotalLines = 5000;
-    static_assert(kTotalLines % kBatchSize == 0, "kBatchSize must evenly divide kTotalLines");
+    constexpr size_t CAP = 1000;
+    constexpr size_t BATCH_SIZE = 100;
+    constexpr size_t TOTAL_LINES = 5000;
+    static_assert(TOTAL_LINES % BATCH_SIZE == 0, "BATCH_SIZE must evenly divide TOTAL_LINES");
 
-    for (size_t batchStart = 0; batchStart < kTotalLines; batchStart += kBatchSize)
+    for (size_t batchStart = 0; batchStart < TOTAL_LINES; batchStart += BATCH_SIZE)
     {
         const bool declareNewKey = (batchStart == 0);
-        table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, batchStart + 1, kBatchSize, declareNewKey));
+        table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, batchStart + 1, BATCH_SIZE, declareNewKey));
 
         // Mirror `LogModel::AppendBatch`'s post-append trim: any rows past
         // the cap are evicted in source order. Cap is checked *after*
         // append because PreviewAppend would also be valid here, but the
         // post-append form keeps the test self-contained.
-        if (table.RowCount() > kCap)
+        if (table.RowCount() > CAP)
         {
-            table.EvictPrefixRows(table.RowCount() - kCap);
+            table.EvictPrefixRows(table.RowCount() - CAP);
         }
-        REQUIRE(table.RowCount() <= kCap);
+        REQUIRE(table.RowCount() <= CAP);
     }
 
-    REQUIRE(table.RowCount() == kCap);
-    // The first surviving row's `value` is `kTotalLines - kCap + 1 = 4001`;
-    // the last is `kTotalLines = 5000`.
+    REQUIRE(table.RowCount() == CAP);
+    // The first surviving row's `value` is `TOTAL_LINES - CAP + 1 = 4001`;
+    // the last is `TOTAL_LINES = 5000`.
     const auto firstValue = std::get<int64_t>(table.GetValue(0, 0));
-    const auto lastValue = std::get<int64_t>(table.GetValue(kCap - 1, 0));
-    CHECK(firstValue == static_cast<int64_t>(kTotalLines - kCap + 1));
-    CHECK(lastValue == static_cast<int64_t>(kTotalLines));
+    const auto lastValue = std::get<int64_t>(table.GetValue(CAP - 1, 0));
+    CHECK(firstValue == static_cast<int64_t>(TOTAL_LINES - CAP + 1));
+    CHECK(lastValue == static_cast<int64_t>(TOTAL_LINES));
 }
 
 TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[log_table][retention]")
@@ -950,8 +950,8 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
     KeyIndex &keys = table.Keys();
     const KeyId valueKey = keys.GetOrInsert(std::string("value"));
 
-    constexpr size_t kCap = 1000;
-    constexpr size_t kGiantBatch = 2000;
+    constexpr size_t CAP = 1000;
+    constexpr size_t GIANT_BATCH = 2000;
 
     // Mirrors the GUI-side "giant-batch collapse": the head
     // of the batch is dropped before it lands in `LogTable::AppendBatch`, so
@@ -959,17 +959,17 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
     // numbered to match what the GUI side would have surfaced after head
     // drop; the source's first AppendLine bumps `mNextLineId` past the
     // head-dropped range so the published id matches.
-    const size_t headDrop = kGiantBatch - kCap;
+    const size_t headDrop = GIANT_BATCH - CAP;
     for (size_t i = 0; i < headDrop; ++i)
     {
         streamSourceRef.AppendLine("dropped" + std::to_string(i + 1), std::string{});
     }
     streamSourceRef.EvictBefore(headDrop + 1);
-    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, kCap, /*declareNewKey=*/true));
+    table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, CAP, /*declareNewKey=*/true));
 
-    REQUIRE(table.RowCount() == kCap);
+    REQUIRE(table.RowCount() == CAP);
     CHECK(std::get<int64_t>(table.GetValue(0, 0)) == static_cast<int64_t>(headDrop + 1));
-    CHECK(std::get<int64_t>(table.GetValue(kCap - 1, 0)) == static_cast<int64_t>(kGiantBatch));
+    CHECK(std::get<int64_t>(table.GetValue(CAP - 1, 0)) == static_cast<int64_t>(GIANT_BATCH));
 }
 
 TEST_CASE(
@@ -1044,8 +1044,8 @@ TEST_CASE(
 
     const KeyId k1 = keys.Find(std::string("key1"));
     const KeyId k2 = keys.Find(std::string("key2"));
-    REQUIRE(k1 != kInvalidKeyId);
-    REQUIRE(k2 != kInvalidKeyId);
+    REQUIRE(k1 != INVALID_KEY_ID);
+    REQUIRE(k2 != INVALID_KEY_ID);
 
     REQUIRE(table.RowCount() == 1);
     REQUIRE(table.Data().Sources().size() == 1);

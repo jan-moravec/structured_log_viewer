@@ -8,7 +8,8 @@
 namespace loglib::internal
 {
 
-BufferingSink::BufferingSink(std::unique_ptr<FileLineSource> source) : mSource(std::move(source))
+BufferingSink::BufferingSink(std::unique_ptr<FileLineSource> source)
+    : mSource(std::move(source))
 {
 }
 

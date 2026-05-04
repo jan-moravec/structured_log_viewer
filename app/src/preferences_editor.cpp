@@ -12,7 +12,8 @@
 
 #include <cstddef>
 
-PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
+PreferencesEditor::PreferencesEditor(QWidget *parent)
+    : QWidget{parent}
 {
     setWindowFlags(Qt::Window);
     setWindowTitle("Preferences");
@@ -27,10 +28,10 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
     mSizeSpinBox->setRange(6, 72);
 
     mStreamRetentionSpinBox->setRange(
-        static_cast<int>(StreamingControl::kMinRetentionLines), static_cast<int>(StreamingControl::kMaxRetentionLines)
+        static_cast<int>(StreamingControl::MIN_RETENTION_LINES), static_cast<int>(StreamingControl::MAX_RETENTION_LINES)
     );
     mStreamRetentionSpinBox->setSingleStep(1000);
-    mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::kDefaultRetentionLines));
+    mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::DEFAULT_RETENTION_LINES));
     mStreamRetentionSpinBox->setToolTip(
         "Maximum number of streamed lines kept in memory. Oldest lines are dropped when the cap "
         "is reached. Higher values use more memory."

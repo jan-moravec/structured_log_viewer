@@ -135,7 +135,7 @@ public:
     ///     visible+buffered stays within `cap`.
     ///   - **Idle**: just record the value for the next session.
     /// `cap == 0` means unbounded; the live-tail entry substitutes
-    /// `StreamingControl::kDefaultRetentionLines` if still 0.
+    /// `StreamingControl::DEFAULT_RETENTION_LINES` if still 0.
     void SetRetentionCap(size_t cap);
 
     /// Current retention cap (`0` means unbounded). GUI thread only.
@@ -198,7 +198,7 @@ private:
     std::vector<std::string> mStreamingErrors;
 
     /// Retention cap. `0` means unbounded; the live-tail entry applies
-    /// `StreamingControl::kDefaultRetentionLines` when still 0 at
+    /// `StreamingControl::DEFAULT_RETENTION_LINES` when still 0 at
     /// session start.
     size_t mRetentionCap = 0;
 

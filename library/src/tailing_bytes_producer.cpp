@@ -31,9 +31,9 @@
 #endif
 #include <windows.h>
 #else
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -53,9 +53,9 @@ namespace
 #if defined(_WIN32)
 // `INVALID_HANDLE_VALUE` is a reinterpret_cast and not a constant
 // expression in MSVC's C++23 mode (C2131); use a plain `const` global.
-const internal::NativeFileHandle kInvalidHandle = INVALID_HANDLE_VALUE;
+const internal::NativeFileHandle INVALID_HANDLE = INVALID_HANDLE_VALUE;
 #else
-constexpr internal::NativeFileHandle kInvalidHandle = -1;
+constexpr internal::NativeFileHandle INVALID_HANDLE = -1;
 #endif
 
 bool IsValidHandle(internal::NativeFileHandle handle) noexcept
@@ -97,7 +97,7 @@ std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
 }
 
 /// Open @p path for read with maximum producer-friendly share flags.
-/// Returns `kInvalidHandle` on failure.
+/// Returns `INVALID_HANDLE` on failure.
 internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
 {
 #if defined(_WIN32)
@@ -301,7 +301,7 @@ private:
     SourceStatus mLastReportedStatus = SourceStatus::Running;
 
     // Worker-thread-only state (no lock needed):
-    NativeFileHandle mHandle = kInvalidHandle;
+    NativeFileHandle mHandle = INVALID_HANDLE;
     FileIdentity mIdentityAtOpen;
     uint64_t mReadOffset = 0;
     bool mRotationInProgress = false;
@@ -338,8 +338,11 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
 )
     // Canonicalize up front so every downstream computation (basename,
     // display name, watcher parent) sees an absolute path.
-    : mPath(CanonicalizeWatchedPath(std::move(path))), mFileName(mPath.filename().string()),
-      mDisplayName(mPath.string()), mRetentionLines(std::max<size_t>(retentionLines, 1)), mOptions(options)
+    : mPath(CanonicalizeWatchedPath(std::move(path))),
+      mFileName(mPath.filename().string()),
+      mDisplayName(mPath.string()),
+      mRetentionLines(std::max<size_t>(retentionLines, 1)),
+      mOptions(options)
 {
     // Open synchronously. Transient ENOENT during tailing is handled by
     // the worker's rotation branch (ii), not here.
@@ -788,7 +791,7 @@ void TailingBytesProducerImpl::CloseHandle() noexcept
     {
         CloseNativeHandle(mHandle);
     }
-    mHandle = kInvalidHandle;
+    mHandle = INVALID_HANDLE;
 }
 
 void TailingBytesProducerImpl::AppendBytesAndSplitLocked(const char *data, size_t size)
@@ -830,8 +833,8 @@ void TailingBytesProducerImpl::CompactReadyBufferIfNeededLocked()
 {
     // Compact once half the buffer (or 64 KiB, whichever is larger) is
     // consumed: amortised O(1) per byte.
-    constexpr size_t kMinCompactBytes = 64 * 1024;
-    if (mReadyConsumed >= kMinCompactBytes && mReadyConsumed * 2 >= mReadyBuffer.size())
+    constexpr size_t MIN_COMPACT_BYTES = 64 * 1024;
+    if (mReadyConsumed >= MIN_COMPACT_BYTES && mReadyConsumed * 2 >= mReadyBuffer.size())
     {
         mReadyBuffer.erase(mReadyBuffer.begin(), mReadyBuffer.begin() + mReadyConsumed);
         mReadyConsumed = 0;

@@ -76,13 +76,13 @@ template <class Field> FastFieldKey ExtractFieldKey(Field &field)
 
 /// Crossover at which `InsertSorted` switches from a linear back-scan to
 /// `std::lower_bound`. Tuned for the `[wide]` benchmark.
-constexpr size_t kInsertSortedLowerBoundThreshold = 8;
+constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
 void InsertSorted(
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
 )
 {
-    if (out.size() < kInsertSortedLowerBoundThreshold)
+    if (out.size() < INSERT_SORTED_LOWER_BOUND_THRESHOLD)
     {
         auto it = out.end();
         while (it != out.begin())
@@ -802,7 +802,7 @@ void JsonParser::ParseStreaming(
 {
     LogFile &file = source.File();
     const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
-                                                          : internal::AdvancedParserOptions::kDefaultBatchSizeBytes;
+                                                          : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
 
     const char *fileBegin = file.Data();
     const size_t fileSize = file.Size();

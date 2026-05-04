@@ -39,8 +39,8 @@ inline double LoadTimeScale() noexcept
 /// Cached test-time multiplier — read the env var once per process.
 inline double TimeScale() noexcept
 {
-    static const double kScale = LoadTimeScale();
-    return kScale;
+    static const double SCALE = LoadTimeScale();
+    return SCALE;
 }
 
 /// Scale a `std::chrono::milliseconds` deadline by

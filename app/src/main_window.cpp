@@ -120,7 +120,8 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
@@ -825,16 +826,16 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
         return;
     }
 
-    constexpr size_t kMaxErrorsShown = 20;
+    constexpr size_t MAX_ERRORS_SHOWN = 20;
     QString message;
-    const size_t shown = std::min(errors.size(), kMaxErrorsShown);
+    const size_t shown = std::min(errors.size(), MAX_ERRORS_SHOWN);
     for (size_t i = 0; i < shown; ++i)
     {
         message += QString::fromStdString(errors[i]) + QLatin1Char('\n');
     }
-    if (errors.size() > kMaxErrorsShown)
+    if (errors.size() > MAX_ERRORS_SHOWN)
     {
-        message += QString("... and %1 more error(s).").arg(errors.size() - kMaxErrorsShown);
+        message += QString("... and %1 more error(s).").arg(errors.size() - MAX_ERRORS_SHOWN);
     }
 
     QMessageBox::warning(this, title, message);
@@ -1060,7 +1061,6 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
 
 void MainWindow::UpdateFilters()
 {
-
     std::vector<std::unique_ptr<FilterRule>> rules;
     for (const auto &filter : mFilters)
     {

@@ -31,7 +31,9 @@ LogData::LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines,
 }
 
 LogData::LogData(LogData &&other) noexcept
-    : mSources(std::move(other.mSources)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys)),
+    : mSources(std::move(other.mSources)),
+      mLines(std::move(other.mLines)),
+      mKeys(std::move(other.mKeys)),
       mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
 {
     // KeyIndex moved address — rebind. `LineSource` heap addresses are

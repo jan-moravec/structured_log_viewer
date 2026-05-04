@@ -19,7 +19,7 @@ namespace loglib::internal
 /// case of consecutive lines sharing a timestamp.
 struct LastTimestampBytesHit
 {
-    KeyId keyId = kInvalidKeyId;
+    KeyId keyId = INVALID_KEY_ID;
     std::string bytes;
     TimeStamp parsed{};
     bool valid = false;

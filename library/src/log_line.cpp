@@ -208,7 +208,7 @@ LogValue LogLine::GetValue(const std::string &key) const
         return LogValue{std::monostate{}};
     }
     const KeyId id = mKeys->Find(key);
-    if (id == kInvalidKeyId)
+    if (id == INVALID_KEY_ID)
     {
         return LogValue{std::monostate{}};
     }
@@ -262,7 +262,7 @@ void LogLine::SetValue(const std::string &key, LogValue value)
         throw std::runtime_error("LogLine::SetValue(string): KeyIndex back-pointer is unset");
     }
     const KeyId id = mKeys->Find(key);
-    if (id == kInvalidKeyId)
+    if (id == INVALID_KEY_ID)
     {
         throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
     }
