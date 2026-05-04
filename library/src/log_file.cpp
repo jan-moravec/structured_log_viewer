@@ -105,7 +105,7 @@ std::string LogFile::GetLine(size_t lineNumber) const
 
     // Stop offset is one byte past the trailing '\n'. Files without a trailing
     // newline use `fileSize + 1` as the sentinel; clamp against the mmap size.
-    size_t length = static_cast<size_t>(stopOffset - startOffset - 1);
+    size_t length = stopOffset - startOffset - 1;
 
     const size_t mmapSize = mMmap.size();
     if (startOffset + length > mmapSize)
@@ -152,7 +152,7 @@ std::string_view LogFile::OwnedStringsView() const noexcept
 
 uint64_t LogFile::AppendOwnedStrings(std::string_view bytes)
 {
-    const auto offset = static_cast<uint64_t>(mOwnedStrings.size());
+    const uint64_t offset = mOwnedStrings.size();
     mOwnedStrings.append(bytes.data(), bytes.size());
     return offset;
 }

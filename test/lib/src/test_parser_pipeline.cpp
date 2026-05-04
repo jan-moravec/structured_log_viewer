@@ -179,7 +179,7 @@ public:
                     // `LogFile` arena and rebases the offsets on the way
                     // out — the inline `worker.PromoteTimestamps` call
                     // below sees the per-batch view.
-                    const auto offset = static_cast<uint64_t>(parsed.ownedStringsArena.size());
+                    const uint64_t offset = parsed.ownedStringsArena.size();
                     parsed.ownedStringsArena.append(valueView.data(), valueView.size());
                     auto val = loglib::internal::CompactLogValue::MakeOwnedString(
                         offset, static_cast<uint32_t>(valueView.size())

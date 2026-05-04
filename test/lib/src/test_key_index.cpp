@@ -281,7 +281,7 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
             {
                 continue;
             }
-            const KeyId id = static_cast<KeyId>(static_cast<unsigned>(i) % static_cast<unsigned>(limit));
+            const KeyId id = static_cast<KeyId>(i) % limit;
             const std::string_view view = index.KeyOf(id);
             REQUIRE(index.Find(view) == id);
             if (writerDone.load(std::memory_order_acquire) && i > 1024)

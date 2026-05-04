@@ -715,7 +715,7 @@ void LogModel::SetRetentionCap(size_t cap)
     }
 
     const bool paused = mSink && mSink->IsPaused();
-    const size_t visible = static_cast<size_t>(mLogTable.RowCount());
+    const size_t visible = mLogTable.RowCount();
 
     if (!paused)
     {

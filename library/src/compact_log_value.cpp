@@ -4,11 +4,13 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <chrono>
-#include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -145,13 +147,13 @@ CompactLogValue ToCompactLogValue(
                     const auto offset = static_cast<uint64_t>(alt.data() - fileBegin);
                     return CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
                 }
-                const auto offset = static_cast<uint64_t>(ownedStringArena.size());
+                const uint64_t offset = ownedStringArena.size();
                 ownedStringArena.append(alt.data(), alt.size());
                 return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(alt.size()));
             }
             else if constexpr (std::is_same_v<T, std::string>)
             {
-                const auto offset = static_cast<uint64_t>(ownedStringArena.size());
+                const uint64_t offset = ownedStringArena.size();
                 ownedStringArena.append(alt.data(), alt.size());
                 return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(alt.size()));
             }
@@ -208,6 +210,16 @@ namespace
 /// CompactLogValue is a POD), so we can use raw `operator new`/`delete`
 /// to skip the per-element ctor/dtor that `std::vector` would run.
 constexpr size_t PAIR_BYTES = sizeof(std::pair<KeyId, CompactLogValue>);
+
+// libstdc++ historically marks `std::pair`'s special members as
+// user-provided even when they degrade to trivial copies, which trips
+// `-Wclass-memaccess` on direct `memcpy`/`memmove`. Use the typed
+// algorithms below; they compile down to the same bitwise copy under
+// optimisation when the value type is trivially copyable.
+static_assert(
+    std::is_trivially_copyable_v<std::pair<KeyId, CompactLogValue>>,
+    "CompactLineFields relies on bitwise copy for its slot pairs"
+);
 
 std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
 {
@@ -283,7 +295,7 @@ void CompactLineFields::Reserve(uint32_t capacity)
     auto *fresh = AllocatePairs(capacity);
     if (mSize > 0)
     {
-        std::memcpy(fresh, mData, static_cast<size_t>(mSize) * PAIR_BYTES);
+        std::uninitialized_copy_n(mData, mSize, fresh);
     }
     DeallocatePairs(mData);
     mData = fresh;
@@ -292,7 +304,8 @@ void CompactLineFields::Reserve(uint32_t capacity)
 
 void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
 {
-    if (count > mCapacity)
+    const bool reused = (count <= mCapacity);
+    if (!reused)
     {
         DeallocatePairs(mData);
         mData = AllocatePairs(count);
@@ -300,7 +313,19 @@ void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
     }
     if (count > 0)
     {
-        std::memcpy(mData, values, static_cast<size_t>(count) * PAIR_BYTES);
+        // When reusing the existing buffer the slots are previously-
+        // constructed (assigned by `EmplaceBack` / `Insert` / earlier
+        // `AssignSorted`); on a fresh allocation they are raw bytes.
+        // For trivially-copyable pairs the two operations collapse to
+        // the same memcpy under -O2.
+        if (reused)
+        {
+            std::copy_n(values, count, mData);
+        }
+        else
+        {
+            std::uninitialized_copy_n(values, count, mData);
+        }
     }
     mSize = count;
 }
@@ -328,7 +353,11 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
     }
     if (position < mSize)
     {
-        std::memmove(mData + position + 1, mData + position, static_cast<size_t>(mSize - position) * PAIR_BYTES);
+        // Shift `[position, mSize)` one slot to the right so we can
+        // overwrite slot `position`. `std::copy_backward` correctly
+        // handles the overlapping range; for trivially-copyable pairs
+        // the compiler lowers it to memmove.
+        std::copy_backward(mData + position, mData + mSize, mData + mSize + 1);
     }
     mData[position] = {key, value};
     ++mSize;
@@ -361,7 +390,7 @@ void CompactLineFields::ShrinkToFit()
         return;
     }
     auto *fresh = AllocatePairs(mSize);
-    std::memcpy(fresh, mData, static_cast<size_t>(mSize) * PAIR_BYTES);
+    std::uninitialized_copy_n(mData, mSize, fresh);
     DeallocatePairs(mData);
     mData = fresh;
     mCapacity = mSize;

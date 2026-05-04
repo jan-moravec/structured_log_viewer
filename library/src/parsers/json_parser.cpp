@@ -130,7 +130,7 @@ internal::CompactLogValue MakeStringCompact(
         const auto offset = static_cast<uint64_t>(sv.data() - fileBegin);
         return internal::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(sv.size()));
     }
-    const auto offset = static_cast<uint64_t>(ownedArena.size());
+    const uint64_t offset = ownedArena.size();
     ownedArena.append(sv.data(), sv.size());
     return internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
 }
@@ -187,7 +187,7 @@ internal::CompactLogValue ExtractRawJsonValue(
             return MakeStringCompact(rawJson, fileBegin, fileSize, ownedArena);
         }
         // Padded-scratch fallback: copy into the per-batch arena.
-        const auto offset = static_cast<uint64_t>(ownedArena.size());
+        const uint64_t offset = ownedArena.size();
         ownedArena.append(rawJson.data(), rawJson.size());
         return internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(rawJson.size()));
     }

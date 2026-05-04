@@ -513,7 +513,7 @@ int main(int argc, char *argv[])
             std::cerr << "Write failed at byte " << totalBytes << '\n';
             return 1;
         }
-        const auto bytesWritten = static_cast<std::uint64_t>(serialized.size()) + 1U;
+        const std::uint64_t bytesWritten = serialized.size() + 1U;
         totalBytes += bytesWritten;
         bytesInFile += bytesWritten;
         ++totalLines;

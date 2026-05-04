@@ -140,7 +140,7 @@ private:
 struct StreamingRun
 {
     std::unique_ptr<LogModel> model;
-    int finishedCount = 0;
+    qsizetype finishedCount = 0;
     bool cancelled = false;
 };
 
@@ -474,7 +474,7 @@ private slots:
         // for each key (especially "uint" → unsigned_integer via 18446744073709551610).
         QCOMPARE(sortVal(0, colStr).toString(), QStringLiteral("alpha"));
         QCOMPARE(sortVal(0, colInt).toLongLong(), qint64(-7));
-        QCOMPARE(sortVal(0, colUint).toULongLong(), quint64(18446744073709551610ULL));
+        QCOMPARE(sortVal(0, colUint).toULongLong(), 18446744073709551610ULL);
         QCOMPARE(sortVal(0, colDbl).toDouble(), 3.14);
         QCOMPARE(sortVal(0, colFlag).toBool(), true);
         QVERIFY(!sortVal(0, colNul).isValid());
@@ -1466,7 +1466,7 @@ private slots:
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(valueKey, loglib::LogValue{static_cast<int64_t>(lineNumber)});
                 batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
-                batch.localLineOffsets.push_back(static_cast<uint64_t>(lineNumber * 16));
+                batch.localLineOffsets.push_back(lineNumber * 16);
             }
             sink->OnBatch(std::move(batch));
         }
@@ -1606,7 +1606,7 @@ private slots:
 
         const size_t pausedCount = 8;
         sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, pausedCount, /*declareNewKey=*/true));
-        QCOMPARE(static_cast<size_t>(sink->PausedLineCount()), pausedCount);
+        QCOMPARE(sink->PausedLineCount(), pausedCount);
         QCOMPARE(model.rowCount(), 0);
 
         // Synchronous-Resume contract: the coalesced paused buffer must
@@ -1616,7 +1616,7 @@ private slots:
         sink->Resume();
         QVERIFY(!sink->IsPaused());
         QCOMPARE(static_cast<size_t>(model.rowCount()), pausedCount);
-        QCOMPARE(static_cast<size_t>(sink->PausedLineCount()), 0);
+        QCOMPARE(sink->PausedLineCount(), size_t{0});
 
         // Drive a follow-up `OnBatch` directly (mirroring a worker that
         // fires immediately after `mPaused` was cleared) — its rows must
@@ -2215,7 +2215,7 @@ private:
         {
             const QVariant sortValue = run.model->data(run.model->index(row, tsCol), LogModelItemDataRole::SortRole);
             QVERIFY2(sortValue.isValid(), qPrintable(QStringLiteral("row %1 timestamp must be promoted").arg(row)));
-            QCOMPARE(static_cast<int>(sortValue.typeId()), static_cast<int>(QMetaType::LongLong));
+            QCOMPARE(sortValue.typeId(), static_cast<int>(QMetaType::LongLong));
 
             const QString display = run.model->data(run.model->index(row, tsCol), Qt::DisplayRole).toString();
             QVERIFY2(

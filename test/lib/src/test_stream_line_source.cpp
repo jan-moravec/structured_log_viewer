@@ -117,7 +117,7 @@ TEST_CASE("StreamLineSource: ResolveOwnedBytes resolves per-line arenas", "[Stre
 
     // Out-of-range payloads return an empty view, not a partial one.
     CHECK(source.ResolveOwnedBytes(0, 1024, id1).empty());
-    CHECK(source.ResolveOwnedBytes(static_cast<uint64_t>(lineOneArena.size()), 1, id1).empty());
+    CHECK(source.ResolveOwnedBytes(lineOneArena.size(), 1, id1).empty());
 }
 
 TEST_CASE("StreamLineSource: ResolveMmapBytes always returns empty (defensive)", "[StreamLineSource]")

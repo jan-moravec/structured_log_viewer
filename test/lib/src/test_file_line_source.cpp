@@ -66,7 +66,7 @@ TEST_CASE("FileLineSource: ResolveMmapBytes indexes into the mmap data", "[FileL
 
     // Out-of-range queries return an empty view (not UB).
     CHECK(source.ResolveMmapBytes(0, 1024, /*lineId=*/0).empty());
-    CHECK(source.ResolveMmapBytes(static_cast<uint64_t>(content.size()) + 1, 1, /*lineId=*/0).empty());
+    CHECK(source.ResolveMmapBytes(content.size() + 1, 1, /*lineId=*/0).empty());
 }
 
 TEST_CASE("FileLineSource: ResolveOwnedBytes indexes into the LogFile owned-string arena", "[FileLineSource]")

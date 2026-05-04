@@ -75,7 +75,7 @@ uint64_t StreamLineSource::AppendOwnedBytes(size_t lineId, std::string_view byte
         );
     }
     std::string &arena = mLineOwnedBytes[IndexForLocked(lineId)];
-    const auto offset = static_cast<uint64_t>(arena.size());
+    const uint64_t offset = arena.size();
     arena.append(bytes.data(), bytes.size());
     return offset;
 }
