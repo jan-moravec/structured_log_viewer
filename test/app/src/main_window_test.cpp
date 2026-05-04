@@ -21,8 +21,11 @@
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 
+#include <QAction>
 #include <QFile>
 #include <QFileInfo>
+#include <QMenu>
+#include <QMenuBar>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollBar>
@@ -301,6 +304,48 @@ loglib::StreamedBatch MakeSyntheticBatch(
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
+}
+
+// Locate a UI-file-declared `QAction` by `objectName`. Tries
+// `QObject::findChild` first; falls back to walking the menu bar's
+// menus and matching `objectName()` against their `actions()` list.
+//
+// Why the fallback exists: on the GitHub-hosted Linux runner with
+// Qt 6.8 + the offscreen QPA plugin, `mainWindow->findChild<QAction
+// *>(name)` reliably returns nullptr for actions declared inside
+// `<widget class="QMainWindow">` even though they exist as
+// `ui->actionXxx` and are wired into menus and toolbars
+// (Windows / macOS with the same Qt build are unaffected). The
+// `<addaction>` registrations in the .ui file place the actions
+// into the menu bar's menus, so walking that hierarchy finds them
+// reliably.
+QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
+{
+    if (QAction *direct = window->findChild<QAction *>(name))
+    {
+        return direct;
+    }
+    QMenuBar *menuBar = window->menuBar();
+    if (menuBar == nullptr)
+    {
+        return nullptr;
+    }
+    for (QAction *menuAction : menuBar->actions())
+    {
+        QMenu *menu = menuAction->menu();
+        if (menu == nullptr)
+        {
+            continue;
+        }
+        for (QAction *child : menu->actions())
+        {
+            if (child->objectName() == name)
+            {
+                return child;
+            }
+        }
+    }
+    return nullptr;
 }
 
 } // namespace
@@ -1595,9 +1640,9 @@ private slots:
     // a stuck checked state from any other path can never persist.
     void testStreamMenuActionsDisabledWhileIdle()
     {
-        QAction *pauseAction = window->findChild<QAction *>(QStringLiteral("actionPauseStream"));
-        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
-        QAction *stopAction = window->findChild<QAction *>(QStringLiteral("actionStopStream"));
+        QAction *pauseAction = FindActionByObjectName(window, QStringLiteral("actionPauseStream"));
+        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
+        QAction *stopAction = FindActionByObjectName(window, QStringLiteral("actionStopStream"));
         QVERIFY(pauseAction != nullptr);
         QVERIFY(followAction != nullptr);
         QVERIFY(stopAction != nullptr);
@@ -1628,7 +1673,7 @@ private slots:
     // existing Pause-toggle reset in the slot.
     void testStaleCheckedPauseClearedOnTeardown()
     {
-        QAction *pauseAction = window->findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        QAction *pauseAction = FindActionByObjectName(window, QStringLiteral("actionPauseStream"));
         QVERIFY(pauseAction != nullptr);
 
         // Simulate the bug condition: forcibly enable the action and
@@ -1679,7 +1724,7 @@ private slots:
     // toggle alone.
     void testFollowTailIgnoresProgrammaticScrollbarChanges()
     {
-        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
         LogTableView *tableView = window->findChild<LogTableView *>();
         QVERIFY(followAction != nullptr);
         QVERIFY(tableView != nullptr);
@@ -1936,7 +1981,7 @@ private slots:
     // user clicking the scrollbar.
     void testFollowNewestDisengagesOnScrollbarAction()
     {
-        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
         LogTableView *tableView = window->findChild<LogTableView *>();
         QVERIFY(followAction != nullptr);
         QVERIFY(tableView != nullptr);
@@ -1980,7 +2025,7 @@ private slots:
         StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
         LogTableView *tableView = window->findChild<LogTableView *>();
         LogModel *model = window->findChild<LogModel *>();
-        QAction *followAction = window->findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
         QVERIFY(streamOrderProxy != nullptr);
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
