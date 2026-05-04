@@ -211,14 +211,19 @@ namespace
 /// to skip the per-element ctor/dtor that `std::vector` would run.
 constexpr size_t PAIR_BYTES = sizeof(std::pair<KeyId, CompactLogValue>);
 
-// libstdc++ historically marks `std::pair`'s special members as
-// user-provided even when they degrade to trivial copies, which trips
-// `-Wclass-memaccess` on direct `memcpy`/`memmove`. Use the typed
-// algorithms below; they compile down to the same bitwise copy under
-// optimisation when the value type is trivially copyable.
+// `CompactLineFields` allocates with raw `::operator new` and frees
+// with raw `::operator delete`, so the value type must be trivially
+// destructible (no per-slot dtor pass). `std::pair`'s trivial-copyable
+// status differs across stdlibs — libstdc++ defaults its copy
+// assignment when both members are trivially copyable, libc++ does not
+// — so we deliberately do not assert that here. The typed
+// `std::uninitialized_copy_n` / `std::copy_n` / `std::copy_backward`
+// calls below are correct regardless and lower to the same memcpy /
+// memmove the previous direct-`memcpy` code emitted under -O2 (without
+// tripping -Wclass-memaccess on libstdc++).
 static_assert(
-    std::is_trivially_copyable_v<std::pair<KeyId, CompactLogValue>>,
-    "CompactLineFields relies on bitwise copy for its slot pairs"
+    std::is_trivially_destructible_v<std::pair<KeyId, CompactLogValue>>,
+    "CompactLineFields uses raw operator new/delete; slot pairs must have a trivial destructor"
 );
 
 std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
