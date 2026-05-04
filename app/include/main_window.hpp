@@ -9,6 +9,7 @@
 
 #include <loglib/log_configuration.hpp>
 
+#include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QLabel>
@@ -53,6 +54,16 @@ public:
     /// and `setAlternatingRowColors`, which all need to move together.
     /// Idempotent.
     void ApplyStreamingDisplayOrder();
+
+    /// Test-only lookup that returns the UI-file-declared `QAction`
+    /// with the given `objectName`, or `nullptr` if no such action
+    /// is recognised. Works around a Qt 6.8 + Linux + offscreen-QPA
+    /// case where `QObject::findChild<QAction*>(name)` on the
+    /// `QMainWindow` returns null for actions declared inside
+    /// `<widget class="QMainWindow">` even though `ui->actionXxx`
+    /// is valid. Going through `ui->` directly bypasses the
+    /// QObject-tree traversal entirely.
+    [[nodiscard]] QAction *FindUiAction(const QString &name) const;
 
 protected:
     bool event(QEvent *event) override;

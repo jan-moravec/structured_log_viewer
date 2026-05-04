@@ -597,14 +597,23 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
 
     // Rename-and-create rotations flip the path's inode; identity
     // detection (branch i) is state-based, so the worker reliably
-    // observes every flip regardless of CI jitter.
+    // observes every flip -- provided we give it a poll window between
+    // successive flips. A fixed ms budget is not enough on slow CI
+    // hosts (observed: macOS arm64 runners intermittently miss an
+    // intermediate flip when the worker loses a scheduling slot to
+    // the filesystem ops on this thread; the path's inode ends up
+    // jumping from rotation i-1 straight to rotation i+1 and only
+    // one rotation is counted). Synchronise on the observed
+    // `RotationCount()` instead. The per-step deadline is much
+    // smaller than `rotationDebounce` so all three rotations still
+    // land inside the same debounce window, preserving the
+    // callback-coalescing assertion below.
     for (int i = 0; i < 3; ++i)
     {
         const auto rotated = dir.File("debounce.log." + std::to_string(i));
         std::filesystem::rename(path, rotated);
         Overwrite(path, "rot" + std::to_string(i) + "\n");
-        // > 2x poll interval so the worker observes each new identity.
-        std::this_thread::sleep_for(ScaledMs(20ms));
+        REQUIRE(WaitForRotationCount(source, static_cast<size_t>(i + 1), ScaledMs(250ms)));
     }
 
     // Drain so we know the worker has processed at least the last rotation.

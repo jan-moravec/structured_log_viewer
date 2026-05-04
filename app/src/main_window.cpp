@@ -793,6 +793,66 @@ void MainWindow::ApplyStreamingRetention()
     mModel->SetRetentionCap(StreamingControl::RetentionLines());
 }
 
+QAction *MainWindow::FindUiAction(const QString &name) const
+{
+    // Exhaustive dispatch against `ui->` so tests can reach every
+    // UI-file-declared action without depending on the QObject tree.
+    // Must stay in sync with `main_window.ui`.
+    if (name == QStringLiteral("actionOpen"))
+    {
+        return ui->actionOpen;
+    }
+    if (name == QStringLiteral("actionOpenLogStream"))
+    {
+        return ui->actionOpenLogStream;
+    }
+    if (name == QStringLiteral("actionSaveConfiguration"))
+    {
+        return ui->actionSaveConfiguration;
+    }
+    if (name == QStringLiteral("actionLoadConfiguration"))
+    {
+        return ui->actionLoadConfiguration;
+    }
+    if (name == QStringLiteral("actionExit"))
+    {
+        return ui->actionExit;
+    }
+    if (name == QStringLiteral("actionCopy"))
+    {
+        return ui->actionCopy;
+    }
+    if (name == QStringLiteral("actionFind"))
+    {
+        return ui->actionFind;
+    }
+    if (name == QStringLiteral("actionAddFilter"))
+    {
+        return ui->actionAddFilter;
+    }
+    if (name == QStringLiteral("actionClearAllFilters"))
+    {
+        return ui->actionClearAllFilters;
+    }
+    if (name == QStringLiteral("actionPauseStream"))
+    {
+        return ui->actionPauseStream;
+    }
+    if (name == QStringLiteral("actionFollowTail"))
+    {
+        return ui->actionFollowTail;
+    }
+    if (name == QStringLiteral("actionStopStream"))
+    {
+        return ui->actionStopStream;
+    }
+    if (name == QStringLiteral("actionPreferences"))
+    {
+        return ui->actionPreferences;
+    }
+    return nullptr;
+}
+
 void MainWindow::ApplyStreamingDisplayOrder()
 {
     const bool newestFirst = StreamingControl::IsNewestFirst();

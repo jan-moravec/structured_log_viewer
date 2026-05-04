@@ -204,16 +204,28 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     // scalar, producing "not a JSON object" errors for every row.
     std::vector<std::string> lineTexts;
     lineTexts.reserve(INVALID_LINE_NUMBER_B);
+    // Note: the `std::string&`+append pattern is deliberate over
+    // `operator+` chains. GCC 13 on the Linux CI runner emits a
+    // false-positive `-Wstringop-overread` / `-Wstringop-overflow`
+    // on `std::string("prefix ") + std::to_string(i)` when the
+    // resulting string leaves the SSO buffer (libstdc++ SSO cap is
+    // 15 bytes for char strings); the separate `.append()` calls
+    // avoid the temporary that the heuristic misanalyses.
     for (size_t i = 1; i <= INVALID_LINE_NUMBER_B; ++i)
     {
+        std::string line;
         if (i == INVALID_LINE_NUMBER_A || i == INVALID_LINE_NUMBER_B)
         {
-            lineTexts.emplace_back(std::string("not json line ") + std::to_string(i));
+            line = "not json line ";
+            line.append(std::to_string(i));
         }
         else
         {
-            lineTexts.emplace_back(R"({"index": )" + std::to_string(i) + "}");
+            line = R"({"index": )";
+            line.append(std::to_string(i));
+            line.append("}");
         }
+        lineTexts.push_back(std::move(line));
     }
     std::vector<TestJsonLogFile::Line> lines;
     lines.reserve(lineTexts.size());
