@@ -191,7 +191,18 @@ TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small fil
     REQUIRE(lines.size() == 20);
     CHECK(lines.front() == "line 80");
     CHECK(lines.back() == "line 99");
-    CHECK(source.DisplayName() == path.string());
+    // The producer canonicalises its input path (so the watcher parent
+    // is always absolute), which on Windows can also resolve 8.3 short
+    // names (e.g. `RUNNER~1` -> `runneradmin`) when the OS-supplied
+    // `temp_directory_path()` returns a short form. Compare against the
+    // canonicalised form so the test is robust on those CI runners.
+    std::error_code ec;
+    auto expected = std::filesystem::weakly_canonical(path, ec);
+    if (ec || expected.empty())
+    {
+        expected = path;
+    }
+    CHECK(source.DisplayName() == expected.string());
 }
 
 TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingBytesProducer]")

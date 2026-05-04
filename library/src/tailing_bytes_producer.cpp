@@ -877,6 +877,11 @@ void TailingBytesProducerImpl::FireStatusCallbackIfChanged(SourceStatus status)
 
 } // namespace internal
 
+TailingBytesProducer::TailingBytesProducer(std::filesystem::path path, size_t retentionLines)
+    : TailingBytesProducer(std::move(path), retentionLines, Options{})
+{
+}
+
 TailingBytesProducer::TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options)
     : mImpl(std::make_unique<internal::TailingBytesProducerImpl>(std::move(path), retentionLines, options))
 {

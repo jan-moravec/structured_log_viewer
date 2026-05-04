@@ -428,7 +428,8 @@ bool MainWindow::event(QEvent *event)
 {
     switch (event->type())
     {
-    case QEvent::ApplicationFontChange: {
+    case QEvent::ApplicationFontChange:
+    {
         QFont applicationFont = qApp->font();
         mTableView->setFont(applicationFont);
         applicationFont.setBold(true);

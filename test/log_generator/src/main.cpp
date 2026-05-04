@@ -243,7 +243,8 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
 
     switch (strategy)
     {
-    case RollStrategy::Rename: {
+    case RollStrategy::Rename:
+    {
         if (keepRolled > 0)
         {
             ShiftBackups(basePath, keepRolled);
@@ -271,7 +272,8 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }
-    case RollStrategy::CopyTruncate: {
+    case RollStrategy::CopyTruncate:
+    {
         if (keepRolled > 0)
         {
             ShiftBackups(basePath, keepRolled);
@@ -288,7 +290,8 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }
-    case RollStrategy::Truncate: {
+    case RollStrategy::Truncate:
+    {
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }

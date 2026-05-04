@@ -76,7 +76,8 @@ public:
     /// Throws if the initial open fails; transient missing-path errors
     /// during tailing are handled internally (rotation branch ii) and
     /// never propagate.
-    TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options = Options{});
+    TailingBytesProducer(std::filesystem::path path, size_t retentionLines);
+    TailingBytesProducer(std::filesystem::path path, size_t retentionLines, Options options);
 
     ~TailingBytesProducer() override;
 

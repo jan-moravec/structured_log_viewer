@@ -254,7 +254,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
             const auto type = cache.keyTypes[keyId];
             switch (type)
             {
-            case simdjson::ondemand::json_type::boolean: {
+            case simdjson::ondemand::json_type::boolean:
+            {
                 bool b;
                 if (!value.get(b))
                 {
@@ -263,12 +264,14 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                 }
                 break;
             }
-            case simdjson::ondemand::json_type::number: {
+            case simdjson::ondemand::json_type::number:
+            {
                 if (cache.hasNumberType[keyId])
                 {
                     switch (cache.numberTypes[keyId])
                     {
-                    case simdjson::ondemand::number_type::signed_integer: {
+                    case simdjson::ondemand::number_type::signed_integer:
+                    {
                         int64_t i;
                         if (!value.get(i))
                         {
@@ -277,7 +280,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                         }
                         break;
                     }
-                    case simdjson::ondemand::number_type::unsigned_integer: {
+                    case simdjson::ondemand::number_type::unsigned_integer:
+                    {
                         uint64_t u;
                         if (!value.get(u))
                         {
@@ -286,7 +290,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                         }
                         break;
                     }
-                    case simdjson::ondemand::number_type::floating_point_number: {
+                    case simdjson::ondemand::number_type::floating_point_number:
+                    {
                         double d;
                         if (!value.get(d))
                         {
@@ -301,7 +306,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                 }
                 break;
             }
-            case simdjson::ondemand::json_type::string: {
+            case simdjson::ondemand::json_type::string:
+            {
                 internal::CompactLogValue stringValue =
                     ExtractStringValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
                 if (stringValue.tag != internal::CompactTag::Monostate)
@@ -312,7 +318,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                 break;
             }
             case simdjson::ondemand::json_type::array:
-            case simdjson::ondemand::json_type::object: {
+            case simdjson::ondemand::json_type::object:
+            {
                 internal::CompactLogValue rawValue =
                     ExtractRawJsonValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
                 if (rawValue.tag != internal::CompactTag::Monostate)
@@ -347,7 +354,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
 
         switch (type)
         {
-        case simdjson::ondemand::json_type::boolean: {
+        case simdjson::ondemand::json_type::boolean:
+        {
             bool b;
             if (!value.get(b))
             {
@@ -359,7 +367,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
             }
             break;
         }
-        case simdjson::ondemand::json_type::number: {
+        case simdjson::ondemand::json_type::number:
+        {
             auto numberType = value.get_number_type();
             if (numberType.error())
             {
@@ -370,7 +379,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
             cache.hasNumberType[keyId] = true;
             switch (numberType.value())
             {
-            case simdjson::ondemand::number_type::signed_integer: {
+            case simdjson::ondemand::number_type::signed_integer:
+            {
                 int64_t i;
                 if (!value.get(i))
                 {
@@ -382,7 +392,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                 }
                 break;
             }
-            case simdjson::ondemand::number_type::unsigned_integer: {
+            case simdjson::ondemand::number_type::unsigned_integer:
+            {
                 uint64_t u;
                 if (!value.get(u))
                 {
@@ -394,7 +405,8 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
                 }
                 break;
             }
-            case simdjson::ondemand::number_type::floating_point_number: {
+            case simdjson::ondemand::number_type::floating_point_number:
+            {
                 double d;
                 if (!value.get(d))
                 {
@@ -412,14 +424,16 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
             }
             break;
         }
-        case simdjson::ondemand::json_type::string: {
+        case simdjson::ondemand::json_type::string:
+        {
             internal::CompactLogValue stringValue =
                 ExtractStringValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
             InsertSorted(result, keyId, stringValue);
             break;
         }
         case simdjson::ondemand::json_type::array:
-        case simdjson::ondemand::json_type::object: {
+        case simdjson::ondemand::json_type::object:
+        {
             internal::CompactLogValue rawValue =
                 ExtractRawJsonValue(value, sourceIsStable, fileBegin, fileSize, ownedArena);
             InsertSorted(result, keyId, rawValue);

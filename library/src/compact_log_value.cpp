@@ -84,7 +84,8 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) c
     {
     case CompactTag::Monostate:
         return LogValue{std::monostate{}};
-    case CompactTag::MmapSlice: {
+    case CompactTag::MmapSlice:
+    {
         if (source == nullptr)
         {
             return LogValue{std::monostate{}};
@@ -96,7 +97,8 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) c
         }
         return LogValue{bytes};
     }
-    case CompactTag::OwnedString: {
+    case CompactTag::OwnedString:
+    {
         if (source == nullptr)
         {
             return LogValue{std::string{}};
