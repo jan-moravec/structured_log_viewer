@@ -26,7 +26,6 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
 
     mSizeSpinBox->setRange(6, 72);
 
-    // Stream retention range mirrors  (1 000 .. 1 000 000).
     mStreamRetentionSpinBox->setRange(
         static_cast<int>(StreamingControl::kMinRetentionLines), static_cast<int>(StreamingControl::kMaxRetentionLines)
     );
@@ -62,10 +61,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
         qApp->setStyle(QStyleFactory::create(styleName));
     });
 
-    // Stream retention is applied transactionally on Ok: the spinbox does not push live updates so a
-    // Cancel must revert. The Ok handler below mirrors the value into
-    // `StreamingControl` and emits `streamingRetentionChanged` for the
-    // `MainWindow` to apply (task 5.12).
+    // Stream retention is applied transactionally on Ok: the spinbox
+    // does not push live updates, so Cancel reverts cleanly.
 
     auto *layout = new QVBoxLayout(this);
 
@@ -92,11 +89,9 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
         AppearanceControl::SaveConfiguration();
-        // Mirror the dialog's edits into `StreamingControl` and persist
-        // before notifying the `MainWindow`, so an observer querying
-        // `StreamingControl::RetentionLines()` /
-        // `StreamingControl::IsNewestFirst()` from a slot sees the new
-        // values.
+        // Mirror dialog edits into `StreamingControl` and persist them
+        // before notifying so observers querying the static accessors
+        // from a slot see the committed values.
         const auto retention = static_cast<size_t>(mStreamRetentionSpinBox->value());
         const bool newestFirst = mStreamNewestFirstCheckBox->isChecked();
         const bool newestFirstChanged = (newestFirst != StreamingControl::IsNewestFirst());
@@ -104,9 +99,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
         StreamingControl::SetNewestFirst(newestFirst);
         StreamingControl::SaveConfiguration();
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
-        // Only notify on a real toggle so the chain
-        // (`StreamOrderProxyModel::SetReversed` → re-sort → tail-edge
-        // flip on the `LogTableView`) does not run on every Ok click.
+        // Only emit on a real toggle so the re-sort chain does not run
+        // on every Ok click.
         if (newestFirstChanged)
         {
             emit streamingDisplayOrderChanged(newestFirst);
@@ -115,9 +109,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent) : QWidget{parent}
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
         AppearanceControl::LoadConfiguration();
-        // Revert the spinbox-edited value to the persisted one. No need
-        // to emit `streamingRetentionChanged` because the on-disk value
-        // is unchanged.
+        // Revert the spinbox-edited values to the persisted ones; no
+        // emit needed because the on-disk values are unchanged.
         StreamingControl::LoadConfiguration();
         close();
     });

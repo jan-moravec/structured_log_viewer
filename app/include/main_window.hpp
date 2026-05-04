@@ -47,20 +47,11 @@ public:
 
     void UpdateUi();
 
-    /// **Single sync point** for the newest-first display orientation.
-    /// Reads `StreamingControl::IsNewestFirst()` once and propagates
-    /// the boolean to every GUI piece that needs to track it in
-    /// lockstep:
-    ///   1. `StreamOrderProxyModel::SetReversed` — flips the proxy's
-    ///      `InsertionOrderRole` sort direction.
-    ///   2. `LogTableView::SetTailEdge` — picks Top vs Bottom for the
-    ///      Follow-tail anchor + user-scroll-detection heuristic.
-    ///   3. `setAlternatingRowColors` — disabled in newest-first mode
-    ///      because top-insertion shifts every visible row's parity on
-    ///      every batch (see body for the gritty details).
-    /// Tests drive this directly to bypass the preferences-editor
-    /// round-trip; production calls it from startup and from
-    /// `PreferencesEditor::streamingDisplayOrderChanged`. Idempotent.
+    /// Single sync point for newest-first display orientation. Reads
+    /// `StreamingControl::IsNewestFirst()` once and propagates it to
+    /// `StreamOrderProxyModel::SetReversed`, `LogTableView::SetTailEdge`,
+    /// and `setAlternatingRowColors`, which all need to move together.
+    /// Idempotent.
     void ApplyStreamingDisplayOrder();
 
 protected:
@@ -83,47 +74,35 @@ private slots:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
 
-    /// Toggle pause / resume on the bridging sink. Slot bound to
-    /// `actionPauseStream` (toolbar / Stream menu).
+    /// Pause / resume on the bridging sink. Bound to `actionPauseStream`.
     void TogglePauseStream(bool paused);
 
-    /// Stop the active stream. Slot bound to `actionStopStream`.
+    /// Stop the active stream. Bound to `actionStopStream`.
     void StopStream();
 
-    /// Source-thread rotation event re-emitted on the GUI thread by
-    /// `LogModel::rotationDetected`; flashes the brief `— rotated`
-    /// suffix in the status bar.
+    /// Rotation event from the source thread re-emitted on the GUI
+    /// thread; flashes the `— rotated` suffix in the status bar.
     void OnRotationDetected();
 
-    /// Source-thread status transition re-emitted on the GUI thread by
-    /// `LogModel::sourceStatusChanged`.
-    /// Latches `mSourceWaiting` and refreshes the status-bar label so it
-    /// shows `Source unavailable …` while the source is in
-    /// `SourceStatus::Waiting`.
+    /// Source-thread status transition. Latches `mSourceWaiting` and
+    /// refreshes the status bar so it shows `Source unavailable …`
+    /// while the source is `Waiting`.
     void OnSourceStatusChanged(loglib::SourceStatus status);
 
 private:
     /// Try to load @p file as a `LogConfiguration`; returns true and
-    /// fires `UpdateUi` on success. Used by the single-file open and
-    /// drag-drop paths to preserve the historical "drop a config file
-    /// to load it" affordance.
+    /// fires `UpdateUi` on success. Single-file open / drag-drop uses
+    /// this to preserve the "drop a config file to load it" affordance.
     bool TryLoadAsConfiguration(const QString &file);
 
-    /// Reset the model + filter state and start a sequential streaming
-    /// open of @p files. The first file goes through
-    /// `LogModel::BeginStreaming`; the rest are queued on
-    /// `mPendingOpenFiles` and dispatched through
-    /// `LogModel::AppendStreaming` from the `streamingFinished` slot
-    /// once the previous file's parse finishes. Single-file opens use
-    /// the same path -- streaming is the only static-file populate
-    /// route after the Phase 6 cleanup.
+    /// Reset model + filter state and start a sequential streaming open
+    /// of @p files. The first file uses `LogModel::BeginStreaming`; the
+    /// rest are queued and dispatched through `AppendStreaming` from
+    /// the `streamingFinished` slot.
     void StartStreamingOpenQueue(QStringList files);
 
-    /// Pop one file off `mPendingOpenFiles` and start parsing it. The
-    /// first file in a session uses `BeginStreaming`; subsequent files
-    /// use `AppendStreaming` so the existing rows + `KeyIndex` survive
-    /// across files. File-open errors are collected on
-    /// `mPendingOpenErrors` and the next file is attempted; the
+    /// Pop the next file off `mPendingOpenFiles` and start parsing it.
+    /// File-open errors are collected on `mPendingOpenErrors` and the
     /// summary is shown when the queue drains.
     void StreamNextPendingFile();
 
@@ -135,19 +114,16 @@ private:
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
-    /// Re-evaluate the visibility of the stream toolbar against
-    /// `mModel->IsStreamingActive()` (4.10 task 4.12). Called from
-    /// `BeginStreaming` and `streamingFinished`.
+    /// Re-evaluate the stream toolbar's visibility against the current
+    /// session mode. Called from open paths and `streamingFinished`.
     void UpdateStreamToolbarVisibility();
 
     /// Scroll the table to the most-recently-appended source row when
-    /// `actionFollowTail->isChecked()`. Mapped through
-    /// the proxy model so it lands on the correct visual row even under
-    /// a sort.
+    /// Follow tail is on. Mapped through the proxy chain so the scroll
+    /// lands on the correct visual row even under a sort.
     void ScrollToNewestRowIfFollowing();
 
-    /// Re-apply the persisted `streaming/retentionLines` value to
-    /// `mModel->SetRetentionCap`. Called from
+    /// Re-apply the persisted retention cap to the model. Called from
     /// startup and from the preferences-Ok handler.
     void ApplyStreamingRetention();
 
@@ -162,40 +138,28 @@ private:
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
-    /// Status-bar label that shows "Parsing <file> — N lines, M errors"
-    /// while a streaming parse is in flight.
+    /// Status-bar label rendered while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
 
-    /// Toolbar holding Pause / Follow newest / Stop. Visible only while
-    /// `mModel->IsStreamingActive() == true`.
+    /// Toolbar holding Pause / Follow tail / Stop. Visible only during
+    /// a live-tail session.
     QToolBar *mStreamToolbar = nullptr;
 
-    /// Display name of the file currently being streamed; used to render
-    /// `mStatusLabel`. Empty when no parse is in flight.
+    /// Filename of the active stream; empty when no session is in
+    /// flight.
     QString mStreamingFileName;
 
-    /// Files queued by `StartStreamingOpenQueue` and not yet streamed.
-    /// `streamingFinished` pops the next one and calls
-    /// `LogModel::AppendStreaming` until empty. Cleared on cancel /
-    /// failure / `Clear` so a new open does not inherit a stale queue.
+    /// Files queued by `StartStreamingOpenQueue` waiting to be streamed
+    /// after the current file finishes.
     QStringList mPendingOpenFiles;
 
-    /// File-open errors accumulated while draining `mPendingOpenFiles`.
-    /// Any file that fails to open is skipped (the queue continues with
-    /// the next entry); the summary is shown to the user when the
-    /// queue drains.
+    /// File-open errors collected while draining `mPendingOpenFiles`.
+    /// Surfaced as the post-parse summary when the queue drains.
     std::vector<std::string> mPendingOpenErrors;
 
-    /// What kind of streaming session, if any, the GUI is currently
-    /// driving. Set on entry to `BeginStreaming`/`AppendStreaming` and
-    /// reset in the `streamingFinished` slot.
-    ///
-    /// The value gates the configuration UI, the post-parse error
-    /// summary, and the live-tail-only status-bar variants. The previous
-    /// `mStreamingActive` / `mLiveTailActive` bool pair encoded the
-    /// same three states (`Idle`, `Static`, `LiveTail`) but allowed an
-    /// impossible fourth one (`!streaming && liveTail`); the enum
-    /// makes the state space explicit.
+    /// Streaming session kind. Gates the configuration UI, the
+    /// post-parse error summary, and the live-tail-only status-bar
+    /// variants. Set on open, cleared in `streamingFinished`.
     enum class SessionMode
     {
         Idle,
@@ -207,26 +171,21 @@ private:
     [[nodiscard]] bool IsSessionActive() const noexcept { return mSessionMode != SessionMode::Idle; }
     [[nodiscard]] bool IsLiveTailSession() const noexcept { return mSessionMode == SessionMode::LiveTail; }
 
-    /// Running line / error count snapshot for the status-bar label.
+    /// Running line / error counts shown in the status bar.
     qsizetype mStreamingLineCount = 0;
     qsizetype mStreamingErrorCount = 0;
 
-    /// Tracks whether the first non-empty streaming batch has landed yet.
-    /// Reset on `BeginStreaming`, flipped to true on the first
-    /// `lineCountChanged` with a non-zero count. While `false` and
-    /// live-tail is active, `UpdateUi()` runs after the batch lands;
-    /// thereafter, never.
+    /// Flips true on the first non-empty batch of a session; gates the
+    /// one-shot column auto-resize so subsequent batches don't yank
+    /// columns under the user's mouse.
     bool mFirstStreamingBatchSeen = false;
 
-    /// True for the duration of the brief 3 s `— rotated` flash on the
-    /// status bar after a rotation event.
-    /// A `QTimer::singleShot` clears it.
+    /// True during the 3 s `— rotated` flash on the status bar after a
+    /// rotation event (cleared by a `QTimer::singleShot`).
     bool mRotationFlashActive = false;
 
-    /// Latched `SourceStatus::Waiting` flag. Set by `OnSourceStatusChanged(Waiting)`, cleared by
-    /// `OnSourceStatusChanged(Running)` and by `streamingFinished`
-    /// (either terminal outcome — the source is no longer "waiting" if
-    /// the whole session tore down). Used by `UpdateStreamingStatus`
-    /// to render the `Source unavailable …` label variant.
+    /// Latched `SourceStatus::Waiting` flag. Set/cleared by
+    /// `OnSourceStatusChanged`; cleared by `streamingFinished`. Drives
+    /// the `Source unavailable …` status-bar variant.
     bool mSourceWaiting = false;
 };

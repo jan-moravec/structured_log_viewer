@@ -63,12 +63,7 @@ std::span<const char> FileLineSource::StableBytes() const noexcept
 
 uint64_t FileLineSource::AppendOwnedBytes(size_t /*lineId*/, std::string_view bytes)
 {
-    // `LogFile::AppendOwnedStrings` is the session-global arena
-    // shared by every line in this file; the per-line @p lineId is
-    // irrelevant for resolution because `ResolveOwnedBytes` reads from
-    // the same shared arena. The cost is a single arena append; the
-    // returned offset is what the caller stamps into a
-    // `CompactTag::OwnedString` payload.
+    // Forward to the session-global arena shared by every line.
     return mFile->AppendOwnedStrings(bytes);
 }
 
@@ -79,9 +74,7 @@ bool FileLineSource::SupportsEviction() const noexcept
 
 void FileLineSource::EvictBefore(size_t /*firstSurvivingLineId*/)
 {
-    // Finite mmap-backed sources never evict. The call is accepted as a
-    // no-op so generic plumbing (`LogTable::EvictPrefixRows`) need not
-    // branch on type.
+    // Finite mmap-backed sources never evict.
 }
 
 size_t FileLineSource::FirstAvailableLineId() const noexcept
@@ -101,11 +94,8 @@ const LogFile &FileLineSource::File() const noexcept
 
 std::unique_ptr<LogFile> FileLineSource::ReleaseFile() noexcept
 {
-    // Note: `mFile` keeps pointing at the released file so resolution
-    // calls remain valid while the caller migrates the `LogFile` into
-    // its eventual owner. The caller is contractually required to keep
-    // the file alive at least as long as this source (or any `LogLine`
-    // resolving through it).
+    // `mFile` still points at the released file so resolution remains
+    // valid; the caller must keep the file alive for our lifetime.
     return std::move(mOwnedFile);
 }
 

@@ -45,13 +45,11 @@ FileIdentity FromStat(const struct stat &st) noexcept
 FileIdentity FromPath(const std::filesystem::path &path) noexcept
 {
 #if defined(_WIN32)
-    // Open with full sharing so we do not interfere with a producer
-    // holding the file open; FILE_FLAG_BACKUP_SEMANTICS so the call
-    // works on directories too (cheap robustness — the caller passes
-    // files, but a parent-dir poll could pass either).
+    // Full sharing so we don't disturb a concurrent producer.
+    // FILE_FLAG_BACKUP_SEMANTICS lets the call also work on directories.
     const HANDLE handle = ::CreateFileW(
         path.c_str(),
-        0, // no read/write access needed; only metadata
+        0, // metadata only
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,

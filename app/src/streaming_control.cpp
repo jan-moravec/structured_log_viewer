@@ -33,8 +33,8 @@ void StreamingControl::LoadConfiguration()
         }
         else
         {
-            // Out-of-range or unparsable value: drop and fall through to the
-            // default. Avoids a corrupted setting wedging the spinbox.
+            // Drop a corrupt / out-of-range value so it can't wedge
+            // the spinbox.
             settings.remove(CONFIGURATION_RETENTION_LINES);
             mConfiguration.retentionLines = kDefaultRetentionLines;
         }
@@ -46,10 +46,6 @@ void StreamingControl::LoadConfiguration()
 
     if (const QVariant value = settings.value(CONFIGURATION_NEWEST_FIRST); value.isValid())
     {
-        // `QVariant::toBool` accepts both the canonical bool encoding
-        // and the legacy string forms QSettings may produce on some
-        // backends; either way an unparsable value falls back to the
-        // default below.
         mConfiguration.newestFirst = value.toBool();
     }
     else

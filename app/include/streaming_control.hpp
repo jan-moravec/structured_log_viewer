@@ -3,59 +3,42 @@
 #include <cstddef>
 
 /// Persistence facade for the **Streaming** group of `PreferencesEditor`.
-/// Mirrors `AppearanceControl`'s Ok/Cancel transactional pattern: the preferences editor mutates the live config
-/// in-memory; `SaveConfiguration` (Ok) commits to `QSettings`,
-/// `LoadConfiguration` (Cancel / startup) reverts to the on-disk value.
-///
-/// A separate class from `AppearanceControl` so a Cancel-from-appearance
-/// does not also revert a streaming-retention change made on the same
-/// dialog session. Tests touch the same `QSettings` keys directly.
+/// Ok/Cancel transactional: the editor mutates in-memory state;
+/// `SaveConfiguration` commits to `QSettings`, `LoadConfiguration`
+/// reverts to the on-disk values. Tests touch the same `QSettings`
+/// keys directly.
 class StreamingControl
 {
 public:
-    /// Default retention cap surfaced in the Preferences spinbox. Also
-    /// the fallback that `LogModel::BeginStreaming(StreamLineSource, ...)`
-    /// applies when no other value has been set, so this constant is
-    /// the single source of truth for the default cap across both the
-    /// preferences UI and the model layer.
+    /// Default retention cap, also the fallback used by
+    /// `LogModel::BeginStreaming(StreamLineSource, ...)` when no value
+    /// has been set elsewhere.
     static constexpr size_t kDefaultRetentionLines = 10'000;
 
-    /// Allowed retention range surfaced by the spinbox. Mirrors 
-    /// (`1 000 .. 1 000 000`).
+    /// Allowed retention range surfaced by the spinbox.
     static constexpr size_t kMinRetentionLines = 1'000;
     static constexpr size_t kMaxRetentionLines = 1'000'000;
 
-    /// Default for the **Show newest lines first** stream toggle.
-    /// Off by default so the existing append-at-bottom behaviour is
-    /// preserved for users who do not opt in.
+    /// Default for **Show newest lines first**: off, so the existing
+    /// append-at-bottom behaviour is preserved for users who do not
+    /// opt in.
     static constexpr bool kDefaultNewestFirst = false;
 
-    /// Persist the in-memory configuration to `QSettings` under
-    /// `streaming/retentionLines` and `streaming/newestFirst` (Ok
-    /// handler).
+    /// Commit the in-memory configuration to `QSettings`.
     static void SaveConfiguration();
 
-    /// Reload the in-memory configuration from `QSettings` (Cancel handler /
-    /// startup). Falls back to `kDefaultRetentionLines` /
-    /// `kDefaultNewestFirst` when no value has been persisted yet.
+    /// Reload from `QSettings`, falling back to defaults when nothing
+    /// has been persisted.
     static void LoadConfiguration();
 
-    /// In-memory retention cap. Mutated by the spinbox while the
-    /// preferences dialog is open; committed to / reverted from
-    /// `QSettings` by Save / LoadConfiguration.
     static size_t RetentionLines();
 
-    /// Update the in-memory retention cap. Does not persist to `QSettings`
-    /// — call `SaveConfiguration` from the Ok handler.
+    /// Set the in-memory cap; call `SaveConfiguration` to persist.
     static void SetRetentionLines(size_t value);
 
-    /// In-memory **Show newest lines first** flag. Mutated by the
-    /// preferences-dialog checkbox; committed to / reverted from
-    /// `QSettings` by Save / LoadConfiguration.
     static bool IsNewestFirst();
 
-    /// Update the in-memory newest-first flag. Does not persist to
-    /// `QSettings` — call `SaveConfiguration` from the Ok handler.
+    /// Set the in-memory flag; call `SaveConfiguration` to persist.
     static void SetNewestFirst(bool value);
 
 private:

@@ -16,17 +16,12 @@ public:
     void UpdateFields();
 
 signals:
-    /// Emitted on Ok after `StreamingControl::SaveConfiguration()` has
-    /// committed the new retention cap to `QSettings`. `MainWindow`
-    /// re-applies it via `LogModel::SetRetentionCap` so a running stream
-    /// picks up the new value immediately.
+    /// Fired after Ok commits the new retention cap to `QSettings`.
+    /// `MainWindow` re-applies it via `LogModel::SetRetentionCap`.
     void streamingRetentionChanged(qulonglong retentionLines);
 
-    /// Emitted on Ok after `StreamingControl::SaveConfiguration()` has
-    /// committed the **Show newest lines first** flag. `MainWindow`
-    /// re-applies it to `StreamOrderProxyModel` so the visible order
-    /// flips immediately, including for a stream that is already in
-    /// flight.
+    /// Fired after Ok commits the **Show newest lines first** flag.
+    /// `MainWindow` re-applies it via `ApplyStreamingDisplayOrder`.
     void streamingDisplayOrderChanged(bool newestFirst);
 
 private:

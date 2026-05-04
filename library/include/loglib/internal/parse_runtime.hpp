@@ -17,17 +17,16 @@
 namespace loglib::internal
 {
 
-/// Per-worker key string -> KeyId cache. Hit: `find(string_view)` is alloc-free;
-/// miss: one `KeyIndex::GetOrInsert` plus a write-back.
+/// Per-worker key-string -> KeyId cache. Hit: alloc-free `find`. Miss:
+/// one `KeyIndex::GetOrInsert` + write-back.
 struct PerWorkerKeyCache
 {
     tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
 };
 
-/// Per-worker scratch shared across parsers: key cache plus per-time-column
-/// carry-over for the inline timestamp-promotion hook. Used by both the
-/// static TBB pipeline (`RunStaticParserPipeline`) and the live-tail loop
-/// (`RunStreamingParseLoop`).
+/// Per-worker scratch shared by the static TBB pipeline and the
+/// live-tail loop: key cache + per-time-column carry-over for inline
+/// timestamp promotion.
 struct WorkerScratchBase
 {
     PerWorkerKeyCache keyCache;
@@ -47,13 +46,11 @@ struct WorkerScratchBase
         }
     }
 
-    /// Promote the configured `Type::time` columns of @p line in place.
-    /// @p ownedArena is the byte buffer that any `OwnedString` compact
-    /// values on @p line currently reference: for the TBB pipeline that
-    /// is the per-batch staging buffer (`ParsedPipelineBatch::ownedStringsArena`);
-    /// for the live-tail loop the source already owns the bytes, so an
-    /// empty view is passed and resolution falls through to the
-    /// `LineSource *` on the line.
+    /// Promote `Type::time` columns of @p line in place. @p ownedArena
+    /// is the buffer backing any `OwnedString` payloads on @p line:
+    /// the TBB pipeline passes its per-batch staging buffer; the
+    /// live-tail loop passes empty (resolution falls through to the
+    /// line's `LineSource *`).
     void PromoteTimestamps(LogLine &line, std::span<const TimeColumnSpec> timeColumns, std::string_view ownedArena)
     {
         if (timeColumns.empty())
@@ -64,17 +61,15 @@ struct WorkerScratchBase
     }
 };
 
-/// Bolts format-specific scratch (e.g. simdjson parser + padded buffer) onto
-/// the shared base. Used by the TBB pipeline; the live-tail loop passes
-/// `WorkerScratchBase` directly.
+/// Adds format-specific scratch (e.g. simdjson parser + padded
+/// buffer) on top of the shared base. Used by the TBB pipeline.
 template <class UserState> struct WorkerScratch : WorkerScratchBase
 {
     UserState user;
 };
 
-/// Routes a key lookup through the per-worker cache. The view's bytes must
-/// outlive the cache entry on the miss path. Passing `cache == nullptr`
-/// falls back to a direct `KeyIndex::GetOrInsert` call.
+/// Look up @p key through @p cache. View bytes must outlive the cache
+/// entry on miss. `cache == nullptr` falls through to `KeyIndex`.
 inline KeyId InternKeyVia(std::string_view key, KeyIndex &keys, PerWorkerKeyCache *cache)
 {
     if (cache == nullptr)

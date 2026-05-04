@@ -36,8 +36,7 @@ void LogTable::Update(LogData &&data)
 
 void LogTable::Reset()
 {
-    // Wipe per-parse state but preserve `mConfiguration`. Both row vectors
-    // (file rows and stream rows) clear together so RowCount() returns 0.
+    // Wipe per-parse state; preserve `mConfiguration`.
     mData = LogData{};
     mStageBSnapshotTimeKeys.clear();
     mPostSnapshotTimeKeys.clear();
@@ -53,9 +52,8 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
-        // Both pipelines (`RunStaticParserPipeline` Stage B and
-        // `RunStreamingParseLoop`) promote `Type::time` inline; later-
-        // discovered time columns are back-filled in `AppendBatch`.
+        // Both pipelines promote `Type::time` inline; later-discovered
+        // time columns are back-filled in `AppendBatch`.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
@@ -81,20 +79,12 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
 
     mLastBackfillRange.reset();
 
-    // Splice the new source into the session's source list. The
-    // existing `mData.mLines` / `mData.mKeys` are preserved, which is
-    // the whole point: rows from prior files stay visible and the
-    // KeyIndex stays canonical so the next parser worker sees the same
-    // KeyIds as the previous one (columns line up). The parser worker
-    // for @p source emits `LogLine`s tagged with `&*source`, so per-
-    // row byte resolution dispatches correctly across files.
+    // Splice in the new source. Lines and keys are preserved so prior
+    // rows stay visible and KeyIds line up across files.
     mData.Sources().push_back(std::move(source));
-
-    // The snapshot time-column KeyIds and column-key cache stay valid:
-    // the configuration is gated for the duration of the session, and
-    // any post-snapshot time keys discovered during the prior file's
-    // parse are still tracked in `mPostSnapshotTimeKeys` for inline
-    // back-fill in subsequent `AppendBatch` calls.
+    // Snapshot KeyIds and column-key cache stay valid: configuration
+    // is gated for the session, and `mPostSnapshotTimeKeys` keeps
+    // tracking late-discovered time keys for `AppendBatch` back-fill.
 }
 
 void LogTable::AppendBatch(StreamedBatch batch)
@@ -106,9 +96,8 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
-    // Pre-append snapshot so per-batch back-fill restricts to the new
-    // slice. First-observation columns still back-fill all rows (older
-    // rows pre-date them).
+    // Pre-append snapshot so slice back-fill targets only new rows;
+    // first-observation columns still back-fill all rows.
     const size_t oldLineCount = mData.Lines().size();
 
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
@@ -121,11 +110,10 @@ void LogTable::AppendBatch(StreamedBatch batch)
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    // Back-fill post-snapshot time columns (Stage B handles snapshot ones):
-    //   1. First observation: back-fill all rows and record `mLastBackfillRange`
-    //      so `dataChanged` covers existing rows.
-    //   2. Already-known post-snapshot column: back-fill only the appended
-    //      slice; the upcoming `beginInsertRows` already invalidates them.
+    // Back-fill post-snapshot time columns (Stage B handles snapshot
+    // ones). First observation: back-fill all rows and record
+    // `mLastBackfillRange` so `dataChanged` reaches existing rows.
+    // Known post-snapshot column: back-fill only the appended slice.
     const auto &columns = mConfiguration.Configuration().columns;
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -170,7 +158,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
             continue;
         }
 
-        // Use the `Discard` overload: streaming has no consumer for per-line errors.
+        // Streaming has no consumer for per-line errors.
         if (firstObservation)
         {
             BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
@@ -325,10 +313,8 @@ void LogTable::EvictPrefixRows(size_t count)
     }
     auto &lines = mData.Lines();
 
-    // Tell the source to release per-line storage for the rows we're
-    // about to drop. Sources that don't support eviction (e.g.
-    // `FileLineSource` — the file is mmap'd in its entirety) treat the
-    // call as a no-op.
+    // Release per-line storage for the rows we're about to drop.
+    // Non-evicting sources (e.g. mmap'd `FileLineSource`) no-op.
     auto evictSource = [&](size_t firstSurvivingLineId) {
         for (auto &source : mData.Sources())
         {
@@ -341,8 +327,7 @@ void LogTable::EvictPrefixRows(size_t count)
 
     if (count >= lines.size())
     {
-        // Use the next id past the last live row so the source clears
-        // every entry it currently holds.
+        // Past-the-end id so the source clears all live entries.
         size_t firstSurvivingLineId = 0;
         if (!lines.empty())
         {
@@ -459,8 +444,8 @@ void LogTable::RefreshSnapshotTimeKeys()
         }
         for (const std::string &key : column.keys)
         {
-            // `GetOrInsert` so the snapshot holds valid ids on the fresh
-            // post-`BeginStreaming` `KeyIndex` (mirrors `BuildTimeColumnSpecs`).
+            // `GetOrInsert` so the snapshot holds valid ids on the
+            // fresh post-`BeginStreaming` `KeyIndex`.
             const KeyId id = mData.Keys().GetOrInsert(key);
             mStageBSnapshotTimeKeys.insert(id);
         }

@@ -28,18 +28,13 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
         throw std::runtime_error(fmt::format("File '{}' is empty.", file.string()));
     }
 
-    // Long-lived `FileLineSource` owned by the sink for the duration of
-    // the parse and beyond -- the emitted `LogLine`s store a raw
-    // `LineSource *` back-pointer at it, so it must outlive the lines.
-    // `BufferingSink::TakeData()` transfers ownership into `LogData`'s
-    // `mSources` so the back-pointers stay valid in the returned result.
+    // The sink owns the `FileLineSource` for the duration of the parse;
+    // `TakeData()` transfers ownership into `LogData::mSources` so the
+    // emitted `LogLine`'s `LineSource *` back-pointers stay valid.
     auto fileSource = std::make_unique<FileLineSource>(std::make_unique<LogFile>(file));
     FileLineSource *sourceRaw = fileSource.get();
     internal::BufferingSink sink(std::move(fileSource));
 
-    // Drive the typed static-file overload directly so emitted LogLines
-    // reference the long-lived FileLineSource above (not a stack-local
-    // borrowing wrapper that would dangle the moment we return).
     parser.ParseStreaming(*sourceRaw, sink, ParserOptions{});
 
     LogData data = sink.TakeData();

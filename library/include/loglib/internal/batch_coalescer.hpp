@@ -13,20 +13,13 @@ class KeyIndex;
 namespace loglib::internal
 {
 
-/// Shared GUI-batch coalescer used by both the static TBB pipeline and the
-/// live-tail streaming loop. Owns:
-///   * the in-flight `StreamedBatch` buffer plus its primed-state flag,
-///   * the running `KeyIndex` cursor used to diff new keys per batch,
-///   * the time-based throttle (last-flush timestamp) that gates the
-///     interval-based flush threshold.
-///
-/// The two pipelines push line / error content into `Pending()` directly
-/// and call `TryFlush(false)` after each unit of work to honour the
-/// `(flushLines, flushInterval)` thresholds. `Finish` emits one final
-/// batch (possibly empty, primed at the caller-supplied fallback line
-/// number) and forwards `OnFinished` to the sink, satisfying the sink
-/// contract that at least one `OnBatch` precedes every `OnFinished` even
-/// on early-exit paths.
+/// Shared GUI-batch coalescer for both the static TBB pipeline and the
+/// live-tail streaming loop. Holds the in-flight `StreamedBatch`, the
+/// `KeyIndex` cursor for per-batch new-key diffs, and the
+/// (flushLines, flushInterval) throttle. Pipelines push content into
+/// `Pending()` and call `TryFlush(false)` to flush on threshold.
+/// `Finish` always emits a final batch — possibly empty — and forwards
+/// `OnFinished`, so the sink contract holds even on early-exit paths.
 class BatchCoalescer
 {
 public:
@@ -39,16 +32,15 @@ public:
     BatchCoalescer(BatchCoalescer &&) = delete;
     BatchCoalescer &operator=(BatchCoalescer &&) = delete;
 
-    /// Direct mutation handle on the in-flight batch. Callers append
-    /// `lines`, `errors`, and (static path only) `localLineOffsets` here.
+    /// In-flight batch. Callers append `lines`, `errors`, and
+    /// (static path only) `localLineOffsets` directly.
     [[nodiscard]] StreamedBatch &Pending() noexcept
     {
         return mPending;
     }
 
-    /// Sets `Pending().firstLineNumber` once. Subsequent calls are no-ops
-    /// so the absolute line number of the *first* line in the batch
-    /// stays stable as more content lands.
+    /// Sets `Pending().firstLineNumber` once; subsequent calls are
+    /// no-ops so the line number stays anchored to the first line.
     void Prime(size_t firstLineNumber) noexcept;
 
     [[nodiscard]] bool IsPrimed() const noexcept
@@ -56,23 +48,18 @@ public:
         return mPrimed;
     }
 
-    /// Append the keys added to the index since the last drain into
-    /// @p out's `newKeys`, and bump the running cursor. Public so the
-    /// static `prefersUncoalesced` branch can drain into a per-batch
-    /// scratch `StreamedBatch` that bypasses `Pending()`.
+    /// Append the keys added since the last drain into @p out and
+    /// advance the cursor. Public so the static `prefersUncoalesced`
+    /// branch can drain into a per-batch scratch batch.
     void DrainNewKeysInto(StreamedBatch &out);
 
-    /// Flush the pending batch to the sink if either threshold is met,
-    /// or unconditionally when @p force is true. Returns true if a batch
-    /// was emitted. Empty threshold-triggered flushes (no lines, no
-    /// errors, no new keys) are skipped to avoid dispatching busy-work
-    /// to the GUI thread; `lastFlush` still ticks forward in that case.
+    /// Flush if either threshold is met, or unconditionally if
+    /// @p force. Returns true if a batch was emitted. Empty
+    /// threshold-triggered flushes are skipped (but `lastFlush` ticks).
     bool TryFlush(bool force);
 
-    /// Emit one final batch and forward `OnFinished(@p wasCancelled)`. If
-    /// nothing has been buffered, primes a fresh empty batch at
-    /// @p fallbackLineNumber so the sink contract is honoured. Safe to
-    /// call from any early-exit path.
+    /// Emit a final batch (empty if nothing buffered, primed at
+    /// @p fallbackLineNumber) and forward `OnFinished(@p wasCancelled)`.
     void Finish(size_t fallbackLineNumber, bool wasCancelled);
 
 private:

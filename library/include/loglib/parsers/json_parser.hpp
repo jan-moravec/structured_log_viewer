@@ -25,24 +25,19 @@ class JsonParser : public LogParser
 public:
     bool IsValid(const std::filesystem::path &file) const override;
 
-    /// Static-file streaming parse against a long-lived `FileLineSource`.
-    /// Drives the TBB pipeline directly over @p source's `LogFile` mmap;
-    /// each `LogLine` produced is tagged with `&source` and its absolute
-    /// 0-based file-line id. Default `AdvancedParserOptions` are used.
+    /// Static-file streaming parse over @p source's mmap. Each emitted
+    /// `LogLine` carries `&source` and its 0-based file-line id.
     void
     ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /// Live-tail streaming parse against a long-lived `StreamLineSource`.
-    /// Each line read from `source.Producer()` is appended to @p source
-    /// and surfaced as a `LogLine` tagged with `&source` and the
-    /// just-published 1-based monotonic line id.
+    /// Live-tail streaming parse. Each line read from
+    /// `source.Producer()` is appended via `AppendLine` and surfaced
+    /// as a `LogLine` carrying `&source` and the new 1-based id.
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {})
         const override;
 
-    /// Streaming parse with the internal tuning knobs (benchmarks / bisects).
-    /// Same semantics as the 3-arg overload, plus an
-    /// `AdvancedParserOptions` knob bundle that is otherwise hidden from
-    /// the public API.
+    /// Static-file overload exposing internal tuning knobs (used by
+    /// benchmarks / bisects).
     void ParseStreaming(
         FileLineSource &source,
         LogParseSink &sink,
@@ -52,7 +47,7 @@ public:
 
     std::string ToString(const LogLine &line) const override;
 
-    /// Convenience overload for `LogMap` callers (tests, debug dumps).
+    /// Convenience for `LogMap` (tests, debug dumps).
     std::string ToString(const LogMap &values) const;
 };
 

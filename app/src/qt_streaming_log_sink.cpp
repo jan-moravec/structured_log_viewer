@@ -19,8 +19,7 @@ QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent) : QObje
 
 loglib::StopToken QtStreamingLogSink::Arm()
 {
-    // Bumping drops any still-queued OnBatch from a prior parse before the
-    // fresh stop source is installed.
+    // Bump drops any still-queued OnBatch from a prior parse.
     mGeneration.fetch_add(1, std::memory_order_acq_rel);
     mStopSource.emplace();
     {
@@ -35,9 +34,9 @@ loglib::StopToken QtStreamingLogSink::Arm()
 
 void QtStreamingLogSink::RequestStop()
 {
-    // Cooperative only — bumping the generation here would let drain-phase
-    // OnBatch/OnFinished pass the mismatch check (their captures would see
-    // the bump) and run after teardown. Bump in `DropPendingBatches` instead.
+    // Cooperative only. Bumping the generation here would let drain-phase
+    // OnBatch/OnFinished pass the mismatch check; do that in
+    // `DropPendingBatches` after the worker has joined.
     if (mStopSource.has_value())
     {
         mStopSource->request_stop();
@@ -46,8 +45,8 @@ void QtStreamingLogSink::RequestStop()
 
 void QtStreamingLogSink::DropPendingBatches()
 {
-    // Caller must have joined the worker first (e.g. `waitForFinished()`),
-    // so no further OnBatch/OnFinished can capture the new generation.
+    // Caller must have joined the worker first so no further callbacks
+    // can capture the new generation.
     mGeneration.fetch_add(1, std::memory_order_acq_rel);
     {
         std::lock_guard<std::mutex> lock(mPausedMutex);
@@ -71,33 +70,19 @@ void QtStreamingLogSink::Resume()
 {
     Q_ASSERT(QThread::currentThread() == thread());
 
-    // Drain the paused buffer **before** clearing `mPaused` so the worker
-    // never observes the unpaused state with batches still sitting in the
-    // buffer. Otherwise the following sequence would invert ordering:
-    //   1. GUI: `mPaused.exchange(false)` (older code path)
-    //   2. Worker: `OnBatch` reads `mPaused == false`, skips the buffer,
-    //      posts batch_N+1 via `QueuedConnection`.
-    //   3. GUI: `invokeMethod(... Qt::QueuedConnection)` posts the
-    //      coalesced paused batch — *behind* batch_N+1 in the queue.
-    //   4. Event loop runs batch_N+1 first, then the older paused rows.
-    // Since `Resume()` already runs on the GUI thread, deliver the
-    // coalesced batch synchronously: there is no other GUI-thread work
-    // racing with it, and any worker batches posted after `mPaused` is
-    // cleared land in the Qt queue *after* this synchronous call returns
-    // — preserving FIFO order without the QueuedConnection round-trip.
+    // Swap the buffer and clear `mPaused` under one lock so a
+    // concurrent `OnBatch` either lands in the buffer we just took
+    // ownership of, or sees the cleared flag and posts via
+    // QueuedConnection — which lands after the synchronous AppendBatch
+    // below, preserving FIFO order.
     std::vector<loglib::StreamedBatch> drained;
     {
         std::lock_guard<std::mutex> lock(mPausedMutex);
         if (!mPaused.load(std::memory_order_acquire))
         {
-            return; // already running
+            return;
         }
         drained.swap(mPausedBatches);
-        // Clear under the lock so a concurrent `OnBatch` either appended
-        // its batch to the (now-emptied) buffer before we swapped — in
-        // which case we already own it — or it sees `mPaused == false`
-        // on its next check and posts via QueuedConnection (correctly
-        // ordered after this synchronous AppendBatch).
         mPaused.store(false, std::memory_order_release);
     }
 
@@ -138,13 +123,10 @@ void QtStreamingLogSink::TrimPausedBufferTo(size_t maxBufferedLines)
         return;
     }
     size_t toDrop = total - maxBufferedLines;
-    // Walk the buffer head-to-tail dropping whole batches, then trimming
-    // the prefix of the first surviving batch if it is a pure live-tail
-    // batch (no `localLineOffsets`). Static-path batches (`lines` +
-    // `localLineOffsets`) are treated atomically: `localLineOffsets` may
-    // be longer than `lines` (the pipeline accumulates offsets from
-    // all-error chunks past the line count), so partially trimming would
-    // break the parser invariant `LogTable::AppendBatch` relies on.
+    // Drop whole batches, then trim the prefix of the first survivor.
+    // Static-path batches (with `localLineOffsets`) are dropped whole
+    // because their offsets may exceed `lines.size()`; partial trimming
+    // would break `LogTable::AppendBatch`'s invariant.
     auto it = mPausedBatches.begin();
     while (it != mPausedBatches.end() && toDrop > 0)
     {
@@ -158,8 +140,6 @@ void QtStreamingLogSink::TrimPausedBufferTo(size_t maxBufferedLines)
         else
         {
             it->lines.erase(it->lines.begin(), it->lines.begin() + static_cast<std::ptrdiff_t>(toDrop));
-            // Shift the batch's start cursor forward so its `firstLineNumber`
-            // still names a valid line for downstream consumers.
             it->firstLineNumber += toDrop;
             toDrop = 0;
         }
@@ -191,60 +171,38 @@ loglib::KeyIndex &QtStreamingLogSink::Keys()
 
 void QtStreamingLogSink::OnStarted()
 {
-    // Intentional no-op: the GUI's streaming state is armed synchronously by
+    // No-op: the GUI's streaming state is armed synchronously by
     // `LogModel::BeginStreaming` before the worker is spawned.
 }
 
 void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
 {
-    // Worker-side Pause check: redirect parsed
-    // batches into the paused buffer rather than posting per-batch
-    // `Qt::QueuedConnection` lambdas so the Qt event-queue doesn't
-    // accumulate as a third unbounded memory pool invisible to
-    // `K buffered`.
+    // While paused, route batches into the paused buffer instead of
+    // posting them across threads, so the Qt event queue does not
+    // become a third unbounded memory pool.
     bool routedToPausedBuffer = false;
     if (mPaused.load(std::memory_order_acquire))
     {
         const size_t cap = mRetentionCap.load(std::memory_order_acquire);
         std::lock_guard<std::mutex> lock(mPausedMutex);
-        // Re-check under the lock so a concurrent Resume that swapped the
-        // buffer out cannot race us into a now-orphaned vector.
+        // Re-check under the lock; a concurrent Resume could have
+        // already swapped the buffer out.
         if (mPaused.load(std::memory_order_acquire))
         {
             mPausedBatches.push_back(std::move(batch));
-            // Keep the buffered + visible total within `cap`.
-            // The visible row count is the model's, but we cannot read it
-            // from the worker thread; pessimistically bound the buffer alone
-            // to `cap`. The visible count is recouped on Resume by FIFO
-            // eviction in `LogModel::AppendBatch`. This is the
-            // "paused buffer drops oldest" half of 4.2.2.iv; the GUI side
-            // additionally calls `TrimPausedBufferTo` from
-            // `LogModel::SetRetentionCap` to trim against the *combined*
-            // visible+buffered budget per 4.5.5.ii.
+            // Bound the paused buffer alone to `cap`. The combined
+            // visible+buffered budget is enforced on Resume by
+            // `LogModel::AppendBatch`'s FIFO eviction.
             if (cap != 0)
             {
                 size_t total = PausedLineCountLocked();
                 if (total > cap)
                 {
                     size_t toDrop = total - cap;
-                    // Accumulate the *actual* number of lines evicted by
-                    // the loop below so the counter ticks correctly on
-                    // both branches. A snapshot of `toDrop` up-front would
-                    // under-report on the whole-batch-erased branch when
-                    // the head is a static-content batch with more rows
-                    // than `toDrop` requires: that batch is evicted
-                    // atomically (its `localLineOffsets` may exceed
-                    // `lines`, so partial-prefix trimming would break the
-                    // invariant `LogTable::AppendBatch` relies on), so the
-                    // real drop count is `rows`, not `toDrop`. The
-                    // "dropped while paused" indicator must surface
-                    // that overshoot.
+                    // Count actual evicted lines, not `toDrop`: a
+                    // static-content batch is evicted whole and may
+                    // overshoot.
                     size_t linesDropped = 0;
-                    // Same partial-trim caveat as `TrimPausedBufferTo`:
-                    // static-path batches are evicted whole (their
-                    // `localLineOffsets` may be longer than `lines`), so
-                    // partial-prefix trimming is only safe on pure
-                    // live-tail batches.
                     auto it = mPausedBatches.begin();
                     while (it != mPausedBatches.end() && toDrop > 0)
                     {
@@ -252,9 +210,6 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                         const bool hasStaticContent = !it->localLineOffsets.empty();
                         if (rows <= toDrop || hasStaticContent)
                         {
-                            // Whole batch evicted — count `rows`, which
-                            // may exceed the remaining `toDrop` for
-                            // atomic static-content batches.
                             linesDropped += rows;
                             toDrop = (toDrop > rows) ? toDrop - rows : 0;
                             ++it;
@@ -285,8 +240,8 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
     }
 
     const uint64_t gen = mGeneration.load(std::memory_order_acquire);
-    // Qt's queued-connection storage requires CopyConstructible; wrap the
-    // move-only batch in shared_ptr.
+    // Qt's queued-connection storage requires CopyConstructible; wrap
+    // the move-only batch in shared_ptr.
     auto batchPtr = std::make_shared<loglib::StreamedBatch>(std::move(batch));
     QMetaObject::invokeMethod(
         this,
@@ -326,10 +281,6 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
         return out;
     }
     // Pre-size so a long paused tail does not thrash on `push_back`.
-    // After the `LogLine` consolidation, both static- and streaming-
-    // path batches carry their row payload uniformly via `lines` (with
-    // `localLineOffsets` populated only for static-path batches whose
-    // rows reference a `FileLineSource`).
     size_t lineRows = 0;
     size_t lineOffsetCount = 0;
     size_t errorCount = 0;

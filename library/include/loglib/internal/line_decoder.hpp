@@ -13,33 +13,21 @@
 namespace loglib::internal
 {
 
-/// Format-specific record decoder used by the streaming pipeline.
-/// `RunStreamingParseLoop` in `streaming_parse_loop.hpp` feeds the
-/// decoder one record at a time and stays format-agnostic; per-format
-/// code (JSON, future logfmt / CSV / syslog / key=value) implements
-/// this concept.
+/// Format-specific record decoder for the streaming pipeline.
+/// `RunStreamingParseLoop` feeds one record at a time and stays
+/// format-agnostic; per-format code implements this concept.
 ///
-/// The streaming pipeline filters out empty / blank lines before
-/// calling `DecodeCompact`, so implementations may assume @p line is
-/// non-empty.
+/// The pipeline pre-filters empty/blank lines, so @p line is non-empty.
+/// `DecodeCompact` fills @p outValues with `(KeyId, CompactLogValue)`,
+/// where `OwnedString` payloads index into @p outOwnedArena. The
+/// arena is transferred into `StreamLineSource` in a single
+/// `AppendLine` call.
 ///
-/// `DecodeCompact` fills @p outValues with `(KeyId, CompactLogValue)`
-/// pairs whose `OwnedString` payloads carry offsets into
-/// @p outOwnedArena. The streaming pipeline transfers
-/// @p outOwnedArena into the `StreamLineSource` (which becomes the
-/// canonical `LineSource *` for the resulting `LogLine`) in a single
-/// `AppendLine` call — the hot-path `LogLine` ctor never has to
-/// mutate the source.
+/// On parse error: return false and put a human message in @p outError;
+/// the pipeline wraps it with "Error on line N: ...".
 ///
-/// On parse error the implementation returns false and writes a
-/// human-facing message into @p outError; the streaming pipeline
-/// composes the absolute "Error on line N: <body>" wrapper from this
-/// body and the running line cursor.
-///
-/// Implementations are expected to carry whatever scratch state the
-/// format requires (e.g. a simdjson parser, a padded-line buffer, a
-/// type cache) as member fields and reuse it across `DecodeCompact`
-/// invocations within a single parse run.
+/// Implementations may carry per-run scratch state (simdjson parser,
+/// padded buffers, etc.) as member fields.
 template <class T>
 concept CompactLineDecoder = requires(
     T &decoder,

@@ -4,27 +4,21 @@
 
 StreamOrderProxyModel::StreamOrderProxyModel(QObject *parent) : QSortFilterProxyModel{parent}
 {
-    // The reverse-order sort always compares `InsertionOrderRole`,
-    // which `LogModel::data` returns as the bare source row index.
-    // Setting the role once here means the user-clicked column sort on
-    // the downstream `LogFilterModel` (which has its own sort role of
-    // `LogModelItemDataRole::SortRole`) is completely independent of
-    // ours — the two proxy layers never share sort state.
+    // Compare on the bare source row index; the downstream
+    // `LogFilterModel` sorts on `SortRole`, so the two proxies'
+    // sort states never overlap.
     setSortRole(LogModelItemDataRole::InsertionOrderRole);
 
-    // Dynamic sort handles refiltering on data changes. The explicit
-    // `invalidate()` from the source-`rowsInserted` hook below is
-    // what guarantees newly-appended rows land at the visual top in
-    // reversed mode — without it, only the snapshot present at the
-    // time of `sort(...)` looks newest-first.
+    // Dynamic sort + the explicit `invalidate()` below ensures
+    // newly-appended rows always land at the visual top in reversed
+    // mode (without it, only the snapshot at `sort()`-time is sorted).
     setDynamicSortFilter(true);
 }
 
 void StreamOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
 {
-    // Drop only the connections we own; `QSortFilterProxyModel`
-    // manages its own source-model plumbing internally and must not
-    // be touched here.
+    // Drop only the connections we own; the base class manages its
+    // own source-model plumbing.
     QObject::disconnect(mRowsInsertedConn);
     QObject::disconnect(mRowsRemovedConn);
 
@@ -35,11 +29,9 @@ void StreamOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
         return;
     }
 
-    // Slots fire in connection order, so the base class'
-    // `_q_sourceRowsInserted` (registered earlier inside
-    // `QSortFilterProxyModel::setSourceModel`) has already updated
-    // the proxy mapping by the time our handler runs — `invalidate()`
-    // is therefore a safe direct call.
+    // Slots fire in connection order, so by the time our handler runs
+    // the base class has already updated its mapping; calling
+    // `invalidate()` here is safe.
     auto resortIfReversed = [this](const QModelIndex &parent, int, int) {
         if (mReversed && !parent.isValid())
         {
@@ -58,11 +50,9 @@ void StreamOrderProxyModel::SetReversed(bool reversed)
     }
     mReversed = reversed;
 
-    // `sort(0, ...)` with the `InsertionOrderRole` set above performs
-    // a row-index sort — the column argument is incidental, since the
-    // role's value is identical for every column on a given row.
-    // `sort(-1)` clears the proxy's sort state and falls back to the
-    // identity mapping.
+    // The column argument to `sort()` is incidental because
+    // `InsertionOrderRole` is identical across all columns of a row.
+    // `sort(-1)` falls back to the identity mapping.
     if (mReversed)
     {
         sort(0, Qt::DescendingOrder);

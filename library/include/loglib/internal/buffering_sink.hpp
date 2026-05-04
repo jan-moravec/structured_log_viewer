@@ -17,10 +17,9 @@ namespace loglib::internal
 class BufferingSink : public LogParseSink
 {
 public:
-    /// Takes ownership of @p source and routes batches into an internal
-    /// `KeyIndex`. The owned source's `LogFile` is the canonical arena for
-    /// `OwnedString` payload concatenation; line-offset pushes come in
-    /// through `OnBatch`.
+    /// Takes ownership of @p source. The source's `LogFile` is the
+    /// arena for `OwnedString` payload concatenation; line offsets are
+    /// pushed in via `OnBatch`.
     explicit BufferingSink(std::unique_ptr<FileLineSource> source);
 
     KeyIndex &Keys() override;

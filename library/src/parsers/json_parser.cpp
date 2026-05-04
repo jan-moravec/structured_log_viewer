@@ -138,11 +138,11 @@ internal::CompactLogValue ExtractStringValue(
     Value &value, bool sourceIsStable, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
 {
-    // string_view path is only safe when simdjson iterates directly over the
-    // mmap; the padded-scratch fallback yields views that dangle on the next line.
-    // `raw_json_token()`/`raw_json()` aliasing into source is pinned to
-    // simdjson v4.6.3 (see `cmake/FetchDependencies.cmake`); re-verify on bump
-    // — the `[allocations]` benchmark's fast-path fraction is the regression signal.
+    // The string_view fast path is only safe when simdjson iterates
+    // over the mmap; padded-scratch fallback views dangle on the next
+    // line. `raw_json_token()` / `raw_json()` source-aliasing is pinned
+    // to simdjson v4.6.3 — re-verify on bump (the `[allocations]`
+    // benchmark's fast-path fraction is the regression signal).
     if (sourceIsStable)
     {
         std::string_view rawToken(value.raw_json_token());
@@ -159,10 +159,9 @@ internal::CompactLogValue ExtractStringValue(
     std::string_view stringValue;
     if (!value.get_string().get(stringValue))
     {
-        // `get_string()` on the padded-scratch fallback yields bytes inside
-        // the worker's scratch buffer (not the mmap), so `MakeStringCompact`
-        // will fall through to the `OwnedString` arena path. Same as the
-        // pre-Phase-1 `LogValue{std::string(stringValue)}` semantics.
+        // Padded-scratch fallback: the view aliases the worker's
+        // scratch buffer, so `MakeStringCompact` falls through to the
+        // `OwnedString` arena path.
         return MakeStringCompact(stringValue, fileBegin, fileSize, ownedArena);
     }
     return internal::CompactLogValue::MakeMonostate();
@@ -185,8 +184,7 @@ internal::CompactLogValue ExtractRawJsonValue(
         {
             return MakeStringCompact(rawJson, fileBegin, fileSize, ownedArena);
         }
-        // Padded-scratch fallback: `rawJson` aliases the worker's scratch
-        // buffer, copy into the per-batch arena.
+        // Padded-scratch fallback: copy into the per-batch arena.
         const auto offset = static_cast<uint64_t>(ownedArena.size());
         ownedArena.append(rawJson.data(), rawJson.size());
         return internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(rawJson.size()));
@@ -528,9 +526,8 @@ void DecodeJsonBatch(
             line.remove_suffix(1);
         }
 
-        // `GetLine` subtracts 1 (the '\n') from the slice length; for an
-        // unterminated final line, push `fileSize + 1` as the sentinel so
-        // the last character is not lopped off.
+        // `GetLine` subtracts 1 (the '\n'); for an unterminated final
+        // line push `fileSize + 1` so we don't lop off the last char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
 
@@ -542,8 +539,8 @@ void DecodeJsonBatch(
 
         try
         {
-            // mmap fast path requires SIMDJSON_PADDING bytes of slack past lineEnd;
-            // otherwise fall back to a per-worker padded copy.
+            // mmap fast path needs SIMDJSON_PADDING bytes of slack past
+            // lineEnd; otherwise fall back to a padded scratch copy.
             const size_t remaining = static_cast<size_t>(fileEnd - lineEnd);
             const bool sourceIsStable = remaining >= simdjson::SIMDJSON_PADDING;
             auto result =
@@ -590,18 +587,17 @@ void DecodeJsonBatch(
                 parsed.ownedStringsArena
             );
 
-            // Stamp the 0-based offset of this line within the batch so that
-            // `LogFile::GetLine(LineId())` indexes the correct row in
-            // `mLineOffsets` after Stage C shifts by the running cursor.
-            // `relativeLineNumber` itself stays 1-based for the human-facing
-            // error messages above.
+            // 0-based intra-batch offset; Stage C shifts by the
+            // running cursor so `LogFile::GetLine(LineId())` indexes
+            // `mLineOffsets` correctly. `relativeLineNumber` stays
+            // 1-based for human-facing error messages.
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
 
             parsed.lines.push_back(std::move(logLine));
 
-            // Promote inline so the freshly-written values are still hot in L1.
-            // The line's `OwnedString` payloads still index into the per-batch
-            // arena (Stage C rebases later), so pass that arena explicitly.
+            // Inline promotion: values are still hot in L1.
+            // `OwnedString` payloads still reference the per-batch
+            // arena (Stage C rebases later), so pass it explicitly.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
         }
         catch (const std::exception &e)
@@ -681,29 +677,20 @@ std::string JsonParser::ToString(const LogMap &values) const
 namespace
 {
 
-/// JSON record decoder for the format-agnostic streaming pipeline.
-/// Owns the simdjson parser, padded-line scratch buffer (the streaming
-/// path always falls back to the padded-copy shape because
-/// `BytesProducer::Read` does not promise the `simdjson::SIMDJSON_PADDING`
-/// byte slack the mmap fast path relies on), and the per-key type
-/// cache so successive lines reuse the same allocations. Satisfies
-/// `internal::CompactLineDecoder` (the unified `LogLine`-emitting
-/// pipeline `RunStreamingParseLoop`).
+/// JSON record decoder for `RunStreamingParseLoop`. Owns the simdjson
+/// parser, padded-line scratch (the streaming path always uses the
+/// padded-copy shape because `BytesProducer::Read` doesn't promise
+/// SIMDJSON_PADDING slack), and the per-key type cache so successive
+/// lines reuse allocations. Satisfies `CompactLineDecoder`.
 class JsonLineDecoder
 {
 public:
     JsonLineDecoder() = default;
 
-    /// `CompactLineDecoder` concept entry point — fills @p out with
-    /// pre-built `CompactLogValue`s whose `OwnedString` payloads carry
-    /// offsets into @p outOwnedArena, so the pipeline can `AppendLine`
-    /// the arena into the `StreamLineSource` and resolve fields
-    /// through the source's `ResolveOwnedBytes` afterwards. The
-    /// streaming pipeline filters blank lines before getting here, so
-    /// the @p line precondition is "non-empty after `\r` trimming".
-    /// On parse error returns false and writes a human-facing message
-    /// to @p errorOut (the pipeline composes the absolute "Error on
-    /// line N: ..." wrapper).
+    /// `CompactLineDecoder` entry point. Fills @p out with compact
+    /// values whose `OwnedString` payloads index into @p outOwnedArena.
+    /// Returns false on parse error and writes a body message to
+    /// @p errorOut; the pipeline wraps it as "Error on line N: ...".
     bool DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
@@ -746,11 +733,10 @@ public:
             }
 
             auto objectValue = object.value();
-            // `sourceIsStable = false`: the streaming caller does not
-            // give the parser a stable view of the source bytes, so
-            // every string is copied into @p outOwnedArena. `fileBegin = nullptr` /
-            // `fileSize = 0` ensures `MakeStringCompact` cannot mistake
-            // a padded-buffer view for a mmap slice.
+            // sourceIsStable=false: every string is copied into the
+            // owned arena. fileBegin/fileSize=0 prevents
+            // `MakeStringCompact` from mistaking a padded-buffer view
+            // for an mmap slice.
             out = ParseJsonLine(
                 objectValue,
                 keys,
@@ -785,15 +771,6 @@ static_assert(
 
 void JsonParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // The unified streaming path: emits `LogLine`s tagged with @p
-    // source so `LogTable` can hold them in a single row vector
-    // alongside the static-file `LogLine`s. The `JsonLineDecoder`
-    // satisfies `CompactLineDecoder` (the unified shape that produces
-    // pre-built `CompactLogValue`s + a per-line owned arena), and
-    // `RunStreamingParseLoop` move-transfers each arena into
-    // the source on every line so the resulting `LogLine`'s
-    // `OwnedString` payloads resolve against the source's canonical
-    // arena from the moment of construction.
     JsonLineDecoder decoder;
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
@@ -823,7 +800,7 @@ void JsonParser::ParseStreaming(
             return false;
         }
         const char *batchBegin = cursor;
-        // Size-bounded advance: `cursor + batchSize` is UB past one-past-end.
+        // Bounded advance: `cursor + batchSize` past one-past-end is UB.
         const size_t remaining = static_cast<size_t>(fileEnd - cursor);
         const size_t advance = std::min(batchSize, remaining);
         const char *target = cursor + advance;

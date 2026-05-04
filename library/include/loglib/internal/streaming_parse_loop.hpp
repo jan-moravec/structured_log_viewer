@@ -26,38 +26,25 @@
 namespace loglib::internal
 {
 
-/// Coalescing thresholds for the live-tail streaming loop. Smaller than the
-/// static pipeline's `kStaticBatch*` because the live-tail target is
-/// end-to-end latency rather than million-line throughput; the loop emits a
-/// batch as soon as either threshold is reached.
+/// Coalescing thresholds for the live-tail loop. Tighter than the
+/// static pipeline because we optimise for latency, not throughput.
 constexpr size_t kStreamingBatchFlushLines = 250;
 constexpr auto kStreamingBatchFlushInterval = std::chrono::milliseconds(100);
 
-/// Read buffer size for the live-tail loop. 64 KiB matches the pre-fill
-/// chunk size in `TailingBytesProducer` and is small enough that each
-/// `BytesProducer::Read` returns within a couple of poll ticks even on
-/// slow CI runners.
+/// Read buffer size for the live-tail loop. Matches `TailingBytesProducer`'s
+/// pre-fill chunk; small enough that each `Read` returns promptly.
 constexpr size_t kStreamingReadBufferSize = 64 * 1024;
 
-/// Format-agnostic live-tail entry point that emits the unified `LogLine`
-/// row type backed by a long-lived `StreamLineSource`. Drains
-/// `source.Producer()` line-by-line, hands each non-blank line to
-/// @p decoder (which must satisfy the `CompactLineDecoder` concept --
-/// see `internal/line_decoder.hpp`), atomically commits the resulting
-/// `(rawText, ownedArena)` to @p source, and constructs a `LogLine`
-/// referencing the just-published `lineId`. Coalesces rows into
-/// `StreamedBatch::lines` and honours the `LogParseSink` contract
-/// (up to `kStreamingBatchFlushLines` rows or
-/// `kStreamingBatchFlushInterval` per batch).
+/// Format-agnostic live-tail entry point. Drains `source.Producer()`
+/// line-by-line, hands each non-blank line to @p decoder (must
+/// satisfy `CompactLineDecoder`), commits `(rawText, ownedArena)` to
+/// @p source, and emits `LogLine`s into batches throttled by
+/// `kStreamingBatchFlush*`.
 ///
-/// Single-threaded by design -- the live-tail target is thousands of
-/// lines/s, not millions, so the TBB pipeline overhead is not warranted.
-///
-/// `source` is mutated on the parser thread (`AppendLine` /
-/// `AppendOwnedBytes`) and read concurrently from the GUI thread via
-/// `LogLine::Source()->RawLine` / `ResolveOwnedBytes`. The
-/// `StreamLineSource`'s deque storage and per-source mutex make this
-/// safe.
+/// Single-threaded: the target is thousands of lines/s, so TBB
+/// overhead is not warranted. `source` is mutated on the parser
+/// thread and read concurrently by the GUI; `StreamLineSource`'s
+/// internal mutex + deque storage make that safe.
 template <class Decoder>
 void RunStreamingParseLoop(
     StreamLineSource &source, Decoder &decoder, LogParseSink &sink, const ParserOptions &options
@@ -71,9 +58,8 @@ void RunStreamingParseLoop(
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)
     {
-        // No byte producer attached -- typical for unit tests that drive
-        // the source's API directly. Honour the sink contract with one
-        // empty terminal batch and finish.
+        // No producer (e.g. unit tests driving `AppendLine` directly).
+        // Honour the sink contract with one empty terminal batch.
         coalescer.Finish(1, false);
         return;
     }
@@ -91,9 +77,7 @@ void RunStreamingParseLoop(
     std::string carry;
     std::vector<char> readBuffer(kStreamingReadBufferSize);
 
-    // Reused per line: cleared at the top of every `processLine`. Move-
-    // transferred into the source on success so the source's deque
-    // storage owns the bytes thereafter.
+    // Reused per line; move-transferred into the source on success.
     std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
     std::string ownedArena;
     std::string lineError;
@@ -122,26 +106,20 @@ void RunStreamingParseLoop(
             return;
         }
 
-        // Compact values produced by the decoder are unsorted (the JSON
-        // path emits them in source order); the `LogLine` hot-path
-        // ctor's `is_sorted` debug assertion needs ascending KeyIds.
+        // `LogLine` ctor's debug `is_sorted` assertion requires
+        // ascending KeyIds; decoders may emit in source order.
         std::sort(compactValues.begin(), compactValues.end(), [](const auto &a, const auto &b) {
             return a.first < b.first;
         });
 
-        // Atomic commit to the source: `AppendLine` move-transfers both
-        // the raw bytes and the per-line owned arena under the source's
-        // mutex, so any concurrent reader on the GUI thread observes
-        // the line either fully written or not at all.
+        // Atomic commit: `AppendLine` move-transfers both the raw
+        // bytes and the per-line arena under the source's mutex.
         const size_t lineId = source.AppendLine(std::string(trimmed), std::move(ownedArena));
         ownedArena.clear();
 
         LogLine logLine(std::move(compactValues), keys, source, lineId);
-        // Inline timestamp promotion mirrors the static pipeline. The
-        // `string_view{}` arena tells `ExtractStringBytes` to resolve
-        // `OwnedString` payloads through the line's `LineSource *` --
-        // which, for stream sources, dispatches to
-        // `StreamLineSource::ResolveOwnedBytes`.
+        // Empty arena -> resolution falls through to the line's
+        // `LineSource *` (i.e. `StreamLineSource::ResolveOwnedBytes`).
         promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
 
         coalescer.Prime(lineNumber);

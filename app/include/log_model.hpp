@@ -25,19 +25,14 @@ enum LogModelItemDataRole
     UserRole = Qt::UserRole,
     SortRole,
     CopyLine,
-    /// Returns the source-model row index (`index.row()`) regardless of
-    /// column. Used by the `StreamOrderProxyModel` to reverse the visual
-    /// order of streamed lines (newest-first mode) without touching the
-    /// user-clicked column sort that lives on the outer
-    /// `LogFilterModel`. Comparing this role with `Qt::DescendingOrder`
-    /// places the most-recently-appended row at proxy row 0.
+    /// Source-model row index. `StreamOrderProxyModel` sorts on this
+    /// (descending) for newest-first mode without disturbing the user's
+    /// column sort on `LogFilterModel`.
     InsertionOrderRole,
 };
 
-/// Outcome reported by `LogModel::streamingFinished`: clean completion vs.
-/// external cancel vs. worker failure (the exception-escape `catch` paths
-/// in `LogModel::BeginStreaming(FileLineSource, parseCallable)` map to
-/// `Failed`).
+/// Outcome reported by `LogModel::streamingFinished`. `Failed` is the
+/// exception-escape boundary in the parser worker.
 enum class StreamingResult : int
 {
     Success = 0,
@@ -53,112 +48,62 @@ public:
     explicit LogModel(QObject *parent = nullptr);
     ~LogModel() override;
 
-    /// Tears the full model down: runs the streaming teardown order
-    /// (source `Stop()` → sink `RequestStop()` → worker
-    /// `waitForFinished()` → paused-buffer flush → `DropPendingBatches()`)
-    /// **and** then resets `mLogTable`, emitting `lineCountChanged(0)` /
-    /// `errorCountChanged(0)`. Called from every "open a new session"
-    /// entry point. The compensating `streamingFinished(Cancelled)` is
-    /// emitted when this call observed `mStreamingActive == true`.
-    ///
-    /// Sibling of `StopAndKeepRows()`: same teardown, full row reset.
+    /// Full teardown (`BytesProducer::Stop()` -> sink `RequestStop()` ->
+    /// worker join -> paused-buffer flush -> `DropPendingBatches()`)
+    /// followed by a model reset. Emits `lineCountChanged(0)` /
+    /// `errorCountChanged(0)`, plus a compensating
+    /// `streamingFinished(Cancelled)` if a session was still active.
     void Reset();
 
-    /// Ends the active streaming session but **preserves the visible
-    /// rows**. Runs the same teardown sequence as `Reset()` — including
-    /// the paused-buffer flush so already-parsed rows land in the model
-    /// before teardown — but does *not* reset `mLogTable`. Used by
-    /// `MainWindow::StopStream` so the user can keep sorting, filtering,
-    /// searching, and copying rows after Stop. Emits the compensating
-    /// `streamingFinished(Cancelled)` when this call observed
-    /// `mStreamingActive == true`.
-    ///
-    /// Sibling of `Reset()`: same teardown, rows preserved.
+    /// Same teardown as `Reset()` but keeps the visible rows so the
+    /// user can keep sorting/filtering/copying after Stop.
     void StopAndKeepRows();
 
-    /// Production overload for the static-file path: arms the model and
-    /// runs @p parseCallable on a `QtConcurrent::run` worker, parking the
-    /// `QFuture` on the model so `Clear()` / `~LogModel` can
-    /// `waitForFinished()` before the borrowed `LogFile*` is unmapped
-    /// (cooperative stop alone is insufficient — TBB Stage B runs in
-    /// parallel without polling the token mid-batch).
+    /// Static-file streaming entry point. Runs @p parseCallable on a
+    /// `QtConcurrent::run` worker; the future is parked on the model so
+    /// teardown can join before the borrowed `LogFile*` is unmapped
+    /// (the TBB pipeline does not poll the stop token mid-batch).
     ///
-    /// @p parseCallable receives the parse `StopToken`. Exceptions escaping
-    /// it are caught at the worker boundary and converted into a synthetic
-    /// terminal `OnBatch` + `OnFinished(false)`.
+    /// Exceptions escaping @p parseCallable are caught at the worker
+    /// boundary and surfaced as a synthetic terminal
+    /// `OnBatch` + `OnFinished(false)`.
     loglib::StopToken BeginStreaming(
         std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
     );
 
-    /// **Multi-file streaming append.** Same shape as the static-file
-    /// `BeginStreaming` overload above, but appends to the existing
-    /// session instead of resetting the model. Used by the GUI's
-    /// sequential multi-file open flow: after each file's
-    /// `streamingFinished`, the next file is queued via this entry
-    /// point, accumulating rows from all files in one model. Reuses
-    /// the existing `KeyIndex` so columns line up across files. The
-    /// caller (`MainWindow`) is responsible for ensuring the model
-    /// already has an active session (the typical guard is that
-    /// `BeginStreaming` was called first for the queue's first file).
-    /// Asserts the streaming watcher is idle on entry.
+    /// Append a follow-up file to an already-active static-file session
+    /// (multi-file open). Reuses the existing `KeyIndex` so columns
+    /// line up across files. Asserts the streaming watcher is idle.
     loglib::StopToken AppendStreaming(
         std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
     );
 
-    /// Live-tail entry point. Takes ownership of @p source for the session
-    /// lifetime, arms the sink, and spawns a `QtConcurrent::run` worker
-    /// that drives `JsonParser::ParseStreaming(*source, *sink, options)`.
-    /// Behavior on stop / model teardown is the mandatory 
-    /// order: `BytesProducer::Stop()` (on the producer owned by the
-    /// `StreamLineSource`) → parser `stopToken.request_stop()` →
-    /// `mStreamingWatcher->waitForFinished()` → sink
-    /// `DropPendingBatches()`. The two stop signals are deliberately
-    /// distinct because the parser's stop token alone does not unblock a
-    /// worker parked in `Read` / `WaitForBytes`.
+    /// Live-tail entry point. Takes ownership of @p source, arms the
+    /// sink, and spawns a `JsonParser::ParseStreaming` worker.
     ///
-    /// `options.stopToken` is overwritten by `Sink()->Arm()` before the
-    /// worker captures it. `options.configuration` (if non-null) is
-    /// snapshotted by the parser's hot loop.
+    /// Teardown order: `BytesProducer::Stop()` (releases I/O parked in
+    /// `Read`/`WaitForBytes`) -> parser stop token -> worker join ->
+    /// sink `DropPendingBatches()`. Both stop signals are needed; the
+    /// parser token alone cannot unblock a worker parked on I/O.
     ///
-    /// The `StreamLineSource` is installed into `LogTable` and outlives
-    /// every `LogLine` it owns; the worker emits `LogLine`s tagged with
-    /// that source so each row stays resolvable via `LineSource::RawLine`
-    /// after parsing has moved on.
+    /// `options.stopToken` is overwritten by `Sink()->Arm()` before
+    /// the worker captures it.
     loglib::StopToken BeginStreaming(
         std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options
     );
 
-    /// **Test-only entry point.** Installs @p source into the table and
-    /// arms the bridging sink without spawning a parser worker, so
-    /// tests can drive synthetic `AppendBatch(...)` calls directly.
-    /// Returns the parse `StopToken` so a follow-up
-    /// `mSink->RequestStop()` / `EndStreaming(...)` cycle behaves
-    /// identically to the production paths.
-    ///
-    /// Pair every call with `EndStreaming(...)` or `Reset()`; otherwise
-    /// `mStreamingActive` stays on and the GUI's configuration gate never
-    /// reopens. Asserts the streaming watcher is idle on entry. Source
-    /// may be null (the model resets to the empty-stream shape).
-    ///
-    /// Production code must use the worker-driven overloads above
-    /// instead -- this entry point is documented as test-only because
-    /// it skips the worker-spawn / cancellation plumbing every shipping
-    /// open path needs.
+    /// Test-only: install @p source, arm the sink, and return the stop
+    /// token without spawning a worker. Pair every call with
+    /// `EndStreaming(...)` or `Reset()`.
     loglib::StopToken BeginStreamingForSyncTest(std::unique_ptr<loglib::LineSource> source);
 
-    /// Appends one streamed batch and emits the corresponding
-    /// rows/columns/dataChanged signals plus the line/error counters.
-    /// FIFO eviction runs before insertion when the
-    /// configured retention cap is set: the prefix of the model is
-    /// dropped via `beginRemoveRows` / `endRemoveRows` so the visible
-    /// rows + appended rows fit. Giant batches
-    /// (`batch.lines.size() > retentionCap`) collapse the head of the
-    /// batch directly, keeping per-batch eviction O(cap) rather than
-    /// O(batch).
+    /// Append one streamed batch and emit the Qt model signals. When a
+    /// `RetentionCap()` is set, the visible row prefix is FIFO-evicted
+    /// before insertion; over-cap batches are head-trimmed first so
+    /// per-batch eviction stays O(cap).
     void AppendBatch(loglib::StreamedBatch batch);
 
-    /// Finalises the streaming parse and emits `streamingFinished`.
-    /// Timestamps are already promoted by Stage B / mid-stream back-fill.
+    /// Finalise the streaming parse and emit `streamingFinished`.
     void EndStreaming(bool cancelled);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
@@ -185,105 +130,78 @@ public:
     /// sink directly.
     [[nodiscard]] bool IsStreamingActive() const noexcept;
 
-    /// Update the in-memory line cap:
-    ///   - **Running**: if the new cap is below the visible row count,
-    ///     immediately FIFO-trim the existing rows. Raising has no
-    ///     immediate effect.
-    ///   - **Paused**: record the new cap, leave the visible rows alone,
-    ///     and trim the paused buffer to `cap - visible` so the
-    ///     visible+buffered total stays within `cap` (4.5.5.ii).
-    ///   - **Idle**: just record the value for the next `BeginStreaming`.
-    /// `cap == 0` is treated as "unbounded" (back-compat with the
-    /// static-file path; the live-tail entry point applies
-    /// `StreamingControl::kDefaultRetentionLines` if no value has been
-    /// set).
+    /// Update the in-memory line cap.
+    ///   - **Running**: FIFO-trim visible rows down to the new cap.
+    ///     Raising has no immediate effect.
+    ///   - **Paused**: keep visible rows; trim the paused buffer so
+    ///     visible+buffered stays within `cap`.
+    ///   - **Idle**: just record the value for the next session.
+    /// `cap == 0` means unbounded; the live-tail entry substitutes
+    /// `StreamingControl::kDefaultRetentionLines` if still 0.
     void SetRetentionCap(size_t cap);
 
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
 signals:
-    /// Emitted after each batch carrying errors; cumulative count since
-    /// last `Clear`/`BeginStreaming`.
+    /// Cumulative error count since the last `Reset` / `BeginStreaming`,
+    /// emitted whenever a batch carries errors.
     void errorCountChanged(qsizetype count);
 
-    /// Emitted after every `AppendBatch` so the status bar still ticks
-    /// on errors-only batches.
+    /// Emitted after every `AppendBatch` so the status bar ticks on
+    /// errors-only batches too.
     void lineCountChanged(qsizetype count);
 
     /// Emitted from `EndStreaming` (and from `Reset()` as a compensating
-    /// signal when the queued `OnFinished` was generation-stamped). See
-    /// `StreamingResult` for the outcome encoding.
+    /// signal when the queued `OnFinished` was generation-stamped).
     void streamingFinished(StreamingResult result);
 
-    /// Emitted on the GUI thread when the active `BytesProducer` reports a
-    /// rotation event. The `MainWindow` consumes this to
-    /// flash the brief `— rotated` suffix in the status bar (5.8). The
-    /// callback fires from the source's worker thread; the model
-    /// re-emits via a queued connection so the slot runs on the GUI
-    /// thread.
+    /// Rotation reported by the active `BytesProducer`. Re-emitted from
+    /// the source's worker thread via a queued connection so the slot
+    /// runs on the GUI thread.
     void rotationDetected();
 
-    /// Emitted on the GUI thread when the active `BytesProducer` transitions
-    /// between `Running` and `Waiting`.
-    /// The callback fires from the source's worker thread; the model
-    /// re-emits via a queued connection so the slot runs on the GUI
-    /// thread. `MainWindow::OnSourceStatusChanged` toggles the
-    /// `Source unavailable` status-bar variant.
+    /// `Running`/`Waiting` transition reported by the active
+    /// `BytesProducer`. Re-emitted via queued connection to the GUI.
     void sourceStatusChanged(loglib::SourceStatus status);
 
 private:
-    /// Shared `BeginStreaming` setup for both static-file and live-tail
-    /// sessions: installs @p source (or no source, for the synthetic-
-    /// batch test path) into `LogTable`, resets the model and arms the
-    /// sink. The parser worker emits `LogLine`s tagged with @p source
-    /// so the model layer can resolve each row's raw bytes via
-    /// `LineSource::RawLine` after parsing has moved on. When @p source
-    /// is a `FileLineSource`, the table's per-line offsets are reserved
-    /// based on `LogFile::Size()`; the hint is a no-op for stream
-    /// sources.
+    /// Shared `BeginStreaming` setup: install @p source into `LogTable`
+    /// (or nothing for the sync-test entry), reset the model, and arm
+    /// the sink. Reserves per-line offsets up front for `FileLineSource`
+    /// inputs; no-op for stream sources.
     void BeginStreamingShared(std::unique_ptr<loglib::LineSource> source);
 
     /// Shared implementation of `Reset()` / `StopAndKeepRows()`. Runs
-    /// the full teardown, then — if @p resetTable is true — does the
-    /// `beginResetModel` / `mLogTable.Reset` / zero-count emit sequence.
-    /// The compensating `streamingFinished(Cancelled)` is emitted last,
-    /// preserving the existing test-observed ordering (teardown → reset
-    /// → `lineCountChanged(0)` → `streamingFinished`).
+    /// the full teardown, then resets `mLogTable` if @p resetTable is
+    /// true. Order: teardown → reset → `lineCountChanged(0)` →
+    /// compensating `streamingFinished`.
     void TeardownStreamingSessionInternal(bool resetTable);
 
     loglib::LogTable mLogTable;
     QtStreamingLogSink *mSink = nullptr;
 
-    /// Future for the active parse worker; destructive ops join it before
-    /// the borrowed `LogTable`/`LineSource` references are torn down.
+    /// Future for the active parse worker; destructive ops join it
+    /// before the borrowed `LogTable` / `LineSource` are torn down.
     QFutureWatcher<void> *mStreamingWatcher = nullptr;
 
-    /// Returns the live byte producer for the active streaming session
-    /// (`LogTable::Data().FrontStreamSource()->Producer()` for live-tail
-    /// sessions). Returns nullptr for static-file sessions and when no
-    /// session is active. Used by the  teardown to call
-    /// `Stop()` before joining the worker.
+    /// Live byte producer for the active session, or nullptr when none.
+    /// Teardown calls `Stop()` on it before joining the worker.
     [[nodiscard]] loglib::BytesProducer *ActiveProducer() noexcept;
 
-    /// Cumulative error count for the active parse (mirrors `mStreamingErrors.size()`).
     qsizetype mErrorCount = 0;
 
-    /// GUI-thread-only flag set by `BeginStreaming()`, cleared by
-    /// `EndStreaming()` / `Reset()`. Race-free unlike
-    /// `mStreamingWatcher->isRunning()`, which flips off before the queued
-    /// `OnFinished` lambda reaches the GUI thread. `Reset()` consults it to
-    /// decide whether to emit a compensating `streamingFinished`.
+    /// Race-free "still streaming" flag.
+    /// `mStreamingWatcher->isRunning()` flips off before the queued
+    /// `OnFinished` reaches the GUI; this flag stays set until
+    /// `EndStreaming`/`Reset` runs on the GUI thread.
     bool mStreamingActive = false;
 
     std::vector<std::string> mStreamingErrors;
 
-    /// Configurable retention cap. `0` means unbounded
-    /// (static-path / sync-test-variant default). Live-tail
-    /// `BeginStreaming(StreamLineSource, ...)` applies
-    /// `StreamingControl::kDefaultRetentionLines` when this is still 0
-    /// at session start. `SetRetentionCap` updates this and applies the
-    /// in-flight trim rules.
+    /// Retention cap. `0` means unbounded; the live-tail entry applies
+    /// `StreamingControl::kDefaultRetentionLines` when still 0 at
+    /// session start.
     size_t mRetentionCap = 0;
 
     static QString ConvertToSingleLineCompactQString(const std::string &string);

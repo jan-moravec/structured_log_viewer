@@ -16,53 +16,27 @@ namespace loglib
 
 class BytesProducer;
 
-/// `LineSource` over a live byte producer (`TailingBytesProducer`, future
-/// stdin / TCP / UDP / named-pipe). Owns the bytes that back each line
-/// directly: a parallel pair of `std::deque<std::string>`s holds the
-/// raw line text and any escape-decoded payload bytes referenced by the
-/// matching `LogLine`'s `OwnedString` compact values. There is **no
-/// session-global arena** — eviction simply drops the corresponding
-/// deque entries.
+/// `LineSource` over a live byte producer. Owns the bytes backing each
+/// line in a pair of `std::deque<std::string>`s (raw text + per-line
+/// owned arena). No session-global arena: eviction simply drops the
+/// corresponding entries.
 ///
-/// Design notes:
-///
-///   - The `BytesProducer` drives I/O -- `Read` / `WaitForBytes` /
-///     `Stop` / rotation- and status-callbacks. The parser drains it,
-///     splits into lines, and calls `AppendLine` once per record.
-///
-///   - `BytesAreStable()` is `false`: the parser must emit
-///     `OwnedString` compact values rather than `MmapSlice` ones.
-///
-///   - `SupportsEviction()` is `true`. `EvictBefore(firstId)` drops
-///     ids `[mFirstAvailableLineId, firstId)`. The `LogTable` /
-///     `LogModel` retention path is the one caller in production;
-///     tests may drive it directly.
-///
-///   - LineId convention: 1-based monotonic ids assigned by
-///     `AppendLine`.
-///
-///   - Thread-safety: every `LineSource` virtual is callable from any
-///     thread. The parser worker thread mutates the source via
-///     `AppendLine`; the GUI thread reads via `RawLine` /
-///     `ResolveOwnedBytes` and may evict via `EvictBefore`. Internal
-///     state is mutex-protected; `std::deque` storage means
-///     `AppendLine`'s push_back never invalidates references to
-///     existing entries that other threads may already be reading.
-///     Callers must not retain `string_view`s returned by
-///     `ResolveOwnedBytes` past the next `EvictBefore` for the same
-///     line id.
+/// - `BytesAreStable()` is `false`; the parser must emit
+///   `OwnedString` payloads (not `MmapSlice`).
+/// - `SupportsEviction()` is `true`; `EvictBefore` is the retention
+///   hook used by `LogTable` / `LogModel`.
+/// - LineIds are 1-based monotonic, assigned by `AppendLine`.
+/// - Thread-safe: a mutex guards all members. The parser worker
+///   appends; the GUI reads and may evict. `std::deque` push_back is
+///   reference-stable, so concurrent reads on existing entries are
+///   safe. `string_view`s from `ResolveOwnedBytes` are invalidated by
+///   `EvictBefore` on that line id.
 class StreamLineSource final : public LineSource
 {
 public:
-    /// @param displayName  Human-facing identity for the GUI status bar
-    ///                     and any code that consumes
-    ///                     `LineSource::Path()`. Typically the file
-    ///                     path's string for tail-of-file producers;
-    ///                     synthetic for non-filesystem sources.
-    /// @param producer     The byte producer for this stream. May be
-    ///                     null when the source is constructed for
-    ///                     pure-test scenarios that drive `AppendLine`
-    ///                     directly.
+    /// @param displayName  GUI-facing identity (typically a file path).
+    /// @param producer     Byte producer for this stream. May be null
+    ///                     in tests that drive `AppendLine` directly.
     StreamLineSource(std::filesystem::path displayName, std::unique_ptr<BytesProducer> producer);
 
     ~StreamLineSource() override;
@@ -91,29 +65,21 @@ public:
     void EvictBefore(size_t firstSurvivingLineId) override;
     [[nodiscard]] size_t FirstAvailableLineId() const noexcept override;
 
-    /// Borrow the byte producer. Returns `nullptr` if the source was
-    /// constructed without one. Used by the parser to drain bytes;
-    /// ownership stays with the source.
+    /// Borrow the byte producer; ownership stays with the source.
+    /// Returns `nullptr` if the source was constructed without one.
     [[nodiscard]] BytesProducer *Producer() noexcept;
     [[nodiscard]] const BytesProducer *Producer() const noexcept;
 
-    /// Append @p rawLine and its accompanying escape-decoded byte
-    /// arena to the source. Returns the assigned 1-based monotonic
-    /// `lineId`. The arena is opaque to the source — `OwnedString`
-    /// compact values produced by the parser carry `(offset, length)`
-    /// pairs into it, resolved later via `ResolveOwnedBytes`.
-    ///
-    /// `ownedBytes` may be empty when the line had no escape-decoded
-    /// fields.
+    /// Append @p rawLine and its escape-decoded byte arena. Returns
+    /// the assigned 1-based monotonic `lineId`. `ownedBytes` may be
+    /// empty if the line had no escape-decoded fields.
     size_t AppendLine(std::string rawLine, std::string ownedBytes);
 
-    /// Number of lines currently held (post-eviction). Equals
-    /// `mNextLineId - mFirstAvailableLineId`.
+    /// Number of lines currently held (post-eviction).
     [[nodiscard]] size_t Size() const noexcept;
 
-    /// Total bytes owned by this source: line bytes + per-line owned
-    /// arenas, capacity-accurate. Used by the memory-footprint
-    /// benchmark; not part of the parse hot path.
+    /// Total bytes owned: line bytes + per-line owned arenas.
+    /// Capacity-accurate; benchmark-only, not on the parse hot path.
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
 private:
@@ -123,29 +89,18 @@ private:
     std::filesystem::path mDisplayName;
     std::unique_ptr<BytesProducer> mProducer;
 
-    /// Guards every member below it. Acquired by every `LineSource`
-    /// virtual and by `AppendLine` / `EvictBefore`. Held only while
-    /// reading or mutating the deques; callers receive copies (raw
-    /// line) or `string_view`s that remain valid as long as the deque
-    /// entry hasn't been evicted.
+    /// Guards every member below.
     mutable std::mutex mLock;
 
     /// Raw line text (no trailing `\n` / `\r`). `std::deque` push_back
-    /// is reference-stable, so a reader that already obtained a
-    /// `string_view` into a published entry is unaffected by concurrent
-    /// `AppendLine`s on later entries.
+    /// is reference-stable, so concurrent reads on existing entries
+    /// remain valid.
     std::deque<std::string> mLines;
 
-    /// Per-line escape-decoded byte arena. `OwnedString` compact
-    /// values index into the entry whose deque index matches that of
-    /// `mLines`.
+    /// Per-line escape-decoded byte arena. Same indexing as `mLines`.
     std::deque<std::string> mLineOwnedBytes;
 
-    /// 1-based id of the first line still held in `mLines` /
-    /// `mLineOwnedBytes`.
     size_t mFirstAvailableLineId = 1;
-
-    /// 1-based id that the next `AppendLine` will assign.
     size_t mNextLineId = 1;
 };
 

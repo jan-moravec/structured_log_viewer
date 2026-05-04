@@ -140,15 +140,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     ApplyTableStyleSheet();
 
-    // Two-stage proxy chain: the inner `StreamOrderProxyModel` flips
-    // the row order when **Show newest lines first** is enabled (its
-    // sort role is `InsertionOrderRole`, independent of any user
-    // column sort); the outer `LogFilterModel` filters and supports
-    // user-clicked column sorts using `SortRole`. The two layers never
-    // share sort state, so a column sort and the newest-first flag
-    // can coexist without fighting (the column sort wins on the
-    // visible row order; clearing it falls back to the proxy's
-    // reversed order).
+    // Two-stage proxy chain: the inner `StreamOrderProxyModel` reverses
+    // row order in newest-first mode (sort role: `InsertionOrderRole`);
+    // the outer `LogFilterModel` filters and supports user-clicked
+    // column sorts (sort role: `SortRole`). The layers never share sort
+    // state, so a column sort and newest-first coexist without fighting.
     mStreamOrderProxyModel = new StreamOrderProxyModel(this);
     mStreamOrderProxyModel->setSourceModel(mModel);
 
@@ -185,9 +181,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
-    // Stream toolbar. Hidden until a stream
-    // is opened; the same actions are also reachable from the **Stream**
-    // menu (task 5.2).
+    // Stream toolbar. Hidden until a live-tail stream is opened; the
+    // same actions are reachable from the Stream menu.
     mStreamToolbar = addToolBar(tr("Stream"));
     mStreamToolbar->setObjectName("streamToolbar");
     mStreamToolbar->addAction(ui->actionPauseStream);
@@ -195,21 +190,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     mStreamToolbar->addAction(ui->actionStopStream);
     mStreamToolbar->setVisible(false);
 
-    // The toolbar is hidden between sessions but the same actions live
-    // in the **Stream** menu (`menuStream` in `main_window.ui`), which
-    // stays reachable. Without an explicit disable, an idle-time menu
-    // click on `actionPauseStream` (checkable) flips its checked state
-    // before `TogglePauseStream`'s `IsStreamingActive` early-return
-    // runs; the toggle then survives into the next session, which the
-    // teardown path *cannot* unstick because `LogModel::Reset()` only
-    // emits `streamingFinished` (where the toggle is reset) when the
-    // prior session was still active — which it isn't after a `StopAndKeepRows()`
-    // or a previous full teardown. Disabling the actions while idle
-    // makes the only legal entry point the toolbar (which is in turn
-    // gated on `IsStreamingActive`), so the checked state can never
-    // leak across sessions. `UpdateStreamToolbarVisibility` keeps the
-    // enabled flag in sync with the toolbar visibility for the rest of
-    // the lifecycle.
+    // Disable the actions while idle so an idle-time Stream-menu click
+    // on `actionPauseStream` (checkable) cannot leak its checked state
+    // into the next session. `UpdateStreamToolbarVisibility` keeps the
+    // enabled flag in sync with toolbar visibility from then on.
     ui->actionPauseStream->setEnabled(false);
     ui->actionFollowTail->setEnabled(false);
     ui->actionStopStream->setEnabled(false);
@@ -218,13 +202,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->actionStopStream, &QAction::triggered, this, &MainWindow::StopStream);
 
     // `actionFollowTail` is a stateless toggle observed by
-    // `ScrollToNewestRowIfFollowing`; nothing to wire on its own
-    // `toggled` signal. The user-scroll signals below auto-disengage /
-    // auto-re-engage it. The "tail edge" the table view
-    // tracks is bottom in the default orientation and top when
-    // **Show newest lines first** is enabled — that flip lives in
-    // `ApplyStreamingDisplayOrder` so this wiring stays orientation-
-    // agnostic.
+    // `ScrollToNewestRowIfFollowing`; the user-scroll signals below
+    // auto-disengage / auto-re-engage it. The tail edge (bottom by
+    // default, top in newest-first mode) is owned by
+    // `ApplyStreamingDisplayOrder`, so this wiring stays
+    // orientation-agnostic.
     connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
         if (ui->actionFollowTail->isChecked())
         {
@@ -264,16 +246,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
-        // First-batch column auto-resize. `UpdateUi`
-        // runs only on the first non-empty batch after `BeginStreaming`,
-        // so initial widths fit pre-fill rows; thereafter the user
-        // resizes manually (avoid yanking columns under the mouse).
+        // One-shot column auto-resize on the first non-empty batch so
+        // initial widths fit the pre-fill rows; subsequent batches
+        // leave columns alone to avoid yanking them under the mouse.
         if (IsLiveTailSession() && !mFirstStreamingBatchSeen && count > 0)
         {
             mFirstStreamingBatchSeen = true;
             UpdateUi();
         }
-        // Follow newest auto-scroll on every batch.
         if (mModel->IsStreamingActive())
         {
             ScrollToNewestRowIfFollowing();
@@ -285,25 +265,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     });
     connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
         mSessionMode = SessionMode::Idle;
-        // Source is going away — drop the `Source unavailable` latch so
-        // the post-session status-bar label doesn't inherit a stale
-        // "waiting" state. Re-set naturally by the next stream's
-        // first `Waiting` transition if one arrives.
+        // Drop the `Source unavailable` latch so the post-session label
+        // doesn't inherit a stale "waiting" state. The next stream's
+        // first `Waiting` transition will re-set it.
         mSourceWaiting = false;
 
-        // Multi-file static open: `result == Success` advances the
-        // queue. Cancellation drains the queue (matches Stop-stream
-        // semantics: user wants to stop). Failed (worker exception)
-        // also drains so the user can see the error and retry. The
-        // `mSessionMode` re-arm happens inside
-        // `StreamNextPendingFile` when it actually starts the next
-        // file's parse.
+        // Multi-file static open: Success advances the queue;
+        // Cancelled / Failed drain it so the user can react.
         if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
         {
             StreamNextPendingFile();
-            // `StreamNextPendingFile` re-armed `mSessionMode` if
-            // it actually dispatched a follow-up; on a clean
-            // re-arm there is nothing else to reset on the GUI.
             if (IsSessionActive())
             {
                 return;
@@ -314,21 +285,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             mPendingOpenFiles.clear();
         }
 
-        // Reset Pause toggle so the next session starts unpaused.
+        // Reset Pause / Follow-tail to their defaults so the next
+        // session starts unpaused with auto-scroll engaged. Neither
+        // toggle has a `toggled` slot wired beyond the value
+        // `ScrollToNewestRowIfFollowing` reads.
         if (ui->actionPauseStream->isChecked())
         {
             const QSignalBlocker blocker(ui->actionPauseStream);
             ui->actionPauseStream->setChecked(false);
         }
-        // Reset Follow newest to its `.ui` default (checked) so the next
-        // live-tail session starts auto-scrolling — symmetric with the
-        // Pause reset above. Without this, an `userScrolledAwayFromTail`
-        // during the previous session would leave the toggle off and the
-        // user would have to manually scroll to the bottom (or toggle
-        // the action) to re-engage auto-scroll on the new stream. The
-        // toggle has no `toggled` slot wired, so flipping it has no
-        // side effects beyond changing the value
-        // `ScrollToNewestRowIfFollowing` reads.
         if (!ui->actionFollowTail->isChecked())
         {
             const QSignalBlocker blocker(ui->actionFollowTail);
@@ -338,13 +303,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         UpdateStreamToolbarVisibility();
         UpdateUi();
         UpdateStreamingStatus();
-        // Only `Success` produces a post-parse error summary; cancellation
-        // hides it and `Failed` surfaces independently.
+        // Only Success produces a post-parse error summary.
         if (result == StreamingResult::Success)
         {
             std::vector<std::string> errors = mModel->StreamingErrors();
-            // Fold in any per-file open failures accumulated by the
-            // queue while it was draining.
             errors.insert(
                 errors.end(),
                 std::make_move_iterator(mPendingOpenErrors.begin()),
@@ -362,10 +324,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
 
-    // Pull the persisted streaming preferences into the model and the
-    // proxy on startup so the first `OpenLogStream` honours the user's
-    // choices (task 5.12 for retention; symmetric wiring for the
-    // newest-first toggle added later).
+    // Pull persisted streaming preferences into the model and proxy on
+    // startup so the first session honours the user's choices.
     StreamingControl::LoadConfiguration();
     ApplyStreamingRetention();
     ApplyStreamingDisplayOrder();
@@ -432,8 +392,8 @@ void MainWindow::dropEvent(QDropEvent *event)
         return;
     }
 
-    // Single-file drop: keep the historical "drop a config file to load
-    // it" affordance. Multi-file drops always stream.
+    // Single-file drop preserves the "drop a config file to load it"
+    // affordance; multi-file drops always stream.
     if (urlList.size() == 1)
     {
         const QString singleFile = urlList.front().toLocalFile();
@@ -495,8 +455,8 @@ void MainWindow::OpenFiles()
         return;
     }
 
-    // Single-file open: keep the historical "drop a config file to load
-    // it" affordance. Multi-file selections always stream.
+    // Single-file open preserves the "drop a config file to load it"
+    // affordance; multi-file selections always stream.
     if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
     {
         UpdateUi();
@@ -521,8 +481,8 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
 void MainWindow::StartStreamingOpenQueue(QStringList files)
 {
-    // Reset session state before the queue starts so residual rows /
-    // filters / paused buffer never leak into the new session.
+    // Reset session state before starting so residual rows / filters /
+    // paused buffer cannot leak into the new session.
     mModel->Reset();
     ClearAllFilters();
 
@@ -538,9 +498,8 @@ void MainWindow::StreamNextPendingFile()
     {
         const QString file = mPendingOpenFiles.takeFirst();
 
-        // Open on the GUI thread so file-open errors are synchronous.
-        // Failed opens are accumulated and the queue continues with the
-        // next file; the summary is surfaced once the queue drains.
+        // Open on the GUI thread so errors are synchronous. Failures
+        // are accumulated; the queue continues with the next file.
         std::unique_ptr<loglib::LogFile> logFile;
         try
         {
@@ -552,13 +511,11 @@ void MainWindow::StreamNextPendingFile()
             continue;
         }
 
-        // Snapshot the configuration so the parser worker reads it
-        // lock-free, and a UI-gate-skipping edit cannot affect the
-        // in-flight parse.
+        // Snapshot the configuration so the worker reads it lock-free.
         auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
-        // The session is "first" when no streaming session is currently
-        // active; subsequent files in the queue append to it.
+        // First file in a session vs. follow-up: BeginStreaming starts
+        // a new session; AppendStreaming joins the existing one.
         const bool isFirstFileInSession = !IsSessionActive();
 
         mStreamingFileName = QFileInfo(file).fileName();
@@ -599,9 +556,8 @@ void MainWindow::StreamNextPendingFile()
     }
 
     // Queue exhausted via fallthrough (every remaining file failed to
-    // open). Surface accumulated errors immediately if no streaming
-    // session was ever armed; otherwise the post-parse summary in
-    // `streamingFinished` will fold them in.
+    // open). Surface the accumulated errors now if no session was ever
+    // armed; otherwise the `streamingFinished` summary will fold them in.
     if (!IsSessionActive() && !mPendingOpenErrors.empty())
     {
         ShowParseErrors("Error Opening File", mPendingOpenErrors);
@@ -618,8 +574,7 @@ void MainWindow::OpenLogStream()
     }
 
     // Construct the source on the GUI thread so open errors are
-    // synchronous. Pre-fill needs to know the retention cap so it
-    // back-reads at most that many lines off disk.
+    // synchronous. Pre-fill back-reads at most `retention` lines.
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
@@ -638,9 +593,8 @@ void MainWindow::OpenLogStream()
         return;
     }
 
-    // Mirror the static-open reset order from `OpenFilesWithParser` so
-    // residual state (filters, Find match, paused buffer) does not leak
-    // into the new session.
+    // Mirror the static-open reset order so residual state (filters,
+    // Find match, paused buffer) cannot leak into the new session.
     mModel->Reset();
     ClearAllFilters();
 
@@ -653,18 +607,15 @@ void MainWindow::OpenLogStream()
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
 
-    // Snapshot the configuration so the worker reads it lock-free
-    // (matches `OpenJsonStreaming`).
+    // Snapshot the configuration so the worker reads it lock-free.
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
-    // Wrap the byte producer (`TailingBytesProducer`) in a long-lived
-    // `StreamLineSource`: the model installs it in `LogTable`, the
-    // parser worker emits `LogLine`s tagged with it, and the GUI
-    // resolves each row's raw bytes via `LineSource::RawLine` after
-    // parsing has moved on.
+    // Wrap the producer in a long-lived `StreamLineSource`: the model
+    // installs it in `LogTable` and the parser tags each `LogLine`
+    // with it so `LineSource::RawLine` resolves the bytes later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     mModel->BeginStreaming(std::move(streamSource), std::move(options));
 }
@@ -692,22 +643,16 @@ void MainWindow::StopStream()
     {
         return;
     }
-    // `LogModel::StopAndKeepRows()` runs the mandatory teardown
-    // sequence (source `Stop()` → sink `RequestStop()` → worker
-    // `waitForFinished()` → flush paused buffer → `DropPendingBatches()`)
-    // and emits a compensating `streamingFinished(Cancelled)` so the
-    // GUI gating reopens — but leaves the visible rows intact so the
-    // user can keep sorting / filtering / searching / copying after
-    // Stop. `mStreamingFileName` is cleared so a subsequent
-    // "Open…" does not inherit the old filename in status text.
+    // `StopAndKeepRows()` runs the teardown sequence and emits a
+    // compensating `streamingFinished(Cancelled)`, but preserves the
+    // visible rows so the user can keep working on them.
     mModel->StopAndKeepRows();
     mStreamingFileName.clear();
 }
 
 void MainWindow::OnRotationDetected()
 {
-    // : brief 3 s `— rotated` flash on the
-    // status label. A `QTimer::singleShot` clears the flag.
+    // Brief 3 s `— rotated` flash on the status label.
     mRotationFlashActive = true;
     UpdateStreamingStatus();
     QTimer::singleShot(3000, this, [this]() {
@@ -718,16 +663,15 @@ void MainWindow::OnRotationDetected()
 
 void MainWindow::OnSourceStatusChanged(loglib::SourceStatus status)
 {
-    //  / §6 *Status bar*: latch the `Waiting` state so the
-    // label keeps showing "Source unavailable …" between poll ticks
-    // (the status callback is edge-triggered, not level-triggered).
+    // Latch the `Waiting` state so the label keeps showing
+    // "Source unavailable …" between callbacks (which are edge-triggered).
     mSourceWaiting = (status == loglib::SourceStatus::Waiting);
     UpdateStreamingStatus();
 }
 
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
 {
-    // The parser holds an immutable snapshot; gate edits while streaming.
+    // Parser holds an immutable snapshot; gate edits while streaming.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
@@ -745,7 +689,6 @@ void MainWindow::UpdateStreamingStatus()
     QString text;
     if (!IsLiveTailSession())
     {
-        // Static streaming-parse path (existing behaviour).
         text = QString("Parsing %1 - %2 lines, %3 errors")
                    .arg(mStreamingFileName)
                    .arg(mStreamingLineCount)
@@ -753,11 +696,8 @@ void MainWindow::UpdateStreamingStatus()
     }
     else if (mSourceWaiting)
     {
-        // Source unavailable: the file disappeared during a
-        // delete-then-recreate rotation.
-        // Takes precedence over the Paused variant because Paused is
-        // a user-initiated UI state while Source unavailable surfaces
-        // an actionable environmental problem.
+        // Source unavailable takes precedence over Paused: it surfaces
+        // an environmental problem the user should react to.
         text = QString("Source unavailable - last seen %1 - %2 lines, %3 errors")
                    .arg(mStreamingFileName)
                    .arg(mStreamingLineCount)
@@ -765,25 +705,20 @@ void MainWindow::UpdateStreamingStatus()
     }
     else if (mModel->Sink() && mModel->Sink()->IsPaused())
     {
-        // Paused:  status-bar wording.
         const auto buffered = static_cast<qsizetype>(mModel->Sink()->PausedLineCount());
         text = QString("Paused - %1 lines, %2 buffered").arg(mStreamingLineCount).arg(buffered);
     }
     else
     {
-        // Running.
         text = QString("Streaming %1 - %2 lines, %3 errors")
                    .arg(mStreamingFileName)
                    .arg(mStreamingLineCount)
                    .arg(mStreamingErrorCount);
     }
 
-    // Paused-drop telemetry. The counter is session-scoped
-    // and increments only while paused; once set, it stays non-zero until
-    // the stream is stopped so the user keeps seeing "lines were lost"
-    // after Resume. Appended to both Paused and Running variants of the
-    // label; the static-streaming path does not pause in practice (the
-    // toolbar is hidden), so the check is live-tail-only.
+    // Paused-drop telemetry: stays non-zero until the stream is
+    // stopped so the user keeps seeing "lines were lost" after Resume.
+    // Static-streaming sessions do not pause in practice.
     if (IsLiveTailSession() && mModel->Sink())
     {
         const auto dropped = static_cast<qsizetype>(mModel->Sink()->PausedDropCount());
@@ -804,31 +739,19 @@ void MainWindow::UpdateStreamingStatus()
 
 void MainWindow::UpdateStreamToolbarVisibility()
 {
-    // Use the MainWindow's own `mSessionMode` (set on entry to
-    // `OpenLogStream` / `StreamNextPendingFile`, cleared in the
-    // `streamingFinished` slot before this call) rather than
-    // `mModel->IsStreamingActive()`. The model flag is only set inside
-    // `BeginStreaming`, which runs *after* the existing call sites here
-    // — so reading the model flag here would always return `false` on
-    // open and the toolbar would never become visible until something
-    // else triggered another call.
+    // Use this window's `mSessionMode` rather than
+    // `mModel->IsStreamingActive()`: the model flag is only set
+    // inside `BeginStreaming`, which runs after this is called from
+    // open paths.
     const bool visible = IsLiveTailSession();
     if (mStreamToolbar)
     {
         mStreamToolbar->setVisible(visible);
     }
-    // Gate the menu actions on the toolbar's visibility so a Stream-menu
-    // click while idle (the menu items remain reachable even with the
-    // toolbar hidden) cannot pre-flip a checkable action's state into
-    // the next session. Without this guard `actionPauseStream` can land
-    // checked before `BeginStreaming` runs, leaving the toolbar showing
-    // "Paused" while the sink is genuinely running.
-    //
-    // The companion reset of the action's *checked* state at session
-    // boundaries lives in the `streamingFinished` slot above (see the
-    // `QSignalBlocker(actionPauseStream)` block) — keeping the logic in
-    // one place avoids two slightly-different uncheck pathways racing
-    // against each other.
+    // Gate the menu actions on toolbar visibility so a Stream-menu
+    // click while idle cannot pre-flip a checkable action's state into
+    // the next session. Per-session checked-state reset lives in the
+    // `streamingFinished` slot above.
     ui->actionPauseStream->setEnabled(visible);
     ui->actionFollowTail->setEnabled(visible);
     ui->actionStopStream->setEnabled(visible);
@@ -845,10 +768,10 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     {
         return;
     }
-    //  — scroll to the most-recently-appended source row even
-    // when sorted by a non-time column. Mapping through both proxy
-    // layers (StreamOrder → LogFilter) makes the visual scroll land
-    // on the correct row under reverse-order, sort, and filter.
+    // Scroll to the most-recently-appended source row even when sorted
+    // by a non-time column; mapping through both proxy layers makes
+    // the scroll land on the correct visual row under sort / filter /
+    // reverse-order.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
     const QModelIndex midIndex = mStreamOrderProxyModel->mapFromSource(sourceIndex);
     const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
@@ -856,12 +779,9 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     {
         return;
     }
-    // In newest-first mode the most-recently-appended row sits at the
-    // *top* of the view (proxy row 0), so Follow newest must scroll to
-    // the top edge instead of the bottom. The `LogTableView`'s
-    // `TailEdge` is kept in sync with this orientation by
-    // `ApplyStreamingDisplayOrder` so the user-scroll detection also
-    // tracks the right edge.
+    // In newest-first mode the latest row is at proxy row 0, so we
+    // must scroll to the top edge. The view's `TailEdge` is kept in
+    // sync by `ApplyStreamingDisplayOrder`.
     const auto position = mStreamOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop
                                                                : QAbstractItemView::PositionAtBottom;
     mTableView->scrollTo(proxyIndex, position);
@@ -874,34 +794,24 @@ void MainWindow::ApplyStreamingRetention()
 
 void MainWindow::ApplyStreamingDisplayOrder()
 {
-    // See header for why these three pieces have to move together.
     const bool newestFirst = StreamingControl::IsNewestFirst();
 
-    // (1) Proxy: flip the sort direction on InsertionOrderRole.
+    // 1. Proxy: flip the InsertionOrderRole sort direction.
     mStreamOrderProxyModel->SetReversed(newestFirst);
 
-    // (2) Table view: anchor Follow-tail + user-scroll detection on
-    //     the right edge.
+    // 2. Table view: anchor Follow-tail + user-scroll detection on the
+    //    matching scrollbar edge.
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
-    // (3) Alternating row colours are keyed off the **visual** row index
-    // by Qt -- perfect when new rows append at the bottom and existing
-    // rows keep their visual positions, but newest-first inserts at
-    // proxy row 0 and shifts every existing row's parity on every
-    // batch, so each arriving line flips every visible row's tone.
-    // We tried overriding the per-cell `Alternate` flag in a custom
-    // delegate to pin colours to source-row parity; in practice the
-    // CSS-based table style (`alternate-background-color`) bypassed
-    // the override and the rows still flickered, so we just turn the
-    // alternation off in newest-first mode and accept a single base
-    // colour there. Default mode keeps the visual reading aid.
+    // 3. Disable alternating row colours in newest-first mode. Qt keys
+    // alternation off the visual row index, so top-insertion flips
+    // every visible row's parity on every batch and the rows flicker.
+    // A custom delegate could pin colours to source-row parity, but
+    // the CSS-based `alternate-background-color` bypasses it.
     mTableView->setAlternatingRowColors(!newestFirst);
 
-    // Re-pin the view to the (potentially new) tail edge if Follow
-    // tail is currently engaged so the user does not have to scroll
-    // manually after toggling the preference. Keeps behaviour
-    // consistent with the implicit `scrollTo` that `lineCountChanged`
-    // would otherwise need to wait for.
+    // Re-pin to the new tail edge if Follow tail is engaged so the
+    // user does not have to scroll manually after toggling the option.
     if (mModel->IsStreamingActive())
     {
         ScrollToNewestRowIfFollowing();

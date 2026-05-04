@@ -13,69 +13,50 @@
 namespace loglib
 {
 
-/// Collection of log data loaded from one or more log sources. Owns the
-/// canonical `KeyIndex`; every owned `LogLine` resolves keys through it.
+/// Log data loaded from one or more sources. Owns the canonical
+/// `KeyIndex`; every `LogLine` resolves keys through it.
 ///
-/// The session's source list is stored as
-/// `vector<unique_ptr<LineSource>>` — heterogeneous on purpose:
-/// `FileLineSource`s for static `File → Open…` flows,
-/// `StreamLineSource`s for live-tail / non-mmap streaming sources.
-/// `LogData::Sources()` exposes the polymorphic container;
-/// `FrontFileSource()` / `FrontStreamSource()` are typed accessors for
-/// branches that still need direct `LogFile` access or producer-level
-/// control (`Stop()`, retention).
+/// The source list is heterogeneous: `FileLineSource`s for static
+/// opens, `StreamLineSource`s for live-tail. Polymorphic access via
+/// `Sources()`, typed access via `FrontFileSource()` /
+/// `FrontStreamSource()` for code that still needs direct `LogFile`
+/// or producer-level control.
 class LogData
 {
 public:
     LogData();
 
     /// Constructs a `LogData` from a single source and rebinds each
-    /// line's `KeyIndex` back-pointer to @p keys, so lines built against
-    /// a temporary `KeyIndex` stay valid.
+    /// line's `KeyIndex` back-pointer to @p keys.
     LogData(std::unique_ptr<LineSource> source, std::vector<LogLine> lines, KeyIndex keys);
 
     LogData(const LogData &) = delete;
     LogData &operator=(const LogData &) = delete;
 
-    /// Move ops rebind each line's `KeyIndex` back-pointer to the new owner.
-    /// `LogLine::mSource` survives the move automatically because the
-    /// underlying `LineSource` heap object stays at its address (only
-    /// the `unique_ptr` wrappers move).
+    /// Move ops rebind each line's `KeyIndex` back-pointer.
+    /// `LogLine::mSource` survives the move because the underlying
+    /// `LineSource` heap object stays put.
     LogData(LogData &&other) noexcept;
     LogData &operator=(LogData &&other) noexcept;
 
-    /// Polymorphic source list. The first entry, when present, is the
-    /// canonical "primary" source; multi-source loads add more (the
-    /// `Merge` path concatenates them here).
+    /// Polymorphic source list. The front entry is the primary source.
     [[nodiscard]] const std::vector<std::unique_ptr<LineSource>> &Sources() const noexcept;
     [[nodiscard]] std::vector<std::unique_ptr<LineSource>> &Sources() noexcept;
 
-    /// Typed accessor for the front source iff it is a `FileLineSource`.
-    /// Returns `nullptr` otherwise (empty source list, or front source
-    /// is a `StreamLineSource`). Used by the static-file branches that
-    /// still need direct `LogFile` access — `LogTable::ReserveLineOffsets`
-    /// in particular targets the *first* installed file source (the
-    /// initial `BeginStreaming` payload). Subsequent multi-file streaming
-    /// appends route per-batch line offsets via `BackFileSource()`.
+    /// First source iff it is a `FileLineSource`, else nullptr. Used
+    /// by static-file branches (e.g. `LogTable::ReserveLineOffsets`)
+    /// that target the initial source.
     [[nodiscard]] FileLineSource *FrontFileSource() noexcept;
     [[nodiscard]] const FileLineSource *FrontFileSource() const noexcept;
 
-    /// Most-recently appended `FileLineSource` (last entry in `Sources()`
-    /// that is a `FileLineSource`), or `nullptr` if none. Used by
-    /// `AppendBatch(lines, lineOffsets)` to route per-batch line offsets
-    /// to the source the active streaming session is currently writing
-    /// into. For single-file sessions this is identical to
-    /// `FrontFileSource()`; for sequential multi-file streaming (the
-    /// `LogModel::AppendStreaming` flow) it tracks the in-flight file.
+    /// Last `FileLineSource` in `Sources()`, or nullptr. Tracks the
+    /// in-flight file for sequential multi-file streaming so
+    /// `AppendBatch` routes line offsets to the right source.
     [[nodiscard]] FileLineSource *BackFileSource() noexcept;
     [[nodiscard]] const FileLineSource *BackFileSource() const noexcept;
 
-    /// Mirror of `FrontFileSource` for the live-tail path. Returns the
-    /// first installed `StreamLineSource` (the streaming pipeline only
-    /// installs one — multi-stream sessions are not in scope) or
-    /// nullptr when the table is empty / file-only. Used by
-    /// `LogModel`'s stop-on-clear path to access the byte producer
-    /// owned by the source.
+    /// First `StreamLineSource` (live-tail mirror of `FrontFileSource`),
+    /// or nullptr. Used by `LogModel` to reach the byte producer.
     [[nodiscard]] StreamLineSource *FrontStreamSource() noexcept;
     [[nodiscard]] const StreamLineSource *FrontStreamSource() const noexcept;
 
@@ -97,11 +78,9 @@ public:
     /// to this side's canonical `KeyIndex`.
     void Merge(LogData &&other);
 
-    /// Streaming append of a pre-parsed `LogLine` batch. `lineOffsets`
-    /// is the per-line offset table for `LogFile::GetLine`; only used
-    /// (and gated) when `FrontFileSource() != nullptr`. The live-tail
-    /// path passes an empty vector — `StreamLineSource` owns its own
-    /// per-line storage.
+    /// Append a parsed batch. `lineOffsets` populates
+    /// `LogFile::mLineOffsets` for file sources; the live-tail path
+    /// passes an empty vector (the source owns its per-line storage).
     void AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets);
 
 private:

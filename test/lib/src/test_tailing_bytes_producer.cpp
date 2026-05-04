@@ -24,10 +24,9 @@ using namespace std::chrono_literals;
 namespace
 {
 
-/// Test scratch directory + monotonically-named files. Each test case
-/// constructs one of these on the stack; the directory tree is removed
-/// in the dtor. We pick `temp_directory_path()` over CWD so parallel
-/// test runs (e.g. `ctest -j`) cannot collide on a fixed filename.
+/// Per-test scratch directory under `temp_directory_path()`; cleaned
+/// up in the dtor. `temp_directory_path()` keeps parallel `ctest -j`
+/// runs from colliding on a fixed filename.
 class TempDir
 {
 public:
@@ -82,10 +81,9 @@ void Overwrite(const std::filesystem::path &path, std::string_view text)
     out.flush();
 }
 
-/// Drain the source into a string, parking on `WaitForBytes` between
-/// short reads. Returns once `predicate(accumulated)` is true or
-/// `deadline` elapses. This is the standard "wait for the worker to
-/// produce expected output" helper used throughout the test file.
+/// Drain the source, parking on `WaitForBytes` between short reads.
+/// Returns once `predicate(accumulated)` is true or `deadline`
+/// elapses. The standard wait-for-output helper for these tests.
 template <typename Predicate>
 std::string DrainUntil(TailingBytesProducer &source, std::chrono::milliseconds deadline, Predicate predicate)
 {
@@ -156,9 +154,8 @@ std::vector<std::string> SplitLines(std::string_view text)
     return lines;
 }
 
-/// Test-default options: no native watcher, short polling cadence so
-/// the test wall-clock stays small. The polling interval matches the
-/// 250 ms heartbeat the  out, scaled down 10x for tests.
+/// Test defaults: no native watcher; short polling cadence (10x
+/// faster than production) so test wall-clocks stay small.
 TailingBytesProducer::Options FastPollOptions()
 {
     TailingBytesProducer::Options options;
@@ -216,29 +213,19 @@ TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingByt
     CHECK(lines[2] == "c");
 }
 
-// Regression for C.4.2: `Prefill()` runs in the worker's prologue and
-// drops bytes into `mReadyBuffer` via `AppendBytesAndSplitLocked`. It
-// must wake `mCv` so a parser already parked in `WaitForBytes` returns
-// immediately — without the `mCv.notify_all()` at the end of `Prefill`,
-// the caller would sleep until `mOptions.pollInterval` (250 ms in
-// production, 5 s here) elapses and the worker's polling loop wakes
-// the predicate.
-//
-// Test shape: deliberately stretch `Prefill()` over many small
-// backwards reads (`prefillChunkBytes = 512`, `retentionLines` close
-// to the line count) so the test thread reliably calls `WaitForBytes`
-// *before* the pre-fill bytes land in the queue — that is the race
-// window the missing notify exposes.
+// Regression: `Prefill` must `notify_all` after appending bytes,
+// otherwise a parser parked in `WaitForBytes` sleeps until
+// `pollInterval` elapses. We stretch `Prefill` with many small
+// backwards reads so the test thread reliably parks before the
+// pre-fill bytes land — exposing a missing notify.
 TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[TailingBytesProducer]")
 {
     TempDir dir;
     const auto path = dir.File("notify_prefill.log");
 
-    // ~500 KiB across 5 000 lines of ~100 bytes each. Walking
-    // backwards in 512-byte chunks means `Prefill` performs ~900
-    // syscalls and a ~450 KiB forward read before notifying — long
-    // enough on every realistic dev/CI machine to ensure the test
-    // thread wins the race into `WaitForBytes`.
+    // ~500 KiB across 5 000 ~100-byte lines. With 512-byte backwards
+    // chunks, `Prefill` runs ~900 syscalls before notifying — easily
+    // enough for the test thread to win the race into `WaitForBytes`.
     std::string content;
     constexpr int kLineCount = 5000;
     content.reserve(kLineCount * 110);
@@ -249,11 +236,9 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
     Overwrite(path, content);
 
     auto opts = FastPollOptions();
-    // `pollInterval` is deliberately fixed (per `scaled_ms.hpp`'s
-    // contract) and chosen well above any plausible `ScaledMs(...)`
-    // assertion below so a missing `notify_all()` dominates the
-    // measurement: the regression case waits the full 10 s, the fixed
-    // case wakes within the I/O cost of `Prefill()` itself.
+    // pollInterval intentionally above any test deadline so a
+    // missing `notify_all()` dominates the measurement (regression:
+    // 10 s wait; fixed: I/O cost of `Prefill` only).
     opts.pollInterval = 10000ms;
     opts.prefillChunkBytes = 512;
 
@@ -263,16 +248,10 @@ TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[Ta
     source.WaitForBytes(ScaledMs(3000ms));
     const auto waitElapsed = std::chrono::steady_clock::now() - waitStart;
 
-    // Generous margin for slow CI disks while still cleanly catching
-    // the 10 s regression. With the fix in place the wait returns
-    // within the I/O cost of `Prefill()` (tens of ms on a hot cache,
-    // a few hundred on a cold one).
+    // 2s is generous for CI disks but well below the 10s regression.
     CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(waitElapsed) < ScaledMs(2000ms));
 
-    // The pre-fill bytes are now (or imminently) in the ready buffer;
-    // drain them to verify `Prefill` produced the expected lines and
-    // the wake-up was not a spurious wakeup that returned with an
-    // empty buffer.
+    // Verify the wake wasn't spurious by draining the expected lines.
     const std::string drained = DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) {
         return std::count(acc.begin(), acc.end(), '\n') >= kLineCount - 1;
     });
@@ -285,13 +264,9 @@ TEST_CASE(
     "[TailingBytesProducer]"
 )
 {
-    // : a 2 MiB no-newline file with a 128 KiB
-    // scan budget must not wedge the ctor. `Prefill` walks backwards
-    // through `prefillChunkBytes` slices counting newlines; a file
-    // whose last `retentionLines + 1` newlines are beyond the budget
-    // (or absent entirely, as here) aborts the scan, yields zero
-    // lines, and seeks to EOF. Future appends from the producer still
-    // appear in the tail.
+    // 2 MiB file with no newlines and a 128 KiB scan budget must not
+    // wedge the ctor: pre-fill aborts, yields zero lines, seeks to
+    // EOF, and future appends still appear in the tail.
     TempDir dir;
     const auto path = dir.File("huge_line.log");
     {
@@ -310,10 +285,8 @@ TEST_CASE(
     const auto ctorElapsed = std::chrono::steady_clock::now() - ctorStart;
     CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(ctorElapsed) < ScaledMs(500ms));
 
-    // No pre-fill lines should surface — the 2 MiB blob has no '\n',
-    // so the scan aborts without finding any line boundary. We give
-    // the worker a scheduling slice so any spurious pre-fill bytes
-    // would land in the queue before we sample it.
+    // No pre-fill lines should surface; the brief sleep gives any
+    // spurious bytes time to land before we sample.
     std::this_thread::sleep_for(ScaledMs(50ms));
     std::array<char, 1024> buf{};
     const size_t drained = source.Read(std::span<char>(buf));
@@ -562,11 +535,7 @@ TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle fil
     const auto elapsed = std::chrono::steady_clock::now() - waitStart;
 
     CHECK(waitReturned.load(std::memory_order_acquire));
-    // The budget is 500 ms for stop teardown including I/O unwind; on this
-    // idle source we expect well under that. Scale the budget by
-    // `LOGLIB_TEST_TIME_SCALE` for slow CI runners -- the documented budget
-    // itself is fixed, but we don't want to flake on a 10x-slow
-    // shared-runner CPU.
+    // 500 ms budget for stop+I/O unwind; idle case is well under.
     CHECK(elapsed < ScaledMs(500ms));
 }
 
@@ -590,19 +559,15 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
     // on a steady mReadOffset.
     DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.find("seed\n") != std::string::npos; });
 
-    // Rename-and-create rotations are detected via branch (i) "file
-    // identity changed", which is purely state-based (no timing race
-    // against the size-shrunk window). Each rotation flips the path's
-    // inode, so the worker observes every one regardless of CI scheduling
-    // jitter. We then assert on the *callback fire* count: the debounce
-    // collapses all three into one user-visible rotation event.
+    // Rename-and-create rotations flip the path's inode; identity
+    // detection (branch i) is state-based, so the worker reliably
+    // observes every flip regardless of CI jitter.
     for (int i = 0; i < 3; ++i)
     {
         const auto rotated = dir.File("debounce.log." + std::to_string(i));
         std::filesystem::rename(path, rotated);
         Overwrite(path, "rot" + std::to_string(i) + "\n");
-        // Pump twice the poll interval so the worker is guaranteed to
-        // observe the new identity before the next rename arrives.
+        // > 2x poll interval so the worker observes each new identity.
         std::this_thread::sleep_for(ScaledMs(20ms));
     }
 
@@ -611,11 +576,8 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
         return acc.find("rot2\n") != std::string::npos;
     });
 
-    // The internal RotationCount counts every detected rotation; the
-    // external callback fires at most once per debounce window. The
-    // callback assertion is the documented semantic; the count
-    // assertion proves the worker actually observed each event (so the
-    // debounce isn't trivially satisfied by missed events).
+    // RotationCount counts every detected rotation; the callback
+    // collapses them into one per debounce window.
     CHECK(source.RotationCount() >= 3);
     CHECK(rotationFires.load(std::memory_order_acquire) == 1);
 }
@@ -657,12 +619,10 @@ TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", 
 
 TEST_CASE("TailingBytesProducer reports SourceStatus::Waiting while the file is missing", "[TailingBytesProducer][status]")
 {
-    //  / §6 *Status bar*: when the watched file disappears
-    // during a delete-then-recreate rotation the source transitions
-    // into `Waiting` so the GUI can swap the status-bar label to
-    // "Source unavailable …". A subsequent re-create lifts the source
-    // back into `Running`. Edge-triggered — a single delete/create pair
-    // produces exactly one `Waiting` and one `Running` observation.
+    // When the watched file disappears the source transitions to
+    // `Waiting`; a subsequent re-create lifts it back to `Running`.
+    // Edge-triggered: one delete/create pair => one `Waiting` and
+    // one `Running` observation.
     TempDir dir;
     const auto path = dir.File("status.log");
     Overwrite(path, "seed\n");

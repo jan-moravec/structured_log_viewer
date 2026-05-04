@@ -51,9 +51,8 @@ namespace
 {
 
 #if defined(_WIN32)
-// `INVALID_HANDLE_VALUE` is a `reinterpret_cast<HANDLE>((LONG_PTR)-1)`, which
-// is not a constant expression in MSVC's C++23 mode (C2131). Fall back to a
-// plain `const` global; the alias is internal-linkage either way.
+// `INVALID_HANDLE_VALUE` is a reinterpret_cast and not a constant
+// expression in MSVC's C++23 mode (C2131); use a plain `const` global.
 const internal::NativeFileHandle kInvalidHandle = INVALID_HANDLE_VALUE;
 #else
 constexpr internal::NativeFileHandle kInvalidHandle = -1;
@@ -82,18 +81,10 @@ void CloseNativeHandle(internal::NativeFileHandle handle) noexcept
 }
 
 /// Canonicalize @p path so the efsw watcher is always installed on an
-/// absolute parent directory. `weakly_canonical` handles the
-/// edge cases the original `parent_path().empty() → current_path()`
-/// fallback missed: relative paths (e.g. `"app.log"`), paths with `..`
-/// components, and Windows root-relative paths like `"C:foo.log"` that
-/// have an empty `parent_path()` on some `std::filesystem`
-/// implementations.
-///
-/// Falls back to the untouched input on error (bad symlink loop, out-of-
-/// memory, filesystem rejection). The fallback keeps the belt-and-braces
-/// behaviour so a pathological input still gets a best-effort watch
-/// attempt; the `parent_path().empty() → current_path()` branch in the
-/// ctor handles that remaining path.
+/// absolute parent directory. Covers relative paths (`"app.log"`), `..`
+/// components, and Windows root-relative paths like `"C:foo.log"`
+/// whose `parent_path()` would otherwise be empty. Falls back to the
+/// untouched input on error.
 std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
 {
     std::error_code ec;
@@ -105,14 +96,14 @@ std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
     return canon;
 }
 
-/// Open @p path for read with maximum producer-friendly share flags. Returns
-/// `kInvalidHandle` on failure (incl. `ENOENT` / `ERROR_FILE_NOT_FOUND`).
+/// Open @p path for read with maximum producer-friendly share flags.
+/// Returns `kInvalidHandle` on failure.
 internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
 {
 #if defined(_WIN32)
-    // FILE_SHARE_DELETE is critical: without it, the producer cannot rename
-    // or unlink the file. FILE_FLAG_SEQUENTIAL_SCAN
-    // hints the cache manager to read ahead.
+    // FILE_SHARE_DELETE is critical: without it the producer cannot
+    // rename or unlink the file. FILE_FLAG_SEQUENTIAL_SCAN hints the
+    // cache manager to read ahead.
     return ::CreateFileW(
         path.c_str(),
         GENERIC_READ,
@@ -127,9 +118,8 @@ internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexce
 #endif
 }
 
-/// Sample the open handle's current size in bytes. Returns `std::nullopt`
-/// if the OS call failed (typical when the handle has been closed or the
-/// underlying inode is gone).
+/// Sample the open handle's current size. Returns `std::nullopt` if the
+/// OS call fails (e.g. the handle has been closed or the inode is gone).
 std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noexcept
 {
     if (!IsValidHandle(handle))
@@ -153,10 +143,9 @@ std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noex
 #endif
 }
 
-/// Read up to @p size bytes from @p offset on @p handle into @p out. Does
-/// not advance any persistent file pointer (uses `pread` / overlapped
-/// `ReadFile`). Returns the number of bytes actually read; a short read
-/// is normal at EOF. Returns -1 on hard error.
+/// Pread-style read: up to @p size bytes from @p offset, without
+/// advancing a persistent file pointer. Short reads at EOF are normal.
+/// Returns -1 on hard error.
 ssize_type ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size, uint64_t offset) noexcept
 {
     if (!IsValidHandle(handle) || size == 0)
@@ -262,30 +251,25 @@ public:
 private:
     void WorkerMain();
     void Prefill();
-    /// Worker-thread-only. Returns true if a rotation branch matched and
-    /// recovery completed (caller should treat next iteration fresh).
+    /// Worker-thread-only. Returns true if a rotation branch matched.
     bool DetectAndRecoverRotation();
-    /// Worker-thread-only. Reads up to `options.readChunkBytes` of new
-    /// bytes from the open handle, splits at `\n`, and pushes complete
-    /// lines into `mReadyBuffer`. Returns the number of bytes read.
+    /// Worker-thread-only. Reads up to `options.readChunkBytes`, splits
+    /// at `\n`, and pushes complete lines into `mReadyBuffer`.
     size_t ReadMoreBytes();
-    /// Worker-thread-only. Closes the active handle (if any).
+    /// Worker-thread-only.
     void CloseHandle() noexcept;
     /// Caller must hold `mMutex`.
     void AppendBytesAndSplitLocked(const char *data, size_t size);
-    /// Caller must hold `mMutex`. Appends `mPartialLine` to ready
-    /// (with a synthetic `\n` if not already present) and clears it.
+    /// Caller must hold `mMutex`. Appends `mPartialLine` to ready (with
+    /// a synthetic `\n` if absent) and clears it.
     void FlushPartialLineLocked();
-    /// Caller must hold `mMutex`. Compacts `mReadyBuffer` after
-    /// substantial consumption.
+    /// Caller must hold `mMutex`. Compacts after substantial consumption.
     void CompactReadyBufferIfNeededLocked();
-    /// Fires the rotation callback if 1s has elapsed since the last fire.
-    ///  — multi-rotation debounce.
+    /// Fires the rotation callback debounced by `rotationDebounce`.
     void FireRotationCallbackIfDebounced();
 
-    /// Fires the status callback if @p status differs from the last
-    /// status we reported. Edge-triggered so a poll tick in the same
-    /// state is silent. Caller must NOT hold `mMutex`.
+    /// Edge-triggered: fires only on transition. Caller must NOT hold
+    /// `mMutex`.
     void FireStatusCallbackIfChanged(SourceStatus status);
 
     std::filesystem::path mPath;
@@ -308,8 +292,8 @@ private:
     std::atomic<bool> mWorkerExited{false};
     std::atomic<size_t> mRotationCount{0};
 
-    // Rotation + status callbacks share one mutex so we can call user
-    // code without holding the busy `mMutex`.
+    // Separate mutex so we never call user callbacks while holding the
+    // busy `mMutex`.
     mutable std::mutex mCallbackMutex;
     std::function<void()> mRotationCallback;
     std::function<void(SourceStatus)> mStatusCallback;
@@ -322,9 +306,8 @@ private:
     uint64_t mReadOffset = 0;
     bool mRotationInProgress = false;
 
-    // efsw integration. Declared here so worker can reference, destroyed
-    // from the dtor (after worker join) so the listener can never fire on
-    // a half-destroyed impl.
+    // efsw integration. Destroyed from the dtor *after* worker join so
+    // the listener can never fire on a half-destroyed impl.
     std::unique_ptr<TailingBytesProducerWatcherListener> mWatcherListener;
     std::unique_ptr<efsw::FileWatcher> mWatcher;
     efsw::WatchID mWatchID = 0;
@@ -353,16 +336,13 @@ void TailingBytesProducerWatcherListener::handleFileAction(
 TailingBytesProducerImpl::TailingBytesProducerImpl(
     std::filesystem::path path, size_t retentionLines, TailingBytesProducer::Options options
 )
-    // Canonicalize up front so every downstream computation — basename,
-    // display name, watcher parent — sees an absolute path. Without this
-    // the filesystem watcher silently no-ops on plain `"app.log"` inputs
-    // (empty `parent_path()`, CWD-fallback brittle under `chdir`).
+    // Canonicalize up front so every downstream computation (basename,
+    // display name, watcher parent) sees an absolute path.
     : mPath(CanonicalizeWatchedPath(std::move(path))), mFileName(mPath.filename().string()),
       mDisplayName(mPath.string()), mRetentionLines(std::max<size_t>(retentionLines, 1)), mOptions(options)
 {
-    // Open the file up front. Failure here propagates as an exception.
-    // Transient ENOENT during tailing is handled by the rotation branch
-    // (ii), not here.
+    // Open synchronously. Transient ENOENT during tailing is handled by
+    // the worker's rotation branch (ii), not here.
     mHandle = OpenForTail(mPath);
     if (!IsValidHandle(mHandle))
     {
@@ -371,23 +351,14 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
     }
     mIdentityAtOpen = FromOpenHandle(mHandle);
 
-    // Pre-fill used to run here synchronously, but a multi-GB file can
-    // block the caller for seconds of backwards-newline scanning
-    // (§B.4 of the PR review). The worker thread now runs `Prefill()`
-    // in its prologue so the GUI thread only pays the ctor's
-    // `OpenForTail` + `efsw` setup cost. Open failures still throw
-    // synchronously from this ctor, and `Read` returns 0
-    // until pre-fill lands bytes in the queue — the parser parks on
-    // `WaitForBytes` per the existing contract.
+    // Pre-fill runs from the worker's prologue (not here) so a multi-GB
+    // backwards-newline scan never blocks the GUI thread. `Read` returns
+    // 0 until pre-fill lands bytes; the parser parks on `WaitForBytes`.
 
-    // Install the filesystem watcher unless the test harness has disabled
-    // it. We watch the parent directory because Linux `inotify` and macOS
-    // `FSEvents` work at directory granularity; the listener
-    // filters down to our basename. The ctor has already canonicalized
-    // `mPath`, so `parent_path()` is non-empty on any well-formed input;
-    // the `current_path()` fallback below is kept as a belt-and-braces
-    // second line of defence for exotic inputs where `weakly_canonical`
-    // declined (symlink loop, out-of-memory, FS rejection).
+    // Watch the parent directory: Linux inotify / macOS FSEvents work at
+    // directory granularity; the listener filters by basename. The
+    // `current_path()` fallback below covers pathological inputs where
+    // `weakly_canonical` declined (symlink loop, OOM, FS rejection).
     if (!mOptions.disableNativeWatcher)
     {
         try
@@ -406,15 +377,12 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
             {
                 mWatcher->watch();
             }
-            // efsw signals failure via a negative WatchID; we silently
-            // fall back to the polling loop in that case (the worker still
-            // works, just at the polling cadence).
+            // Negative WatchID = efsw failure; fall through to polling.
         }
         catch (...)
         {
-            // efsw construction can throw on resource exhaustion; the
-            // polling loop is a graceful fallback. Reset the partials so
-            // we don't leak listener pointers into a defunct watcher.
+            // efsw can throw on resource exhaustion; polling is the
+            // graceful fallback.
             mWatcher.reset();
             mWatcherListener.reset();
         }
@@ -430,9 +398,8 @@ TailingBytesProducerImpl::~TailingBytesProducerImpl()
     {
         mWorker.join();
     }
-    // Tear down the watcher *after* the worker has exited so the listener
-    // never fires on a partially-destroyed impl. efsw's destructor stops
-    // the watcher's internal thread.
+    // Tear down watcher AFTER worker join so the listener never fires
+    // on a partially-destroyed impl.
     if (mWatcher && mWatchID > 0)
     {
         mWatcher->removeWatch(mWatchID);
@@ -471,8 +438,7 @@ void TailingBytesProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     };
     if (timeout.count() <= 0)
     {
-        // Non-blocking variant: just consult the predicate.
-        return;
+        return; // non-blocking
     }
     mCv.wait_for(lock, timeout, predicate);
 }
@@ -533,11 +499,8 @@ void TailingBytesProducerImpl::OnWatcherEvent() noexcept
 
 void TailingBytesProducerImpl::WorkerMain()
 {
-    // Pre-fill runs here rather than in the ctor so the GUI thread is
-    // never blocked on a multi-GB backwards-newline scan (§B.4 of the
-    // PR review / –6). The stop check up front ensures a
-    // fast `Stop` immediately after construction exits cleanly without
-    // doing the work — symmetric with the body loop's stop checks.
+    // Pre-fill runs from the worker prologue (not the ctor) so a
+    // multi-GB backwards-newline scan never blocks the caller.
     if (!mStopRequested.load(std::memory_order_acquire))
     {
         Prefill();
@@ -547,14 +510,11 @@ void TailingBytesProducerImpl::WorkerMain()
     {
         bool didWork = false;
 
-        // 1. Detect / recover rotation. The detect step also handles the
-        // "waiting" state for branch (ii) on each tick.
         if (DetectAndRecoverRotation())
         {
             didWork = true;
         }
 
-        // 2. Read newly-available bytes from the current open handle.
         if (IsValidHandle(mHandle))
         {
             const size_t n = ReadMoreBytes();
@@ -571,8 +531,8 @@ void TailingBytesProducerImpl::WorkerMain()
 
         if (!didWork)
         {
-            // Park on cv until: a watcher event fires, Stop is requested,
-            // or the polling fallback fires.
+            // Park until a watcher event fires, Stop is requested, or
+            // the poll interval elapses.
             std::unique_lock<std::mutex> lock(mMutex);
             mCv.wait_for(lock, mOptions.pollInterval, [&] {
                 return mWatcherEventPending || mStopRequested.load(std::memory_order_acquire);
@@ -581,15 +541,13 @@ void TailingBytesProducerImpl::WorkerMain()
         }
         else
         {
-            // After processing work, clear the pending flag so the next
-            // iteration's wait re-arms cleanly.
             std::lock_guard<std::mutex> lock(mMutex);
             mWatcherEventPending = false;
         }
     }
 
-    // Stop has been requested. Flush the partial-line buffer as a final
-    // synthetic line unless we are mid-rotation.
+    // Flush the partial-line buffer as a synthetic final line, unless
+    // we're mid-rotation.
     {
         std::lock_guard<std::mutex> lock(mMutex);
         if (!mRotationInProgress)
@@ -617,9 +575,9 @@ void TailingBytesProducerImpl::Prefill()
     }
     const uint64_t fileSize = *sizeOpt;
 
-    // Walk backwards in `prefillChunkBytes` slices, counting newlines until
-    // we have N+1 (so the byte after the (N+1)-th newline from the end is
-    // the start of the last N complete lines). 
+    // Walk backwards in `prefillChunkBytes` slices, counting newlines
+    // until we have N+1 (the byte after the (N+1)-th newline from the
+    // end is the start of the last N complete lines).
     const size_t targetNewlines = mRetentionLines + 1;
     uint64_t pos = fileSize;
     size_t newlinesSeen = 0;
@@ -628,11 +586,8 @@ void TailingBytesProducerImpl::Prefill()
     std::vector<char> chunk;
     chunk.resize(mOptions.prefillChunkBytes);
 
-    // : bound the pre-fill scan so a file with
-    // no newlines (or a pathological retentionLines on a multi-GB file)
-    // cannot wedge the ctor / the worker for an unbounded amount of
-    // time. On overflow we seek to EOF and return no lines — the
-    // producer's future writes will still appear in the tail.
+    // Bound the pre-fill scan so a newline-less or pathologically large
+    // file can't wedge the worker. On overflow, skip to EOF.
     uint64_t scannedBytes = 0;
 
     while (pos > 0 && !boundaryFound)
@@ -642,12 +597,11 @@ void TailingBytesProducerImpl::Prefill()
         const ssize_type n = ReadAtOffset(mHandle, chunk.data(), static_cast<size_t>(chunkSize), pos);
         if (n <= 0)
         {
-            // Unable to read; abandon prefill and start tail at file_size.
+            // Read failed; abandon prefill and tail from file_size.
             mReadOffset = fileSize;
             return;
         }
         scannedBytes += static_cast<uint64_t>(n);
-        // Walk backwards through the chunk.
         for (size_t i = static_cast<size_t>(n); i > 0; --i)
         {
             if (chunk[i - 1] == '\n')
@@ -663,14 +617,12 @@ void TailingBytesProducerImpl::Prefill()
         }
         if (!boundaryFound && mOptions.prefillMaxScanBytes != 0 && scannedBytes >= mOptions.prefillMaxScanBytes)
         {
-            // Scan budget exhausted without finding enough newlines.
-            // Yield no lines; tailing resumes from EOF.
+            // Scan budget exhausted; yield no lines and tail from EOF.
             mReadOffset = fileSize;
             return;
         }
     }
 
-    // Read [lineStart, fileSize) and split.
     if (lineStart < fileSize)
     {
         const uint64_t toRead = fileSize - lineStart;
@@ -683,17 +635,13 @@ void TailingBytesProducerImpl::Prefill()
         }
     }
 
-    // The tailing read continues from the end of the file as observed at
-    // pre-fill time. Bytes [lineStart, fileSize) have been processed; the
-    // partial-line buffer (set by AppendBytesAndSplitLocked) seeds the
-    // tail's partial-line state.1.5.i.
+    // Tailing resumes from EOF as observed at pre-fill time. Any partial
+    // last line was retained by AppendBytesAndSplitLocked and seeds the
+    // tail's partial-line state.
     mReadOffset = fileSize;
 
-    // Wake any consumer parked on `WaitForBytes`. Without this notify,
-    // a parser that parked before pre-fill bytes landed in `mReadyBuffer`
-    // would sleep until `mOptions.pollInterval` (250 ms in production)
-    // expires — a measurable startup latency hit on large pre-filled
-    // files. Symmetric with `ReadMoreBytes`.
+    // Wake any consumer parked on `WaitForBytes` so they don't sleep
+    // until `pollInterval` after pre-fill data lands.
     mCv.notify_all();
 }
 
@@ -702,13 +650,12 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
     const FileIdentity pathId = FromPath(mPath);
     const FileIdentity handleId = FromOpenHandle(mHandle);
 
-    // Branch (i): file-identity changed (rename-and-create or
-    // delete-then-recreate that completed between two polls).
+    // Branch (i): identity changed (rename-and-create or
+    // delete-then-recreate finished between polls).
     if (pathId.valid && handleId.valid && pathId != handleId)
     {
         mRotationInProgress = true;
 
-        // Recovery: close old handle, open new path, seek to 0.
         CloseHandle();
         mHandle = OpenForTail(mPath);
         mIdentityAtOpen = FromOpenHandle(mHandle);
@@ -718,22 +665,22 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
 
         {
             std::lock_guard<std::mutex> lock(mMutex);
-            mPartialLine.clear(); // 
+            mPartialLine.clear();
         }
 
         mRotationCount.fetch_add(1, std::memory_order_acq_rel);
         FireRotationCallbackIfDebounced();
         if (wasWaiting)
         {
-            // Leaving the waiting state: tell the GUI the source is
-            // healthy again.
             FireStatusCallbackIfChanged(SourceStatus::Running);
         }
         mRotationInProgress = false;
         return true;
     }
 
-    // Branch (ii): path missing.
+    // Branch (ii): path missing. Keep the old handle open; future
+    // polls will either see the path reappear (branch i) or stay
+    // missing.
     if (!pathId.valid)
     {
         if (!mWaiting)
@@ -741,21 +688,15 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
             mWaiting = true;
             {
                 std::lock_guard<std::mutex> lock(mMutex);
-                mPartialLine.clear(); //  — partial cannot be completed
+                mPartialLine.clear();
             }
-            // Entering the waiting state: tell the GUI to swap the
-            // status-bar label to "Source unavailable".
             FireStatusCallbackIfChanged(SourceStatus::Waiting);
         }
-        // Stay in waiting. Keep the old handle open; a future poll will
-        // either see the path reappear (branch i wins via identity) or
-        // stay missing.
         return false;
     }
 
-    // Path is present and identity matches the open handle. If we were
-    // previously waiting and the handle is invalid (e.g. we closed it),
-    // re-open the path now.
+    // Path present and identity matches. If we were waiting and the
+    // handle is invalid, re-open.
     if (mWaiting && !IsValidHandle(mHandle))
     {
         mRotationInProgress = true;
@@ -778,25 +719,22 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
     }
     if (mWaiting)
     {
-        // Path reappeared while the handle was still open (rare on POSIX
-        // but possible on Windows with FILE_SHARE_DELETE share mode).
-        // Just clear the waiting flag and re-announce Running so the
-        // GUI drops "Source unavailable".
+        // Path reappeared while our handle stayed open (rare on POSIX,
+        // possible on Windows under FILE_SHARE_DELETE).
         mWaiting = false;
         FireStatusCallbackIfChanged(SourceStatus::Running);
     }
 
-    // Branch (iii): size shrunk on the open handle (copytruncate /
-    // in-place truncate). Note we use the OPEN HANDLE size, not the path
-    // size, so a rename-then-create that branch (i) failed to detect
-    // (because identity collided) cannot mask this branch.
+    // Branch (iii): copytruncate / in-place truncate. Use the OPEN
+    // HANDLE size (not path size) so an identity-colliding rotation
+    // can't mask this branch.
     const auto handleSizeOpt = SizeOfOpenHandle(mHandle);
     if (handleSizeOpt.has_value() && *handleSizeOpt < mReadOffset)
     {
         mRotationInProgress = true;
 
-        // Recovery: seek to 0 on the existing handle. Do NOT re-open per
-        //  (the producer may rely on the share mode).
+        // Seek to 0 on the existing handle (don't re-open: the producer
+        // may rely on our share mode).
         mReadOffset = 0;
 
         {
@@ -890,9 +828,8 @@ void TailingBytesProducerImpl::FlushPartialLineLocked()
 
 void TailingBytesProducerImpl::CompactReadyBufferIfNeededLocked()
 {
-    // Compact when half the buffer (or 64 KiB, whichever larger) has been
-    // consumed. Erasing the prefix is O(remaining); the threshold ensures
-    // amortised O(1) per byte.
+    // Compact once half the buffer (or 64 KiB, whichever is larger) is
+    // consumed: amortised O(1) per byte.
     constexpr size_t kMinCompactBytes = 64 * 1024;
     if (mReadyConsumed >= kMinCompactBytes && mReadyConsumed * 2 >= mReadyBuffer.size())
     {
@@ -909,7 +846,7 @@ void TailingBytesProducerImpl::FireRotationCallbackIfDebounced()
         std::lock_guard<std::mutex> lock(mCallbackMutex);
         if (now - mLastRotationFireTime < mOptions.rotationDebounce)
         {
-            return; // within debounce window — collapse this rotation event
+            return; // collapse rapid back-to-back rotations
         }
         mLastRotationFireTime = now;
         cb = mRotationCallback;
@@ -927,7 +864,7 @@ void TailingBytesProducerImpl::FireStatusCallbackIfChanged(SourceStatus status)
         std::lock_guard<std::mutex> lock(mCallbackMutex);
         if (status == mLastReportedStatus)
         {
-            return; // edge-trigger — only fire on actual transitions
+            return; // edge-triggered: only fire on transitions
         }
         mLastReportedStatus = status;
         cb = mStatusCallback;

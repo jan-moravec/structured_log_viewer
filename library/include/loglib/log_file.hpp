@@ -12,13 +12,10 @@
 namespace loglib
 {
 
-/// Memory-mapped log file. Owns the mmap for its lifetime so `LogValue`
-/// instances can hold `string_view`s into the file content. Move keeps the
-/// mapped pointer stable.
-///
-/// `LogFile` is the byte-and-arena container; addressing of individual
-/// log records is the job of `FileLineSource` (which wraps a `LogFile`)
-/// and `LogLine` (which carries a `LineSource * + size_t lineId` pair).
+/// Memory-mapped log file. Owns the mmap so `LogValue` instances can
+/// hold `string_view`s into the content; move keeps the pointer stable.
+/// Per-record addressing is `FileLineSource`'s job; `LogFile` only
+/// holds the bytes and arenas.
 class LogFile
 {
 public:
@@ -41,12 +38,9 @@ public:
 
     void ReserveLineOffsets(size_t count);
 
-    /// Records the byte offset of the *next* line as a single
-    /// strictly-increasing entry on `mLineOffsets`. @p position must
-    /// be strictly greater than the previously registered offset.
-    /// Used by tests that build a `LogFile`'s offset table by hand
-    /// after writing the underlying file; the parser pipeline uses
-    /// `AppendLineOffsets` for batched updates instead.
+    /// Append a single line-boundary offset; @p position must be
+    /// strictly greater than the previously registered one. Used by
+    /// tests; the parser uses `AppendLineOffsets` for batched updates.
     void RegisterLineEnd(size_t position);
 
     /// Caller must ensure offsets are strictly increasing and start past the

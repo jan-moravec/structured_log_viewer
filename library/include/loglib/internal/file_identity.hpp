@@ -13,32 +13,19 @@
 namespace loglib::internal
 {
 
-/// Cross-platform "is this the same file as last time?" identity used by
-/// `TailingBytesProducer` rotation detection.
+/// Cross-platform file identity used by `TailingBytesProducer`
+/// rotation detection. POSIX: `(st_dev, st_ino)`. Windows: volume
+/// serial + `nFileIndexHigh:nFileIndexLow`.
 ///
-/// On POSIX the identity is `(st_dev, st_ino)`; on Windows it is the
-/// volume serial number combined with `nFileIndexHigh:nFileIndexLow`
-/// from `GetFileInformationByHandle`. We carry two 64-bit halves so a
-/// future implementation that wants to keep the volume id separate
-/// (e.g. for cross-volume rotation detection) does not require an ABI
-/// change.
-///
-/// **FAT/exFAT and some SMB caveat.** On
-/// filesystems where the file index is not stable across rename, the
-/// identity comparison is unreliable. The size-shrunk branch (4.8.6.iii)
-/// covers `copytruncate` on those filesystems; rename-and-create
+/// On filesystems where the index isn't stable across rename
+/// (FAT/exFAT, some SMB), identity comparison is unreliable. The
+/// size-shrunk branch covers `copytruncate` there; rename-and-create
 /// degrades to undetected — a documented limitation.
 struct FileIdentity
 {
-    /// Upper half of the identity. POSIX: `st_dev`; Windows: volume
-    /// serial number.
-    uint64_t high = 0;
-    /// Lower half of the identity. POSIX: `st_ino`; Windows:
-    /// `nFileIndexHigh:nFileIndexLow` combined.
-    uint64_t low = 0;
-    /// True iff the identity was successfully sampled. False values are
-    /// not equal to any other value (incl. each other) — callers must
-    /// branch on `valid` before comparing.
+    uint64_t high = 0; // POSIX: st_dev; Windows: volume serial
+    uint64_t low = 0;  // POSIX: st_ino; Windows: file-index halves
+    /// False values never compare equal — branch on `valid` first.
     bool valid = false;
 
     [[nodiscard]] friend bool operator==(const FileIdentity &lhs, const FileIdentity &rhs) noexcept
@@ -52,29 +39,19 @@ struct FileIdentity
     }
 };
 
-/// Sample the identity of @p path without holding any file open.
-///
-/// On POSIX uses `stat(2)`; on Windows opens with `FILE_SHARE_READ |
-/// FILE_SHARE_WRITE | FILE_SHARE_DELETE` and `OPEN_EXISTING` so the call
-/// does not interfere with a producer that holds the file open.
-///
-/// Returns a `FileIdentity` with `valid = false` when the path cannot
-/// be stat'd (e.g. mid-rotation `ENOENT` / `ERROR_FILE_NOT_FOUND`).
+/// Sample identity of @p path without holding it open. POSIX: `stat`.
+/// Windows: `OPEN_EXISTING` with full share flags, so a concurrent
+/// writer is not disturbed. Returns `valid = false` on stat failure.
 [[nodiscard]] FileIdentity FromPath(const std::filesystem::path &path) noexcept;
 
 #if defined(_WIN32)
 using NativeFileHandle = HANDLE;
 #else
-using NativeFileHandle = int; // POSIX file descriptor
+using NativeFileHandle = int; // POSIX fd
 #endif
 
-/// Sample the identity of an already-open native handle.
-///
-/// On POSIX takes a file descriptor and uses `fstat(2)`; on Windows
-/// takes a `HANDLE` and uses `GetFileInformationByHandle`.
-///
-/// Returns a `FileIdentity` with `valid = false` when the handle is
-/// invalid (`-1` / `INVALID_HANDLE_VALUE`) or the OS call fails.
+/// Sample identity of an open handle. POSIX: `fstat`. Windows:
+/// `GetFileInformationByHandle`. Returns `valid = false` on failure.
 [[nodiscard]] FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept;
 
 } // namespace loglib::internal

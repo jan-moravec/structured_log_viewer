@@ -55,9 +55,8 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 namespace
 {
 
-/// Append @p sv to @p source's owned-bytes arena for @p lineId and
-/// return a compact `OwnedString` value pointing at the just-appended
-/// bytes. Used by the cold-path ctors and `SetValue`.
+/// Append @p sv to @p source's owned arena for @p lineId, returning
+/// the matching compact `OwnedString` value. Cold path.
 internal::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
 {
     const uint64_t offset = source.AppendOwnedBytes(lineId, sv);
@@ -75,10 +74,8 @@ internal::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t line
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
             {
-                // MmapSlice fast path: when the view aliases the
-                // source's stable byte range, we can stamp an offset
-                // into it and skip the arena copy. Stream sources
-                // return an empty stable-bytes span and fall through
+                // MmapSlice fast path when the view aliases the
+                // source's stable bytes; stream sources fall through
                 // to `PromoteToOwnedString`.
                 const std::span<const char> stable = source.StableBytes();
                 if (!stable.empty() && alt.data() >= stable.data() &&

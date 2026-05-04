@@ -29,37 +29,32 @@
 namespace loglib::internal
 {
 
-/// Coalescing thresholds for the static TBB pipeline. Picked to keep
-/// per-batch GUI-thread work bounded while still soaking up the parser's
-/// throughput on bulk static loads.
+/// Coalescing thresholds for the static TBB pipeline.
 constexpr size_t kStaticBatchFlushLines = 1000;
 constexpr auto kStaticBatchFlushInterval = std::chrono::milliseconds(50);
 
-/// Per-line error emitted by Stage B. `relativeLine` is the 1-based line
-/// number within the source batch (i.e. it resets to 1 at every Stage B
-/// invocation). Stage C composes the absolute `Error on line N: <body>`
-/// string by adding its running line-number cursor -- Stage B cannot do
-/// this itself because it has no view of the cumulative line count.
+/// Stage B per-line error. `relativeLine` is 1-based within the batch;
+/// Stage C composes the absolute "Error on line N: ..." wrapper using
+/// its running line-number cursor.
 struct ParsedLineError
 {
     size_t relativeLine = 0;
     std::string body;
 };
 
-/// Parsed Stage B output. Stage C re-asserts ordering before the sink sees it.
+/// Stage B output. Stage C re-asserts ordering before the sink sees it.
 struct ParsedPipelineBatch
 {
     uint64_t batchIndex = 0;
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<ParsedLineError> errors;
-    /// Per-batch owned-string staging buffer. Stage B appends escape-decoded
-    /// bytes here and stamps `OwnedString` payloads with offsets into this
-    /// buffer; Stage C concatenates this into the `LogFile`'s arena and
-    /// rebases the offsets in `lines` once.
+    /// Per-batch owned-string staging. Stage B appends escape-decoded
+    /// bytes; Stage C concatenates into the `LogFile` arena and
+    /// rebases the offsets on `lines` in one pass.
     std::string ownedStringsArena;
-    /// Source lines consumed (parsed + errors + skipped empties). Stage C uses
-    /// this to advance its running line-number cursor across batches.
+    /// Source lines consumed (parsed + errors + skipped empties);
+    /// advances Stage C's line-number cursor across batches.
     size_t totalLineCount = 0;
 };
 
@@ -72,18 +67,12 @@ struct ResolvedPipelineSettings
 
 ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &advanced);
 
-/// Static-file TBB pipeline entry point. Stage A
-/// `stageADriver(Token&) -> bool` is `serial_in_order`; Stage B
-/// `stageBDecoder(Token, scratch, keys, columns, out)` runs in parallel.
-/// Stage C coalescing, new-keys diff, inline timestamp promotion, and
-/// stop_token cancellation are owned by this harness.
-///
-/// @p source is the static-file source the pipeline drives against.
-/// Stage B's decoder uses `source.File()` for direct mmap access and
-/// stamps each `LogLine` it builds with `&source` and the line's
-/// absolute `lineId`. Stage C rebases per-batch `OwnedString` payloads
-/// into `source.File()`'s session-global arena once per batch (single-
-/// threaded write).
+/// Static-file TBB pipeline. Stage A (`serial_in_order`) drives
+/// tokens; Stage B (`parallel`) decodes; Stage C (`serial_in_order`)
+/// rebases per-batch arenas into `source.File()`'s session-global
+/// arena, coalesces, diffs new keys, runs inline timestamp promotion,
+/// and honours `stop_token`. Stage B stamps each emitted `LogLine` with
+/// `&source` and its absolute `lineId`.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunStaticParserPipeline(
     FileLineSource &source,
@@ -101,8 +90,8 @@ void RunStaticParserPipeline(
     KeyIndex &keys = sink.Keys();
     BatchCoalescer coalescer(sink, keys, kStaticBatchFlushLines, kStaticBatchFlushInterval);
 
-    // Honour the `LogParseSink` contract: emit at least one (possibly
-    // empty) `OnBatch` before `OnFinished` on every early-exit path.
+    // Sink contract: at least one `OnBatch` before `OnFinished` on
+    // every early-exit path.
     if (options.stopToken.stop_requested())
     {
         coalescer.Finish(1, true);
@@ -164,9 +153,9 @@ void RunStaticParserPipeline(
             }
         }
 
-        // Rebase per-batch `OwnedString` offsets onto the canonical
-        // `LogFile` arena. Stage C is `serial_in_order`, so writing to
-        // `file.AppendOwnedStrings` is single-threaded.
+        // Rebase per-batch `OwnedString` offsets into the `LogFile`
+        // arena. Stage C is serial_in_order, so this write is
+        // single-threaded.
         if (!parsed.ownedStringsArena.empty())
         {
             const uint64_t delta = file.AppendOwnedStrings(parsed.ownedStringsArena);
@@ -176,10 +165,8 @@ void RunStaticParserPipeline(
             }
         }
 
-        // Stage B's `relativeLine` is 1-based within the batch. Compose the
-        // absolute "Error on line N: ..." message here so the line-number
-        // shift on each `LogLine`'s id and the line-number shown to the
-        // user stay in lockstep across batches.
+        // Compose absolute "Error on line N: ..." here so error and
+        // line numbering stay in lockstep with `ShiftLineId` above.
         auto formatErrorsInto = [&](std::vector<std::string> &out) {
             if (parsed.errors.empty())
             {
@@ -212,13 +199,9 @@ void RunStaticParserPipeline(
 
         StreamedBatch &pending = coalescer.Pending();
 
-        // Defer the prime until we have a real line: `firstLineNumber` is
-        // documented (and treated by sinks) as the 1-based absolute line
-        // number of the first source line in the batch -- *not* of the first
-        // chunk that hit `pending`. Priming on an all-error / all-blank chunk
-        // would set `firstLineNumber` to a value strictly less than
-        // `lines.front().LineId()` once the next chunk's first real line
-        // lands here.
+        // Defer Prime until a real line lands: `firstLineNumber` must
+        // be the absolute id of the first source line in the batch,
+        // not of an all-error/all-blank prefix chunk.
         if (!parsed.lines.empty())
         {
             coalescer.Prime(nextLineNumber);
@@ -249,21 +232,11 @@ void RunStaticParserPipeline(
 
     oneapi::tbb::parallel_pipeline(
         settings.ntokens,
-        // A: serial_in_order -- drives Stage A tokens in source order.
         oneapi::tbb::make_filter<void, Token>(oneapi::tbb::filter_mode::serial_in_order, stageA) &
-            // B: parallel -- decode batches concurrently.
             oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
-            // C: serial_in_order -- coalesce / emit batches in source order.
             oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
     );
 
-    // Both modes converge on `BatchCoalescer::Finish`: in the
-    // `prefersUncoalesced` mode the coalescer's pending stays empty so
-    // it just emits one terminal `tail` batch primed at the next line
-    // number. In coalesced mode it flushes whatever pending content
-    // accumulated from trailing all-error / all-blank chunks (errors,
-    // localLineOffsets, or new keys) and otherwise emits the same
-    // primed-empty tail.
     coalescer.Finish(nextLineNumber, stopToken.stop_requested());
 }
 

@@ -5,15 +5,12 @@ namespace loglib
 
 void BytesProducer::SetRotationCallback(std::function<void()> /*callback*/)
 {
-    // Default no-op: finite producers never rotate, so the typical override
-    // point is `TailingBytesProducer`.
+    // No-op: finite producers never rotate.
 }
 
 void BytesProducer::SetStatusCallback(std::function<void(SourceStatus)> /*callback*/)
 {
-    // Default no-op: producers that never become unavailable stay
-    // `SourceStatus::Running` for their lifetime. The
-    // typical override point is `TailingBytesProducer`.
+    // No-op: producers that never become unavailable stay `Running`.
 }
 
 } // namespace loglib

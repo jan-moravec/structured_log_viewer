@@ -54,9 +54,8 @@ bool BatchCoalescer::TryFlush(bool force)
         {
             return false;
         }
-        // Threshold reached but nothing real to ship -- bump the timer
-        // so the next interval restarts and bail out without burdening
-        // the sink with an empty batch.
+        // Threshold reached but nothing to ship: tick the timer and
+        // skip rather than burden the sink with an empty batch.
         const bool hasContent =
             !mPending.lines.empty() || !mPending.errors.empty() || mKeys.Size() > mPrevKeyCount;
         if (!hasContent)

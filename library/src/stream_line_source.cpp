@@ -36,9 +36,7 @@ std::string_view StreamLineSource::ResolveMmapBytes(
     uint64_t /*offset*/, uint32_t /*length*/, size_t /*lineId*/
 ) const noexcept
 {
-    // Stream sources never produce `MmapSlice` compact values. Returning
-    // an empty view is the defensive answer if a stale value somehow
-    // reaches us; under normal operation no caller gets here.
+    // Stream sources never produce `MmapSlice` payloads.
     return {};
 }
 
@@ -54,18 +52,16 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
     {
         return {};
     }
-    // The deque entry is stable across concurrent `AppendLine`s for as
-    // long as it isn't evicted, so the returned view remains valid past
-    // the lock release.  asks callers not to retain it past
-    // the next `EvictBefore` for the same line id.
+    // Deque entries are reference-stable until evicted, so the view
+    // outlives the lock release. Callers must not retain it past the
+    // next `EvictBefore` for this line id.
     return std::string_view(arena.data() + offset, length);
 }
 
 std::span<const char> StreamLineSource::StableBytes() const noexcept
 {
-    // Stream sources never expose stable bytes: the underlying byte
-    // producer's buffers are reused across reads. Every string-shaped
-    // value must land in the per-line owned arena.
+    // No stable bytes: producer buffers are reused; everything must
+    // land in the per-line owned arena.
     return {};
 }
 
@@ -96,11 +92,8 @@ void StreamLineSource::EvictBefore(size_t firstSurvivingLineId)
     {
         return;
     }
-    // Cap at `mNextLineId` so a caller asking to evict past the tail
-    // simply drops everything held; subsequent `AppendLine` calls
-    // resume at `mNextLineId` (advancing `mFirstAvailableLineId` to
-    // match would also be valid but loses the diagnostic that the
-    // caller over-shot, so we clamp instead).
+    // Cap at `mNextLineId`: an over-shot caller drops everything held
+    // and `AppendLine` resumes at `mNextLineId`.
     const size_t target = std::min(firstSurvivingLineId, mNextLineId);
     const size_t drop = target - mFirstAvailableLineId;
     for (size_t i = 0; i < drop; ++i)
@@ -145,10 +138,8 @@ size_t StreamLineSource::Size() const noexcept
 size_t StreamLineSource::OwnedMemoryBytes() const noexcept
 {
     std::lock_guard<std::mutex> guard(mLock);
-    // `std::deque` doesn't expose `capacity()` — it allocates in
-    // chunks of an implementation-defined block size. Fall back to a
-    // size-based estimate for the per-string overhead and accumulate
-    // the actual capacities of each entry.
+    // `std::deque` lacks `capacity()`; estimate per-string overhead
+    // by size and add per-entry capacity.
     size_t total = (mLines.size() + mLineOwnedBytes.size()) * sizeof(std::string);
     for (const auto &line : mLines)
     {

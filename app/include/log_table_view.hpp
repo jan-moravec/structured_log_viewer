@@ -10,11 +10,9 @@ class LogTableView : public QTableView
     Q_OBJECT
 
 public:
-    /// Which edge of the scrollbar represents the "tail" (newest line)
-    /// in the current view. `Bottom` is the default append-at-bottom
-    /// orientation; `Top` mirrors the layout when the user enabled
-    /// **Show newest lines first** in Preferences and a
-    /// `StreamOrderProxyModel` reversed the row order.
+    /// Which scrollbar edge represents the "tail" (newest line). `Bottom`
+    /// is the default append-at-bottom orientation; `Top` mirrors the
+    /// layout when **Show newest lines first** is enabled.
     enum class TailEdge
     {
         Bottom,
@@ -25,124 +23,81 @@ public:
 
     void keyPressEvent(QKeyEvent *event) override;
 
-    /// `QTableView::setModel` is overridden so the view can wire its
-    /// own structural-change hooks (rows / layout about-to-be-changed
-    /// vs. changed) on whichever model is attached. Used by the
-    /// reading-position preservation path described on
-    /// `userScrolledAwayFromTail` below.
+    /// Override so the view can wire its own structural-change hooks
+    /// onto whichever model is attached (used by the reading-position
+    /// preservation path -- see `userScrolledAwayFromTail`).
     void setModel(QAbstractItemModel *model) override;
 
-    /// Switches which edge of the vertical scrollbar `userScrolledTo*`
-    /// emissions track. Idempotent: re-evaluates `mAtTailEdge` against
-    /// the current scroll position so the next genuine user transition
-    /// still edge-triggers correctly.
+    /// Switch which scrollbar edge is treated as the tail. Idempotent;
+    /// re-evaluates `mAtTailEdge` against the current position.
     void SetTailEdge(TailEdge edge);
 
-    /// Currently configured tail edge.
     [[nodiscard]] TailEdge GetTailEdge() const noexcept;
 
 public slots:
     void CopySelectedRowsToClipboard();
 
 signals:
-    /// Emitted when the user manually scrolls **away** from the
-    /// configured tail edge.
-    /// Wired to `MainWindow` to auto-disengage the **Follow newest**
-    /// toggle. The "tail edge" is the bottom of the view in the
-    /// default append-at-bottom orientation and the top of the view
-    /// when **Show newest lines first** is enabled.
-    ///
-    /// Only emitted when the most recent value change was driven by a
-    /// user input path (wheel / keyboard / scrollbar action / drag).
-    /// Programmatic or layout-driven `valueChanged` events
-    /// (`scrollTo` after a new batch, value clamping triggered by
-    /// `endInsertRows`, hover-induced internal repaints, our own
-    /// scroll-anchor preservation `setValue` below) update the
-    /// tracking silently so they can never disengage Follow newest on
-    /// their own.
+    /// User manually scrolled away from the configured tail edge.
+    /// Wired to `MainWindow` to auto-disengage Follow newest.
+    /// Programmatic value changes (`scrollTo`, `endInsertRows`
+    /// clamping, our own anchor restore) are filtered out so they
+    /// cannot disengage Follow newest on their own.
     void userScrolledAwayFromTail();
 
-    /// Emitted when the user manually scrolls back to the configured
-    /// tail edge. Wired to `MainWindow` to auto-re-engage the
-    /// **Follow newest** toggle. Same user-input gate as
-    /// `userScrolledAwayFromTail`.
+    /// User manually scrolled back to the tail edge. Wired to
+    /// `MainWindow` to auto-re-engage Follow newest. Same user-input
+    /// filter as `userScrolledAwayFromTail`.
     void userScrolledToTail();
 
 protected:
-    /// Marks the next `valueChanged` as user-initiated when the wheel
-    /// event reaches the viewport.
+    /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
 
 private:
     void OnVerticalScrollValueChanged(int value);
 
-    /// Hooks invoked from the attached model's `rowsAboutToBeInserted`
-    /// / `rowsInserted` / `layoutAboutToBeChanged` / `layoutChanged`
-    /// signals. The "about" half snapshots the topmost visible row as
-    /// an anchor (only when the user has scrolled away from the tail
-    /// edge); the post-change half restores the anchor's pixel offset
-    /// by adjusting the vertical scrollbar. Together they preserve
-    /// the user's reading position when new lines arrive at the
-    /// visual top in **Show newest lines first** mode (chat-app
-    /// pattern).
+    /// Reading-position preservation hooks (chat-app pattern). Around
+    /// each structural change we snapshot the topmost visible row and
+    /// restore its pixel offset afterwards, so the user's view stays
+    /// stable while new rows arrive at the top in newest-first mode.
+    /// No-ops when the user is at the tail edge or when the
+    /// orientation is the default `TailEdge::Bottom`.
     void OnRowsAboutToBeInserted(const QModelIndex &parent, int first, int last);
     void OnRowsInserted(const QModelIndex &parent, int first, int last);
     void OnLayoutAboutToBeChanged();
     void OnLayoutChanged();
 
-    /// Computes `(value at the configured tail edge?)` for the current
-    /// scrollbar state. Centralised so `SetTailEdge` and
-    /// `OnVerticalScrollValueChanged` stay in lock-step.
     [[nodiscard]] bool ComputeAtTailEdge(int value) const;
 
-    /// Captures the topmost visible row as a scroll anchor, but only
-    /// when the user is reading older content (`!mAtTailEdge`) in a
-    /// reversed orientation (`mTailEdge == TailEdge::Top`). No-op
-    /// otherwise; the caller relies on `mAnchorIsSaved` to know
-    /// whether a matching restore should run.
     void SaveAnchorIfShouldPreserve();
-
-    /// Restores a previously-saved anchor by adjusting the vertical
-    /// scrollbar so the anchor row sits at the same pixel offset as
-    /// when it was saved. Programmatic — does not flip the user-input
-    /// flag, so it cannot disengage Follow newest on its own.
     void RestoreAnchorIfSaved();
 
     TailEdge mTailEdge = TailEdge::Bottom;
 
-    /// True while the most recent `valueChanged` was at the configured
-    /// tail edge of the scrollbar; lets the slot emit edge-triggered
-    /// signals only.
+    /// True while the scrollbar is at the configured tail edge; lets
+    /// `OnVerticalScrollValueChanged` emit edge-triggered signals.
     bool mAtTailEdge = true;
 
-    /// Set by user-input paths (`wheelEvent` / `keyPressEvent`
-    /// overrides on the viewport, `actionTriggered` signal on the
-    /// vertical scrollbar) and consumed by
-    /// `OnVerticalScrollValueChanged`. The `valueChanged` handler
-    /// treats programmatic value changes (those observed while this
-    /// flag is `false`) as silent so they cannot flip Follow newest
-    /// off.
+    /// Set by user-input paths (wheel, key press, scrollbar action)
+    /// and consumed by `OnVerticalScrollValueChanged`. Programmatic
+    /// value changes (this flag still false) are silent.
     bool mNextValueChangeIsUser = false;
 
-    /// Persistent index of the topmost visible row at the moment a
-    /// pending structural change was about to land. Qt auto-updates
-    /// the index across the layout / insertion so we can read its
-    /// new pixel position from `RestoreAnchorIfSaved`.
+    /// Topmost visible row captured before a pending structural change.
+    /// Qt updates the persistent index across the layout / insertion,
+    /// so we can read its new pixel position on the way out.
     QPersistentModelIndex mPreservedAnchor;
 
-    /// Pixel offset of `mPreservedAnchor`'s top from the viewport's
-    /// top at save time. Usually `<= 0` (the anchor row's top is at
-    /// or above the viewport boundary).
+    /// Pixel offset of the anchor row's top from the viewport top at
+    /// save time. Typically <= 0.
     int mPreservedAnchorOffsetPx = 0;
 
-    /// Set when `SaveAnchorIfShouldPreserve` actually captured an
-    /// anchor — the matching `RestoreAnchorIfSaved` runs only when
-    /// this is true. Avoids double-saves when both `rowsAboutTo…` and
-    /// `layoutAboutTo…` fire for the same structural change.
+    /// True iff `SaveAnchorIfShouldPreserve` captured an anchor; the
+    /// matching `RestoreAnchorIfSaved` runs only then.
     bool mAnchorIsSaved = false;
 
-    /// Connections we hold against the currently-attached model.
-    /// Tracked so `setModel` can drop them cleanly before re-wiring
-    /// against a new model.
+    /// Connections to the currently-attached model; dropped on
+    /// `setModel` before re-wiring.
     QList<QMetaObject::Connection> mModelConnections;
 };

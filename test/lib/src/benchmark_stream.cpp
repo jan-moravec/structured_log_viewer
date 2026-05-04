@@ -1,16 +1,11 @@
 // Stream-Mode end-to-end latency benchmark.
 //
-// Goal: prove the G1 budget — median <= 250 ms, p95 <= 500 ms — for the
-// wall-clock delta between a producer's `write() + fflush()` and a row
-// landing in the consumer-side `OnBatch`. The latency budget chain (per
-// ) is poll/event <= 250 ms + coalesce <= 100 ms
-// + queued-connection epsilon ~ 350 ms p95 worst-case; this benchmark
-// measures the *parser-side* portion of that chain (no Qt event loop) and
-// asserts a tighter budget appropriate for that scope.
+// Measures the wall-clock delta between a producer's `write()+fflush()`
+// and the corresponding row landing in `OnBatch`. Asserts median <=
+// 250 ms / p95 <= 500 ms on the parser-side path (no Qt event loop).
 //
-// Tagged `[stream_latency][benchmark]` so it lands under the `benchmark`
-// CTest label alongside the existing `[large]` / `[wide]` / `[allocations]` /
-// `[cancellation]` cases.
+// Tagged `[stream_latency][benchmark]` to land under the `benchmark`
+// CTest label.
 
 #include "common.hpp"
 
@@ -192,17 +187,11 @@ double Percentile(std::vector<double> sorted, double pct)
 
 #define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
-//  success metric 1: writer-to-row latency. The producer writes
-// `kLines` lines at a steady rate (well below the 10 000 lines/s target the
-//  out, so we measure the steady-state floor — not a saturation
-// scenario) and the consumer's parser drains them in real time. We then
-// compute median / p95 / max of the per-line deltas and assert against the
-// 
-//
-// We do **not** drive a Qt event loop here — this benchmark measures the
-// parser-side latency only. The full GUI-included budget (~350 ms p95,
-//) is verified by the offscreen Qt smoke
-// test in `test/app/src/main_window_test.cpp` (task 6.5).
+// Writer-to-row latency. The producer writes `kLines` at a steady rate
+// well below saturation; the consumer's parser drains in real time. We
+// then assert median/p95/max of the per-line deltas. The full GUI
+// latency is verified separately by the offscreen Qt smoke test in
+// `test/app/src/main_window_test.cpp`.
 TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
@@ -223,8 +212,8 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     constexpr auto kInterLineDelay = 10ms;
 
     TailingBytesProducer::Options sourceOptions;
-    sourceOptions.disableNativeWatcher = false; // exercise the native watcher path on the dev machine
-    sourceOptions.pollInterval = 25ms;          // fast poll fallback so the worst case stays inside G1
+    sourceOptions.disableNativeWatcher = false;
+    sourceOptions.pollInterval = 25ms;
     sourceOptions.rotationDebounce = 1000ms;
     sourceOptions.readChunkBytes = 64 * 1024;
     sourceOptions.prefillChunkBytes = 64 * 1024;
@@ -333,8 +322,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
                                              << " ms, max = " << maxLatency << " ms"
     );
 
-    //  success metric 1. The numbers feed straight into the
-    // contributor benchmarking docs (CONTRIBUTING.md `## Benchmarking`).
+    // Numbers feed CONTRIBUTING.md `## Benchmarking`.
     CHECK(median <= 250.0);
     CHECK(p95 <= 500.0);
 }

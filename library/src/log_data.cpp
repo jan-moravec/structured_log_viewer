@@ -34,10 +34,8 @@ LogData::LogData(LogData &&other) noexcept
     : mSources(std::move(other.mSources)), mLines(std::move(other.mLines)), mKeys(std::move(other.mKeys)),
       mTimestampsAlreadyParsed(other.mTimestampsAlreadyParsed)
 {
-    // The KeyIndex wrapper moved address; rebind line back-pointers to *this.
-    // The `LineSource` heap objects stay at their addresses (only the
-    // `unique_ptr` containers moved), so each `LogLine`'s `mSource`
-    // pointer is still valid — no source rebinding required.
+    // KeyIndex moved address — rebind. `LineSource` heap addresses are
+    // stable across the move, so `mSource` pointers stay valid.
     for (auto &line : mLines)
     {
         line.RebindKeys(mKeys);
@@ -167,10 +165,9 @@ void LogData::MarkTimestampsParsed()
 
 void LogData::Merge(LogData &&other)
 {
-    // Splice `other`'s sources in before we touch its lines: the lines
-    // hold `LineSource *` pointers that already point at the heap
-    // objects inside `other.mSources`, and moving the `unique_ptr`s
-    // into `mSources` keeps those heap addresses stable.
+    // Splice sources first: each `LogLine` already points at a heap
+    // `LineSource` inside `other.mSources`; moving the `unique_ptr`s
+    // keeps the addresses stable.
     mSources.reserve(mSources.size() + other.mSources.size());
     std::move(
         std::make_move_iterator(other.mSources.begin()),
@@ -190,11 +187,9 @@ void LogData::Merge(LogData &&other)
     mLines.reserve(mLines.size() + other.mLines.size());
     for (auto &line : other.mLines)
     {
-        // Rewire each pair's KeyId via the compact span (no `LogValue`
-        // materialisation), then re-sort since the new ids may differ in
-        // order. `OwnedString` offsets stay relative to the merged-in
-        // source's arena, which moved into `mSources` above with its
-        // bytes intact, so no rebasing is needed here.
+        // Rewire each pair's KeyId in place (no `LogValue`
+        // materialisation), then re-sort. `OwnedString` offsets stay
+        // valid: the source's arena moved with its bytes.
         const auto values = line.CompactValues();
         std::vector<std::pair<KeyId, internal::CompactLogValue>> remapped;
         remapped.reserve(values.size());
@@ -217,8 +212,8 @@ void LogData::Merge(LogData &&other)
 
 void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets)
 {
-    // No per-batch `reserve` (STL grows to exactly n → O(N^2/B)); rely on
-    // geometric `push_back` growth.
+    // No per-batch `reserve` — rely on geometric push_back growth
+    // (some STL impls take `reserve(size+n)` as exact = O(N^2/B)).
     if (!lines.empty())
     {
         for (auto &line : lines)
@@ -230,13 +225,9 @@ void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> line
 
     if (!lineOffsets.empty())
     {
-        // Route per-batch line offsets to the *most recently appended*
-        // `FileLineSource`. For a single-file session this is the only
-        // file source (= `FrontFileSource()`); for sequential multi-
-        // file streaming (`LogModel::AppendStreaming`) it points at the
-        // currently-streamed file. The live-tail streaming path passes
-        // empty `lineOffsets` (its `StreamLineSource` owns per-line
-        // bytes directly) and so bypasses this branch.
+        // Route offsets to the most-recently-appended `FileLineSource`
+        // — the file currently being streamed. Live-tail passes empty
+        // `lineOffsets` and skips this branch.
         FileLineSource *fileSource = BackFileSource();
         assert(fileSource != nullptr);
         if (fileSource != nullptr)

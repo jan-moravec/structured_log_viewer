@@ -6,22 +6,15 @@
 namespace loglib_test
 {
 
-/// Read-once test-time multiplier for polling-fallback waits. Slow CI
-/// runners (Linux containerised, Windows MSVC matrix, macOS shared arm
-/// runners) can blow past the wall-clock budgets the harness picks for
-/// a developer-class workstation; rather than scattering ad-hoc `*= 2`
-/// factors through every `DrainUntil` / `wait_for` call, we read the
-/// `LOGLIB_TEST_TIME_SCALE` env var once, parse it as a double (default
-/// `1.0`), and multiply every test-only deadline through `ScaledMs`.
-/// Fixed constants like `pollInterval` deliberately do **not** scale --
-/// only the deadlines waiting for the worker to do its thing.
+/// Read-once test-time multiplier for polling-fallback waits, so slow
+/// CI runners can scale wait deadlines without touching every test.
+/// Set via `LOGLIB_TEST_TIME_SCALE` (double, default 1.0). Fixed
+/// constants like `pollInterval` are deliberately NOT scaled.
 inline double LoadTimeScale() noexcept
 {
-    // MSVC flags `std::getenv` as `unsafe` (C4996) and recommends
-    // `_dupenv_s`; the value here is read once at process start and
-    // treated as untrusted input (parsed via `strtod`, default-on-
-    // failure), so the safer-API pattern would only add noise. Suppress
-    // the warning locally rather than blanket-disable C4996 for the TU.
+    // MSVC C4996: `getenv` is "unsafe". The value is read once at
+    // startup and parsed via `strtod` with a default-on-failure, so
+    // the safer-API alternative would only add noise here.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)

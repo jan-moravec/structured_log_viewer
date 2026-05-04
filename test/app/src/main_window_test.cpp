@@ -1165,21 +1165,12 @@ private slots:
         model.EndStreaming(false);
     }
 
-    //  6.5: end-to-end Stream Mode smoke test against a temp file
-    // tailed by `TailingBytesProducer`. Drives the same flow `MainWindow::
-    // OpenLogStream` does (model.BeginStreaming(unique_ptr<BytesProducer>)) but
-    // without going through the menu so the test stays self-contained.
-    //
-    // Coverage:
-    //   - Pre-fill of 100 lines arrives at the model.
-    //   - Appending 50 more lines while running grows the model to 150.
-    //   - Pause freezes the visible model at 150 while the worker keeps
-    //     ingesting; subsequent appends land in the paused buffer.
-    //   - Resume drains the paused buffer in a single coalesced post.
-    //
-    // The retention cap is set high enough (1000) that the FIFO eviction
-    // path stays inactive — that's covered by the dedicated
-    // `testRetentionCap*` tests above.
+    // End-to-end Stream Mode smoke test against a temp file tailed by
+    // `TailingBytesProducer`. Mirrors `MainWindow::OpenLogStream`'s
+    // flow but stays self-contained. Covers pre-fill, live append,
+    // pause-freezes-view-with-buffer-keeps-growing, and resume-drains.
+    // Retention cap is high (1000) so FIFO eviction stays inactive
+    // here — the dedicated `testRetentionCap*` tests cover that.
     void testStreamModeOpensTailFileAndAppends()
     {
         TempLiveTailFile fixture;

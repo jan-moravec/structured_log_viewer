@@ -22,9 +22,8 @@ void BufferingSink::OnStarted()
 
 void BufferingSink::OnBatch(StreamedBatch batch)
 {
-    // No per-batch `reserve(size + n)`: STL implementations take that as
-    // "exactly n", which would turn this into O(N^2/B). `insert()` grows
-    // geometrically.
+    // Avoid `reserve(size + n)`: some STL impls take it as exact and
+    // make this O(N^2/B). `insert` grows geometrically.
     if (!batch.lines.empty())
     {
         mLines.insert(
@@ -59,8 +58,8 @@ KeyIndex &BufferingSink::Keys()
 
 LogData BufferingSink::TakeData()
 {
-    // Push line offsets into the LogFile before the source moves into
-    // LogData so `GetLine(i)` still works on the returned data.
+    // Flush line offsets into the LogFile before moving the source
+    // into LogData so `GetLine(i)` works on the returned data.
     if (mSource && !mLineOffsets.empty())
     {
         mSource->File().AppendLineOffsets(mLineOffsets);

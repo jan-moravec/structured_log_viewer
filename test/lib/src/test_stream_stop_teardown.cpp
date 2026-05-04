@@ -1,13 +1,10 @@
-// Stop-teardown coverage for `TailingBytesProducer` + `JsonParser::ParseStreaming`.
-// The documented budget for stopping a live stream is 500 ms from
-// `BytesProducer::Stop()` to the parser worker joining; on
-// an idle source we expect *well* under that, while a worker mid-decode of a
-// 100 KiB-buffered batch still has to honour the same budget.
+// Stop-teardown coverage for `TailingBytesProducer` +
+// `JsonParser::ParseStreaming`. Budget: 500 ms from
+// `BytesProducer::Stop()` to the parser worker joining, both for an
+// idle source and for a worker mid-decode of a 100 KiB buffered batch.
 //
-// These tests deliberately drive the full source -> parser -> sink chain
-// (not just the source on its own — `test_tailing_file_source.cpp` covers
-// `TailingBytesProducer::Stop` in isolation) so any regression in the parser
-// stop-token plumbing surfaces here.
+// These tests drive the full source -> parser -> sink chain so any
+// regression in the parser stop-token plumbing surfaces here.
 
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/key_index.hpp>
@@ -86,9 +83,8 @@ void Append(const std::filesystem::path &path, std::string_view text)
     out.flush();
 }
 
-/// Test sink that counts incoming batches and reports `OnFinished` so the
-/// test can assert the parser exited cleanly. We can't reuse the GUI's
-/// `QtStreamingLogSink` here because the library tests don't link Qt.
+/// Counts batches and reports `OnFinished` so we can assert clean exit.
+/// (Library tests don't link Qt, so `QtStreamingLogSink` isn't available.)
 struct CountingSink final : LogParseSink
 {
     KeyIndex keys;
@@ -129,12 +125,9 @@ TailingBytesProducer::Options TestOptions()
 
 } // namespace
 
-//  success metric 6: a worker parked in `WaitForBytes` on an idle
-// producer must observe `BytesProducer::Stop()` and unwind in <= 500 ms. This
-// is the typical case (the parser flushes between reads and parks until
-// new bytes / the deadline / Stop). The end-to-end timed window covers
-// `BytesProducer::Stop()` through `ParserOptions::stopToken.request_stop()`,
-// `joinable thread join`, and `OnFinished`.
+// A worker parked in `WaitForBytes` on an idle producer must observe
+// `BytesProducer::Stop()` and unwind within 500 ms. The timed window
+// covers Stop() -> request_stop() -> thread join -> OnFinished.
 TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown]")
 {
     TempDir dir;
@@ -153,17 +146,12 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
     options.stopToken = stopSource.get_token();
 
     // Drive the parser worker on a dedicated thread (mirrors
-    // `LogModel::BeginStreaming`'s `QtConcurrent::run` path without the Qt
-    // dependency). The worker's hot loop polls the parser stop-token at
-    // every batch boundary and on every `WaitForBytes` wake.
+    // `LogModel::BeginStreaming`'s `QtConcurrent::run` without Qt).
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Give the worker time to drain pre-fill and park. The test's correctness
-    // doesn't depend on this sleep — Stop() is observed even if the worker
-    // is mid-Read — but the typical-case wall-clock we're measuring is
-    // dominated by `WaitForBytes` parking, so we aim for the worker to be
-    // there before we Stop.
+    // Give the worker time to drain pre-fill and park in WaitForBytes
+    // so we measure the typical idle path (Stop is correct either way).
     std::this_thread::sleep_for(ScaledMs(100ms));
 
     const auto stopStart = std::chrono::steady_clock::now();
@@ -174,19 +162,14 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
 
     CHECK(sink.finished.load(std::memory_order_acquire));
     INFO("Stop teardown elapsed: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms");
-    //  success metric 6: ≤ 500 ms. We allow `LOGLIB_TEST_TIME_SCALE`
-    // to widen the budget on slow CI runners — the  is a
-    // developer-class-machine target, not a hard real-time bound.
+    // 500 ms developer-class-machine budget. `LOGLIB_TEST_TIME_SCALE`
+    // widens it for slow CI runners.
     CHECK(elapsed < ScaledMs(500ms));
 }
 
-//  success metric 6 (2nd half): a worker mid-decoding a 100 KiB
-// buffered batch must still observe Stop within the same budget. We
-// pre-write a 100 KiB JSONL block before the parser starts, so the
-// parser's hot loop is busy decoding (rather than parked in
-// `WaitForBytes`) when Stop is signalled. The parser checks the
-// stop-token at every line boundary, so the worst-case decode latency
-// is one line-decode cycle plus the Stop-then-join wait.
+// A worker mid-decoding a 100 KiB buffered batch must still observe
+// Stop within 500 ms. The parser checks the stop-token at every line
+// boundary, so worst case is one line decode plus Stop-then-join.
 TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stream_stop_teardown]")
 {
     TempDir dir;
@@ -219,10 +202,8 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
     JsonParser parser;
     std::thread worker([&] { parser.ParseStreaming(*streamPtr, sink, std::move(options)); });
 
-    // Don't wait — Stop the worker as soon as possible so we hit it
-    // mid-decode rather than after natural drain. A short sleep ensures
-    // OnStarted has fired, otherwise the test could measure pre-stream
-    // setup time as part of the budget.
+    // Stop ASAP so we hit the worker mid-decode. The brief sleep just
+    // ensures OnStarted has fired so we don't measure setup time.
     std::this_thread::sleep_for(ScaledMs(5ms));
 
     const auto stopStart = std::chrono::steady_clock::now();

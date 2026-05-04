@@ -23,13 +23,9 @@ struct ParseResult
 };
 
 /// Base class for log-format parsers. New formats implement `IsValid`,
-/// the two `ParseStreaming(LineSource&, ...)` virtuals, and `ToString`.
-///
-/// The synchronous "parse a file to a `ParseResult`" helper used to
-/// live here as `Parse(path)`; it is now the free function
-/// `loglib::ParseFile(parser, path)` declared in `loglib/parse_file.hpp`.
-/// Production GUI code never goes through that helper -- the static-file
-/// open path runs through the streaming entry below.
+/// both `ParseStreaming` overloads, and `ToString`. The synchronous
+/// "parse a file" helper is `loglib::ParseFile` (see `parse_file.hpp`);
+/// production GUI code uses `ParseStreaming` directly.
 class LogParser
 {
 public:
@@ -37,20 +33,13 @@ public:
 
     virtual bool IsValid(const std::filesystem::path &file) const = 0;
 
-    /// Static-file streaming entry point: emits `LogLine`s tagged with
-    /// `&source` (a long-lived `FileLineSource`, typically owned by the
-    /// caller's sink). The synchronous `Parse(path)` routes through this
-    /// virtual so the emitted line pointers never alias a stack-local
-    /// borrowing wrapper.
+    /// Static-file streaming entry. Emitted `LogLine`s carry @p source
+    /// and the line's 0-based file id.
     virtual void
     ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
-    /// Live-tail streaming entry point: emits `LogLine`s tagged with
-    /// `&source` (a long-lived `StreamLineSource`, typically owned by
-    /// the caller's `LogTable`). Each emitted line carries the 1-based
-    /// monotonic id assigned by `StreamLineSource::AppendLine` so the
-    /// model layer can resolve the row's raw bytes via the source long
-    /// after parsing has moved on.
+    /// Live-tail streaming entry. Emitted `LogLine`s carry @p source
+    /// and the 1-based monotonic id assigned by `AppendLine`.
     virtual void
     ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
