@@ -14,6 +14,7 @@ add_library(
     src/static_parser_pipeline.cpp
     src/stream_line_source.cpp
     src/tailing_bytes_producer.cpp
+    src/tcp_server_producer.cpp
     src/udp_server_producer.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
