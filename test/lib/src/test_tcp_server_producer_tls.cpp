@@ -5,6 +5,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -12,7 +13,6 @@
 #include <openssl/x509.h>
 
 #include <array>
-#include <cstdio>
 #include <filesystem>
 #include <random>
 #include <span>
@@ -95,25 +95,45 @@ void GenerateSelfSignedCert(const std::filesystem::path &certPath, const std::fi
         throw std::runtime_error("X509_sign failed");
     }
 
-    FILE *certFp = std::fopen(certPath.string().c_str(), "wb");
-    if (!certFp)
+    // Write both PEM files via BIO_new_file rather than fopen +
+    // PEM_write_X509(FILE*, ...). On Windows the FILE* path crosses
+    // the OpenSSL DLL's CRT boundary and aborts the test with
+    // `OPENSSL_Uplink: no OPENSSL_Applink` whenever the OpenSSL DLLs
+    // and the test binary use different MSVC runtimes (the case for
+    // the Shining Light Productions / chocolatey OpenSSL build). The
+    // BIO variants stay inside the OpenSSL DLL's CRT, so no applink
+    // trampoline is needed.
+    BIO *certBio = BIO_new_file(certPath.string().c_str(), "wb");
+    if (!certBio)
     {
         X509_free(x509);
         EVP_PKEY_free(pkey);
-        throw std::runtime_error("open cert file for write failed");
+        throw std::runtime_error("BIO_new_file (cert) failed");
     }
-    PEM_write_X509(certFp, x509);
-    std::fclose(certFp);
+    if (PEM_write_bio_X509(certBio, x509) <= 0)
+    {
+        BIO_free_all(certBio);
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("PEM_write_bio_X509 failed");
+    }
+    BIO_free_all(certBio);
 
-    FILE *keyFp = std::fopen(keyPath.string().c_str(), "wb");
-    if (!keyFp)
+    BIO *keyBio = BIO_new_file(keyPath.string().c_str(), "wb");
+    if (!keyBio)
     {
         X509_free(x509);
         EVP_PKEY_free(pkey);
-        throw std::runtime_error("open key file for write failed");
+        throw std::runtime_error("BIO_new_file (key) failed");
     }
-    PEM_write_PrivateKey(keyFp, pkey, nullptr, nullptr, 0, nullptr, nullptr);
-    std::fclose(keyFp);
+    if (PEM_write_bio_PrivateKey(keyBio, pkey, nullptr, nullptr, 0, nullptr, nullptr) <= 0)
+    {
+        BIO_free_all(keyBio);
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("PEM_write_bio_PrivateKey failed");
+    }
+    BIO_free_all(keyBio);
 
     X509_free(x509);
     EVP_PKEY_free(pkey);
