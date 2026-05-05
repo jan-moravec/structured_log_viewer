@@ -21,7 +21,17 @@ add_executable(
     "src/test_stream_line_source.cpp"
     "src/test_stream_stop_teardown.cpp"
     "src/test_tailing_bytes_producer.cpp"
+    "src/test_tcp_server_producer.cpp"
+    "src/test_udp_server_producer.cpp"
 )
+
+# The TLS test programmatically generates a self-signed cert via
+# OpenSSL APIs at startup, so it only compiles when TLS support is
+# in. Gated by the same `LOGLIB_NETWORK_TLS` flag the producer uses.
+if(LOGLIB_NETWORK_TLS)
+    target_sources(tests PRIVATE "src/test_tcp_server_producer_tls.cpp")
+    target_link_libraries(tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 
 target_include_directories(tests PRIVATE include)
 

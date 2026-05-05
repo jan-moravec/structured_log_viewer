@@ -26,9 +26,15 @@ public:
     TcpLogClientImpl &operator=(TcpLogClientImpl &&) = delete;
 
     void Send(std::string_view line);
+    void SendRaw(std::string_view bytes);
     void Close();
 
 private:
+    /// Single point of byte-level write so plain and TLS share the
+    /// error-handling path. Used by both `Send` (with newline-fixup)
+    /// and `SendRaw` (verbatim).
+    void WriteAll(const char *data, size_t size);
+
     asio::io_context mIoContext;
     asio::ip::tcp::socket mSocket;
 #ifdef LOGLIB_HAS_TLS
@@ -146,27 +152,34 @@ TcpLogClientImpl::~TcpLogClientImpl()
 void TcpLogClientImpl::Send(std::string_view line)
 {
     const bool needsNewline = line.empty() || line.back() != '\n';
-    asio::error_code ec;
+    WriteAll(line.data(), line.size());
+    if (needsNewline)
+    {
+        const char nl = '\n';
+        WriteAll(&nl, 1);
+    }
+}
 
+void TcpLogClientImpl::SendRaw(std::string_view bytes)
+{
+    if (!bytes.empty())
+    {
+        WriteAll(bytes.data(), bytes.size());
+    }
+}
+
+void TcpLogClientImpl::WriteAll(const char *data, size_t size)
+{
+    asio::error_code ec;
     if (mUsesTls)
     {
 #ifdef LOGLIB_HAS_TLS
-        asio::write(*mSslStream, asio::buffer(line.data(), line.size()), ec);
-        if (!ec && needsNewline)
-        {
-            const char nl = '\n';
-            asio::write(*mSslStream, asio::buffer(&nl, 1), ec);
-        }
+        asio::write(*mSslStream, asio::buffer(data, size), ec);
 #endif
     }
     else
     {
-        asio::write(mSocket, asio::buffer(line.data(), line.size()), ec);
-        if (!ec && needsNewline)
-        {
-            const char nl = '\n';
-            asio::write(mSocket, asio::buffer(&nl, 1), ec);
-        }
+        asio::write(mSocket, asio::buffer(data, size), ec);
     }
     if (ec)
     {
@@ -288,6 +301,11 @@ TcpLogClient &TcpLogClient::operator=(TcpLogClient &&) noexcept = default;
 void TcpLogClient::Send(std::string_view line)
 {
     mImpl->Send(line);
+}
+
+void TcpLogClient::SendRaw(std::string_view bytes)
+{
+    mImpl->SendRaw(bytes);
 }
 
 void TcpLogClient::Close()

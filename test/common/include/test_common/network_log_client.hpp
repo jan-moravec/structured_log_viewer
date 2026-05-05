@@ -66,6 +66,12 @@ public:
     /// already end with one. Throws on write failure.
     void Send(std::string_view line);
 
+    /// Send @p bytes verbatim. No newline is appended. Used by tests
+    /// that want to demonstrate line-fragment interleave and by
+    /// adversarial drivers that craft byte patterns the framer must
+    /// tolerate.
+    void SendRaw(std::string_view bytes);
+
     /// Cleanly shut down the connection. Idempotent; the destructor
     /// also calls this.
     void Close();
