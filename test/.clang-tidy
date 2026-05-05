@@ -1,0 +1,19 @@
+# Test-level overrides.
+#
+# Magic numbers are common and acceptable in test code (expected values,
+# test data, etc.). `cert-err58-cpp` warns about static initialization
+# exceptions, acceptable in test utilities. Public member variables are
+# the norm in Catch2 fixtures / sink structs — `struct { ... }` with
+# exposed fields is idiomatic here. `cppcoreguidelines-owning-memory`
+# fires on the `FILE *fp = std::fopen(...)` / manual `fclose` dance that
+# the latency benchmark deliberately uses for direct-syscall control.
+
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-magic-numbers,
+  -cert-err58-cpp,
+  -misc-non-private-member-variables-in-classes,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-owning-memory

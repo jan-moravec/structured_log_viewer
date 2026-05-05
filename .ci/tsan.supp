@@ -1,0 +1,17 @@
+# ThreadSanitizer suppressions for the Clang TSan CI job.
+#
+# Pattern syntax: `<type>:<symbol-or-path>`. See:
+# https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
+#
+# Common types we use:
+#   race:        suppress data-race reports rooted at <symbol>
+#   thread:      suppress thread-leak reports
+#   mutex:       suppress mutex misuse reports
+#   deadlock:    suppress lock-order reports
+#
+# Keep this file empty by default; add an entry only when an upstream
+# library produces a documented false positive that we cannot fix.
+# Every entry should carry a one-line comment with a link or rationale
+# so the next reader can audit and prune it.
+
+# (none yet)

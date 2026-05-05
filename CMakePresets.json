@@ -32,13 +32,67 @@
             "description": "Release optimizations + debug info, suitable for profiling.",
             "inherits": "_base",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+        },
+        {
+            "name": "_clang_ci_base",
+            "hidden": true,
+            "inherits": "_base",
+            "description": "Shared base for the Clang sanitizer / coverage CI presets. Pins clang-22, RelWithDebInfo, and disables IPO/LTO (LTO breaks sanitizer stack traces and skews coverage line mapping).",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_C_COMPILER": "clang-22",
+                "CMAKE_CXX_COMPILER": "clang++-22",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "OFF"
+            }
+        },
+        {
+            "name": "clang-asan-ubsan",
+            "displayName": "Clang AddressSanitizer + UndefinedBehaviorSanitizer",
+            "description": "Clang 22 RelWithDebInfo + ASan + UBSan. -fno-sanitize-recover=all makes the first hit fail the test binary so CTest turns it into a job failure. Mutually exclusive with TSan (cannot link both into one binary).",
+            "inherits": "_clang_ci_base",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+                "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=address,undefined"
+            }
+        },
+        {
+            "name": "clang-tsan",
+            "displayName": "Clang ThreadSanitizer",
+            "description": "Clang 22 RelWithDebInfo + TSan for the loglib threading code (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel teardown). The matching test preset excludes the Qt-coupled `apptest` because Qt's private mutexes generate false positives; `apptest_queue` (pure C++ BoundedBatchQueue) still runs.",
+            "inherits": "_clang_ci_base",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+                "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread",
+                "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=thread"
+            }
+        },
+        {
+            "name": "clang-coverage",
+            "displayName": "Clang source-based coverage",
+            "description": "Clang 22 RelWithDebInfo + -fprofile-instr-generate -fcoverage-mapping. The CI coverage job also runs `clang-tidy-diff-22.py` against this build's `compile_commands.json` (no separate tidy preset needed). Local repro: `cmake --workflow --preset clang-coverage` then `llvm-profdata-22 merge build/clang-coverage/profiles/*.profraw -o merged.profdata` + `llvm-cov-22 export -format=lcov ...`.",
+            "inherits": "_clang_ci_base",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+                "CMAKE_C_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+                "CMAKE_EXE_LINKER_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+                "CMAKE_MODULE_LINKER_FLAGS": "-fprofile-instr-generate -fcoverage-mapping"
+            }
         }
     ],
 
     "buildPresets": [
-        { "name": "release",        "configurePreset": "release" },
-        { "name": "debug",          "configurePreset": "debug" },
-        { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" }
+        { "name": "release",          "configurePreset": "release" },
+        { "name": "debug",            "configurePreset": "debug" },
+        { "name": "relwithdebinfo",   "configurePreset": "relwithdebinfo" },
+        { "name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan" },
+        { "name": "clang-tsan",       "configurePreset": "clang-tsan" },
+        { "name": "clang-coverage",   "configurePreset": "clang-coverage" }
     ],
 
     "testPresets": [
@@ -82,6 +136,46 @@
             "description": "Same as `release-benchmark` but against the `relwithdebinfo` build (release optimisations + debug info, useful when attaching a profiler to the benchmark fixtures).",
             "configurePreset": "relwithdebinfo",
             "inherits": "release-benchmark"
+        },
+        {
+            "name": "clang-asan-ubsan",
+            "displayName": "ASan + UBSan tests (excludes benchmarks)",
+            "description": "Runs unit + Qt smoke tests under AddressSanitizer + UndefinedBehaviorSanitizer. ASAN_OPTIONS / UBSAN_OPTIONS halt on first hit so CTest reports the failure; LSAN_OPTIONS points at the project's suppression file for known Qt / fontconfig / oneTBB one-shot allocations.",
+            "configurePreset": "clang-asan-ubsan",
+            "inherits": "_test_base",
+            "filter": { "exclude": { "label": "benchmark" } },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1",
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1:abort_on_error=1",
+                "LSAN_OPTIONS": "suppressions=${sourceDir}/.ci/lsan.supp:print_suppressions=0"
+            }
+        },
+        {
+            "name": "clang-tsan",
+            "displayName": "TSan tests (excludes benchmarks and apptest)",
+            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes apptest by name regex because Qt's internal mutexes generate false positives that drown the signal; the threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
+            "configurePreset": "clang-tsan",
+            "inherits": "_test_base",
+            "filter": {
+                "exclude": {
+                    "label": "benchmark",
+                    "name": "^apptest$"
+                }
+            },
+            "environment": {
+                "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/.ci/tsan.supp"
+            }
+        },
+        {
+            "name": "clang-coverage",
+            "displayName": "Coverage tests (excludes benchmarks)",
+            "description": "Runs unit + Qt smoke tests under -fprofile-instr-generate. Each test binary writes its own .profraw under build/clang-coverage/profiles/; merge with `llvm-profdata-22 merge -sparse` and export with `llvm-cov-22 export -format=lcov` for upload.",
+            "configurePreset": "clang-coverage",
+            "inherits": "_test_base",
+            "filter": { "exclude": { "label": "benchmark" } },
+            "environment": {
+                "LLVM_PROFILE_FILE": "${sourceDir}/build/clang-coverage/profiles/%p-%m.profraw"
+            }
         }
     ],
 
@@ -102,6 +196,33 @@
                 { "type": "configure", "name": "debug" },
                 { "type": "build",     "name": "debug" },
                 { "type": "test",      "name": "debug" }
+            ]
+        },
+        {
+            "name": "clang-asan-ubsan",
+            "displayName": "Clang ASan+UBSan: configure + build + test",
+            "steps": [
+                { "type": "configure", "name": "clang-asan-ubsan" },
+                { "type": "build",     "name": "clang-asan-ubsan" },
+                { "type": "test",      "name": "clang-asan-ubsan" }
+            ]
+        },
+        {
+            "name": "clang-tsan",
+            "displayName": "Clang TSan: configure + build + test",
+            "steps": [
+                { "type": "configure", "name": "clang-tsan" },
+                { "type": "build",     "name": "clang-tsan" },
+                { "type": "test",      "name": "clang-tsan" }
+            ]
+        },
+        {
+            "name": "clang-coverage",
+            "displayName": "Clang coverage: configure + build + test",
+            "steps": [
+                { "type": "configure", "name": "clang-coverage" },
+                { "type": "build",     "name": "clang-coverage" },
+                { "type": "test",      "name": "clang-coverage" }
             ]
         }
     ]

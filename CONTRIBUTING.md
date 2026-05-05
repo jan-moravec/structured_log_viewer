@@ -334,11 +334,14 @@ When adding a new third-party dependency to `cmake/FetchDependencies.cmake`, app
 
 All build configurations are defined in [`CMakePresets.json`](CMakePresets.json) (CMake 3.28+). The shared presets are:
 
-| Preset           | Build type       | Purpose                                    |
-| ---------------- | ---------------- | ------------------------------------------ |
-| `release`        | `Release`        | Optimized build, used by CI and releases.  |
-| `debug`          | `Debug`          | Full debug info and assertions.            |
-| `relwithdebinfo` | `RelWithDebInfo` | Release optimizations + debug info (perf). |
+| Preset             | Build type       | Purpose                                                                                                                                     |
+| ------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                   |
+| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                             |
+| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                  |
+| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).               |
+| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` for Qt-internal false positives). CI gating; same section.                                   |
+| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `clang-tidy-diff` against this build's `compile_commands.json`; no separate tidy preset. |
 
 Each preset uses the **Ninja** generator and writes to `build/<presetName>/`. They also enable `CMAKE_EXPORT_COMPILE_COMMANDS` so `clangd`, `clang-tidy`, and other tools work out of the box. Matching `buildPresets`, `testPresets`, and `workflowPresets` are defined with the same names. Two extra benchmark-only test presets — `release-benchmark` and `relwithdebinfo-benchmark` — opt into the long-running parser benchmarks (see [Benchmarking](#benchmarking)).
 
@@ -410,6 +413,49 @@ cmake --preset release -DUSE_SYSTEM_FMT=ON -DUSE_SYSTEM_SIMDJSON=ON
 ```
 
 The full list of `USE_SYSTEM_*` options is in [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake).
+
+### Sanitizers and coverage
+
+The `clang-asan-ubsan`, `clang-tsan`, and `clang-coverage` presets pin Clang 22 (`clang-22` / `clang++-22`), build `RelWithDebInfo` with IPO/LTO disabled (LTO breaks sanitizer stack traces and skews coverage line mapping), and feed the matching CI matrix legs in [`build.yml`](.github/workflows/build.yml). All three are required to pass on every PR.
+
+Local repro is one command per preset — same shape as `release`:
+
+```sh
+cmake --workflow --preset clang-asan-ubsan   # configure + build + test under ASan + UBSan
+cmake --workflow --preset clang-tsan         # ditto under TSan (excludes apptest by name regex)
+cmake --workflow --preset clang-coverage     # coverage-instrumented build + test
+```
+
+The runtime knobs CI uses come from the test presets' `environment` blocks, so a `ctest --preset clang-<mode>` invocation matches the CI behaviour exactly. The most relevant ones:
+
+- **ASan / UBSan / LSan:**
+  - `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1` — the first hit aborts so CTest reports the failure.
+  - `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:abort_on_error=1`.
+  - `LSAN_OPTIONS=suppressions=${sourceDir}/.ci/lsan.supp:print_suppressions=0` — Qt / fontconfig / oneTBB process-global one-shot allocations are suppressed via [`.ci/lsan.supp`](.ci/lsan.supp). Add an entry there only when the leak is in a system library you don't control; each entry should carry a one-line comment explaining where it came from.
+- **TSan:** `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/.ci/tsan.supp`. The matching `clang-tsan` test preset excludes `apptest` (the Qt smoke test) because Qt's private mutexes generate false positives that drown the signal; `apptest_queue` (pure C++ `BoundedBatchQueue` tests) and the `loglib` unit tests cover the threading worth checking — TBB pipeline, `StreamLineSource`, `TailingBytesProducer`, and the `LogModel::Reset()` teardown sequence (`BytesProducer::Stop()` → sink `RequestStop()` → worker join). [`.ci/tsan.supp`](.ci/tsan.supp) starts empty; add entries with a rationale comment as upstream-library false positives surface.
+- **Coverage:** `LLVM_PROFILE_FILE=${sourceDir}/build/clang-coverage/profiles/%p-%m.profraw` — one `.profraw` per (PID, binary) so the eventual `llvm-profdata-22 merge` is unambiguous. After running the tests:
+
+```sh
+llvm-profdata-22 merge -sparse build/clang-coverage/profiles/*.profraw \
+    -o build/clang-coverage/merged.profdata
+llvm-cov-22 report \
+    -instr-profile=build/clang-coverage/merged.profdata \
+    -ignore-filename-regex='(_deps|build|test)/' \
+    build/clang-coverage/bin/RelWithDebInfo/tests \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest \
+    -object build/clang-coverage/bin/RelWithDebInfo/apptest_queue
+```
+
+The CI coverage leg also runs `clang-tidy-diff-22.py` against this build's `compile_commands.json` *before* the build step, so a tidy hit fails fast without paying for the instrumented build + test run + Codecov upload. To run the same diff-only tidy check locally before pushing:
+
+```sh
+cmake --preset clang-coverage
+git diff -U0 origin/main...HEAD -- '*.cpp' '*.hpp' '*.h' '*.cc' \
+    | clang-tidy-diff-22.py -p1 -path build/clang-coverage \
+        -clang-tidy-binary clang-tidy-22 -j"$(nproc)" -fix=false -quiet
+```
+
+Coverage uploads land on [Codecov](https://codecov.io); the CI leg fails the PR if the upload fails, so the `CODECOV_TOKEN` repo secret must be set (Settings → Secrets and variables → Actions). The Codecov badge in the README links to the latest result.
 
 ### IDE integration
 

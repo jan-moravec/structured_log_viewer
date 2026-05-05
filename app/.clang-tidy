@@ -1,0 +1,29 @@
+# App-level overrides for the Qt GUI.
+#
+# Qt forces camelBack on a lot of public API that we cannot rename:
+#   - Overrides from QAbstractTableModel / QObject (`rowCount`,
+#     `columnCount`, `data`, `headerData`, `flags`, ...).
+#   - Signals and public slots declared under `signals:` / `public slots:`
+#     (`errorCountChanged`, `streamingFinished`, `rotationDetected`, ...).
+#
+# Relax the public-method naming rule to accept either CamelCase (our
+# own helpers) or camelBack (Qt-mandated names). Private/protected
+# methods still inherit the project-wide `MethodCase: CamelCase` so our
+# own helpers stay consistent.
+#
+# We also disable a few core-guidelines checks that fight Qt idioms:
+#   -cppcoreguidelines-owning-memory: Qt's parent-owned `new Widget(this)`
+#        pattern is the whole point of QObject. Every widget construction
+#        fires this check otherwise.
+#   -cppcoreguidelines-prefer-member-initializer: Forcing Qt widget
+#        construction into initializer lists reorders setup and fights
+#        Qt's `setCentralWidget` / `addWidget` flow.
+
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-prefer-member-initializer
+
+CheckOptions:
+  - { key: readability-identifier-naming.PublicMethodCase, value: aNy_CasE }

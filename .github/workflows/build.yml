@@ -45,6 +45,178 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure --color=always
 
+  clang-ci:
+    # Three Clang 22 matrix legs that gate every PR alongside the platform
+    # build jobs:
+    #   - asan-ubsan  -> AddressSanitizer + UndefinedBehaviorSanitizer
+    #   - tsan        -> ThreadSanitizer (excludes apptest; Qt internals
+    #                    generate false positives that drown the signal)
+    #   - coverage    -> source-based coverage + Codecov upload, and also
+    #                    runs clang-tidy-diff on the PR's C/C++ changes
+    #                    before the build so a tidy hit fails fast.
+    #
+    # The Codecov upload step requires a CODECOV_TOKEN repo secret. Without
+    # it the step fails (fail_ci_if_error=true) and the coverage matrix leg
+    # blocks merge - that's intentional. Set the secret once at:
+    #   Settings -> Secrets and variables -> Actions -> CODECOV_TOKEN
+    needs: pre-commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [asan-ubsan, tsan, coverage]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # The coverage leg's clang-tidy-diff needs the merge base to
+          # exist locally; fetch-depth: 0 is the simplest way to guarantee
+          # that for both push and pull_request triggers without per-event
+          # branching here. The other two legs don't care.
+          fetch-depth: 0
+
+      - name: Install Clang 22 + LLVM tools
+        # `llvm.sh 22 all` pulls clang-22, clang-tidy-22, clang-tools-22
+        # (provides clang-tidy-diff-22.py), llvm-22 (llvm-profdata-22,
+        # llvm-cov-22), libclang-rt-22-dev (sanitizer runtimes), and
+        # libc++-22-dev. Pinned to clang-22 explicitly via the preset's
+        # CMAKE_C(XX)_COMPILER so a future apt-default flip doesn't
+        # silently change which compiler we run.
+        run: |
+          set -euo pipefail
+          wget --quiet https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22 all
+          clang-22 --version
+          clang-tidy-22 --version
+          llvm-cov-22 --version
+          which clang-tidy-diff-22.py
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: "linux"
+          target: "desktop"
+          arch: "linux_gcc_64"
+          cache: true
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install build tools
+        # libssl-dev for find_package(OpenSSL) (LOGLIB_NETWORK_TLS=ON
+        # default), libxcb-cursor0 for the offscreen Qt platform plugin.
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libxcb-cursor0
+
+      - name: Configure
+        # LOGLIB_NETWORK_TLS=ON pinned explicitly so the TLS code path
+        # (TcpServerProducer + asio::ssl) is in scope for sanitizers /
+        # coverage / tidy. Matches the platform build jobs.
+        run: cmake --preset clang-${{ matrix.mode }} -DLOGLIB_NETWORK_TLS=ON
+
+      - name: Run clang-tidy-diff on PR changes
+        # Coverage leg only. Runs *before* the build so a tidy hit fails
+        # fast - we don't waste a full instrumented build + test run +
+        # Codecov upload on a style issue. Empty diff -> no-op, succeeds.
+        # Non-empty `tidy-fixes.yaml` -> at least one warning was reported,
+        # job fails and the YAML is uploaded as an artifact below.
+        if: matrix.mode == 'coverage'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            BASE="origin/${GITHUB_BASE_REF}"
+          else
+            BASE="HEAD^"
+          fi
+          DIFF=$(git diff -U0 "$BASE"...HEAD -- '*.cpp' '*.hpp' '*.h' '*.cc' || true)
+          if [ -z "$DIFF" ]; then
+            echo "No C/C++ changes in this diff; skipping clang-tidy-diff."
+            exit 0
+          fi
+          echo "$DIFF" \
+            | clang-tidy-diff-22.py -p1 -path build/clang-coverage \
+                -clang-tidy-binary clang-tidy-22 \
+                -j"$(nproc)" -fix=false -quiet \
+                -export-fixes tidy-fixes.yaml \
+            | tee tidy-report.txt
+          if [ -s tidy-fixes.yaml ]; then
+            echo "::error title=clang-tidy-diff::clang-tidy reported issues on changed lines. Download the clang-tidy-fixes artifact for the YAML diff to apply."
+            exit 1
+          fi
+
+      - name: Upload clang-tidy fixes
+        # Surface the YAML so reviewers / authors can apply it locally
+        # via `clang-apply-replacements`. Only relevant when the previous
+        # step failed; if-no-files-found silences the upload when there's
+        # nothing to upload (e.g. build failed before tidy ran).
+        if: failure() && matrix.mode == 'coverage'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-fixes
+          path: |
+            tidy-fixes.yaml
+            tidy-report.txt
+          if-no-files-found: ignore
+
+      - name: Build
+        run: cmake --build --preset clang-${{ matrix.mode }}
+
+      - name: Run tests
+        # ASAN_OPTIONS / UBSAN_OPTIONS / TSAN_OPTIONS / LSAN_OPTIONS /
+        # LLVM_PROFILE_FILE all come from the matching test preset's
+        # `environment` block in CMakePresets.json - keeps local repro
+        # via `ctest --preset clang-<mode>` exactly equivalent to CI.
+        run: ctest --preset clang-${{ matrix.mode }}
+
+      - name: Merge coverage profiles + export lcov
+        # The test step writes one .profraw per (PID, binary) under
+        # build/clang-coverage/profiles/ via LLVM_PROFILE_FILE in the
+        # preset. Merge them, then export lcov for the three test
+        # binaries that ctest actually ran (apptest_bench is excluded
+        # by the `benchmark` label; log_generator isn't a test).
+        # The ignore-filename-regex drops _deps/ (FetchContent), build/
+        # (generated headers), and test/ (test code itself; we only
+        # care about library + app coverage).
+        if: matrix.mode == 'coverage'
+        run: |
+          set -euo pipefail
+          BIN_DIR=build/clang-coverage/bin/RelWithDebInfo
+          llvm-profdata-22 merge -sparse \
+            build/clang-coverage/profiles/*.profraw \
+            -o build/clang-coverage/merged.profdata
+          OBJECTS=(
+            "$BIN_DIR/tests"
+            -object "$BIN_DIR/apptest"
+            -object "$BIN_DIR/apptest_queue"
+          )
+          llvm-cov-22 export -format=lcov \
+            -instr-profile=build/clang-coverage/merged.profdata \
+            -ignore-filename-regex='(_deps|build|test)/' \
+            "${OBJECTS[@]}" \
+            > coverage.lcov
+          echo "::group::Coverage summary (library + app only)"
+          llvm-cov-22 report \
+            -instr-profile=build/clang-coverage/merged.profdata \
+            -ignore-filename-regex='(_deps|build|test)/' \
+            "${OBJECTS[@]}"
+          echo "::endgroup::"
+
+      - name: Upload coverage to Codecov
+        # Requires CODECOV_TOKEN repo secret (see top-of-job comment).
+        # fail_ci_if_error makes a failed upload block the PR so a
+        # missing token surfaces immediately rather than silently
+        # producing zero-coverage runs.
+        if: matrix.mode == 'coverage'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.lcov
+          fail_ci_if_error: true
+          verbose: true
+
   build-linux:
     needs: pre-commit
     # Pinned to the oldest supported runner so the AppImage links against an
