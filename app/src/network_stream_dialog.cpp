@@ -191,14 +191,15 @@ void NetworkStreamDialog::OnProtocolChanged()
     if (!isTcp)
     {
         // Remember whatever TCP-side TLS choice the user had so we
-        // can put it back on the next TCP toggle. Forcing the
-        // checkbox off avoids surprising the user with an enabled-but-
-        // disabled TLS state when they later return to TCP.
-        if (mTlsEnable->isChecked())
-        {
-            mTcpTlsEnableRemembered = true;
-            mTlsEnable->setChecked(false);
-        }
+        // can put it back on the next TCP toggle. Capture
+        // unconditionally: gating on `mTlsEnable->isChecked()` would
+        // leave a stale `true` here if the user disabled TLS on TCP
+        // before switching to UDP, which would then re-enable TLS on
+        // the next UDP -> TCP roundtrip and (worse) persist that
+        // stale `true` to QSettings via `SaveToSettings`. Forcing the
+        // checkbox off keeps the UDP view tidy regardless.
+        mTcpTlsEnableRemembered = mTlsEnable->isChecked();
+        mTlsEnable->setChecked(false);
     }
     else if (mTcpTlsEnableRemembered && TLS_BUILT_IN)
     {
