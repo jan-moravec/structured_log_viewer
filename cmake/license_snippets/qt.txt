@@ -1,0 +1,28 @@
+Qt 6 is dynamically linked into the binary and bundled into the
+distribution by linuxdeploy / windeployqt / macdeployqt. The Qt 6
+Open Source modules used here (QtCore, QtGui, QtWidgets) are
+licensed under the GNU Lesser General Public License, version 3
+(LGPL-3.0-only) with the Qt Company's per-version exceptions:
+
+  https://www.qt.io/licensing/
+  https://doc.qt.io/qt-6/lgpl.html
+
+Source code for Qt is available from:
+
+  https://download.qt.io/
+
+Copyright (C) The Qt Company Ltd. and other contributors.
+
+The full text of the LGPL-3.0 license is available at:
+
+  https://www.gnu.org/licenses/lgpl-3.0.txt
+
+Compliance summary for this distribution:
+
+  - Qt is dynamically linked. Users may relink the application
+    against a different (LGPL-compatible) Qt build.
+  - The Qt source matching the linked version is available from
+    `download.qt.io` for the lifetime of the upstream Qt release.
+  - This file plus the LGPL-3.0 text linked above constitute the
+    "as a work using the Library" attribution required by section
+    4(d) of the LGPL-3.0.

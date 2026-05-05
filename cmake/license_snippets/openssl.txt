@@ -1,0 +1,32 @@
+OpenSSL is the cryptography library used by the optional TLS support in
+TcpServerProducer. It is consumed via the system package and dynamically
+linked into the binary when LOGLIB_NETWORK_TLS=ON.
+
+OpenSSL is licensed under the Apache License 2.0:
+
+    Apache License
+    Version 2.0, January 2004
+    http://www.apache.org/licenses/
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+The full Apache 2.0 license text is available at:
+  https://www.apache.org/licenses/LICENSE-2.0.txt
+
+Copyright (c) 1998-2025 The OpenSSL Project Authors
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson
+
+Source: https://github.com/openssl/openssl
+
+If your build does not include TLS (LOGLIB_NETWORK_TLS=OFF) the OpenSSL
+library is not linked and this section is informational only.

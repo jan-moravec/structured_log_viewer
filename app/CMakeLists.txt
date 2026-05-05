@@ -101,4 +101,12 @@ if(WIN32)
     install(FILES $<TARGET_FILE:TBB::tbb> DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
+# Bundle every third-party license text plus the project's own
+# LICENSE next to the StructuredLogViewer executable. Closes a
+# pre-existing compliance gap where the packaged artifacts shipped
+# without any third-party attribution. `BundleLicenses.cmake` writes
+# the aggregated `THIRD_PARTY_LICENSES.txt` at configure time and
+# stages it (plus `LICENSE`) via POST_BUILD copy + install rules.
+bundle_third_party_licenses(StructuredLogViewer)
+
 qt_finalize_executable(StructuredLogViewer)
