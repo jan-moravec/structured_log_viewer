@@ -254,6 +254,13 @@ if(NOT USE_SYSTEM_ASIO)
             find_package(Threads REQUIRED)
             target_link_libraries(asio_headers INTERFACE Threads::Threads)
         endif()
+        if(WIN32)
+            # Pin to Windows 10 (0x0A00). Without this Asio's detail
+            # headers print "Please define _WIN32_WINNT" and assume
+            # Windows 7, which loses access to a few modern winsock
+            # APIs the SSL paths can use.
+            target_compile_definitions(asio_headers INTERFACE _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN)
+        endif()
         add_library(asio::asio ALIAS asio_headers)
     endif()
 else()
