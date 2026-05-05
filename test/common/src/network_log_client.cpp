@@ -71,8 +71,8 @@ TcpLogClientImpl::TcpLogClientImpl(std::string host, uint16_t port, std::optiona
         mUsesTls = true;
         mSslContext.emplace(asio::ssl::context::tls_client);
         mSslContext->set_options(
-            asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 |
-            asio::ssl::context::no_sslv3 | asio::ssl::context::no_tlsv1 | asio::ssl::context::no_tlsv1_1
+            asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
+            asio::ssl::context::no_tlsv1 | asio::ssl::context::no_tlsv1_1
         );
 
         if (!tls->caBundle.empty())
@@ -130,9 +130,7 @@ TcpLogClientImpl::TcpLogClientImpl(std::string host, uint16_t port, std::optiona
             );
         }
 #else
-        throw std::runtime_error(
-            "TcpLogClient: TLS requested but the binary was built without LOGLIB_HAS_TLS"
-        );
+        throw std::runtime_error("TcpLogClient: TLS requested but the binary was built without LOGLIB_HAS_TLS");
 #endif
     }
 }
@@ -220,7 +218,8 @@ private:
     asio::ip::udp::endpoint mPeer;
 };
 
-UdpLogClientImpl::UdpLogClientImpl(std::string host, uint16_t port) : mSocket(mIoContext)
+UdpLogClientImpl::UdpLogClientImpl(std::string host, uint16_t port)
+    : mSocket(mIoContext)
 {
     asio::error_code ec;
     asio::ip::udp::resolver resolver(mIoContext);

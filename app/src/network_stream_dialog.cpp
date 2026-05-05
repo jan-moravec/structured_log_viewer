@@ -44,7 +44,8 @@ QHBoxLayout *PathRow(QWidget *parent, QLineEdit *edit, void (NetworkStreamDialog
 
 } // namespace
 
-NetworkStreamDialog::NetworkStreamDialog(QWidget *parent) : QDialog(parent)
+NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
+    : QDialog(parent)
 {
     setWindowTitle(tr("Open Network Stream"));
     setModal(true);
@@ -98,7 +99,9 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent) : QDialog(parent)
 
     mTlsCertPath = new QLineEdit(mTlsGroup);
     mTlsCertPath->setPlaceholderText(tr("PEM file with the server certificate chain"));
-    tlsLayout->addRow(tr("Certificate chain:"), PathRow(this, mTlsCertPath, &NetworkStreamDialog::BrowseCertChain, this));
+    tlsLayout->addRow(
+        tr("Certificate chain:"), PathRow(this, mTlsCertPath, &NetworkStreamDialog::BrowseCertChain, this)
+    );
 
     mTlsKeyPath = new QLineEdit(mTlsGroup);
     mTlsKeyPath->setPlaceholderText(tr("PEM file with the server private key"));
@@ -139,11 +142,12 @@ void NetworkStreamDialog::OnProtocolChanged()
     const bool isTcp = mTcpRadio->isChecked();
     mMaxClients->setEnabled(isTcp);
     // TLS is TCP-only; DTLS is out of scope.
-    mTlsGroup->setEnabled(isTcp
+    mTlsGroup->setEnabled(
+        isTcp
 #ifdef LOGLIB_HAS_TLS
-                          && true
+        && true
 #else
-                          && false
+        && false
 #endif
     );
     if (!isTcp)

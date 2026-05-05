@@ -16,8 +16,8 @@
 #include <mutex>
 #include <optional>
 #include <span>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <thread>
 #include <unordered_map>
@@ -390,9 +390,7 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
 #ifdef LOGLIB_HAS_TLS
         mSslContext.emplace(BuildSslContext(*mOptions.tls));
 #else
-        throw std::runtime_error(
-            "TcpServerProducer: TLS support is not built in (rebuild with LOGLIB_NETWORK_TLS=ON)"
-        );
+        throw std::runtime_error("TcpServerProducer: TLS support is not built in (rebuild with LOGLIB_NETWORK_TLS=ON)");
 #endif
     }
 
@@ -686,9 +684,8 @@ void TcpServerProducerImpl::OnAcceptPlain(const asio::error_code &ec, asio::ip::
         {
             std::lock_guard<std::mutex> lock(mMutex);
             id = mNextSessionId++;
-            session = std::make_shared<Session<asio::ip::tcp::socket>>(
-                std::move(socket), this, id, mOptions.readChunkBytes
-            );
+            session =
+                std::make_shared<Session<asio::ip::tcp::socket>>(std::move(socket), this, id, mOptions.readChunkBytes);
             mActiveSessions[id] = session;
         }
         mTotalAccepted.fetch_add(1, std::memory_order_acq_rel);

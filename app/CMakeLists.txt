@@ -115,12 +115,14 @@ endif()
 if(WIN32 AND LOGLIB_NETWORK_TLS)
     get_filename_component(OPENSSL_BIN_HINT "${OPENSSL_INCLUDE_DIR}/../bin" ABSOLUTE)
     find_file(
-        OPENSSL_DLL_LIBSSL NAMES libssl-3-x64.dll libssl-3.dll libssl.dll
+        OPENSSL_DLL_LIBSSL
+        NAMES libssl-3-x64.dll libssl-3.dll libssl.dll
         PATHS "${OPENSSL_BIN_HINT}"
         NO_DEFAULT_PATH
     )
     find_file(
-        OPENSSL_DLL_LIBCRYPTO NAMES libcrypto-3-x64.dll libcrypto-3.dll libcrypto.dll
+        OPENSSL_DLL_LIBCRYPTO
+        NAMES libcrypto-3-x64.dll libcrypto-3.dll libcrypto.dll
         PATHS "${OPENSSL_BIN_HINT}"
         NO_DEFAULT_PATH
     )
@@ -132,12 +134,9 @@ if(WIN32 AND LOGLIB_NETWORK_TLS)
         add_custom_command(
             TARGET StructuredLogViewer
             POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_DLL_LIBSSL}" $<TARGET_FILE_DIR:StructuredLogViewer>
             COMMAND
-                ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_DLL_LIBSSL}"
-                $<TARGET_FILE_DIR:StructuredLogViewer>
-            COMMAND
-                ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_DLL_LIBCRYPTO}"
-                $<TARGET_FILE_DIR:StructuredLogViewer>
+                ${CMAKE_COMMAND} -E copy_if_different "${OPENSSL_DLL_LIBCRYPTO}" $<TARGET_FILE_DIR:StructuredLogViewer>
             COMMENT "Copying OpenSSL runtime DLLs next to StructuredLogViewer.exe"
             VERBATIM
         )

@@ -98,9 +98,7 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
     const asio::ip::address bindAddr = asio::ip::make_address(mOptions.bindAddress, ec);
     if (ec)
     {
-        throw std::system_error(
-            ec, "UdpServerProducer: invalid bind address '" + mOptions.bindAddress + "'"
-        );
+        throw std::system_error(ec, "UdpServerProducer: invalid bind address '" + mOptions.bindAddress + "'");
     }
 
     const asio::ip::udp::endpoint endpoint(bindAddr, mOptions.port);
@@ -117,8 +115,7 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
     if (ec)
     {
         throw std::system_error(
-            ec,
-            "UdpServerProducer: bind failed for " + mOptions.bindAddress + ":" + std::to_string(mOptions.port)
+            ec, "UdpServerProducer: bind failed for " + mOptions.bindAddress + ":" + std::to_string(mOptions.port)
         );
     }
 

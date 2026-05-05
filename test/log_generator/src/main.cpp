@@ -216,9 +216,9 @@ enum class TargetKind
 struct ParsedTarget
 {
     TargetKind kind = TargetKind::File;
-    std::string filePath;          // valid for File
-    std::string host;              // valid for Tcp/TcpTls/Udp
-    std::uint16_t port = 0;        // valid for Tcp/TcpTls/Udp
+    std::string filePath;   // valid for File
+    std::string host;       // valid for Tcp/TcpTls/Udp
+    std::uint16_t port = 0; // valid for Tcp/TcpTls/Udp
 };
 
 // Parse a URL-style target. Accepts the four schemes documented above
@@ -246,7 +246,8 @@ ParsedTarget ParseTarget(const std::string &target)
         // doesn't matter here since this branch is filesystem only.
         ParsedTarget out;
         out.kind = TargetKind::File;
-        if (!rest.empty() && rest.front() == '/' && rest.size() >= 3 && std::isalpha(static_cast<unsigned char>(rest[1])) && rest[2] == ':')
+        if (!rest.empty() && rest.front() == '/' && rest.size() >= 3 &&
+            std::isalpha(static_cast<unsigned char>(rest[1])) && rest[2] == ':')
         {
             out.filePath = rest.substr(1);
         }
@@ -505,20 +506,16 @@ int main(int argc, char *argv[])
         );
 
     program.add_argument("--target")
-        .help(
-            "URL-style output destination. Supersedes --output when set. "
-            "Examples: file:///tmp/foo.jsonl, tcp://127.0.0.1:5141, "
-            "tcp+tls://example:6514, udp://127.0.0.1:5142. When unset, "
-            "--output is used (file mode). The --roll-* flags require "
-            "file mode and are rejected for network targets."
-        );
+        .help("URL-style output destination. Supersedes --output when set. "
+              "Examples: file:///tmp/foo.jsonl, tcp://127.0.0.1:5141, "
+              "tcp+tls://example:6514, udp://127.0.0.1:5142. When unset, "
+              "--output is used (file mode). The --roll-* flags require "
+              "file mode and are rejected for network targets.");
 
     program.add_argument("--tls-ca")
         .help("Optional PEM CA bundle used to verify the server certificate (tcp+tls:// only).");
-    program.add_argument("--tls-cert")
-        .help("Optional client certificate PEM for mutual TLS (tcp+tls:// only).");
-    program.add_argument("--tls-key")
-        .help("Optional client private key PEM matching --tls-cert (tcp+tls:// only).");
+    program.add_argument("--tls-cert").help("Optional client certificate PEM for mutual TLS (tcp+tls:// only).");
+    program.add_argument("--tls-key").help("Optional client private key PEM matching --tls-cert (tcp+tls:// only).");
     program.add_argument("--tls-skip-verify")
         .default_value(false)
         .implicit_value(true)
@@ -670,9 +667,8 @@ int main(int argc, char *argv[])
             std::cerr << "Failed to connect to TCP target: " << err.what() << '\n';
             return 1;
         }
-        targetDescription =
-            (target.kind == TargetKind::TcpTls ? "tcp+tls://" : "tcp://") + target.host + ":" +
-            std::to_string(target.port);
+        targetDescription = (target.kind == TargetKind::TcpTls ? "tcp+tls://" : "tcp://") + target.host + ":" +
+                            std::to_string(target.port);
     }
 
     // Seed `bytesInFile` from the existing on-disk size when --append
@@ -855,7 +851,7 @@ int main(int argc, char *argv[])
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
     std::cout << "log_generator: wrote " << totalLines << " lines, " << totalBytes << " bytes in " << elapsedMs
-              << " ms (" << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", "
-              << targetDescription << ")\n";
+              << " ms (" << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", " << targetDescription
+              << ")\n";
     return 0;
 }
