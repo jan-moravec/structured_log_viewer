@@ -12,39 +12,10 @@
 namespace loglib
 {
 
-class LogFile;
-
-/// Reference to a specific line in a `LogFile`.
-class LogFileReference
-{
-public:
-    LogFileReference(LogFile &logFile, size_t lineNumber);
-
-    const std::filesystem::path &GetPath() const;
-    size_t GetLineNumber() const;
-
-    void SetLineNumber(size_t lineNumber);
-
-    /// Adds @p delta to the stored line number (Stage C: relative -> absolute).
-    void ShiftLineNumber(size_t delta) noexcept;
-
-    std::string GetLine() const;
-
-    /// Direct access to the referenced `LogFile`. Used by `LogLine` to
-    /// resolve `MmapSlice` / `OwnedString` compact values into `LogValue`
-    /// variants. Mutable overload is needed for `SetValue` (writes the
-    /// owned-string arena).
-    LogFile *GetFile() noexcept;
-    const LogFile *GetFile() const noexcept;
-
-private:
-    LogFile *mLogFile = nullptr;
-    size_t mLineNumber = 0;
-};
-
-/// Memory-mapped log file. Owns the mmap for its lifetime so `LogValue`
-/// instances can hold `string_view`s into the file content. Move keeps the
-/// mapped pointer stable.
+/// Memory-mapped log file. Owns the mmap so `LogValue` instances can
+/// hold `string_view`s into the content; move keeps the pointer stable.
+/// Per-record addressing is `FileLineSource`'s job; `LogFile` only
+/// holds the bytes and arenas.
 class LogFile
 {
 public:
@@ -67,9 +38,10 @@ public:
 
     void ReserveLineOffsets(size_t count);
 
-    /// @param position Byte offset of the *next* line. Must be strictly
-    ///                 greater than the previously registered offset.
-    LogFileReference CreateReference(size_t position);
+    /// Append a single line-boundary offset; @p position must be
+    /// strictly greater than the previously registered one. Used by
+    /// tests; the parser uses `AppendLineOffsets` for batched updates.
+    void RegisterLineEnd(size_t position);
 
     /// Caller must ensure offsets are strictly increasing and start past the
     /// current last offset.

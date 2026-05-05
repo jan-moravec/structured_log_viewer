@@ -1,17 +1,20 @@
 #include "loglib/internal/compact_log_value.hpp"
 
+#include "loglib/line_source.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <chrono>
-#include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 CompactLogValue CompactLogValue::MakeMonostate() noexcept
@@ -77,35 +80,36 @@ CompactLogValue CompactLogValue::MakeTimestamp(TimeStamp value) noexcept
     return v;
 }
 
-LogValue CompactLogValue::Materialise(const LogFile *file) const
+LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) const
 {
     switch (tag)
     {
     case CompactTag::Monostate:
         return LogValue{std::monostate{}};
-    case CompactTag::MmapSlice: {
-        if (file == nullptr)
+    case CompactTag::MmapSlice:
+    {
+        if (source == nullptr)
         {
             return LogValue{std::monostate{}};
         }
-        const char *base = file->Data();
-        if (base == nullptr)
+        const std::string_view bytes = source->ResolveMmapBytes(payload, aux, lineId);
+        if (bytes.empty() && aux != 0)
         {
             return LogValue{std::monostate{}};
         }
-        return LogValue{std::string_view(base + payload, aux)};
+        return LogValue{bytes};
     }
-    case CompactTag::OwnedString: {
-        if (file == nullptr)
+    case CompactTag::OwnedString:
+    {
+        if (source == nullptr)
         {
             return LogValue{std::string{}};
         }
-        const std::string_view arena = file->OwnedStringsView();
-        if (payload + aux > arena.size())
-        {
-            return LogValue{std::string{}};
-        }
-        return LogValue{std::string(arena.data() + payload, aux)};
+        const std::string_view bytes = source->ResolveOwnedBytes(payload, aux, lineId);
+        // Materialise as `std::string` so the caller owns the bytes — a
+        // stream source's per-line arena can be evicted later, but a
+        // returned `std::string` is independent of source lifetime.
+        return LogValue{std::string(bytes)};
     }
     case CompactTag::Int64:
         return LogValue{static_cast<int64_t>(payload)};
@@ -143,13 +147,13 @@ CompactLogValue ToCompactLogValue(
                     const auto offset = static_cast<uint64_t>(alt.data() - fileBegin);
                     return CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(alt.size()));
                 }
-                const auto offset = static_cast<uint64_t>(ownedStringArena.size());
+                const uint64_t offset = ownedStringArena.size();
                 ownedStringArena.append(alt.data(), alt.size());
                 return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(alt.size()));
             }
             else if constexpr (std::is_same_v<T, std::string>)
             {
-                const auto offset = static_cast<uint64_t>(ownedStringArena.size());
+                const uint64_t offset = ownedStringArena.size();
                 ownedStringArena.append(alt.data(), alt.size());
                 return CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(alt.size()));
             }
@@ -205,7 +209,22 @@ namespace
 /// copyable and trivially destructible (KeyId is `uint32_t`,
 /// CompactLogValue is a POD), so we can use raw `operator new`/`delete`
 /// to skip the per-element ctor/dtor that `std::vector` would run.
-constexpr size_t kPairBytes = sizeof(std::pair<KeyId, CompactLogValue>);
+constexpr size_t PAIR_BYTES = sizeof(std::pair<KeyId, CompactLogValue>);
+
+// `CompactLineFields` allocates with raw `::operator new` and frees
+// with raw `::operator delete`, so the value type must be trivially
+// destructible (no per-slot dtor pass). `std::pair`'s trivial-copyable
+// status differs across stdlibs — libstdc++ defaults its copy
+// assignment when both members are trivially copyable, libc++ does not
+// — so we deliberately do not assert that here. The typed
+// `std::uninitialized_copy_n` / `std::copy_n` / `std::copy_backward`
+// calls below are correct regardless and lower to the same memcpy /
+// memmove the previous direct-`memcpy` code emitted under -O2 (without
+// tripping -Wclass-memaccess on libstdc++).
+static_assert(
+    std::is_trivially_destructible_v<std::pair<KeyId, CompactLogValue>>,
+    "CompactLineFields uses raw operator new/delete; slot pairs must have a trivial destructor"
+);
 
 std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
 {
@@ -213,7 +232,7 @@ std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
     {
         return nullptr;
     }
-    void *raw = ::operator new(static_cast<size_t>(capacity) * kPairBytes);
+    void *raw = ::operator new(static_cast<size_t>(capacity) * PAIR_BYTES);
     return static_cast<std::pair<KeyId, CompactLogValue> *>(raw);
 }
 
@@ -281,7 +300,7 @@ void CompactLineFields::Reserve(uint32_t capacity)
     auto *fresh = AllocatePairs(capacity);
     if (mSize > 0)
     {
-        std::memcpy(fresh, mData, static_cast<size_t>(mSize) * kPairBytes);
+        std::uninitialized_copy_n(mData, mSize, fresh);
     }
     DeallocatePairs(mData);
     mData = fresh;
@@ -290,7 +309,8 @@ void CompactLineFields::Reserve(uint32_t capacity)
 
 void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
 {
-    if (count > mCapacity)
+    const bool reused = (count <= mCapacity);
+    if (!reused)
     {
         DeallocatePairs(mData);
         mData = AllocatePairs(count);
@@ -298,7 +318,19 @@ void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
     }
     if (count > 0)
     {
-        std::memcpy(mData, values, static_cast<size_t>(count) * kPairBytes);
+        // When reusing the existing buffer the slots are previously-
+        // constructed (assigned by `EmplaceBack` / `Insert` / earlier
+        // `AssignSorted`); on a fresh allocation they are raw bytes.
+        // For trivially-copyable pairs the two operations collapse to
+        // the same memcpy under -O2.
+        if (reused)
+        {
+            std::copy_n(values, count, mData);
+        }
+        else
+        {
+            std::uninitialized_copy_n(values, count, mData);
+        }
     }
     mSize = count;
 }
@@ -326,7 +358,11 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
     }
     if (position < mSize)
     {
-        std::memmove(mData + position + 1, mData + position, static_cast<size_t>(mSize - position) * kPairBytes);
+        // Shift `[position, mSize)` one slot to the right so we can
+        // overwrite slot `position`. `std::copy_backward` correctly
+        // handles the overlapping range; for trivially-copyable pairs
+        // the compiler lowers it to memmove.
+        std::copy_backward(mData + position, mData + mSize, mData + mSize + 1);
     }
     mData[position] = {key, value};
     ++mSize;
@@ -342,7 +378,7 @@ void CompactLineFields::Set(uint32_t position, CompactLogValue value) noexcept
 
 size_t CompactLineFields::OwnedMemoryBytes() const noexcept
 {
-    return static_cast<size_t>(mCapacity) * kPairBytes;
+    return static_cast<size_t>(mCapacity) * PAIR_BYTES;
 }
 
 void CompactLineFields::ShrinkToFit()
@@ -359,10 +395,10 @@ void CompactLineFields::ShrinkToFit()
         return;
     }
     auto *fresh = AllocatePairs(mSize);
-    std::memcpy(fresh, mData, static_cast<size_t>(mSize) * kPairBytes);
+    std::uninitialized_copy_n(mData, mSize, fresh);
     DeallocatePairs(mData);
     mData = fresh;
     mCapacity = mSize;
 }
 
-} // namespace loglib::detail
+} // namespace loglib::internal

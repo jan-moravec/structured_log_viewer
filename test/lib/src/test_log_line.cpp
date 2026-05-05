@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/file_line_source.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
@@ -21,11 +22,10 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
 
     TestLogFile testLogFile;
     testLogFile.Write("abcd\nefgh\n");
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    LogFileReference fileReference(*logFile, 1);
+    auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine line(map, keys, fileReference);
+    LogLine line(map, keys, *source, 1);
 
     REQUIRE(line.Values().size() == map.size());
     CHECK(std::get<std::string>(line.GetValue("key1")) == "value1");
@@ -35,9 +35,10 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(std::get<bool>(line.GetValue("key5")) == true);
     CHECK(std::holds_alternative<std::monostate>(line.GetValue("key6")));
 
-    CHECK(line.FileReference().GetPath() == "test_file.json");
-    CHECK(line.FileReference().GetLineNumber() == 1);
-    CHECK(line.FileReference().GetLine() == "efgh");
+    REQUIRE(line.Source() != nullptr);
+    CHECK(line.Source()->Path() == "test_file.json");
+    CHECK(line.LineId() == 1);
+    CHECK(line.Source()->RawLine(line.LineId()) == "efgh");
 
     auto resultKeys = line.GetKeys();
     REQUIRE(resultKeys.size() == map.size());
@@ -62,9 +63,13 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
                 const auto &actual = std::get<T>(resultMap.at(key));
 
                 if constexpr (std::is_same_v<T, double>)
+                {
                     CHECK(actual == Catch::Approx(expected));
+                }
                 else
+                {
                     CHECK(actual == expected);
+                }
             },
             expectedValue
         );
@@ -76,11 +81,10 @@ TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]"
     LogMap emptyMap;
 
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    LogFileReference fileReference(*logFile, 0);
+    auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine emptyLine(emptyMap, keys, fileReference);
+    LogLine emptyLine(emptyMap, keys, *source, 0);
 
     auto resultKeys = emptyLine.GetKeys();
     CHECK(resultKeys.empty());
@@ -92,11 +96,10 @@ TEST_CASE("LogLine returns monostate for empty and non-existent key", "[log_line
     LogMap map{{"key1", std::string("value1")}, {"key2", uint64_t(42)}};
 
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    LogFileReference fileReference(*logFile, 0);
+    auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine line(map, keys, fileReference);
+    LogLine line(map, keys, *source, 0);
 
     CHECK(std::holds_alternative<std::monostate>(line.GetValue("")));
     CHECK(std::holds_alternative<std::monostate>(line.GetValue("non_existent_key")));
@@ -110,11 +113,10 @@ TEST_CASE("Set and update values", "[log_line]")
     LogMap map{{"existingKey", std::string("initialValue")}};
 
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    LogFileReference fileReference(*logFile, 0);
+    auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine line(map, keys, fileReference);
+    LogLine line(map, keys, *source, 0);
 
     CHECK(std::get<std::string>(line.GetValue("existingKey")) == "initialValue");
     CHECK(line.Values().size() == 1);
@@ -239,8 +241,7 @@ TEST_CASE("LogValueEquivalent treats string and string_view byte-equal as equiva
 TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alternatives", "[log_line][helpers]")
 {
     TestLogFile testLogFile;
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
-    LogFileReference fileReference(*logFile, 0);
+    auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
     const KeyId viewKey = keys.GetOrInsert("view-key");
@@ -255,7 +256,7 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     sorted.emplace_back(ownedKey, LogValue{std::string{"owned-bytes"}});
     sorted.emplace_back(intKey, LogValue{int64_t{99}});
 
-    LogLine line(std::move(sorted), keys, fileReference);
+    LogLine line(std::move(sorted), keys, *source, 0);
 
     // Fast vs. slow path must round-trip the same alternative.
     const LogValue fastView = line.GetValue(viewKey);

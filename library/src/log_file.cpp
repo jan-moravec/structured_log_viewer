@@ -49,46 +49,8 @@ void HintSequential(const mio::mmap_source &mmap)
 
 } // namespace
 
-LogFileReference::LogFileReference(LogFile &logFile, size_t lineNumber) : mLogFile(&logFile), mLineNumber(lineNumber)
-{
-}
-
-const std::filesystem::path &LogFileReference::GetPath() const
-{
-    return mLogFile->GetPath();
-}
-
-size_t LogFileReference::GetLineNumber() const
-{
-    return mLineNumber;
-}
-
-void LogFileReference::SetLineNumber(size_t lineNumber)
-{
-    mLineNumber = lineNumber;
-}
-
-void LogFileReference::ShiftLineNumber(size_t delta) noexcept
-{
-    mLineNumber += delta;
-}
-
-std::string LogFileReference::GetLine() const
-{
-    return mLogFile->GetLine(mLineNumber);
-}
-
-LogFile *LogFileReference::GetFile() noexcept
-{
-    return mLogFile;
-}
-
-const LogFile *LogFileReference::GetFile() const noexcept
-{
-    return mLogFile;
-}
-
-LogFile::LogFile(std::filesystem::path filePath) : mPath(std::move(filePath))
+LogFile::LogFile(std::filesystem::path filePath)
+    : mPath(std::move(filePath))
 {
     if (!std::filesystem::exists(mPath))
     {
@@ -143,7 +105,7 @@ std::string LogFile::GetLine(size_t lineNumber) const
 
     // Stop offset is one byte past the trailing '\n'. Files without a trailing
     // newline use `fileSize + 1` as the sentinel; clamp against the mmap size.
-    size_t length = static_cast<size_t>(stopOffset - startOffset - 1);
+    size_t length = stopOffset - startOffset - 1;
 
     const size_t mmapSize = mMmap.size();
     if (startOffset + length > mmapSize)
@@ -169,15 +131,13 @@ void LogFile::ReserveLineOffsets(size_t count)
     mLineOffsets.reserve(count);
 }
 
-LogFileReference LogFile::CreateReference(size_t position)
+void LogFile::RegisterLineEnd(size_t position)
 {
     if (position <= mLineOffsets.back())
     {
-        throw std::runtime_error("Invalid position to create reference: " + std::to_string(position));
+        throw std::runtime_error("Invalid position to register line end: " + std::to_string(position));
     }
-    LogFileReference reference(*this, mLineOffsets.size() - 1);
     mLineOffsets.push_back(position);
-    return reference;
 }
 
 size_t LogFile::LineOffsetsMemoryBytes() const noexcept
@@ -192,7 +152,7 @@ std::string_view LogFile::OwnedStringsView() const noexcept
 
 uint64_t LogFile::AppendOwnedStrings(std::string_view bytes)
 {
-    const auto offset = static_cast<uint64_t>(mOwnedStrings.size());
+    const uint64_t offset = mOwnedStrings.size();
     mOwnedStrings.append(bytes.data(), bytes.size());
     return offset;
 }

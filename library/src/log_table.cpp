@@ -1,11 +1,13 @@
 #include "loglib/log_table.hpp"
 
+#include "loglib/file_line_source.hpp"
 #include "loglib/log_processing.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <cassert>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,7 +36,7 @@ void LogTable::Update(LogData &&data)
 
 void LogTable::Reset()
 {
-    // Wipe per-parse state but preserve `mConfiguration`.
+    // Wipe per-parse state; preserve `mConfiguration`.
     mData = LogData{};
     mStageBSnapshotTimeKeys.clear();
     mPostSnapshotTimeKeys.clear();
@@ -42,16 +44,16 @@ void LogTable::Reset()
     RefreshColumnKeyIds();
 }
 
-void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
+void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mLastBackfillRange.reset();
 
-    if (file)
+    if (source)
     {
         std::vector<LogLine> noLines;
-        LogData fresh(std::move(file), std::move(noLines), KeyIndex{});
-        // Stage B promotes Type::time inline; later-discovered time columns
-        // are back-filled in `AppendBatch`.
+        LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
+        // Both pipelines promote `Type::time` inline; later-discovered
+        // time columns are back-filled in `AppendBatch`.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
@@ -67,6 +69,24 @@ void LogTable::BeginStreaming(std::unique_ptr<LogFile> file)
     RefreshColumnKeyIds();
 }
 
+void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
+{
+    assert(source != nullptr);
+    if (source == nullptr)
+    {
+        return;
+    }
+
+    mLastBackfillRange.reset();
+
+    // Splice in the new source. Lines and keys are preserved so prior
+    // rows stay visible and KeyIds line up across files.
+    mData.Sources().push_back(std::move(source));
+    // Snapshot KeyIds and column-key cache stay valid: configuration
+    // is gated for the session, and `mPostSnapshotTimeKeys` keeps
+    // tracking late-discovered time keys for `AppendBatch` back-fill.
+}
+
 void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
@@ -76,8 +96,8 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
-    // Pre-append snapshot so per-batch back-fill restricts to the new slice.
-    // First-observation columns still back-fill all rows (older rows pre-date them).
+    // Pre-append snapshot so slice back-fill targets only new rows;
+    // first-observation columns still back-fill all rows.
     const size_t oldLineCount = mData.Lines().size();
 
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
@@ -90,11 +110,10 @@ void LogTable::AppendBatch(StreamedBatch batch)
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    // Back-fill post-snapshot time columns (Stage B handles snapshot ones):
-    //   1. First observation: back-fill all rows and record `mLastBackfillRange`
-    //      so `dataChanged` covers existing rows.
-    //   2. Already-known post-snapshot column: back-fill only the appended
-    //      slice; the upcoming `beginInsertRows` already invalidates them.
+    // Back-fill post-snapshot time columns (Stage B handles snapshot
+    // ones). First observation: back-fill all rows and record
+    // `mLastBackfillRange` so `dataChanged` reaches existing rows.
+    // Known post-snapshot column: back-fill only the appended slice.
     const auto &columns = mConfiguration.Configuration().columns;
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -115,7 +134,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
         {
             const KeyId id = mData.Keys().Find(key);
             columnKeyIds.push_back(id);
-            if (id == kInvalidKeyId)
+            if (id == INVALID_KEY_ID)
             {
                 continue;
             }
@@ -139,13 +158,13 @@ void LogTable::AppendBatch(StreamedBatch batch)
             continue;
         }
 
-        // Use the `Discard` overload: streaming has no consumer for per-line errors.
+        // Streaming has no consumer for per-line errors.
         if (firstObservation)
         {
             BackfillTimestampColumn(column, std::span<LogLine>(mData.Lines()), BackfillErrors::Discard);
             for (const KeyId id : columnKeyIds)
             {
-                if (id != kInvalidKeyId)
+                if (id != INVALID_KEY_ID)
                 {
                     mPostSnapshotTimeKeys.insert(id);
                 }
@@ -156,10 +175,13 @@ void LogTable::AppendBatch(StreamedBatch batch)
             }
             lastBackfilled = columnIndex;
         }
-        else if (needsSliceBackfill && oldLineCount < mData.Lines().size())
+        else if (needsSliceBackfill)
         {
-            std::span<LogLine> slice(mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount);
-            BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
+            if (oldLineCount < mData.Lines().size())
+            {
+                std::span<LogLine> slice(mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount);
+                BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
+            }
         }
     }
 
@@ -203,11 +225,14 @@ void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
 
 void LogTable::ReserveLineOffsets(size_t count)
 {
-    if (count == 0 || mData.Files().empty())
+    if (count == 0)
     {
         return;
     }
-    mData.Files().front()->ReserveLineOffsets(count);
+    if (FileLineSource *fileSource = mData.FrontFileSource(); fileSource != nullptr)
+    {
+        fileSource->File().ReserveLineOffsets(count);
+    }
 }
 
 std::string LogTable::GetHeader(size_t column) const
@@ -222,14 +247,14 @@ size_t LogTable::ColumnCount() const
 
 LogValue LogTable::GetValue(size_t row, size_t column) const
 {
-    if (column >= mColumnKeyIds.size())
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
     {
         return std::monostate{};
     }
     const auto &line = mData.Lines()[row];
     for (const KeyId id : mColumnKeyIds[column])
     {
-        if (id == kInvalidKeyId)
+        if (id == INVALID_KEY_ID)
         {
             continue;
         }
@@ -244,24 +269,25 @@ LogValue LogTable::GetValue(size_t row, size_t column) const
 
 std::string LogTable::GetFormattedValue(size_t row, size_t column) const
 {
-    if (column >= mColumnKeyIds.size())
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
     {
         return "";
     }
+    const std::string &printFormat = mConfiguration.Configuration().columns.at(column).printFormat;
     const auto &line = mData.Lines()[row];
     for (const KeyId id : mColumnKeyIds[column])
     {
-        if (id == kInvalidKeyId)
+        if (id == INVALID_KEY_ID)
         {
             continue;
         }
         LogValue value = line.GetValue(id);
         if (!std::holds_alternative<std::monostate>(value))
         {
-            return FormatLogValue(mConfiguration.Configuration().columns.at(column).printFormat, value);
+            return FormatLogValue(printFormat, value);
         }
     }
-    return "";
+    return std::string{};
 }
 
 size_t LogTable::RowCount() const
@@ -272,6 +298,49 @@ size_t LogTable::RowCount() const
 const LogData &LogTable::Data() const noexcept
 {
     return mData;
+}
+
+LogData &LogTable::Data() noexcept
+{
+    return mData;
+}
+
+void LogTable::EvictPrefixRows(size_t count)
+{
+    if (count == 0)
+    {
+        return;
+    }
+    auto &lines = mData.Lines();
+
+    // Release per-line storage for the rows we're about to drop.
+    // Non-evicting sources (e.g. mmap'd `FileLineSource`) no-op.
+    auto evictSource = [&](size_t firstSurvivingLineId) {
+        for (auto &source : mData.Sources())
+        {
+            if (source != nullptr && source->SupportsEviction())
+            {
+                source->EvictBefore(firstSurvivingLineId);
+            }
+        }
+    };
+
+    if (count >= lines.size())
+    {
+        // Past-the-end id so the source clears all live entries.
+        size_t firstSurvivingLineId = 0;
+        if (!lines.empty())
+        {
+            firstSurvivingLineId = lines.back().LineId() + 1;
+        }
+        lines.clear();
+        evictSource(firstSurvivingLineId);
+        return;
+    }
+
+    const size_t firstSurvivingLineId = lines[count].LineId();
+    lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(count));
+    evictSource(firstSurvivingLineId);
 }
 
 KeyIndex &LogTable::Keys()
@@ -375,8 +444,8 @@ void LogTable::RefreshSnapshotTimeKeys()
         }
         for (const std::string &key : column.keys)
         {
-            // `GetOrInsert` so the snapshot holds valid ids on the fresh
-            // post-`BeginStreaming` `KeyIndex` (mirrors `BuildTimeColumnSpecs`).
+            // `GetOrInsert` so the snapshot holds valid ids on the
+            // fresh post-`BeginStreaming` `KeyIndex`.
             const KeyId id = mData.Keys().GetOrInsert(key);
             mStageBSnapshotTimeKeys.insert(id);
         }

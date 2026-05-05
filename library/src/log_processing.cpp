@@ -1,6 +1,7 @@
 #include "loglib/log_processing.hpp"
 
 #include "loglib/internal/timestamp_promotion.hpp"
+#include "loglib/line_source.hpp"
 #include "loglib/log_file.hpp"
 
 #include <date/date.h>
@@ -41,13 +42,13 @@ bool ParseFixedDigits(const char *p, size_t n, int &out)
 
 TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
 {
-    constexpr std::string_view kIsoT{"%FT%T"};
-    constexpr std::string_view kIsoSpace{"%F %T"};
-    if (format == kIsoT)
+    constexpr std::string_view ISO_T{"%FT%T"};
+    constexpr std::string_view ISO_SPACE{"%F %T"};
+    if (format == ISO_T)
     {
         return TimestampFormatKind::Iso8601_T;
     }
-    if (format == kIsoSpace)
+    if (format == ISO_SPACE)
     {
         return TimestampFormatKind::Iso8601_Space;
     }
@@ -57,8 +58,8 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format)
 bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
 {
     // Layout: YYYY-MM-DDsHH:MM:SS[.fff[fff]]
-    constexpr size_t kPrefixLen = 19;
-    if (sv.size() < kPrefixLen)
+    constexpr size_t PREFIX_LEN = 19;
+    if (sv.size() < PREFIX_LEN)
     {
         return false;
     }
@@ -115,13 +116,13 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     int64_t fractionalUs = 0;
-    if (sv.size() > kPrefixLen)
+    if (sv.size() > PREFIX_LEN)
     {
-        if (sv[kPrefixLen] != '.')
+        if (sv[PREFIX_LEN] != '.')
         {
             return false;
         }
-        const size_t fractionStart = kPrefixLen + 1;
+        const size_t fractionStart = PREFIX_LEN + 1;
         const size_t maxFractionEnd = std::min(sv.size(), fractionStart + 6);
         size_t fractionEnd = fractionStart;
         while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
@@ -225,9 +226,9 @@ namespace
 bool MakeBackfillState(
     const LogConfiguration::Column &column,
     std::span<LogLine> lines,
-    std::array<detail::TimeColumnSpec, 1> &specsOut,
+    std::array<internal::TimeColumnSpec, 1> &specsOut,
     std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
-    std::vector<detail::LastTimestampBytesHit> &bytesHitsOut
+    std::vector<internal::LastTimestampBytesHit> &bytesHitsOut
 )
 {
     if (lines.empty())
@@ -236,7 +237,7 @@ bool MakeBackfillState(
     }
 
     const KeyIndex &keyIndex = lines.front().Keys();
-    detail::TimeColumnSpec spec;
+    internal::TimeColumnSpec spec;
     spec.keyIds.reserve(column.keys.size());
     for (const std::string &key : column.keys)
     {
@@ -250,7 +251,7 @@ bool MakeBackfillState(
     }
     specsOut[0] = std::move(spec);
     lastValidOut.assign(1, std::nullopt);
-    bytesHitsOut.assign(1, detail::LastTimestampBytesHit{});
+    bytesHitsOut.assign(1, internal::LastTimestampBytesHit{});
     return true;
 }
 
@@ -259,15 +260,18 @@ bool MakeBackfillState(
 namespace
 {
 
-/// Pulls the owned-string arena view from the line's referenced `LogFile`.
-/// Post-stream lines have their `OwnedString` payloads rebased onto this
-/// arena (Stage C handles streaming; the synchronous `LogLine` ctor writes
-/// directly to it). Returns an empty view when the line has no file (only
-/// happens in test fixtures).
-std::string_view OwnedArenaForBackfill(const LogLine &line) noexcept
+/// Returns an empty view: `BackfillTimestampColumn` over a `LogLine`
+/// span flows through `PromoteLineTimestamps`, which now resolves the
+/// per-line owned-bytes arena via the line's `LineSource` directly
+/// (`source->ResolveOwnedBytes(offset, length, lineId)`). The
+/// `ownedArena` parameter only matters during Stage B / Stage C of the
+/// parser pipeline, where the per-batch staging buffer carries
+/// `OwnedString` payloads before they are rebased onto the canonical
+/// source arena. This backfill path runs after the pipeline, when
+/// every payload is already source-relative.
+std::string_view OwnedArenaForBackfill(const LogLine & /*line*/) noexcept
 {
-    const LogFile *file = line.FileReference().GetFile();
-    return file != nullptr ? file->OwnedStringsView() : std::string_view{};
+    return std::string_view{};
 }
 
 } // namespace
@@ -275,9 +279,9 @@ std::string_view OwnedArenaForBackfill(const LogLine &line) noexcept
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
 {
     std::vector<std::string> errors;
-    std::array<detail::TimeColumnSpec, 1> specs;
+    std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
-    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    std::vector<internal::LastTimestampBytesHit> bytesHits;
     if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
     {
         return errors;
@@ -287,12 +291,10 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
     for (auto &line : lines)
     {
         const std::string_view ownedArena = OwnedArenaForBackfill(line);
-        if (!detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
+        if (!internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
         {
             errors.emplace_back(fmt::format(
-                "Failed to parse a timestamp for column '{}' from line number {}",
-                column.header,
-                line.FileReference().GetLineNumber()
+                "Failed to parse a timestamp for column '{}' from line number {}", column.header, line.LineId()
             ));
         }
     }
@@ -304,9 +306,9 @@ void BackfillTimestampColumn(
 )
 {
     static_cast<void>(discardErrors);
-    std::array<detail::TimeColumnSpec, 1> specs;
+    std::array<internal::TimeColumnSpec, 1> specs;
     std::vector<std::optional<LastValidTimestampParse>> lastValid;
-    std::vector<detail::LastTimestampBytesHit> bytesHits;
+    std::vector<internal::LastTimestampBytesHit> bytesHits;
     if (!MakeBackfillState(column, lines, specs, lastValid, bytesHits))
     {
         return;
@@ -316,7 +318,7 @@ void BackfillTimestampColumn(
     for (auto &line : lines)
     {
         const std::string_view ownedArena = OwnedArenaForBackfill(line);
-        static_cast<void>(detail::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
+        static_cast<void>(internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena));
     }
 }
 

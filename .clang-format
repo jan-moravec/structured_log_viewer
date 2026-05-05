@@ -57,7 +57,7 @@ BinPackArguments: false
 BinPackParameters: false
 BitFieldColonSpacing: Both
 BraceWrapping:
-  AfterCaseLabel:  false
+  AfterCaseLabel:  true
   AfterClass:      true
   AfterControlStatement: Always
   AfterEnum:       true
@@ -105,17 +105,38 @@ ForEachMacros:
 IfMacros:
   - KJ_IF_MAYBE
 IncludeBlocks:   Preserve
+# Project layout: quoted local headers -> <loglib/...> library ->
+# Qt framework (<Qxxx>) -> third-party with a path (<fmt/...>, <glaze/...>,
+# <oneapi/...>) -> stdlib (single-token angle includes). Authors group via
+# blank lines; `IncludeBlocks: Preserve` keeps those groups, these
+# categories sort alphabetically within each group.
 IncludeCategories:
-  - Regex:           '^"(llvm|llvm-c|clang|clang-c)/'
+  - Regex:           '^"ui_[^"]+"'
+    Priority:        1
+    SortPriority:    0
+    CaseSensitive:   false
+  - Regex:           '^".*"'
     Priority:        2
     SortPriority:    0
     CaseSensitive:   false
-  - Regex:           '^(<|"(gtest|gmock|isl|json)/)'
+  - Regex:           '^<loglib/'
     Priority:        3
+    SortPriority:    0
+    CaseSensitive:   true
+  - Regex:           '^<Q[A-Z][^>]*>$'
+    Priority:        4
+    SortPriority:    0
+    CaseSensitive:   true
+  - Regex:           '^<[^>]+/'
+    Priority:        5
+    SortPriority:    0
+    CaseSensitive:   false
+  - Regex:           '^<[^>]+>$'
+    Priority:        6
     SortPriority:    0
     CaseSensitive:   false
   - Regex:           '.*'
-    Priority:        1
+    Priority:        10
     SortPriority:    0
     CaseSensitive:   false
 IncludeIsMainRegex: '(Test)?$'
@@ -129,8 +150,8 @@ IndentPPDirectives: None
 IndentRequiresClause: true
 IndentWidth:     4
 IndentWrappedFunctionNames: false
-InsertBraces:    false
-InsertNewlineAtEOF: false
+InsertBraces:    true
+InsertNewlineAtEOF: true
 InsertTrailingCommas: None
 IntegerLiteralSeparator:
   Binary:          0
@@ -141,7 +162,7 @@ IntegerLiteralSeparator:
   HexMinDigits:    0
 JavaScriptQuotes: Leave
 JavaScriptWrapImports: true
-KeepEmptyLinesAtTheStartOfBlocks: true
+KeepEmptyLinesAtTheStartOfBlocks: false
 KeepEmptyLinesAtEOF: false
 LambdaBodyIndentation: Signature
 LineEnding:      DeriveLF
@@ -154,7 +175,7 @@ ObjCBlockIndentWidth: 2
 ObjCBreakBeforeNestedBlockParam: true
 ObjCSpaceAfterProperty: false
 ObjCSpaceBeforeProtocolList: true
-PackConstructorInitializers: BinPack
+PackConstructorInitializers: NextLineOnly
 PenaltyBreakAssignment: 2
 PenaltyBreakBeforeFirstCallParameter: 19
 PenaltyBreakComment: 300
@@ -222,6 +243,10 @@ StatementAttributeLikeMacros:
   - Q_EMIT
 StatementMacros:
   - Q_UNUSED
+  - Q_OBJECT
+  - Q_GADGET
+  - Q_NAMESPACE
+  - Q_DECLARE_METATYPE
   - QT_REQUIRE_VERSION
 TabWidth:        4
 UseTab:          Never

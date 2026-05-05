@@ -20,21 +20,21 @@
 
 namespace loglib
 {
-using detail::TransparentStringEqual;
-using detail::TransparentStringHash;
+using internal::TransparentStringEqual;
+using internal::TransparentStringHash;
 
 struct KeyIndex::Impl
 {
-    /// Power-of-two shard count: hash-low-bits AND `kShardMask` picks a shard.
-    static constexpr size_t kShardCount = 16;
-    static constexpr size_t kShardMask = kShardCount - 1;
+    /// Power-of-two shard count: hash-low-bits AND `SHARD_MASK` picks a shard.
+    static constexpr size_t SHARD_COUNT = 16;
+    static constexpr size_t SHARD_MASK = SHARD_COUNT - 1;
 
     struct Shard
     {
         tsl::robin_map<std::string, KeyId, TransparentStringHash, TransparentStringEqual> map;
         mutable std::shared_mutex mutex;
     };
-    std::array<Shard, kShardCount> shards;
+    std::array<Shard, SHARD_COUNT> shards;
 
     /// KeyId -> owning string. `deque` keeps inserted strings pointer-stable,
     /// which `KeyOf`'s contract relies on.
@@ -51,11 +51,12 @@ struct KeyIndex::Impl
 
     static size_t ShardIndex(std::string_view key) noexcept
     {
-        return std::hash<std::string_view>{}(key)&kShardMask;
+        return std::hash<std::string_view>{}(key)&SHARD_MASK;
     }
 };
 
-KeyIndex::KeyIndex() : mImpl(std::make_unique<Impl>())
+KeyIndex::KeyIndex()
+    : mImpl(std::make_unique<Impl>())
 {
 }
 
@@ -89,8 +90,8 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
 
     // Append to `reverse` first so the string address is stable before any
     // other thread can observe the new id. The assert pins the 2^32 cap:
-    // wrapping past it would collide with `kInvalidKeyId`.
-    assert(static_cast<uint64_t>(mImpl->reverse.size()) < static_cast<uint64_t>(kInvalidKeyId));
+    // wrapping past it would collide with `INVALID_KEY_ID`.
+    assert(static_cast<uint64_t>(mImpl->reverse.size()) < static_cast<uint64_t>(INVALID_KEY_ID));
     const KeyId id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
     shard.map.emplace(mImpl->reverse.back(), id);
@@ -111,7 +112,7 @@ KeyId KeyIndex::Find(std::string_view key) const
     {
         return it->second;
     }
-    return kInvalidKeyId;
+    return INVALID_KEY_ID;
 }
 
 std::string_view KeyIndex::KeyOf(KeyId id) const

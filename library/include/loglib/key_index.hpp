@@ -19,7 +19,7 @@ namespace loglib
 /// 0 and never reused, so they double as indices into per-key arrays.
 using KeyId = uint32_t;
 
-inline constexpr KeyId kInvalidKeyId = std::numeric_limits<KeyId>::max();
+inline constexpr KeyId INVALID_KEY_ID = std::numeric_limits<KeyId>::max();
 
 /// Shared, lock-light, append-only dictionary mapping keys to dense ids.
 ///
@@ -45,7 +45,7 @@ public:
     /// Thread-safe; the input view's bytes are copied internally.
     [[nodiscard]] KeyId GetOrInsert(std::string_view key);
 
-    /// Returns `kInvalidKeyId` if @p key has not been inserted. Thread-safe.
+    /// Returns `INVALID_KEY_ID` if @p key has not been inserted. Thread-safe.
     [[nodiscard]] KeyId Find(std::string_view key) const;
 
     /// Stable for the lifetime of the `KeyIndex`. UB if @p id is out of range.

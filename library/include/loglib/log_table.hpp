@@ -1,10 +1,11 @@
 #pragma once
 
 #include "key_index.hpp"
+#include "line_source.hpp"
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 #include "log_file.hpp"
-#include "streaming_log_sink.hpp"
+#include "log_parse_sink.hpp"
 
 #include <memory>
 #include <optional>
@@ -16,6 +17,10 @@
 namespace loglib
 {
 
+/// `LogTable` exposes a single row range backed by `std::vector<LogLine>`
+/// for both static (`FileLineSource`) and live-tail (`StreamLineSource`)
+/// sessions. Value resolution dispatches through each row's
+/// `LineSource *`.
 class LogTable
 {
 public:
@@ -35,11 +40,20 @@ public:
     /// Clears `Data()` and streaming-time-key snapshots; preserves `Configuration()`.
     void Reset();
 
-    /// Initialises the table for an upcoming streaming parse and snapshots the
-    /// time-column KeyIds against the current configuration. `Configuration()`
-    /// is *not* mutated; callers must lock the configuration UI between this
-    /// call and the matching streaming-finished signal. @p file may be null.
-    void BeginStreaming(std::unique_ptr<LogFile> file);
+    /// Init the table for a streaming parse and snapshot time-column
+    /// KeyIds against the current configuration. `Configuration()`
+    /// must not be mutated until the matching streamingFinished signal.
+    /// Takes ownership of @p source for the session; works for both
+    /// `FileLineSource` (static, mmap-backed) and `StreamLineSource`
+    /// (live tail, internally thread-safe). @p source may be null.
+    void BeginStreaming(std::unique_ptr<LineSource> source);
+
+    /// Multi-file streaming append. Adds @p source to the existing
+    /// session without resetting `mData`/`KeyIndex`/time-column
+    /// snapshot; the next parse drives over @p source and routes line
+    /// offsets via `LogData::BackFileSource()`. Used by
+    /// `LogModel::AppendStreaming`. `source` must be non-null.
+    void AppendStreaming(std::unique_ptr<LineSource> source);
 
     /// Splices @p batch into the table. Extends the configuration for any
     /// `batch.newKeys`, then back-fills any newly-introduced `Type::time`
@@ -77,6 +91,13 @@ public:
     [[nodiscard]] size_t RowCount() const;
 
     [[nodiscard]] const LogData &Data() const noexcept;
+    [[nodiscard]] LogData &Data() noexcept;
+
+    /// Drop the first @p count rows. Used by `LogModel`'s FIFO
+    /// retention; callers must wrap with `beginRemoveRows` /
+    /// `endRemoveRows`. `count == 0` and `count >= RowCount()` are
+    /// both well-defined.
+    void EvictPrefixRows(size_t count);
 
     /// Mutable `KeyIndex` for worker-thread `GetOrInsert` (used by `QtStreamingLogSink`).
     KeyIndex &Keys();
@@ -98,20 +119,13 @@ private:
     LogConfigurationManager mConfiguration;
     std::vector<std::vector<KeyId>> mColumnKeyIds;
 
-    /// KeyIds of `Type::time` columns that were already in the configuration
-    /// snapshot at `BeginStreaming` time (and are therefore promoted inline
-    /// by Stage B of the parser pipeline). Populated once in
-    /// `RefreshSnapshotTimeKeys`, which `GetOrInsert`s into the fresh
-    /// `KeyIndex` so the snapshot holds valid ids before Stage B runs.
+    /// `Type::time` KeyIds in the configuration at `BeginStreaming`
+    /// time; promoted inline by Stage B.
     std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
 
-    /// KeyIds of `Type::time` columns that appeared *after* the streaming
-    /// snapshot — typically because `LogConfigurationManager::AppendKeys`
-    /// auto-promoted a freshly-seen "timestamp"/"time"/"t" key on the first
-    /// batch that carried it. Stage B of the running parser does not know
-    /// about them (the `LogConfiguration` it received does not list the
-    /// column), so every subsequent `AppendBatch` must back-fill the rows
-    /// it just appended for these columns.
+    /// `Type::time` KeyIds that appeared after the snapshot (e.g.
+    /// auto-promoted on first sight). Stage B does not know about
+    /// them, so every `AppendBatch` back-fills the rows it appended.
     std::unordered_set<KeyId> mPostSnapshotTimeKeys;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;

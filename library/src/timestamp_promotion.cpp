@@ -1,6 +1,7 @@
 #include "loglib/internal/timestamp_promotion.hpp"
 
 #include "loglib/internal/compact_log_value.hpp"
+#include "loglib/line_source.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 
@@ -10,7 +11,7 @@
 #include <string_view>
 #include <utility>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 namespace
@@ -18,15 +19,24 @@ namespace
 
 /// Lookup the compact value for @p keyId on @p line and return its
 /// underlying string bytes when the value is a string-shaped tag
-/// (`MmapSlice` or `OwnedString`). The `MmapSlice` payload aliases the
-/// `LogFile`'s mmap; the `OwnedString` payload is an offset into
-/// @p ownedArena (which the caller picks: per-batch buffer during Stage B,
-/// `LogFile::OwnedStringsView()` after the stream completes).
+/// (`MmapSlice` or `OwnedString`).
+///
+/// `MmapSlice` is always resolved through `LineSource::ResolveMmapBytes`
+/// (file sources only; stream sources never produce this tag).
+///
+/// `OwnedString` resolution depends on @p ownedArena:
+///   * Empty (post-pipeline backfill, stream-loop): the line's
+///     payloads are already relative to the source's canonical arena,
+///     so we resolve via `LineSource::ResolveOwnedBytes`.
+///   * Non-empty (Stage B inline promotion): payloads are relative to
+///     the per-batch staging buffer the caller passes in; we read
+///     directly from it because Stage C has not yet rebased them onto
+///     the canonical arena.
 std::optional<std::string_view> ExtractStringBytes(
     const LogLine &line, KeyId keyId, std::string_view ownedArena
 ) noexcept
 {
-    if (keyId == kInvalidKeyId)
+    if (keyId == INVALID_KEY_ID)
     {
         return std::nullopt;
     }
@@ -39,22 +49,40 @@ std::optional<std::string_view> ExtractStringBytes(
         return std::nullopt;
     }
     const CompactLogValue &value = it->second;
+    LineSource *source = line.Source();
     if (value.tag == CompactTag::MmapSlice)
     {
-        const LogFile *file = line.FileReference().GetFile();
-        if (file == nullptr || file->Data() == nullptr)
+        if (source == nullptr)
         {
             return std::nullopt;
         }
-        return std::string_view(file->Data() + value.payload, value.aux);
+        const std::string_view bytes = source->ResolveMmapBytes(value.payload, value.aux, line.LineId());
+        if (bytes.empty() && value.aux != 0)
+        {
+            return std::nullopt;
+        }
+        return bytes;
     }
     if (value.tag == CompactTag::OwnedString)
     {
-        if (static_cast<size_t>(value.payload) + value.aux > ownedArena.size())
+        if (!ownedArena.empty())
+        {
+            if (static_cast<size_t>(value.payload) + value.aux > ownedArena.size())
+            {
+                return std::nullopt;
+            }
+            return std::string_view(ownedArena.data() + value.payload, value.aux);
+        }
+        if (source == nullptr)
         {
             return std::nullopt;
         }
-        return std::string_view(ownedArena.data() + value.payload, value.aux);
+        const std::string_view bytes = source->ResolveOwnedBytes(value.payload, value.aux, line.LineId());
+        if (bytes.empty() && value.aux != 0)
+        {
+            return std::nullopt;
+        }
+        return bytes;
     }
     return std::nullopt;
 }
@@ -169,4 +197,4 @@ bool PromoteLineTimestamps(
     return anyPromoted;
 }
 
-} // namespace loglib::detail
+} // namespace loglib::internal

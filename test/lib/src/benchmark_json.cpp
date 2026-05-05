@@ -5,15 +5,17 @@
 
 #include "common.hpp"
 
-#include <loglib/internal/parser_options.hpp>
-#include <loglib/json_parser.hpp>
+#include <loglib/file_line_source.hpp>
+#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
+#include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 
 #include <test_common/log_generator.hpp>
@@ -198,13 +200,11 @@ StructuralBytes ComputeStructuralBytes(const LogTable &table)
     {
         result.lines += line.OwnedMemoryBytes();
     }
-    for (const auto &file : data.Files())
+    if (const FileLineSource *fileSource = data.FrontFileSource())
     {
-        if (file)
-        {
-            result.lineOffsets += file->LineOffsetsMemoryBytes();
-            result.ownedStrings += file->OwnedStringsMemoryBytes();
-        }
+        const LogFile &file = fileSource->File();
+        result.lineOffsets += file.LineOffsetsMemoryBytes();
+        result.ownedStrings += file.OwnedStringsMemoryBytes();
     }
     result.keyIndex = data.Keys().EstimatedMemoryBytes();
     return result;
@@ -244,7 +244,7 @@ std::size_t SamplePeakWorkingSetBytes()
 
 /// Sink that mirrors `LogModel::OnBatch`: every batch is forwarded to
 /// `LogTable::AppendBatch`, which runs the GUI-thread back-fill loop.
-struct StreamSink : StreamingLogSink
+struct StreamSink : LogParseSink
 {
     LogTable *table = nullptr;
     std::chrono::steady_clock::duration appendTotal{};
@@ -328,15 +328,16 @@ StreamingRunResult RunStreamingFlow(
         configManager.Load(configPath.string());
         LogTable table(LogData{}, std::move(configManager));
 
-        // Mirror `MainWindow::OpenJsonStreaming`: one `LogFile` owned by
-        // the table, borrowed by the parser via a raw pointer. Sharing
-        // ensures Stage C's per-line offsets and the owned-string arena
-        // both land in the same `LogFile` the table will look at when
-        // accessing values (otherwise structural-bytes would
-        // under-count and `LogValue` materialisation would dangle).
-        auto fileForTable = std::make_unique<LogFile>(logPath);
-        LogFile *parseFile = fileForTable.get();
-        table.BeginStreaming(std::move(fileForTable));
+        // Mirror `MainWindow::OpenJsonStreaming`: one `FileLineSource`
+        // (wrapping a `LogFile`) owned by the table, with the same source
+        // borrowed by the parser. Sharing ensures Stage C's per-line
+        // offsets and the owned-string arena both land in the same
+        // `LogFile` the table will look at when accessing values
+        // (otherwise structural-bytes would under-count and `LogValue`
+        // materialisation would dangle).
+        auto sourceForTable = std::make_unique<FileLineSource>(std::make_unique<LogFile>(logPath));
+        FileLineSource *parseSource = sourceForTable.get();
+        table.BeginStreaming(std::move(sourceForTable));
 
         StreamSink sink;
         sink.table = &table;
@@ -344,7 +345,7 @@ StreamingRunResult RunStreamingFlow(
         ParserOptions opts;
         opts.configuration = configuration;
 
-        parser.ParseStreaming(*parseFile, sink, opts, advanced);
+        parser.ParseStreaming(*parseSource, sink, opts, advanced);
 
         result.appendTotal = sink.appendTotal;
         result.appendBatches = sink.appendBatches;
@@ -402,23 +403,23 @@ void RunStreamingBenchmark(
 
         if (warmup.memoryCaptured)
         {
-            constexpr double kMiB = 1024.0 * 1024.0;
+            constexpr double MIB = 1024.0 * 1024.0;
             const double linesD = static_cast<double>(expectedRows == 0 ? 1 : expectedRows);
             const double bytesPerLine =
                 expectedRows == 0 ? 0.0 : static_cast<double>(warmup.structuralBytes.Total()) / linesD;
-            const double fileBytesMiB = static_cast<double>(bytes) / kMiB;
-            const double structuralBytesMiB = static_cast<double>(warmup.structuralBytes.Total()) / kMiB;
+            const double fileBytesMiB = static_cast<double>(bytes) / MIB;
+            const double structuralBytesMiB = static_cast<double>(warmup.structuralBytes.Total()) / MIB;
             const double structuralRatio = bytes == 0 ? 0.0 : structuralBytesMiB / fileBytesMiB;
             WARN(
                 "Structural bytes (lines+offsets+ownedStrings+keys): "
                 << structuralBytesMiB << " MiB (" << bytesPerLine << " B/line, "
-                << static_cast<double>(warmup.structuralBytes.lines) / kMiB << " MiB lines + "
-                << static_cast<double>(warmup.structuralBytes.lineOffsets) / kMiB << " MiB offsets + "
-                << static_cast<double>(warmup.structuralBytes.ownedStrings) / kMiB << " MiB ownedStrings + "
-                << static_cast<double>(warmup.structuralBytes.keyIndex) / kMiB
+                << static_cast<double>(warmup.structuralBytes.lines) / MIB << " MiB lines + "
+                << static_cast<double>(warmup.structuralBytes.lineOffsets) / MIB << " MiB offsets + "
+                << static_cast<double>(warmup.structuralBytes.ownedStrings) / MIB << " MiB ownedStrings + "
+                << static_cast<double>(warmup.structuralBytes.keyIndex) / MIB
                 << " MiB keys), structural/file ratio=" << structuralRatio << " | peak working set delta "
-                << static_cast<double>(warmup.peakWorkingSetDeltaBytes) / kMiB << " MiB (peak "
-                << static_cast<double>(warmup.peakWorkingSetBytes) / kMiB << " MiB)"
+                << static_cast<double>(warmup.peakWorkingSetDeltaBytes) / MIB << " MiB (peak "
+                << static_cast<double>(warmup.peakWorkingSetBytes) / MIB << " MiB)"
             );
         }
     }
@@ -433,9 +434,10 @@ void RunStreamingBenchmark(
 
 #define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
-// Synchronous-Parse coverage for `BufferingSink` (the sink behind
-// `LogParser::Parse(path)`, used by tests and `Edit -> Copy`). Small fixture
-// because the synchronous path is not the GUI hot path — the `[large]` and
+// Synchronous-Parse coverage for `BufferingSink` (the sink behind the
+// `loglib::ParseFile(parser, path)` free helper, used by tests and any
+// non-GUI caller that wants a one-shot `LogData`). Small fixture because
+// the synchronous path is not the GUI hot path -- the `[large]` and
 // `[wide]` cases below cover that.
 TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_sync]")
 {
@@ -448,7 +450,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
     {
         const auto start = std::chrono::steady_clock::now();
-        ParseResult warmup = parser.Parse(testFile.GetFilePath());
+        ParseResult warmup = ParseFile(parser, testFile.GetFilePath());
         const auto elapsed = std::chrono::steady_clock::now() - start;
         REQUIRE(warmup.data.Lines().size() == logs.size());
         REQUIRE(warmup.errors.empty());
@@ -457,7 +459,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
     RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {bytes, logs.size()}, [&]() {
         LogTable table;
-        ParseResult result = parser.Parse(testFile.GetFilePath());
+        ParseResult result = ParseFile(parser, testFile.GetFilePath());
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
         REQUIRE(result.errors.empty());
         table.Update(std::move(result.data));
@@ -538,7 +540,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    ParseResult result = parser.Parse(testFile.GetFilePath());
+    ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     const LogData &data = result.data;
     const std::vector<LogLine> &lines = data.Lines();
@@ -549,7 +551,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     for (size_t i = 0; i < kKeys.size(); ++i)
     {
         const KeyId id = data.Keys().Find(kKeys[i]);
-        REQUIRE(id != kInvalidKeyId);
+        REQUIRE(id != INVALID_KEY_ID);
         keyIds[i] = id;
     }
 
@@ -605,7 +607,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    ParseResult result = parser.Parse(testFile.GetFilePath());
+    ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == logs.size());
 
@@ -676,7 +678,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    struct LatencySink : StreamingLogSink
+    struct LatencySink : LogParseSink
     {
         KeyIndex keys;
         loglib::StopSource stop;
@@ -708,17 +710,17 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         }
     };
 
-    constexpr int kIterations = 20;
+    constexpr int ITERATIONS = 20;
     std::vector<double> latenciesUs;
-    latenciesUs.reserve(kIterations);
+    latenciesUs.reserve(ITERATIONS);
 
-    for (int i = 0; i < kIterations; ++i)
+    for (int i = 0; i < ITERATIONS; ++i)
     {
-        LogFile file(testFile.GetFilePath());
+        FileLineSource source(std::make_unique<LogFile>(testFile.GetFilePath()));
         LatencySink sink;
         ParserOptions opts;
         opts.stopToken = sink.stop.get_token();
-        parser.ParseStreaming(file, sink, opts);
+        parser.ParseStreaming(source, sink, opts);
         REQUIRE(sink.cancelled);
         REQUIRE(sink.requestedAt.time_since_epoch().count() != 0);
         const auto latency = std::chrono::duration<double, std::micro>(sink.finishedAt - sink.requestedAt).count();
@@ -730,7 +732,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     const double p95 = latenciesUs[(latenciesUs.size() * 95) / 100];
     const double maxLatency = latenciesUs.back();
     WARN(
-        "Cancellation latency over " << kIterations << " runs (us): median=" << median << ", p95=" << p95
+        "Cancellation latency over " << ITERATIONS << " runs (us): median=" << median << ", p95=" << p95
                                      << ", max=" << maxLatency
     );
     REQUIRE(maxLatency < 5'000'000.0);

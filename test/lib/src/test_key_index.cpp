@@ -42,14 +42,14 @@ TEST_CASE("KeyIndex GetOrInsert returns the existing id for repeat inserts", "[k
     CHECK(index.Size() == 1);
 }
 
-TEST_CASE("KeyIndex Find returns kInvalidKeyId for absent keys", "[key_index]")
+TEST_CASE("KeyIndex Find returns INVALID_KEY_ID for absent keys", "[key_index]")
 {
     KeyIndex index;
-    CHECK(index.Find("missing") == kInvalidKeyId);
+    CHECK(index.Find("missing") == INVALID_KEY_ID);
 
     const KeyId id = index.GetOrInsert("present");
     CHECK(index.Find("present") == id);
-    CHECK(index.Find("missing") == kInvalidKeyId);
+    CHECK(index.Find("missing") == INVALID_KEY_ID);
 }
 
 TEST_CASE("KeyIndex KeyOf round-trips inserted keys", "[key_index]")
@@ -122,14 +122,14 @@ TEST_CASE("KeyIndex Size matches insertion count", "[key_index]")
 
 TEST_CASE("KeyIndex GetOrInsert is safe under concurrent contention with overlapping key sets", "[key_index]")
 {
-    constexpr int kKeyCount = 100;
-    constexpr int kThreadCount = 8;
+    constexpr int KEY_COUNT = 100;
+    constexpr int THREAD_COUNT = 8;
 
     // Pre-build the key strings so the concurrent loop does only inserts (no string formatting
     // contention via the global allocator).
     std::vector<std::string> keys;
-    keys.reserve(kKeyCount);
-    for (int i = 0; i < kKeyCount; ++i)
+    keys.reserve(KEY_COUNT);
+    for (int i = 0; i < KEY_COUNT; ++i)
     {
         keys.push_back("k" + std::to_string(i));
     }
@@ -137,9 +137,9 @@ TEST_CASE("KeyIndex GetOrInsert is safe under concurrent contention with overlap
     KeyIndex index;
 
     // Each iteration inserts every key, so every worker race-inserts overlapping ids. The
-    // postcondition is that exactly kKeyCount distinct ids exist and every key maps to exactly
+    // postcondition is that exactly KEY_COUNT distinct ids exist and every key maps to exactly
     // one of them.
-    oneapi::tbb::parallel_for(0, kThreadCount, [&](int /*thread*/) {
+    oneapi::tbb::parallel_for(0, THREAD_COUNT, [&](int /*thread*/) {
         for (const auto &k : keys)
         {
             // Throwaway return — we only care that all calls converge on the same
@@ -148,29 +148,29 @@ TEST_CASE("KeyIndex GetOrInsert is safe under concurrent contention with overlap
         }
     });
 
-    REQUIRE(index.Size() == static_cast<size_t>(kKeyCount));
+    REQUIRE(index.Size() == static_cast<size_t>(KEY_COUNT));
 
     // Every key resolves to exactly one id.
     std::set<KeyId> seenIds;
     for (const auto &k : keys)
     {
         const KeyId id = index.Find(k);
-        REQUIRE(id != kInvalidKeyId);
+        REQUIRE(id != INVALID_KEY_ID);
         const auto [it, inserted] = seenIds.insert(id);
         INFO("Duplicate id " << id << " observed for key " << k);
         REQUIRE(inserted);
     }
-    CHECK(seenIds.size() == static_cast<size_t>(kKeyCount));
+    CHECK(seenIds.size() == static_cast<size_t>(KEY_COUNT));
 
-    // Ids are dense in [0, kKeyCount).
+    // Ids are dense in [0, KEY_COUNT).
     CHECK(*seenIds.begin() == 0);
-    CHECK(*seenIds.rbegin() == static_cast<KeyId>(kKeyCount - 1));
+    CHECK(*seenIds.rbegin() == static_cast<KeyId>(KEY_COUNT - 1));
 
     // KeyOf returns stable string_views matching the original key bytes.
     for (const auto &k : keys)
     {
         const KeyId id = index.Find(k);
-        REQUIRE(id != kInvalidKeyId);
+        REQUIRE(id != INVALID_KEY_ID);
         CHECK(index.KeyOf(id) == k);
     }
 }
@@ -195,24 +195,24 @@ TEST_CASE("KeyIndex move construction preserves the dictionary", "[key_index]")
 // GetOrInsert, KeyOf round-trips correctly, and ids are dense in [0, 200).
 TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find storm", "[key_index][stress]")
 {
-    constexpr int kKeyCount = 200;
-    constexpr int kThreadCount = 8;
-    constexpr int kIterationsPerThread = 100'000;
+    constexpr int KEY_COUNT = 200;
+    constexpr int THREAD_COUNT = 8;
+    constexpr int ITERATIONS_PER_THREAD = 100'000;
 
     std::vector<std::string> keys;
-    keys.reserve(kKeyCount);
-    for (int i = 0; i < kKeyCount; ++i)
+    keys.reserve(KEY_COUNT);
+    for (int i = 0; i < KEY_COUNT; ++i)
     {
         keys.push_back("stress_key_" + std::to_string(i));
     }
 
     KeyIndex index;
 
-    oneapi::tbb::parallel_for(0, kThreadCount, [&](int thread) {
+    oneapi::tbb::parallel_for(0, THREAD_COUNT, [&](int thread) {
         // Per-thread RNG so the iteration order interleaves but is reproducible.
         std::mt19937 rng(static_cast<unsigned>(thread) * 37u + 1u);
-        std::uniform_int_distribution<int> pickKey(0, kKeyCount - 1);
-        for (int i = 0; i < kIterationsPerThread; ++i)
+        std::uniform_int_distribution<int> pickKey(0, KEY_COUNT - 1);
+        for (int i = 0; i < ITERATIONS_PER_THREAD; ++i)
         {
             const std::string &k = keys[static_cast<size_t>(pickKey(rng))];
             // Mix of GetOrInsert + Find so both code paths race against
@@ -223,13 +223,13 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
         }
     });
 
-    REQUIRE(index.Size() == static_cast<size_t>(kKeyCount));
+    REQUIRE(index.Size() == static_cast<size_t>(KEY_COUNT));
 
     std::set<KeyId> seenIds;
     for (const auto &k : keys)
     {
         const KeyId byFind = index.Find(k);
-        REQUIRE(byFind != kInvalidKeyId);
+        REQUIRE(byFind != INVALID_KEY_ID);
         const KeyId byGetOrInsert = index.GetOrInsert(k);
         CHECK(byFind == byGetOrInsert);
         const auto [it, inserted] = seenIds.insert(byFind);
@@ -238,8 +238,8 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
         CHECK(index.KeyOf(byFind) == k);
     }
     CHECK(*seenIds.begin() == 0);
-    CHECK(*seenIds.rbegin() == static_cast<KeyId>(kKeyCount - 1));
-    CHECK(index.Size() == static_cast<size_t>(kKeyCount));
+    CHECK(*seenIds.rbegin() == static_cast<KeyId>(KEY_COUNT - 1));
+    CHECK(index.Size() == static_cast<size_t>(KEY_COUNT));
 }
 
 // Regression: `KeyOf` previously read the `reverse` deque without a lock
@@ -248,13 +248,13 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
 // `Find`. Surfaces deterministically under TSan / Windows debug iterators.
 TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary", "[key_index][stress]")
 {
-    constexpr int kKeyCount = 4'096;
-    constexpr int kReaderThreads = 4;
-    constexpr int kReaderIterations = 50'000;
+    constexpr int KEY_COUNT = 4'096;
+    constexpr int READER_THREADS = 4;
+    constexpr int READER_ITERATIONS = 50'000;
 
     std::vector<std::string> keys;
-    keys.reserve(kKeyCount);
-    for (int i = 0; i < kKeyCount; ++i)
+    keys.reserve(KEY_COUNT);
+    for (int i = 0; i < KEY_COUNT; ++i)
     {
         keys.push_back("racer_key_" + std::to_string(i));
     }
@@ -274,14 +274,14 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
     });
 
     auto reader = [&] {
-        for (int i = 0; i < kReaderIterations; ++i)
+        for (int i = 0; i < READER_ITERATIONS; ++i)
         {
             const KeyId limit = highWater.load(std::memory_order_acquire);
             if (limit == 0)
             {
                 continue;
             }
-            const KeyId id = static_cast<KeyId>(static_cast<unsigned>(i) % static_cast<unsigned>(limit));
+            const KeyId id = static_cast<KeyId>(i) % limit;
             const std::string_view view = index.KeyOf(id);
             REQUIRE(index.Find(view) == id);
             if (writerDone.load(std::memory_order_acquire) && i > 1024)
@@ -292,8 +292,8 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
     };
 
     std::vector<std::thread> readers;
-    readers.reserve(kReaderThreads);
-    for (int t = 0; t < kReaderThreads; ++t)
+    readers.reserve(READER_THREADS);
+    for (int t = 0; t < READER_THREADS; ++t)
     {
         readers.emplace_back(reader);
     }
@@ -303,8 +303,8 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
         th.join();
     }
 
-    REQUIRE(index.Size() == static_cast<size_t>(kKeyCount));
-    for (KeyId id = 0; id < static_cast<KeyId>(kKeyCount); ++id)
+    REQUIRE(index.Size() == static_cast<size_t>(KEY_COUNT));
+    for (KeyId id = 0; id < static_cast<KeyId>(KEY_COUNT); ++id)
     {
         const std::string_view view = index.KeyOf(id);
         CHECK(index.Find(view) == id);
@@ -339,7 +339,7 @@ TEST_CASE(
 
     CHECK(index.Find(alphaView) == alphaId);
     CHECK(index.Find(betaView) == betaId);
-    CHECK(index.Find(absentView) == kInvalidKeyId);
+    CHECK(index.Find(absentView) == INVALID_KEY_ID);
 
     // Repeat-`GetOrInsert` for an existing key must take the fast path
     // (heterogeneous `find` on the per-shard map) and not allocate a new id.

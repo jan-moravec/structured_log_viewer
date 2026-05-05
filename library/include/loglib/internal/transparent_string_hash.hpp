@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 /// Transparent hash for heterogeneous `string`/`string_view` lookup.
@@ -50,4 +50,4 @@ struct TransparentStringEqual
     }
 };
 
-} // namespace loglib::detail
+} // namespace loglib::internal

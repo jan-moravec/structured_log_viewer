@@ -15,19 +15,110 @@ The application currently reads **JSON Lines** (also known as NDJSON): one JSON 
 
 Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested objects and arrays are preserved as their compact JSON string.
 
-## Opening Log Files
+## Static vs Stream Mode
 
-You can open a log file in three ways:
+Structured Log Viewer ingests logs through two distinct paths. Pick the one that matches the file you are looking at:
+
+| Aspect                 | Static mode                                                          | Stream Mode (live tail)                                                                               |
+| ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **When to use**        | Post-mortem analysis of one or more *finished* log files.            | Watching a service's log *as it is being written* — reproducing a bug, smoke-testing a release, etc.  |
+| **How to open**        | `File → Open…` (`Ctrl+O`), `File → Open JSON Logs…`, or drag & drop. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      |
+| **Files per session**  | One or many; multi-file opens are **merged** into one table.         | Exactly one file.                                                                                     |
+| **Reads the file**     | Memory-mapped; parsed in parallel through the TBB pipeline.          | Buffered tail-reader; parsed line-by-line in a single worker.                                         |
+| **Memory**             | Whole file is parsed and held; row count grows with the file.        | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     |
+| **Reacts to new data** | No. The on-screen rows are a snapshot of the file at open time.      | Yes. New lines appear within ~250 ms of being written; survives `logrotate` and in-place truncations. |
+| **Stream toolbar**     | Hidden.                                                              | Pause / Follow newest / Stop visible while a session is active.                                       |
+| **Configuration menu** | Available between opens; disabled while a parse is in flight.        | Disabled for the lifetime of the session (the parser holds an immutable configuration snapshot).      |
+
+In Stream Mode, **Stop** ends the session but keeps the visible rows around as a static snapshot you can keep filtering, sorting, and copying — handy when you only realised mid-tail that the bug already happened. Opening a new file (in either mode) clears the table first.
+
+## Static Mode (Open files)
+
+You can open a finished log file in three ways:
 
 1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file.
 1. **File → Open JSON Logs…** — forces the JSON parser regardless of content. Use this if auto-detection mistakenly treats a log as a configuration.
 1. **Drag & drop** one or more files onto the main window.
 
-Opening multiple files at once **merges** their records into a single table. If parsing errors occur, the first 20 are shown in a dialog; the rest are summarized as "… and N more error(s)".
+Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight.
 
-### Automatic Column Detection
+For a file that is **still being written**, use [Stream Mode](#stream-mode-live-tail) instead — static mode parses the bytes that exist when you opened the file and stops there.
 
-The first time you open a file, Structured Log Viewer builds the column list from the keys it sees in the JSON records:
+## Stream Mode (live tail)
+
+Stream Mode opens a single log file and continuously tails it: it pre-fills the table with the last `N` complete lines on disk and then appends every new line as it is written. The mode is targeted at developer workflows where you want to watch a service's log as you reproduce a bug or run a smoke test, without alt-tabbing to a terminal.
+
+### Opening a stream
+
+Use **File → Open Log Stream…** (`Ctrl+Shift+O`) to pick a single file. Drag-and-drop continues to use the static path (the assumption is that drag-and-drop is for "open this archive", not "tail this"). Errors during open (file not found, permission denied) are reported via the existing parse-error dialog and the previous session is preserved.
+
+The pre-fill back-reads at most **retention** complete lines from the end of the file (see [Retention cap](#retention-cap)), so opening a multi-GB log in Stream Mode is fast even on a cold cache.
+
+### Toolbar and **Stream** menu
+
+A toolbar appears above the table while a stream is running, mirroring the **Stream** menu:
+
+| Action         | Shortcut       | Notes                                                                                                              |
+| -------------- | -------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Pause / Resume | `Ctrl+Shift+P` | Pause freezes the visible table; new lines accumulate in memory until you Resume or Stop.                          |
+| Follow newest  | `Ctrl+Shift+T` | Auto-scroll to the newest line. Auto-disengages when you scroll away to read history; re-engages on scroll-to-end. |
+| Stop           | `Ctrl+Shift+S` | Ends the session and leaves the rows visible as a static snapshot you can keep filtering, sorting, and copying.    |
+
+**Pause** and **Follow newest** are independent toggles, and both reset to their defaults (un-paused, follow on) on every new session.
+
+### Status bar
+
+The permanent status-bar label reflects the current state of the live tail:
+
+| Label                                                       | Meaning                                                                                                                                                                   |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Streaming <file> — N lines, M errors`                      | Normal flow; updated on every batch.                                                                                                                                      |
+| `Paused — N lines, K buffered`                              | Stream is paused. `K` is the number of lines that arrived during the pause; **Resume** drains them in one go.                                                             |
+| `Source unavailable — last seen <file> — N lines, M errors` | The watched file disappeared (e.g. mid-rotation). The viewer keeps the rows it has and waits for it to reappear.                                                          |
+| `Streaming <file> — … — rotated`                            | Briefly appended (~3 s) right after a log rotation is detected.                                                                                                           |
+| `Streaming <file> — … , X dropped while paused`             | At least `X` lines arrived while paused and overflowed the retention cap, so they were FIFO-evicted from the paused buffer. The counter is sticky until the session ends. |
+
+### Retention cap
+
+Stream Mode keeps at most `N` lines in memory; older lines are evicted in FIFO order so the resident set stays bounded across long-running tails. The default cap is **10 000 lines**. To change it, open **Settings → Preferences…** → **Streaming** → **Stream retention (lines)** (range 1 000 .. 1 000 000).
+
+The setting is persisted via `QSettings` and applies to future sessions and to the *current* session: lowering the cap on a running stream FIFO-trims existing rows immediately; lowering it while paused trims the paused buffer first (visible rows are preserved, per the pause-suspends-eviction rule). Raising the cap takes effect from the next batch onward — already-evicted lines are not pulled back.
+
+### Newest lines first
+
+By default new lines are appended to the *bottom* of the table, which matches how most terminal log viewers behave. **Settings → Preferences… → Streaming → Show newest lines first** flips the orientation: the most-recently-arrived line is shown at row 0, older lines below it. **Follow newest** then keeps the top of the view pinned to the latest line. The setting is persisted via `QSettings`, applies to all subsequent sessions, and can be toggled while a stream is active.
+
+> Alternating row colours are disabled in newest-first mode because Qt's CSS-based striping is keyed off the visual row index, which would flicker every time a new line shifts the rows down.
+
+### File rotation
+
+Stream Mode tolerates the common log-rotation patterns:
+
+- **logrotate `create`** (rename + new file at the original path)
+- **logrotate `copytruncate`** (copy aside, then truncate in place)
+- **In-place truncation** (`: > app.log`)
+- **Delete-then-recreate** (path disappears for a moment, then reappears)
+
+When a rotation is detected, the viewer keeps every line that is already in memory, switches to the new on-disk content, and briefly appends `— rotated` to the status bar so you can tell it happened. Rotation bursts within a 1 s window are coalesced into a single event. **Rotated content is not pulled back from disk**: only the lines you have already seen survive the rotation in memory.
+
+### Stop semantics and configuration menus
+
+While a stream is active the **Configuration** menus (Save / Load) and **Settings → Preferences…** are disabled — the running parser holds an immutable snapshot of the configuration, and editing it would race the worker. **Stop** ends the session, joins the background tailing thread within ~500 ms, and re-enables those menus. Closing the application while a stream is active stops cleanly via the same teardown path.
+
+### Non-goals
+
+The following are **out of scope** for the current Stream Mode implementation:
+
+- **Compressed rotations** (`app.log.1.gz` etc.) — only uncompressed rotations are handled.
+- **Pulling rotated history off disk** — the viewer does not read `app.log.1` to recover lines older than the in-memory cap.
+- **TCP / UDP / stdin / named-pipe sources** — only file tailing is wired up. The `BytesProducer` abstraction in `loglib` is designed to accommodate them in a future round.
+- **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
+- **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
+- **Streaming for non-JSON formats** — currently only JSON Lines streams. The seam in `loglib` is format-agnostic so a future CSV / logfmt parser inherits the feature for free.
+
+## Automatic Column Detection
+
+The first time you open a file (in either mode), Structured Log Viewer builds the column list from the keys it sees in the JSON records:
 
 - Any key named `timestamp`, `time`, or `t` (case-insensitive) is treated as a **timestamp column**. Its values are parsed with the ISO 8601 formats `%FT%T%Ez`, `%F %T%Ez`, `%FT%T`, `%F %T` and displayed with the format `%F %H:%M:%S` in the local timezone. Timestamp columns are moved to the front of the table.
 
@@ -99,22 +190,35 @@ Because `Open…` auto-detects configurations, double-clicking a saved configura
 
 ## Preferences
 
-Open **Settings → Preferences…** to change the application's appearance:
+Open **Settings → Preferences…** to change application-wide settings. The dialog is split into two groups:
+
+**Appearance** — previewed live; reverted on Cancel.
 
 - **Style** — the Qt widget style (e.g. `fusion`, `windows11`, `macOS`). Styles available depend on your platform.
 - **Font** — the application-wide UI font family.
 - **Font size** — 6 to 72 pt.
 
-Changes preview live. Click **Ok** to persist them (stored via `QSettings` under the organization `jan-moravec` / application `StructuredLogViewer`), or **Cancel** to revert to the last saved values. The previous configuration is automatically restored the next time you launch the application.
+**Streaming** — applied transactionally on **Ok**.
+
+- **Stream retention (lines)** — the cap on how many lines [Stream Mode](#retention-cap) keeps in memory (range 1 000 .. 1 000 000, default 10 000).
+- **Show newest lines first** — orient new stream lines at the top of the table instead of the bottom (see [Newest lines first](#newest-lines-first)).
+
+Click **Ok** to persist (stored via `QSettings` under the organization `jan-moravec` / application `StructuredLogViewer`), or **Cancel** to revert to the last saved values. The previous configuration is automatically restored the next time you launch the application.
+
+> Preferences are disabled while a stream is active because the parser holds an immutable snapshot of the configuration. Stop the stream to edit them.
 
 ## Keyboard Shortcuts
 
-| Action                     | Shortcut |
-| -------------------------- | -------- |
-| Open file(s)               | `Ctrl+O` |
-| Save configuration         | `Ctrl+S` |
-| Find                       | `Ctrl+F` |
-| Copy selected rows as JSON | `Ctrl+C` |
+| Action                     | Shortcut       |
+| -------------------------- | -------------- |
+| Open file(s)               | `Ctrl+O`       |
+| Open log stream            | `Ctrl+Shift+O` |
+| Save configuration         | `Ctrl+S`       |
+| Find                       | `Ctrl+F`       |
+| Copy selected rows as JSON | `Ctrl+C`       |
+| Pause / Resume stream      | `Ctrl+Shift+P` |
+| Toggle Follow newest       | `Ctrl+Shift+T` |
+| Stop stream                | `Ctrl+Shift+S` |
 
 ## Troubleshooting
 

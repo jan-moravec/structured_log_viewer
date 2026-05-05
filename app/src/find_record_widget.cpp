@@ -6,7 +6,8 @@
 #include <QPushButton>
 #include <QTimer>
 
-FindRecordWidget::FindRecordWidget(QWidget *parent) : QWidget{parent}
+FindRecordWidget::FindRecordWidget(QWidget *parent)
+    : QWidget{parent}
 {
     QHBoxLayout *hLayout = new QHBoxLayout(this);
 

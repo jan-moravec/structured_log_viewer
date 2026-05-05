@@ -34,7 +34,7 @@ TimestampFormatKind ClassifyTimestampFormat(std::string_view format);
 /// fast path. `kind` caches `ClassifyTimestampFormat(format)`.
 struct LastValidTimestampParse
 {
-    KeyId keyId = kInvalidKeyId;
+    KeyId keyId = INVALID_KEY_ID;
     std::string format;
     TimestampFormatKind kind = TimestampFormatKind::Generic;
 };

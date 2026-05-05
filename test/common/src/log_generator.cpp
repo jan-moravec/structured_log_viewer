@@ -210,7 +210,8 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
             const std::string &keyName = keys[k].first;
             switch (keys[k].second)
             {
-            case Family::String: {
+            case Family::String:
+            {
                 if (keyName.rfind("timestamp", 0) == 0)
                 {
                     json[keyName] = FormatNow();
@@ -239,7 +240,8 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
                 }
                 break;
             }
-            case Family::Numeric: {
+            case Family::Numeric:
+            {
                 if (keyName.rfind("thread_id", 0) == 0)
                 {
                     json[keyName] = static_cast<std::int64_t>(i % 16);
@@ -254,15 +256,18 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
                 }
                 break;
             }
-            case Family::Boolean: {
+            case Family::Boolean:
+            {
                 json[keyName] = ((i + k) & 1) == 0;
                 break;
             }
-            case Family::Null: {
+            case Family::Null:
+            {
                 json[keyName] = nullptr;
                 break;
             }
-            case Family::Array: {
+            case Family::Array:
+            {
                 std::vector<glz::generic_sorted_u64> arr;
                 arr.emplace_back(static_cast<std::int64_t>(intDist(rng)));
                 arr.emplace_back(static_cast<std::int64_t>(smallIntDist(rng)));
@@ -270,7 +275,8 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
                 json[keyName] = std::move(arr);
                 break;
             }
-            case Family::Object: {
+            case Family::Object:
+            {
                 glz::generic_sorted_u64 obj;
                 obj["k"] = static_cast<std::int64_t>(smallIntDist(rng));
                 obj["v"] = std::string(WORDS[static_cast<std::size_t>(wordDist(rng))]);

@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -11,18 +12,21 @@
 
 using namespace loglib;
 
-TestJsonLogFile::TestJsonLogFile(std::string filePath) : mFilePath(std::move(filePath))
+TestJsonLogFile::TestJsonLogFile(std::string filePath)
+    : mFilePath(std::move(filePath))
 {
     std::ofstream file(mFilePath);
     REQUIRE(file.is_open());
 }
 
-TestJsonLogFile::TestJsonLogFile(Line line, std::string filePath) : TestJsonLogFile(std::move(filePath))
+TestJsonLogFile::TestJsonLogFile(Line line, std::string filePath)
+    : TestJsonLogFile(std::move(filePath))
 {
     WriteToFile(std::vector<Line>{std::move(line)});
 }
 
-TestJsonLogFile::TestJsonLogFile(std::vector<Line> lines, std::string filePath) : TestJsonLogFile(std::move(filePath))
+TestJsonLogFile::TestJsonLogFile(std::vector<Line> lines, std::string filePath)
+    : TestJsonLogFile(std::move(filePath))
 {
     WriteToFile(std::move(lines));
 }
@@ -74,7 +78,8 @@ const std::vector<glz::generic_sorted_u64> &TestJsonLogFile::JsonLines() const
     return mJsonLines;
 }
 
-TestLogConfiguration::TestLogConfiguration(std::string filePath) : mFilePath(std::move(filePath))
+TestLogConfiguration::TestLogConfiguration(std::string filePath)
+    : mFilePath(std::move(filePath))
 {
     std::ofstream file(GetFilePath());
     REQUIRE(file.is_open());
@@ -108,7 +113,8 @@ const std::string &TestLogFile::GetFilePath() const
     return mFilePath;
 }
 
-TestLogFile::TestLogFile(std::string filePath) : mFilePath(std::move(filePath))
+TestLogFile::TestLogFile(std::string filePath)
+    : mFilePath(std::move(filePath))
 {
     std::ofstream file(GetFilePath(), std::ios::binary);
     REQUIRE(file.is_open());
@@ -142,15 +148,20 @@ std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
         ++pos;
         if (ch == '\n')
         {
-            logFile->CreateReference(pos);
+            logFile->RegisterLineEnd(pos);
         }
     }
     if (pos > 0 && ch != '\n')
     {
-        logFile->CreateReference(pos + 1);
+        logFile->RegisterLineEnd(pos + 1);
     }
 
     return logFile;
+}
+
+std::unique_ptr<loglib::FileLineSource> TestLogFile::CreateFileLineSource() const
+{
+    return std::make_unique<loglib::FileLineSource>(CreateLogFile());
 }
 
 void InitializeTimezoneData()

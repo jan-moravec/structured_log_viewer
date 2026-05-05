@@ -8,7 +8,8 @@
 class FilterRule
 {
 public:
-    FilterRule(int filteredColumn) : mFilteredColumn(filteredColumn)
+    FilterRule(int filteredColumn)
+        : mFilteredColumn(filteredColumn)
     {
     }
     virtual ~FilterRule() = default;
@@ -38,11 +39,13 @@ public:
             return data == mValue;
         case loglib::LogConfiguration::LogFilter::Match::contains:
             return data.toString().contains(mValue);
-        case loglib::LogConfiguration::LogFilter::Match::regularExpression: {
+        case loglib::LogConfiguration::LogFilter::Match::regularExpression:
+        {
             QRegularExpression regex(mValue);
             return regex.match(data.toString()).hasMatch();
         }
-        case loglib::LogConfiguration::LogFilter::Match::wildcard: {
+        case loglib::LogConfiguration::LogFilter::Match::wildcard:
+        {
             QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(mValue));
             return regex.match(data.toString()).hasMatch();
         }

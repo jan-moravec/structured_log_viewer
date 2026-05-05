@@ -1,9 +1,9 @@
 #pragma once
 
+#include "loglib/file_line_source.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_data.hpp"
-#include "loglib/log_file.hpp"
-#include "loglib/streaming_log_sink.hpp"
+#include "loglib/log_parse_sink.hpp"
 
 #include <memory>
 #include <string>
@@ -12,13 +12,15 @@
 namespace loglib::internal
 {
 
-/// `StreamingLogSink` adapter behind the synchronous `LogParser::Parse(path)`
+/// `LogParseSink` adapter behind the synchronous `LogParser::Parse(path)`
 /// overload: accumulates every batch into a single `LogData`. One sink per parse.
-class BufferingSink : public StreamingLogSink
+class BufferingSink : public LogParseSink
 {
 public:
-    /// Takes ownership of @p logFile and routes batches into an internal `KeyIndex`.
-    explicit BufferingSink(std::unique_ptr<LogFile> logFile);
+    /// Takes ownership of @p source. The source's `LogFile` is the
+    /// arena for `OwnedString` payload concatenation; line offsets are
+    /// pushed in via `OnBatch`.
+    explicit BufferingSink(std::unique_ptr<FileLineSource> source);
 
     KeyIndex &Keys() override;
 
@@ -37,7 +39,7 @@ public:
     std::vector<std::string> TakeErrors();
 
 private:
-    std::unique_ptr<LogFile> mFile;
+    std::unique_ptr<FileLineSource> mSource;
     KeyIndex mKeys;
     std::vector<LogLine> mLines;
     std::vector<uint64_t> mLineOffsets;

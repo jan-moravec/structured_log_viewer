@@ -11,8 +11,9 @@
 namespace loglib
 {
 
-class LogFile;
-class StreamingLogSink;
+class FileLineSource;
+class LogParseSink;
+class StreamLineSource;
 
 /// Buffered output of a synchronous parse.
 struct ParseResult
@@ -22,8 +23,9 @@ struct ParseResult
 };
 
 /// Base class for log-format parsers. New formats implement `IsValid`,
-/// `ParseStreaming`, and `ToString`; `Parse(path)` is a non-virtual
-/// convenience that buffers the streaming output.
+/// both `ParseStreaming` overloads, and `ToString`. The synchronous
+/// "parse a file" helper is `loglib::ParseFile` (see `parse_file.hpp`);
+/// production GUI code uses `ParseStreaming` directly.
 class LogParser
 {
 public:
@@ -31,13 +33,13 @@ public:
 
     virtual bool IsValid(const std::filesystem::path &file) const = 0;
 
-    /// Synchronous parse: routes through `ParseStreaming` into a `BufferingSink`.
-    ParseResult Parse(const std::filesystem::path &file) const;
+    /// Static-file streaming entry. Emitted `LogLine`s carry @p source
+    /// and the line's 0-based file id.
+    virtual void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
-    /// Streams parsed lines into @p sink. `options.stopToken` is polled for
-    /// cooperative cancellation; when `options.configuration` is non-null the
-    /// pipeline promotes `Type::time` columns inline.
-    virtual void ParseStreaming(LogFile &file, StreamingLogSink &sink, ParserOptions options = {}) const = 0;
+    /// Live-tail streaming entry. Emitted `LogLine`s carry @p source
+    /// and the 1-based monotonic id assigned by `AppendLine`.
+    virtual void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
     /// Renders a parsed line back to the parser's native text form.
     virtual std::string ToString(const LogLine &line) const = 0;

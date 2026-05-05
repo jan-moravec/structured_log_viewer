@@ -12,14 +12,14 @@
 #include <string_view>
 #include <vector>
 
-namespace loglib::detail
+namespace loglib::internal
 {
 
 /// Per-worker per-time-column same-bytes short-circuit, exploiting the common
 /// case of consecutive lines sharing a timestamp.
 struct LastTimestampBytesHit
 {
-    KeyId keyId = kInvalidKeyId;
+    KeyId keyId = INVALID_KEY_ID;
     std::string bytes;
     TimeStamp parsed{};
     bool valid = false;
@@ -57,4 +57,4 @@ bool PromoteLineTimestamps(
     std::string_view ownedArena
 );
 
-} // namespace loglib::detail
+} // namespace loglib::internal

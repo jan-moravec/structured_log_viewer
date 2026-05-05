@@ -18,18 +18,23 @@ set(PROJECT_SOURCES
     include/log_model.hpp
     src/qt_streaming_log_sink.cpp
     include/qt_streaming_log_sink.hpp
+    include/bounded_batch_queue.hpp
     src/log_table_view.cpp
     include/log_table_view.hpp
     src/find_record_widget.cpp
     include/find_record_widget.hpp
     src/log_filter_model.cpp
     include/log_filter_model.hpp
+    src/row_order_proxy_model.cpp
+    include/row_order_proxy_model.hpp
     src/filter_editor.cpp
     include/filter_editor.hpp
     src/preferences_editor.cpp
     include/preferences_editor.hpp
     src/appearance_control.cpp
     include/appearance_control.hpp
+    src/streaming_control.cpp
+    include/streaming_control.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})
