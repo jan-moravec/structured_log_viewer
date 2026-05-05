@@ -20,6 +20,10 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/tcp_server_producer.hpp>
+#include <loglib/udp_server_producer.hpp>
+
+#include <test_common/network_log_client.hpp>
 
 #include <QAction>
 #include <QElapsedTimer>
@@ -1321,6 +1325,106 @@ private slots:
 
         QVERIFY(!model.IsStreamingActive());
         QCOMPARE(model.rowCount(), 0);
+    }
+
+    // End-to-end smoke test for the UDP network-stream open path.
+    // Mirrors `testStreamModeOpensTailFileAndAppends` but the byte
+    // producer is a `UdpServerProducer` driven by a synchronous
+    // `UdpLogClient` from `test_common`. We do not pop the
+    // `NetworkStreamDialog` (modal -> would hang offscreen QPA);
+    // instead we wire the producer directly into the model the same
+    // way `MainWindow::OpenNetworkStream` does.
+    void testStreamModeOpensUdpProducer()
+    {
+        loglib::UdpServerProducer::Options opts;
+        opts.bindAddress = "127.0.0.1"; // ephemeral port
+        auto producer = std::make_unique<loglib::UdpServerProducer>(opts);
+        const uint16_t port = producer->BoundPort();
+        QVERIFY(port != 0);
+        const std::string display = producer->DisplayName();
+
+        LogModel model;
+        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        QVERIFY(lineCountSpy.isValid());
+        model.SetRetentionCap(1000);
+
+        auto streamSource =
+            std::make_unique<loglib::StreamLineSource>(std::filesystem::path(display), std::move(producer));
+        loglib::ParserOptions options;
+        Q_UNUSED(model.BeginStreaming(std::move(streamSource), options));
+
+        QVERIFY(model.IsStreamingActive());
+
+        // Send 10 datagrams. Each lands as one line in the parser.
+        test_common::UdpLogClient client("127.0.0.1", port);
+        for (int i = 0; i < 10; ++i)
+        {
+            client.Send("{\"i\":" + std::to_string(i + 1) + ",\"phase\":\"udp\"}");
+        }
+
+        QVERIFY2(WaitForLineCount(model, 10, std::chrono::seconds(5)), "10 UDP lines must arrive within 5 s");
+        QCOMPARE(model.rowCount(), 10);
+
+        model.Reset();
+        QCoreApplication::processEvents();
+        QVERIFY(!model.IsStreamingActive());
+    }
+
+    // End-to-end smoke test for the TCP network-stream open path.
+    // Single client, plaintext (TLS coverage lives in the lib-tree
+    // `test_tcp_server_producer_tls.cpp` so the apptest does not need
+    // to build OpenSSL into its link line when LOGLIB_NETWORK_TLS is
+    // off on a developer build).
+    void testStreamModeOpensTcpProducer()
+    {
+        loglib::TcpServerProducer::Options opts;
+        opts.bindAddress = "127.0.0.1"; // ephemeral port
+        auto producer = std::make_unique<loglib::TcpServerProducer>(opts);
+        const uint16_t port = producer->BoundPort();
+        QVERIFY(port != 0);
+        const std::string display = producer->DisplayName();
+        QVERIFY(display.starts_with("tcp://127.0.0.1:"));
+
+        LogModel model;
+        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        QVERIFY(lineCountSpy.isValid());
+        model.SetRetentionCap(1000);
+
+        auto streamSource =
+            std::make_unique<loglib::StreamLineSource>(std::filesystem::path(display), std::move(producer));
+        loglib::ParserOptions options;
+        Q_UNUSED(model.BeginStreaming(std::move(streamSource), options));
+
+        QVERIFY(model.IsStreamingActive());
+
+        test_common::TcpLogClient client("127.0.0.1", port);
+        for (int i = 0; i < 10; ++i)
+        {
+            client.Send("{\"i\":" + std::to_string(i + 1) + ",\"phase\":\"tcp\"}");
+        }
+
+        QVERIFY2(WaitForLineCount(model, 10, std::chrono::seconds(5)), "10 TCP lines must arrive within 5 s");
+        QCOMPARE(model.rowCount(), 10);
+
+        client.Close();
+        model.Reset();
+        QCoreApplication::processEvents();
+        QVERIFY(!model.IsStreamingActive());
+    }
+
+    // The `actionOpenNetworkStream` UI entry must be reachable via
+    // `FindUiAction` so apptest harnesses can locate it without going
+    // through the QObject tree (the workaround documented in
+    // `MainWindow::FindUiAction`).
+    void testActionOpenNetworkStreamIsExposed()
+    {
+        // Local variable name avoids the `MainWindowTest::window`
+        // member-shadow C4458 warning under MSVC.
+        MainWindow mainWindow;
+        QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
+        QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via FindUiAction");
+        // Sanity-check the keyboard accelerator the production UI ships.
+        QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+N")));
     }
 
     //  regression: when the paused-buffer cap forces the
