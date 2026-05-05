@@ -224,3 +224,55 @@ if(NOT USE_SYSTEM_EFSW)
 else()
     find_package(efsw REQUIRED)
 endif()
+
+# Standalone Asio header-only build, used by `TcpServerProducer` /
+# `UdpServerProducer` and the `test_common::TcpLogClient` /
+# `UdpLogClient` helpers. Boost.Asio is intentionally *not* used: we
+# avoid a transitive Boost dependency. `ASIO_STANDALONE` selects the
+# standalone path; `ASIO_NO_DEPRECATED` keeps us off the legacy API
+# surface so future Asio bumps are less disruptive.
+option(USE_SYSTEM_ASIO "Use system chriskohlhoff/asio library" OFF)
+if(NOT USE_SYSTEM_ASIO)
+    FetchContent_Declare(
+        asio
+        GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+        GIT_TAG asio-1-30-2
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(asio)
+
+    # Asio's CMakeLists is non-canonical; expose an INTERFACE target
+    # ourselves rather than relying on `asio::asio` from the upstream
+    # CMake (which only exists in select forks).
+    if(NOT TARGET asio::asio)
+        add_library(asio_headers INTERFACE)
+        target_include_directories(asio_headers SYSTEM INTERFACE ${asio_SOURCE_DIR}/asio/include)
+        target_compile_definitions(asio_headers INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
+        # POSIX hosts need pthreads; Windows links ws2_32 / mswsock implicitly via Asio headers.
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            target_link_libraries(asio_headers INTERFACE Threads::Threads)
+        endif()
+        add_library(asio::asio ALIAS asio_headers)
+    endif()
+else()
+    find_package(asio REQUIRED)
+endif()
+
+# TLS support for `TcpServerProducer`. Default ON so packaged binaries
+# (Linux/Windows/macOS) ship working TLS; developers iterating on
+# non-network code can pass `-DLOGLIB_NETWORK_TLS=OFF` to skip the
+# OpenSSL dependency entirely. We use the system OpenSSL via
+# `find_package(OpenSSL REQUIRED)` rather than fetching/building
+# OpenSSL from source -- the build cost (5-15 min on first configure)
+# and the wrapper-maintenance risk outweighed the convenience for a
+# single dep. CONTRIBUTING.md documents the per-platform install
+# command (apt / dnf / brew / winget / vcpkg).
+option(LOGLIB_NETWORK_TLS "Build TLS support for TcpServerProducer (requires system OpenSSL)" ON)
+if(LOGLIB_NETWORK_TLS)
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "TLS support enabled (OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR})")
+else()
+    message(STATUS "TLS support disabled (LOGLIB_NETWORK_TLS=OFF) -- TcpServerProducer will be plaintext-only")
+endif()
