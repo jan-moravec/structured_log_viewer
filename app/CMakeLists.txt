@@ -35,6 +35,8 @@ set(PROJECT_SOURCES
     include/appearance_control.hpp
     src/streaming_control.cpp
     include/streaming_control.hpp
+    src/network_stream_dialog.cpp
+    include/network_stream_dialog.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})

@@ -3,9 +3,11 @@
 
 #include "appearance_control.hpp"
 #include "filter_editor.hpp"
+#include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 
+#include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -14,6 +16,8 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/tcp_server_producer.hpp>
+#include <loglib/udp_server_producer.hpp>
 
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -171,6 +175,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
+    connect(ui->actionOpenNetworkStream, &QAction::triggered, this, &MainWindow::OpenNetworkStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
@@ -658,6 +663,85 @@ void MainWindow::OpenLogStream()
     mModel->BeginStreaming(std::move(streamSource), std::move(options));
 }
 
+void MainWindow::OpenNetworkStream()
+{
+    NetworkStreamDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+    const auto cfg = dialog.Configuration();
+
+    std::unique_ptr<loglib::BytesProducer> producer;
+    std::string displayName;
+    try
+    {
+        if (cfg.protocol == NetworkStreamDialog::Protocol::Tcp)
+        {
+            loglib::TcpServerProducer::Options opts;
+            opts.bindAddress = cfg.bindAddress.toStdString();
+            opts.port = cfg.port;
+            opts.maxConcurrentClients = cfg.maxClients;
+            if (cfg.tlsEnabled)
+            {
+                opts.tls.emplace();
+                opts.tls->certificateChain = cfg.tlsCertChainPath.toStdString();
+                opts.tls->privateKey = cfg.tlsPrivateKeyPath.toStdString();
+                opts.tls->caBundle = cfg.tlsCaBundlePath.toStdString();
+                opts.tls->requireClientCertificate = cfg.tlsRequireClientCertificate;
+            }
+            auto tcp = std::make_unique<loglib::TcpServerProducer>(std::move(opts));
+            displayName = tcp->DisplayName();
+            producer = std::move(tcp);
+        }
+        else
+        {
+            loglib::UdpServerProducer::Options opts;
+            opts.bindAddress = cfg.bindAddress.toStdString();
+            opts.port = cfg.port;
+            auto udp = std::make_unique<loglib::UdpServerProducer>(std::move(opts));
+            displayName = udp->DisplayName();
+            producer = std::move(udp);
+        }
+    }
+    catch (const std::exception &e)
+    {
+        ShowParseErrors(
+            "Error Opening Network Stream",
+            {std::string("Failed to start network listener on ") + cfg.bindAddress.toStdString() + ":" +
+             std::to_string(cfg.port) + ": " + e.what()}
+        );
+        return;
+    }
+
+    // Mirror the `OpenLogStream` reset order so residual state cannot
+    // leak into the new session.
+    mModel->Reset();
+    ClearAllFilters();
+
+    mStreamingFileName = QString::fromStdString(displayName);
+    mSessionMode = SessionMode::LiveTail;
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    mFirstStreamingBatchSeen = false;
+    SetConfigurationUiEnabled(false);
+    UpdateStreamingStatus();
+    UpdateStreamToolbarVisibility();
+    ApplyDisplayOrder();
+
+    auto config = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+    loglib::ParserOptions options;
+    options.configuration = std::move(config);
+
+    // The displayName doubles as the LineSource's "path" for
+    // `RawLine` lookups; for network streams there is no real
+    // filesystem path, so we use the producer's e.g. `tcp://...`
+    // string. `StreamLineSource` only treats it as opaque identity.
+    auto streamSource =
+        std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
+    mModel->BeginStreaming(std::move(streamSource), std::move(options));
+}
+
 void MainWindow::TogglePauseStream(bool paused)
 {
     if (!mModel->IsStreamingActive())
@@ -854,6 +938,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     if (name == QStringLiteral("actionOpenLogStream"))
     {
         return ui->actionOpenLogStream;
+    }
+    if (name == QStringLiteral("actionOpenNetworkStream"))
+    {
+        return ui->actionOpenNetworkStream;
     }
     if (name == QStringLiteral("actionSaveConfiguration"))
     {
