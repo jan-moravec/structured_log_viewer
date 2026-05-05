@@ -28,10 +28,10 @@
 namespace loglib::internal
 {
 
-// Bytes-queue / back-pressure plumbing now lives in
-// `LineBytesQueue` (`loglib/internal/line_bytes_queue.hpp`) so TCP and
-// UDP share a single tested implementation; sessions push complete-line
-// payloads through `mImpl->mReadyBuffer.Append(...)` directly.
+// Bytes-queue and line-aware back-pressure are shared with
+// `UdpServerProducer` via `LineBytesQueue`
+// (`loglib/internal/line_bytes_queue.hpp`); sessions push complete-line
+// payloads through `mImpl->mReadyBuffer.Append(...)`.
 
 class TcpServerProducerImpl;
 
@@ -114,10 +114,9 @@ public:
     [[nodiscard]] size_t TotalClientsRejected() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
 
-    /// Called from a session's read handler. Pushes complete-line
-    /// bytes from @p completeLines into the shared queue under the
-    /// mutex, applying back-pressure. @p carryDeltaSize is just for
-    /// asserting on the test side that no torn-line bytes leaked.
+    /// Called from a session's read handler. Pushes the bytes in
+    /// @p completeLines (always ending on a `\n` boundary) into the
+    /// shared queue under the mutex, applying back-pressure.
     void OnSessionLines(std::string_view completeLines);
 
     /// Called from a session's `Finalize`. Drops the session from

@@ -43,7 +43,10 @@ qt_add_library(logapp STATIC ${PROJECT_SOURCES})
 
 target_include_directories(logapp PUBLIC ./include)
 
-target_link_libraries(logapp PUBLIC Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network loglib project_warnings)
+target_link_libraries(
+    logapp
+    PUBLIC Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network loglib project_warnings
+)
 
 qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../resources/resources.qrc)
 qt_add_executable(StructuredLogViewer MANUAL_FINALIZATION src/main.cpp ${RESOURCES})

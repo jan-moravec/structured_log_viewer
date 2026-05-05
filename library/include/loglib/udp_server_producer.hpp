@@ -33,12 +33,11 @@ class UdpServerProducerImpl; // pimpl forward decl
 ///   - The producer appends a synthetic `\n` to any datagram missing
 ///     one so datagram boundaries always match line boundaries
 ///     downstream of `RunStreamingParseLoop`.
-///   - Source address is intentionally dropped: the GUI displays one
-///     interleaved view; per-peer attribution is a follow-up.
+///   - Source address is dropped: the GUI displays one interleaved
+///     view across all peers.
 ///   - `maxQueueBytes` provides simple back-pressure: when the parser
 ///     falls behind, the oldest queued bytes are dropped and counted
-///     in `DroppedByteCount` (surfaced to the status bar in a
-///     follow-up).
+///     in `DroppedByteCount`.
 class UdpServerProducer final : public BytesProducer
 {
 public:

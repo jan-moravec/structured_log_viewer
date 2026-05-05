@@ -23,15 +23,10 @@ namespace loglib::internal
 /// drop count goes into a caller-supplied atomic so the producer can
 /// surface it via its `DroppedByteCount` accessor.
 ///
-/// Memory: backed by `std::deque<char>` which gives O(1) `pop_front`
-/// and bounded memory under sustained back-pressure -- the previous
-/// `std::vector<char> + consumed-index` pattern grew to O(N²) in the
-/// pathological case where each append needs to drop bytes (the
-/// vector did not compact until consumed >= size/2, so memory crept
-/// up between compactions). Iteration over deque slots is slightly
-/// slower than over a vector, but the parse loop's read sizes
-/// (`STREAMING_READ_BUFFER_SIZE`) are well below a deque block, so
-/// most reads stay in one block.
+/// Backed by `std::deque<char>` for O(1) `pop_front` and bounded
+/// resident memory under sustained back-pressure. Read sizes
+/// (`STREAMING_READ_BUFFER_SIZE`) stay below a deque block, so most
+/// `Read` calls do not cross a block boundary.
 class LineBytesQueue
 {
 public:

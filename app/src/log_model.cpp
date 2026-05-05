@@ -747,8 +747,7 @@ const std::vector<std::string> &LogModel::StreamingErrors() const
         {
             const std::size_t delta = dropped - mLastReportedShutdownDropCount;
             mStreamingErrors.emplace_back(
-                std::string("Lost ") + std::to_string(delta) +
-                (delta == 1 ? " parsed batch" : " parsed batches") +
+                std::string("Lost ") + std::to_string(delta) + (delta == 1 ? " parsed batch" : " parsed batches") +
                 " between the parser and the GUI when the stream was stopped (back-pressure shutdown)."
             );
             mLastReportedShutdownDropCount = dropped;

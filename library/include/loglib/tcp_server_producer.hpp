@@ -37,13 +37,12 @@ class TcpServerProducerImpl; // pimpl forward decl
 ///     append-only at line boundaries: a partial line from peer A
 ///     never interleaves into a partial line from peer B. On a peer
 ///     disconnect the carry is flushed as a synthetic final line.
-///   - Source addresses are deliberately dropped: the GUI shows one
-///     interleaved view (matching the user-confirmed design); per-peer
-///     attribution is a follow-up.
+///   - Source addresses are dropped: the GUI shows one interleaved
+///     view across all peers.
 ///   - `SetStatusCallback` reports `Waiting` until the first byte
-///     arrives from any client, then `Running`. We do not flip back to
-///     `Waiting` on an idle period: TCP listening with no clients is
-///     normal, not an environmental fault.
+///     arrives from any client, then `Running`. It does not flip back
+///     to `Waiting` on an idle period: TCP listening with no clients
+///     is normal, not an environmental fault.
 class TcpServerProducer final : public BytesProducer
 {
 public:

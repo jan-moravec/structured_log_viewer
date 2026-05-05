@@ -143,7 +143,8 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
     mTlsCaPath->setPlaceholderText(tr("Optional PEM CA bundle for client cert verification"));
     mTlsCaPath->setAccessibleName(tr("TLS CA bundle path"));
     tlsLayout->addRow(
-        tr("CA bundle:"), PathRow(this, mTlsCaPath, &NetworkStreamDialog::BrowseCaBundle, this, tr("Browse for CA bundle"))
+        tr("CA bundle:"),
+        PathRow(this, mTlsCaPath, &NetworkStreamDialog::BrowseCaBundle, this, tr("Browse for CA bundle"))
     );
 
     mTlsRequireClientCert = new QCheckBox(tr("Require valid client certificate"), mTlsGroup);
@@ -358,8 +359,7 @@ void NetworkStreamDialog::SaveToSettings() const
     // Persist the *intended* TCP TLS choice so the next session
     // restores it even if the user happened to be on UDP at accept
     // time (where the live checkbox is forced off).
-    const bool persistedTlsEnabled =
-        mTcpRadio->isChecked() ? mTlsEnable->isChecked() : mTcpTlsEnableRemembered;
+    const bool persistedTlsEnabled = mTcpRadio->isChecked() ? mTlsEnable->isChecked() : mTcpTlsEnableRemembered;
     settings.setValue(KEY_TLS_ENABLED, persistedTlsEnabled);
     settings.setValue(KEY_TLS_CERT, mTlsCertPath->text());
     settings.setValue(KEY_TLS_KEY, mTlsKeyPath->text());
