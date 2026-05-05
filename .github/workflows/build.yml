@@ -199,7 +199,7 @@ jobs:
         # `C:\Program Files\OpenSSL-Win64` layout used elsewhere.
         # `--no-progress` keeps the action log readable.
         shell: powershell
-        run: choco install openssl --yes --no-progress
+        run: choco install openssl --version=3.6.2 --yes --no-progress
 
       - name: Configure
         shell: cmd
