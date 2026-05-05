@@ -1,5 +1,7 @@
 #include "loglib/udp_server_producer.hpp"
 
+#include "loglib/internal/line_bytes_queue.hpp"
+
 #include <asio.hpp>
 
 #include <algorithm>
@@ -7,7 +9,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -52,6 +53,13 @@ private:
     /// would exceed `mOptions.maxQueueBytes`.
     void AppendDatagramLocked(const char *data, size_t size);
 
+    /// Edge-triggered transition `Waiting -> Running` once a real
+    /// datagram has arrived. Mirrors `TcpServerProducer::MarkRunning`
+    /// so the GUI badge has the same semantics across protocols
+    /// (bound-but-no-traffic is `Waiting`, first byte flips to
+    /// `Running`, and the producer never falls back).
+    void MarkRunning();
+
     UdpServerProducer::Options mOptions;
     std::string mDisplayName;
 
@@ -66,13 +74,12 @@ private:
     mutable std::mutex mMutex;
     std::condition_variable mCv;
 
-    /// Byte queue (FIFO). `mReadyConsumed` tracks how much of the
-    /// front we've already handed to `Read`; we periodically compact
-    /// once consumption exceeds half the buffer. Same shape as
-    /// `TailingBytesProducer` so the parse loop's `Read`/`WaitForBytes`
-    /// pattern stays uniform.
-    std::vector<char> mReadyBuffer;
-    size_t mReadyConsumed = 0;
+    /// Byte queue (FIFO). Backed by a `std::deque<char>` ring so
+    /// back-pressure-induced front drops are O(K-bytes-dropped) and
+    /// never trigger a full-buffer shift. The wrapper handles the
+    /// line-aware drop policy so this file stays focused on Asio
+    /// plumbing.
+    LineBytesQueue mReadyBuffer;
 
     std::atomic<bool> mStopRequested{false};
     std::atomic<bool> mWorkerExited{false};
@@ -81,12 +88,14 @@ private:
 
     uint16_t mBoundPort = 0;
 
-    /// Status callback bookkeeping. Edge-triggered. UDP has no
-    /// "connection state" to track, so we report `Running` once the
-    /// socket is open and never flip back; we keep the field anyway
-    /// to satisfy the `BytesProducer` contract uniformly.
+    /// Status callback bookkeeping. Edge-triggered. We start in
+    /// `Waiting` (socket bound but no datagrams seen yet) and flip to
+    /// `Running` exactly once on the first arrival, parity with
+    /// `TcpServerProducer`. UDP has no per-connection state to track
+    /// past that, so the status never falls back to `Waiting`.
     mutable std::mutex mCallbackMutex;
     std::function<void(SourceStatus)> mStatusCallback;
+    SourceStatus mLastReportedStatus = SourceStatus::Waiting;
 
     std::thread mWorker;
 };
@@ -158,25 +167,8 @@ size_t UdpServerProducerImpl::Read(std::span<char> buffer)
     {
         return 0;
     }
-
     std::lock_guard<std::mutex> lock(mMutex);
-    const size_t available = mReadyBuffer.size() - mReadyConsumed;
-    if (available == 0)
-    {
-        return 0;
-    }
-    const size_t toCopy = std::min(available, buffer.size());
-    std::memcpy(buffer.data(), mReadyBuffer.data() + mReadyConsumed, toCopy);
-    mReadyConsumed += toCopy;
-
-    // Compact when we've consumed >= half the buffer to keep memory
-    // bounded for long-running streams.
-    if (mReadyConsumed * 2 >= mReadyBuffer.size() && mReadyConsumed > 0)
-    {
-        mReadyBuffer.erase(mReadyBuffer.begin(), mReadyBuffer.begin() + static_cast<std::ptrdiff_t>(mReadyConsumed));
-        mReadyConsumed = 0;
-    }
-    return toCopy;
+    return mReadyBuffer.Read(buffer);
 }
 
 void UdpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
@@ -187,7 +179,7 @@ void UdpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     }
     std::unique_lock<std::mutex> lock(mMutex);
     mCv.wait_for(lock, timeout, [&] {
-        return (mReadyBuffer.size() - mReadyConsumed) > 0 || mStopRequested.load(std::memory_order_acquire) ||
+        return !mReadyBuffer.Empty() || mStopRequested.load(std::memory_order_acquire) ||
                mWorkerExited.load(std::memory_order_acquire);
     });
 }
@@ -200,16 +192,26 @@ void UdpServerProducerImpl::Stop() noexcept
     }
 
     // Close the socket from the worker thread to avoid races between
-    // the running `async_receive_from` and the destructor. Posting to
-    // `io_context` is safe from any thread.
-    asio::post(mIoContext, [this] {
-        asio::error_code ec;
-        mSocket.close(ec);
-        // Closing cancels the in-flight receive with
-        // `operation_aborted`; the completion handler observes
-        // `mStopRequested` and stops re-arming.
-    });
-    mIoContext.stop();
+    // the running `async_receive_from` and the destructor. The close
+    // cancels the in-flight receive with `operation_aborted`; the
+    // completion handler observes `mStopRequested` and does not
+    // re-arm, so the io_context's work count drops to zero and
+    // `run()` returns naturally. We deliberately do NOT call
+    // `mIoContext.stop()` -- that would abandon the posted close
+    // handler and leave the close-on-destruct fallback to clean up.
+    try
+    {
+        asio::post(mIoContext, [this] {
+            asio::error_code ec;
+            mSocket.close(ec);
+        });
+    }
+    catch (...)
+    {
+        // `asio::post` can theoretically throw on allocator failure;
+        // hard-stop as the safety net so the producer always terminates.
+        mIoContext.stop();
+    }
     mCv.notify_all();
 }
 
@@ -220,7 +222,7 @@ bool UdpServerProducerImpl::IsClosed() const noexcept
         return false;
     }
     std::lock_guard<std::mutex> lock(mMutex);
-    return (mReadyBuffer.size() - mReadyConsumed) == 0;
+    return mReadyBuffer.Empty();
 }
 
 std::string UdpServerProducerImpl::DisplayName() const
@@ -231,18 +233,21 @@ std::string UdpServerProducerImpl::DisplayName() const
 void UdpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
 {
     std::function<void(SourceStatus)> snapshot;
+    SourceStatus current{};
     {
         std::lock_guard<std::mutex> lock(mCallbackMutex);
         mStatusCallback = std::move(callback);
         snapshot = mStatusCallback;
+        current = mLastReportedStatus;
     }
     // Fire once with the current state so the GUI gets a fresh
-    // edge-triggered baseline. We always report `Running` for UDP --
-    // the socket is bound and ready to receive even when no datagrams
-    // have arrived yet.
+    // edge-triggered baseline. UDP starts in `Waiting`; `MarkRunning`
+    // promotes to `Running` on the first datagram. Replaying the
+    // current state matches the TCP producer's behaviour so consumers
+    // installed late still see the live status.
     if (snapshot)
     {
-        snapshot(SourceStatus::Running);
+        snapshot(current);
     }
 }
 
@@ -259,6 +264,24 @@ size_t UdpServerProducerImpl::DatagramCount() const noexcept
 size_t UdpServerProducerImpl::DroppedByteCount() const noexcept
 {
     return mDroppedByteCount.load(std::memory_order_acquire);
+}
+
+void UdpServerProducerImpl::MarkRunning()
+{
+    std::function<void(SourceStatus)> cb;
+    {
+        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        if (mLastReportedStatus == SourceStatus::Running)
+        {
+            return;
+        }
+        mLastReportedStatus = SourceStatus::Running;
+        cb = mStatusCallback;
+    }
+    if (cb)
+    {
+        cb(SourceStatus::Running);
+    }
 }
 
 void UdpServerProducerImpl::StartReceive()
@@ -296,6 +319,7 @@ void UdpServerProducerImpl::StartReceive()
                     AppendDatagramLocked(mRecvBuffer.data(), bytes);
                 }
                 mDatagramCount.fetch_add(1, std::memory_order_acq_rel);
+                MarkRunning();
                 mCv.notify_all();
             }
             StartReceive();
@@ -309,59 +333,25 @@ void UdpServerProducerImpl::AppendDatagramLocked(const char *data, size_t size)
     {
         return;
     }
-    const bool needsNewline = data[size - 1] != '\n';
-
-    // Back-pressure: drop oldest queued bytes (after `mReadyConsumed`)
-    // if appending this datagram would exceed the cap. We never drop
-    // already-in-flight (post-consumed) bytes, only un-read ones, so
-    // the consumer never sees a torn line: the FIFO drop happens at
-    // the line-boundary granularity that the parse loop consumes at.
-    const size_t willAdd = size + (needsNewline ? 1 : 0);
-    const size_t cap = mOptions.maxQueueBytes;
-    if (cap > 0)
+    // Normalise the trailing newline first so the line-aware
+    // back-pressure path inside `LineBytesQueue::Append` always sees
+    // a complete-line payload (the framing contract the parser
+    // expects). The synthetic newline goes through a stack buffer
+    // when the datagram is large enough to need it; for the common
+    // pre-terminated case we hand the original pointer through.
+    if (data[size - 1] == '\n')
     {
-        const size_t pendingNow = mReadyBuffer.size() - mReadyConsumed;
-        if (pendingNow + willAdd > cap)
-        {
-            // Drop the oldest unread bytes until we fit, but never
-            // drop more than what's currently pending.
-            const size_t over = pendingNow + willAdd - cap;
-            const size_t dropFrom = std::min(over, pendingNow);
-
-            // Round drop up to the next newline so the consumer
-            // doesn't get a torn line. If no newline within the
-            // pending region, drop everything (extreme back-pressure;
-            // the parser is hopelessly behind).
-            size_t dropTo = mReadyConsumed + dropFrom;
-            const size_t pendingEnd = mReadyBuffer.size();
-            while (dropTo < pendingEnd && mReadyBuffer[dropTo] != '\n')
-            {
-                ++dropTo;
-            }
-            if (dropTo < pendingEnd && mReadyBuffer[dropTo] == '\n')
-            {
-                ++dropTo; // include the newline so the next byte is a fresh line start
-            }
-
-            const size_t actualDrop = dropTo - mReadyConsumed;
-            mDroppedByteCount.fetch_add(actualDrop, std::memory_order_acq_rel);
-            mReadyConsumed = dropTo;
-
-            // Compact eagerly under back-pressure to free memory.
-            if (mReadyConsumed > 0)
-            {
-                mReadyBuffer.erase(
-                    mReadyBuffer.begin(), mReadyBuffer.begin() + static_cast<std::ptrdiff_t>(mReadyConsumed)
-                );
-                mReadyConsumed = 0;
-            }
-        }
+        mReadyBuffer.Append(data, size, mOptions.maxQueueBytes, mDroppedByteCount);
     }
-
-    mReadyBuffer.insert(mReadyBuffer.end(), data, data + size);
-    if (needsNewline)
+    else
     {
-        mReadyBuffer.push_back('\n');
+        // One pass: append the datagram and the synthetic newline as
+        // separate ops -- both share the same back-pressure cap, so
+        // the second call will drop additional history if needed
+        // without ever creating a torn line.
+        mReadyBuffer.Append(data, size, mOptions.maxQueueBytes, mDroppedByteCount);
+        const char nl = '\n';
+        mReadyBuffer.Append(&nl, 1, mOptions.maxQueueBytes, mDroppedByteCount);
     }
 }
 

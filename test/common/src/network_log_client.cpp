@@ -113,7 +113,30 @@ TcpLogClientImpl::TcpLogClientImpl(std::string host, uint16_t port, std::optiona
             mSslStream->set_verify_mode(asio::ssl::verify_peer);
         }
 
-        const std::string sni = tls->serverNameIndication.empty() ? host : tls->serverNameIndication;
+        // Choose the SNI value carefully: RFC 6066 forbids sending an
+        // IP literal as SNI, and OpenSSL >= 3 actively rejects it.
+        // When the caller did not pin an explicit SNI and `host`
+        // happens to be an IPv4 / IPv6 literal, omit the extension
+        // altogether -- TLS still works (handshake just doesn't carry
+        // SNI). Caller-supplied SNI is always passed through unchanged
+        // because the test fixtures occasionally want to exercise that
+        // code path against a server that requires it.
+        std::string sni;
+        if (!tls->serverNameIndication.empty())
+        {
+            sni = tls->serverNameIndication;
+        }
+        else
+        {
+            asio::error_code parseEc;
+            asio::ip::make_address(host, parseEc);
+            if (parseEc)
+            {
+                // `host` is not a valid IPv4 / IPv6 literal -> treat it
+                // as a hostname and use it for SNI.
+                sni = host;
+            }
+        }
         if (!sni.empty())
         {
             // SNI extension; safe to ignore failure (older servers).

@@ -127,6 +127,10 @@ public:
 
     /// Per-line errors peeled off `StreamedBatch::errors` since the last
     /// `Clear`/`BeginStreaming`. `LogTable::AppendBatch` discards them.
+    /// Note: this method also opportunistically appends a synthetic
+    /// error each time the sink reports newly-dropped batches (back-
+    /// pressure shutdown), so the returned reference may grow between
+    /// calls even when no new parse errors arrived.
     const std::vector<std::string> &StreamingErrors() const;
 
     /// Whether a live-tail / static-streaming session is currently armed.
@@ -201,7 +205,14 @@ private:
     /// `EndStreaming`/`Reset` runs on the GUI thread.
     bool mStreamingActive = false;
 
-    std::vector<std::string> mStreamingErrors;
+    mutable std::vector<std::string> mStreamingErrors;
+
+    /// High-water mark of `mSink->BatchesDroppedDuringShutdown()` we
+    /// have already represented in `mStreamingErrors`. `StreamingErrors()`
+    /// uses it to decide whether to append a fresh synthetic message
+    /// for newly-dropped batches without double-counting on repeated
+    /// reads. Reset alongside `mStreamingErrors` on session start.
+    mutable std::size_t mLastReportedShutdownDropCount = 0;
 
     /// Retention cap. `0` means unbounded; the live-tail entry applies
     /// `StreamingControl::DEFAULT_RETENTION_LINES` when still 0 at

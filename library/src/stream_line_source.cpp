@@ -138,8 +138,15 @@ size_t StreamLineSource::Size() const noexcept
 size_t StreamLineSource::OwnedMemoryBytes() const noexcept
 {
     std::lock_guard<std::mutex> guard(mLock);
-    // `std::deque` lacks `capacity()`; estimate per-string overhead
-    // by size and add per-entry capacity.
+    // STRICT LOWER BOUND: this counts the per-string control block
+    // (`sizeof(std::string)` per element) plus each string's heap
+    // `capacity()`. It does NOT count `std::deque`'s per-block
+    // bookkeeping (deque has no public `capacity()`), nor any small-
+    // string-optimisation slack inside the control block, nor the
+    // mutex / member overhead of `*this`. For "is this stream growing
+    // unboundedly?" diagnostics the lower bound is more useful than a
+    // pessimistic estimate that conflates allocator block-rounding
+    // with logical growth, so callers should treat it as such.
     size_t total = (mLines.size() + mLineOwnedBytes.size()) * sizeof(std::string);
     for (const auto &line : mLines)
     {

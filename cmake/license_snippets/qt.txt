@@ -13,9 +13,12 @@ Source code for Qt is available from:
 
 Copyright (C) The Qt Company Ltd. and other contributors.
 
-The full text of the LGPL-3.0 license is available at:
+The full LGPL-3.0 text (which incorporates the GPL-3.0 by
+reference per LGPL-3.0 section 0) is reproduced verbatim in
+two dedicated sections of this bundle, named:
 
-  https://www.gnu.org/licenses/lgpl-3.0.txt
+  === LGPL-3.0 (Qt) ===
+  === GPL-3.0 (Qt LGPL incorporates) ===
 
 Compliance summary for this distribution:
 
@@ -23,6 +26,6 @@ Compliance summary for this distribution:
     against a different (LGPL-compatible) Qt build.
   - The Qt source matching the linked version is available from
     `download.qt.io` for the lifetime of the upstream Qt release.
-  - This file plus the LGPL-3.0 text linked above constitute the
-    "as a work using the Library" attribution required by section
-    4(d) of the LGPL-3.0.
+  - This file plus the LGPL-3.0 text and GPL-3.0 text reproduced
+    in this bundle constitute the "as a work using the Library"
+    attribution required by section 4(d) of the LGPL-3.0.

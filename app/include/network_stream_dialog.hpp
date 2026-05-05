@@ -41,7 +41,7 @@ public:
         Protocol protocol = Protocol::Tcp;
         QString bindAddress;
         uint16_t port = 0;
-        size_t maxClients = 16; // TCP-only
+        size_t maxConcurrentClients = 16; // TCP-only
 
         bool tlsEnabled = false;
         QString tlsCertChainPath;
@@ -72,7 +72,7 @@ private:
     QRadioButton *mUdpRadio = nullptr;
     QLineEdit *mBindAddress = nullptr;
     QSpinBox *mPort = nullptr;
-    QSpinBox *mMaxClients = nullptr;
+    QSpinBox *mMaxConcurrentClients = nullptr;
 
     QGroupBox *mTlsGroup = nullptr;
     QCheckBox *mTlsEnable = nullptr;
@@ -80,4 +80,11 @@ private:
     QLineEdit *mTlsKeyPath = nullptr;
     QLineEdit *mTlsCaPath = nullptr;
     QCheckBox *mTlsRequireClientCert = nullptr;
+
+    /// Captured TCP TLS state so we can restore it when the user
+    /// toggles UDP -> TCP after disabling TLS in the UDP step.
+    /// `OnProtocolChanged` writes the prior TCP TLS-enable state here
+    /// before forcing the checkbox off for UDP, then reads it back when
+    /// returning to TCP.
+    bool mTcpTlsEnableRemembered = false;
 };

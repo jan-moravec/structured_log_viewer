@@ -327,6 +327,11 @@ std::size_t QtStreamingLogSink::PendingCapacity() const noexcept
     return mPending.Capacity();
 }
 
+std::size_t QtStreamingLogSink::BatchesDroppedDuringShutdown() const noexcept
+{
+    return mPending.BatchesDroppedDuringShutdown();
+}
+
 loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::StreamedBatch> &&batches)
 {
     loglib::StreamedBatch out;

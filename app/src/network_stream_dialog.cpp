@@ -3,11 +3,14 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHostAddress>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSettings>
@@ -20,23 +23,42 @@ constexpr auto SETTINGS_GROUP = "networkStream";
 constexpr auto KEY_PROTOCOL = "protocol";
 constexpr auto KEY_BIND = "bindAddress";
 constexpr auto KEY_PORT = "port";
-constexpr auto KEY_MAX_CLIENTS = "maxClients";
+constexpr auto KEY_MAX_CLIENTS = "maxConcurrentClients";
 constexpr auto KEY_TLS_ENABLED = "tls/enabled";
 constexpr auto KEY_TLS_CERT = "tls/certificateChain";
 constexpr auto KEY_TLS_KEY = "tls/privateKey";
 constexpr auto KEY_TLS_CA = "tls/caBundle";
 constexpr auto KEY_TLS_REQUIRE_CLIENT = "tls/requireClientCert";
 
+// Numeric defaults / bounds for the spin boxes. Pulled into named
+// constants because clang-tidy's `cppcoreguidelines-avoid-magic-numbers`
+// would otherwise flag the literals inline, and naming them also
+// documents the intent for the next reader.
+constexpr int MAX_PORT_NUMBER = 65535;
+constexpr int DEFAULT_PORT_NUMBER = 5141;
+constexpr int MAX_CONCURRENT_CLIENTS_UPPER = 4096;
+constexpr int DEFAULT_MAX_CONCURRENT_CLIENTS = 16;
+
 /// Add a "..." browse button next to @p edit that opens a file picker
 /// rooted at the edit's current text and writes the selection back.
 /// `parent` becomes the dialog's parent so the file picker is modal
-/// over the network-stream dialog.
-QHBoxLayout *PathRow(QWidget *parent, QLineEdit *edit, void (NetworkStreamDialog::*browseSlot)(), QObject *receiver)
+/// over the network-stream dialog. @p accessibleName is set on the
+/// button so screen readers can disambiguate the three TLS-row Browse
+/// buttons (which all share the same visible label).
+QHBoxLayout *PathRow(
+    QWidget *parent,
+    QLineEdit *edit,
+    void (NetworkStreamDialog::*browseSlot)(),
+    QObject *receiver,
+    const QString &accessibleName
+)
 {
     auto *row = new QHBoxLayout();
     row->setContentsMargins(0, 0, 0, 0);
     row->addWidget(edit, 1);
     auto *button = new QPushButton(QObject::tr("Browse..."), parent);
+    button->setAccessibleName(accessibleName);
+    button->setToolTip(accessibleName);
     QObject::connect(button, &QPushButton::clicked, receiver, browseSlot);
     row->addWidget(button);
     return row;
@@ -71,19 +93,22 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
 
     mBindAddress = new QLineEdit("0.0.0.0", bindBox);
     mBindAddress->setToolTip(tr("0.0.0.0 = IPv4-any, :: = IPv6-any dual-stack, 127.0.0.1 = loopback only"));
+    mBindAddress->setAccessibleName(tr("Bind address"));
     bindForm->addRow(tr("Bind address:"), mBindAddress);
 
     mPort = new QSpinBox(bindBox);
-    mPort->setRange(0, 65535);
-    mPort->setValue(5141);
+    mPort->setRange(0, MAX_PORT_NUMBER);
+    mPort->setValue(DEFAULT_PORT_NUMBER);
     mPort->setToolTip(tr("0 requests an OS-assigned ephemeral port (useful for testing)"));
+    mPort->setAccessibleName(tr("Bind port"));
     bindForm->addRow(tr("Port:"), mPort);
 
-    mMaxClients = new QSpinBox(bindBox);
-    mMaxClients->setRange(1, 4096);
-    mMaxClients->setValue(16);
-    mMaxClients->setToolTip(tr("TCP only: maximum simultaneously-connected clients"));
-    bindForm->addRow(tr("Max clients (TCP):"), mMaxClients);
+    mMaxConcurrentClients = new QSpinBox(bindBox);
+    mMaxConcurrentClients->setRange(1, MAX_CONCURRENT_CLIENTS_UPPER);
+    mMaxConcurrentClients->setValue(DEFAULT_MAX_CONCURRENT_CLIENTS);
+    mMaxConcurrentClients->setToolTip(tr("TCP only: maximum simultaneously-connected clients"));
+    mMaxConcurrentClients->setAccessibleName(tr("Maximum concurrent TCP clients"));
+    bindForm->addRow(tr("Max concurrent clients (TCP):"), mMaxConcurrentClients);
 
     outerLayout->addWidget(bindBox);
 
@@ -95,23 +120,34 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
     mTlsGroup = new QGroupBox(tr("TLS (TCP only)"), this);
     auto *tlsLayout = new QFormLayout(mTlsGroup);
     mTlsEnable = new QCheckBox(tr("Enable TLS"), mTlsGroup);
+    mTlsEnable->setAccessibleName(tr("Enable TLS for this TCP listener"));
     tlsLayout->addRow(mTlsEnable);
 
     mTlsCertPath = new QLineEdit(mTlsGroup);
     mTlsCertPath->setPlaceholderText(tr("PEM file with the server certificate chain"));
+    mTlsCertPath->setAccessibleName(tr("TLS certificate chain path"));
     tlsLayout->addRow(
-        tr("Certificate chain:"), PathRow(this, mTlsCertPath, &NetworkStreamDialog::BrowseCertChain, this)
+        tr("Certificate chain:"),
+        PathRow(this, mTlsCertPath, &NetworkStreamDialog::BrowseCertChain, this, tr("Browse for certificate chain"))
     );
 
     mTlsKeyPath = new QLineEdit(mTlsGroup);
     mTlsKeyPath->setPlaceholderText(tr("PEM file with the server private key"));
-    tlsLayout->addRow(tr("Private key:"), PathRow(this, mTlsKeyPath, &NetworkStreamDialog::BrowsePrivateKey, this));
+    mTlsKeyPath->setAccessibleName(tr("TLS private key path"));
+    tlsLayout->addRow(
+        tr("Private key:"),
+        PathRow(this, mTlsKeyPath, &NetworkStreamDialog::BrowsePrivateKey, this, tr("Browse for private key"))
+    );
 
     mTlsCaPath = new QLineEdit(mTlsGroup);
     mTlsCaPath->setPlaceholderText(tr("Optional PEM CA bundle for client cert verification"));
-    tlsLayout->addRow(tr("CA bundle:"), PathRow(this, mTlsCaPath, &NetworkStreamDialog::BrowseCaBundle, this));
+    mTlsCaPath->setAccessibleName(tr("TLS CA bundle path"));
+    tlsLayout->addRow(
+        tr("CA bundle:"), PathRow(this, mTlsCaPath, &NetworkStreamDialog::BrowseCaBundle, this, tr("Browse for CA bundle"))
+    );
 
     mTlsRequireClientCert = new QCheckBox(tr("Require valid client certificate"), mTlsGroup);
+    mTlsRequireClientCert->setAccessibleName(tr("Require valid client certificate"));
     tlsLayout->addRow(mTlsRequireClientCert);
 
 #ifndef LOGLIB_HAS_TLS
@@ -133,6 +169,11 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
     outerLayout->addWidget(buttons);
 
     LoadFromSettings();
+    // Seed the remembered TCP TLS toggle from whatever LoadFromSettings
+    // applied, so the first UDP -> TCP roundtrip restores the same
+    // value. Without this seed, switching to UDP first and back to TCP
+    // would always restore "off" regardless of the persisted choice.
+    mTcpTlsEnableRemembered = mTlsEnable->isChecked();
     OnProtocolChanged();
     OnTlsToggled();
 }
@@ -140,19 +181,28 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
 void NetworkStreamDialog::OnProtocolChanged()
 {
     const bool isTcp = mTcpRadio->isChecked();
-    mMaxClients->setEnabled(isTcp);
-    // TLS is TCP-only; DTLS is out of scope.
-    mTlsGroup->setEnabled(
-        isTcp
+    mMaxConcurrentClients->setEnabled(isTcp);
 #ifdef LOGLIB_HAS_TLS
-        && true
+    constexpr bool TLS_BUILT_IN = true;
 #else
-        && false
+    constexpr bool TLS_BUILT_IN = false;
 #endif
-    );
+    mTlsGroup->setEnabled(isTcp && TLS_BUILT_IN);
     if (!isTcp)
     {
-        mTlsEnable->setChecked(false);
+        // Remember whatever TCP-side TLS choice the user had so we
+        // can put it back on the next TCP toggle. Forcing the
+        // checkbox off avoids surprising the user with an enabled-but-
+        // disabled TLS state when they later return to TCP.
+        if (mTlsEnable->isChecked())
+        {
+            mTcpTlsEnableRemembered = true;
+            mTlsEnable->setChecked(false);
+        }
+    }
+    else if (mTcpTlsEnableRemembered && TLS_BUILT_IN)
+    {
+        mTlsEnable->setChecked(true);
     }
     OnTlsToggled();
 }
@@ -201,6 +251,72 @@ void NetworkStreamDialog::BrowseCaBundle()
 
 void NetworkStreamDialog::Accepted()
 {
+    // Front-load every validation that would otherwise surface as a
+    // post-accept exception inside `MainWindow::OpenNetworkStream`
+    // (where the dialog has already been dismissed and the bad config
+    // persisted to QSettings). Each failure pops a warning and
+    // returns; the dialog stays open so the user can fix the field.
+    const QString bind = mBindAddress->text().trimmed();
+    if (bind.isEmpty())
+    {
+        QMessageBox::warning(this, tr("Open Network Stream"), tr("Bind address must not be empty."));
+        mBindAddress->setFocus();
+        return;
+    }
+    QHostAddress probe;
+    if (!probe.setAddress(bind))
+    {
+        QMessageBox::warning(
+            this,
+            tr("Open Network Stream"),
+            tr("Bind address '%1' is not a valid IPv4 or IPv6 literal.\n\n"
+               "Use 0.0.0.0 / :: to listen on all interfaces, or 127.0.0.1 / ::1 for loopback only.")
+                .arg(bind)
+        );
+        mBindAddress->setFocus();
+        return;
+    }
+
+    if (mTcpRadio->isChecked() && mTlsGroup->isEnabled() && mTlsEnable->isChecked())
+    {
+        const QString cert = mTlsCertPath->text().trimmed();
+        const QString key = mTlsKeyPath->text().trimmed();
+        if (cert.isEmpty() || key.isEmpty())
+        {
+            QMessageBox::warning(
+                this,
+                tr("Open Network Stream"),
+                tr("TLS is enabled but the certificate chain and private key are required.")
+            );
+            (cert.isEmpty() ? mTlsCertPath : mTlsKeyPath)->setFocus();
+            return;
+        }
+        // Path-existence checks: cheap, run on the GUI thread, and
+        // give a clearer diagnostic than OpenSSL's "cannot open file"
+        // returned from the producer constructor.
+        if (!QFileInfo::exists(cert))
+        {
+            QMessageBox::warning(
+                this, tr("Open Network Stream"), tr("Certificate chain file does not exist:\n%1").arg(cert)
+            );
+            mTlsCertPath->setFocus();
+            return;
+        }
+        if (!QFileInfo::exists(key))
+        {
+            QMessageBox::warning(this, tr("Open Network Stream"), tr("Private key file does not exist:\n%1").arg(key));
+            mTlsKeyPath->setFocus();
+            return;
+        }
+        const QString ca = mTlsCaPath->text().trimmed();
+        if (!ca.isEmpty() && !QFileInfo::exists(ca))
+        {
+            QMessageBox::warning(this, tr("Open Network Stream"), tr("CA bundle file does not exist:\n%1").arg(ca));
+            mTlsCaPath->setFocus();
+            return;
+        }
+    }
+
     SaveToSettings();
     accept();
 }
@@ -220,7 +336,7 @@ void NetworkStreamDialog::LoadFromSettings()
     }
     mBindAddress->setText(settings.value(KEY_BIND, mBindAddress->text()).toString());
     mPort->setValue(settings.value(KEY_PORT, mPort->value()).toInt());
-    mMaxClients->setValue(settings.value(KEY_MAX_CLIENTS, mMaxClients->value()).toInt());
+    mMaxConcurrentClients->setValue(settings.value(KEY_MAX_CLIENTS, mMaxConcurrentClients->value()).toInt());
 
     mTlsEnable->setChecked(settings.value(KEY_TLS_ENABLED, false).toBool());
     mTlsCertPath->setText(settings.value(KEY_TLS_CERT).toString());
@@ -237,8 +353,13 @@ void NetworkStreamDialog::SaveToSettings() const
     settings.setValue(KEY_PROTOCOL, mTcpRadio->isChecked() ? "tcp" : "udp");
     settings.setValue(KEY_BIND, mBindAddress->text());
     settings.setValue(KEY_PORT, mPort->value());
-    settings.setValue(KEY_MAX_CLIENTS, mMaxClients->value());
-    settings.setValue(KEY_TLS_ENABLED, mTlsEnable->isChecked());
+    settings.setValue(KEY_MAX_CLIENTS, mMaxConcurrentClients->value());
+    // Persist the *intended* TCP TLS choice so the next session
+    // restores it even if the user happened to be on UDP at accept
+    // time (where the live checkbox is forced off).
+    const bool persistedTlsEnabled =
+        mTcpRadio->isChecked() ? mTlsEnable->isChecked() : mTcpTlsEnableRemembered;
+    settings.setValue(KEY_TLS_ENABLED, persistedTlsEnabled);
     settings.setValue(KEY_TLS_CERT, mTlsCertPath->text());
     settings.setValue(KEY_TLS_KEY, mTlsKeyPath->text());
     settings.setValue(KEY_TLS_CA, mTlsCaPath->text());
@@ -252,7 +373,7 @@ NetworkStreamDialog::Config NetworkStreamDialog::Configuration() const
     out.protocol = mTcpRadio->isChecked() ? Protocol::Tcp : Protocol::Udp;
     out.bindAddress = mBindAddress->text();
     out.port = static_cast<uint16_t>(mPort->value());
-    out.maxClients = static_cast<size_t>(mMaxClients->value());
+    out.maxConcurrentClients = static_cast<size_t>(mMaxConcurrentClients->value());
     out.tlsEnabled = mTlsGroup->isEnabled() && mTlsEnable->isChecked();
     out.tlsCertChainPath = mTlsCertPath->text();
     out.tlsPrivateKeyPath = mTlsKeyPath->text();

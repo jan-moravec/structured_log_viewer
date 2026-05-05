@@ -156,6 +156,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mLogTable.Reset();
         mErrorCount = 0;
         mStreamingErrors.clear();
+        mLastReportedShutdownDropCount = 0;
 
         endResetModel();
 
@@ -194,6 +195,7 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
 
     mErrorCount = 0;
     mStreamingErrors.clear();
+    mLastReportedShutdownDropCount = 0;
 
     // Every new session starts unbounded. The live-tail entry point
     // re-applies its retention cap after returning from here; static
@@ -327,13 +329,40 @@ loglib::StopToken LogModel::BeginStreaming(
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    // Subscribe to the producer's rotation / status hooks before handing
-    // the source off. The callbacks fire from the producer's worker
-    // thread; re-emit via a queued connection so the GUI receives them
-    // on the model's thread. `QPointer` makes destruction mid-hop a
-    // graceful no-op.
+    QtStreamingLogSink *sinkForWorker = mSink;
+    loglib::StreamLineSource *streamSourcePtr = source.get();
+    BeginStreamingShared(std::move(source));
+
+    // Arm the sink + apply retention BEFORE wiring producer callbacks
+    // so a synchronous `SetStatusCallback` replay (TCP/UDP fire the
+    // current status in-line) lands on a fully-initialised model and
+    // sink. The GUI hop itself is queued so synchronous replay is
+    // already deferred, but keeping the ordering explicit makes the
+    // code resilient to future producers that might fire status from
+    // their worker thread before the model has set `mStreamingActive`.
+    const loglib::StopToken stopToken = mSink->Arm();
+    options.stopToken = stopToken;
+
+    // The live-tail entry point is never unbounded. `BeginStreamingShared`
+    // just zeroed the cap (fresh-session baseline), so load the user's
+    // configured retention from `StreamingControl` here -- falling back
+    // to `DEFAULT_RETENTION_LINES` only when nothing sensible is on disk.
+    size_t cap = StreamingControl::RetentionLines();
+    if (cap == 0)
+    {
+        cap = StreamingControl::DEFAULT_RETENTION_LINES;
+    }
+    mRetentionCap = cap;
+    mSink->SetRetentionCap(mRetentionCap);
+
+    // Subscribe to the producer's rotation / status hooks now that the
+    // model state is live. The callbacks fire from the producer's
+    // worker thread (or, for the immediate `SetStatusCallback` replay,
+    // synchronously from this thread); re-emit via a queued connection
+    // so the GUI receives them on the model's thread. `QPointer` makes
+    // destruction mid-hop a graceful no-op.
     QPointer<LogModel> self(this);
-    if (loglib::BytesProducer *producer = source->Producer(); producer != nullptr)
+    if (loglib::BytesProducer *producer = streamSourcePtr->Producer(); producer != nullptr)
     {
         producer->SetRotationCallback([self]() {
             if (!self)
@@ -368,25 +397,6 @@ loglib::StopToken LogModel::BeginStreaming(
             );
         });
     }
-
-    QtStreamingLogSink *sinkForWorker = mSink;
-    loglib::StreamLineSource *streamSourcePtr = source.get();
-    BeginStreamingShared(std::move(source));
-
-    const loglib::StopToken stopToken = mSink->Arm();
-    options.stopToken = stopToken;
-
-    // The live-tail entry point is never unbounded. `BeginStreamingShared`
-    // just zeroed the cap (fresh-session baseline), so load the user's
-    // configured retention from `StreamingControl` here -- falling back
-    // to `DEFAULT_RETENTION_LINES` only when nothing sensible is on disk.
-    size_t cap = StreamingControl::RetentionLines();
-    if (cap == 0)
-    {
-        cap = StreamingControl::DEFAULT_RETENTION_LINES;
-    }
-    mRetentionCap = cap;
-    mSink->SetRetentionCap(mRetentionCap);
 
     QFuture<void> future =
         QtConcurrent::run([sinkForWorker, streamSourcePtr, capturedOptions = std::move(options)]() mutable {
@@ -722,6 +732,28 @@ QtStreamingLogSink *LogModel::Sink()
 
 const std::vector<std::string> &LogModel::StreamingErrors() const
 {
+    // The sink may have dropped batches when `RequestStop` woke a
+    // worker that was blocked on a full queue (back-pressure).
+    // Surface those as a synthetic error string so the post-session
+    // dialog tells the user the on-screen rows are not the complete
+    // parse output. We materialise lazily into `mStreamingErrors` on
+    // each call so the count keeps reflecting the latest sink state
+    // without polluting `mErrorCount` (which counts per-line parse
+    // errors, not transport-layer drops).
+    if (mSink != nullptr)
+    {
+        const std::size_t dropped = mSink->BatchesDroppedDuringShutdown();
+        if (dropped != mLastReportedShutdownDropCount)
+        {
+            const std::size_t delta = dropped - mLastReportedShutdownDropCount;
+            mStreamingErrors.emplace_back(
+                std::string("Lost ") + std::to_string(delta) +
+                (delta == 1 ? " parsed batch" : " parsed batches") +
+                " between the parser and the GUI when the stream was stopped (back-pressure shutdown)."
+            );
+            mLastReportedShutdownDropCount = dropped;
+        }
+    }
     return mStreamingErrors;
 }
 

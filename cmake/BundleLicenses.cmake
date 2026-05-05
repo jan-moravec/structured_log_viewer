@@ -107,10 +107,16 @@ function(bundle_third_party_licenses target_name)
     endif()
 
     # Qt is bundled at deploy time (linuxdeploy / windeployqt /
-    # macdeployqt). LGPLv3 requires we ship the LGPL-3.0 text and
-    # an offer-of-source pointer. Use a short snippet pointing at the
-    # canonical Qt legal page.
+    # macdeployqt). LGPL-3.0 §4(d) requires us to ship the full
+    # LGPL-3.0 text (which incorporates the GPL-3.0 by reference, so
+    # we ship that too) plus an offer-of-source pointer. The qt.txt
+    # snippet provides the offer-of-source / attribution wording; the
+    # two licence files below provide the verbatim legal text.
     _bundle_collect_entry("Qt 6 (LGPL-3.0)" "${_BUNDLE_LICENSES_DIR}/license_snippets/qt.txt" LICENSE_ENTRIES)
+    _bundle_collect_entry("LGPL-3.0 (Qt)" "${_BUNDLE_LICENSES_DIR}/license_snippets/lgpl-3.0.txt" LICENSE_ENTRIES)
+    _bundle_collect_entry(
+        "GPL-3.0 (Qt LGPL incorporates)" "${_BUNDLE_LICENSES_DIR}/license_snippets/gpl-3.0.txt" LICENSE_ENTRIES
+    )
 
     # Compose the aggregated file. Generation runs at configure time
     # so the file is ready before the binary's POST_BUILD copy step.

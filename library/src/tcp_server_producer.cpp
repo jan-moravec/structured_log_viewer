@@ -1,5 +1,7 @@
 #include "loglib/tcp_server_producer.hpp"
 
+#include "loglib/internal/line_bytes_queue.hpp"
+
 #include <asio.hpp>
 #ifdef LOGLIB_HAS_TLS
 #include <asio/ssl.hpp>
@@ -10,7 +12,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -27,67 +28,40 @@
 namespace loglib::internal
 {
 
-namespace
-{
-
-/// Append @p data of length @p size into @p ready obeying a soft byte
-/// cap. Drop policy: oldest unconsumed bytes, rounded up to the next
-/// newline, so the consumer never sees a torn line. Counts dropped
-/// bytes into @p droppedCounter.
-void AppendBytesWithBackPressureLocked(
-    std::vector<char> &ready,
-    size_t &consumed,
-    const char *data,
-    size_t size,
-    size_t cap,
-    std::atomic<size_t> &droppedCounter
-)
-{
-    if (size == 0)
-    {
-        return;
-    }
-    if (cap > 0)
-    {
-        const size_t pendingNow = ready.size() - consumed;
-        if (pendingNow + size > cap)
-        {
-            const size_t over = pendingNow + size - cap;
-            const size_t dropFrom = std::min(over, pendingNow);
-
-            size_t dropTo = consumed + dropFrom;
-            const size_t pendingEnd = ready.size();
-            while (dropTo < pendingEnd && ready[dropTo] != '\n')
-            {
-                ++dropTo;
-            }
-            if (dropTo < pendingEnd && ready[dropTo] == '\n')
-            {
-                ++dropTo;
-            }
-
-            const size_t actualDrop = dropTo - consumed;
-            droppedCounter.fetch_add(actualDrop, std::memory_order_acq_rel);
-            consumed = dropTo;
-
-            if (consumed > 0)
-            {
-                ready.erase(ready.begin(), ready.begin() + static_cast<std::ptrdiff_t>(consumed));
-                consumed = 0;
-            }
-        }
-    }
-    ready.insert(ready.end(), data, data + size);
-}
-
-} // namespace
+// Bytes-queue / back-pressure plumbing now lives in
+// `LineBytesQueue` (`loglib/internal/line_bytes_queue.hpp`) so TCP and
+// UDP share a single tested implementation; sessions push complete-line
+// payloads through `mImpl->mReadyBuffer.Append(...)` directly.
 
 class TcpServerProducerImpl;
+
+/// Type-erased session handle so the impl can store both plain
+/// (`asio::ip::tcp::socket`) and TLS (`asio::ssl::stream<>`) sessions
+/// in a single `mActiveSessions` map and close them uniformly during
+/// `Stop()` without needing the templated session type at the call
+/// site. The vtable is tiny (one virtual: `Close`) so the indirection
+/// cost is negligible vs the network I/O each call wraps.
+class SessionBase
+{
+public:
+    SessionBase() = default;
+    virtual ~SessionBase() = default;
+
+    SessionBase(const SessionBase &) = delete;
+    SessionBase &operator=(const SessionBase &) = delete;
+    SessionBase(SessionBase &&) = delete;
+    SessionBase &operator=(SessionBase &&) = delete;
+
+    /// Cancel any in-flight read and close the underlying socket. The
+    /// async handler observes `operation_aborted` and finalises the
+    /// session via `Finalize`. Idempotent.
+    virtual void Close() noexcept = 0;
+};
 
 /// Per-connection state, ref-counted via `shared_ptr` so the in-flight
 /// Asio async chain keeps the session alive until the read completes
 /// and we explicitly drop it.
-template <class Stream> class Session : public std::enable_shared_from_this<Session<Stream>>
+template <class Stream> class Session : public SessionBase, public std::enable_shared_from_this<Session<Stream>>
 {
 public:
     Session(Stream stream, TcpServerProducerImpl *impl, size_t id, size_t readChunkBytes);
@@ -97,10 +71,7 @@ public:
     /// the read loop.
     void Start();
 
-    /// Cancel any in-flight read and close the underlying socket. The
-    /// async handler observes `operation_aborted` and finalises the
-    /// session via `Finalize`.
-    void Close() noexcept;
+    void Close() noexcept override;
 
 private:
     void DoRead();
@@ -191,15 +162,16 @@ private:
     mutable std::mutex mMutex;
     std::condition_variable mCv;
 
-    /// Byte queue. Same shape as `UdpServerProducer` and
-    /// `TailingBytesProducer` so the parse loop's `Read` /
-    /// `WaitForBytes` pattern stays uniform across all producers.
-    std::vector<char> mReadyBuffer;
-    size_t mReadyConsumed = 0;
+    /// Byte queue. Backed by `LineBytesQueue` (deque<char> with
+    /// line-aware back-pressure) so the per-batch front drop is
+    /// O(K-bytes-dropped) instead of O(remaining buffer). The parse
+    /// loop's `Read` / `WaitForBytes` pattern stays uniform across
+    /// all producers.
+    LineBytesQueue mReadyBuffer;
 
     /// Active sessions, keyed by id. Lives on the mutex so `Stop` can
-    /// cancel all in-flight reads.
-    std::unordered_map<size_t, std::shared_ptr<void>> mActiveSessions;
+    /// snapshot and close them without racing the accept handler.
+    std::unordered_map<size_t, std::shared_ptr<SessionBase>> mActiveSessions;
     size_t mNextSessionId = 1;
 
     std::atomic<bool> mStopRequested{false};
@@ -456,20 +428,7 @@ size_t TcpServerProducerImpl::Read(std::span<char> buffer)
         return 0;
     }
     std::lock_guard<std::mutex> lock(mMutex);
-    const size_t available = mReadyBuffer.size() - mReadyConsumed;
-    if (available == 0)
-    {
-        return 0;
-    }
-    const size_t toCopy = std::min(available, buffer.size());
-    std::memcpy(buffer.data(), mReadyBuffer.data() + mReadyConsumed, toCopy);
-    mReadyConsumed += toCopy;
-    if (mReadyConsumed * 2 >= mReadyBuffer.size() && mReadyConsumed > 0)
-    {
-        mReadyBuffer.erase(mReadyBuffer.begin(), mReadyBuffer.begin() + static_cast<std::ptrdiff_t>(mReadyConsumed));
-        mReadyConsumed = 0;
-    }
-    return toCopy;
+    return mReadyBuffer.Read(buffer);
 }
 
 void TcpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
@@ -480,7 +439,7 @@ void TcpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     }
     std::unique_lock<std::mutex> lock(mMutex);
     mCv.wait_for(lock, timeout, [&] {
-        return (mReadyBuffer.size() - mReadyConsumed) > 0 || mStopRequested.load(std::memory_order_acquire) ||
+        return !mReadyBuffer.Empty() || mStopRequested.load(std::memory_order_acquire) ||
                mWorkerExited.load(std::memory_order_acquire);
     });
 }
@@ -491,34 +450,47 @@ void TcpServerProducerImpl::Stop() noexcept
     {
         return;
     }
-    asio::post(mIoContext, [this] {
-        asio::error_code ec;
-        mAcceptor.close(ec);
-        // Snapshot active sessions under the lock then close them
-        // outside the lock so finalization (which re-acquires the
-        // lock from `OnSessionEnded`) does not deadlock.
-        std::vector<std::shared_ptr<void>> snapshot;
-        {
-            std::lock_guard<std::mutex> lock(mMutex);
-            snapshot.reserve(mActiveSessions.size());
-            for (auto &kv : mActiveSessions)
+    // Post the close work onto the io_context so the acceptor and
+    // session sockets are touched only on the worker thread (the same
+    // thread that owns the in-flight async operations). This avoids a
+    // hard `mIoContext.stop()` that would abandon queued handlers --
+    // here every in-flight `async_accept` / `async_read_some` instead
+    // completes with `operation_aborted` and the session's `Finalize`
+    // path runs cleanly, flushing the per-client carry buffer as a
+    // synthetic last line. Once every session has finalised and the
+    // acceptor is closed, the io_context's outstanding work count
+    // drops to zero and `run()` returns naturally.
+    try
+    {
+        asio::post(mIoContext, [this] {
+            asio::error_code ec;
+            mAcceptor.close(ec);
+
+            std::vector<std::shared_ptr<SessionBase>> snapshot;
             {
-                snapshot.push_back(kv.second);
+                std::lock_guard<std::mutex> lock(mMutex);
+                snapshot.reserve(mActiveSessions.size());
+                for (auto &kv : mActiveSessions)
+                {
+                    snapshot.push_back(kv.second);
+                }
             }
-        }
-        // Cast back to the templated session via type-erased shared_ptr
-        // is impossible without knowing the type. Instead we close
-        // each session via a virtual-ish dispatch: every session also
-        // stores a closer lambda we can invoke. We didn't wire that
-        // up; closing is done by re-posting from the io_context with
-        // the typed handle held by `Session::Close`. The simpler path
-        // -- which we use here -- is to stop the io_context and let
-        // each session's read complete with `operation_aborted`. The
-        // `mAcceptor.close` plus the `mIoContext.stop` below
-        // accomplishes that.
-        (void)snapshot;
-    });
-    mIoContext.stop();
+            for (auto &session : snapshot)
+            {
+                if (session)
+                {
+                    session->Close();
+                }
+            }
+        });
+    }
+    catch (...)
+    {
+        // `asio::post` can theoretically throw on allocator failure; in
+        // that case fall back to a hard stop so the producer still
+        // terminates rather than wedging the worker thread.
+        mIoContext.stop();
+    }
     mCv.notify_all();
 }
 
@@ -529,7 +501,7 @@ bool TcpServerProducerImpl::IsClosed() const noexcept
         return false;
     }
     std::lock_guard<std::mutex> lock(mMutex);
-    return (mReadyBuffer.size() - mReadyConsumed) == 0;
+    return mReadyBuffer.Empty();
 }
 
 std::string TcpServerProducerImpl::DisplayName() const
@@ -587,14 +559,7 @@ void TcpServerProducerImpl::OnSessionLines(std::string_view completeLines)
     }
     {
         std::lock_guard<std::mutex> lock(mMutex);
-        AppendBytesWithBackPressureLocked(
-            mReadyBuffer,
-            mReadyConsumed,
-            completeLines.data(),
-            completeLines.size(),
-            mOptions.maxQueueBytes,
-            mDroppedByteCount
-        );
+        mReadyBuffer.Append(completeLines, mOptions.maxQueueBytes, mDroppedByteCount);
     }
     MarkRunning();
     mCv.notify_all();

@@ -227,17 +227,62 @@ private:
     QString mPath;
 };
 
+// Read-once test-time multiplier so loaded CI runners can scale wait
+// budgets without touching every callsite. Mirrors
+// `loglib_test::ScaledMs` (which we cannot link directly: `loglib_test`
+// is the catch2 fixture target and apptest is QtTest-based). Set via
+// `LOGLIB_TEST_TIME_SCALE` (double; defaults to 1.0). Sub-1.0 values
+// still floor at 1 ms so a tight 25 ms budget never collapses to 0.
+double LoadTestTimeScale() noexcept
+{
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996) // getenv
+#endif
+    const char *raw = std::getenv("LOGLIB_TEST_TIME_SCALE");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (raw == nullptr || *raw == '\0')
+    {
+        return 1.0;
+    }
+    char *end = nullptr;
+    const double parsed = std::strtod(raw, &end);
+    if (end == raw || parsed <= 0.0)
+    {
+        return 1.0;
+    }
+    return parsed;
+}
+
+double TestTimeScale() noexcept
+{
+    static const double SCALE = LoadTestTimeScale();
+    return SCALE;
+}
+
+std::chrono::milliseconds ScaledDeadline(std::chrono::milliseconds base) noexcept
+{
+    const double scaled = static_cast<double>(base.count()) * TestTimeScale();
+    const auto rounded = static_cast<long long>(scaled + 0.5);
+    return std::chrono::milliseconds(rounded < 1 ? 1 : rounded);
+}
+
 // Wait until the model's `lineCountChanged` signal reports at least
 // @p target rows, draining the Qt event queue while we wait so the
-// QueuedConnection lambdas the parser worker posts actually run. Returns
-// `true` on success, `false` if the deadline expires (the caller usually
-// `QVERIFY2`s the result).
+// QueuedConnection lambdas the parser worker posts actually run. The
+// deadline is automatically scaled by `LOGLIB_TEST_TIME_SCALE` so slow
+// CI runners can extend it without changing per-call code. Returns
+// `true` on success, `false` if the deadline expires (the caller
+// usually `QVERIFY2`s the result).
 bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::milliseconds deadline)
 {
+    const auto scaled = ScaledDeadline(deadline);
     const auto start = std::chrono::steady_clock::now();
     while (model.rowCount() < target)
     {
-        if (std::chrono::steady_clock::now() - start > deadline)
+        if (std::chrono::steady_clock::now() - start > scaled)
         {
             return false;
         }
@@ -1488,6 +1533,73 @@ private slots:
 
         model.StopAndKeepRows();
         QCoreApplication::processEvents();
+    }
+
+    // Regression: pausing during a live-tail session, feeding N
+    // synthetic batches into the paused buffer, then `StopAndKeepRows`
+    // must flush every still-buffered row into the visible model so
+    // the user sees the final state of the parse rather than losing
+    // the last-emitted rows. Asserts that
+    // `visibleRows == sumOfBatchedRows - PausedDropCount` so the
+    // accounting closes: any row that left the paused buffer either
+    // landed in the visible model or was counted in the cap-eviction
+    // counter, but never silently disappeared. Counterpart to
+    // `testPausedDropCountIsObservable` (which exercises overflow);
+    // this one exercises the under-cap normal-stop path.
+    void testStopAfterPauseFlushesPausedBufferToModel()
+    {
+        LogModel model;
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        // Cap chosen high enough to never trigger paused-buffer
+        // eviction so this test exercises the no-loss path. Five
+        // batches of 50 lines = 250 rows, well under cap.
+        const size_t cap = 1000;
+        model.SetRetentionCap(cap);
+        QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), qulonglong(0));
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->Pause();
+        QVERIFY(sink->IsPaused());
+
+        const size_t batchLines = 50;
+        const int batchesPushed = 5;
+        const size_t totalLines = batchLines * batchesPushed;
+        for (int b = 0; b < batchesPushed; ++b)
+        {
+            const bool firstBatch = (b == 0);
+            sink->OnBatch(MakeSyntheticBatch(
+                streamSource, keys, valueKey, static_cast<size_t>(b) * batchLines + 1, batchLines, firstBatch
+            ));
+        }
+
+        QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(totalLines));
+        QCOMPARE(model.rowCount(), 0); // still paused, nothing visible
+
+        // StopAndKeepRows must drain the paused buffer into the
+        // visible model BEFORE bumping the generation that would
+        // short-circuit drain-phase callbacks. The teardown sequence
+        // (TeardownStreamingSessionInternal) is responsible for
+        // calling `TakePausedBuffer` and feeding it through
+        // `AppendBatch` -- this test fails loudly if that step is
+        // ever removed.
+        model.StopAndKeepRows();
+        QCoreApplication::processEvents();
+
+        const qsizetype visible = model.rowCount();
+        const qulonglong dropped = static_cast<qulonglong>(sink->PausedDropCount());
+        QVERIFY2(
+            static_cast<qulonglong>(visible) + dropped == totalLines,
+            qPrintable(QStringLiteral("rows accounting failed: visible=%1 + dropped=%2 != totalLines=%3")
+                           .arg(visible)
+                           .arg(dropped)
+                           .arg(static_cast<qulonglong>(totalLines)))
+        );
+        QCOMPARE(static_cast<int>(visible), static_cast<int>(totalLines));
     }
 
     // Regression for the `linesDropped` snapshot bug.

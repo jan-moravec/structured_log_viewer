@@ -681,7 +681,7 @@ void MainWindow::OpenNetworkStream()
             loglib::TcpServerProducer::Options opts;
             opts.bindAddress = cfg.bindAddress.toStdString();
             opts.port = cfg.port;
-            opts.maxConcurrentClients = cfg.maxClients;
+            opts.maxConcurrentClients = cfg.maxConcurrentClients;
             if (cfg.tlsEnabled)
             {
                 opts.tls.emplace();
