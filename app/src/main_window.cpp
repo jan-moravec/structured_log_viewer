@@ -141,16 +141,16 @@ MainWindow::MainWindow(QWidget *parent)
 
     ApplyTableStyleSheet();
 
-    // Two-stage proxy chain: the inner `StreamOrderProxyModel` reverses
-    // row order in newest-first mode (sort role: `InsertionOrderRole`);
+    // Two-stage proxy chain: the inner `RowOrderProxyModel` reverses
+    // row order in newest-first mode via O(1) per-row index mirroring;
     // the outer `LogFilterModel` filters and supports user-clicked
     // column sorts (sort role: `SortRole`). The layers never share sort
     // state, so a column sort and newest-first coexist without fighting.
-    mStreamOrderProxyModel = new StreamOrderProxyModel(this);
-    mStreamOrderProxyModel->setSourceModel(mModel);
+    mRowOrderProxyModel = new RowOrderProxyModel(this);
+    mRowOrderProxyModel->setSourceModel(mModel);
 
     mSortFilterProxyModel = new LogFilterModel(this);
-    mSortFilterProxyModel->setSourceModel(mStreamOrderProxyModel);
+    mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
@@ -206,7 +206,7 @@ MainWindow::MainWindow(QWidget *parent)
     // `ScrollToNewestRowIfFollowing`; the user-scroll signals below
     // auto-disengage / auto-re-engage it. The tail edge (bottom by
     // default, top in newest-first mode) is owned by
-    // `ApplyStreamingDisplayOrder`, so this wiring stays
+    // `ApplyDisplayOrder`, so this wiring stays
     // orientation-agnostic.
     connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
         if (ui->actionFollowTail->isChecked())
@@ -236,8 +236,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
+    // Both signals route through the same mode-aware slot. The slot
+    // re-reads the per-mode `StreamingControl` accessor matching the
+    // current session, so a stream-mode toggle is a no-op when a
+    // static session is active and vice versa.
     connect(mPreferencesEditor, &PreferencesEditor::streamingDisplayOrderChanged, this, [this](bool) {
-        ApplyStreamingDisplayOrder();
+        ApplyDisplayOrder();
+    });
+    connect(mPreferencesEditor, &PreferencesEditor::staticDisplayOrderChanged, this, [this](bool) {
+        ApplyDisplayOrder();
     });
 
     mStatusLabel = new QLabel(this);
@@ -340,7 +347,7 @@ MainWindow::MainWindow(QWidget *parent)
     // startup so the first session honours the user's choices.
     StreamingControl::LoadConfiguration();
     ApplyStreamingRetention();
-    ApplyStreamingDisplayOrder();
+    ApplyDisplayOrder();
 
     QTimer::singleShot(0, [this] {
         // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
@@ -540,6 +547,9 @@ void MainWindow::StreamNextPendingFile()
             mFirstStreamingBatchSeen = false;
             SetConfigurationUiEnabled(false);
             UpdateStreamToolbarVisibility();
+            // Re-apply the display-order so the proxy/view orientation
+            // matches the static-mode preference before any rows arrive.
+            ApplyDisplayOrder();
         }
         UpdateStreamingStatus();
 
@@ -618,6 +628,9 @@ void MainWindow::OpenLogStream()
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
+    // Re-apply the display-order so the proxy/view orientation matches
+    // the stream-mode preference before any rows arrive.
+    ApplyDisplayOrder();
 
     // Snapshot the configuration so the worker reads it lock-free.
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
@@ -785,7 +798,7 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     // the scroll land on the correct visual row under sort / filter /
     // reverse-order.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
-    const QModelIndex midIndex = mStreamOrderProxyModel->mapFromSource(sourceIndex);
+    const QModelIndex midIndex = mRowOrderProxyModel->mapFromSource(sourceIndex);
     const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
     if (!proxyIndex.isValid())
     {
@@ -793,9 +806,9 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     }
     // In newest-first mode the latest row is at proxy row 0, so we
     // must scroll to the top edge. The view's `TailEdge` is kept in
-    // sync by `ApplyStreamingDisplayOrder`.
+    // sync by `ApplyDisplayOrder`.
     const auto position =
-        mStreamOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
+        mRowOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
     mTableView->scrollTo(proxyIndex, position);
 }
 
@@ -864,18 +877,40 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     return nullptr;
 }
 
-void MainWindow::ApplyStreamingDisplayOrder()
+void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
-    const bool newestFirst = StreamingControl::IsNewestFirst();
+    switch (mode)
+    {
+    case TestSessionMode::Idle:
+        mSessionMode = SessionMode::Idle;
+        break;
+    case TestSessionMode::Static:
+        mSessionMode = SessionMode::Static;
+        break;
+    case TestSessionMode::LiveTail:
+        mSessionMode = SessionMode::LiveTail;
+        break;
+    }
+}
 
-    // 1. Proxy: flip the InsertionOrderRole sort direction.
-    mStreamOrderProxyModel->SetReversed(newestFirst);
+void MainWindow::ApplyDisplayOrder()
+{
+    // Mode dispatch:
+    //   - LiveTail session  -> stream-mode preference
+    //   - Static session    -> static-mode preference
+    //   - Idle              -> stream-mode preference (the *next*
+    //     session typically inherits this on open; whichever path
+    //     opens the file calls `ApplyDisplayOrder()` again with the
+    //     correct `mSessionMode` so this fallback only matters for
+    //     the empty viewer between sessions).
+    const bool newestFirst =
+        (mSessionMode == SessionMode::Static) ? StreamingControl::IsStaticNewestFirst() : StreamingControl::IsNewestFirst();
 
-    // 2. Table view: anchor Follow-tail + user-scroll detection on the
-    //    matching scrollbar edge.
+    mRowOrderProxyModel->SetReversed(newestFirst);
+
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
-    // 3. Disable alternating row colours in newest-first mode. Qt keys
+    // Disable alternating row colours in newest-first mode. Qt keys
     // alternation off the visual row index, so top-insertion flips
     // every visible row's parity on every batch and the rows flicker.
     // A custom delegate could pin colours to source-row parity, but

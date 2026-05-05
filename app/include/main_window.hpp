@@ -5,7 +5,7 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "preferences_editor.hpp"
-#include "stream_order_proxy_model.hpp"
+#include "row_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
 
@@ -48,12 +48,15 @@ public:
 
     void UpdateUi();
 
-    /// Single sync point for newest-first display orientation. Reads
-    /// `StreamingControl::IsNewestFirst()` once and propagates it to
-    /// `StreamOrderProxyModel::SetReversed`, `LogTableView::SetTailEdge`,
+    /// Single sync point for newest-first display orientation. Picks
+    /// `StreamingControl::IsNewestFirst()` for stream sessions and
+    /// `StreamingControl::IsStaticNewestFirst()` for static sessions
+    /// (Idle inherits the stream-mode flag so the *next* session boots
+    /// in the right orientation), and propagates it to
+    /// `RowOrderProxyModel::SetReversed`, `LogTableView::SetTailEdge`,
     /// and `setAlternatingRowColors`, which all need to move together.
     /// Idempotent.
-    void ApplyStreamingDisplayOrder();
+    void ApplyDisplayOrder();
 
     /// Test-only lookup that returns the UI-file-declared `QAction`
     /// with the given `objectName`, or `nullptr` if no such action
@@ -64,6 +67,20 @@ public:
     /// is valid. Going through `ui->` directly bypasses the
     /// QObject-tree traversal entirely.
     [[nodiscard]] QAction *FindUiAction(const QString &name) const;
+
+    /// Test-only handle that flips the internal `mSessionMode` so
+    /// `ApplyDisplayOrder` exercises the `Static` branch without
+    /// having to drive a real `OpenFiles` / `OpenLogStream` flow
+    /// (both of which are `QFileDialog`-gated and async). Production
+    /// code never calls this; the regular open paths set the same
+    /// field internally.
+    enum class TestSessionMode
+    {
+        Idle,
+        Static,
+        LiveTail,
+    };
+    void SetSessionModeForTest(TestSessionMode mode);
 
 protected:
     bool event(QEvent *event) override;
@@ -140,7 +157,7 @@ private:
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
-    StreamOrderProxyModel *mStreamOrderProxyModel;
+    RowOrderProxyModel *mRowOrderProxyModel;
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;

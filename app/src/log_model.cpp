@@ -621,8 +621,10 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     else if (role == LogModelItemDataRole::InsertionOrderRole)
     {
         // Bare source row index, column-independent (see the role's
-        // declaration). `StreamOrderProxyModel` sorts by it with
-        // `Qt::DescendingOrder` for newest-first mode.
+        // declaration). Historically `StreamOrderProxyModel` sorted by
+        // it for newest-first mode; the role is retained for tests that
+        // need the source-side row index, and for the `LogFilterModel`
+        // sort tie-break.
         return QVariant(index.row());
     }
     else if (role == LogModelItemDataRole::CopyLine)

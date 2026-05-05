@@ -25,9 +25,10 @@ enum LogModelItemDataRole
     UserRole = Qt::UserRole,
     SortRole,
     CopyLine,
-    /// Source-model row index. `StreamOrderProxyModel` sorts on this
-    /// (descending) for newest-first mode without disturbing the user's
-    /// column sort on `LogFilterModel`.
+    /// Source-model row index. Retained as a stable tie-break for
+    /// `LogFilterModel` sorts (and for tests that need the source-side
+    /// row index); the `RowOrderProxyModel` mirrors row indices
+    /// directly without consulting any role.
     InsertionOrderRole,
 };
 

@@ -9,6 +9,7 @@ namespace
 {
 const QString CONFIGURATION_RETENTION_LINES = "streaming/retentionLines";
 const QString CONFIGURATION_NEWEST_FIRST = "streaming/newestFirst";
+const QString CONFIGURATION_STATIC_NEWEST_FIRST = "static/newestFirst";
 } // namespace
 
 StreamingControl::Configuration StreamingControl::mConfiguration;
@@ -18,6 +19,7 @@ void StreamingControl::SaveConfiguration()
     QSettings settings;
     settings.setValue(CONFIGURATION_RETENTION_LINES, static_cast<qulonglong>(mConfiguration.retentionLines));
     settings.setValue(CONFIGURATION_NEWEST_FIRST, mConfiguration.newestFirst);
+    settings.setValue(CONFIGURATION_STATIC_NEWEST_FIRST, mConfiguration.staticNewestFirst);
 }
 
 void StreamingControl::LoadConfiguration()
@@ -52,6 +54,15 @@ void StreamingControl::LoadConfiguration()
     {
         mConfiguration.newestFirst = DEFAULT_NEWEST_FIRST;
     }
+
+    if (const QVariant value = settings.value(CONFIGURATION_STATIC_NEWEST_FIRST); value.isValid())
+    {
+        mConfiguration.staticNewestFirst = value.toBool();
+    }
+    else
+    {
+        mConfiguration.staticNewestFirst = DEFAULT_NEWEST_FIRST;
+    }
 }
 
 size_t StreamingControl::RetentionLines()
@@ -72,4 +83,14 @@ bool StreamingControl::IsNewestFirst()
 void StreamingControl::SetNewestFirst(bool value)
 {
     mConfiguration.newestFirst = value;
+}
+
+bool StreamingControl::IsStaticNewestFirst()
+{
+    return mConfiguration.staticNewestFirst;
+}
+
+void StreamingControl::SetStaticNewestFirst(bool value)
+{
+    mConfiguration.staticNewestFirst = value;
 }

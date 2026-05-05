@@ -20,9 +20,15 @@ signals:
     /// `MainWindow` re-applies it via `LogModel::SetRetentionCap`.
     void streamingRetentionChanged(qulonglong retentionLines);
 
-    /// Fired after Ok commits the **Show newest lines first** flag.
-    /// `MainWindow` re-applies it via `ApplyStreamingDisplayOrder`.
+    /// Fired after Ok commits the **stream-mode** "Show newest lines
+    /// first" flag. `MainWindow::ApplyDisplayOrder` only honours it when
+    /// the current session is a stream session.
     void streamingDisplayOrderChanged(bool newestFirst);
+
+    /// Fired after Ok commits the **static-mode** "Show newest lines
+    /// first" flag. `MainWindow::ApplyDisplayOrder` only honours it when
+    /// the current session is a static (file-mode) session.
+    void staticDisplayOrderChanged(bool newestFirst);
 
 private:
     QComboBox *mStyleComboBox;
@@ -30,4 +36,5 @@ private:
     QSpinBox *mSizeSpinBox;
     QSpinBox *mStreamRetentionSpinBox;
     QCheckBox *mStreamNewestFirstCheckBox;
+    QCheckBox *mStaticNewestFirstCheckBox;
 };

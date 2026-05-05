@@ -3,7 +3,7 @@
 #include "log_table_view.hpp"
 #include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
-#include "stream_order_proxy_model.hpp"
+#include "row_order_proxy_model.hpp"
 #include "streaming_control.hpp"
 
 #include <loglib/file_line_source.hpp>
@@ -22,6 +22,7 @@
 #include <loglib/tailing_bytes_producer.hpp>
 
 #include <QAction>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QMenu>
@@ -266,6 +267,17 @@ loglib::StreamLineSource &BeginSyntheticStreamSession(LogModel &model)
     loglib::StreamLineSource *streamPtr = streamSource.get();
     static_cast<void>(model.BeginStreamingForSyncTest(std::move(streamSource)));
     return *streamPtr;
+}
+
+// Static-mode counterpart of `BeginSyntheticStreamSession`. Installs a
+// synthetic `StreamLineSource` (the `LineSource` flavour is irrelevant
+// for proxy-orientation tests) but without any rows; callers are
+// expected to push synthetic batches via `OnBatch` if they need rows.
+// Returns the installed source by reference for callers that publish
+// raw bytes via `AppendLine`.
+loglib::StreamLineSource &BeginSyntheticStaticSession(LogModel &model)
+{
+    return BeginSyntheticStreamSession(model);
 }
 
 // Builds one synthetic streaming batch carrying @p count `LogLine`
@@ -1749,21 +1761,21 @@ private slots:
     }
 
     // The **Show newest lines first** preference flips the
-    // `StreamOrderProxyModel` into reversed mode: the highest source
+    // `RowOrderProxyModel` into reversed mode: the highest source
     // row index (the most-recently-appended streamed line) lands at
     // proxy row 0 and the oldest at the bottom of the visible model.
     // Drives the proxy directly (no Preferences dialog round-trip)
     // because the dialog's Ok handler is just a thin wrapper around
-    // `StreamOrderProxyModel::SetReversed` plus the persisted
+    // `RowOrderProxyModel::SetReversed` plus the persisted
     // `streaming/newestFirst` setting — exercising the proxy here
     // covers the contract that the GUI relies on.
     void testNewestFirstReversesProxyOrder()
     {
-        StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
+        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
         LogModel *model = window->findChild<LogModel *>();
-        QVERIFY(streamOrderProxy != nullptr);
+        QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
-        QVERIFY(!streamOrderProxy->IsReversed());
+        QVERIFY(!rowOrderProxy->IsReversed());
 
         // Drive a tiny streaming session with three rows so the proxy
         // has something to reorder. `valueKey` plus a per-line integer
@@ -1785,18 +1797,18 @@ private slots:
         // Default (oldest-first) order: proxy row 0 == source row 0
         // == lineId 1, proxy row 2 == source row 2 == lineId 3.
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(1)
         );
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(3)
         );
 
-        streamOrderProxy->SetReversed(true);
-        QVERIFY(streamOrderProxy->IsReversed());
+        rowOrderProxy->SetReversed(true);
+        QVERIFY(rowOrderProxy->IsReversed());
 
         // Reversed order: proxy row 0 carries the *most-recently-
         // appended* line (lineId 3), and proxy row 2 the oldest
@@ -1804,12 +1816,12 @@ private slots:
         // the proxy mapping flips, so the underlying append-order
         // contract continues to hold.
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(3)
         );
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(1)
         );
@@ -1817,10 +1829,10 @@ private slots:
         // Toggling back leaves the source order intact and restores
         // the identity mapping (idempotency contract for
         // `SetReversed`).
-        streamOrderProxy->SetReversed(false);
-        QVERIFY(!streamOrderProxy->IsReversed());
+        rowOrderProxy->SetReversed(false);
+        QVERIFY(!rowOrderProxy->IsReversed());
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(1)
         );
@@ -1837,17 +1849,17 @@ private slots:
     // proxy row 0, not stuck under the first batch.
     void testNewestFirstIncrementalBatchesKeepNewestAtTop()
     {
-        StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
+        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
         LogModel *model = window->findChild<LogModel *>();
-        QVERIFY(streamOrderProxy != nullptr);
+        QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
         QtStreamingLogSink *sink = model->Sink();
         QVERIFY(sink != nullptr);
 
-        streamOrderProxy->SetReversed(true);
-        QVERIFY(streamOrderProxy->IsReversed());
+        rowOrderProxy->SetReversed(true);
+        QVERIFY(rowOrderProxy->IsReversed());
 
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
@@ -1860,7 +1872,7 @@ private slots:
         QVERIFY(valueColumn >= 0);
 
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(3)
         );
@@ -1870,11 +1882,84 @@ private slots:
         QCOMPARE(model->rowCount(), 5);
 
         QCOMPARE(
-            streamOrderProxy->data(streamOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
                 .toLongLong(),
             qint64(5)
         );
 
+        model->EndStreaming(false);
+    }
+
+    // Guard test: toggling `RowOrderProxyModel::SetReversed` must be
+    // O(persistent indices), not O(rows). Regression here would mean
+    // we accidentally re-introduced a `QSortFilterProxyModel`-style
+    // full mapping rebuild — which is the exact O(N²) trap Phase 3
+    // was written to fix.
+    //
+    // Method: install a single persistent index, fill the model with
+    // 10'000 rows (one order of magnitude past anything Qt's painter
+    // visits per frame), toggle 100 times, and assert the wall-time
+    // stays well under a budget that a full per-row rebuild would
+    // blow. Set deliberately loose to absorb CI noise; the failing
+    // implementation routinely lands at multiple seconds, while the
+    // current one lands in single-digit ms.
+    void testNewestFirstToggleIsOPersistentIndices()
+    {
+        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QVERIFY(rowOrderProxy != nullptr);
+        QVERIFY(model != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        constexpr int kRows = 10'000;
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, kRows, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), kRows);
+
+        // Hold a single persistent index from somewhere in the
+        // middle of the proxy. Toggling SetReversed must remap *this
+        // one* via `changePersistentIndexList`; nothing else.
+        const QPersistentModelIndex pinned(rowOrderProxy->index(kRows / 2, 0));
+        QVERIFY(pinned.isValid());
+
+        rowOrderProxy->SetReversed(false);
+        QVERIFY(!rowOrderProxy->IsReversed());
+
+        QElapsedTimer timer;
+        timer.start();
+        constexpr int kToggles = 100;
+        for (int i = 0; i < kToggles; ++i)
+        {
+            rowOrderProxy->SetReversed(i % 2 == 1);
+        }
+        const qint64 elapsedMs = timer.elapsed();
+
+        // Budget: 200 ms for 100 toggles over 10'000 rows. The
+        // QSortFilterProxyModel-based predecessor in newest-first
+        // mode was O(N log N) per toggle and timed in seconds for
+        // this row count.
+        QVERIFY2(
+            elapsedMs < 200,
+            qPrintable(QStringLiteral("RowOrderProxyModel::SetReversed must be O(persistent indices), "
+                                      "not O(rows); 100 toggles over %1 rows took %2 ms (budget 200 ms)")
+                           .arg(kRows)
+                           .arg(elapsedMs))
+        );
+
+        // Sanity check: the persistent index correctly tracks the
+        // mapping flip. After the last toggle (kToggles-1=99 -> odd
+        // -> reversed=true), the pinned source row (kRows/2 in
+        // identity, which is what the constructor saw) should sit at
+        // proxy row (kRows - 1 - kRows/2).
+        QVERIFY(pinned.isValid());
+        QCOMPARE(pinned.row(), kRows - 1 - kRows / 2);
+
+        rowOrderProxy->SetReversed(false);
         model->EndStreaming(false);
     }
 
@@ -1922,7 +2007,7 @@ private slots:
         // Reset the view to "at tail" (top) so the next user-initiated
         // event can flip the edge tracking. We bypass the user-input
         // gate by re-seeding via `SetTailEdge`, which is the production
-        // path the `MainWindow` takes when `ApplyStreamingDisplayOrder`
+        // path the `MainWindow` takes when `ApplyDisplayOrder`
         // re-orients the view.
         scrollBar->setValue(scrollBar->minimum());
         QCoreApplication::processEvents();
@@ -2009,11 +2094,11 @@ private slots:
     // pixel position from the user's perspective (chat-app pattern).
     void testNewestFirstPreservesReadingPositionAcrossBatches()
     {
-        StreamOrderProxyModel *streamOrderProxy = window->findChild<StreamOrderProxyModel *>();
+        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
         LogTableView *tableView = window->findChild<LogTableView *>();
         LogModel *model = window->findChild<LogModel *>();
         QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
-        QVERIFY(streamOrderProxy != nullptr);
+        QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(followAction != nullptr);
@@ -2037,8 +2122,8 @@ private slots:
         // Reverse the proxy and orient the table view's tail edge so
         // the preservation hook (which only fires for `TailEdge::Top`)
         // is in the right configuration. Mirrors what
-        // `MainWindow::ApplyStreamingDisplayOrder` does in production.
-        streamOrderProxy->SetReversed(true);
+        // `MainWindow::ApplyDisplayOrder` does in production.
+        rowOrderProxy->SetReversed(true);
         tableView->SetTailEdge(LogTableView::TailEdge::Top);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
@@ -2110,30 +2195,43 @@ private slots:
     // bottom-tail mode keeps the visual reading aid because rows
     // append at the bottom (visual parity is stable).
     //
-    // This test asserts the toggle in `MainWindow::ApplyStreamingDisplayOrder`
+    // This test asserts the toggle in `MainWindow::ApplyDisplayOrder`
     // mirrors the persisted `StreamingControl::IsNewestFirst()` value
-    // both ways. We poke the preference, fire the apply path, and
-    // read back `QTableView::alternatingRowColors`.
+    // both ways while a **stream-mode** session is active. We stage the
+    // session mode via `BeginSyntheticStreamSession`, poke the
+    // preference, fire the apply path, and read back
+    // `QTableView::alternatingRowColors`. The companion
+    // `testAlternatingRowColoursDisabledInStaticNewestFirstMode`
+    // asserts the same contract for static-mode sessions.
     void testAlternatingRowColoursDisabledInNewestFirstMode()
     {
         LogTableView *tableView = window->findChild<LogTableView *>();
+        LogModel *model = window->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
 
         const bool originalNewestFirst = StreamingControl::IsNewestFirst();
-        auto restoreNewestFirst =
-            qScopeGuard([originalNewestFirst]() { StreamingControl::SetNewestFirst(originalNewestFirst); });
+        auto restoreNewestFirst = qScopeGuard([this, originalNewestFirst]() {
+            StreamingControl::SetNewestFirst(originalNewestFirst);
+            window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+        });
+
+        // Stage a stream-mode session so `ApplyDisplayOrder` consults
+        // `IsNewestFirst()` (and not `IsStaticNewestFirst()`).
+        static_cast<void>(BeginSyntheticStreamSession(*model));
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
         // Default-mode baseline: alternation is on so users still get
         // the lighter/darker reading aid while reading static logs or
         // a bottom-tail stream.
         StreamingControl::SetNewestFirst(false);
-        window->ApplyStreamingDisplayOrder();
+        window->ApplyDisplayOrder();
         QVERIFY2(tableView->alternatingRowColors(), "default bottom-tail mode should keep alternating row colours on");
 
         // Newest-first flips the toggle off — see the comment in
-        // `ApplyStreamingDisplayOrder` for the rationale.
+        // `ApplyDisplayOrder` for the rationale.
         StreamingControl::SetNewestFirst(true);
-        window->ApplyStreamingDisplayOrder();
+        window->ApplyDisplayOrder();
         QVERIFY2(
             !tableView->alternatingRowColors(),
             "newest-first mode should disable alternating row colours to avoid the "
@@ -2144,10 +2242,125 @@ private slots:
         // never enabled newest-first, but covers the "I tried it,
         // didn't like it, switched back" path).
         StreamingControl::SetNewestFirst(false);
-        window->ApplyStreamingDisplayOrder();
+        window->ApplyDisplayOrder();
         QVERIFY2(
             tableView->alternatingRowColors(), "switching newest-first off should re-enable alternating row colours"
         );
+
+        model->EndStreaming(false);
+    }
+
+    // Static-mode parallel of `testAlternatingRowColoursDisabledInNewestFirstMode`:
+    // when the active session is static the apply path must read the
+    // **static** preference (`StreamingControl::IsStaticNewestFirst`),
+    // not the stream-mode one. Toggling only the stream-mode flag must
+    // be a no-op while a static session is active.
+    void testStaticNewestFirstReversesProxyOrder()
+    {
+        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QVERIFY(rowOrderProxy != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+
+        const bool originalStream = StreamingControl::IsNewestFirst();
+        const bool originalStatic = StreamingControl::IsStaticNewestFirst();
+        auto restore = qScopeGuard([this, originalStream, originalStatic]() {
+            StreamingControl::SetNewestFirst(originalStream);
+            StreamingControl::SetStaticNewestFirst(originalStatic);
+            window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+        });
+
+        BeginSyntheticStaticSession(*model);
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+
+        // Stream-mode flag has no effect on a static session: with the
+        // stream flag ON and the static flag OFF, the proxy must stay
+        // in the identity orientation.
+        StreamingControl::SetNewestFirst(true);
+        StreamingControl::SetStaticNewestFirst(false);
+        window->ApplyDisplayOrder();
+        QVERIFY2(
+            !rowOrderProxy->IsReversed(),
+            "static session must ignore the stream-mode newest-first flag"
+        );
+        QVERIFY(tableView->alternatingRowColors());
+
+        // Flipping the static-mode flag drives the same proxy reversal
+        // as the stream-mode flag does for live-tail sessions.
+        StreamingControl::SetStaticNewestFirst(true);
+        window->ApplyDisplayOrder();
+        QVERIFY(rowOrderProxy->IsReversed());
+        QVERIFY(!tableView->alternatingRowColors());
+
+        StreamingControl::SetStaticNewestFirst(false);
+        window->ApplyDisplayOrder();
+        QVERIFY(!rowOrderProxy->IsReversed());
+        QVERIFY(tableView->alternatingRowColors());
+
+        model->EndStreaming(false);
+    }
+
+    // Mode-transition guard: with both flags ON, switching from a
+    // static session to a stream session must keep the proxy reversed
+    // because both modes' preferences agree. Then with only the
+    // *static* flag ON, the proxy must reverse on a static session and
+    // de-reverse on a stream session, proving the mode dispatch in
+    // `ApplyDisplayOrder` actually picks per-mode (and isn't reading
+    // either flag's value unconditionally).
+    void testNewestFirstFollowsSessionModeOnTransition()
+    {
+        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QVERIFY(rowOrderProxy != nullptr);
+        QVERIFY(model != nullptr);
+
+        const bool originalStream = StreamingControl::IsNewestFirst();
+        const bool originalStatic = StreamingControl::IsStaticNewestFirst();
+        auto restore = qScopeGuard([this, originalStream, originalStatic]() {
+            StreamingControl::SetNewestFirst(originalStream);
+            StreamingControl::SetStaticNewestFirst(originalStatic);
+            window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+        });
+
+        // Both ON: every session orientation should land reversed.
+        StreamingControl::SetNewestFirst(true);
+        StreamingControl::SetStaticNewestFirst(true);
+
+        BeginSyntheticStaticSession(*model);
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        window->ApplyDisplayOrder();
+        QVERIFY(rowOrderProxy->IsReversed());
+
+        // End the static session and start a stream one; the proxy
+        // must stay reversed because the stream-mode flag is also ON.
+        model->EndStreaming(false);
+        static_cast<void>(BeginSyntheticStreamSession(*model));
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+        window->ApplyDisplayOrder();
+        QVERIFY(rowOrderProxy->IsReversed());
+
+        // Asymmetric: only the static-mode flag is ON. The proxy must
+        // de-reverse for the stream session (still active) and only
+        // re-reverse once we transition back to a static session.
+        StreamingControl::SetNewestFirst(false);
+        window->ApplyDisplayOrder();
+        QVERIFY2(
+            !rowOrderProxy->IsReversed(),
+            "stream session must follow the stream-mode flag, not the static-mode one"
+        );
+
+        model->EndStreaming(false);
+        BeginSyntheticStaticSession(*model);
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        window->ApplyDisplayOrder();
+        QVERIFY2(
+            rowOrderProxy->IsReversed(),
+            "static session must follow the static-mode flag even when the stream-mode flag is OFF"
+        );
+
+        model->EndStreaming(false);
     }
 
 private:

@@ -24,8 +24,8 @@ set(PROJECT_SOURCES
     include/find_record_widget.hpp
     src/log_filter_model.cpp
     include/log_filter_model.hpp
-    src/stream_order_proxy_model.cpp
-    include/stream_order_proxy_model.hpp
+    src/row_order_proxy_model.cpp
+    include/row_order_proxy_model.hpp
     src/filter_editor.cpp
     include/filter_editor.hpp
     src/preferences_editor.cpp

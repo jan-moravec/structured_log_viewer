@@ -24,6 +24,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     mStyleComboBox = new QComboBox(this);
     mStreamRetentionSpinBox = new QSpinBox(this);
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
+    mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
 
     mSizeSpinBox->setRange(6, 72);
 
@@ -39,6 +40,10 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     mStreamNewestFirstCheckBox->setToolTip(
         "When enabled, new lines appear at the top of the stream view (oldest at the bottom). "
         "Follow newest then keeps the top of the view pinned to the most recent line."
+    );
+    mStaticNewestFirstCheckBox->setToolTip(
+        "When enabled, files opened in static (file) mode are displayed with the last line "
+        "at the top and the first line at the bottom."
     );
 
     for (const auto &style : QStyleFactory::keys())
@@ -82,8 +87,13 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     streamingLayout->addWidget(mStreamRetentionSpinBox);
     streamingLayout->addWidget(mStreamNewestFirstCheckBox);
 
+    auto *staticGroup = new QGroupBox("Static (file mode)", this);
+    auto *staticLayout = new QVBoxLayout(staticGroup);
+    staticLayout->addWidget(mStaticNewestFirstCheckBox);
+
     layout->addWidget(appearanceGroup);
     layout->addWidget(streamingGroup);
+    layout->addWidget(staticGroup);
 
     QPushButton *okButton = new QPushButton("Ok", this);
     QPushButton *cancelButton = new QPushButton("Cancel", this);
@@ -94,17 +104,24 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         // before notifying so observers querying the static accessors
         // from a slot see the committed values.
         const auto retention = static_cast<size_t>(mStreamRetentionSpinBox->value());
-        const bool newestFirst = mStreamNewestFirstCheckBox->isChecked();
-        const bool newestFirstChanged = (newestFirst != StreamingControl::IsNewestFirst());
+        const bool streamNewestFirst = mStreamNewestFirstCheckBox->isChecked();
+        const bool staticNewestFirst = mStaticNewestFirstCheckBox->isChecked();
+        const bool streamNewestFirstChanged = (streamNewestFirst != StreamingControl::IsNewestFirst());
+        const bool staticNewestFirstChanged = (staticNewestFirst != StreamingControl::IsStaticNewestFirst());
         StreamingControl::SetRetentionLines(retention);
-        StreamingControl::SetNewestFirst(newestFirst);
+        StreamingControl::SetNewestFirst(streamNewestFirst);
+        StreamingControl::SetStaticNewestFirst(staticNewestFirst);
         StreamingControl::SaveConfiguration();
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
-        if (newestFirstChanged)
+        if (streamNewestFirstChanged)
         {
-            emit streamingDisplayOrderChanged(newestFirst);
+            emit streamingDisplayOrderChanged(streamNewestFirst);
+        }
+        if (staticNewestFirstChanged)
+        {
+            emit staticDisplayOrderChanged(staticNewestFirst);
         }
         close();
     });
@@ -130,4 +147,5 @@ void PreferencesEditor::UpdateFields()
     mFontComboBox->setCurrentFont(qApp->font());
     mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::RetentionLines()));
     mStreamNewestFirstCheckBox->setChecked(StreamingControl::IsNewestFirst());
+    mStaticNewestFirstCheckBox->setChecked(StreamingControl::IsStaticNewestFirst());
 }
