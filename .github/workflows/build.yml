@@ -79,10 +79,17 @@ jobs:
         uses: lukka/get-cmake@latest
 
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y libfuse2 xvfb libxcb-cursor0 zsync
+        # libssl-dev satisfies find_package(OpenSSL) for the
+        # LOGLIB_NETWORK_TLS code path (TcpServerProducer + asio::ssl).
+        # Other entries: libfuse2 (AppImage runtime), xvfb / libxcb-cursor0
+        # (Qt's offscreen QPA), zsync (linuxdeploy delta updates).
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 xvfb libxcb-cursor0 zsync libssl-dev
 
       - name: Configure
-        run: cmake --preset release
+        # LOGLIB_NETWORK_TLS=ON is the project default but pinned here
+        # explicitly so a future default flip doesn't silently disable
+        # TLS in the published AppImage.
+        run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
@@ -125,6 +132,14 @@ jobs:
           cp -r build/release/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
+          # Stage the aggregated third-party license bundle and the
+          # project's own LICENSE alongside the binary so they survive
+          # the AppImage packaging step (linuxdeploy preserves
+          # everything under usr/).
+          mkdir -p $APP_DIR/usr/share/doc/${{ env.APP_NAME }}
+          cp build/release/bin/Release/THIRD_PARTY_LICENSES.txt \
+             build/release/bin/Release/LICENSE \
+             $APP_DIR/usr/share/doc/${{ env.APP_NAME }}/
           ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
 
       - name: Compute SHA256 checksums
@@ -177,11 +192,24 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      - name: Install OpenSSL
+        # The Windows runner has Strawberry Perl's OpenSSL but not the
+        # standalone Win64 build CMake's FindOpenSSL prefers. Install
+        # via chocolatey so OPENSSL_ROOT_DIR resolves to the canonical
+        # `C:\Program Files\OpenSSL-Win64` layout used elsewhere.
+        # `--no-progress` keeps the action log readable.
+        shell: powershell
+        run: choco install openssl --yes --no-progress
+
       - name: Configure
         shell: cmd
+        env:
+          # Hard-pin the install root chocolatey uses so CMake's
+          # FindOpenSSL skips the (slow) registry probe on every run.
+          OPENSSL_ROOT_DIR: "C:\\Program Files\\OpenSSL-Win64"
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          cmake --preset release
+          cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         shell: cmd
@@ -215,6 +243,18 @@ jobs:
           # POST_BUILD rule in app/CMakeLists.txt already copies it next to
           # StructuredLogViewer.exe, so the file is present in the build tree.
           Move-Item ../build/release/bin/Release/tbb*.dll .
+          # OpenSSL runtime DLLs (libssl-3-x64.dll, libcrypto-3-x64.dll)
+          # are placed by the LOGLIB_NETWORK_TLS POST_BUILD rule in
+          # app/CMakeLists.txt. Without them, StructuredLogViewer.exe
+          # would fail at startup with STATUS_DLL_NOT_FOUND.
+          Move-Item ../build/release/bin/Release/libssl-*.dll .
+          Move-Item ../build/release/bin/Release/libcrypto-*.dll .
+          # Stage the aggregated third-party license bundle and the
+          # project's own LICENSE next to the executable. They are the
+          # same files the BundleLicenses POST_BUILD rule copied into
+          # bin/Release/, so just move them across.
+          Move-Item ../build/release/bin/Release/THIRD_PARTY_LICENSES.txt .
+          Move-Item ../build/release/bin/Release/LICENSE .
           windeployqt --release ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
 
@@ -280,8 +320,17 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      - name: Install OpenSSL
+        # macos-latest already has openssl@3 on the PATH via Homebrew but
+        # the keg is install-time only; re-running `brew install` is a
+        # cheap no-op that also caches the prefix variable for the
+        # following step.
+        run: brew install openssl@3
+
       - name: Configure
-        run: cmake --preset release
+        env:
+          OPENSSL_ROOT_DIR: /opt/homebrew/opt/openssl@3
+        run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
@@ -306,6 +355,13 @@ jobs:
           # POST_BUILD step; verify it's there before deploying.
           if [ ! -d "${{ env.APP_NAME }}.app/Contents/Resources/tzdata" ]; then
             echo "ERROR: tzdata missing from bundle Resources" >&2
+            exit 1
+          fi
+          # Aggregated third-party licenses + project LICENSE. Same
+          # POST_BUILD step that handles tzdata copies them in; verify
+          # so we fail loud instead of shipping a non-compliant DMG.
+          if [ ! -f "${{ env.APP_NAME }}.app/Contents/Resources/THIRD_PARTY_LICENSES.txt" ]; then
+            echo "ERROR: THIRD_PARTY_LICENSES.txt missing from bundle Resources" >&2
             exit 1
           fi
           macdeployqt ${{ env.APP_NAME }}.app -dmg
