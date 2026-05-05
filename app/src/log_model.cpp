@@ -30,6 +30,11 @@
 #include <vector>
 
 LogModel::LogModel(QObject *parent)
+    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT)
+{
+}
+
+LogModel::LogModel(QObject *parent, std::size_t pendingCapacity)
     : QAbstractTableModel{parent}
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
@@ -37,7 +42,7 @@ LogModel::LogModel(QObject *parent)
     // queued invocation; Qt refuses to queue unregistered types.
     qRegisterMetaType<loglib::SourceStatus>("loglib::SourceStatus");
 
-    mSink = new QtStreamingLogSink(this, this);
+    mSink = new QtStreamingLogSink(this, this, pendingCapacity);
     mStreamingWatcher = new QFutureWatcher<void>(this);
 }
 
@@ -117,6 +122,11 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
     if (!resetTable && mSink && mSink->IsActive())
     {
         QCoreApplication::sendPostedEvents(mSink, 0);
+        // Defensive backstop: if the worker enqueued batches into the
+        // bounded queue but exited before reaching the lazy
+        // `mDrainScheduled` post, `sendPostedEvents` finds nothing to
+        // run. Drain explicitly so those rows still land in the model.
+        mSink->DrainNow();
         finishedAlreadyEmitted = !mSink->IsActive();
     }
 

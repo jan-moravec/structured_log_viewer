@@ -1,5 +1,7 @@
 #pragma once
 
+#include "bounded_batch_queue.hpp"
+
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/stop_token.hpp>
 
@@ -17,19 +19,37 @@ class LogModel;
 
 /// Qt adapter that forwards `loglib::LogParseSink` callbacks from a worker
 /// thread to a `LogModel` on the GUI thread. Generation/stop-source live on
-/// the GUI thread; worker callbacks post via QueuedConnection and drop on
-/// generation mismatch.
+/// the GUI thread; worker callbacks enqueue into a bounded SPSC queue and
+/// schedule a single GUI-thread drain lambda per drain epoch.
+///
+/// Back-pressure: `OnBatch` blocks the worker once `mPending` holds
+/// `kPendingCapacity` items (default 32). The block propagates back
+/// through `BatchCoalescer` -> TBB Stage C -> Stage A, so the parser
+/// runs at the GUI's pace instead of producing unboundedly. `RequestStop`
+/// pairs `mStopSource->request_stop()` with `mPending.NotifyStop()` so a
+/// blocked worker wakes immediately.
 ///
 /// Live-tail Pause/Resume: while paused the worker buffers parsed batches
-/// internally instead of posting them; `Resume()` coalesces the buffer
-/// and posts it once. The buffer is bounded by the retention cap so an
-/// indefinitely-paused noisy producer cannot OOM.
+/// internally instead of enqueuing them; `Resume()` coalesces the buffer
+/// and posts it once. The paused buffer is bounded by the retention cap
+/// so an indefinitely-paused noisy producer cannot OOM. Pause path and
+/// bounded-queue path are disjoint.
 class QtStreamingLogSink : public QObject, public loglib::LogParseSink
 {
     Q_OBJECT
 
 public:
-    explicit QtStreamingLogSink(LogModel *model, QObject *parent = nullptr);
+    /// Resident-batch ceiling between worker and GUI under steady state
+    /// streaming. With current `STATIC_BATCH_FLUSH_LINES = 1000` this
+    /// caps in-flight rows at ~32k regardless of file size.
+    static constexpr std::size_t PENDING_CAPACITY_DEFAULT = 32;
+
+    /// `pendingCapacity` is exposed for tests that want to exercise the
+    /// blocking path with small caps; production callers should rely on
+    /// the default.
+    explicit QtStreamingLogSink(
+        LogModel *model, QObject *parent = nullptr, std::size_t pendingCapacity = PENDING_CAPACITY_DEFAULT
+    );
     ~QtStreamingLogSink() override = default;
 
     /// Opens a fresh parse generation and returns the stop_token to install
@@ -87,6 +107,17 @@ public:
     /// already empty.
     std::optional<loglib::StreamedBatch> TakePausedBuffer();
 
+    /// GUI-thread fallback used by `LogModel`'s teardown. Drains the
+    /// bounded queue and applies any rows under the still-valid
+    /// generation. Normally the GUI gets here via the lazy-scheduled
+    /// `Drain` lambda; this method is a defensive backstop for the
+    /// teardown path when a worker enqueued items but never reached
+    /// the lambda post (e.g. exited mid-`OnBatch`).
+    void DrainNow();
+
+    /// Bounded-queue capacity for diagnostics / tests.
+    [[nodiscard]] std::size_t PendingCapacity() const noexcept;
+
     /// The canonical KeyIndex (the model's LogTable's). Thread-safe.
     loglib::KeyIndex &Keys() override;
 
@@ -97,12 +128,18 @@ public:
 private:
     /// Concatenates the batches into one. The first batch's
     /// `firstLineNumber` is preserved; all other vectors are appended.
-    /// Used by `Resume()` and `TakePausedBuffer()`.
+    /// Used by `Resume()`, `TakePausedBuffer()`, and `DrainGeneration`.
     static loglib::StreamedBatch CoalesceLocked(std::vector<loglib::StreamedBatch> &&batches);
 
     /// Total row count across `mPausedBatches`. Caller must hold
     /// `mPausedMutex`.
     size_t PausedLineCountLocked() const;
+
+    /// GUI-thread. Pulls everything currently in `mPending` and applies
+    /// it to the model iff `gen` still matches the live generation.
+    /// Posted lazily by `OnBatch` whenever the queue transitions from
+    /// "no drain scheduled" to "drain scheduled".
+    void DrainGeneration(uint64_t gen);
 
     QPointer<LogModel> mModel;
     std::atomic<uint64_t> mGeneration{0};
@@ -122,6 +159,15 @@ private:
     /// the status bar and drains on Resume.
     mutable std::mutex mPausedMutex;
     std::vector<loglib::StreamedBatch> mPausedBatches;
+
+    /// Bounded SPSC queue between worker `OnBatch` and the GUI drain.
+    /// Producer blocks once full; consumer never blocks.
+    logapp::BoundedBatchQueue mPending;
+
+    /// True between an `OnBatch` enqueue that posted a `Drain` lambda
+    /// and the GUI thread picking it up. Coalesces multiple worker
+    /// enqueues onto a single GUI-thread drain lambda per epoch.
+    std::atomic<bool> mDrainScheduled{false};
 
     /// Backs `IsActive()`: set by `Arm()`, cleared by matching
     /// `OnFinished` or `DropPendingBatches()`. GUI thread.

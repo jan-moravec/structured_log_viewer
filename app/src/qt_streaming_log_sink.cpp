@@ -10,11 +10,10 @@
 
 #include <algorithm>
 #include <iterator>
-#include <memory>
 #include <utility>
 
-QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent)
-    : QObject(parent), mModel(model)
+QtStreamingLogSink::QtStreamingLogSink(LogModel *model, QObject *parent, std::size_t pendingCapacity)
+    : QObject(parent), mModel(model), mPending(pendingCapacity)
 {
 }
 
@@ -27,6 +26,12 @@ loglib::StopToken QtStreamingLogSink::Arm()
         std::lock_guard<std::mutex> lock(mPausedMutex);
         mPausedBatches.clear();
     }
+    // Re-arm the bounded queue: clear leftover items and the stopped
+    // flag. Safe here because `DropPendingBatches` (which precedes
+    // every fresh Arm in the teardown protocol) has already joined the
+    // worker, so no producer can be racing this clear.
+    mPending.Reset();
+    mDrainScheduled.store(false, std::memory_order_release);
     mPaused.store(false, std::memory_order_release);
     mPausedDropCount.store(0, std::memory_order_release);
     mActive = true;
@@ -42,6 +47,11 @@ void QtStreamingLogSink::RequestStop()
     {
         mStopSource->request_stop();
     }
+    // Wake any worker parked inside `mPending.WaitEnqueue`. Without
+    // this the worker could remain blocked indefinitely waiting for a
+    // GUI drain that the teardown caller is itself waiting to issue --
+    // a deadlock against `mStreamingWatcher->waitForFinished()`.
+    mPending.NotifyStop();
 }
 
 void QtStreamingLogSink::DropPendingBatches()
@@ -53,6 +63,12 @@ void QtStreamingLogSink::DropPendingBatches()
         std::lock_guard<std::mutex> lock(mPausedMutex);
         mPausedBatches.clear();
     }
+    // Drain-and-discard anything the worker enqueued before exiting.
+    // The matching generation bump above is what makes any still-queued
+    // `Drain` lambda short-circuit when it finally runs.
+    (void)mPending.DrainAll();
+    mPending.Reset();
+    mDrainScheduled.store(false, std::memory_order_release);
     mPaused.store(false, std::memory_order_release);
     mActive = false;
 }
@@ -238,21 +254,22 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
         return;
     }
 
-    const uint64_t gen = mGeneration.load(std::memory_order_acquire);
-    // Qt's queued-connection storage requires CopyConstructible; wrap
-    // the move-only batch in shared_ptr.
-    auto batchPtr = std::make_shared<loglib::StreamedBatch>(std::move(batch));
-    QMetaObject::invokeMethod(
-        this,
-        [this, gen, batchPtr]() {
-            if (mGeneration.load(std::memory_order_acquire) != gen || !mModel)
-            {
-                return;
-            }
-            mModel->AppendBatch(std::move(*batchPtr));
-        },
-        Qt::QueuedConnection
-    );
+    // Park the worker once the bounded queue is full. The drain on the
+    // GUI thread will wake us; if `RequestStop()` fires while we are
+    // parked, `WaitEnqueue` returns false and we drop this batch.
+    if (!mPending.WaitEnqueue(std::move(batch)))
+    {
+        return;
+    }
+    // Lazily post one drain lambda per drain epoch. Subsequent
+    // enqueues until the lambda runs see `mDrainScheduled == true`
+    // and skip the post -- the lambda will pick up everything via
+    // `DrainAll()`.
+    if (!mDrainScheduled.exchange(true, std::memory_order_acq_rel))
+    {
+        const uint64_t gen = mGeneration.load(std::memory_order_acquire);
+        QMetaObject::invokeMethod(this, [this, gen]() { DrainGeneration(gen); }, Qt::QueuedConnection);
+    }
 }
 
 void QtStreamingLogSink::OnFinished(bool cancelled)
@@ -270,6 +287,44 @@ void QtStreamingLogSink::OnFinished(bool cancelled)
         },
         Qt::QueuedConnection
     );
+}
+
+void QtStreamingLogSink::DrainGeneration(uint64_t gen)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    // Allow a fresh `OnBatch` to re-arm the lambda before we touch the
+    // queue: even if the new batch arrives between `exchange(false)`
+    // and `DrainAll()` it will be picked up by *this* drain, and the
+    // worker's `exchange(true)` will post a follow-up lambda that
+    // finds the queue empty and returns. Either order is correct.
+    mDrainScheduled.store(false, std::memory_order_release);
+    auto batches = mPending.DrainAll();
+    if (batches.empty() || !mModel)
+    {
+        return;
+    }
+    if (mGeneration.load(std::memory_order_acquire) != gen)
+    {
+        // A `DropPendingBatches()` ran between the post and now; the
+        // batches we just drained belong to a stale generation.
+        return;
+    }
+    mModel->AppendBatch(CoalesceLocked(std::move(batches)));
+}
+
+void QtStreamingLogSink::DrainNow()
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    // Use the currently-live generation: this is the teardown
+    // backstop, called only when the caller still considers the
+    // session active.
+    const uint64_t gen = mGeneration.load(std::memory_order_acquire);
+    DrainGeneration(gen);
+}
+
+std::size_t QtStreamingLogSink::PendingCapacity() const noexcept
+{
+    return mPending.Capacity();
 }
 
 loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::StreamedBatch> &&batches)

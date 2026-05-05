@@ -47,6 +47,11 @@ class LogModel : public QAbstractTableModel
 
 public:
     explicit LogModel(QObject *parent = nullptr);
+    /// Test-only overload that constructs the embedded
+    /// `QtStreamingLogSink` with a custom bounded-queue capacity. Used
+    /// by back-pressure tests that need to exercise the worker-blocks
+    /// path with a small cap; production callers use the default.
+    LogModel(QObject *parent, std::size_t pendingCapacity);
     ~LogModel() override;
 
     /// Full teardown (`BytesProducer::Stop()` -> sink `RequestStop()` ->

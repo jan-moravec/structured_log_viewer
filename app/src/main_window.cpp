@@ -208,6 +208,14 @@ MainWindow::MainWindow(QWidget *parent)
     // default, top in newest-first mode) is owned by
     // `ApplyDisplayOrder`, so this wiring stays
     // orientation-agnostic.
+    //
+    // Re-engage is gated on `IsLiveTailSession()` (not
+    // `mModel->IsStreamingActive()`): static sessions are
+    // streaming-active too while their backing file is parsed, but
+    // they have no continuously-arriving "newest" data the user could
+    // sensibly want to follow. Allowing a static-mode scroll to the
+    // bottom to silently re-arm Follow newest would then yank the
+    // viewport away on the next batch parsed from the same file.
     connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
         if (ui->actionFollowTail->isChecked())
         {
@@ -215,7 +223,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     connect(mTableView, &LogTableView::userScrolledToTail, this, [this]() {
-        if (!ui->actionFollowTail->isChecked() && mModel->IsStreamingActive())
+        if (!ui->actionFollowTail->isChecked() && IsLiveTailSession())
         {
             ui->actionFollowTail->setChecked(true);
         }
@@ -262,7 +270,12 @@ MainWindow::MainWindow(QWidget *parent)
             mFirstStreamingBatchSeen = true;
             UpdateUi();
         }
-        if (mModel->IsStreamingActive())
+        // Auto-follow is a live-tail affordance only. Static sessions
+        // are streaming-active too while the backing file is parsed,
+        // but their "newest" row is just the next chunk of an
+        // already-finite payload the user is reading -- yanking the
+        // viewport on every batch fights the user's scroll.
+        if (IsLiveTailSession())
         {
             ScrollToNewestRowIfFollowing();
         }
@@ -784,6 +797,18 @@ void MainWindow::UpdateStreamToolbarVisibility()
 
 void MainWindow::ScrollToNewestRowIfFollowing()
 {
+    // Auto-follow is meaningful only in live-tail sessions; static
+    // sessions parse a finite payload the user is reading, so any
+    // residual `actionFollowTail` checked state from the previous
+    // session (or the startup default) must not cause the viewport
+    // to chase batches as the file is parsed. The toolbar gate in
+    // `UpdateStreamToolbarVisibility` already disables the action
+    // outside live-tail, but the action's *value* is independent of
+    // its enabled flag so we need this defensive early-return too.
+    if (!IsLiveTailSession())
+    {
+        return;
+    }
     if (!ui->actionFollowTail->isChecked())
     {
         return;

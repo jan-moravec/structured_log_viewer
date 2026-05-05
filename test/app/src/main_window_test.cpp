@@ -39,6 +39,7 @@
 #include <QtTest/QtTest>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -2292,6 +2293,152 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression for the user-reported "static file mode keeps
+    // following the newest data" bug: while a large static file is
+    // being parsed, every batch fires `LogModel::lineCountChanged`,
+    // which in turn called `ScrollToNewestRowIfFollowing()` whenever
+    // `mModel->IsStreamingActive()` -- a flag that's true for *both*
+    // live-tail and static sessions. With `actionFollowTail` defaulting
+    // to checked at startup (and on every `streamingFinished` reset),
+    // a static session would silently chase the newest parsed row and
+    // yank the viewport away from wherever the user had scrolled.
+    //
+    // The fix narrows the gate from `IsStreamingActive()` to
+    // `IsLiveTailSession()` (in both `lineCountChanged` and
+    // `userScrolledToTail`), and adds a defensive early-return inside
+    // `ScrollToNewestRowIfFollowing()` itself so any future caller
+    // of the method honours the same contract.
+    //
+    // The test simulates a static-mode batch arrival after the user
+    // has scrolled away from the bottom and asserts the scrollbar
+    // value does not change.
+    void testStaticSessionDoesNotFollowNewestRows()
+    {
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+
+        auto restore = qScopeGuard([this]() { window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+
+        // Static session, with `actionFollowTail` left in its startup
+        // baseline (checked). Production users never see this toggle
+        // in static mode (the toolbar is hidden, the action is
+        // disabled), but the *value* persists across sessions and is
+        // what the buggy auto-scroll path was reading.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStaticSession(*model);
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        QVERIFY(followAction->isChecked());
+
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Force a known viewport size so the seeded rows actually
+        // produce a scrollable range.
+        tableView->resize(400, 200);
+        tableView->show();
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 200, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 200);
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        QVERIFY(vbar != nullptr);
+        if (vbar->maximum() == 0)
+        {
+            QSKIP("offscreen layout did not produce a scrollable viewport for the seeded rows");
+        }
+
+        // Park the user mid-file. A live-tail session would re-yank
+        // the viewport to the bottom on the next batch (see
+        // `testFollowNewestDisengagesOnScrollbarAction` for the
+        // production scroll-away behaviour); a static session must
+        // leave the value alone.
+        const int parkedValue = vbar->maximum() / 2;
+        vbar->setValue(parkedValue);
+        QCoreApplication::processEvents();
+        QCOMPARE(vbar->value(), parkedValue);
+
+        // Push another batch: this fires `lineCountChanged`, which
+        // pre-fix would have called `ScrollToNewestRowIfFollowing`
+        // and snapped the viewport to the bottom.
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 201, 200, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 400);
+
+        // Post-fix: the scrollbar's range can grow because rows were
+        // appended, but the *value* must not have been programmatic-
+        // ally snapped to the new maximum. Allow at most a small
+        // delta from any layout / viewport recalc that genuinely
+        // affected the parked row's pixel position.
+        const int valueAfter = vbar->value();
+        QVERIFY2(
+            qAbs(valueAfter - parkedValue) <= 4,
+            qPrintable(QStringLiteral("static-mode batch must not move the scrollbar; "
+                                      "parked=%1 after=%2 max=%3")
+                           .arg(parkedValue)
+                           .arg(valueAfter)
+                           .arg(vbar->maximum()))
+        );
+        QVERIFY2(
+            valueAfter < vbar->maximum(),
+            qPrintable(QStringLiteral("static-mode batch must not snap the scrollbar to the bottom; "
+                                      "after=%1 max=%2")
+                           .arg(valueAfter)
+                           .arg(vbar->maximum()))
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Companion to `testStaticSessionDoesNotFollowNewestRows`: the
+    // user-scroll-to-tail signal must not silently re-arm
+    // `actionFollowTail` while a static session is active. Pre-fix
+    // the slot re-engaged the toggle whenever
+    // `mModel->IsStreamingActive()`, which is true for static
+    // sessions too -- so a user who scrolled to the bottom of a
+    // partially-parsed static file would have the next incoming
+    // batch yank the viewport away.
+    void testStaticSessionDoesNotReArmFollowOnScrollToTail()
+    {
+        LogTableView *tableView = window->findChild<LogTableView *>();
+        LogModel *model = window->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+
+        auto restore = qScopeGuard([this]() { window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+
+        BeginSyntheticStaticSession(*model);
+        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+
+        // Force the action *unchecked* so the re-arm path has a
+        // visible state transition to attempt.
+        followAction->setChecked(false);
+        QVERIFY(!followAction->isChecked());
+
+        QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
+        QVERIFY(toSpy.isValid());
+
+        // Synthesise the same `userScrolledToTail` emission the
+        // production path produces when the user drags the scrollbar
+        // to the bottom edge. Going through `Q_EMIT` here is the
+        // narrowest possible exercise of the slot we just narrowed.
+        Q_EMIT tableView->userScrolledToTail();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(toSpy.count(), 1);
+        QVERIFY2(!followAction->isChecked(), "scroll-to-tail in static mode must not re-arm the Follow newest toggle");
+
+        model->EndStreaming(false);
+    }
+
     // Mode-transition guard: with both flags ON, switching from a
     // static session to a stream session must keep the proxy reversed
     // because both modes' preferences agree. Then with only the
@@ -2350,6 +2497,177 @@ private slots:
         );
 
         model->EndStreaming(false);
+    }
+
+    // Back-pressure: when the GUI thread cannot keep up, the worker
+    // posting batches via `OnBatch` must block on the bounded queue
+    // once it fills. This test fills the queue without spinning the
+    // event loop, samples that the worker is parked on the (cap+1)-th
+    // call, then drains via `processEvents` and confirms every batch
+    // eventually lands.
+    void testBoundedQueueBlocksWorkerWhenGuiFallsBehind()
+    {
+        constexpr std::size_t CAPACITY = 4;
+        constexpr int TOTAL_BATCHES = static_cast<int>(CAPACITY) + 5;
+        LogModel model(nullptr, CAPACITY);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        QCOMPARE(sink->PendingCapacity(), CAPACITY);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        std::atomic<int> enqueuedCount{0};
+        std::thread worker([&]() {
+            for (int i = 0; i < TOTAL_BATCHES; ++i)
+            {
+                sink->OnBatch(MakeSyntheticBatch(
+                    streamSource, keys, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0
+                ));
+                enqueuedCount.fetch_add(1, std::memory_order_release);
+            }
+        });
+
+        // Wait for the worker to fill the queue. We deliberately do
+        // NOT spin the event loop here -- the drain lambda must stay
+        // queued so the worker has nowhere to push the (cap+1)-th batch.
+        const auto fillDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (enqueuedCount.load(std::memory_order_acquire) < static_cast<int>(CAPACITY))
+        {
+            QVERIFY(std::chrono::steady_clock::now() < fillDeadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        // Producer must remain parked: count stays at cap for a
+        // sustained sample window.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        QCOMPARE(enqueuedCount.load(std::memory_order_acquire), static_cast<int>(CAPACITY));
+
+        // Now spin the event loop so the drain lambda runs, pulls
+        // batches out, wakes the worker, and the rest go through.
+        const auto drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (enqueuedCount.load(std::memory_order_acquire) < TOTAL_BATCHES)
+        {
+            QVERIFY(std::chrono::steady_clock::now() < drainDeadline);
+            QCoreApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        worker.join();
+
+        // Final drain so any trailing posted lambda runs.
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), TOTAL_BATCHES);
+
+        model.EndStreaming(false);
+    }
+
+    // Stop integration: when the worker is parked inside the bounded
+    // queue and the GUI calls `Reset`, `RequestStop -> NotifyStop` must
+    // wake the worker immediately (no polling). Without the explicit
+    // `NotifyStop` hook the worker would deadlock against
+    // `mStreamingWatcher->waitForFinished()`.
+    void testStopWhileWorkerBlockedOnBoundedQueue()
+    {
+        constexpr std::size_t CAPACITY = 1;
+        LogModel model(nullptr, CAPACITY);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Pre-fill the queue so the next enqueue blocks.
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, /*declareNewKey=*/true));
+
+        std::atomic<bool> entered{false};
+        std::atomic<bool> finished{false};
+        std::thread worker([&]() {
+            entered.store(true, std::memory_order_release);
+            sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 2, 1, /*declareNewKey=*/false));
+            finished.store(true, std::memory_order_release);
+        });
+
+        const auto enterDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!entered.load(std::memory_order_acquire))
+        {
+            QVERIFY(std::chrono::steady_clock::now() < enterDeadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        // Give the worker a moment to actually park inside the queue's
+        // condition variable.
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        QVERIFY(!finished.load(std::memory_order_acquire));
+
+        // Reset must wake the parked worker via NotifyStop and return
+        // well inside this deadline. Without NotifyStop the
+        // `waitForFinished` step would still complete (no QFuture is
+        // associated with the synthetic worker), but the worker
+        // thread's `WaitEnqueue` would never return -- our `worker.join()`
+        // below would deadlock.
+        const auto resetStart = std::chrono::steady_clock::now();
+        model.Reset();
+        const auto resetElapsed = std::chrono::steady_clock::now() - resetStart;
+        QVERIFY2(
+            resetElapsed < std::chrono::seconds(1),
+            qPrintable(QStringLiteral("Reset took %1 ms; expected < 1000 ms")
+                           .arg(std::chrono::duration_cast<std::chrono::milliseconds>(resetElapsed).count()))
+        );
+
+        worker.join();
+        QVERIFY(finished.load(std::memory_order_acquire));
+    }
+
+    // Throughput / FIFO: drive many small batches through the bounded
+    // queue with a small capacity and a draining GUI; every batch must
+    // arrive in order. Guards against drain-side dropouts and against
+    // the lazy `mDrainScheduled` flag missing a re-arm window.
+    void testNoBatchLossUnderBackPressure()
+    {
+        constexpr std::size_t CAPACITY = 8;
+        constexpr int TOTAL_BATCHES = 200;
+        LogModel model(nullptr, CAPACITY);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        std::atomic<bool> producerDone{false};
+        std::thread worker([&]() {
+            for (int i = 0; i < TOTAL_BATCHES; ++i)
+            {
+                sink->OnBatch(MakeSyntheticBatch(
+                    streamSource, keys, valueKey, static_cast<size_t>(i) + 1, 1, /*declareNewKey=*/i == 0
+                ));
+            }
+            producerDone.store(true, std::memory_order_release);
+        });
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (model.rowCount() < TOTAL_BATCHES)
+        {
+            QVERIFY(std::chrono::steady_clock::now() < deadline);
+            QCoreApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        worker.join();
+        QVERIFY(producerDone.load(std::memory_order_acquire));
+
+        QCOMPARE(model.rowCount(), TOTAL_BATCHES);
+        // FIFO: with newest-first OFF (default) the source-row at
+        // position K must be the K-th appended row.
+        for (int row = 0; row < TOTAL_BATCHES; ++row)
+        {
+            const QVariant insertionOrder = model.data(model.index(row, 0), LogModelItemDataRole::InsertionOrderRole);
+            QCOMPARE(insertionOrder.toInt(), row);
+        }
+
+        model.EndStreaming(false);
     }
 
 private:

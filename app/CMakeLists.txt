@@ -18,6 +18,7 @@ set(PROJECT_SOURCES
     include/log_model.hpp
     src/qt_streaming_log_sink.cpp
     include/qt_streaming_log_sink.hpp
+    include/bounded_batch_queue.hpp
     src/log_table_view.cpp
     include/log_table_view.hpp
     src/find_record_widget.cpp
