@@ -1797,13 +1797,11 @@ private slots:
         // Default (oldest-first) order: proxy row 0 == source row 0
         // == lineId 1, proxy row 2 == source row 2 == lineId 3.
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(1)
         );
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(3)
         );
 
@@ -1816,13 +1814,11 @@ private slots:
         // the proxy mapping flips, so the underlying append-order
         // contract continues to hold.
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(3)
         );
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(2, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(1)
         );
 
@@ -1832,8 +1828,7 @@ private slots:
         rowOrderProxy->SetReversed(false);
         QVERIFY(!rowOrderProxy->IsReversed());
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(1)
         );
 
@@ -1872,8 +1867,7 @@ private slots:
         QVERIFY(valueColumn >= 0);
 
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(3)
         );
 
@@ -1882,8 +1876,7 @@ private slots:
         QCOMPARE(model->rowCount(), 5);
 
         QCOMPARE(
-            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole)
-                .toLongLong(),
+            rowOrderProxy->data(rowOrderProxy->index(0, valueColumn), LogModelItemDataRole::SortRole).toLongLong(),
             qint64(5)
         );
 
@@ -2281,10 +2274,7 @@ private slots:
         StreamingControl::SetNewestFirst(true);
         StreamingControl::SetStaticNewestFirst(false);
         window->ApplyDisplayOrder();
-        QVERIFY2(
-            !rowOrderProxy->IsReversed(),
-            "static session must ignore the stream-mode newest-first flag"
-        );
+        QVERIFY2(!rowOrderProxy->IsReversed(), "static session must ignore the stream-mode newest-first flag");
         QVERIFY(tableView->alternatingRowColors());
 
         // Flipping the static-mode flag drives the same proxy reversal
@@ -2347,8 +2337,7 @@ private slots:
         StreamingControl::SetNewestFirst(false);
         window->ApplyDisplayOrder();
         QVERIFY2(
-            !rowOrderProxy->IsReversed(),
-            "stream session must follow the stream-mode flag, not the static-mode one"
+            !rowOrderProxy->IsReversed(), "stream session must follow the stream-mode flag, not the static-mode one"
         );
 
         model->EndStreaming(false);

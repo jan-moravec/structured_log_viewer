@@ -46,7 +46,9 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
         // structural signal so the proxy stays correct under any
         // future source-model evolution.
         mRowsAboutToBeInsertedConn = connect(
-            sourceModel, &QAbstractItemModel::rowsAboutToBeInserted, this,
+            sourceModel,
+            &QAbstractItemModel::rowsAboutToBeInserted,
+            this,
             [this](const QModelIndex &parent, int first, int last) {
                 if (parent.isValid())
                 {
@@ -67,19 +69,19 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
 
-        mRowsInsertedConn = connect(
-            sourceModel, &QAbstractItemModel::rowsInserted, this,
-            [this](const QModelIndex &parent, int, int) {
+        mRowsInsertedConn =
+            connect(sourceModel, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &parent, int, int) {
                 if (parent.isValid())
                 {
                     return;
                 }
                 endInsertRows();
-            }
-        );
+            });
 
         mRowsAboutToBeRemovedConn = connect(
-            sourceModel, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            sourceModel,
+            &QAbstractItemModel::rowsAboutToBeRemoved,
+            this,
             [this](const QModelIndex &parent, int first, int last) {
                 if (parent.isValid())
                 {
@@ -94,9 +96,7 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
                     // fires. FIFO eviction at source [0, last] maps
                     // to proxy [srcCount-1-last, srcCount-1].
                     mPreRemovalSourceRows = QAbstractProxyModel::sourceModel()->rowCount(QModelIndex());
-                    beginRemoveRows(
-                        QModelIndex(), mPreRemovalSourceRows - 1 - last, mPreRemovalSourceRows - 1 - first
-                    );
+                    beginRemoveRows(QModelIndex(), mPreRemovalSourceRows - 1 - last, mPreRemovalSourceRows - 1 - first);
                 }
                 else
                 {
@@ -105,19 +105,19 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
 
-        mRowsRemovedConn = connect(
-            sourceModel, &QAbstractItemModel::rowsRemoved, this,
-            [this](const QModelIndex &parent, int, int) {
+        mRowsRemovedConn =
+            connect(sourceModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &parent, int, int) {
                 if (parent.isValid())
                 {
                     return;
                 }
                 endRemoveRows();
-            }
-        );
+            });
 
         mColumnsAboutToBeInsertedConn = connect(
-            sourceModel, &QAbstractItemModel::columnsAboutToBeInserted, this,
+            sourceModel,
+            &QAbstractItemModel::columnsAboutToBeInserted,
+            this,
             [this](const QModelIndex &parent, int first, int last) {
                 if (parent.isValid())
                 {
@@ -127,7 +127,9 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
         mColumnsInsertedConn = connect(
-            sourceModel, &QAbstractItemModel::columnsInserted, this,
+            sourceModel,
+            &QAbstractItemModel::columnsInserted,
+            this,
             [this](const QModelIndex &parent, int, int) {
                 if (parent.isValid())
                 {
@@ -138,7 +140,9 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
         );
 
         mColumnsAboutToBeRemovedConn = connect(
-            sourceModel, &QAbstractItemModel::columnsAboutToBeRemoved, this,
+            sourceModel,
+            &QAbstractItemModel::columnsAboutToBeRemoved,
+            this,
             [this](const QModelIndex &parent, int first, int last) {
                 if (parent.isValid())
                 {
@@ -148,7 +152,9 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
         mColumnsRemovedConn = connect(
-            sourceModel, &QAbstractItemModel::columnsRemoved, this,
+            sourceModel,
+            &QAbstractItemModel::columnsRemoved,
+            this,
             [this](const QModelIndex &parent, int, int) {
                 if (parent.isValid())
                 {
@@ -159,7 +165,9 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
         );
 
         mColumnsAboutToBeMovedConn = connect(
-            sourceModel, &QAbstractItemModel::columnsAboutToBeMoved, this,
+            sourceModel,
+            &QAbstractItemModel::columnsAboutToBeMoved,
+            this,
             [this](
                 const QModelIndex &sourceParent,
                 int sourceStart,
@@ -175,18 +183,23 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
         mColumnsMovedConn = connect(
-            sourceModel, &QAbstractItemModel::columnsMoved, this,
+            sourceModel,
+            &QAbstractItemModel::columnsMoved,
+            this,
             [this](const QModelIndex &, int, int, const QModelIndex &, int) { endMoveColumns(); }
         );
 
         // dataChanged + headerDataChanged: the row range is mirrored
         // in reversed mode; columns are unchanged in both modes.
-        mDataChangedConn = connect(
-            sourceModel, &QAbstractItemModel::dataChanged, this, &RowOrderProxyModel::HandleSourceDataChanged
-        );
+        mDataChangedConn =
+            connect(sourceModel, &QAbstractItemModel::dataChanged, this, &RowOrderProxyModel::HandleSourceDataChanged);
         mHeaderDataChangedConn = connect(
-            sourceModel, &QAbstractItemModel::headerDataChanged, this,
-            [this](Qt::Orientation orientation, int first, int last) { emit headerDataChanged(orientation, first, last); }
+            sourceModel,
+            &QAbstractItemModel::headerDataChanged,
+            this,
+            [this](Qt::Orientation orientation, int first, int last) {
+                emit headerDataChanged(orientation, first, last);
+            }
         );
 
         // Reset / layoutChanged forwarding. `layoutChanged` may
@@ -199,16 +212,20 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
         mModelResetConn = connect(sourceModel, &QAbstractItemModel::modelReset, this, [this]() { endResetModel(); });
 
         mLayoutAboutToBeChangedConn = connect(
-            sourceModel, &QAbstractItemModel::layoutAboutToBeChanged, this,
-            [this](
-                const QList<QPersistentModelIndex> &parents, QAbstractItemModel::LayoutChangeHint hint
-            ) { emit layoutAboutToBeChanged(parents, hint); }
+            sourceModel,
+            &QAbstractItemModel::layoutAboutToBeChanged,
+            this,
+            [this](const QList<QPersistentModelIndex> &parents, QAbstractItemModel::LayoutChangeHint hint) {
+                emit layoutAboutToBeChanged(parents, hint);
+            }
         );
         mLayoutChangedConn = connect(
-            sourceModel, &QAbstractItemModel::layoutChanged, this,
-            [this](
-                const QList<QPersistentModelIndex> &parents, QAbstractItemModel::LayoutChangeHint hint
-            ) { emit layoutChanged(parents, hint); }
+            sourceModel,
+            &QAbstractItemModel::layoutChanged,
+            this,
+            [this](const QList<QPersistentModelIndex> &parents, QAbstractItemModel::LayoutChangeHint hint) {
+                emit layoutChanged(parents, hint);
+            }
         );
     }
 

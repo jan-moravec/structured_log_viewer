@@ -903,8 +903,8 @@ void MainWindow::ApplyDisplayOrder()
     //     opens the file calls `ApplyDisplayOrder()` again with the
     //     correct `mSessionMode` so this fallback only matters for
     //     the empty viewer between sessions).
-    const bool newestFirst =
-        (mSessionMode == SessionMode::Static) ? StreamingControl::IsStaticNewestFirst() : StreamingControl::IsNewestFirst();
+    const bool newestFirst = (mSessionMode == SessionMode::Static) ? StreamingControl::IsStaticNewestFirst()
+                                                                   : StreamingControl::IsNewestFirst();
 
     mRowOrderProxyModel->SetReversed(newestFirst);
 
