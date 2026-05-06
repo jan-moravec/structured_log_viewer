@@ -35,6 +35,12 @@ include(cmake/CompilerWarnings.cmake)
 add_library(project_warnings INTERFACE)
 set_project_warnings(project_warnings False)
 
+# Aggregates third-party license texts into a single
+# `THIRD_PARTY_LICENSES.txt` next to the binary. `bundle_third_party_licenses`
+# is invoked from `app/CMakeLists.txt` once the StructuredLogViewer
+# target exists.
+include(cmake/BundleLicenses.cmake)
+
 add_subdirectory(library)
 add_subdirectory(app)
 

@@ -15,22 +15,22 @@ The application currently reads **JSON Lines** (also known as NDJSON): one JSON 
 
 Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested objects and arrays are preserved as their compact JSON string.
 
-## Static vs Stream Mode
+## Ingestion modes
 
-Structured Log Viewer ingests logs through two distinct paths. Pick the one that matches the file you are looking at:
+Structured Log Viewer ingests logs through three distinct paths. Pick the one that matches what you are looking at:
 
-| Aspect                 | Static mode                                                          | Stream Mode (live tail)                                                                               |
-| ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **When to use**        | Post-mortem analysis of one or more *finished* log files.            | Watching a service's log *as it is being written* — reproducing a bug, smoke-testing a release, etc.  |
-| **How to open**        | `File → Open…` (`Ctrl+O`), `File → Open JSON Logs…`, or drag & drop. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      |
-| **Files per session**  | One or many; multi-file opens are **merged** into one table.         | Exactly one file.                                                                                     |
-| **Reads the file**     | Memory-mapped; parsed in parallel through the TBB pipeline.          | Buffered tail-reader; parsed line-by-line in a single worker.                                         |
-| **Memory**             | Whole file is parsed and held; row count grows with the file.        | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     |
-| **Reacts to new data** | No. The on-screen rows are a snapshot of the file at open time.      | Yes. New lines appear within ~250 ms of being written; survives `logrotate` and in-place truncations. |
-| **Stream toolbar**     | Hidden.                                                              | Pause / Follow newest / Stop visible while a session is active.                                       |
-| **Configuration menu** | Available between opens; disabled while a parse is in flight.        | Disabled for the lifetime of the session (the parser holds an immutable configuration snapshot).      |
+| Aspect                 | Static mode                                                          | Stream Mode (live tail)                                                                               | Network Stream Mode (TCP / UDP)                                                                  |
+| ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **When to use**        | Post-mortem analysis of one or more *finished* log files.            | Watching a service's log file *as it is being written* — reproducing a bug, smoke-testing a release.  | Receiving JSON Lines pushed over the network — distributed services, dev loopback firehose.      |
+| **How to open**        | `File → Open…` (`Ctrl+O`), `File → Open JSON Logs…`, or drag & drop. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      | `File → Open Network Stream…` (`Ctrl+Shift+N`).                                                  |
+| **Source per session** | One or many files; multi-file opens are **merged** into one table.   | Exactly one file.                                                                                     | One TCP listener (multiple concurrent clients allowed) or one UDP listener.                      |
+| **Reads bytes via**    | Memory-mapped; parsed in parallel through the TBB pipeline.          | Buffered tail-reader; parsed line-by-line in a single worker.                                         | Asio TCP accept loop (with optional TLS) or Asio UDP receive loop; same line-by-line worker.     |
+| **Memory**             | Whole file is parsed and held; row count grows with the file.        | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     | Same retention cap as Stream Mode; back-pressure also drops oldest *bytes* if the parser stalls. |
+| **Reacts to new data** | No. The on-screen rows are a snapshot of the file at open time.      | Yes. New lines appear within ~250 ms of being written; survives `logrotate` and in-place truncations. | Yes. Each `\n`-terminated record lands as a new row as soon as it is received.                   |
+| **Stream toolbar**     | Hidden.                                                              | Pause / Follow newest / Stop visible while a session is active.                                       | Same toolbar as Stream Mode.                                                                     |
+| **Configuration menu** | Available between opens; disabled while a parse is in flight.        | Disabled for the lifetime of the session (the parser holds an immutable configuration snapshot).      | Same — disabled for the lifetime of the session.                                                 |
 
-In Stream Mode, **Stop** ends the session but keeps the visible rows around as a static snapshot you can keep filtering, sorting, and copying — handy when you only realised mid-tail that the bug already happened. Opening a new file (in either mode) clears the table first.
+In Stream Mode and Network Stream Mode, **Stop** ends the session but keeps the visible rows around as a static snapshot you can keep filtering, sorting, and copying — handy when you only realised mid-tail that the bug already happened. Opening a new source (in any mode) clears the table first.
 
 ## Static Mode (Open files)
 
@@ -111,10 +111,51 @@ The following are **out of scope** for the current Stream Mode implementation:
 
 - **Compressed rotations** (`app.log.1.gz` etc.) — only uncompressed rotations are handled.
 - **Pulling rotated history off disk** — the viewer does not read `app.log.1` to recover lines older than the in-memory cap.
-- **TCP / UDP / stdin / named-pipe sources** — only file tailing is wired up. The `BytesProducer` abstraction in `loglib` is designed to accommodate them in a future round.
+- **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
 - **Streaming for non-JSON formats** — currently only JSON Lines streams. The seam in `loglib` is format-agnostic so a future CSV / logfmt parser inherits the feature for free.
+
+## Network Stream Mode (TCP / UDP)
+
+Network Stream Mode listens on a local TCP or UDP port and ingests JSON Lines pushed to it by your application. It is intended for distributed services that cannot redirect their stdout/stderr to a file you can tail, and for "firehose into the GUI" loops during development. Each `\n`-terminated record becomes a row exactly the same way Stream Mode does, so the toolbar, retention cap, Pause / Follow newest / Stop, search, filters, and configurations all behave identically once the session is open.
+
+### Opening a network stream
+
+Use **File → Open Network Stream…** (`Ctrl+Shift+N`). The dialog asks for:
+
+- **Protocol** — TCP or UDP.
+- **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
+- **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
+- **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
+- **TLS (TCP only)** — when the binary is built with `LOGLIB_NETWORK_TLS=ON`, an *Enable TLS* checkbox unlocks fields for the **certificate chain**, **private key**, and an optional **CA bundle** for verifying client certificates. *Require valid client certificate* turns the CA bundle from optional verification into mutual TLS. The whole TLS group is greyed out on builds compiled without TLS support.
+
+The dialog values are persisted via `QSettings` so the next invocation defaults to your last choice. UDP cannot use TLS — DTLS is intentionally out of scope; encrypted log shipping is the TCP+TLS path.
+
+### TCP vs UDP
+
+| Aspect                 | TCP                                                                                  | UDP                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| **Concurrent senders** | Many; lines from different clients interleave at line granularity (no torn records). | Many; each datagram is independent.                                |
+| **Reliability**        | Reliable, ordered.                                                                   | Best-effort; out-of-order or dropped datagrams are not retried.    |
+| **Framing**            | One line per `\n`-terminated record over the byte stream.                            | One or more whole records per datagram (`\n` appended if missing). |
+| **TLS**                | Optional, gated on the `LOGLIB_NETWORK_TLS=ON` build option.                         | Not supported (plaintext only).                                    |
+| **Recommended for**    | Production log shipping over a LAN/WAN, especially when integrity matters.           | Loopback firehose, fire-and-forget local services.                 |
+
+### Status bar and toolbar
+
+Network sessions reuse the Stream Mode toolbar (Pause / Follow newest / Stop) and status-bar labels. The "filename" shown in the label is the listener URL — for example `Streaming tcp://0.0.0.0:5141 — N lines, M errors` or `Streaming udp://127.0.0.1:5142 — …`. Until the first byte arrives the label shows `Source unavailable — last seen tcp://… — 0 lines, 0 errors` (TCP) or the matching UDP variant, which makes a misconfigured client side obvious. Both protocols flip to `Streaming` on the first byte / datagram and never fall back, since there is no connection state to track on either side.
+
+### Stop semantics
+
+**Stop** closes every open client connection (TCP), shuts the listening socket, joins the I/O worker, and leaves the visible rows around as a static snapshot for further filtering / sorting / copying. Closing the application also cleanly shuts the session down. Once stopped, the same listening port is free again for the next session.
+
+### Non-goals
+
+- **Per-peer attribution** — connections are interleaved; the GUI does not split rows by source address.
+- **DTLS** — UDP is plaintext-only by design.
+- **Encrypted private keys / hardware tokens** — the TLS configuration accepts plain PEM cert + key files only. Decrypt offline before pointing the dialog at them.
+- **Auto-discovery of services on the network** — bind address and port are always entered explicitly.
 
 ## Automatic Column Detection
 
@@ -213,6 +254,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | -------------------------- | -------------- |
 | Open file(s)               | `Ctrl+O`       |
 | Open log stream            | `Ctrl+Shift+O` |
+| Open network stream        | `Ctrl+Shift+N` |
 | Save configuration         | `Ctrl+S`       |
 | Find                       | `Ctrl+F`       |
 | Copy selected rows as JSON | `Ctrl+C`       |

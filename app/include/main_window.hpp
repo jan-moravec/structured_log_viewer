@@ -88,6 +88,11 @@ protected:
 private slots:
     void OpenFiles();
     void OpenLogStream();
+    /// Pop the `NetworkStreamDialog`, build the matching producer
+    /// (`Tcp` / `UdpServerProducer`) wrapped in a `StreamLineSource`,
+    /// and call `LogModel::BeginStreaming`. Mirrors `OpenLogStream`'s
+    /// reset-then-arm sequence.
+    void OpenNetworkStream();
     void SaveConfiguration();
     void LoadConfiguration();
 

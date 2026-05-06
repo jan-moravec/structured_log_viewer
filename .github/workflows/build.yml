@@ -79,10 +79,17 @@ jobs:
         uses: lukka/get-cmake@latest
 
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y libfuse2 xvfb libxcb-cursor0 zsync
+        # libssl-dev satisfies find_package(OpenSSL) for the
+        # LOGLIB_NETWORK_TLS code path (TcpServerProducer + asio::ssl).
+        # Other entries: libfuse2 (AppImage runtime), xvfb / libxcb-cursor0
+        # (Qt's offscreen QPA), zsync (linuxdeploy delta updates).
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 xvfb libxcb-cursor0 zsync libssl-dev
 
       - name: Configure
-        run: cmake --preset release
+        # LOGLIB_NETWORK_TLS=ON is the project default but pinned here
+        # explicitly so a future default flip doesn't silently disable
+        # TLS in the published AppImage.
+        run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
@@ -125,6 +132,14 @@ jobs:
           cp -r build/release/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
+          # Stage the aggregated third-party license bundle and the
+          # project's own LICENSE alongside the binary so they survive
+          # the AppImage packaging step (linuxdeploy preserves
+          # everything under usr/).
+          mkdir -p $APP_DIR/usr/share/doc/${{ env.APP_NAME }}
+          cp build/release/bin/Release/THIRD_PARTY_LICENSES.txt \
+             build/release/bin/Release/LICENSE \
+             $APP_DIR/usr/share/doc/${{ env.APP_NAME }}/
           ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
 
       - name: Compute SHA256 checksums
@@ -177,11 +192,63 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      - name: Install OpenSSL
+        # The Windows runner has Strawberry Perl's openssl on PATH but
+        # without import libraries, so it's unusable for find_package.
+        # Install the full (dev headers + .lib + DLLs) Shining Light
+        # Productions build via chocolatey, pinned to the same 3.x
+        # version we tested with locally. Subsequent versions of the
+        # SLP installer have shipped to `C:\Program Files\OpenSSL-Win64`,
+        # `C:\Program Files\OpenSSL`, or
+        # `C:\Program Files\OpenSSL-Win64-<ver>` depending on the
+        # bundle, so the next step probes both rather than hard-coding
+        # one path that may silently disagree with what choco installed.
+        shell: powershell
+        run: choco install openssl --version=3.6.2 --yes --no-progress
+
+      - name: Locate OpenSSL and export OPENSSL_ROOT_DIR
+        # Probe the well-known SLP / chocolatey install roots for an
+        # `openssl.exe` paired with a populated `include/openssl/`
+        # directory (find_package(OpenSSL) needs both). Export the
+        # match into $GITHUB_ENV so every following step inherits the
+        # right root regardless of which path the installer used.
+        # Fails loud with a directory listing if nothing matches, so
+        # diagnosing future installer-layout changes does not require
+        # reproducing the CI run locally.
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $candidates = @(
+            "C:\Program Files\OpenSSL-Win64",
+            "C:\Program Files\OpenSSL",
+            "C:\Program Files\OpenSSL-Win64-3.6.2"
+          )
+          $found = $null
+          foreach ($c in $candidates) {
+            if ((Test-Path "$c\bin\openssl.exe") -and (Test-Path "$c\include\openssl")) {
+              $found = $c
+              break
+            }
+          }
+          if (-not $found) {
+            Write-Host "OpenSSL not found at any known install root. Listing C:\Program Files\:"
+            Get-ChildItem "C:\Program Files" -Directory | Where-Object { $_.Name -like "OpenSSL*" } | Format-Table -AutoSize
+            throw "OpenSSL install missing required headers / openssl.exe; cannot continue."
+          }
+          $version = & "$found\bin\openssl.exe" version
+          Write-Host "Located OpenSSL: $version at $found"
+          # Sanity-check the runtime DLLs the build's POST_BUILD step
+          # will copy next to the executable. Names follow OpenSSL's
+          # SONAME convention (libssl-<major>-x64.dll on Windows).
+          Get-ChildItem "$found\bin" -Filter "libssl*.dll"
+          Get-ChildItem "$found\bin" -Filter "libcrypto*.dll"
+          "OPENSSL_ROOT_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Configure
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          cmake --preset release
+          cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         shell: cmd
@@ -215,6 +282,18 @@ jobs:
           # POST_BUILD rule in app/CMakeLists.txt already copies it next to
           # StructuredLogViewer.exe, so the file is present in the build tree.
           Move-Item ../build/release/bin/Release/tbb*.dll .
+          # OpenSSL runtime DLLs (libssl-3-x64.dll, libcrypto-3-x64.dll)
+          # are placed by the LOGLIB_NETWORK_TLS POST_BUILD rule in
+          # app/CMakeLists.txt. Without them, StructuredLogViewer.exe
+          # would fail at startup with STATUS_DLL_NOT_FOUND.
+          Move-Item ../build/release/bin/Release/libssl-*.dll .
+          Move-Item ../build/release/bin/Release/libcrypto-*.dll .
+          # Stage the aggregated third-party license bundle and the
+          # project's own LICENSE next to the executable. They are the
+          # same files the BundleLicenses POST_BUILD rule copied into
+          # bin/Release/, so just move them across.
+          Move-Item ../build/release/bin/Release/THIRD_PARTY_LICENSES.txt .
+          Move-Item ../build/release/bin/Release/LICENSE .
           windeployqt --release ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
 
@@ -280,8 +359,32 @@ jobs:
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      - name: Install OpenSSL
+        # macos-latest ships openssl@3 via Homebrew; re-running
+        # `brew install` is a cheap no-op when already present. The
+        # keg lives under `$(brew --prefix openssl@3)`, which differs
+        # between Apple Silicon (`/opt/homebrew/opt/openssl@3`) and
+        # Intel (`/usr/local/opt/openssl@3`) runners. The next step
+        # resolves it dynamically rather than hard-coding either path.
+        run: brew install openssl@3
+
+      - name: Locate OpenSSL and export OPENSSL_ROOT_DIR
+        # Resolve the keg prefix from Homebrew so we work on both
+        # arm64 (default for macos-latest today) and Intel runners,
+        # then export it so subsequent steps inherit the right root.
+        run: |
+          set -euo pipefail
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          if [ ! -x "$OPENSSL_PREFIX/bin/openssl" ] || [ ! -d "$OPENSSL_PREFIX/include/openssl" ]; then
+            echo "OpenSSL prefix $OPENSSL_PREFIX is missing openssl.exe or headers" >&2
+            ls -la "$OPENSSL_PREFIX" || true
+            exit 1
+          fi
+          "$OPENSSL_PREFIX/bin/openssl" version
+          echo "OPENSSL_ROOT_DIR=$OPENSSL_PREFIX" >> "$GITHUB_ENV"
+
       - name: Configure
-        run: cmake --preset release
+        run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
@@ -306,6 +409,13 @@ jobs:
           # POST_BUILD step; verify it's there before deploying.
           if [ ! -d "${{ env.APP_NAME }}.app/Contents/Resources/tzdata" ]; then
             echo "ERROR: tzdata missing from bundle Resources" >&2
+            exit 1
+          fi
+          # Aggregated third-party licenses + project LICENSE. Same
+          # POST_BUILD step that handles tzdata copies them in; verify
+          # so we fail loud instead of shipping a non-compliant DMG.
+          if [ ! -f "${{ env.APP_NAME }}.app/Contents/Resources/THIRD_PARTY_LICENSES.txt" ]; then
+            echo "ERROR: THIRD_PARTY_LICENSES.txt missing from bundle Resources" >&2
             exit 1
           fi
           macdeployqt ${{ env.APP_NAME }}.app -dmg

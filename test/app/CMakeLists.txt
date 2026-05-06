@@ -1,8 +1,14 @@
 cmake_minimum_required(VERSION 3.28)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
 
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test Widgets)
+# `Network` is required at this scope because logapp now PUBLIC-links
+# Qt::Network (the network-stream dialog uses `QHostAddress` to validate
+# the bind-address field). The Qt CMake auto-finalizer walks transitive
+# dependencies and warns on missing targets otherwise; pulling the
+# find_package up here keeps the warning silent without bloating the
+# tests' own dependency surface.
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test Widgets Network)
 
 set(CMAKE_AUTOMOC ON)
 
@@ -12,7 +18,10 @@ qt_add_resources(RESOURCES
 )
 qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
 
-target_link_libraries(apptest PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp)
+# `test_common` provides Tcp/UdpLogClient used by the network-stream
+# open-path tests. Qt::Test stays first so generated MOC integrates
+# normally; logapp pulls in the GUI under test.
+target_link_libraries(apptest PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp test_common)
 
 target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 

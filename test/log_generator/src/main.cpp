@@ -3,8 +3,20 @@
 // count or a target line count is reached. Supports streaming throttling via
 // `--timeout` and in-flight file rotation (`rename` / `copytruncate` /
 // `truncate`) via the `--roll-*` flags so it can drive `TailingBytesProducer`
-// rotation tests and the GUI's Stream
-// Mode smoke tests end-to-end.
+// rotation tests and the GUI's Stream Mode smoke tests end-to-end.
+//
+// File output is the default (`--target file://...` or the legacy
+// `--output <path>`). Network output is selected by a URL-style
+// `--target` argument:
+//
+//   * `tcp://host:port`     plaintext TCP, drives `TcpServerProducer`
+//   * `tcp+tls://host:port` TLS-on-TCP, drives `TcpServerProducer` with
+//                           `tls.has_value()`. Use `--tls-ca` to verify
+//                           the server cert; `--tls-skip-verify` for a
+//                           self-signed dev cert; `--tls-cert` /
+//                           `--tls-key` for mutual-TLS.
+//   * `udp://host:port`     UDP datagram per line, drives
+//                           `UdpServerProducer`.
 //
 // Each emitted record is stamped with a monotonic, session-global,
 // 0-based line index under the `line_number` field. The counter is
@@ -15,6 +27,7 @@
 
 #include <test_common/json_log_line.hpp>
 #include <test_common/log_generator.hpp>
+#include <test_common/network_log_client.hpp>
 
 #include <argparse/argparse.hpp>
 #include <glaze/glaze.hpp>
@@ -192,6 +205,137 @@ RollStrategy ParseRollStrategy(const std::string &text)
     throw std::invalid_argument("unknown --roll-strategy '" + text + "' (expected rename|copytruncate|truncate)");
 }
 
+enum class TargetKind
+{
+    File,
+    Tcp,
+    TcpTls,
+    Udp,
+};
+
+struct ParsedTarget
+{
+    TargetKind kind = TargetKind::File;
+    std::string filePath;   // valid for File
+    std::string host;       // valid for Tcp/TcpTls/Udp
+    std::uint16_t port = 0; // valid for Tcp/TcpTls/Udp
+};
+
+// Parse a URL-style target. Accepts the four schemes documented above
+// plus the bare/`file://` form. Throws on a malformed network URL so
+// the user gets a clear error instead of a silent fallback to file.
+ParsedTarget ParseTarget(const std::string &target)
+{
+    auto schemeAt = target.find("://");
+    if (schemeAt == std::string::npos)
+    {
+        // No scheme -> treat the whole string as a file path. Lets
+        // the user keep passing `--target generated.jsonl` as before.
+        ParsedTarget out;
+        out.kind = TargetKind::File;
+        out.filePath = target;
+        return out;
+    }
+
+    const std::string scheme = target.substr(0, schemeAt);
+    const std::string rest = target.substr(schemeAt + 3);
+
+    if (scheme == "file")
+    {
+        // Strip a leading slash on Windows (`file:///C:/foo`); Asio
+        // doesn't matter here since this branch is filesystem only.
+        ParsedTarget out;
+        out.kind = TargetKind::File;
+        if (!rest.empty() && rest.front() == '/' && rest.size() >= 3 &&
+            std::isalpha(static_cast<unsigned char>(rest[1])) && rest[2] == ':')
+        {
+            out.filePath = rest.substr(1);
+        }
+        else
+        {
+            out.filePath = rest;
+        }
+        return out;
+    }
+
+    TargetKind kind = TargetKind::File;
+    if (scheme == "tcp")
+    {
+        kind = TargetKind::Tcp;
+    }
+    else if (scheme == "tcp+tls")
+    {
+        kind = TargetKind::TcpTls;
+    }
+    else if (scheme == "udp")
+    {
+        kind = TargetKind::Udp;
+    }
+    else
+    {
+        throw std::invalid_argument(
+            "unknown --target scheme '" + scheme + "' (expected file://, tcp://, tcp+tls://, udp://)"
+        );
+    }
+
+    // Strip any path component after host:port; the network targets
+    // ignore it.
+    auto pathAt = rest.find('/');
+    const std::string hostPort = (pathAt == std::string::npos) ? rest : rest.substr(0, pathAt);
+
+    // Split host:port. IPv6 literal in brackets `[::1]:5141` supported.
+    std::string hostText;
+    std::string portText;
+    if (!hostPort.empty() && hostPort.front() == '[')
+    {
+        const auto closeBracket = hostPort.find(']');
+        if (closeBracket == std::string::npos)
+        {
+            throw std::invalid_argument("malformed IPv6 literal in --target '" + target + "'");
+        }
+        hostText = hostPort.substr(1, closeBracket - 1);
+        if (closeBracket + 1 >= hostPort.size() || hostPort[closeBracket + 1] != ':')
+        {
+            throw std::invalid_argument("--target '" + target + "' must include :PORT after the IPv6 literal");
+        }
+        portText = hostPort.substr(closeBracket + 2);
+    }
+    else
+    {
+        const auto colon = hostPort.rfind(':');
+        if (colon == std::string::npos)
+        {
+            throw std::invalid_argument("--target '" + target + "' must include :PORT");
+        }
+        hostText = hostPort.substr(0, colon);
+        portText = hostPort.substr(colon + 1);
+    }
+
+    if (hostText.empty() || portText.empty())
+    {
+        throw std::invalid_argument("--target '" + target + "' must be of the form scheme://HOST:PORT");
+    }
+    int port = 0;
+    try
+    {
+        port = std::stoi(portText);
+    }
+    catch (const std::exception &)
+    {
+        throw std::invalid_argument("--target '" + target + "' has a non-numeric port");
+    }
+    if (port <= 0 || port > 65535)
+    {
+        throw std::invalid_argument("--target '" + target + "' port must be in 1..65535");
+    }
+
+    ParsedTarget out;
+    out.kind = kind;
+    out.host = hostText;
+    out.port = static_cast<std::uint16_t>(port);
+    return out;
+}
+
 // `<base>.<n>` — same naming convention as logrotate (`app.log.1`,
 // `app.log.2`, ...). Kept as a free function so both the shift and the
 // rotation routines can use it without a shared state object.
@@ -361,6 +505,24 @@ int main(int argc, char *argv[])
             "Number of rotated backups to keep at <output>.1 .. <output>.N. 0 deletes content on rotation (no backup)."
         );
 
+    program.add_argument("--target")
+        .help("URL-style output destination. Supersedes --output when set. "
+              "Examples: file:///tmp/foo.jsonl, tcp://127.0.0.1:5141, "
+              "tcp+tls://example:6514, udp://127.0.0.1:5142. When unset, "
+              "--output is used (file mode). The --roll-* flags require "
+              "file mode and are rejected for network targets.");
+
+    program.add_argument("--tls-ca")
+        .help("Optional PEM CA bundle used to verify the server certificate (tcp+tls:// only).");
+    program.add_argument("--tls-cert").help("Optional client certificate PEM for mutual TLS (tcp+tls:// only).");
+    program.add_argument("--tls-key").help("Optional client private key PEM matching --tls-cert (tcp+tls:// only).");
+    program.add_argument("--tls-skip-verify")
+        .default_value(false)
+        .implicit_value(true)
+        .help("Skip server certificate validation. Required for self-signed dev certs; never use in production.");
+    program.add_argument("--tls-sni")
+        .help("Override the SNI hostname sent during the handshake. Defaults to the URL host.");
+
     try
     {
         program.parse_args(argc, argv);
@@ -388,6 +550,9 @@ int main(int argc, char *argv[])
     std::uint64_t rollBytes = 0;
     std::uint64_t rollLines = 0;
     RollStrategy strategy{RollStrategy::Rename};
+    ParsedTarget target;
+    target.kind = TargetKind::File;
+    target.filePath = outputPath.string();
     try
     {
         targetBytes = ParseSize(sizeText);
@@ -395,6 +560,10 @@ int main(int argc, char *argv[])
         rollBytes = ParseSize(rollSizeText);
         rollLines = ParseCount(rollLinesText);
         strategy = ParseRollStrategy(rollStrategyText);
+        if (program.is_used("--target"))
+        {
+            target = ParseTarget(program.get<std::string>("--target"));
+        }
     }
     catch (const std::exception &err)
     {
@@ -415,13 +584,91 @@ int main(int argc, char *argv[])
     const std::size_t keepRolled = static_cast<std::size_t>(keepRolledInt);
 
     const bool rollingEnabled = rollBytes != 0 || rollLines != 0;
+    const bool isNetworkTarget =
+        target.kind == TargetKind::Tcp || target.kind == TargetKind::TcpTls || target.kind == TargetKind::Udp;
 
-    const auto openMode = std::ios::binary | (append ? std::ios::app : std::ios::trunc);
-    std::ofstream out(outputPath, openMode);
-    if (!out.is_open())
+    if (isNetworkTarget && rollingEnabled)
     {
-        std::cerr << "Failed to open output file: " << outputPath << '\n';
+        std::cerr << "--roll-size / --roll-lines require a file target; rotation is not meaningful for "
+                     "tcp/udp streams.\n";
         return 1;
+    }
+    if (isNetworkTarget && append)
+    {
+        std::cerr << "--append requires a file target.\n";
+        return 1;
+    }
+
+    // Network sinks. At most one is non-null; both null means file mode.
+    std::unique_ptr<test_common::TcpLogClient> tcpClient;
+    std::unique_ptr<test_common::UdpLogClient> udpClient;
+
+    // File sink. Populated only in file mode; kept out of the
+    // network branches so the open-on-startup path stays clean.
+    std::ofstream out;
+    std::filesystem::path filePath;
+
+    std::string targetDescription;
+    if (target.kind == TargetKind::File)
+    {
+        filePath = std::filesystem::path(target.filePath);
+        const auto openMode = std::ios::binary | (append ? std::ios::app : std::ios::trunc);
+        out.open(filePath, openMode);
+        if (!out.is_open())
+        {
+            std::cerr << "Failed to open output file: " << filePath << '\n';
+            return 1;
+        }
+        targetDescription = "file://" + filePath.string();
+    }
+    else if (target.kind == TargetKind::Udp)
+    {
+        try
+        {
+            udpClient = std::make_unique<test_common::UdpLogClient>(target.host, target.port);
+        }
+        catch (const std::exception &err)
+        {
+            std::cerr << "Failed to create UDP client: " << err.what() << '\n';
+            return 1;
+        }
+        targetDescription = "udp://" + target.host + ":" + std::to_string(target.port);
+    }
+    else // Tcp or TcpTls
+    {
+        std::optional<test_common::TcpLogClient::TlsOptions> tls;
+        if (target.kind == TargetKind::TcpTls)
+        {
+            tls.emplace();
+            if (program.is_used("--tls-ca"))
+            {
+                tls->caBundle = std::filesystem::path(program.get<std::string>("--tls-ca"));
+            }
+            if (program.is_used("--tls-cert"))
+            {
+                tls->clientCert = std::filesystem::path(program.get<std::string>("--tls-cert"));
+            }
+            if (program.is_used("--tls-key"))
+            {
+                tls->clientKey = std::filesystem::path(program.get<std::string>("--tls-key"));
+            }
+            tls->insecureSkipVerify = program.get<bool>("--tls-skip-verify");
+            if (program.is_used("--tls-sni"))
+            {
+                tls->serverNameIndication = program.get<std::string>("--tls-sni");
+            }
+        }
+        try
+        {
+            tcpClient = std::make_unique<test_common::TcpLogClient>(target.host, target.port, std::move(tls));
+        }
+        catch (const std::exception &err)
+        {
+            std::cerr << "Failed to connect to TCP target: " << err.what() << '\n';
+            return 1;
+        }
+        targetDescription = (target.kind == TargetKind::TcpTls ? "tcp+tls://" : "tcp://") + target.host + ":" +
+                            std::to_string(target.port);
     }
 
     // Seed `bytesInFile` from the existing on-disk size when --append
@@ -431,10 +678,10 @@ int main(int argc, char *argv[])
     // `--append` is therefore measured from the appended-only segment;
     // call it a documented quirk rather than a bug.
     std::uint64_t bytesInFile = 0;
-    if (append)
+    if (append && target.kind == TargetKind::File)
     {
         std::error_code ec;
-        const auto existingSize = std::filesystem::file_size(outputPath, ec);
+        const auto existingSize = std::filesystem::file_size(filePath, ec);
         if (!ec)
         {
             bytesInFile = static_cast<std::uint64_t>(existingSize);
@@ -445,7 +692,7 @@ int main(int argc, char *argv[])
               << " up to "
               << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "
               << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines") << " to "
-              << outputPath << " (timeout=" << timeoutMs << "ms, seed=" << seed
+              << targetDescription << " (timeout=" << timeoutMs << "ms, seed=" << seed
               << ", append=" << (append ? "true" : "false");
     if (rollingEnabled)
     {
@@ -507,12 +754,41 @@ int main(int argc, char *argv[])
             (*json)["line_number"] = static_cast<std::int64_t>(totalLines);
         }
         const std::string serialized = line.ToString();
-        out << serialized << '\n';
-        if (!out.good())
+
+        if (target.kind == TargetKind::File)
         {
-            std::cerr << "Write failed at byte " << totalBytes << '\n';
-            return 1;
+            out << serialized << '\n';
+            if (!out.good())
+            {
+                std::cerr << "Write failed at byte " << totalBytes << '\n';
+                return 1;
+            }
         }
+        else if (udpClient)
+        {
+            try
+            {
+                udpClient->Send(serialized);
+            }
+            catch (const std::exception &err)
+            {
+                std::cerr << "UDP send failed at line " << totalLines << ": " << err.what() << '\n';
+                return 1;
+            }
+        }
+        else if (tcpClient)
+        {
+            try
+            {
+                tcpClient->Send(serialized);
+            }
+            catch (const std::exception &err)
+            {
+                std::cerr << "TCP send failed at line " << totalLines << ": " << err.what() << '\n';
+                return 1;
+            }
+        }
+
         const std::uint64_t bytesWritten = serialized.size() + 1U;
         totalBytes += bytesWritten;
         bytesInFile += bytesWritten;
@@ -523,7 +799,12 @@ int main(int argc, char *argv[])
         {
             // Flush so the consumer can see incremental progress while we sleep;
             // without this the stdlib buffer would hide everything until close.
-            out.flush();
+            // Network clients write synchronously per call so they need no
+            // extra flush.
+            if (target.kind == TargetKind::File)
+            {
+                out.flush();
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
         }
 
@@ -531,7 +812,7 @@ int main(int argc, char *argv[])
         {
             try
             {
-                Rotate(out, outputPath, strategy, keepRolled);
+                Rotate(out, filePath, strategy, keepRolled);
             }
             catch (const std::exception &err)
             {
@@ -540,26 +821,37 @@ int main(int argc, char *argv[])
             }
             if (!out.is_open())
             {
-                std::cerr << "Failed to re-open output file after rotation: " << outputPath << '\n';
+                std::cerr << "Failed to re-open output file after rotation: " << filePath << '\n';
                 return 1;
             }
             ++rotationCount;
             bytesInFile = 0;
             linesInFile = 0;
             std::cout << "log_generator: rotated #" << rotationCount << " (" << rollStrategyText
-                      << "), continuing into " << outputPath << " (total so far: " << totalLines << " lines, "
+                      << "), continuing into " << filePath << " (total so far: " << totalLines << " lines, "
                       << totalBytes << " bytes)\n";
         }
     }
 
-    out.flush();
-    out.close();
+    if (target.kind == TargetKind::File)
+    {
+        out.flush();
+        out.close();
+    }
+    if (tcpClient)
+    {
+        tcpClient->Close();
+    }
+    if (udpClient)
+    {
+        udpClient->Close();
+    }
 
     const auto elapsed = std::chrono::steady_clock::now() - start;
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
     std::cout << "log_generator: wrote " << totalLines << " lines, " << totalBytes << " bytes in " << elapsedMs
-              << " ms (" << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", " << outputPath
+              << " ms (" << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", " << targetDescription
               << ")\n";
     return 0;
 }

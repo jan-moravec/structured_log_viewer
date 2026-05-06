@@ -225,6 +225,14 @@ static_assert(
     std::is_trivially_destructible_v<std::pair<KeyId, CompactLogValue>>,
     "CompactLineFields uses raw operator new/delete; slot pairs must have a trivial destructor"
 );
+// Trivial copy construction is what makes `std::construct_at` collapse
+// into a memcpy under optimisation. Without this, the `EmplaceBack` /
+// `Insert` paths below (which `construct_at` into raw bytes returned
+// by `::operator new`) would still be correct but unnecessarily costly.
+static_assert(
+    std::is_trivially_copy_constructible_v<std::pair<KeyId, CompactLogValue>>,
+    "CompactLineFields::EmplaceBack constructs into raw memory; pair must be trivially copy-constructible"
+);
 
 std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
 {
@@ -346,7 +354,14 @@ void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
     {
         Reserve(GrowCapacity(mCapacity, mSize + 1U));
     }
-    mData[mSize] = {key, value};
+    // Slot `mData[mSize]` is raw bytes (the buffer comes from
+    // `::operator new`, and `Reserve` only `uninitialized_copy_n`s the
+    // first `mSize` elements). Use `construct_at` so an object's
+    // lifetime is properly begun before we write to it -- assigning to
+    // a non-existent object would be UB even for trivially-copyable
+    // types. The static_assert above guarantees `construct_at` lowers
+    // to a memcpy under optimisation.
+    std::construct_at(mData + mSize, key, value);
     ++mSize;
 }
 
@@ -358,13 +373,24 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
     }
     if (position < mSize)
     {
-        // Shift `[position, mSize)` one slot to the right so we can
-        // overwrite slot `position`. `std::copy_backward` correctly
-        // handles the overlapping range; for trivially-copyable pairs
-        // the compiler lowers it to memmove.
-        std::copy_backward(mData + position, mData + mSize, mData + mSize + 1);
+        // Shift `[position, mSize)` one slot to the right. The slot at
+        // `mData + mSize` is raw memory, so first construct it from
+        // the last live element, then `copy_backward` the remainder
+        // (which is now an assignment into already-constructed slots,
+        // not a write to raw memory). The compiler lowers the whole
+        // sequence to memmove for trivially-copyable pairs.
+        std::construct_at(mData + mSize, mData[mSize - 1]);
+        if (position + 1 < mSize)
+        {
+            std::copy_backward(mData + position, mData + mSize - 1, mData + mSize);
+        }
+        mData[position] = {key, value};
     }
-    mData[position] = {key, value};
+    else
+    {
+        // Append slot is raw memory; construct the new pair there.
+        std::construct_at(mData + mSize, key, value);
+    }
     ++mSize;
 }
 

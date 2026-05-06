@@ -118,6 +118,13 @@ public:
     /// Bounded-queue capacity for diagnostics / tests.
     [[nodiscard]] std::size_t PendingCapacity() const noexcept;
 
+    /// Number of `OnBatch` invocations whose batches were dropped
+    /// because the bounded queue was full when `RequestStop` woke the
+    /// blocked worker. Resets on `Arm()`. Surfaced by `LogModel` as
+    /// part of the streaming-error report so users notice that some
+    /// rows were lost between the parser and the GUI.
+    [[nodiscard]] std::size_t BatchesDroppedDuringShutdown() const noexcept;
+
     /// The canonical KeyIndex (the model's LogTable's). Thread-safe.
     loglib::KeyIndex &Keys() override;
 

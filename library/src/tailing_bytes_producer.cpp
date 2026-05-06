@@ -482,8 +482,26 @@ void TailingBytesProducerImpl::SetRotationCallback(std::function<void()> callbac
 
 void TailingBytesProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
 {
-    std::lock_guard<std::mutex> lock(mCallbackMutex);
-    mStatusCallback = std::move(callback);
+    // Mirror `TcpServerProducer` / `UdpServerProducer`: snapshot the
+    // last-reported status under the lock and replay it once outside
+    // so a GUI consumer that subscribes after a `Waiting` transition
+    // (e.g. file went missing before the model wired the callback)
+    // immediately sees the live state instead of an inconsistent
+    // implicit `Running` baseline. Edge-triggered firing inside
+    // `FireStatusCallbackIfChanged` is unaffected because we do not
+    // touch `mLastReportedStatus` here.
+    std::function<void(SourceStatus)> snapshot;
+    SourceStatus current{};
+    {
+        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        mStatusCallback = std::move(callback);
+        snapshot = mStatusCallback;
+        current = mLastReportedStatus;
+    }
+    if (snapshot)
+    {
+        snapshot(current);
+    }
 }
 
 size_t TailingBytesProducerImpl::RotationCount() const noexcept

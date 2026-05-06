@@ -2,6 +2,7 @@
 
 #include <loglib/log_parse_sink.hpp>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -44,8 +45,10 @@ public:
 
     /// Producer-thread. Blocks until a slot opens or `NotifyStop` fires.
     /// Returns `false` only if the stop happens while we were blocked
-    /// waiting for a slot; the batch is then discarded. If a slot is
-    /// available we always enqueue, even after stop -- this preserves
+    /// waiting for a slot; the batch is then discarded and the dropped
+    /// count (with `BatchesDroppedDuringShutdown`) is incremented so
+    /// the GUI can surface a "rows lost on stop" diagnostic. If a slot
+    /// is available we always enqueue, even after stop -- this preserves
     /// the existing sink contract that drain-phase `OnBatch` calls
     /// (between `RequestStop` and the worker join) deliver normally.
     bool WaitEnqueue(loglib::StreamedBatch batch)
@@ -57,7 +60,10 @@ public:
             mItems.push_back(std::move(batch));
             return true;
         }
-        // Stopped while the queue was full -- drop the batch.
+        // Stopped while the queue was full -- drop the batch and bump
+        // the diagnostic counter so the GUI can warn the user that
+        // some parsed rows did not make it to the model.
+        mDroppedDuringShutdown.fetch_add(1, std::memory_order_acq_rel);
         return false;
     }
 
@@ -91,11 +97,14 @@ public:
     /// GUI-thread, intended to be called from `Arm()` after the
     /// previous worker has been joined: clears any leftover items and
     /// re-arms the queue (clears the stopped flag) for a new session.
+    /// Also resets the shutdown-drop counter so each session reports
+    /// its own losses cleanly.
     void Reset()
     {
         std::scoped_lock<std::mutex> lock(mMtx);
         mItems.clear();
         mStopped = false;
+        mDroppedDuringShutdown.store(0, std::memory_order_release);
     }
 
     [[nodiscard]] std::size_t SizeApprox() const
@@ -109,12 +118,23 @@ public:
         return mCapacity;
     }
 
+    /// Number of batches dropped because `WaitEnqueue` was unblocked
+    /// by `NotifyStop` while the queue was at capacity. Resets to zero
+    /// on `Reset`. Read by the GUI to surface a "rows lost on stop"
+    /// warning to the user. Lock-free so the worker can keep updating
+    /// it without contending the queue mutex.
+    [[nodiscard]] std::size_t BatchesDroppedDuringShutdown() const noexcept
+    {
+        return mDroppedDuringShutdown.load(std::memory_order_acquire);
+    }
+
 private:
     mutable std::mutex mMtx;
     std::condition_variable mNotFull;
     std::deque<loglib::StreamedBatch> mItems;
     std::size_t mCapacity;
     bool mStopped = false;
+    std::atomic<std::size_t> mDroppedDuringShutdown{0};
 };
 
 } // namespace logapp

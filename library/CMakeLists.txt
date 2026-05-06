@@ -14,6 +14,8 @@ add_library(
     src/static_parser_pipeline.cpp
     src/stream_line_source.cpp
     src/tailing_bytes_producer.cpp
+    src/tcp_server_producer.cpp
+    src/udp_server_producer.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
     src/log_data.cpp
@@ -35,5 +37,17 @@ target_link_libraries(
     # public API ever returns a TBB type.
     # efsw provides the cross-platform filesystem watcher used by TailingBytesProducer;
     # no efsw type appears in any public loglib header, so it stays PRIVATE.
-    PRIVATE TBB::tbb efsw
+    # asio is used by Tcp/UdpServerProducer; no Asio type leaks through the public
+    # loglib headers (pimpl), so it stays PRIVATE.
+    PRIVATE TBB::tbb efsw asio::asio
 )
+
+# Optional TLS support for `TcpServerProducer`. When enabled, define
+# `LOGLIB_HAS_TLS` PUBLICly so downstream targets (test/lib's TLS test,
+# the GUI's NetworkStreamDialog) can compile-out their TLS branches in
+# OFF builds. OpenSSL itself stays PRIVATE: only the producer's pimpl
+# uses it, and no `OpenSSL::*` type appears in any public loglib header.
+if(LOGLIB_NETWORK_TLS)
+    target_compile_definitions(loglib PUBLIC LOGLIB_HAS_TLS)
+    target_link_libraries(loglib PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()

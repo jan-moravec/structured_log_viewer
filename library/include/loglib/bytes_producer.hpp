@@ -25,9 +25,8 @@ enum class SourceStatus
 };
 
 /// Abstract byte producer feeding the streaming pipeline via
-/// `StreamLineSource`. Currently only `TailingBytesProducer` exists;
-/// future stdin / TCP / UDP / named-pipe producers implement the same
-/// contract.
+/// `StreamLineSource`. Concrete implementations: `TailingBytesProducer`
+/// (file tail), `TcpServerProducer`, `UdpServerProducer`.
 ///
 /// Deliberately a byte producer, not a parser orchestrator: the parser
 /// drives, the producer supplies bytes. Has no knowledge of

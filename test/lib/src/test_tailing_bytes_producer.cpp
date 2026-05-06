@@ -683,6 +683,19 @@ TEST_CASE(
         observed.push_back(s);
     });
 
+    // `SetStatusCallback` synchronously fires the current status so a
+    // GUI consumer that subscribes after a transition still sees the
+    // live state (parity with TCP/UDP). At install time the watcher
+    // is `Running`, so observed[0] is the replayed `Running`. Drop it
+    // before exercising the delete/recreate transitions so the test
+    // assertions read naturally about user-visible state changes only.
+    {
+        std::lock_guard<std::mutex> lock(statusMu);
+        REQUIRE_FALSE(observed.empty());
+        CHECK(observed.front() == loglib::SourceStatus::Running);
+        observed.clear();
+    }
+
     // Drain the pre-fill so the worker is in its steady-state tail loop
     // before we perturb the file.
     DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.find("seed\n") != std::string::npos; });
