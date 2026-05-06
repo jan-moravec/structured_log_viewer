@@ -100,7 +100,7 @@ private slots:
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
     void AddFilter(
-        const QString filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt
+        const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt
     );
     void ClearAllFilters();
     void ClearFilter(const QString &filterID);

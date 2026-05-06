@@ -6,8 +6,6 @@
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 
-#include <algorithm>
-#include <random>
 #include <utility>
 
 using namespace loglib;
@@ -15,7 +13,7 @@ using namespace loglib;
 TestJsonLogFile::TestJsonLogFile(std::string filePath)
     : mFilePath(std::move(filePath))
 {
-    std::ofstream file(mFilePath);
+    const std::ofstream file(mFilePath);
     REQUIRE(file.is_open());
 }
 
@@ -81,7 +79,7 @@ const std::vector<glz::generic_sorted_u64> &TestJsonLogFile::JsonLines() const
 TestLogConfiguration::TestLogConfiguration(std::string filePath)
     : mFilePath(std::move(filePath))
 {
-    std::ofstream file(GetFilePath());
+    const std::ofstream file(GetFilePath());
     REQUIRE(file.is_open());
 }
 
@@ -95,7 +93,7 @@ const std::string &TestLogConfiguration::GetFilePath() const
     return mFilePath;
 }
 
-void TestLogConfiguration::Write(const LogConfiguration &configuration)
+void TestLogConfiguration::Write(const LogConfiguration &configuration) const
 {
     std::ofstream file(GetFilePath());
     REQUIRE(file.is_open());
@@ -116,7 +114,7 @@ const std::string &TestLogFile::GetFilePath() const
 TestLogFile::TestLogFile(std::string filePath)
     : mFilePath(std::move(filePath))
 {
-    std::ofstream file(GetFilePath(), std::ios::binary);
+    const std::ofstream file(GetFilePath(), std::ios::binary);
     REQUIRE(file.is_open());
 }
 

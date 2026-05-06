@@ -15,7 +15,7 @@ using loglib::LogFile;
 
 TEST_CASE("FileLineSource: forwards Path() to the wrapped LogFile", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("hello\n");
     auto logFile = testLogFile.CreateLogFile();
 
@@ -30,7 +30,7 @@ TEST_CASE("FileLineSource: rejects null files", "[FileLineSource]")
 
 TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2\nLine 3\n");
     auto logFile = testLogFile.CreateLogFile();
 
@@ -46,7 +46,7 @@ TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLin
 
 TEST_CASE("FileLineSource: ResolveMmapBytes indexes into the mmap data", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     const std::string content = "abcdef\nghijkl\n";
     testLogFile.Write(content);
     auto logFile = testLogFile.CreateLogFile();
@@ -71,7 +71,7 @@ TEST_CASE("FileLineSource: ResolveMmapBytes indexes into the mmap data", "[FileL
 
 TEST_CASE("FileLineSource: ResolveOwnedBytes indexes into the LogFile owned-string arena", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("x\n");
     auto logFile = testLogFile.CreateLogFile();
 
@@ -92,7 +92,7 @@ TEST_CASE("FileLineSource: ResolveOwnedBytes indexes into the LogFile owned-stri
 
 TEST_CASE("FileLineSource: eviction is a no-op for finite mmap sources", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("a\nb\nc\n");
     auto logFile = testLogFile.CreateLogFile();
 
@@ -107,7 +107,7 @@ TEST_CASE("FileLineSource: eviction is a no-op for finite mmap sources", "[FileL
 
 TEST_CASE("FileLineSource: File() returns the underlying LogFile", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("hello\n");
     auto logFile = testLogFile.CreateLogFile();
     LogFile *raw = logFile.get();
@@ -122,7 +122,7 @@ TEST_CASE("FileLineSource: File() returns the underlying LogFile", "[FileLineSou
 
 TEST_CASE("FileLineSource: ReleaseFile transfers ownership but keeps the source resolvable", "[FileLineSource]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("hello\n");
     auto logFile = testLogFile.CreateLogFile();
     LogFile *raw = logFile.get();

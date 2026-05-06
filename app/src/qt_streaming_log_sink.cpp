@@ -2,13 +2,12 @@
 
 #include "log_model.hpp"
 
-#include <loglib/log_data.hpp>
 #include <loglib/log_table.hpp>
+#include <algorithm>
 
 #include <QMetaObject>
 #include <QThread>
 
-#include <algorithm>
 #include <iterator>
 #include <utility>
 
@@ -23,7 +22,7 @@ loglib::StopToken QtStreamingLogSink::Arm()
     mGeneration.fetch_add(1, std::memory_order_acq_rel);
     mStopSource.emplace();
     {
-        std::lock_guard<std::mutex> lock(mPausedMutex);
+        const std::scoped_lock lock(mPausedMutex);
         mPausedBatches.clear();
     }
     // Re-arm the bounded queue: clear leftover items and the stopped
@@ -60,7 +59,7 @@ void QtStreamingLogSink::DropPendingBatches()
     // can capture the new generation.
     mGeneration.fetch_add(1, std::memory_order_acq_rel);
     {
-        std::lock_guard<std::mutex> lock(mPausedMutex);
+        const std::scoped_lock lock(mPausedMutex);
         mPausedBatches.clear();
     }
     // Drain-and-discard anything the worker enqueued before exiting.
@@ -94,7 +93,7 @@ void QtStreamingLogSink::Resume()
     // below, preserving FIFO order.
     std::vector<loglib::StreamedBatch> drained;
     {
-        std::lock_guard<std::mutex> lock(mPausedMutex);
+        const std::scoped_lock lock(mPausedMutex);
         if (!mPaused.load(std::memory_order_acquire))
         {
             return;
@@ -117,7 +116,7 @@ bool QtStreamingLogSink::IsPaused() const noexcept
 
 size_t QtStreamingLogSink::PausedLineCount() const
 {
-    std::lock_guard<std::mutex> lock(mPausedMutex);
+    const std::scoped_lock lock(mPausedMutex);
     return PausedLineCountLocked();
 }
 
@@ -133,8 +132,8 @@ void QtStreamingLogSink::SetRetentionCap(size_t cap) noexcept
 
 void QtStreamingLogSink::TrimPausedBufferTo(size_t maxBufferedLines)
 {
-    std::lock_guard<std::mutex> lock(mPausedMutex);
-    size_t total = PausedLineCountLocked();
+    const std::scoped_lock lock(mPausedMutex);
+    const size_t total = PausedLineCountLocked();
     if (total <= maxBufferedLines)
     {
         return;
@@ -171,7 +170,7 @@ std::optional<loglib::StreamedBatch> QtStreamingLogSink::TakePausedBuffer()
 {
     std::vector<loglib::StreamedBatch> drained;
     {
-        std::lock_guard<std::mutex> lock(mPausedMutex);
+        const std::scoped_lock lock(mPausedMutex);
         drained.swap(mPausedBatches);
     }
     if (drained.empty())
@@ -201,7 +200,7 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
     if (mPaused.load(std::memory_order_acquire))
     {
         const size_t cap = mRetentionCap.load(std::memory_order_acquire);
-        std::lock_guard<std::mutex> lock(mPausedMutex);
+        const std::scoped_lock lock(mPausedMutex);
         // Re-check under the lock; a concurrent Resume could have
         // already swapped the buffer out.
         if (mPaused.load(std::memory_order_acquire))
@@ -212,7 +211,7 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
             // `LogModel::AppendBatch`'s FIFO eviction.
             if (cap != 0)
             {
-                size_t total = PausedLineCountLocked();
+                const size_t total = PausedLineCountLocked();
                 if (total > cap)
                 {
                     size_t toDrop = total - cap;
@@ -358,12 +357,10 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
     out.firstLineNumber = batches.front().firstLineNumber;
     for (auto &batch : batches)
     {
-        std::move(batch.lines.begin(), batch.lines.end(), std::back_inserter(out.lines));
-        std::move(
-            batch.localLineOffsets.begin(), batch.localLineOffsets.end(), std::back_inserter(out.localLineOffsets)
-        );
-        std::move(batch.errors.begin(), batch.errors.end(), std::back_inserter(out.errors));
-        std::move(batch.newKeys.begin(), batch.newKeys.end(), std::back_inserter(out.newKeys));
+        std::ranges::move(batch.lines, std::back_inserter(out.lines));
+        std::ranges::move(batch.localLineOffsets, std::back_inserter(out.localLineOffsets));
+        std::ranges::move(batch.errors, std::back_inserter(out.errors));
+        std::ranges::move(batch.newKeys, std::back_inserter(out.newKeys));
     }
     return out;
 }

@@ -36,14 +36,17 @@ public:
 
     /// Static-file overload exposing internal tuning knobs (used by
     /// benchmarks / bisects).
-    void ParseStreaming(
-        FileLineSource &source, LogParseSink &sink, ParserOptions options, internal::AdvancedParserOptions advanced
-    ) const;
+    static void ParseStreaming(
+        FileLineSource &source,
+        LogParseSink &sink,
+        const ParserOptions &options,
+        internal::AdvancedParserOptions advanced
+    );
 
     std::string ToString(const LogLine &line) const override;
 
     /// Convenience for `LogMap` (tests, debug dumps).
-    std::string ToString(const LogMap &values) const;
+    static std::string ToString(const LogMap &values);
 };
 
 } // namespace loglib

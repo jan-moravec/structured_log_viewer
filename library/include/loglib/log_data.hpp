@@ -81,7 +81,7 @@ public:
     /// Append a parsed batch. `lineOffsets` populates
     /// `LogFile::mLineOffsets` for file sources; the live-tail path
     /// passes an empty vector (the source owns its per-line storage).
-    void AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets);
+    void AppendBatch(std::vector<LogLine> lines, const std::vector<uint64_t> &lineOffsets);
 
 private:
     std::vector<std::unique_ptr<LineSource>> mSources;

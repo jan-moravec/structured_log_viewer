@@ -39,7 +39,7 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
 
     LogData data = sink.TakeData();
     std::vector<std::string> errors = sink.TakeErrors();
-    return ParseResult{std::move(data), std::move(errors)};
+    return ParseResult{.data = std::move(data), .errors = std::move(errors)};
 }
 
 ParseResult ParseFile(const std::filesystem::path &file)

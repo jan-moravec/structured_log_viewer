@@ -3,14 +3,12 @@
 #include <catch2/catch_all.hpp>
 #include <oneapi/tbb/parallel_for.h>
 
-#include <algorithm>
 #include <atomic>
 #include <random>
 #include <set>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 using namespace loglib;
@@ -181,7 +179,7 @@ TEST_CASE("KeyIndex move construction preserves the dictionary", "[key_index]")
     const KeyId a = source.GetOrInsert("alpha");
     const KeyId b = source.GetOrInsert("beta");
 
-    KeyIndex moved(std::move(source));
+    const KeyIndex moved(std::move(source));
     CHECK(moved.Size() == 2);
     CHECK(moved.Find("alpha") == a);
     CHECK(moved.Find("beta") == b);
@@ -210,7 +208,7 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
 
     oneapi::tbb::parallel_for(0, THREAD_COUNT, [&](int thread) {
         // Per-thread RNG so the iteration order interleaves but is reproducible.
-        std::mt19937 rng(static_cast<unsigned>(thread) * 37u + 1u);
+        std::mt19937 rng((static_cast<unsigned>(thread) * 37u) + 1u);
         std::uniform_int_distribution<int> pickKey(0, KEY_COUNT - 1);
         for (int i = 0; i < ITERATIONS_PER_THREAD; ++i)
         {
@@ -330,12 +328,12 @@ TEST_CASE(
     // Build the query as a string_view over a stack-allocated char buffer so
     // there is no chance of an implicit std::string ever being constructed
     // along the call path.
-    constexpr char alphaBuf[] = "alpha";
-    constexpr char betaBuf[] = "beta";
-    constexpr char absentBuf[] = "missing";
-    const std::string_view alphaView(alphaBuf, sizeof(alphaBuf) - 1);
-    const std::string_view betaView(betaBuf, sizeof(betaBuf) - 1);
-    const std::string_view absentView(absentBuf, sizeof(absentBuf) - 1);
+    constexpr char ALPHA_BUF[] = "alpha";
+    constexpr char BETA_BUF[] = "beta";
+    constexpr char ABSENT_BUF[] = "missing";
+    const std::string_view alphaView(ALPHA_BUF, sizeof(ALPHA_BUF) - 1);
+    const std::string_view betaView(BETA_BUF, sizeof(BETA_BUF) - 1);
+    const std::string_view absentView(ABSENT_BUF, sizeof(ABSENT_BUF) - 1);
 
     CHECK(index.Find(alphaView) == alphaId);
     CHECK(index.Find(betaView) == betaId);

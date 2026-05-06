@@ -1,7 +1,6 @@
 #include "loglib/internal/compact_log_value.hpp"
 
 #include "loglib/line_source.hpp"
-#include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 
 #include <algorithm>
@@ -257,17 +256,14 @@ uint32_t GrowCapacity(uint32_t current, uint32_t needed) noexcept
     // Geometric growth (×1.5 rounded up). Matches `std::vector`'s
     // amortised cost while keeping capacity tighter than ×2.
     uint32_t target = current == 0 ? 4U : current + (current / 2U) + 1U;
-    if (target < needed)
-    {
-        target = needed;
-    }
+    target = std::max(target, needed);
     return target;
 }
 
 } // namespace
 
 CompactLineFields::CompactLineFields(uint32_t initialCapacity)
-    : mData(AllocatePairs(initialCapacity)), mSize(0), mCapacity(initialCapacity)
+    : mData(AllocatePairs(initialCapacity)), mCapacity(initialCapacity)
 {
 }
 

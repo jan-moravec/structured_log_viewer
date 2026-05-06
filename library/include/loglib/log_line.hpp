@@ -59,15 +59,15 @@ public:
 
     /// Debug builds assert @p value is not a `string_view`. Owned
     /// strings are appended to the source's arena.
-    void SetValue(KeyId id, LogValue value);
+    void SetValue(KeyId id, const LogValue &value);
 
     /// Caller promises any view in @p value outlives the `LogLine`.
     /// Views inside `StableBytes()` are stored zero-copy; others are
     /// copied into the arena.
-    void SetValue(KeyId id, LogValue value, LogValueTrustView trust);
+    void SetValue(KeyId id, const LogValue &value, LogValueTrustView trust);
 
     /// Throws if @p key is unknown.
-    void SetValue(const std::string &key, LogValue value);
+    void SetValue(const std::string &key, const LogValue &value);
 
     std::vector<std::string> GetKeys() const;
 

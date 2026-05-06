@@ -18,14 +18,13 @@
 #include <mutex>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -41,7 +40,7 @@ namespace
 {
 // `ssize_t` is POSIX-only; alias to a portable signed type so the I/O
 // helpers below have a single signature on all platforms.
-using ssize_type = std::int64_t;
+using SsizeType = std::int64_t;
 } // namespace
 
 namespace loglib
@@ -50,7 +49,7 @@ namespace loglib
 namespace
 {
 
-#if defined(_WIN32)
+#ifdef _WIN32
 // `INVALID_HANDLE_VALUE` is a reinterpret_cast and not a constant
 // expression in MSVC's C++23 mode (C2131); use a plain `const` global.
 const internal::NativeFileHandle INVALID_HANDLE = INVALID_HANDLE_VALUE;
@@ -60,7 +59,7 @@ constexpr internal::NativeFileHandle INVALID_HANDLE = -1;
 
 bool IsValidHandle(internal::NativeFileHandle handle) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     return handle != INVALID_HANDLE_VALUE && handle != nullptr;
 #else
     return handle >= 0;
@@ -73,7 +72,7 @@ void CloseNativeHandle(internal::NativeFileHandle handle) noexcept
     {
         return;
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     ::CloseHandle(handle);
 #else
     ::close(handle);
@@ -100,7 +99,7 @@ std::filesystem::path CanonicalizeWatchedPath(std::filesystem::path path)
 /// Returns `INVALID_HANDLE` on failure.
 internal::NativeFileHandle OpenForTail(const std::filesystem::path &path) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     // FILE_SHARE_DELETE is critical: without it the producer cannot
     // rename or unlink the file. FILE_FLAG_SEQUENTIAL_SCAN hints the
     // cache manager to read ahead.
@@ -126,7 +125,7 @@ std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noex
     {
         return std::nullopt;
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     LARGE_INTEGER li{};
     if (!::GetFileSizeEx(handle, &li))
     {
@@ -146,13 +145,13 @@ std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noex
 /// Pread-style read: up to @p size bytes from @p offset, without
 /// advancing a persistent file pointer. Short reads at EOF are normal.
 /// Returns -1 on hard error.
-ssize_type ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size, uint64_t offset) noexcept
+SsizeType ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size, uint64_t offset) noexcept
 {
     if (!IsValidHandle(handle) || size == 0)
     {
         return 0;
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     OVERLAPPED ov{};
     ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFu);
     ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
@@ -167,11 +166,11 @@ ssize_type ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t siz
         }
         return -1;
     }
-    return static_cast<ssize_type>(bytesRead);
+    return static_cast<SsizeType>(bytesRead);
 #else
-    ssize_type total = 0;
+    SsizeType total = 0;
     char *outChars = static_cast<char *>(out);
-    while (total < static_cast<ssize_type>(size))
+    while (total < static_cast<SsizeType>(size))
     {
         const ssize_t n = ::pread(handle, outChars + total, size - static_cast<size_t>(total), offset + total);
         if (n == 0)
@@ -186,7 +185,7 @@ ssize_type ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t siz
             }
             return -1;
         }
-        total += static_cast<ssize_type>(n);
+        total += static_cast<SsizeType>(n);
     }
     return total;
 #endif
@@ -297,7 +296,7 @@ private:
     mutable std::mutex mCallbackMutex;
     std::function<void()> mRotationCallback;
     std::function<void(SourceStatus)> mStatusCallback;
-    std::chrono::steady_clock::time_point mLastRotationFireTime{};
+    std::chrono::steady_clock::time_point mLastRotationFireTime;
     SourceStatus mLastReportedStatus = SourceStatus::Running;
 
     // Worker-thread-only state (no lock needed):
@@ -342,11 +341,12 @@ TailingBytesProducerImpl::TailingBytesProducerImpl(
       mFileName(mPath.filename().string()),
       mDisplayName(mPath.string()),
       mRetentionLines(std::max<size_t>(retentionLines, 1)),
-      mOptions(options)
+      mOptions(options),
+      mHandle(OpenForTail(mPath))
 {
     // Open synchronously. Transient ENOENT during tailing is handled by
     // the worker's rotation branch (ii), not here.
-    mHandle = OpenForTail(mPath);
+
     if (!IsValidHandle(mHandle))
     {
         const std::error_code ec(errno, std::generic_category());
@@ -419,7 +419,7 @@ size_t TailingBytesProducerImpl::Read(std::span<char> buffer)
         return 0;
     }
 
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     const size_t available = mReadyBuffer.size() - mReadyConsumed;
     if (available == 0)
     {
@@ -453,7 +453,7 @@ void TailingBytesProducerImpl::Stop() noexcept
         return; // already stopped
     }
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         mWatcherEventPending = true;
     }
     mCv.notify_all();
@@ -465,7 +465,7 @@ bool TailingBytesProducerImpl::IsClosed() const noexcept
     {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return (mReadyBuffer.size() - mReadyConsumed) == 0;
 }
 
@@ -476,7 +476,7 @@ std::string TailingBytesProducerImpl::DisplayName() const
 
 void TailingBytesProducerImpl::SetRotationCallback(std::function<void()> callback)
 {
-    std::lock_guard<std::mutex> lock(mCallbackMutex);
+    const std::scoped_lock lock(mCallbackMutex);
     mRotationCallback = std::move(callback);
 }
 
@@ -493,7 +493,7 @@ void TailingBytesProducerImpl::SetStatusCallback(std::function<void(SourceStatus
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         mStatusCallback = std::move(callback);
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
@@ -512,7 +512,7 @@ size_t TailingBytesProducerImpl::RotationCount() const noexcept
 void TailingBytesProducerImpl::OnWatcherEvent() noexcept
 {
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         mWatcherEventPending = true;
     }
     mCv.notify_all();
@@ -562,7 +562,7 @@ void TailingBytesProducerImpl::WorkerMain()
         }
         else
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             mWatcherEventPending = false;
         }
     }
@@ -570,7 +570,7 @@ void TailingBytesProducerImpl::WorkerMain()
     // Flush the partial-line buffer as a synthetic final line, unless
     // we're mid-rotation.
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         if (!mRotationInProgress)
         {
             FlushPartialLineLocked();
@@ -615,7 +615,7 @@ void TailingBytesProducerImpl::Prefill()
     {
         const uint64_t chunkSize = std::min<uint64_t>(pos, mOptions.prefillChunkBytes);
         pos -= chunkSize;
-        const ssize_type n = ReadAtOffset(mHandle, chunk.data(), static_cast<size_t>(chunkSize), pos);
+        const SsizeType n = ReadAtOffset(mHandle, chunk.data(), static_cast<size_t>(chunkSize), pos);
         if (n <= 0)
         {
             // Read failed; abandon prefill and tail from file_size.
@@ -623,7 +623,7 @@ void TailingBytesProducerImpl::Prefill()
             return;
         }
         scannedBytes += static_cast<uint64_t>(n);
-        for (size_t i = static_cast<size_t>(n); i > 0; --i)
+        for (auto i = static_cast<size_t>(n); i > 0; --i)
         {
             if (chunk[i - 1] == '\n')
             {
@@ -648,10 +648,10 @@ void TailingBytesProducerImpl::Prefill()
     {
         const uint64_t toRead = fileSize - lineStart;
         std::vector<char> body(static_cast<size_t>(toRead));
-        const ssize_type n = ReadAtOffset(mHandle, body.data(), body.size(), lineStart);
+        const SsizeType n = ReadAtOffset(mHandle, body.data(), body.size(), lineStart);
         if (n > 0)
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             AppendBytesAndSplitLocked(body.data(), static_cast<size_t>(n));
         }
     }
@@ -685,7 +685,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         mWaiting = false;
 
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             mPartialLine.clear();
         }
 
@@ -708,7 +708,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         {
             mWaiting = true;
             {
-                std::lock_guard<std::mutex> lock(mMutex);
+                const std::scoped_lock lock(mMutex);
                 mPartialLine.clear();
             }
             FireStatusCallbackIfChanged(SourceStatus::Waiting);
@@ -728,7 +728,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         mWaiting = false;
 
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             mPartialLine.clear();
         }
 
@@ -759,7 +759,7 @@ bool TailingBytesProducerImpl::DetectAndRecoverRotation()
         mReadOffset = 0;
 
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             mPartialLine.clear();
         }
 
@@ -785,10 +785,10 @@ size_t TailingBytesProducerImpl::ReadMoreBytes()
         return 0;
     }
     const uint64_t available = size - mReadOffset;
-    const size_t toRead = static_cast<size_t>(std::min<uint64_t>(available, mOptions.readChunkBytes));
+    const auto toRead = static_cast<size_t>(std::min<uint64_t>(available, mOptions.readChunkBytes));
 
     std::vector<char> scratch(toRead);
-    const ssize_type n = ReadAtOffset(mHandle, scratch.data(), toRead, mReadOffset);
+    const SsizeType n = ReadAtOffset(mHandle, scratch.data(), toRead, mReadOffset);
     if (n <= 0)
     {
         return 0;
@@ -796,7 +796,7 @@ size_t TailingBytesProducerImpl::ReadMoreBytes()
     mReadOffset += static_cast<uint64_t>(n);
 
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         AppendBytesAndSplitLocked(scratch.data(), static_cast<size_t>(n));
     }
     mCv.notify_all();
@@ -864,7 +864,7 @@ void TailingBytesProducerImpl::FireRotationCallbackIfDebounced()
     const auto now = std::chrono::steady_clock::now();
     std::function<void()> cb;
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         if (now - mLastRotationFireTime < mOptions.rotationDebounce)
         {
             return; // collapse rapid back-to-back rotations
@@ -882,7 +882,7 @@ void TailingBytesProducerImpl::FireStatusCallbackIfChanged(SourceStatus status)
 {
     std::function<void(SourceStatus)> cb;
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         if (status == mLastReportedStatus)
         {
             return; // edge-triggered: only fire on transitions

@@ -95,8 +95,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     layout->addWidget(streamingGroup);
     layout->addWidget(staticGroup);
 
-    QPushButton *okButton = new QPushButton("Ok", this);
-    QPushButton *cancelButton = new QPushButton("Cancel", this);
+    auto *okButton = new QPushButton("Ok", this);
+    auto *cancelButton = new QPushButton("Cancel", this);
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
         AppearanceControl::SaveConfiguration();
@@ -133,7 +133,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         close();
     });
 
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    auto *buttonLayout = new QHBoxLayout();
     buttonLayout->addWidget(okButton);
     buttonLayout->addWidget(cancelButton);
     layout->addStretch(1);

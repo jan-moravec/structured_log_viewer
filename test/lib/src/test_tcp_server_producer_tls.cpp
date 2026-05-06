@@ -164,7 +164,7 @@ std::string DrainUntil(TcpServerProducer &producer, size_t target, std::chrono::
 
 TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tcp_producer][tls]")
 {
-    TempDir tmp;
+    const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
     const auto keyPath = tmp.File("key.pem");
     GenerateSelfSignedCert(certPath, keyPath);
@@ -195,7 +195,7 @@ TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tc
 
 TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cert", "[tcp_producer][tls]")
 {
-    TempDir tmp;
+    const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
     const auto keyPath = tmp.File("key.pem");
     GenerateSelfSignedCert(certPath, keyPath);

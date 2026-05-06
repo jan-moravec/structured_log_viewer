@@ -4,7 +4,6 @@
 
 #include <asio.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -167,7 +166,7 @@ size_t UdpServerProducerImpl::Read(std::span<char> buffer)
     {
         return 0;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Read(buffer);
 }
 
@@ -221,7 +220,7 @@ bool UdpServerProducerImpl::IsClosed() const noexcept
     {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Empty();
 }
 
@@ -235,7 +234,7 @@ void UdpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> 
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         mStatusCallback = std::move(callback);
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
@@ -270,7 +269,7 @@ void UdpServerProducerImpl::MarkRunning()
 {
     std::function<void(SourceStatus)> cb;
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         if (mLastReportedStatus == SourceStatus::Running)
         {
             return;
@@ -315,7 +314,7 @@ void UdpServerProducerImpl::StartReceive()
             if (bytes > 0)
             {
                 {
-                    std::lock_guard<std::mutex> lock(mMutex);
+                    const std::scoped_lock lock(mMutex);
                     AppendDatagramLocked(mRecvBuffer.data(), bytes);
                 }
                 mDatagramCount.fetch_add(1, std::memory_order_acq_rel);

@@ -1,8 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/file_line_source.hpp>
 #include <loglib/key_index.hpp>
-#include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -11,21 +9,21 @@ using namespace loglib;
 
 TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]")
 {
-    LogMap map{
+    const LogMap map{
         {"key1", std::string("value1")},
-        {"key2", uint64_t(42)},
-        {"key3", int64_t(-12)},
+        {"key2", static_cast<uint64_t>(42)},
+        {"key3", static_cast<int64_t>(-12)},
         {"key4", 3.14},
         {"key5", true},
         {"key6", std::monostate()}
     };
 
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("abcd\nefgh\n");
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine line(map, keys, *source, 1);
+    const LogLine line(map, keys, *source, 1);
 
     REQUIRE(line.Values().size() == map.size());
     CHECK(std::get<std::string>(line.GetValue("key1")) == "value1");
@@ -42,12 +40,12 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
 
     auto resultKeys = line.GetKeys();
     REQUIRE(resultKeys.size() == map.size());
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), "key1") != resultKeys.end());
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), "key2") != resultKeys.end());
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), "key3") != resultKeys.end());
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), "key4") != resultKeys.end());
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), "key5") != resultKeys.end());
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), "key6") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key1") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key2") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key3") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key4") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key5") != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, "key6") != resultKeys.end());
 
     const LogMap resultMap = line.Values();
 
@@ -78,13 +76,13 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
 
 TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]")
 {
-    LogMap emptyMap;
+    const LogMap emptyMap;
 
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine emptyLine(emptyMap, keys, *source, 0);
+    const LogLine emptyLine(emptyMap, keys, *source, 0);
 
     auto resultKeys = emptyLine.GetKeys();
     CHECK(resultKeys.empty());
@@ -93,13 +91,13 @@ TEST_CASE("LogLine GetKeys returns empty vector for empty LogLine", "[log_line]"
 
 TEST_CASE("LogLine returns monostate for empty and non-existent key", "[log_line]")
 {
-    LogMap map{{"key1", std::string("value1")}, {"key2", uint64_t(42)}};
+    const LogMap map{{"key1", std::string("value1")}, {"key2", static_cast<uint64_t>(42)}};
 
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
-    LogLine line(map, keys, *source, 0);
+    const LogLine line(map, keys, *source, 0);
 
     CHECK(std::holds_alternative<std::monostate>(line.GetValue("")));
     CHECK(std::holds_alternative<std::monostate>(line.GetValue("non_existent_key")));
@@ -110,9 +108,9 @@ TEST_CASE("LogLine returns monostate for empty and non-existent key", "[log_line
 
 TEST_CASE("Set and update values", "[log_line]")
 {
-    LogMap map{{"existingKey", std::string("initialValue")}};
+    const LogMap map{{"existingKey", std::string("initialValue")}};
 
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
@@ -143,7 +141,7 @@ TEST_CASE("Set and update values", "[log_line]")
 
     resultKeys = line.GetKeys();
     REQUIRE(resultKeys.size() == 2);
-    CHECK(std::find(resultKeys.begin(), resultKeys.end(), newKey) != resultKeys.end());
+    CHECK(std::ranges::find(resultKeys, newKey) != resultKeys.end());
 }
 
 // `AsStringView` / `HoldsString` / `ToOwnedLogValue` / `LogValueEquivalent`
@@ -191,7 +189,7 @@ TEST_CASE("ToOwnedLogValue copies string_view bytes and detaches from source sto
     // Allocate the source bytes on the heap so we can free them and prove
     // the owned LogValue does not retain a dangling view.
     auto source = std::make_unique<std::string>("ephemeral");
-    LogValue viewValue{std::string_view{*source}};
+    const LogValue viewValue{std::string_view{*source}};
 
     LogValue owned = ToOwnedLogValue(viewValue);
     REQUIRE(std::holds_alternative<std::string>(owned));
@@ -203,12 +201,12 @@ TEST_CASE("ToOwnedLogValue copies string_view bytes and detaches from source sto
     CHECK(std::get<std::string>(owned) == "ephemeral");
 
     // Non-string values pass through unchanged.
-    LogValue intValue{int64_t{-7}};
+    const LogValue intValue{int64_t{-7}};
     LogValue intCopy = ToOwnedLogValue(intValue);
     REQUIRE(std::holds_alternative<int64_t>(intCopy));
     CHECK(std::get<int64_t>(intCopy) == -7);
 
-    LogValue monoCopy = ToOwnedLogValue(LogValue{std::monostate{}});
+    const LogValue monoCopy = ToOwnedLogValue(LogValue{std::monostate{}});
     CHECK(std::holds_alternative<std::monostate>(monoCopy));
 }
 
@@ -240,7 +238,7 @@ TEST_CASE("LogValueEquivalent treats string and string_view byte-equal as equiva
 // the same value regardless of which alternative the parser chose.
 TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alternatives", "[log_line][helpers]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
 
     KeyIndex keys;
@@ -256,7 +254,7 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     sorted.emplace_back(ownedKey, LogValue{std::string{"owned-bytes"}});
     sorted.emplace_back(intKey, LogValue{int64_t{99}});
 
-    LogLine line(std::move(sorted), keys, *source, 0);
+    const LogLine line(std::move(sorted), keys, *source, 0);
 
     // Fast vs. slow path must round-trip the same alternative.
     const LogValue fastView = line.GetValue(viewKey);

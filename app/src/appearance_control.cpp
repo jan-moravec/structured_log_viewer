@@ -17,8 +17,8 @@ AppearanceControl::Configuration AppearanceControl::mConfiguration;
 
 bool AppearanceControl::IsDarkTheme()
 {
-    QColor bgColor = qApp->palette().color(QPalette::Window);
-    int brightness = (bgColor.red() * 299 + bgColor.green() * 587 + bgColor.blue() * 114) / 1000;
+    const QColor bgColor = qApp->palette().color(QPalette::Window);
+    const int brightness = ((bgColor.red() * 299) + (bgColor.green() * 587) + (bgColor.blue() * 114)) / 1000;
     return brightness < 128;
 }
 

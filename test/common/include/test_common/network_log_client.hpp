@@ -53,7 +53,7 @@ public:
     /// Connect (and TLS-handshake when @p tls is non-nullopt). Throws
     /// `std::runtime_error` on connect / handshake failure.
     /// `tls` non-nullopt in a build without `LOGLIB_HAS_TLS` throws.
-    TcpLogClient(std::string host, uint16_t port, std::optional<TlsOptions> tls = std::nullopt);
+    TcpLogClient(const std::string &host, uint16_t port, std::optional<TlsOptions> tls = std::nullopt);
 
     ~TcpLogClient();
 
@@ -88,7 +88,7 @@ class UdpLogClient
 public:
     /// Resolve @p host and create an unconnected UDP socket. Throws
     /// `std::runtime_error` if @p host cannot be resolved.
-    UdpLogClient(std::string host, uint16_t port);
+    UdpLogClient(const std::string &host, uint16_t port);
 
     ~UdpLogClient();
 

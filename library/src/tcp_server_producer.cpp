@@ -208,10 +208,14 @@ template <class Stream> void Session<Stream>::Start()
             }
             self->DoRead();
         });
-        return;
     }
-#endif
+    else
+    {
+        DoRead();
+    }
+#else
     DoRead();
+#endif
 }
 
 template <class Stream> void Session<Stream>::DoRead()
@@ -426,7 +430,7 @@ size_t TcpServerProducerImpl::Read(std::span<char> buffer)
     {
         return 0;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Read(buffer);
 }
 
@@ -467,7 +471,7 @@ void TcpServerProducerImpl::Stop() noexcept
 
             std::vector<std::shared_ptr<SessionBase>> snapshot;
             {
-                std::lock_guard<std::mutex> lock(mMutex);
+                const std::scoped_lock lock(mMutex);
                 snapshot.reserve(mActiveSessions.size());
                 for (auto &kv : mActiveSessions)
                 {
@@ -499,7 +503,7 @@ bool TcpServerProducerImpl::IsClosed() const noexcept
     {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Empty();
 }
 
@@ -513,7 +517,7 @@ void TcpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> 
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         mStatusCallback = std::move(callback);
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
@@ -531,7 +535,7 @@ uint16_t TcpServerProducerImpl::BoundPort() const noexcept
 
 size_t TcpServerProducerImpl::ActiveClientCount() const noexcept
 {
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mActiveSessions.size();
 }
 
@@ -557,7 +561,7 @@ void TcpServerProducerImpl::OnSessionLines(std::string_view completeLines)
         return;
     }
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         mReadyBuffer.Append(completeLines, mOptions.maxQueueBytes, mDroppedByteCount);
     }
     MarkRunning();
@@ -567,7 +571,7 @@ void TcpServerProducerImpl::OnSessionLines(std::string_view completeLines)
 void TcpServerProducerImpl::OnSessionEnded(size_t sessionId)
 {
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         mActiveSessions.erase(sessionId);
     }
     mCv.notify_all();
@@ -577,7 +581,7 @@ void TcpServerProducerImpl::MarkRunning()
 {
     std::function<void(SourceStatus)> cb;
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         if (mLastReportedStatus == SourceStatus::Running)
         {
             return;
@@ -613,7 +617,7 @@ void TcpServerProducerImpl::StartAccept()
 
 bool TcpServerProducerImpl::AdmitOrReject(asio::ip::tcp::socket &socket)
 {
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     if (mActiveSessions.size() >= mOptions.maxConcurrentClients)
     {
         asio::error_code closeEc;
@@ -646,7 +650,7 @@ void TcpServerProducerImpl::OnAcceptPlain(const asio::error_code &ec, asio::ip::
         size_t id = 0;
         std::shared_ptr<Session<asio::ip::tcp::socket>> session;
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             id = mNextSessionId++;
             session =
                 std::make_shared<Session<asio::ip::tcp::socket>>(std::move(socket), this, id, mOptions.readChunkBytes);
@@ -679,7 +683,7 @@ void TcpServerProducerImpl::OnAcceptTls(const asio::error_code &ec, asio::ip::tc
         size_t id = 0;
         std::shared_ptr<Session<TlsStream>> session;
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             id = mNextSessionId++;
             TlsStream stream(std::move(socket), *mSslContext);
             session = std::make_shared<Session<TlsStream>>(std::move(stream), this, id, mOptions.readChunkBytes);

@@ -18,12 +18,23 @@
 #   -cppcoreguidelines-prefer-member-initializer: Forcing Qt widget
 #        construction into initializer lists reorders setup and fights
 #        Qt's `setCentralWidget` / `addWidget` flow.
+#   -readability-redundant-access-specifiers
+#   (and its `cppcoreguidelines-redundant-access-specifiers` alias):
+#        Qt's moc uses the next access specifier as the slot-list
+#        boundary, so the `private:` after `private slots:` is required.
+#        Both names are listed because the root config enables both
+#        `readability-*` and `cppcoreguidelines-*`.
+#   -readability-convert-member-functions-to-static:
+#        Qt slots / signals / overrides must stay non-static for moc.
 
 InheritParentConfig: true
 
 Checks: >
   -cppcoreguidelines-owning-memory,
-  -cppcoreguidelines-prefer-member-initializer
+  -cppcoreguidelines-prefer-member-initializer,
+  -readability-redundant-access-specifiers,
+  -cppcoreguidelines-redundant-access-specifiers,
+  -readability-convert-member-functions-to-static
 
 CheckOptions:
   - { key: readability-identifier-naming.PublicMethodCase, value: aNy_CasE }

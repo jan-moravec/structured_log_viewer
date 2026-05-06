@@ -130,7 +130,7 @@ TailingBytesProducer::Options TestOptions()
 // covers Stop() -> request_stop() -> thread join -> OnFinished.
 TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 500 ms", "[stream_stop_teardown]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("idle.log");
     // Start with one line so the parser drains pre-fill, then parks.
     Append(path, "{\"a\":1}\n");
@@ -172,7 +172,7 @@ TEST_CASE("Stream Stop teardown unblocks a worker parked in WaitForBytes within 
 // boundary, so worst case is one line decode plus Stop-then-join.
 TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stream_stop_teardown]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("buffered.log");
 
     // ~100 KiB buffered batch: 1500 lines x ~70 bytes each.
@@ -182,7 +182,7 @@ TEST_CASE("Stream Stop teardown stops a mid-decode worker within 500 ms", "[stre
         blob.reserve(100 * 1024);
         for (int i = 0; i < LINE_COUNT; ++i)
         {
-            blob += "{\"i\":" + std::to_string(i) + ",\"msg\":\"line ";
+            blob += "{\"i\":" + std::to_string(i) + R"(,"msg":"line )";
             blob += std::to_string(i);
             blob += " padding padding padding\"}\n";
         }

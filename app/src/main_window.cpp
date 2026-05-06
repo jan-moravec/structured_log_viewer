@@ -578,9 +578,10 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
-        auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](loglib::StopToken stopToken) mutable {
+        auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken
+                             ) mutable {
             options.stopToken = stopToken;
-            loglib::JsonParser parser;
+            const loglib::JsonParser parser;
             parser.ParseStreaming(*fileSourcePtr, *sink, options);
         };
 
@@ -618,7 +619,7 @@ void MainWindow::OpenLogStream()
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
-    std::filesystem::path filePath(file.toStdString());
+    const std::filesystem::path filePath(file.toStdString());
     std::unique_ptr<loglib::TailingBytesProducer> source;
     try
     {
@@ -1062,7 +1063,8 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
 
 void MainWindow::SaveConfiguration()
 {
-    QString file = QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
+    const QString file =
+        QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
     if (!file.isEmpty())
     {
         mModel->ConfigurationManager().Save(file.toStdString());
@@ -1071,7 +1073,8 @@ void MainWindow::SaveConfiguration()
 
 void MainWindow::LoadConfiguration()
 {
-    QString file = QFileDialog::getOpenFileName(this, "Load Configuration", QString(), "JSON (*.json);;All Files (*)");
+    const QString file =
+        QFileDialog::getOpenFileName(this, "Load Configuration", QString(), "JSON (*.json);;All Files (*)");
     if (!file.isEmpty())
     {
         try
@@ -1134,11 +1137,11 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 }
 
-void MainWindow::AddFilter(const QString filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter)
+void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter)
 {
     if (mModel->rowCount() > 0)
     {
-        auto filterEditor = new FilterEditor(*mModel, filterId, this);
+        auto *filterEditor = new FilterEditor(*mModel, filterId, this);
         connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
         connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
         if (filter.has_value())
@@ -1250,10 +1253,10 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     QMenu *menuItem = ui->menuFilters->addMenu(title);
     menuItem->menuAction()->setData(QVariant(id));
 
-    QAction *editAction = menuItem->addAction("Edit");
+    const QAction *editAction = menuItem->addAction("Edit");
     connect(editAction, &QAction::triggered, this, [this, id, filter]() { AddFilter(id, filter); });
 
-    QAction *clearAction = menuItem->addAction("Clear");
+    const QAction *clearAction = menuItem->addAction("Clear");
     connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
 }

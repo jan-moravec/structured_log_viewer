@@ -11,7 +11,6 @@
 #include <span>
 #include <string>
 #include <thread>
-#include <vector>
 
 using loglib::TcpServerProducer;
 using loglib_test::ScaledMs;
@@ -124,8 +123,8 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
     opts.maxConcurrentClients = 2;
     TcpServerProducer producer(opts);
 
-    test_common::TcpLogClient a("127.0.0.1", producer.BoundPort());
-    test_common::TcpLogClient b("127.0.0.1", producer.BoundPort());
+    const test_common::TcpLogClient a("127.0.0.1", producer.BoundPort());
+    const test_common::TcpLogClient b("127.0.0.1", producer.BoundPort());
     REQUIRE(WaitFor([&] { return producer.ActiveClientCount() == 2; }, ScaledMs(2000ms)));
 
     // Third connection: the producer accepts and immediately closes

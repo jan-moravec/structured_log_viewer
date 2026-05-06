@@ -66,7 +66,7 @@ LogData BufferingSink::TakeData()
         mSource->File().AppendLineOffsets(mLineOffsets);
         mLineOffsets.clear();
     }
-    return LogData(std::move(mSource), std::move(mLines), std::move(mKeys));
+    return {std::move(mSource), std::move(mLines), std::move(mKeys)};
 }
 
 std::vector<std::string> BufferingSink::TakeErrors()

@@ -22,7 +22,7 @@ TEST_CASE("Create non-existent parser", "[log_factory]")
 
 TEST_CASE("Parse JSON log file via ParseFile auto-detect", "[log_factory]")
 {
-    TestJsonLogFile testFile(glz::generic_sorted_u64{{"key", "value"}});
+    const TestJsonLogFile testFile(glz::generic_sorted_u64{{"key", "value"}});
 
     ParseResult result = ParseFile(testFile.GetFilePath());
     CHECK(result.errors.empty());
@@ -33,6 +33,6 @@ TEST_CASE("ParseFile auto-detect rejects nonexistent or invalid file", "[log_fac
 {
     CHECK_THROWS_AS(ParseFile("nonexistent.json"), std::runtime_error);
 
-    TestJsonLogFile testFile(TestJsonLogFile::Line("Invalid log line."));
+    const TestJsonLogFile testFile(TestJsonLogFile::Line("Invalid log line."));
     CHECK_THROWS_AS(ParseFile(testFile.GetFilePath()), std::runtime_error);
 }

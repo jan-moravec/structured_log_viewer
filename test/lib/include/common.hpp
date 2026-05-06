@@ -43,7 +43,7 @@ public:
     ~TestLogConfiguration();
 
     const std::string &GetFilePath() const;
-    void Write(const loglib::LogConfiguration &configuration);
+    void Write(const loglib::LogConfiguration &configuration) const;
 
 private:
     static constexpr char FILE_PATH[] = "test_config.json";

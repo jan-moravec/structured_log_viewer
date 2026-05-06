@@ -14,6 +14,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 #include <vector>
@@ -23,7 +24,7 @@ using namespace loglib;
 TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager", "[log_table]")
 {
     // Setup test data
-    TestLogFile testFile;
+    const TestLogFile testFile;
     testFile.Write("line1\nline2");
     auto source = testFile.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -38,9 +39,21 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
 
     // Create test configuration
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"Header1", {"key1"}, "{}", LogConfiguration::Type::any, {}});
-    logConfiguration.columns.push_back({"Header2", {"key2"}, "{}", LogConfiguration::Type::any, {}});
-    TestLogConfiguration testLogConfiguration;
+    logConfiguration.columns.push_back(
+        {.header = "Header1",
+         .keys = {"key1"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    logConfiguration.columns.push_back(
+        {.header = "Header2",
+         .keys = {"key2"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
@@ -71,8 +84,8 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
 
 TEST_CASE("Update LogTable with new LogData", "[log_table]")
 {
-    TestLogFile testFile("log_file.json");
-    TestLogFile newTestFile("new_log_file.json");
+    const TestLogFile testFile("log_file.json");
+    const TestLogFile newTestFile("new_log_file.json");
 
     // Setup initial test data
     testFile.Write("file1\nfile2");
@@ -88,8 +101,14 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
 
     // Create initial configuration
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"Header1", {"key1"}, "{}", LogConfiguration::Type::any, {}});
-    TestLogConfiguration testLogConfiguration;
+    logConfiguration.columns.push_back(
+        {.header = "Header1",
+         .keys = {"key1"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
@@ -143,7 +162,7 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
 {
     // Regression: `Reset()` clears data but must keep the configuration
     // (otherwise `LoadConfiguration → File → Open` would lose column layout).
-    TestLogFile testFile;
+    const TestLogFile testFile;
     testFile.Write("line1\nline2");
     auto source = testFile.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
@@ -155,8 +174,20 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"CustomA", {"key1"}, "{}", LogConfiguration::Type::any, {}});
-    logConfiguration.columns.push_back({"CustomB", {"key2"}, "{}", LogConfiguration::Type::any, {}});
+    logConfiguration.columns.push_back(
+        {.header = "CustomA",
+         .keys = {"key1"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    logConfiguration.columns.push_back(
+        {.header = "CustomB",
+         .keys = {"key2"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
     LogConfiguration::LogFilter filter;
     filter.type = LogConfiguration::LogFilter::Type::string;
     filter.row = 0;
@@ -164,7 +195,7 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     filter.matchType = LogConfiguration::LogFilter::Match::contains;
     logConfiguration.filters.push_back(filter);
 
-    TestLogConfiguration testLogConfiguration;
+    const TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
@@ -196,7 +227,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
     {
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
-    std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
     return LogLine(std::move(sorted), keys, source, 0);
 }
 
@@ -222,7 +253,7 @@ StreamedBatch BuildStreamedBatch(
         batch.newKeys.reserve(currentKeyCount - prevKeyCount);
         for (size_t i = prevKeyCount; i < currentKeyCount; ++i)
         {
-            batch.newKeys.emplace_back(std::string(keys.KeyOf(static_cast<KeyId>(i))));
+            batch.newKeys.emplace_back(keys.KeyOf(static_cast<KeyId>(i)));
         }
     }
     return batch;
@@ -234,7 +265,7 @@ TEST_CASE(
     "LogTable::AppendBatch -- steady-state batches with no new keys do not extend columns", "[log_table][append_batch]"
 )
 {
-    TestLogFile testFile("steady.json");
+    const TestLogFile testFile("steady.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -267,7 +298,7 @@ TEST_CASE(
 
 TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", "[log_table][append_batch]")
 {
-    TestLogFile testFile("append_columns.json");
+    const TestLogFile testFile("append_columns.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -296,7 +327,7 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
 
 TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log_table][append_batch]")
 {
-    TestLogFile testFile("empty_rows.json");
+    const TestLogFile testFile("empty_rows.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
 
@@ -333,7 +364,7 @@ TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log
 // invalidating any persistent `QModelIndex` held by the view.
 TEST_CASE("LogTable column to KeyId cache is append-only across Update and AppendBatch", "[log_table][append_only]")
 {
-    TestLogFile testFile("append_only.json");
+    const TestLogFile testFile("append_only.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -425,9 +456,9 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
 // Avoids timestamp keys so the auto-promotion reorder stays out of scope.
 TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table][append_only]")
 {
-    TestLogFile fileA("log_file_initial.json");
-    TestLogFile fileB("log_file_second.json");
-    TestLogFile fileC("log_file_third.json");
+    const TestLogFile fileA("log_file_initial.json");
+    const TestLogFile fileB("log_file_second.json");
+    const TestLogFile fileC("log_file_third.json");
 
     fileA.Write("a1\n");
     auto sourceA = fileA.CreateFileLineSource();
@@ -440,9 +471,21 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
     LogData dataA(std::move(sourceA), std::move(linesA), std::move(keysA));
 
     LogConfiguration cfg;
-    cfg.columns.push_back({"alpha", {"alpha"}, "{}", LogConfiguration::Type::any, {}});
-    cfg.columns.push_back({"beta", {"beta"}, "{}", LogConfiguration::Type::any, {}});
-    TestLogConfiguration cfgFile;
+    cfg.columns.push_back(
+        {.header = "alpha",
+         .keys = {"alpha"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    cfg.columns.push_back(
+        {.header = "beta",
+         .keys = {"beta"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
@@ -497,7 +540,7 @@ TEST_CASE(
 {
     InitializeTimezoneData();
 
-    TestLogFile testFile("backfill.json");
+    const TestLogFile testFile("backfill.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -600,16 +643,23 @@ TEST_CASE(
 {
     InitializeTimezoneData();
 
-    TestLogFile testFile("snapshot_time_keys.json");
+    const TestLogFile testFile("snapshot_time_keys.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
-    cfg.columns.push_back({"timestamp", {"timestamp"}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T", "%F %T"}}
+    cfg.columns.push_back(
+        {.header = "timestamp",
+         .keys = {"timestamp"},
+         .printFormat = "%F %H:%M:%S",
+         .type = LogConfiguration::Type::time,
+         .parseFormats = {"%FT%T", "%F %T"}}
     );
-    cfg.columns.push_back({"msg", {"msg"}, "{}", LogConfiguration::Type::any, {}});
-    TestLogConfiguration cfgFile;
+    cfg.columns.push_back(
+        {.header = "msg", .keys = {"msg"}, .printFormat = "{}", .type = LogConfiguration::Type::any, .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
@@ -692,7 +742,7 @@ TEST_CASE(
     constexpr int KEY_COUNT = 100;
     constexpr int BATCHES = 1'000;
 
-    TestLogFile testFile("refresh_no_alloc.json");
+    const TestLogFile testFile("refresh_no_alloc.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -711,7 +761,7 @@ TEST_CASE(
     }
     cfg.columns.push_back(std::move(wide));
 
-    TestLogConfiguration cfgFile;
+    const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
@@ -776,7 +826,7 @@ TEST_CASE(
 {
     constexpr int UNTOUCHED_KEY_COUNT = 50;
 
-    TestLogFile testFile("refresh_no_alloc_incremental.json");
+    const TestLogFile testFile("refresh_no_alloc_incremental.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -801,7 +851,7 @@ TEST_CASE(
     }
     cfg.columns.push_back(std::move(untouched));
 
-    TestLogConfiguration cfgFile;
+    const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
     LogConfigurationManager mgr;
     mgr.Load(cfgFile.GetFilePath());
@@ -866,7 +916,7 @@ StreamedBatch MakeStreamBatch(
     batch.firstLineNumber = firstLineId;
     if (declareNewKey)
     {
-        batch.newKeys.emplace_back(std::string("value"));
+        batch.newKeys.emplace_back("value");
     }
     batch.lines.reserve(count);
     for (size_t i = 0; i < count; ++i)
@@ -936,8 +986,8 @@ TEST_CASE("LogTable::EvictPrefixRows trims oldest stream rows in source order", 
     // the last is `TOTAL_LINES = 5000`.
     const auto firstValue = std::get<int64_t>(table.GetValue(0, 0));
     const auto lastValue = std::get<int64_t>(table.GetValue(CAP - 1, 0));
-    CHECK(firstValue == static_cast<int64_t>(TOTAL_LINES - CAP + 1));
-    CHECK(lastValue == static_cast<int64_t>(TOTAL_LINES));
+    CHECK(std::cmp_equal(firstValue, TOTAL_LINES - CAP + 1));
+    CHECK(std::cmp_equal(lastValue, TOTAL_LINES));
 }
 
 TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[log_table][retention]")
@@ -968,8 +1018,8 @@ TEST_CASE("LogTable::EvictPrefixRows handles a giant single-batch overflow", "[l
     table.AppendBatch(MakeStreamBatch(streamSourceRef, keys, valueKey, headDrop + 1, CAP, /*declareNewKey=*/true));
 
     REQUIRE(table.RowCount() == CAP);
-    CHECK(std::get<int64_t>(table.GetValue(0, 0)) == static_cast<int64_t>(headDrop + 1));
-    CHECK(std::get<int64_t>(table.GetValue(CAP - 1, 0)) == static_cast<int64_t>(GIANT_BATCH));
+    CHECK(std::cmp_equal(std::get<int64_t>(table.GetValue(0, 0)), headDrop + 1));
+    CHECK(std::cmp_equal(std::get<int64_t>(table.GetValue(CAP - 1, 0)), GIANT_BATCH));
 }
 
 TEST_CASE(
@@ -1020,9 +1070,9 @@ TEST_CASE(
     // `std::filesystem::remove` (throwing variant); on Windows you cannot
     // delete an mmap'd file, so they must outlive the table that holds
     // the mmap.
-    TestLogFile fileA("multifile_a.json");
+    const TestLogFile fileA("multifile_a.json");
     fileA.Write("alpha\nbeta\n");
-    TestLogFile fileB("multifile_b.json");
+    const TestLogFile fileB("multifile_b.json");
     fileB.Write("gamma\ndelta\n");
 
     auto sourceA = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fileA.GetFilePath()));

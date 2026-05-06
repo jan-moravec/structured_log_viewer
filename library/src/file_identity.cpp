@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -20,7 +20,7 @@ namespace loglib::internal
 namespace
 {
 
-#if defined(_WIN32)
+#ifdef _WIN32
 FileIdentity FromBhfi(const BY_HANDLE_FILE_INFORMATION &info) noexcept
 {
     FileIdentity identity;
@@ -44,7 +44,7 @@ FileIdentity FromStat(const struct stat &st) noexcept
 
 FileIdentity FromPath(const std::filesystem::path &path) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     // Full sharing so we don't disturb a concurrent producer.
     // FILE_FLAG_BACKUP_SEMANTICS lets the call also work on directories.
     const HANDLE handle = ::CreateFileW(
@@ -80,7 +80,7 @@ FileIdentity FromPath(const std::filesystem::path &path) noexcept
 
 FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     if (handle == INVALID_HANDLE_VALUE || handle == nullptr)
     {
         return FileIdentity{};

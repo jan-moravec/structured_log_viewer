@@ -9,7 +9,7 @@
 FindRecordWidget::FindRecordWidget(QWidget *parent)
     : QWidget{parent}
 {
-    QHBoxLayout *hLayout = new QHBoxLayout(this);
+    auto *hLayout = new QHBoxLayout(this);
 
     mEdit = new QLineEdit(this);
     hLayout->addWidget(mEdit);

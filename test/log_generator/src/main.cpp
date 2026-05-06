@@ -30,6 +30,7 @@
 #include <test_common/network_log_client.hpp>
 
 #include <argparse/argparse.hpp>
+
 #include <glaze/glaze.hpp>
 
 #include <cctype>
@@ -55,7 +56,7 @@ namespace
 // the common suffixes `B`, `KB`, `MB`, `GB` (case-insensitive, base 1024).
 // We deliberately keep this in one TU rather than pulling in fmt/std::regex
 // because the `log_generator` binary should stay tiny.
-std::uint64_t ParseSize(std::string text)
+std::uint64_t ParseSize(const std::string &text)
 {
     if (text.empty())
     {
@@ -102,7 +103,7 @@ std::uint64_t ParseSize(std::string text)
     {
         throw std::invalid_argument("size must contain a numeric value");
     }
-    for (char c : upper)
+    for (const char c : upper)
     {
         if (std::isdigit(static_cast<unsigned char>(c)) == 0)
         {
@@ -117,7 +118,7 @@ std::uint64_t ParseSize(std::string text)
 // Parse a line-count literal: plain integer or with `K` / `M` / `G` suffix
 // (base 1000, case-insensitive). Distinct from `ParseSize` because line
 // counts conventionally use SI multipliers (`100K` = 100'000, not 102'400).
-std::uint64_t ParseCount(std::string text)
+std::uint64_t ParseCount(const std::string &text)
 {
     if (text.empty())
     {
@@ -160,7 +161,7 @@ std::uint64_t ParseCount(std::string text)
     {
         throw std::invalid_argument("count must contain a numeric value");
     }
-    for (char c : upper)
+    for (const char c : upper)
     {
         if (std::isdigit(static_cast<unsigned char>(c)) == 0)
         {
@@ -581,7 +582,7 @@ int main(int argc, char *argv[])
         std::cerr << "Invalid --keep-rolled: must be >= 0\n" << program;
         return 1;
     }
-    const std::size_t keepRolled = static_cast<std::size_t>(keepRolledInt);
+    const auto keepRolled = static_cast<std::size_t>(keepRolledInt);
 
     const bool rollingEnabled = rollBytes != 0 || rollLines != 0;
     const bool isNetworkTarget =

@@ -42,7 +42,6 @@
 #include <QWheelEvent>
 #include <QtTest/QtTest>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -50,7 +49,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -171,8 +169,8 @@ StreamingRun RunStreaming(const QString &fixturePath)
         loglib::internal::AdvancedParserOptions advanced;
         advanced.threads = 1;
 
-        loglib::JsonParser parser;
-        parser.ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
     }
 
     if (finishedSpy.count() == 0)
@@ -204,7 +202,7 @@ public:
         mPath = mDir.filePath("live.jsonl");
         // Touch the file so `TailingBytesProducer`'s open() succeeds. Pre-fill
         // walks the existing content (zero bytes here) before tailing.
-        std::ofstream stream(mPath.toStdString(), std::ios::binary);
+        const std::ofstream stream(mPath.toStdString(), std::ios::binary);
         QVERIFY2(stream.is_open(), "live-tail fixture file must be openable");
     }
 
@@ -235,12 +233,12 @@ private:
 // still floor at 1 ms so a tight 25 ms budget never collapses to 0.
 double LoadTestTimeScale() noexcept
 {
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996) // getenv
 #endif
     const char *raw = std::getenv("LOGLIB_TEST_TIME_SCALE");
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #pragma warning(pop)
 #endif
     if (raw == nullptr || *raw == '\0')
@@ -350,7 +348,7 @@ loglib::StreamedBatch MakeSyntheticBatch(
     batch.firstLineNumber = firstLineId;
     if (declareNewKey)
     {
-        batch.newKeys.emplace_back(std::string("value"));
+        batch.newKeys.emplace_back("value");
     }
     batch.lines.reserve(count);
     for (size_t i = 0; i < count; ++i)
@@ -419,30 +417,30 @@ private slots:
     void init()
     {
         // Called before each test function
-        window = new MainWindow();
+        mWindow = new MainWindow();
     }
 
     void cleanup()
     {
         // Called after each test function
-        delete window;
-        window = nullptr;
+        delete mWindow;
+        mWindow = nullptr;
     }
 
-    void testWindowTitle()
+    void TestWindowTitle()
     {
-        QCOMPARE(window->windowTitle(), QString("Structured Log Viewer"));
+        QCOMPARE(mWindow->windowTitle(), QString("Structured Log Viewer"));
     }
 
-    void testWindowIcon()
+    void TestWindowIcon()
     {
-        QVERIFY(!window->windowIcon().isNull());
+        QVERIFY(!mWindow->windowIcon().isNull());
     }
 
-    void testFixture_Empty()
+    static void TestFixtureEmpty()
     {
-        FixtureFile fixture(":/fixtures/empty.jsonl");
-        StreamingRun run = RunStreaming(fixture.Path());
+        const FixtureFile fixture(":/fixtures/empty.jsonl");
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QCOMPARE(run.model->rowCount(), 0);
@@ -450,10 +448,10 @@ private slots:
         QVERIFY(run.model->StreamingErrors().empty());
     }
 
-    void testFixture_SingleLine()
+    static void TestFixtureSingleLine()
     {
-        FixtureFile fixture(":/fixtures/single_line.jsonl");
-        StreamingRun run = RunStreaming(fixture.Path());
+        const FixtureFile fixture(":/fixtures/single_line.jsonl");
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QCOMPARE(run.model->rowCount(), 1);
@@ -463,9 +461,9 @@ private slots:
         QVERIFY(run.model->StreamingErrors().empty());
     }
 
-    void testFixture_ValueTypes()
+    static void TestFixtureValueTypes()
     {
-        FixtureFile fixture(":/fixtures/value_types.jsonl");
+        const FixtureFile fixture(":/fixtures/value_types.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
@@ -523,36 +521,36 @@ private slots:
         QCOMPARE(displayVal(2, colArr), QStringLiteral("[\"x\",\"y\"]"));
     }
 
-    void testFixture_IsoTTimestamp()
+    static void TestFixtureIsoTTimestamp()
     {
-        FixtureFile fixture(":/fixtures/iso_t_timestamp.jsonl");
+        const FixtureFile fixture(":/fixtures/iso_t_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
         // 2024-04-28T07:14:30 UTC → 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, qint64(1714288470000000), 3);
+        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
     }
 
-    void testFixture_IsoSpaceTimestamp()
+    static void TestFixtureIsoSpaceTimestamp()
     {
-        FixtureFile fixture(":/fixtures/iso_space_timestamp.jsonl");
+        const FixtureFile fixture(":/fixtures/iso_space_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
         // 2024-04-28 07:14:30 UTC → 1714288470 seconds since epoch.
-        AssertTimestampFixture(run, qint64(1714288470000000), 3);
+        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
     }
 
-    void testFixture_IsoOffsetTimestamp()
+    static void TestFixtureIsoOffsetTimestamp()
     {
-        FixtureFile fixture(":/fixtures/iso_offset_timestamp.jsonl");
+        const FixtureFile fixture(":/fixtures/iso_offset_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
         // 2024-04-28T07:14:30+02:00 → 2024-04-28T05:14:30 UTC → 1714281270 seconds.
-        AssertTimestampFixture(run, qint64(1714281270000000), 3);
+        AssertTimestampFixture(run, static_cast<qint64>(1714281270000000), 3);
     }
 
-    void testFixture_IsoFractionalTimestamp()
+    static void TestFixtureIsoFractionalTimestamp()
     {
-        FixtureFile fixture(":/fixtures/iso_fractional_timestamp.jsonl");
+        const FixtureFile fixture(":/fixtures/iso_fractional_timestamp.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
         // 2024-04-28T07:14:30.123 UTC → 1714288470.123 → 1714288470123000 µs.
-        AssertTimestampFixture(run, qint64(1714288470123000), 3);
+        AssertTimestampFixture(run, static_cast<qint64>(1714288470123000), 3);
 
         // Spot-check the µs and 0.5s rows separately so all three fractional
         // widths in the fixture are exercised.
@@ -563,10 +561,10 @@ private slots:
         QCOMPARE(row2Us, qint64(1714288470500000));
     }
 
-    void testFixture_AltTimestampKeys()
+    static void TestFixtureAltTimestampKeys()
     {
-        FixtureFile fixture(":/fixtures/alt_timestamp_keys.jsonl");
-        StreamingRun run = RunStreaming(fixture.Path());
+        const FixtureFile fixture(":/fixtures/alt_timestamp_keys.jsonl");
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QCOMPARE(run.model->rowCount(), 3);
@@ -607,9 +605,9 @@ private slots:
         QVERIFY(run.model->data(run.model->index(2, colTimestamp), LogModelItemDataRole::SortRole).isValid());
     }
 
-    void testFixture_MixedColumns()
+    static void TestFixtureMixedColumns()
     {
-        FixtureFile fixture(":/fixtures/mixed_columns.jsonl");
+        const FixtureFile fixture(":/fixtures/mixed_columns.jsonl");
         StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
@@ -642,10 +640,10 @@ private slots:
         QCOMPARE(displayVal(2, colC), QStringLiteral("c3"));
     }
 
-    void testFixture_InvalidLines()
+    static void TestFixtureInvalidLines()
     {
-        FixtureFile fixture(":/fixtures/invalid_lines.jsonl");
-        StreamingRun run = RunStreaming(fixture.Path());
+        const FixtureFile fixture(":/fixtures/invalid_lines.jsonl");
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QCOMPARE(run.model->rowCount(), 2);
@@ -664,10 +662,10 @@ private slots:
         QCOMPARE(run.model->data(run.model->index(1, colA), Qt::DisplayRole).toString(), QStringLiteral("valid_third"));
     }
 
-    void testFixture_MixedTzAndOrder()
+    static void TestFixtureMixedTzAndOrder()
     {
-        FixtureFile fixture(":/fixtures/mixed_tz_and_order.jsonl");
-        StreamingRun run = RunStreaming(fixture.Path());
+        const FixtureFile fixture(":/fixtures/mixed_tz_and_order.jsonl");
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QCOMPARE(run.model->rowCount(), 3);
@@ -717,10 +715,10 @@ private slots:
     // Regression: `LogModel::AppendBatch` must fire `beginInsertRows` /
     // `beginInsertColumns` *before* `LogTable::AppendBatch` mutates, so
     // proxies see the pre-mutation source count in `*AboutToBeInserted`.
-    void testAppendBatchFiresBeginsBeforeMutation()
+    static void TestAppendBatchFiresBeginsBeforeMutation()
     {
         const QStringList fixtureLines = MakeParityFixture();
-        TempJsonFile fixture(fixtureLines);
+        const TempJsonFile fixture(fixtureLines);
 
         LogModel model;
         LogFilterModel proxy;
@@ -760,8 +758,8 @@ private slots:
         loglib::internal::AdvancedParserOptions advanced;
         advanced.threads = 1;
 
-        loglib::JsonParser parser;
-        parser.ParseStreaming(*parseSource, *model.Sink(), options, advanced);
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*parseSource, *model.Sink(), options, advanced);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -775,7 +773,7 @@ private slots:
         );
 
         int expectedRowCount = 0;
-        for (int snapshot : rowCountSnapshotsAtAboutToBeInserted)
+        for (const int snapshot : rowCountSnapshotsAtAboutToBeInserted)
         {
             QVERIFY2(
                 snapshot == expectedRowCount,
@@ -791,7 +789,7 @@ private slots:
         QCOMPARE(model.rowCount(), fixtureLines.size());
 
         int expectedColumnCount = 0;
-        for (int snapshot : columnCountSnapshotsAtAboutToBeInserted)
+        for (const int snapshot : columnCountSnapshotsAtAboutToBeInserted)
         {
             QVERIFY2(
                 snapshot >= expectedColumnCount,
@@ -813,11 +811,11 @@ private slots:
     // on a GUI-thread flag (`mStreamingActive`), not `isRunning()` — the
     // latter races with the queued `OnFinished` and would silently drop the
     // signal, leaving configuration menus disabled.
-    void testResetAfterBeginStreamingEmitsCompensatingFinished()
+    static void TestResetAfterBeginStreamingEmitsCompensatingFinished()
     {
         // Use a tiny in-memory file so BeginStreaming has a valid LogFile
         // to install on the model.
-        TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
+        const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
         LogModel model;
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
@@ -847,9 +845,9 @@ private slots:
     // `RequestStop()`. Otherwise drain-phase queued lambdas pass the
     // mismatch check and run after `Reset()` has destroyed `mLogTable`
     // (use-after-free on dangling `LogFile*` + spurious second `streamingFinished`).
-    void testResetDuringStreamingDropsDrainPhaseBatch()
+    static void TestResetDuringStreamingDropsDrainPhaseBatch()
     {
-        TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
+        const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
         LogModel model;
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
@@ -870,7 +868,7 @@ private slots:
 
         const loglib::StopToken stop = model.BeginStreaming(
             std::move(fileSource),
-            [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
+            [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](const loglib::StopToken &stopToken) {
                 while (!stopToken.stop_requested())
                 {
                     std::this_thread::yield();
@@ -898,7 +896,7 @@ private slots:
         std::thread releaser([&]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             {
-                std::lock_guard lock(releaseMutex);
+                const std::scoped_lock lock(releaseMutex);
                 released = true;
             }
             releaseCv.notify_all();
@@ -932,9 +930,9 @@ private slots:
     // assertion (the row must survive) and the signal-count assertion
     // (the drained `OnFinished` lambda emits the *only* terminal
     // signal — no compensating duplicate from the teardown helper).
-    void testStopAndKeepRowsPreservesDrainPhaseBatch()
+    static void TestStopAndKeepRowsPreservesDrainPhaseBatch()
     {
-        TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
+        const TempJsonFile fixture(QStringList{QStringLiteral(R"({"a": 1})")});
 
         LogModel model;
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
@@ -952,7 +950,7 @@ private slots:
 
         const loglib::StopToken stop = model.BeginStreaming(
             std::move(fileSource),
-            [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](loglib::StopToken stopToken) {
+            [sinkBeforeBegin, sourcePtr, &releaseMutex, &releaseCv, &released](const loglib::StopToken &stopToken) {
                 while (!stopToken.stop_requested())
                 {
                     std::this_thread::yield();
@@ -978,7 +976,7 @@ private slots:
         std::thread releaser([&]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             {
-                std::lock_guard lock(releaseMutex);
+                const std::scoped_lock lock(releaseMutex);
                 released = true;
             }
             releaseCv.notify_all();
@@ -1009,7 +1007,7 @@ private slots:
     //   - `beginRemoveRows`/`rowsRemoved` fire on the prefix as new lines arrive;
     //   - the surviving rows correspond to the *most recent* lines, not the
     //     oldest ones (FIFO drops oldest).
-    void testRetentionCapFifoEviction()
+    static void TestRetentionCapFifoEviction()
     {
         LogModel model;
         // Install a no-producer `StreamLineSource` so synthetic
@@ -1018,7 +1016,7 @@ private slots:
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
         model.SetRetentionCap(100);
 
-        QSignalSpy rowsRemovedSpy(&model, &QAbstractItemModel::rowsRemoved);
+        const QSignalSpy rowsRemovedSpy(&model, &QAbstractItemModel::rowsRemoved);
         QVERIFY(rowsRemovedSpy.isValid());
 
         loglib::KeyIndex &keys = model.Sink()->Keys();
@@ -1058,7 +1056,7 @@ private slots:
     // exceeds the cap must collapse the head of the batch *before* it lands
     // in `LogTable`, so per-batch eviction stays O(cap) and the visible
     // model never breaches the cap.
-    void testRetentionCapGiantBatchCollapse()
+    static void TestRetentionCapGiantBatchCollapse()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1090,10 +1088,10 @@ private slots:
     // buffer instead of posting per-batch QueuedConnection lambdas; on
     // Resume the buffer is coalesced into a single batch and posted to
     // `LogModel::AppendBatch`.
-    void testSinkPauseResumeCoalescesBufferedBatches()
+    static void TestSinkPauseResumeCoalescesBufferedBatches()
     {
         LogModel model;
-        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1113,7 +1111,7 @@ private slots:
         const int linesPerBatch = 5;
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
-            const size_t firstLineId = static_cast<size_t>(b * linesPerBatch + 1);
+            const auto firstLineId = static_cast<size_t>((b * linesPerBatch) + 1);
             const bool declareNewKey = (b == 0);
             // Direct call to OnBatch from this thread mirrors the worker.
             sink->OnBatch(MakeSyntheticBatch(
@@ -1147,21 +1145,21 @@ private slots:
     // payload that the static path emits, and `PausedLineCountLocked`
     // only summing `streamLines.size()` (so the status-bar `K buffered`
     // would read 0 even with rows queued).
-    void testSinkPauseResumePreservesStaticLineBatches()
+    static void TestSinkPauseResumePreservesStaticLineBatches()
     {
         // Need a real `LogFile` because the `FileLineSource` (and the
         // model's `LogTable::AppendBatch` path that consumes `lines`) hold
         // pointers into the file. The file's contents don't have to match
         // what we synthesise -- we never call `LogLine::GetValue()` on them
         // through the table -- but they must outlive the test.
-        TempJsonFile fixture(QStringList{
+        const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"a": 1})"),
             QStringLiteral(R"({"a": 2})"),
             QStringLiteral(R"({"a": 3})"),
         });
 
         LogModel model;
-        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
@@ -1187,12 +1185,12 @@ private slots:
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
             loglib::StreamedBatch batch;
-            batch.firstLineNumber = static_cast<size_t>(b * linesPerBatch + 1);
+            batch.firstLineNumber = static_cast<size_t>((b * linesPerBatch) + 1);
             batch.lines.reserve(linesPerBatch);
             batch.localLineOffsets.reserve(linesPerBatch);
             for (int i = 0; i < linesPerBatch; ++i)
             {
-                const size_t lineNumber = static_cast<size_t>(b * linesPerBatch + i + 1);
+                const auto lineNumber = static_cast<size_t>((b * linesPerBatch) + i + 1);
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
                 batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
@@ -1225,7 +1223,7 @@ private slots:
     // Pause + cap-shrink interaction: while paused, lowering
     // the retention cap must trim the paused buffer to `cap - visible`
     // (preserving the visible rows). Verified via PausedLineCount().
-    void testPauseCapShrinkTrimsPausedBuffer()
+    static void TestPauseCapShrinkTrimsPausedBuffer()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1265,9 +1263,9 @@ private slots:
     // pause-freezes-view-with-buffer-keeps-growing, and resume-drains.
     // Retention cap is high (1000) so FIFO eviction stays inactive
     // here — the dedicated `testRetentionCap*` tests cover that.
-    void testStreamModeOpensTailFileAndAppends()
+    static void TestStreamModeOpensTailFileAndAppends()
     {
-        TempLiveTailFile fixture;
+        const TempLiveTailFile fixture;
 
         // Pre-fill: 100 lines on disk before the source opens.
         {
@@ -1280,9 +1278,9 @@ private slots:
         }
 
         LogModel model;
-        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
-        QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         model.SetRetentionCap(1000);
@@ -1295,15 +1293,15 @@ private slots:
         sourceOptions.pollInterval = std::chrono::milliseconds(25);
         sourceOptions.rotationDebounce = std::chrono::milliseconds(250);
 
-        std::filesystem::path filePath(fixture.Path().toStdString());
+        const std::filesystem::path filePath(fixture.Path().toStdString());
         auto source = std::make_unique<loglib::TailingBytesProducer>(filePath, /*retentionLines=*/1000, sourceOptions);
         auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
 
-        loglib::ParserOptions options;
+        const loglib::ParserOptions options;
         // Don't pass a configuration; the auto-promote heuristics aren't the
         // focus of this test. The model's `BeginStreaming(StreamLineSource)`
         // overrides `options.stopToken` with the sink's freshly-armed token.
-        loglib::StopToken stopToken = model.BeginStreaming(std::move(streamSource), options);
+        const loglib::StopToken stopToken = model.BeginStreaming(std::move(streamSource), options);
         Q_UNUSED(stopToken);
 
         QVERIFY(model.IsStreamingActive());
@@ -1379,7 +1377,7 @@ private slots:
     // `NetworkStreamDialog` (modal -> would hang offscreen QPA);
     // instead we wire the producer directly into the model the same
     // way `MainWindow::OpenNetworkStream` does.
-    void testStreamModeOpensUdpProducer()
+    static void TestStreamModeOpensUdpProducer()
     {
         loglib::UdpServerProducer::Options opts;
         opts.bindAddress = "127.0.0.1"; // ephemeral port
@@ -1389,13 +1387,13 @@ private slots:
         const std::string display = producer->DisplayName();
 
         LogModel model;
-        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
         model.SetRetentionCap(1000);
 
         auto streamSource =
             std::make_unique<loglib::StreamLineSource>(std::filesystem::path(display), std::move(producer));
-        loglib::ParserOptions options;
+        const loglib::ParserOptions options;
         Q_UNUSED(model.BeginStreaming(std::move(streamSource), options));
 
         QVERIFY(model.IsStreamingActive());
@@ -1404,7 +1402,7 @@ private slots:
         test_common::UdpLogClient client("127.0.0.1", port);
         for (int i = 0; i < 10; ++i)
         {
-            client.Send("{\"i\":" + std::to_string(i + 1) + ",\"phase\":\"udp\"}");
+            client.Send("{\"i\":" + std::to_string(i + 1) + R"(,"phase":"udp"})");
         }
 
         QVERIFY2(WaitForLineCount(model, 10, std::chrono::seconds(5)), "10 UDP lines must arrive within 5 s");
@@ -1420,7 +1418,7 @@ private slots:
     // `test_tcp_server_producer_tls.cpp` so the apptest does not need
     // to build OpenSSL into its link line when LOGLIB_NETWORK_TLS is
     // off on a developer build).
-    void testStreamModeOpensTcpProducer()
+    static void TestStreamModeOpensTcpProducer()
     {
         loglib::TcpServerProducer::Options opts;
         opts.bindAddress = "127.0.0.1"; // ephemeral port
@@ -1431,13 +1429,13 @@ private slots:
         QVERIFY(display.starts_with("tcp://127.0.0.1:"));
 
         LogModel model;
-        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
         model.SetRetentionCap(1000);
 
         auto streamSource =
             std::make_unique<loglib::StreamLineSource>(std::filesystem::path(display), std::move(producer));
-        loglib::ParserOptions options;
+        const loglib::ParserOptions options;
         Q_UNUSED(model.BeginStreaming(std::move(streamSource), options));
 
         QVERIFY(model.IsStreamingActive());
@@ -1445,7 +1443,7 @@ private slots:
         test_common::TcpLogClient client("127.0.0.1", port);
         for (int i = 0; i < 10; ++i)
         {
-            client.Send("{\"i\":" + std::to_string(i + 1) + ",\"phase\":\"tcp\"}");
+            client.Send("{\"i\":" + std::to_string(i + 1) + R"(,"phase":"tcp"})");
         }
 
         QVERIFY2(WaitForLineCount(model, 10, std::chrono::seconds(5)), "10 TCP lines must arrive within 5 s");
@@ -1461,12 +1459,12 @@ private slots:
     // `FindUiAction` so apptest harnesses can locate it without going
     // through the QObject tree (the workaround documented in
     // `MainWindow::FindUiAction`).
-    void testActionOpenNetworkStreamIsExposed()
+    static void TestActionOpenNetworkStreamIsExposed()
     {
         // Local variable name avoids the `MainWindowTest::window`
         // member-shadow C4458 warning under MSVC.
-        MainWindow mainWindow;
-        QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
+        const MainWindow mainWindow;
+        const QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
         QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via FindUiAction");
         // Sanity-check the keyboard accelerator the production UI ships.
         QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+N")));
@@ -1478,7 +1476,7 @@ private slots:
     // the pause. This test pauses, feeds enough live-tail batches to
     // overflow the cap, and asserts both that `PausedDropCount()` > 0
     // and that the visible+buffered total stayed within the cap.
-    void testPausedDropCountIsObservable()
+    static void TestPausedDropCountIsObservable()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1507,7 +1505,7 @@ private slots:
         {
             const bool firstBatch = (b == 0);
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, static_cast<size_t>(b) * batchLines + 1, batchLines, firstBatch
+                streamSource, keys, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
             ));
         }
 
@@ -1546,7 +1544,7 @@ private slots:
     // counter, but never silently disappeared. Counterpart to
     // `testPausedDropCountIsObservable` (which exercises overflow);
     // this one exercises the under-cap normal-stop path.
-    void testStopAfterPauseFlushesPausedBufferToModel()
+    static void TestStopAfterPauseFlushesPausedBufferToModel()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1573,7 +1571,7 @@ private slots:
         {
             const bool firstBatch = (b == 0);
             sink->OnBatch(MakeSyntheticBatch(
-                streamSource, keys, valueKey, static_cast<size_t>(b) * batchLines + 1, batchLines, firstBatch
+                streamSource, keys, valueKey, (static_cast<size_t>(b) * batchLines) + 1, batchLines, firstBatch
             ));
         }
 
@@ -1591,7 +1589,7 @@ private slots:
         QCoreApplication::processEvents();
 
         const qsizetype visible = model.rowCount();
-        const qulonglong dropped = static_cast<qulonglong>(sink->PausedDropCount());
+        const auto dropped = static_cast<qulonglong>(sink->PausedDropCount());
         QVERIFY2(
             static_cast<qulonglong>(visible) + dropped == totalLines,
             qPrintable(QStringLiteral("rows accounting failed: visible=%1 + dropped=%2 != totalLines=%3")
@@ -1613,9 +1611,9 @@ private slots:
     // pre-fix counter snapshotted `toDrop` up front, under-reporting the
     // overshoot to the status-bar "dropped while paused" indicator. The
     // fix accumulates the *actual* lines evicted as the loop runs.
-    void testPausedDropCountReflectsStaticBatchOverEviction()
+    static void TestPausedDropCountReflectsStaticBatchOverEviction()
     {
-        TempJsonFile fixture(QStringList{
+        const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"a": 1})"),
             QStringLiteral(R"({"a": 2})"),
             QStringLiteral(R"({"a": 3})"),
@@ -1646,7 +1644,7 @@ private slots:
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back(std::string("value"));
+            batch.newKeys.emplace_back("value");
             batch.lines.reserve(staticBatchRows);
             batch.localLineOffsets.reserve(staticBatchRows);
             for (size_t i = 0; i < staticBatchRows; ++i)
@@ -1707,12 +1705,12 @@ private slots:
     // static snapshot of what was in memory at stop time). `StopAndKeepRows()`
     // is the API `MainWindow::StopStream` uses; `Reset()` (which fully
     // resets the model) is reserved for the "open a new session" paths.
-    void testStopAndKeepRowsPreservesRows()
+    static void TestStopAndKeepRowsPreservesRows()
     {
         LogModel model;
         QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
+        const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
         QVERIFY(lineCountSpy.isValid());
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1780,7 +1778,7 @@ private slots:
     // already in the model — so any later `OnBatch` (queued or direct)
     // necessarily lands after them. We don't try to win the worker race
     // here; the synchronous contract removes the race entirely.
-    void testResumeDeliversBufferedBatchSynchronouslyForOrdering()
+    static void TestResumeDeliversBufferedBatchSynchronouslyForOrdering()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -1854,11 +1852,11 @@ private slots:
     // The fix disables the three Stream actions whenever the toolbar
     // is hidden, and force-unchecks `actionPauseStream` defensively so
     // a stuck checked state from any other path can never persist.
-    void testStreamMenuActionsDisabledWhileIdle()
+    void TestStreamMenuActionsDisabledWhileIdle()
     {
-        QAction *pauseAction = FindActionByObjectName(window, QStringLiteral("actionPauseStream"));
-        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
-        QAction *stopAction = FindActionByObjectName(window, QStringLiteral("actionStopStream"));
+        QAction *pauseAction = FindActionByObjectName(mWindow, QStringLiteral("actionPauseStream"));
+        const QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        const QAction *stopAction = FindActionByObjectName(mWindow, QStringLiteral("actionStopStream"));
         QVERIFY(pauseAction != nullptr);
         QVERIFY(followAction != nullptr);
         QVERIFY(stopAction != nullptr);
@@ -1887,9 +1885,9 @@ private slots:
     // next session boundary. This validates that my new disable-gate
     // in `UpdateStreamToolbarVisibility` did not interfere with the
     // existing Pause-toggle reset in the slot.
-    void testStaleCheckedPauseClearedOnTeardown()
+    void TestStaleCheckedPauseClearedOnTeardown()
     {
-        QAction *pauseAction = FindActionByObjectName(window, QStringLiteral("actionPauseStream"));
+        QAction *pauseAction = FindActionByObjectName(mWindow, QStringLiteral("actionPauseStream"));
         QVERIFY(pauseAction != nullptr);
 
         // Simulate the bug condition: forcibly enable the action and
@@ -1904,7 +1902,7 @@ private slots:
         // (in `MainWindow`) resets the Pause toggle and refreshes the
         // toolbar gating. This is the existing reset path that must
         // keep working alongside the new disabled-while-idle invariant.
-        LogModel *model = window->findChild<LogModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
 
         static_cast<void>(model->BeginStreamingForSyncTest(std::unique_ptr<loglib::LineSource>{}));
@@ -1938,10 +1936,10 @@ private slots:
     // the range — the closest in-process simulation of a hover-
     // triggered internal scroll update — must therefore leave the
     // toggle alone.
-    void testFollowTailIgnoresProgrammaticScrollbarChanges()
+    void TestFollowTailIgnoresProgrammaticScrollbarChanges()
     {
-        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
-        LogTableView *tableView = window->findChild<LogTableView *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        const auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(followAction != nullptr);
         QVERIFY(tableView != nullptr);
 
@@ -1963,7 +1961,7 @@ private slots:
         scrollBar->setRange(0, 1000);
         scrollBar->setValue(scrollBar->maximum());
 
-        QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        const QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
         QVERIFY(awaySpy.isValid());
 
         // Programmatic value change to the middle of the range — the
@@ -1986,10 +1984,10 @@ private slots:
     // `RowOrderProxyModel::SetReversed` plus the persisted
     // `streaming/newestFirst` setting — exercising the proxy here
     // covers the contract that the GUI relies on.
-    void testNewestFirstReversesProxyOrder()
+    void TestNewestFirstReversesProxyOrder()
     {
-        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
-        LogModel *model = window->findChild<LogModel *>();
+        auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(!rowOrderProxy->IsReversed());
@@ -2059,10 +2057,10 @@ private slots:
     // first** enables reversed mode before any data (matching session
     // startup); the second batch must land with its newest line at
     // proxy row 0, not stuck under the first batch.
-    void testNewestFirstIncrementalBatchesKeepNewestAtTop()
+    void TestNewestFirstIncrementalBatchesKeepNewestAtTop()
     {
-        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
-        LogModel *model = window->findChild<LogModel *>();
+        auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
 
@@ -2113,10 +2111,10 @@ private slots:
     // blow. Set deliberately loose to absorb CI noise; the failing
     // implementation routinely lands at multiple seconds, while the
     // current one lands in single-digit ms.
-    void testNewestFirstToggleIsOPersistentIndices()
+    void TestNewestFirstToggleIsOPersistentIndices()
     {
-        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
-        LogModel *model = window->findChild<LogModel *>();
+        auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
 
@@ -2124,17 +2122,17 @@ private slots:
         QtStreamingLogSink *sink = model->Sink();
         QVERIFY(sink != nullptr);
 
-        constexpr int kRows = 10'000;
+        constexpr int K_ROWS = 10'000;
         loglib::KeyIndex &keys = sink->Keys();
         const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
-        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, kRows, /*declareNewKey=*/true));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
         QCoreApplication::processEvents();
-        QCOMPARE(model->rowCount(), kRows);
+        QCOMPARE(model->rowCount(), K_ROWS);
 
         // Hold a single persistent index from somewhere in the
         // middle of the proxy. Toggling SetReversed must remap *this
         // one* via `changePersistentIndexList`; nothing else.
-        const QPersistentModelIndex pinned(rowOrderProxy->index(kRows / 2, 0));
+        const QPersistentModelIndex pinned(rowOrderProxy->index(K_ROWS / 2, 0));
         QVERIFY(pinned.isValid());
 
         rowOrderProxy->SetReversed(false);
@@ -2142,8 +2140,8 @@ private slots:
 
         QElapsedTimer timer;
         timer.start();
-        constexpr int kToggles = 100;
-        for (int i = 0; i < kToggles; ++i)
+        constexpr int K_TOGGLES = 100;
+        for (int i = 0; i < K_TOGGLES; ++i)
         {
             rowOrderProxy->SetReversed(i % 2 == 1);
         }
@@ -2157,7 +2155,7 @@ private slots:
             elapsedMs < 200,
             qPrintable(QStringLiteral("RowOrderProxyModel::SetReversed must be O(persistent indices), "
                                       "not O(rows); 100 toggles over %1 rows took %2 ms (budget 200 ms)")
-                           .arg(kRows)
+                           .arg(K_ROWS)
                            .arg(elapsedMs))
         );
 
@@ -2167,7 +2165,7 @@ private slots:
         // identity, which is what the constructor saw) should sit at
         // proxy row (kRows - 1 - kRows/2).
         QVERIFY(pinned.isValid());
-        QCOMPARE(pinned.row(), kRows - 1 - kRows / 2);
+        QCOMPARE(pinned.row(), K_ROWS - 1 - K_ROWS / 2);
 
         rowOrderProxy->SetReversed(false);
         model->EndStreaming(false);
@@ -2189,9 +2187,9 @@ private slots:
     // The companion `testFollowTailIgnoresProgrammaticScrollbarChanges`
     // already covers the bottom edge; this test pins down the top edge
     // contract introduced by the newest-first feature.
-    void testTailEdgeTopFollowsScrollbarMinimum()
+    void TestTailEdgeTopFollowsScrollbarMinimum()
     {
-        LogTableView *tableView = window->findChild<LogTableView *>();
+        auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
 
         tableView->SetTailEdge(LogTableView::TailEdge::Top);
@@ -2204,8 +2202,8 @@ private slots:
 
         // Programmatic value change to the middle: must not flip the
         // toggle (mirrors the bottom-edge programmatic-scroll test).
-        QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
-        QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
+        const QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        const QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
         QVERIFY(awaySpy.isValid());
         QVERIFY(toSpy.isValid());
 
@@ -2261,10 +2259,10 @@ private slots:
     // arrows, key press on the slider) ultimately call, so driving
     // it directly here is the closest in-process equivalent of the
     // user clicking the scrollbar.
-    void testFollowNewestDisengagesOnScrollbarAction()
+    void TestFollowNewestDisengagesOnScrollbarAction()
     {
-        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
-        LogTableView *tableView = window->findChild<LogTableView *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        const auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(followAction != nullptr);
         QVERIFY(tableView != nullptr);
 
@@ -2277,7 +2275,7 @@ private slots:
         scrollBar->setRange(0, 1000);
         scrollBar->setValue(scrollBar->maximum());
 
-        QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        const QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
         QVERIFY(awaySpy.isValid());
 
         // `triggerAction(SliderToMinimum)` mirrors a Home keypress on
@@ -2302,12 +2300,12 @@ private slots:
     // row + its pixel offset before the structural change and
     // re-aligns the scrollbar after, so the row stays at the same
     // pixel position from the user's perspective (chat-app pattern).
-    void testNewestFirstPreservesReadingPositionAcrossBatches()
+    void TestNewestFirstPreservesReadingPositionAcrossBatches()
     {
-        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
-        LogTableView *tableView = window->findChild<LogTableView *>();
-        LogModel *model = window->findChild<LogModel *>();
-        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
+        auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
@@ -2413,35 +2411,35 @@ private slots:
     // `QTableView::alternatingRowColors`. The companion
     // `testAlternatingRowColoursDisabledInStaticNewestFirstMode`
     // asserts the same contract for static-mode sessions.
-    void testAlternatingRowColoursDisabledInNewestFirstMode()
+    void TestAlternatingRowColoursDisabledInNewestFirstMode()
     {
-        LogTableView *tableView = window->findChild<LogTableView *>();
-        LogModel *model = window->findChild<LogModel *>();
+        const auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
 
         const bool originalNewestFirst = StreamingControl::IsNewestFirst();
         auto restoreNewestFirst = qScopeGuard([this, originalNewestFirst]() {
             StreamingControl::SetNewestFirst(originalNewestFirst);
-            window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+            mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
         });
 
         // Stage a stream-mode session so `ApplyDisplayOrder` consults
         // `IsNewestFirst()` (and not `IsStaticNewestFirst()`).
         static_cast<void>(BeginSyntheticStreamSession(*model));
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
         // Default-mode baseline: alternation is on so users still get
         // the lighter/darker reading aid while reading static logs or
         // a bottom-tail stream.
         StreamingControl::SetNewestFirst(false);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY2(tableView->alternatingRowColors(), "default bottom-tail mode should keep alternating row colours on");
 
         // Newest-first flips the toggle off — see the comment in
         // `ApplyDisplayOrder` for the rationale.
         StreamingControl::SetNewestFirst(true);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY2(
             !tableView->alternatingRowColors(),
             "newest-first mode should disable alternating row colours to avoid the "
@@ -2452,7 +2450,7 @@ private slots:
         // never enabled newest-first, but covers the "I tried it,
         // didn't like it, switched back" path).
         StreamingControl::SetNewestFirst(false);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY2(
             tableView->alternatingRowColors(), "switching newest-first off should re-enable alternating row colours"
         );
@@ -2465,11 +2463,11 @@ private slots:
     // **static** preference (`StreamingControl::IsStaticNewestFirst`),
     // not the stream-mode one. Toggling only the stream-mode flag must
     // be a no-op while a static session is active.
-    void testStaticNewestFirstReversesProxyOrder()
+    void TestStaticNewestFirstReversesProxyOrder()
     {
-        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
-        LogTableView *tableView = window->findChild<LogTableView *>();
-        LogModel *model = window->findChild<LogModel *>();
+        const auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        const auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
@@ -2479,30 +2477,30 @@ private slots:
         auto restore = qScopeGuard([this, originalStream, originalStatic]() {
             StreamingControl::SetNewestFirst(originalStream);
             StreamingControl::SetStaticNewestFirst(originalStatic);
-            window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+            mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
         });
 
         BeginSyntheticStaticSession(*model);
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
 
         // Stream-mode flag has no effect on a static session: with the
         // stream flag ON and the static flag OFF, the proxy must stay
         // in the identity orientation.
         StreamingControl::SetNewestFirst(true);
         StreamingControl::SetStaticNewestFirst(false);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY2(!rowOrderProxy->IsReversed(), "static session must ignore the stream-mode newest-first flag");
         QVERIFY(tableView->alternatingRowColors());
 
         // Flipping the static-mode flag drives the same proxy reversal
         // as the stream-mode flag does for live-tail sessions.
         StreamingControl::SetStaticNewestFirst(true);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY(rowOrderProxy->IsReversed());
         QVERIFY(!tableView->alternatingRowColors());
 
         StreamingControl::SetStaticNewestFirst(false);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY(!rowOrderProxy->IsReversed());
         QVERIFY(tableView->alternatingRowColors());
 
@@ -2528,16 +2526,16 @@ private slots:
     // The test simulates a static-mode batch arrival after the user
     // has scrolled away from the bottom and asserts the scrollbar
     // value does not change.
-    void testStaticSessionDoesNotFollowNewestRows()
+    void TestStaticSessionDoesNotFollowNewestRows()
     {
-        LogTableView *tableView = window->findChild<LogTableView *>();
-        LogModel *model = window->findChild<LogModel *>();
-        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        const QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(followAction != nullptr);
 
-        auto restore = qScopeGuard([this]() { window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
 
         // Static session, with `actionFollowTail` left in its startup
         // baseline (checked). Production users never see this toggle
@@ -2545,7 +2543,7 @@ private slots:
         // disabled), but the *value* persists across sessions and is
         // what the buggy auto-scroll path was reading.
         loglib::StreamLineSource &streamSource = BeginSyntheticStaticSession(*model);
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
         QVERIFY(followAction->isChecked());
 
         QtStreamingLogSink *sink = model->Sink();
@@ -2620,26 +2618,26 @@ private slots:
     // sessions too -- so a user who scrolled to the bottom of a
     // partially-parsed static file would have the next incoming
     // batch yank the viewport away.
-    void testStaticSessionDoesNotReArmFollowOnScrollToTail()
+    void TestStaticSessionDoesNotReArmFollowOnScrollToTail()
     {
-        LogTableView *tableView = window->findChild<LogTableView *>();
-        LogModel *model = window->findChild<LogModel *>();
-        QAction *followAction = FindActionByObjectName(window, QStringLiteral("actionFollowTail"));
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(followAction != nullptr);
 
-        auto restore = qScopeGuard([this]() { window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
 
         BeginSyntheticStaticSession(*model);
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
 
         // Force the action *unchecked* so the re-arm path has a
         // visible state transition to attempt.
         followAction->setChecked(false);
         QVERIFY(!followAction->isChecked());
 
-        QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
+        const QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
         QVERIFY(toSpy.isValid());
 
         // Synthesise the same `userScrolledToTail` emission the
@@ -2662,10 +2660,10 @@ private slots:
     // de-reverse on a stream session, proving the mode dispatch in
     // `ApplyDisplayOrder` actually picks per-mode (and isn't reading
     // either flag's value unconditionally).
-    void testNewestFirstFollowsSessionModeOnTransition()
+    void TestNewestFirstFollowsSessionModeOnTransition()
     {
-        RowOrderProxyModel *rowOrderProxy = window->findChild<RowOrderProxyModel *>();
-        LogModel *model = window->findChild<LogModel *>();
+        const auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
 
@@ -2674,7 +2672,7 @@ private slots:
         auto restore = qScopeGuard([this, originalStream, originalStatic]() {
             StreamingControl::SetNewestFirst(originalStream);
             StreamingControl::SetStaticNewestFirst(originalStatic);
-            window->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+            mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
         });
 
         // Both ON: every session orientation should land reversed.
@@ -2682,31 +2680,31 @@ private slots:
         StreamingControl::SetStaticNewestFirst(true);
 
         BeginSyntheticStaticSession(*model);
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
-        window->ApplyDisplayOrder();
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        mWindow->ApplyDisplayOrder();
         QVERIFY(rowOrderProxy->IsReversed());
 
         // End the static session and start a stream one; the proxy
         // must stay reversed because the stream-mode flag is also ON.
         model->EndStreaming(false);
         static_cast<void>(BeginSyntheticStreamSession(*model));
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
-        window->ApplyDisplayOrder();
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+        mWindow->ApplyDisplayOrder();
         QVERIFY(rowOrderProxy->IsReversed());
 
         // Asymmetric: only the static-mode flag is ON. The proxy must
         // de-reverse for the stream session (still active) and only
         // re-reverse once we transition back to a static session.
         StreamingControl::SetNewestFirst(false);
-        window->ApplyDisplayOrder();
+        mWindow->ApplyDisplayOrder();
         QVERIFY2(
             !rowOrderProxy->IsReversed(), "stream session must follow the stream-mode flag, not the static-mode one"
         );
 
         model->EndStreaming(false);
         BeginSyntheticStaticSession(*model);
-        window->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
-        window->ApplyDisplayOrder();
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        mWindow->ApplyDisplayOrder();
         QVERIFY2(
             rowOrderProxy->IsReversed(),
             "static session must follow the static-mode flag even when the stream-mode flag is OFF"
@@ -2721,7 +2719,7 @@ private slots:
     // event loop, samples that the worker is parked on the (cap+1)-th
     // call, then drains via `processEvents` and confirms every batch
     // eventually lands.
-    void testBoundedQueueBlocksWorkerWhenGuiFallsBehind()
+    static void TestBoundedQueueBlocksWorkerWhenGuiFallsBehind()
     {
         constexpr std::size_t CAPACITY = 4;
         constexpr int TOTAL_BATCHES = static_cast<int>(CAPACITY) + 5;
@@ -2783,7 +2781,7 @@ private slots:
     // wake the worker immediately (no polling). Without the explicit
     // `NotifyStop` hook the worker would deadlock against
     // `mStreamingWatcher->waitForFinished()`.
-    void testStopWhileWorkerBlockedOnBoundedQueue()
+    static void TestStopWhileWorkerBlockedOnBoundedQueue()
     {
         constexpr std::size_t CAPACITY = 1;
         LogModel model(nullptr, CAPACITY);
@@ -2840,7 +2838,7 @@ private slots:
     // queue with a small capacity and a draining GUI; every batch must
     // arrive in order. Guards against drain-side dropouts and against
     // the lazy `mDrainScheduled` flag missing a re-arm window.
-    void testNoBatchLossUnderBackPressure()
+    static void TestNoBatchLossUnderBackPressure()
     {
         constexpr std::size_t CAPACITY = 8;
         constexpr int TOTAL_BATCHES = 200;
@@ -2886,10 +2884,9 @@ private slots:
         model.EndStreaming(false);
     }
 
-private:
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
     // so moc doesn't expose it as a test method.
-    void AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount)
+    static void AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount)
     {
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
@@ -2924,7 +2921,8 @@ private:
         QCOMPARE(firstUs, expectedFirstUtcUs);
     }
 
-    MainWindow *window;
+private:
+    MainWindow *mWindow{};
 };
 
 QTEST_MAIN(MainWindowTest)

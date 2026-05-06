@@ -1,8 +1,6 @@
 #include "loglib/log_processing.hpp"
 
 #include "loglib/internal/timestamp_promotion.hpp"
-#include "loglib/line_source.hpp"
-#include "loglib/log_file.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
@@ -32,7 +30,7 @@ bool ParseFixedDigits(const char *p, size_t n, int &out)
         {
             return false;
         }
-        value = value * 10 + (c - '0');
+        value = (value * 10) + (c - '0');
     }
     out = value;
     return true;
@@ -137,7 +135,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
         }
         for (size_t i = fractionStart; i < fractionEnd; ++i)
         {
-            fractionalUs = fractionalUs * 10 + (sv[i] - '0');
+            fractionalUs = (fractionalUs * 10) + (sv[i] - '0');
         }
         for (size_t i = fractionLen; i < 6; ++i)
         {
@@ -160,11 +158,11 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     const auto days = date::sys_days{ymd};
-    const auto totalUs =
-        std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::seconds{hour * 3600 + minute * 60 + second}
-        ) +
-        std::chrono::microseconds{fractionalUs};
+    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+                         std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::seconds{(hour * 3600) + (minute * 60) + second}
+                         ) +
+                         std::chrono::microseconds{fractionalUs};
     out = TimeStamp{totalUs};
     // Syntactically valid Y/M/D/H/M/S/fraction is success; the POSIX epoch
     // and pre-1970 timestamps are valid outputs, not failures.
@@ -179,7 +177,12 @@ bool TryParseGenericTimestamp(
     scratch.stream.clear();
     scratch.stream.str(scratch.str);
     out = TimeStamp{};
-    scratch.stream >> date::parse(format, out);
+    // Call `date::from_stream` directly rather than using
+    // `scratch.stream >> date::parse(format, out)`. The latter expands inside
+    // `date::parse` to an unqualified `from_stream(...)` call, which becomes
+    // ambiguous in C++20+/libc++ where `std::chrono::from_stream` is also a
+    // viable overload for `std::chrono::time_point<system_clock, microseconds>`.
+    date::from_stream(scratch.stream, format.c_str(), out);
     // Stream-fail bit alone is the success signal: the POSIX epoch and
     // pre-1970 timestamps are valid outputs.
     return !scratch.stream.fail();
@@ -326,16 +329,15 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 {
     std::vector<std::string> errors;
 
-    for (size_t i = 0; i < configuration.columns.size(); ++i)
+    for (const auto &column : configuration.columns)
     {
-        const LogConfiguration::Column &column = configuration.columns[i];
         if (column.type == LogConfiguration::Type::time)
         {
             auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
             if (!columnErrors.empty())
             {
                 errors.reserve(errors.size() + columnErrors.size());
-                std::move(columnErrors.begin(), columnErrors.end(), std::back_inserter(errors));
+                std::ranges::move(columnErrors, std::back_inserter(errors));
             }
         }
     }

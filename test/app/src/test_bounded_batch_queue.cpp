@@ -42,7 +42,7 @@ private slots:
     /// Capacity 2: enqueue two items, spawn a producer that wants to
     /// enqueue a third; verify it is parked on `WaitEnqueue` until a
     /// `DrainAll` opens a slot.
-    void testEnqueueBlocksAtCapacity()
+    static void TestEnqueueBlocksAtCapacity()
     {
         logapp::BoundedBatchQueue queue(2);
         QVERIFY(queue.WaitEnqueue(MakeBatch(0)));
@@ -85,7 +85,7 @@ private slots:
     /// `NotifyStop` must wake the blocked producer immediately (no
     /// polling loop). Capacity 1 + one prefilled item parks the
     /// producer; the wake must arrive well inside the deadline.
-    void testNotifyStopWakesBlockedProducer()
+    static void TestNotifyStopWakesBlockedProducer()
     {
         logapp::BoundedBatchQueue queue(1);
         QVERIFY(queue.WaitEnqueue(MakeBatch(0)));
@@ -126,7 +126,7 @@ private slots:
     /// the drain-phase `OnBatch` contract: between `RequestStop` and
     /// the worker join the worker may emit more batches and they must
     /// reach the GUI).
-    void testStopWithSpaceStillEnqueues()
+    static void TestStopWithSpaceStillEnqueues()
     {
         logapp::BoundedBatchQueue queue(4);
         queue.NotifyStop();
@@ -140,7 +140,7 @@ private slots:
 
     /// `WaitEnqueue` against a full + stopped queue must not park the
     /// caller; it returns `false` immediately with the batch dropped.
-    void testStopWithFullQueueReturnsFalseImmediately()
+    static void TestStopWithFullQueueReturnsFalseImmediately()
     {
         logapp::BoundedBatchQueue queue(1);
         QVERIFY(queue.WaitEnqueue(MakeBatch(0)));
@@ -161,7 +161,7 @@ private slots:
     /// Producer enqueues 100 items in order; consumer issues several
     /// `DrainAll` calls. The concatenation of drained items must be
     /// the original sequence.
-    void testFifoOrderAcrossDrains()
+    static void TestFifoOrderAcrossDrains()
     {
         constexpr std::size_t COUNT = 100;
         logapp::BoundedBatchQueue queue(8);
@@ -202,7 +202,7 @@ private slots:
     /// stopped flag so the queue is usable again. After Reset the
     /// queue should also block again on full-capacity (i.e. the
     /// stopped flag is genuinely cleared, not just hidden).
-    void testResetClearsAndReArms()
+    static void TestResetClearsAndReArms()
     {
         logapp::BoundedBatchQueue queue(2);
         QVERIFY(queue.WaitEnqueue(MakeBatch(7)));
@@ -226,7 +226,7 @@ private slots:
 
     /// One producer + one consumer move 100 000 items through a
     /// capacity-8 queue; verify FIFO and a generous time bound.
-    void testStressOneProducerOneConsumer()
+    static void TestStressOneProducerOneConsumer()
     {
         constexpr std::size_t COUNT = 100'000;
         logapp::BoundedBatchQueue queue(8);

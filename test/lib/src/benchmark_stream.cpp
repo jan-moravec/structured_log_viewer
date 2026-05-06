@@ -113,7 +113,7 @@ struct LatencyMeasuringSink final : LogParseSink
     void OnBatch(StreamedBatch batch) override
     {
         const auto now = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lock(mu);
+        const std::scoped_lock lock(mu);
         arrivals.reserve(arrivals.size() + batch.lines.size());
         for (const auto &line : batch.lines)
         {
@@ -150,7 +150,7 @@ void RunProducer(
     writes.reserve(static_cast<size_t>(lineCount));
     for (int i = 0; i < lineCount; ++i)
     {
-        const size_t lineId = static_cast<size_t>(i + 1);
+        const auto lineId = static_cast<size_t>(i + 1);
         // Stamp the line with its own id so the consumer can match
         // `LineId` -> arrival timestamp without per-line bookkeeping in the
         // sink. Padding keeps the line size representative of real log data.
@@ -162,7 +162,7 @@ void RunProducer(
         std::fwrite(buf, 1, static_cast<size_t>(n), fp);
         std::fflush(fp);
         const auto committedAt = std::chrono::steady_clock::now();
-        writes.push_back({lineId, committedAt});
+        writes.push_back({.lineId = lineId, .committedAt = committedAt});
 
         if (interLineDelay.count() > 0)
         {
@@ -178,8 +178,8 @@ double Percentile(std::vector<double> sorted, double pct)
     {
         return 0.0;
     }
-    std::sort(sorted.begin(), sorted.end());
-    const size_t idx = static_cast<size_t>((pct / 100.0) * static_cast<double>(sorted.size() - 1) + 0.5);
+    std::ranges::sort(sorted);
+    const auto idx = static_cast<size_t>(((pct / 100.0) * static_cast<double>(sorted.size() - 1)) + 0.5);
     return sorted[std::min(idx, sorted.size() - 1)];
 }
 
@@ -196,10 +196,10 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("latency.log");
     {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        const std::ofstream out(path, std::ios::binary | std::ios::trunc);
         REQUIRE(out.is_open());
     }
 
@@ -237,12 +237,12 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     // `_write` syscall directly. MSVC prefers `fopen_s`; the safer API
     // adds nothing here (the path is test-controlled) so suppress C4996
     // locally rather than fork the call site by platform.
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996)
 #endif
     FILE *fp = std::fopen(path.string().c_str(), "ab");
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #pragma warning(pop)
 #endif
     REQUIRE(fp != nullptr);
@@ -272,7 +272,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     const auto deadline = std::chrono::steady_clock::now() + 1500ms;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        std::lock_guard<std::mutex> lock(sink.mu);
+        const std::scoped_lock lock(sink.mu);
         if (static_cast<int>(sink.arrivals.size()) >= LINE_COUNT)
         {
             break;
@@ -290,13 +290,11 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     std::vector<double> latenciesMs;
     latenciesMs.reserve(static_cast<size_t>(LINE_COUNT));
     {
-        std::lock_guard<std::mutex> lock(sink.mu);
+        const std::scoped_lock lock(sink.mu);
         // Convert arrivals into a sorted-by-lineId snapshot so the lookup is
         // O(1). The parser emits in source order, so this is normally
         // already sorted, but we don't rely on it.
-        std::sort(sink.arrivals.begin(), sink.arrivals.end(), [](const auto &a, const auto &b) {
-            return a.first < b.first;
-        });
+        std::ranges::sort(sink.arrivals, [](const auto &a, const auto &b) { return a.first < b.first; });
         size_t arrIdx = 0;
         for (const auto &write : writes)
         {
@@ -316,7 +314,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
 
     REQUIRE(!latenciesMs.empty());
 
-    std::sort(latenciesMs.begin(), latenciesMs.end());
+    std::ranges::sort(latenciesMs);
     const double median = Percentile(latenciesMs, 50.0);
     const double p95 = Percentile(latenciesMs, 95.0);
     const double maxLatency = latenciesMs.back();

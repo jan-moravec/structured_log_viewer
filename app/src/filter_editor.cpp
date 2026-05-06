@@ -92,23 +92,23 @@ int FilterEditor::GetMatchType() const
 
 void FilterEditor::SetupLayout()
 {
-    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    auto *mainLayout = new QVBoxLayout(this);
 
-    QHBoxLayout *rowLayout = new QHBoxLayout();
+    auto *rowLayout = new QHBoxLayout();
     rowLayout->addWidget(new QLabel("Row to filter:", this));
     rowLayout->addWidget(mRowComboBox);
     mainLayout->addLayout(rowLayout);
 
-    QHBoxLayout *stringLayout = new QHBoxLayout();
+    auto *stringLayout = new QHBoxLayout();
     stringLayout->addWidget(new QLabel("String to filter:", this));
     stringLayout->addWidget(mStringLineEdit);
 
-    QHBoxLayout *matchLayout = new QHBoxLayout();
+    auto *matchLayout = new QHBoxLayout();
     matchLayout->addWidget(new QLabel("Match type:", this));
     matchLayout->addWidget(mMatchTypeComboBox);
 
-    QWidget *firstPage = new QWidget(this);
-    QVBoxLayout *firstLayout = new QVBoxLayout(firstPage);
+    auto *firstPage = new QWidget(this);
+    auto *firstLayout = new QVBoxLayout(firstPage);
     firstLayout->addLayout(stringLayout);
     firstLayout->addLayout(matchLayout);
     firstPage->setLayout(firstLayout);
@@ -116,14 +116,14 @@ void FilterEditor::SetupLayout()
     mBeginTimeEdit->setDisplayFormat("HH:mm:ss.zzz");
     mEndTimeEdit->setDisplayFormat("HH:mm:ss.zzz");
 
-    QWidget *secondPage = new QWidget(this);
-    QVBoxLayout *secondPageLayout = new QVBoxLayout(secondPage);
-    QHBoxLayout *beginLayout = new QHBoxLayout;
+    auto *secondPage = new QWidget(this);
+    auto *secondPageLayout = new QVBoxLayout(secondPage);
+    auto *beginLayout = new QHBoxLayout;
     beginLayout->addWidget(new QLabel("Begin Date and Time:", this));
     beginLayout->addWidget(mBeginDateEdit);
     beginLayout->addWidget(mBeginTimeEdit);
 
-    QHBoxLayout *endLayout = new QHBoxLayout;
+    auto *endLayout = new QHBoxLayout;
     endLayout->addWidget(new QLabel("End Date and Time:", this));
     endLayout->addWidget(mEndDateEdit);
     endLayout->addWidget(mEndTimeEdit);
@@ -135,7 +135,7 @@ void FilterEditor::SetupLayout()
     mStackedWidget->addWidget(secondPage);
     mainLayout->addWidget(mStackedWidget);
 
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    auto *buttonLayout = new QHBoxLayout();
     buttonLayout->addWidget(mOkButton);
     buttonLayout->addWidget(mCancelButton);
     mainLayout->addStretch(1);

@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -30,12 +30,12 @@ namespace
 /// Windows `PrefetchVirtualMemory`). Best-effort; failures are ignored.
 void HintSequential(const mio::mmap_source &mmap)
 {
-    if (mmap.size() == 0)
+    if (mmap.empty())
     {
         return;
     }
 
-#if defined(_WIN32)
+#ifdef _WIN32
     WIN32_MEMORY_RANGE_ENTRY range;
     range.VirtualAddress = const_cast<char *>(mmap.data());
     range.NumberOfBytes = mmap.size();

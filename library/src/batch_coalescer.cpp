@@ -37,7 +37,7 @@ void BatchCoalescer::DrainNewKeysInto(StreamedBatch &out)
         out.newKeys.reserve(out.newKeys.size() + (currentKeyCount - mPrevKeyCount));
         for (size_t i = mPrevKeyCount; i < currentKeyCount; ++i)
         {
-            out.newKeys.emplace_back(std::string(mKeys.KeyOf(static_cast<KeyId>(i))));
+            out.newKeys.emplace_back(mKeys.KeyOf(static_cast<KeyId>(i)));
         }
         mPrevKeyCount = currentKeyCount;
     }

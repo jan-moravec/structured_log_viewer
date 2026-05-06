@@ -59,7 +59,7 @@ std::span<const char> FileLineSource::StableBytes() const noexcept
     {
         return {};
     }
-    return std::span<const char>(data, size);
+    return {data, size};
 }
 
 uint64_t FileLineSource::AppendOwnedBytes(size_t /*lineId*/, std::string_view bytes)
