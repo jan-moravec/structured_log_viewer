@@ -61,22 +61,27 @@ jobs:
     #   asan-ubsan -> AddressSanitizer + UBSan
     #   tsan       -> ThreadSanitizer (excludes apptest; Qt internals trip it)
     #   coverage   -> source-based coverage + Codecov upload; also runs
-    #                 clang-tidy-diff before the build so style hits fail fast.
+    #                 cpp-linter-action before the build so style hits fail fast.
     # Coverage requires a CODECOV_TOKEN repo secret; without it the upload
     # fails the leg by design (fail_ci_if_error=true).
     needs: pre-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      # contents: read inherited from the workflow scope is enough for
+      # cpp-linter-action's PR-files API call. pull-requests: write is what
+      # lets it post the inline tidy-review + rolling thread comment on PRs.
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
         mode: [asan-ubsan, tsan, coverage]
     steps:
       - name: Checkout code
+        # cpp-linter-action gets the changed-files list from the GitHub API,
+        # so the default shallow checkout is fine for every leg.
         uses: actions/checkout@v5
-        with:
-          # Only coverage's clang-tidy-diff needs the merge base; shallow elsewhere.
-          fetch-depth: ${{ matrix.mode == 'coverage' && 0 || 1 }}
 
       - name: Install Clang 22 + LLVM tools
         # `llvm.sh 22 all` -> clang-22, clang-tidy-22, clang-tools-22
@@ -114,53 +119,48 @@ jobs:
         # sanitizers / coverage / tidy.
         run: cmake --preset clang-${{ matrix.mode }} -DLOGLIB_NETWORK_TLS=ON
 
-      - name: Run clang-tidy-diff on PR changes
+      - name: Run clang-tidy on PR changes
         # Coverage leg only, *before* the build so style hits fail fast.
-        # Empty diff -> no-op; non-empty tidy-fixes.yaml -> fail + upload.
-        # We use pull_request.base.sha rather than `origin/<base>` because
-        # actions/checkout doesn't set up a remote-tracking ref for the base
-        # branch even with fetch-depth: 0. The base SHA is reachable via the
-        # merge commit's first-parent history, so no extra fetch is needed.
+        # cpp-linter-action drives clang-tidy-22 against the PR diff using
+        # this build's compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS=ON
+        # in the preset). Findings are surfaced as inline PR review comments
+        # and a step-summary; no YAML artifact to chase down.
+        #
+        # clang-format is intentionally skipped (`style: ''`): pre-commit
+        # already enforces formatting, and we don't want this leg to start
+        # double-reporting it.
+        # `tidy-checks: ''` defers entirely to .clang-tidy.
+        # `lines-changed-only: true` matches the previous clang-tidy-diff
+        # behaviour: only diagnostics on lines added by the PR fail the leg.
+        #
+        # SHA-pinned to v2.18.0 so a tag re-cut can't silently change what
+        # we run; bump deliberately. Resolved SHA verified against
+        # https://api.github.com/repos/cpp-linter/cpp-linter-action/git/ref/tags/v2.18.0
         if: matrix.mode == 'coverage'
-        shell: bash
+        id: cpp-linter
+        uses: cpp-linter/cpp-linter-action@77c390c5ba9c947ebc185a3e49cc754f1558abb5 # v2.18.0
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            BASE="${PR_BASE_SHA}"
-          else
-            BASE="HEAD^"
-          fi
-          # No `|| true`: a failed `git diff` previously yielded an empty DIFF
-          # and silently disabled clang-tidy on every PR. Let it fail loud.
-          DIFF=$(git diff -U0 "$BASE"...HEAD -- '*.cpp' '*.hpp' '*.h' '*.cc')
-          if [ -z "$DIFF" ]; then
-            echo "No C/C++ changes in this diff; skipping clang-tidy-diff."
-            exit 0
-          fi
-          echo "$DIFF" \
-            | clang-tidy-diff-22.py -p1 -path build/clang-coverage \
-                -clang-tidy-binary clang-tidy-22 \
-                -j"$(nproc)" -fix=false -quiet \
-                -export-fixes tidy-fixes.yaml \
-            | tee tidy-report.txt
-          if [ -s tidy-fixes.yaml ]; then
-            echo "::error title=clang-tidy-diff::clang-tidy reported issues on changed lines. Download the clang-tidy-fixes artifact for the YAML diff to apply."
-            exit 1
-          fi
-
-      - name: Upload clang-tidy fixes
-        # Surface the YAML so authors can apply it via clang-apply-replacements.
-        # if-no-files-found: ignore covers builds that failed before tidy ran.
-        if: failure() && matrix.mode == 'coverage'
-        uses: actions/upload-artifact@v4
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: clang-tidy-fixes
-          path: |
-            tidy-fixes.yaml
-            tidy-report.txt
-          if-no-files-found: ignore
+          version: "22"
+          style: ""
+          tidy-checks: ""
+          database: build/clang-coverage
+          extensions: cpp,hpp,h,cc
+          files-changed-only: true
+          lines-changed-only: true
+          tidy-review: true
+          thread-comments: update
+          step-summary: true
+
+      - name: Fail leg if clang-tidy reported issues
+        # cpp-linter-action itself never fails the workflow; gate on its
+        # output so a tidy hit aborts before the expensive build/test/codecov
+        # work and CI status reflects the lint result.
+        if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.checks-failed > 0
+        run: |
+          echo "::error title=clang-tidy::clang-tidy reported issues on changed lines. See the PR review comments and the job's step summary for details."
+          exit 1
 
       - name: Build
         run: cmake --build --preset clang-${{ matrix.mode }}

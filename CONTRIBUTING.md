@@ -334,14 +334,14 @@ When adding a new third-party dependency to `cmake/FetchDependencies.cmake`, app
 
 All build configurations are defined in [`CMakePresets.json`](CMakePresets.json) (CMake 3.28+). The shared presets are:
 
-| Preset             | Build type       | Purpose                                                                                                                                     |
-| ------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                   |
-| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                             |
-| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                  |
-| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).               |
-| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` for Qt-internal false positives). CI gating; same section.                                   |
-| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `clang-tidy-diff` against this build's `compile_commands.json`; no separate tidy preset. |
+| Preset             | Build type       | Purpose                                                                                                                                       |
+| ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                     |
+| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                               |
+| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                    |
+| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).                 |
+| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` for Qt-internal false positives). CI gating; same section.                                     |
+| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `cpp-linter-action` against this build's `compile_commands.json`; no separate tidy preset. |
 
 Each preset uses the **Ninja** generator and writes to `build/<presetName>/`. They also enable `CMAKE_EXPORT_COMPILE_COMMANDS` so `clangd`, `clang-tidy`, and other tools work out of the box. Matching `buildPresets`, `testPresets`, and `workflowPresets` are defined with the same names. Two extra benchmark-only test presets — `release-benchmark` and `relwithdebinfo-benchmark` — opt into the long-running parser benchmarks (see [Benchmarking](#benchmarking)).
 
@@ -446,7 +446,7 @@ llvm-cov-22 report \
     -object build/clang-coverage/bin/RelWithDebInfo/apptest_queue
 ```
 
-The CI coverage leg also runs `clang-tidy-diff-22.py` against this build's `compile_commands.json` *before* the build step, so a tidy hit fails fast without paying for the instrumented build + test run + Codecov upload. To run the same diff-only tidy check locally before pushing:
+The CI coverage leg also runs [`cpp-linter-action`](https://github.com/cpp-linter/cpp-linter-action) against this build's `compile_commands.json` *before* the build step, so a tidy hit fails fast without paying for the instrumented build + test run + Codecov upload. The action posts inline review comments and a rolling thread comment on the PR — no YAML artifact to download and replay locally. To reproduce the same diff-only tidy check at the command line before pushing:
 
 ```sh
 cmake --preset clang-coverage
