@@ -117,16 +117,24 @@ jobs:
       - name: Run clang-tidy-diff on PR changes
         # Coverage leg only, *before* the build so style hits fail fast.
         # Empty diff -> no-op; non-empty tidy-fixes.yaml -> fail + upload.
+        # We use pull_request.base.sha rather than `origin/<base>` because
+        # actions/checkout doesn't set up a remote-tracking ref for the base
+        # branch even with fetch-depth: 0. The base SHA is reachable via the
+        # merge commit's first-parent history, so no extra fetch is needed.
         if: matrix.mode == 'coverage'
         shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            BASE="origin/${GITHUB_BASE_REF}"
+            BASE="${PR_BASE_SHA}"
           else
             BASE="HEAD^"
           fi
-          DIFF=$(git diff -U0 "$BASE"...HEAD -- '*.cpp' '*.hpp' '*.h' '*.cc' || true)
+          # No `|| true`: a failed `git diff` previously yielded an empty DIFF
+          # and silently disabled clang-tidy on every PR. Let it fail loud.
+          DIFF=$(git diff -U0 "$BASE"...HEAD -- '*.cpp' '*.hpp' '*.h' '*.cc')
           if [ -z "$DIFF" ]; then
             echo "No C/C++ changes in this diff; skipping clang-tidy-diff."
             exit 0
