@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(structured_log_viewer VERSION 0.6.0 LANGUAGES CXX)
+project(structured_log_viewer VERSION 0.7.0 LANGUAGES CXX)
 
 # IPO/LTO for Release / RelWithDebInfo so the linker can inline across TUs.
 # Debug stays off for iteration speed.
