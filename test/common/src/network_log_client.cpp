@@ -311,6 +311,7 @@ namespace test_common
 {
 
 TcpLogClient::TcpLogClient(const std::string &host, uint16_t port, std::optional<TlsOptions> tls)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
     : mImpl(std::make_unique<internal::TcpLogClientImpl>(host, port, std::move(tls)))
 {
 }
@@ -336,6 +337,7 @@ void TcpLogClient::Close()
 }
 
 UdpLogClient::UdpLogClient(const std::string &host, uint16_t port)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
     : mImpl(std::make_unique<internal::UdpLogClientImpl>(host, port))
 {
 }

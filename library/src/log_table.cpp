@@ -478,19 +478,8 @@ std::string LogTable::FormatLogValue(const std::string &format, const LogValue &
             {
                 return std::string(arg);
             }
-            else if constexpr (std::is_same_v<T, int64_t>)
-            {
-                return fmt::vformat(format, fmt::make_format_args(arg));
-            }
-            else if constexpr (std::is_same_v<T, uint64_t>)
-            {
-                return fmt::vformat(format, fmt::make_format_args(arg));
-            }
-            else if constexpr (std::is_same_v<T, double>)
-            {
-                return fmt::vformat(format, fmt::make_format_args(arg));
-            }
-            else if constexpr (std::is_same_v<T, bool>)
+            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t> || std::is_same_v<T, double> ||
+                               std::is_same_v<T, bool>)
             {
                 return fmt::vformat(format, fmt::make_format_args(arg));
             }

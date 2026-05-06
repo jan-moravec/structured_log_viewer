@@ -37,10 +37,13 @@ void HintSequential(const mio::mmap_source &mmap)
 
 #ifdef _WIN32
     WIN32_MEMORY_RANGE_ENTRY range;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): Win32 `PrefetchVirtualMemory` takes non-const `void*`;
+    // mapping is read-only.
     range.VirtualAddress = const_cast<char *>(mmap.data());
     range.NumberOfBytes = mmap.size();
     (void)::PrefetchVirtualMemory(::GetCurrentProcess(), 1, &range, 0);
 #elif defined(__unix__) || defined(__APPLE__)
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): POSIX API takes non-const `void*`; mapping is read-only.
     (void)::posix_madvise(const_cast<char *>(mmap.data()), mmap.size(), POSIX_MADV_SEQUENTIAL);
 #else
     (void)mmap;

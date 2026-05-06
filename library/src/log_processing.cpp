@@ -20,6 +20,22 @@ namespace loglib
 namespace
 {
 
+constexpr int DECIMAL_RADIX = 10;
+constexpr size_t ISO_DASH1_INDEX = 4;
+constexpr size_t MONTH_DIGITS_OFFSET = 5;
+constexpr size_t ISO_DASH2_INDEX = 7;
+constexpr size_t DAY_DIGITS_OFFSET = 8;
+constexpr size_t DATE_TIME_SEPARATOR_INDEX = 10;
+constexpr size_t HOUR_DIGITS_OFFSET = 11;
+constexpr size_t TIME_COLON1_INDEX = 13;
+constexpr size_t MINUTE_DIGITS_OFFSET = 14;
+constexpr size_t TIME_COLON2_INDEX = 16;
+constexpr size_t SECOND_DIGITS_OFFSET = 17;
+constexpr size_t FRACTION_DIGITS_SCALE = 6;
+constexpr int MAX_HOUR_INCLUSIVE = 23;
+constexpr int MAX_MINUTE_INCLUSIVE = 59;
+constexpr int MAX_SECOND_INCLUSIVE_LEAP = 60;
+
 bool ParseFixedDigits(const char *p, size_t n, int &out)
 {
     int value = 0;
@@ -30,7 +46,7 @@ bool ParseFixedDigits(const char *p, size_t n, int &out)
         {
             return false;
         }
-        value = (value * 10) + (c - '0');
+        value = (value * DECIMAL_RADIX) + (c - '0');
     }
     out = value;
     return true;
@@ -72,43 +88,43 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     {
         return false;
     }
-    if (sv[4] != '-')
+    if (sv[ISO_DASH1_INDEX] != '-')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 5, 2, month))
+    if (!ParseFixedDigits(sv.data() + MONTH_DIGITS_OFFSET, 2, month))
     {
         return false;
     }
-    if (sv[7] != '-')
+    if (sv[ISO_DASH2_INDEX] != '-')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 8, 2, day))
+    if (!ParseFixedDigits(sv.data() + DAY_DIGITS_OFFSET, 2, day))
     {
         return false;
     }
-    if (sv[10] != dateTimeSep)
+    if (sv[DATE_TIME_SEPARATOR_INDEX] != dateTimeSep)
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 11, 2, hour))
+    if (!ParseFixedDigits(sv.data() + HOUR_DIGITS_OFFSET, 2, hour))
     {
         return false;
     }
-    if (sv[13] != ':')
+    if (sv[TIME_COLON1_INDEX] != ':')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 14, 2, minute))
+    if (!ParseFixedDigits(sv.data() + MINUTE_DIGITS_OFFSET, 2, minute))
     {
         return false;
     }
-    if (sv[16] != ':')
+    if (sv[TIME_COLON2_INDEX] != ':')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 17, 2, second))
+    if (!ParseFixedDigits(sv.data() + SECOND_DIGITS_OFFSET, 2, second))
     {
         return false;
     }
@@ -121,7 +137,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
             return false;
         }
         const size_t fractionStart = PREFIX_LEN + 1;
-        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + 6);
+        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + FRACTION_DIGITS_SCALE);
         size_t fractionEnd = fractionStart;
         while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
         {
@@ -135,16 +151,16 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
         }
         for (size_t i = fractionStart; i < fractionEnd; ++i)
         {
-            fractionalUs = (fractionalUs * 10) + (sv[i] - '0');
+            fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[i] - '0');
         }
-        for (size_t i = fractionLen; i < 6; ++i)
+        for (size_t i = fractionLen; i < FRACTION_DIGITS_SCALE; ++i)
         {
-            fractionalUs *= 10;
+            fractionalUs *= DECIMAL_RADIX;
         }
     }
 
     // Accept second == 60 to match `date::parse("%T")` leap-second handling.
-    if (hour > 23 || minute > 59 || second > 60)
+    if (hour > MAX_HOUR_INCLUSIVE || minute > MAX_MINUTE_INCLUSIVE || second > MAX_SECOND_INCLUSIVE_LEAP)
     {
         return false;
     }

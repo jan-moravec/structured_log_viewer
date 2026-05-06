@@ -40,6 +40,8 @@ public:
         std::filesystem::create_directories(mPath);
     }
 
+    // NOLINTNEXTLINE(bugprone-exception-escape): MSVC may model throwing paths through STL `remove_all`; teardown
+    // ignores errors via `error_code`.
     ~TempDir() noexcept
     {
         std::error_code ec;

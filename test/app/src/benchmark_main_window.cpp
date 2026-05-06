@@ -153,6 +153,7 @@ QString FormatThroughput(const QString &label, std::chrono::nanoseconds elapsed,
 
 } // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` test fixture; moc + QTest registration expect this shape.
 class MainWindowBench : public QObject
 {
     Q_OBJECT

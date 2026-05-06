@@ -101,7 +101,7 @@ struct SampleStats
 /// clock. Avoids the Catch2 iteration-estimation pass and 100-resample
 /// bootstrap, which together added 3-5x wall-time on multi-second-per-
 /// sample fixtures and timed the 1M-line streaming case out at 30 min.
-template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn &&fn)
+template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn fn)
 {
     REQUIRE(samples > 0);
     std::vector<std::chrono::nanoseconds> elapsed;

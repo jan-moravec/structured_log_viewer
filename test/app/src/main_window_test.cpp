@@ -238,6 +238,7 @@ double LoadTestTimeScale() noexcept
 #pragma warning(push)
 #pragma warning(disable : 4996) // getenv
 #endif
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded test harness; read once per process.
     const char *raw = std::getenv("LOGLIB_TEST_TIME_SCALE");
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -398,6 +399,7 @@ QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
 
 } // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture; moc expects this declaration shape.
 class MainWindowTest : public QObject
 {
     Q_OBJECT
@@ -1112,8 +1114,7 @@ private slots:
         const int linesPerBatch = 5;
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
-            const auto firstLineId =
-                static_cast<size_t>(static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch) + size_t{1});
+            const auto firstLineId = (static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch)) + size_t{1};
             const bool declareNewKey = (b == 0);
             // Direct call to OnBatch from this thread mirrors the worker.
             sink->OnBatch(MakeSyntheticBatch(
@@ -1187,15 +1188,13 @@ private slots:
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
             loglib::StreamedBatch batch;
-            batch.firstLineNumber =
-                static_cast<size_t>(static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch) + size_t{1});
+            batch.firstLineNumber = (static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch)) + size_t{1};
             batch.lines.reserve(linesPerBatch);
             batch.localLineOffsets.reserve(linesPerBatch);
             for (int i = 0; i < linesPerBatch; ++i)
             {
-                const auto lineNumber = static_cast<size_t>(
-                    static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch) + static_cast<size_t>(i) + size_t{1}
-                );
+                const auto lineNumber =
+                    (static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch)) + static_cast<size_t>(i) + size_t{1};
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
                 batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
@@ -1995,6 +1994,8 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts the test if
+        // pointers are null.
         QVERIFY(!rowOrderProxy->IsReversed());
 
         // Drive a tiny streaming session with three rows so the proxy

@@ -445,6 +445,8 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
 
 } // namespace
 
+// NOLINTNEXTLINE(bugprone-exception-escape): CLI tool; `ParseSize` and argparse surface errors via exceptions by
+// design.
 int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.2.0");

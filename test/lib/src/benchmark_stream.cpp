@@ -22,6 +22,8 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <cmath>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -71,6 +73,8 @@ public:
         mPath = base / ("loglib_stream_latency_" + std::to_string(suffix));
         std::filesystem::create_directories(mPath);
     }
+    // NOLINTNEXTLINE(bugprone-exception-escape): MSVC may model throwing paths through STL `remove_all`; teardown
+    // ignores errors via `error_code`.
     ~TempDir() noexcept
     {
         std::error_code ec;
@@ -150,17 +154,18 @@ void RunProducer(
     writes.reserve(static_cast<size_t>(lineCount));
     for (int i = 0; i < lineCount; ++i)
     {
-        const auto lineId = static_cast<size_t>(i + 1);
+        const auto lineId = static_cast<size_t>(static_cast<size_t>(i) + 1u);
         // Stamp the line with its own id so the consumer can match
         // `LineId` -> arrival timestamp without per-line bookkeeping in the
         // sink. Padding keeps the line size representative of real log data.
         char buf[160];
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): benchmark I/O; fixed buffer + bounded format.
         const int n = std::snprintf(
             buf, sizeof(buf), "{\"i\":%zu,\"msg\":\"latency benchmark line %zu padding padding\"}\n", lineId, lineId
         );
         REQUIRE(n > 0);
-        std::fwrite(buf, 1, static_cast<size_t>(n), fp);
-        std::fflush(fp);
+        static_cast<void>(std::fwrite(buf, 1, static_cast<size_t>(n), fp));
+        static_cast<void>(std::fflush(fp));
         const auto committedAt = std::chrono::steady_clock::now();
         writes.push_back({.lineId = lineId, .committedAt = committedAt});
 
@@ -179,7 +184,7 @@ double Percentile(std::vector<double> sorted, double pct)
         return 0.0;
     }
     std::ranges::sort(sorted);
-    const auto idx = static_cast<size_t>(((pct / 100.0) * static_cast<double>(sorted.size() - 1)) + 0.5);
+    const auto idx = static_cast<size_t>(std::lround((pct / 100.0) * static_cast<double>(sorted.size() - 1)));
     return sorted[std::min(idx, sorted.size() - 1)];
 }
 
@@ -260,7 +265,7 @@ TEST_CASE("Stream Mode write-to-row latency", "[.][benchmark][stream_latency]")
     });
 
     producer.join();
-    std::fclose(fp);
+    static_cast<void>(std::fclose(fp));
 
     // Wait for the consumer to drain. We poll the sink's arrivals vector
     // under its mutex; the parser will keep parking on `WaitForBytes`

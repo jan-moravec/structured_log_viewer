@@ -165,8 +165,9 @@ QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp)
 
 qint64 FilterEditor::ConvertToTimeStamp(const QDate &date, const QTime &time)
 {
+    constexpr qint64 MICROSECONDS_PER_MILLISECOND = 1000;
     const QDateTime dateTime(date, time, QTimeZone::systemTimeZone());
-    return dateTime.toMSecsSinceEpoch() * 1000;
+    return dateTime.toMSecsSinceEpoch() * MICROSECONDS_PER_MILLISECOND;
 }
 
 void FilterEditor::OnOkClicked()

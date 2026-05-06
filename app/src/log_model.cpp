@@ -182,10 +182,11 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     // FileLineSource fast path: pre-reserve per-line offsets so per-batch
     // inserts stay amortised O(1). ~100 bytes/line matches the benchmark
     // fixture. The hint is a no-op for stream sources.
+    constexpr size_t BYTES_PER_LINE_RESERVE_HINT = 100;
     std::optional<size_t> reserveCount;
     if (auto *fileSource = dynamic_cast<loglib::FileLineSource *>(source.get()); fileSource != nullptr)
     {
-        reserveCount = fileSource->File().Size() / 100;
+        reserveCount = fileSource->File().Size() / BYTES_PER_LINE_RESERVE_HINT;
     }
 
     mLogTable.BeginStreaming(std::move(source));
@@ -612,13 +613,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 {
                     return QVariant::fromValue<qulonglong>(arg);
                 }
-                else if constexpr (std::is_same_v<T, double>)
+                else if constexpr (std::is_same_v<T, double> || std::is_same_v<T, bool>)
                 {
-                    return QVariant(arg);
-                }
-                else if constexpr (std::is_same_v<T, bool>)
-                {
-                    return QVariant(arg);
+                    return {arg};
                 }
                 else if constexpr (std::is_same_v<T, loglib::TimeStamp>)
                 {
@@ -654,7 +651,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         const auto &line = mLogTable.Data().Lines()[row];
         const loglib::LineSource *source = line.Source();
         const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
-        return QVariant(QString::fromStdString(raw));
+        return {QString::fromStdString(raw)};
     }
 
     return {};

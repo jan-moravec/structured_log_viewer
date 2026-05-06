@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -223,18 +224,25 @@ class TempTextFile
 {
 public:
     explicit TempTextFile(const std::string &content, std::string filePath = "test_kv.log")
-        : mFilePath(std::move(filePath))
+        : mFilePath(std::move(filePath)), mFsPath(mFilePath)
     {
-        std::ofstream file(mFilePath, std::ios::binary);
+        std::ofstream file(mFsPath, std::ios::binary);
         REQUIRE(file.is_open());
         file.write(content.data(), static_cast<std::streamsize>(content.size()));
     }
 
+    // NOLINTNEXTLINE(bugprone-exception-escape): MSVC may model throwing paths through STL; teardown ignores errors via
+    // `error_code`.
     ~TempTextFile() noexcept
     {
         std::error_code ec;
-        std::filesystem::remove(mFilePath, ec);
+        std::filesystem::remove(mFsPath, ec);
     }
+
+    TempTextFile(const TempTextFile &) = delete;
+    TempTextFile &operator=(const TempTextFile &) = delete;
+    TempTextFile(TempTextFile &&) = delete;
+    TempTextFile &operator=(TempTextFile &&) = delete;
 
     const std::string &Path() const
     {
@@ -243,6 +251,7 @@ public:
 
 private:
     std::string mFilePath;
+    std::filesystem::path mFsPath;
 };
 
 /// Test sink: gathers every batch the harness emits so cases can assert on the
@@ -474,8 +483,8 @@ TEST_CASE("Mock parser: per-line errors propagate through StreamedBatch::errors"
     }
     REQUIRE(totalLines == 2);
     REQUIRE(allErrors.size() == 2);
-    REQUIRE(allErrors[0].find("Error on line 2") != std::string::npos);
-    REQUIRE(allErrors[1].find("Error on line 4") != std::string::npos);
+    REQUIRE(allErrors[0].contains("Error on line 2"));
+    REQUIRE(allErrors[1].contains("Error on line 4"));
 }
 
 // Regression: when errors land past the first Stage A batch, Stage C must
@@ -531,7 +540,7 @@ TEST_CASE(
     {
         const std::string expected = "Error on line " + std::to_string(expectedErrorLines[i]);
         INFO("error #" << i << " text: " << allErrors[i] << ", expected to start with: " << expected);
-        CHECK(allErrors[i].find(expected) != std::string::npos);
+        CHECK(allErrors[i].contains(expected));
     }
 }
 

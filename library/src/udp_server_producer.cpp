@@ -184,6 +184,8 @@ void UdpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     });
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape): `asio::io_context::stop()` may throw in rare error paths; `noexcept`
+// matches producer contract; catch block is the safety net.
 void UdpServerProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))
@@ -361,6 +363,7 @@ namespace loglib
 {
 
 UdpServerProducer::UdpServerProducer(Options options)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
     : mImpl(std::make_unique<internal::UdpServerProducerImpl>(std::move(options)))
 {
 }

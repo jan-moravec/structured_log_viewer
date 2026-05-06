@@ -228,7 +228,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
         sorted.emplace_back(keys.GetOrInsert(key), value);
     }
     std::ranges::sort(sorted, [](const auto &a, const auto &b) { return a.first < b.first; });
-    return LogLine(std::move(sorted), keys, source, 0);
+    return {std::move(sorted), keys, source, 0};
 }
 
 // Helper that snapshots a column → KeyId range from a given KeyIndex into a StreamedBatch::newKeys.
@@ -585,9 +585,13 @@ TEST_CASE(
     CHECK(table.GetHeader(1) == "timestamp");
 
     // The back-fill range covers exactly the new time column (index 1, inclusive on both ends).
-    REQUIRE(table.LastBackfillRange().has_value());
-    CHECK(table.LastBackfillRange()->first == 1);
-    CHECK(table.LastBackfillRange()->second == 1);
+    const auto backfill = table.LastBackfillRange();
+    REQUIRE(backfill.has_value());
+    if (backfill.has_value())
+    {
+        CHECK(backfill->first == 1);
+        CHECK(backfill->second == 1);
+    }
 
     // The third row's timestamp is now a parsed TimeStamp (the back-fill ran over all rows
     // including the just-appended one). Rows 0 and 1 stay monostate because they never
@@ -787,7 +791,7 @@ TEST_CASE(
     for (int batchIdx = 0; batchIdx < BATCHES; ++batchIdx)
     {
         StreamedBatch batch;
-        batch.firstLineNumber = static_cast<size_t>(batchIdx + 1);
+        batch.firstLineNumber = static_cast<size_t>(static_cast<size_t>(batchIdx) + 1u);
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"k0", std::string("steady")}}));
         REQUIRE(batch.newKeys.empty());
         table.AppendBatch(std::move(batch));

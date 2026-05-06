@@ -55,7 +55,7 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
     // Deque entries are reference-stable until evicted, so the view
     // outlives the lock release. Callers must not retain it past the
     // next `EvictBefore` for this line id.
-    return std::string_view(arena.data() + offset, length);
+    return {arena.data() + offset, length};
 }
 
 std::span<const char> StreamLineSource::StableBytes() const noexcept

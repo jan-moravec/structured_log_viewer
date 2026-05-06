@@ -34,6 +34,7 @@ constexpr auto STRESS_DEADLINE = std::chrono::seconds(5);
 
 } // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture.
 class BoundedBatchQueueTest : public QObject
 {
     Q_OBJECT

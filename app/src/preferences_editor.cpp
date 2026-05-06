@@ -12,12 +12,20 @@
 
 #include <cstddef>
 
+namespace
+{
+constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
+constexpr int FONT_POINT_SIZE_MIN = 6;
+constexpr int FONT_POINT_SIZE_MAX = 72;
+constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
+} // namespace
+
 PreferencesEditor::PreferencesEditor(QWidget *parent)
     : QWidget{parent}
 {
     setWindowFlags(Qt::Window);
     setWindowTitle("Preferences");
-    setMinimumWidth(300);
+    setMinimumWidth(PREFERENCES_MIN_WIDTH_PX);
 
     mFontComboBox = new QFontComboBox(this);
     mSizeSpinBox = new QSpinBox(this);
@@ -26,12 +34,12 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
 
-    mSizeSpinBox->setRange(6, 72);
+    mSizeSpinBox->setRange(FONT_POINT_SIZE_MIN, FONT_POINT_SIZE_MAX);
 
     mStreamRetentionSpinBox->setRange(
         static_cast<int>(StreamingControl::MIN_RETENTION_LINES), static_cast<int>(StreamingControl::MAX_RETENTION_LINES)
     );
-    mStreamRetentionSpinBox->setSingleStep(1000);
+    mStreamRetentionSpinBox->setSingleStep(RETENTION_LINES_SPIN_SINGLE_STEP);
     mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::DEFAULT_RETENTION_LINES));
     mStreamRetentionSpinBox->setToolTip(
         "Maximum number of streamed lines kept in memory. Oldest lines are dropped when the cap "

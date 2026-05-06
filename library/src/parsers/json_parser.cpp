@@ -72,6 +72,8 @@ template <class Field> FastFieldKey ExtractFieldKey(Field &field)
 /// Crossover at which `InsertSorted` switches from a linear back-scan to
 /// `std::lower_bound`. Tuned for the `[wide]` benchmark.
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
+constexpr size_t INITIAL_OBJECT_FIELD_CAPACITY = 16;
+constexpr size_t LINE_PADDED_EXTRA_SLACK_BYTES = 64;
 
 void InsertSorted(
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
@@ -231,7 +233,7 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
 )
 {
     std::vector<std::pair<KeyId, internal::CompactLogValue>> result;
-    result.reserve(16);
+    result.reserve(INITIAL_OBJECT_FIELD_CAPACITY);
 
     for (auto field : object)
     {
@@ -437,8 +439,6 @@ std::vector<std::pair<KeyId, internal::CompactLogValue>> ParseJsonLine(
             break;
         }
         case simdjson::ondemand::json_type::null:
-            InsertSorted(result, keyId, internal::CompactLogValue::MakeMonostate());
-            break;
         default:
             InsertSorted(result, keyId, internal::CompactLogValue::MakeMonostate());
             break;
@@ -562,7 +562,9 @@ void DecodeJsonBatch(
                     if (line.size() > worker.user.maxLineSize || worker.user.linePadded.size() < needed)
                     {
                         worker.user.maxLineSize = std::max(worker.user.maxLineSize, line.size());
-                        worker.user.linePadded.resize(worker.user.maxLineSize + simdjson::SIMDJSON_PADDING + 64);
+                        worker.user.linePadded.resize(
+                            worker.user.maxLineSize + simdjson::SIMDJSON_PADDING + LINE_PADDED_EXTRA_SLACK_BYTES
+                        );
                     }
                     std::memcpy(worker.user.linePadded.data(), line.data(), line.size());
                     std::memset(worker.user.linePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);
@@ -730,7 +732,7 @@ public:
             if (line.size() > mMaxLineSize || mLinePadded.size() < needed)
             {
                 mMaxLineSize = std::max(mMaxLineSize, line.size());
-                mLinePadded.resize(mMaxLineSize + simdjson::SIMDJSON_PADDING + 64);
+                mLinePadded.resize(mMaxLineSize + simdjson::SIMDJSON_PADDING + LINE_PADDED_EXTRA_SLACK_BYTES);
             }
             std::memcpy(mLinePadded.data(), line.data(), line.size());
             std::memset(mLinePadded.data() + line.size(), 0, simdjson::SIMDJSON_PADDING);

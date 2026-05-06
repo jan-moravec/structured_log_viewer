@@ -578,6 +578,8 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks): false positive; `parseCallable` is moved into the
+        // model and invoked; `cfg` is consumed by `options`.
         auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken
                              ) mutable {
             options.stopToken = stopToken;
@@ -775,10 +777,11 @@ void MainWindow::StopStream()
 
 void MainWindow::OnRotationDetected()
 {
+    constexpr int ROTATION_STATUS_FLASH_MS = 3000;
     // Brief 3 s `— rotated` flash on the status label.
     mRotationFlashActive = true;
     UpdateStreamingStatus();
-    QTimer::singleShot(3000, this, [this]() {
+    QTimer::singleShot(ROTATION_STATUS_FLASH_MS, this, [this]() {
         mRotationFlashActive = false;
         UpdateStreamingStatus();
     });
@@ -1254,6 +1257,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     menuItem->menuAction()->setData(QVariant(id));
 
     const QAction *editAction = menuItem->addAction("Edit");
+    // NOLINTNEXTLINE(bugprone-exception-escape): Qt slot; `AddFilter` uses normal exception-throwing STL; failures
+    // surface as usual.
     connect(editAction, &QAction::triggered, this, [this, id, filter]() { AddFilter(id, filter); });
 
     const QAction *clearAction = menuItem->addAction("Clear");

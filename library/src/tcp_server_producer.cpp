@@ -41,6 +41,8 @@ class TcpServerProducerImpl;
 /// `Stop()` without needing the templated session type at the call
 /// site. The vtable is tiny (one virtual: `Close`) so the indirection
 /// cost is negligible vs the network I/O each call wraps.
+// NOLINTNEXTLINE(misc-use-internal-linkage): `loglib::internal` TU-local implementation detail for
+// `TcpServerProducerImpl`.
 class SessionBase
 {
 public:
@@ -61,6 +63,7 @@ public:
 /// Per-connection state, ref-counted via `shared_ptr` so the in-flight
 /// Asio async chain keeps the session alive until the read completes
 /// and we explicitly drop it.
+// NOLINTNEXTLINE(misc-use-internal-linkage): TU-local async session type for `TcpServerProducerImpl`.
 template <class Stream> class Session : public SessionBase, public std::enable_shared_from_this<Session<Stream>>
 {
 public:
@@ -218,14 +221,17 @@ template <class Stream> void Session<Stream>::Start()
 #endif
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): async continuation chain; not stack recursion.
 template <class Stream> void Session<Stream>::DoRead()
 {
     auto self = this->shared_from_this();
+    // NOLINTNEXTLINE(misc-no-recursion): Asio completion handler re-arms reads asynchronously.
     mStream.async_read_some(asio::buffer(mReadBuffer), [self](const asio::error_code &ec, std::size_t n) {
         self->OnRead(ec, n);
     });
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): async continuation chain; not stack recursion.
 template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec, std::size_t bytes)
 {
     if (ec)
@@ -237,6 +243,7 @@ template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec,
     }
     if (bytes == 0)
     {
+        // NOLINTNEXTLINE(misc-no-recursion): async re-arm; not synchronous stack recursion.
         DoRead();
         return;
     }
@@ -255,6 +262,7 @@ template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec,
         mCarry.erase(0, lastNewline + 1);
     }
 
+    // NOLINTNEXTLINE(misc-no-recursion): async re-arm; not synchronous stack recursion.
     DoRead();
 }
 
@@ -448,6 +456,8 @@ void TcpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     });
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape): `asio::io_context::stop()` may throw in rare error paths; `noexcept`
+// matches producer contract; catch block is the safety net.
 void TcpServerProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))
@@ -703,6 +713,7 @@ namespace loglib
 {
 
 TcpServerProducer::TcpServerProducer(Options options)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
     : mImpl(std::make_unique<internal::TcpServerProducerImpl>(std::move(options)))
 {
 }
