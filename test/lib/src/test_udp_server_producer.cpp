@@ -11,7 +11,6 @@
 #include <span>
 #include <string>
 #include <thread>
-#include <vector>
 
 using loglib::UdpServerProducer;
 using loglib_test::ScaledMs;

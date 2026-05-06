@@ -93,7 +93,7 @@ public:
     /// port when `Options::port == 0`.
     [[nodiscard]] std::string DisplayName() const override;
 
-    void SetStatusCallback(std::function<void(SourceStatus)> callback) override;
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
     /// Actual port the socket is bound to. Equals `Options::port`
     /// unless that was 0, in which case it returns the kernel-chosen

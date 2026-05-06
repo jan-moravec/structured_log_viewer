@@ -136,7 +136,7 @@ private:
     /// Concatenates the batches into one. The first batch's
     /// `firstLineNumber` is preserved; all other vectors are appended.
     /// Used by `Resume()`, `TakePausedBuffer()`, and `DrainGeneration`.
-    static loglib::StreamedBatch CoalesceLocked(std::vector<loglib::StreamedBatch> &&batches);
+    static loglib::StreamedBatch CoalesceLocked(std::vector<loglib::StreamedBatch> batches);
 
     /// Total row count across `mPausedBatches`. Caller must hold
     /// `mPausedMutex`.

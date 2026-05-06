@@ -6,7 +6,7 @@
 
 int main(int argc, char *argv[])
 {
-    QApplication a(argc, argv);
+    const QApplication a(argc, argv);
 
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
@@ -16,5 +16,5 @@ int main(int argc, char *argv[])
     MainWindow w;
     w.show();
 
-    return a.exec();
+    return QApplication::exec();
 }

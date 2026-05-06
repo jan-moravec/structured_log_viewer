@@ -17,7 +17,7 @@ namespace test_common::internal
 class TcpLogClientImpl
 {
 public:
-    TcpLogClientImpl(std::string host, uint16_t port, std::optional<TcpLogClient::TlsOptions> tls);
+    TcpLogClientImpl(const std::string &host, uint16_t port, std::optional<TcpLogClient::TlsOptions> tls);
     ~TcpLogClientImpl();
 
     TcpLogClientImpl(const TcpLogClientImpl &) = delete;
@@ -44,7 +44,7 @@ private:
     bool mUsesTls = false;
 };
 
-TcpLogClientImpl::TcpLogClientImpl(std::string host, uint16_t port, std::optional<TcpLogClient::TlsOptions> tls)
+TcpLogClientImpl::TcpLogClientImpl(const std::string &host, uint16_t port, std::optional<TcpLogClient::TlsOptions> tls)
     : mSocket(mIoContext)
 {
     asio::error_code ec;
@@ -224,7 +224,7 @@ void TcpLogClientImpl::Close()
 class UdpLogClientImpl
 {
 public:
-    UdpLogClientImpl(std::string host, uint16_t port);
+    UdpLogClientImpl(const std::string &host, uint16_t port);
     ~UdpLogClientImpl();
 
     UdpLogClientImpl(const UdpLogClientImpl &) = delete;
@@ -241,7 +241,7 @@ private:
     asio::ip::udp::endpoint mPeer;
 };
 
-UdpLogClientImpl::UdpLogClientImpl(std::string host, uint16_t port)
+UdpLogClientImpl::UdpLogClientImpl(const std::string &host, uint16_t port)
     : mSocket(mIoContext)
 {
     asio::error_code ec;
@@ -310,8 +310,9 @@ void UdpLogClientImpl::Close()
 namespace test_common
 {
 
-TcpLogClient::TcpLogClient(std::string host, uint16_t port, std::optional<TlsOptions> tls)
-    : mImpl(std::make_unique<internal::TcpLogClientImpl>(std::move(host), port, std::move(tls)))
+TcpLogClient::TcpLogClient(const std::string &host, uint16_t port, std::optional<TlsOptions> tls)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
+    : mImpl(std::make_unique<internal::TcpLogClientImpl>(host, port, std::move(tls)))
 {
 }
 
@@ -335,8 +336,9 @@ void TcpLogClient::Close()
     mImpl->Close();
 }
 
-UdpLogClient::UdpLogClient(std::string host, uint16_t port)
-    : mImpl(std::make_unique<internal::UdpLogClientImpl>(std::move(host), port))
+UdpLogClient::UdpLogClient(const std::string &host, uint16_t port)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
+    : mImpl(std::make_unique<internal::UdpLogClientImpl>(host, port))
 {
 }
 

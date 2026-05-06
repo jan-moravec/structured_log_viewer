@@ -1,0 +1,33 @@
+# Test-app-level overrides for Qt QTest test classes.
+#
+# Qt's QTest auto-invokes the camelBack lifecycle slots
+# `initTestCase`, `cleanupTestCase`, `init`, `cleanup` by exact name
+# match. Renaming them to CamelCase makes QTest silently skip them
+# (the test "passes" because nothing ran). The test methods themselves
+# live under `private slots:`, so the right knob is
+# `PrivateMethodCase` rather than `PublicMethodCase` -- the project's
+# `app/.clang-tidy` only relaxes the public side because the GUI's
+# Qt-forced camelBack names are signals / public slots / overrides.
+#
+# Public is also relaxed for parity with `app/.clang-tidy` (the test
+# binary calls into Qt's public surface as well).
+#
+# Also mirror the moc-related disables from `app/.clang-tidy`:
+#   -readability-redundant-access-specifiers (+ its cppcoreguidelines
+#        alias): the `private:` after `private slots:` is required so
+#        moc can find the slot-list boundary.
+#   -readability-convert-member-functions-to-static: QTest dispatches
+#        lifecycle slots through the metaobject as instance methods;
+#        marking them `static` also recategorises them under
+#        `ClassMethodCase`, rejecting the Qt-mandated camelBack names.
+
+InheritParentConfig: true
+
+Checks: >
+  -readability-redundant-access-specifiers,
+  -cppcoreguidelines-redundant-access-specifiers,
+  -readability-convert-member-functions-to-static
+
+CheckOptions:
+  - { key: readability-identifier-naming.PrivateMethodCase, value: aNy_CasE }
+  - { key: readability-identifier-naming.PublicMethodCase,  value: aNy_CasE }

@@ -18,7 +18,7 @@ TEST_CASE(
     "Constructor should correctly initialize LogData with a single source and provided lines and keys", "[LogData]"
 )
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
 
@@ -46,8 +46,8 @@ TEST_CASE(
 
 TEST_CASE("Merge() should correctly combine sources, lines and keys from two LogData objects", "[LogData]")
 {
-    TestLogFile testLogFile1("test_file_1.json");
-    TestLogFile testLogFile2("test_file_2.json");
+    const TestLogFile testLogFile1("test_file_1.json");
+    const TestLogFile testLogFile2("test_file_2.json");
 
     auto source1 = testLogFile1.CreateFileLineSource();
     FileLineSource *source1Ptr = source1.get();

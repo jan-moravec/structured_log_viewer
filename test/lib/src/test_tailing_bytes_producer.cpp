@@ -40,7 +40,9 @@ public:
         std::filesystem::create_directories(mPath);
     }
 
-    ~TempDir()
+    // NOLINTNEXTLINE(bugprone-exception-escape): MSVC may model throwing paths through STL `remove_all`; teardown
+    // ignores errors via `error_code`.
+    ~TempDir() noexcept
     {
         std::error_code ec;
         std::filesystem::remove_all(mPath, ec);
@@ -191,7 +193,7 @@ TailingBytesProducer::Options FastPollOptions()
 
 TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small file", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("preset_lines.log");
 
     std::string content;
@@ -227,7 +229,7 @@ TEST_CASE("TailingBytesProducer pre-fill of last N complete lines on a small fil
 
 TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("short.log");
     Overwrite(path, "a\nb\nc\n");
 
@@ -251,7 +253,7 @@ TEST_CASE("TailingBytesProducer pre-fill on a file shorter than N", "[TailingByt
 // pre-fill bytes land — exposing a missing notify.
 TEST_CASE("TailingBytesProducer Prefill notifies WaitForBytes immediately", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("notify_prefill.log");
 
     // ~500 KiB across 5 000 ~100-byte lines. With 512-byte backwards
@@ -298,7 +300,7 @@ TEST_CASE(
     // 2 MiB file with no newlines and a 128 KiB scan budget must not
     // wedge the ctor: pre-fill aborts, yields zero lines, seeks to
     // EOF, and future appends still appear in the tail.
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("huge_line.log");
     {
         std::ofstream out(path, std::ios::binary);
@@ -325,17 +327,16 @@ TEST_CASE(
 
     // Tailing still works: appending a complete line produces it.
     Append(path, "\nafter\n");
-    const auto post = DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) {
-        return acc.find("after\n") != std::string::npos;
-    });
-    CHECK(post.find("after\n") != std::string::npos);
+    const auto post =
+        DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) { return acc.contains("after\n"); });
+    CHECK(post.contains("after\n"));
     // The 2 MiB "xxx…" prefix must NOT have been synthesized into a line.
-    CHECK(post.find("xxxxx") == std::string::npos);
+    CHECK(!post.contains("xxxxx"));
 }
 
 TEST_CASE("TailingBytesProducer detects growth across many small writes", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("growth.log");
     Overwrite(path, ""); // start empty
 
@@ -357,7 +358,7 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
 
     const auto lines = SplitLines(drained);
     REQUIRE(lines.size() >= static_cast<size_t>(COUNT));
-    for (int i = 0; i < COUNT; ++i)
+    for (size_t i = 0; i < static_cast<size_t>(COUNT); ++i)
     {
         CHECK(lines[i] == "g" + std::to_string(i));
     }
@@ -365,7 +366,7 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
 
 TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[TailingBytesProducer][rotation]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("rotate.log");
     const auto rotatedPath = dir.File("rotate.log.1");
     Overwrite(path, "pre1\npre2\n");
@@ -400,7 +401,7 @@ TEST_CASE("TailingBytesProducer recovers from rename-and-create rotation", "[Tai
 
 TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingBytesProducer][rotation]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("copytrunc.log");
     Overwrite(path, "old1\nold2\nold3\n");
 
@@ -431,7 +432,7 @@ TEST_CASE("TailingBytesProducer recovers from copytruncate rotation", "[TailingB
 
 TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytesProducer][rotation]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("inplace_trunc.log");
     Overwrite(path, "x1\nx2\nx3\n");
 
@@ -450,7 +451,7 @@ TEST_CASE("TailingBytesProducer recovers from in-place truncate", "[TailingBytes
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     const auto postLines = SplitLines(post);
-    REQUIRE(postLines.size() >= 1);
+    REQUIRE(!postLines.empty());
     CHECK(postLines[0] == "y1");
     CHECK(source.RotationCount() >= 1);
 }
@@ -460,7 +461,7 @@ TEST_CASE(
     "[TailingBytesProducer][rotation]"
 )
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("paused.log");
     Overwrite(path, "p1\np2\n");
 
@@ -492,7 +493,7 @@ TEST_CASE(
 
 TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingBytesProducer][rotation]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("partial_rot.log");
     // Note: no trailing newline → "incomplete" stays in the partial-line buffer.
     Overwrite(path, "complete\nincomplete");
@@ -504,7 +505,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     auto firstLines = SplitLines(first);
-    REQUIRE(firstLines.size() >= 1);
+    REQUIRE(!firstLines.empty());
     CHECK(firstLines[0] == "complete");
 
     // Rotate via in-place truncate. The partial "incomplete" must be
@@ -513,19 +514,18 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     std::this_thread::sleep_for(ScaledMs(50ms));
     Append(path, "after\n");
 
-    const auto post = DrainUntil(source, ScaledMs(1000ms), [](const std::string &acc) {
-        return acc.find("after\n") != std::string::npos;
-    });
+    const auto post =
+        DrainUntil(source, ScaledMs(1000ms), [](const std::string &acc) { return acc.contains("after\n"); });
     const auto postLines = SplitLines(post);
-    REQUIRE(postLines.size() >= 1);
+    REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "after");
     // The partial "incomplete" must NEVER appear.
-    CHECK(post.find("incomplete") == std::string::npos);
+    CHECK(!post.contains("incomplete"));
 }
 
 TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("partial_stop.log");
     Overwrite(path, "first\ntrailing-no-newline");
 
@@ -535,7 +535,7 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
         return std::count(acc.begin(), acc.end(), '\n') >= 1;
     });
     auto preLines = SplitLines(pre);
-    REQUIRE(preLines.size() >= 1);
+    REQUIRE(!preLines.empty());
     CHECK(preLines[0] == "first");
 
     // Now Stop. The partial-line buffer must be flushed as a synthetic
@@ -544,14 +544,14 @@ TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingByte
 
     auto post = DrainUntil(source, ScaledMs(1000ms), [&](const std::string & /*acc*/) { return source.IsClosed(); });
     const auto postLines = SplitLines(post);
-    REQUIRE(postLines.size() >= 1);
+    REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "trailing-no-newline");
     CHECK(source.IsClosed());
 }
 
 TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle file", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("idle.log");
     Overwrite(path, ""); // empty; worker will park waiting for growth
 
@@ -577,7 +577,7 @@ TEST_CASE("TailingBytesProducer Stop unblocks WaitForBytes parked on an idle fil
 
 TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[TailingBytesProducer][rotation]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("debounce.log");
     Overwrite(path, "seed\n");
 
@@ -593,7 +593,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
 
     // Wait for pre-fill to consume the seed and for the worker to settle
     // on a steady mReadOffset.
-    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.find("seed\n") != std::string::npos; });
+    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.contains("seed\n"); });
 
     // Rename-and-create rotations flip the path's inode; identity
     // detection (branch i) is state-based, so the worker reliably
@@ -617,9 +617,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
     }
 
     // Drain so we know the worker has processed at least the last rotation.
-    DrainUntil(source, ScaledMs(1000ms), [](const std::string &acc) {
-        return acc.find("rot2\n") != std::string::npos;
-    });
+    DrainUntil(source, ScaledMs(1000ms), [](const std::string &acc) { return acc.contains("rot2\n"); });
 
     // RotationCount counts every detected rotation; the callback
     // collapses them into one per debounce window.
@@ -629,7 +627,7 @@ TEST_CASE("TailingBytesProducer debounces rapid rotations within 1 s", "[Tailing
 
 TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("does_not_exist.log");
 
     CHECK_THROWS_AS(TailingBytesProducer(path, 100, FastPollOptions()), std::system_error);
@@ -637,7 +635,7 @@ TEST_CASE("TailingBytesProducer throws on initial open failure", "[TailingBytesP
 
 TEST_CASE("TailingBytesProducer Stop after natural drain leaves IsClosed true", "[TailingBytesProducer]")
 {
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("simple.log");
     Overwrite(path, "only\n");
 
@@ -670,7 +668,7 @@ TEST_CASE(
     // `Waiting`; a subsequent re-create lifts it back to `Running`.
     // Edge-triggered: one delete/create pair => one `Waiting` and
     // one `Running` observation.
-    TempDir dir;
+    const TempDir dir;
     const auto path = dir.File("status.log");
     Overwrite(path, "seed\n");
 
@@ -679,7 +677,7 @@ TEST_CASE(
 
     TailingBytesProducer source(path, /*retentionLines=*/100, FastPollOptions());
     source.SetStatusCallback([&](loglib::SourceStatus s) {
-        std::lock_guard<std::mutex> lock(statusMu);
+        const std::scoped_lock lock(statusMu);
         observed.push_back(s);
     });
 
@@ -690,7 +688,7 @@ TEST_CASE(
     // before exercising the delete/recreate transitions so the test
     // assertions read naturally about user-visible state changes only.
     {
-        std::lock_guard<std::mutex> lock(statusMu);
+        const std::scoped_lock lock(statusMu);
         REQUIRE_FALSE(observed.empty());
         CHECK(observed.front() == loglib::SourceStatus::Running);
         observed.clear();
@@ -698,7 +696,7 @@ TEST_CASE(
 
     // Drain the pre-fill so the worker is in its steady-state tail loop
     // before we perturb the file.
-    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.find("seed\n") != std::string::npos; });
+    DrainUntil(source, ScaledMs(500ms), [](const std::string &acc) { return acc.contains("seed\n"); });
 
     // Delete the file → branch (ii) → Waiting.
     std::filesystem::remove(path);
@@ -707,7 +705,7 @@ TEST_CASE(
     while (std::chrono::steady_clock::now() < waitingDeadline)
     {
         {
-            std::lock_guard<std::mutex> lock(statusMu);
+            const std::scoped_lock lock(statusMu);
             if (!observed.empty() && observed.back() == loglib::SourceStatus::Waiting)
             {
                 break;
@@ -719,7 +717,7 @@ TEST_CASE(
     }
 
     {
-        std::lock_guard<std::mutex> lock(statusMu);
+        const std::scoped_lock lock(statusMu);
         REQUIRE_FALSE(observed.empty());
         CHECK(observed.front() == loglib::SourceStatus::Waiting);
     }
@@ -731,7 +729,7 @@ TEST_CASE(
     while (std::chrono::steady_clock::now() < runningDeadline)
     {
         {
-            std::lock_guard<std::mutex> lock(statusMu);
+            const std::scoped_lock lock(statusMu);
             if (!observed.empty() && observed.back() == loglib::SourceStatus::Running)
             {
                 break;
@@ -742,7 +740,7 @@ TEST_CASE(
         std::this_thread::sleep_for(ScaledMs(25ms));
     }
 
-    std::lock_guard<std::mutex> lock(statusMu);
+    const std::scoped_lock lock(statusMu);
     REQUIRE(observed.size() >= 2);
     CHECK(observed.back() == loglib::SourceStatus::Running);
 

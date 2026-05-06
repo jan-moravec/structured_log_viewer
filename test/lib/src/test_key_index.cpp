@@ -3,14 +3,12 @@
 #include <catch2/catch_all.hpp>
 #include <oneapi/tbb/parallel_for.h>
 
-#include <algorithm>
 #include <atomic>
 #include <random>
 #include <set>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 using namespace loglib;
@@ -181,7 +179,7 @@ TEST_CASE("KeyIndex move construction preserves the dictionary", "[key_index]")
     const KeyId a = source.GetOrInsert("alpha");
     const KeyId b = source.GetOrInsert("beta");
 
-    KeyIndex moved(std::move(source));
+    const KeyIndex moved(std::move(source));
     CHECK(moved.Size() == 2);
     CHECK(moved.Find("alpha") == a);
     CHECK(moved.Find("beta") == b);
@@ -210,7 +208,7 @@ TEST_CASE("KeyIndex heterogeneous fast path is safe under concurrent insert+find
 
     oneapi::tbb::parallel_for(0, THREAD_COUNT, [&](int thread) {
         // Per-thread RNG so the iteration order interleaves but is reproducible.
-        std::mt19937 rng(static_cast<unsigned>(thread) * 37u + 1u);
+        std::mt19937 rng((static_cast<unsigned>(thread) * 37u) + 1u);
         std::uniform_int_distribution<int> pickKey(0, KEY_COUNT - 1);
         for (int i = 0; i < ITERATIONS_PER_THREAD; ++i)
         {
@@ -263,6 +261,13 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
     std::atomic<KeyId> highWater{0};
     std::atomic<bool> writerDone{false};
 
+    // Catch2's REQUIRE/CHECK macros are not thread-safe (they touch
+    // process-global state in RunContext), so reader threads only record
+    // mismatches into atomics and the actual assertions happen post-join.
+    std::atomic<uint64_t> mismatchCount{0};
+    std::atomic<KeyId> firstMismatchId{INVALID_KEY_ID};
+    std::atomic<KeyId> firstMismatchFound{INVALID_KEY_ID};
+
     std::thread writer([&] {
         for (const auto &k : keys)
         {
@@ -283,7 +288,15 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
             }
             const KeyId id = static_cast<KeyId>(i) % limit;
             const std::string_view view = index.KeyOf(id);
-            REQUIRE(index.Find(view) == id);
+            const KeyId found = index.Find(view);
+            if (found != id)
+            {
+                if (mismatchCount.fetch_add(1, std::memory_order_relaxed) == 0)
+                {
+                    firstMismatchId.store(id, std::memory_order_relaxed);
+                    firstMismatchFound.store(found, std::memory_order_relaxed);
+                }
+            }
             if (writerDone.load(std::memory_order_acquire) && i > 1024)
             {
                 break;
@@ -302,6 +315,13 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
     {
         th.join();
     }
+
+    INFO(
+        "mismatches=" << mismatchCount.load(std::memory_order_relaxed)
+                      << " firstMismatchId=" << firstMismatchId.load(std::memory_order_relaxed)
+                      << " firstMismatchFound=" << firstMismatchFound.load(std::memory_order_relaxed)
+    );
+    REQUIRE(mismatchCount.load(std::memory_order_relaxed) == 0);
 
     REQUIRE(index.Size() == static_cast<size_t>(KEY_COUNT));
     for (KeyId id = 0; id < static_cast<KeyId>(KEY_COUNT); ++id)
@@ -330,12 +350,12 @@ TEST_CASE(
     // Build the query as a string_view over a stack-allocated char buffer so
     // there is no chance of an implicit std::string ever being constructed
     // along the call path.
-    constexpr char alphaBuf[] = "alpha";
-    constexpr char betaBuf[] = "beta";
-    constexpr char absentBuf[] = "missing";
-    const std::string_view alphaView(alphaBuf, sizeof(alphaBuf) - 1);
-    const std::string_view betaView(betaBuf, sizeof(betaBuf) - 1);
-    const std::string_view absentView(absentBuf, sizeof(absentBuf) - 1);
+    constexpr char ALPHA_BUF[] = "alpha";
+    constexpr char BETA_BUF[] = "beta";
+    constexpr char ABSENT_BUF[] = "missing";
+    const std::string_view alphaView(ALPHA_BUF, sizeof(ALPHA_BUF) - 1);
+    const std::string_view betaView(BETA_BUF, sizeof(BETA_BUF) - 1);
+    const std::string_view absentView(ABSENT_BUF, sizeof(ABSENT_BUF) - 1);
 
     CHECK(index.Find(alphaView) == alphaId);
     CHECK(index.Find(betaView) == betaId);

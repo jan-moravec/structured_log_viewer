@@ -165,7 +165,7 @@ void LogData::MarkTimestampsParsed()
     mTimestampsAlreadyParsed = true;
 }
 
-void LogData::Merge(LogData &&other)
+void LogData::Merge(LogData other)
 {
     // Splice sources first: each `LogLine` already points at a heap
     // `LineSource` inside `other.mSources`; moving the `unique_ptr`s
@@ -199,7 +199,7 @@ void LogData::Merge(LogData &&other)
         {
             remapped.emplace_back(remap[entry.first], entry.second);
         }
-        std::sort(remapped.begin(), remapped.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        std::ranges::sort(remapped, [](const auto &a, const auto &b) { return a.first < b.first; });
 
         assert(line.Source() != nullptr);
         LogLine rebuilt(std::move(remapped), mKeys, *line.Source(), line.LineId());
@@ -212,7 +212,7 @@ void LogData::Merge(LogData &&other)
     }
 }
 
-void LogData::AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets)
+void LogData::AppendBatch(std::vector<LogLine> lines, const std::vector<uint64_t> &lineOffsets)
 {
     // No per-batch `reserve` — rely on geometric push_back growth
     // (some STL impls take `reserve(size+n)` as exact = O(N^2/B)).

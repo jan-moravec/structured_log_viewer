@@ -7,7 +7,9 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
@@ -102,7 +104,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
 
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
     {
-        mData.AppendBatch(std::move(batch.lines), std::move(batch.localLineOffsets));
+        mData.AppendBatch(std::move(batch.lines), batch.localLineOffsets);
     }
 
     if (!batch.newKeys.empty())
@@ -179,7 +181,9 @@ void LogTable::AppendBatch(StreamedBatch batch)
         {
             if (oldLineCount < mData.Lines().size())
             {
-                std::span<LogLine> slice(mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount);
+                const std::span<LogLine> slice(
+                    mData.Lines().data() + oldLineCount, mData.Lines().size() - oldLineCount
+                );
                 BackfillTimestampColumn(column, slice, BackfillErrors::Discard);
             }
         }
@@ -212,14 +216,23 @@ void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
         return;
     }
     mConfiguration.MoveColumn(srcIndex, destIndex);
+    using Diff = std::vector<std::vector<KeyId>>::difference_type;
     auto begin = mColumnKeyIds.begin();
     if (srcIndex > destIndex)
     {
-        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(destIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1))
+        );
     }
     else
     {
-        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1)),
+            std::next(begin, static_cast<Diff>(destIndex + 1))
+        );
     }
 }
 
@@ -281,7 +294,7 @@ std::string LogTable::GetFormattedValue(size_t row, size_t column) const
         {
             continue;
         }
-        LogValue value = line.GetValue(id);
+        const LogValue value = line.GetValue(id);
         if (!std::holds_alternative<std::monostate>(value))
         {
             return FormatLogValue(printFormat, value);
@@ -409,7 +422,7 @@ void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKey
         {
             for (const std::string &key : column.keys)
             {
-                if (newKeySet.find(std::string_view(key)) != newKeySet.end())
+                if (newKeySet.contains(std::string_view(key)))
                 {
                     affected = true;
                     break;
@@ -465,30 +478,19 @@ std::string LogTable::FormatLogValue(const std::string &format, const LogValue &
             {
                 return std::string(arg);
             }
-            else if constexpr (std::is_same_v<T, int64_t>)
-            {
-                return fmt::vformat(format, fmt::make_format_args(arg));
-            }
-            else if constexpr (std::is_same_v<T, uint64_t>)
-            {
-                return fmt::vformat(format, fmt::make_format_args(arg));
-            }
-            else if constexpr (std::is_same_v<T, double>)
-            {
-                return fmt::vformat(format, fmt::make_format_args(arg));
-            }
-            else if constexpr (std::is_same_v<T, bool>)
+            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t> || std::is_same_v<T, double> ||
+                               std::is_same_v<T, bool>)
             {
                 return fmt::vformat(format, fmt::make_format_args(arg));
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                const date::zoned_time local_time{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(arg)};
-                return date::format(format, local_time);
+                const date::zoned_time localTime{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(arg)};
+                return date::format(format, localTime);
             }
             else if constexpr (std::is_same_v<T, std::monostate>)
             {
-                return std::string();
+                return {};
             }
             else
             {

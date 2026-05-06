@@ -128,9 +128,7 @@ LogLine::LogLine(
     : mValues(static_cast<uint32_t>(sortedValues.size())), mKeys(&keys), mSource(&source), mLineId(lineId)
 {
 #ifndef NDEBUG
-    assert(std::is_sorted(sortedValues.begin(), sortedValues.end(), [](const auto &a, const auto &b) {
-        return a.first < b.first;
-    }));
+    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
 #endif
     for (auto &entry : sortedValues)
     {
@@ -147,9 +145,7 @@ LogLine::LogLine(
     : mKeys(&keys), mSource(&source), mLineId(lineId)
 {
 #ifndef NDEBUG
-    assert(std::is_sorted(sortedValues.begin(), sortedValues.end(), [](const auto &a, const auto &b) {
-        return a.first < b.first;
-    }));
+    assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
 #endif
     // Exact-fit copy: drops the temporary vector's `reserve(16)` capacity
     // waste in one go, so each `LogLine` carries only `size * 16` bytes
@@ -167,7 +163,7 @@ LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_
     {
         staging.emplace_back(keys.GetOrInsert(key), MakeCompactFromVariant(source, lineId, value));
     }
-    std::sort(staging.begin(), staging.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::ranges::sort(staging, [](const auto &a, const auto &b) { return a.first < b.first; });
     mValues.AssignSorted(staging.data(), static_cast<uint32_t>(staging.size()));
 }
 
@@ -215,27 +211,27 @@ LogValue LogLine::GetValue(const std::string &key) const
     return GetValue(id);
 }
 
-void LogLine::SetValue(KeyId id, LogValue value)
+void LogLine::SetValue(KeyId id, const LogValue &value)
 {
 #ifndef NDEBUG
     // Untagged setter is for owned values; callers passing a `string_view`
     // must use the `LogValueTrustView` overload to declare the lifetime.
     assert(!std::holds_alternative<std::string_view>(value));
 #endif
-    SetValue(id, std::move(value), LogValueTrustView{});
+    SetValue(id, value, LogValueTrustView{});
 }
 
-void LogLine::SetValue(KeyId id, LogValue value, LogValueTrustView /*trust*/)
+void LogLine::SetValue(KeyId id, const LogValue &value, LogValueTrustView /*trust*/)
 {
     assert(mSource != nullptr);
-    internal::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
+    const internal::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
     auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     uint32_t lo = 0;
     uint32_t hi = size;
     while (lo < hi)
     {
-        const uint32_t mid = lo + (hi - lo) / 2U;
+        const uint32_t mid = lo + ((hi - lo) / 2U);
         if (data[mid].first < id)
         {
             lo = mid + 1U;
@@ -255,7 +251,7 @@ void LogLine::SetValue(KeyId id, LogValue value, LogValueTrustView /*trust*/)
     mValues.Insert(lo, id, compact);
 }
 
-void LogLine::SetValue(const std::string &key, LogValue value)
+void LogLine::SetValue(const std::string &key, const LogValue &value)
 {
     if (mKeys == nullptr)
     {
@@ -266,7 +262,7 @@ void LogLine::SetValue(const std::string &key, LogValue value)
     {
         throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
     }
-    SetValue(id, std::move(value));
+    SetValue(id, value);
 }
 
 std::vector<std::string> LogLine::GetKeys() const
@@ -298,7 +294,7 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
 
 std::span<const std::pair<KeyId, internal::CompactLogValue>> LogLine::CompactValues() const noexcept
 {
-    return std::span<const std::pair<KeyId, internal::CompactLogValue>>(mValues.Data(), mValues.Size());
+    return {mValues.Data(), mValues.Size()};
 }
 
 LogMap LogLine::Values() const

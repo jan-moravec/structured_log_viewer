@@ -4,7 +4,6 @@
 
 #include <asio.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -38,7 +37,7 @@ public:
     void Stop() noexcept;
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] std::string DisplayName() const;
-    void SetStatusCallback(std::function<void(SourceStatus)> callback);
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] uint16_t BoundPort() const noexcept;
     [[nodiscard]] size_t DatagramCount() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
@@ -146,6 +145,7 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
             // Asio handlers in this TU never throw, but defensive: if
             // a future change does, we want the worker to exit
             // gracefully rather than terminate the process.
+            static_cast<void>(0);
         }
         mWorkerExited.store(true, std::memory_order_release);
         mCv.notify_all();
@@ -167,7 +167,7 @@ size_t UdpServerProducerImpl::Read(std::span<char> buffer)
     {
         return 0;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Read(buffer);
 }
 
@@ -184,6 +184,8 @@ void UdpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     });
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape): `asio::io_context::stop()` may throw in rare error paths; `noexcept`
+// matches producer contract; catch block is the safety net.
 void UdpServerProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))
@@ -221,7 +223,7 @@ bool UdpServerProducerImpl::IsClosed() const noexcept
     {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Empty();
 }
 
@@ -230,13 +232,13 @@ std::string UdpServerProducerImpl::DisplayName() const
     return mDisplayName;
 }
 
-void UdpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void UdpServerProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
-        mStatusCallback = std::move(callback);
+        const std::scoped_lock lock(mCallbackMutex);
+        mStatusCallback = callback;
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
     }
@@ -270,7 +272,7 @@ void UdpServerProducerImpl::MarkRunning()
 {
     std::function<void(SourceStatus)> cb;
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         if (mLastReportedStatus == SourceStatus::Running)
         {
             return;
@@ -315,7 +317,7 @@ void UdpServerProducerImpl::StartReceive()
             if (bytes > 0)
             {
                 {
-                    std::lock_guard<std::mutex> lock(mMutex);
+                    const std::scoped_lock lock(mMutex);
                     AppendDatagramLocked(mRecvBuffer.data(), bytes);
                 }
                 mDatagramCount.fetch_add(1, std::memory_order_acq_rel);
@@ -361,6 +363,7 @@ namespace loglib
 {
 
 UdpServerProducer::UdpServerProducer(Options options)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
     : mImpl(std::make_unique<internal::UdpServerProducerImpl>(std::move(options)))
 {
 }
@@ -392,9 +395,9 @@ std::string UdpServerProducer::DisplayName() const
     return mImpl->DisplayName();
 }
 
-void UdpServerProducer::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void UdpServerProducer::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
-    mImpl->SetStatusCallback(std::move(callback));
+    mImpl->SetStatusCallback(callback);
 }
 
 uint16_t UdpServerProducer::BoundPort() const noexcept

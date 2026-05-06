@@ -236,14 +236,14 @@ QModelIndex RowOrderProxyModel::index(int row, int column, const QModelIndex &pa
 {
     if (parent.isValid())
     {
-        return QModelIndex();
+        return {};
     }
     return createIndex(row, column);
 }
 
 QModelIndex RowOrderProxyModel::parent(const QModelIndex & /*child*/) const
 {
-    return QModelIndex();
+    return {};
 }
 
 int RowOrderProxyModel::rowCount(const QModelIndex &parent) const
@@ -268,11 +268,11 @@ QModelIndex RowOrderProxyModel::mapFromSource(const QModelIndex &sourceIndex) co
 {
     if (!sourceIndex.isValid() || sourceModel() == nullptr)
     {
-        return QModelIndex();
+        return {};
     }
     if (sourceIndex.parent().isValid())
     {
-        return QModelIndex();
+        return {};
     }
     if (!mReversed)
     {
@@ -281,7 +281,7 @@ QModelIndex RowOrderProxyModel::mapFromSource(const QModelIndex &sourceIndex) co
     const int rows = sourceModel()->rowCount(QModelIndex());
     if (rows == 0)
     {
-        return QModelIndex();
+        return {};
     }
     return createIndex(rows - 1 - sourceIndex.row(), sourceIndex.column());
 }
@@ -290,7 +290,7 @@ QModelIndex RowOrderProxyModel::mapToSource(const QModelIndex &proxyIndex) const
 {
     if (!proxyIndex.isValid() || sourceModel() == nullptr)
     {
-        return QModelIndex();
+        return {};
     }
     if (!mReversed)
     {
@@ -299,7 +299,7 @@ QModelIndex RowOrderProxyModel::mapToSource(const QModelIndex &proxyIndex) const
     const int rows = sourceModel()->rowCount(QModelIndex());
     if (rows == 0)
     {
-        return QModelIndex();
+        return {};
     }
     return sourceModel()->index(rows - 1 - proxyIndex.row(), proxyIndex.column(), QModelIndex());
 }

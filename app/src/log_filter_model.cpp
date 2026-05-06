@@ -19,7 +19,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     const int rowCount = this->rowCount(start.parent());
     const int columnCount = this->columnCount(start.parent());
 
-    bool wrap = flags.testFlag(Qt::MatchWrap);
+    const bool wrap = flags.testFlag(Qt::MatchWrap);
     const int startRow = start.row();
     const int startColumn = start.column();
 
@@ -27,13 +27,13 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     {
         for (int row = skipFirstN; row < rowCount; ++row)
         {
-            int actualRow = (startRow + row) % rowCount;
+            const int actualRow = (startRow + row) % rowCount;
 
             for (int col = 0; col < columnCount; ++col)
             {
-                int actualColumn = (startColumn + col) % columnCount;
-                QModelIndex index = this->index(actualRow, actualColumn, start.parent());
-                QVariant data = this->data(index, role);
+                const int actualColumn = (startColumn + col) % columnCount;
+                const QModelIndex index = this->index(actualRow, actualColumn, start.parent());
+                const QVariant data = this->data(index, role);
 
                 if (Matches(data, value, flags))
                 {
@@ -64,9 +64,9 @@ QList<QModelIndex> LogFilterModel::MatchRow(
 
             for (int col = 0; col < columnCount; ++col)
             {
-                int actualColumn = (startColumn + col) % columnCount;
-                QModelIndex index = this->index(actualRow, actualColumn, start.parent());
-                QVariant data = this->data(index, role);
+                const int actualColumn = (startColumn + col) % columnCount;
+                const QModelIndex index = this->index(actualRow, actualColumn, start.parent());
+                const QVariant data = this->data(index, role);
 
                 if (Matches(data, value, flags))
                 {
@@ -89,7 +89,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     return result;
 }
 
-bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags) const
+bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags)
 {
     if (flags.testFlag(Qt::MatchExactly))
     {
@@ -109,12 +109,12 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
     }
     if (flags.testFlag(Qt::MatchRegularExpression))
     {
-        QRegularExpression regex(value.toString());
+        const QRegularExpression regex(value.toString());
         return regex.match(data.toString()).hasMatch();
     }
     if (flags.testFlag(Qt::MatchWildcard))
     {
-        QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(value.toString()));
+        const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(value.toString()));
         return regex.match(data.toString()).hasMatch();
     }
     return false;

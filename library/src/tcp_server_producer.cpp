@@ -41,6 +41,8 @@ class TcpServerProducerImpl;
 /// `Stop()` without needing the templated session type at the call
 /// site. The vtable is tiny (one virtual: `Close`) so the indirection
 /// cost is negligible vs the network I/O each call wraps.
+// NOLINTNEXTLINE(misc-use-internal-linkage): `loglib::internal` TU-local implementation detail for
+// `TcpServerProducerImpl`.
 class SessionBase
 {
 public:
@@ -61,6 +63,7 @@ public:
 /// Per-connection state, ref-counted via `shared_ptr` so the in-flight
 /// Asio async chain keeps the session alive until the read completes
 /// and we explicitly drop it.
+// NOLINTNEXTLINE(misc-use-internal-linkage): TU-local async session type for `TcpServerProducerImpl`.
 template <class Stream> class Session : public SessionBase, public std::enable_shared_from_this<Session<Stream>>
 {
 public:
@@ -107,7 +110,7 @@ public:
     void Stop() noexcept;
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] std::string DisplayName() const;
-    void SetStatusCallback(std::function<void(SourceStatus)> callback);
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] uint16_t BoundPort() const noexcept;
     [[nodiscard]] size_t ActiveClientCount() const noexcept;
     [[nodiscard]] size_t TotalClientsAccepted() const noexcept;
@@ -208,20 +211,27 @@ template <class Stream> void Session<Stream>::Start()
             }
             self->DoRead();
         });
-        return;
     }
-#endif
+    else
+    {
+        DoRead();
+    }
+#else
     DoRead();
+#endif
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): async continuation chain; not stack recursion.
 template <class Stream> void Session<Stream>::DoRead()
 {
     auto self = this->shared_from_this();
+    // NOLINTNEXTLINE(misc-no-recursion): Asio completion handler re-arms reads asynchronously.
     mStream.async_read_some(asio::buffer(mReadBuffer), [self](const asio::error_code &ec, std::size_t n) {
         self->OnRead(ec, n);
     });
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): async continuation chain; not stack recursion.
 template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec, std::size_t bytes)
 {
     if (ec)
@@ -233,6 +243,7 @@ template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec,
     }
     if (bytes == 0)
     {
+        // NOLINTNEXTLINE(misc-no-recursion): async re-arm; not synchronous stack recursion.
         DoRead();
         return;
     }
@@ -251,6 +262,7 @@ template <class Stream> void Session<Stream>::OnRead(const asio::error_code &ec,
         mCarry.erase(0, lastNewline + 1);
     }
 
+    // NOLINTNEXTLINE(misc-no-recursion): async re-arm; not synchronous stack recursion.
     DoRead();
 }
 
@@ -405,6 +417,7 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
         catch (...)
         {
             // Asio handlers in this TU never throw; defensive only.
+            static_cast<void>(0);
         }
         mWorkerExited.store(true, std::memory_order_release);
         mCv.notify_all();
@@ -426,7 +439,7 @@ size_t TcpServerProducerImpl::Read(std::span<char> buffer)
     {
         return 0;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Read(buffer);
 }
 
@@ -443,6 +456,8 @@ void TcpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     });
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape): `asio::io_context::stop()` may throw in rare error paths; `noexcept`
+// matches producer contract; catch block is the safety net.
 void TcpServerProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))
@@ -467,7 +482,7 @@ void TcpServerProducerImpl::Stop() noexcept
 
             std::vector<std::shared_ptr<SessionBase>> snapshot;
             {
-                std::lock_guard<std::mutex> lock(mMutex);
+                const std::scoped_lock lock(mMutex);
                 snapshot.reserve(mActiveSessions.size());
                 for (auto &kv : mActiveSessions)
                 {
@@ -499,7 +514,7 @@ bool TcpServerProducerImpl::IsClosed() const noexcept
     {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mReadyBuffer.Empty();
 }
 
@@ -508,13 +523,13 @@ std::string TcpServerProducerImpl::DisplayName() const
     return mDisplayName;
 }
 
-void TcpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TcpServerProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
-        mStatusCallback = std::move(callback);
+        const std::scoped_lock lock(mCallbackMutex);
+        mStatusCallback = callback;
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
     }
@@ -531,7 +546,7 @@ uint16_t TcpServerProducerImpl::BoundPort() const noexcept
 
 size_t TcpServerProducerImpl::ActiveClientCount() const noexcept
 {
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     return mActiveSessions.size();
 }
 
@@ -557,7 +572,7 @@ void TcpServerProducerImpl::OnSessionLines(std::string_view completeLines)
         return;
     }
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         mReadyBuffer.Append(completeLines, mOptions.maxQueueBytes, mDroppedByteCount);
     }
     MarkRunning();
@@ -567,7 +582,7 @@ void TcpServerProducerImpl::OnSessionLines(std::string_view completeLines)
 void TcpServerProducerImpl::OnSessionEnded(size_t sessionId)
 {
     {
-        std::lock_guard<std::mutex> lock(mMutex);
+        const std::scoped_lock lock(mMutex);
         mActiveSessions.erase(sessionId);
     }
     mCv.notify_all();
@@ -577,7 +592,7 @@ void TcpServerProducerImpl::MarkRunning()
 {
     std::function<void(SourceStatus)> cb;
     {
-        std::lock_guard<std::mutex> lock(mCallbackMutex);
+        const std::scoped_lock lock(mCallbackMutex);
         if (mLastReportedStatus == SourceStatus::Running)
         {
             return;
@@ -613,7 +628,7 @@ void TcpServerProducerImpl::StartAccept()
 
 bool TcpServerProducerImpl::AdmitOrReject(asio::ip::tcp::socket &socket)
 {
-    std::lock_guard<std::mutex> lock(mMutex);
+    const std::scoped_lock lock(mMutex);
     if (mActiveSessions.size() >= mOptions.maxConcurrentClients)
     {
         asio::error_code closeEc;
@@ -646,7 +661,7 @@ void TcpServerProducerImpl::OnAcceptPlain(const asio::error_code &ec, asio::ip::
         size_t id = 0;
         std::shared_ptr<Session<asio::ip::tcp::socket>> session;
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             id = mNextSessionId++;
             session =
                 std::make_shared<Session<asio::ip::tcp::socket>>(std::move(socket), this, id, mOptions.readChunkBytes);
@@ -679,7 +694,7 @@ void TcpServerProducerImpl::OnAcceptTls(const asio::error_code &ec, asio::ip::tc
         size_t id = 0;
         std::shared_ptr<Session<TlsStream>> session;
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            const std::scoped_lock lock(mMutex);
             id = mNextSessionId++;
             TlsStream stream(std::move(socket), *mSslContext);
             session = std::make_shared<Session<TlsStream>>(std::move(stream), this, id, mOptions.readChunkBytes);
@@ -698,6 +713,7 @@ namespace loglib
 {
 
 TcpServerProducer::TcpServerProducer(Options options)
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete): Asio `win_thread` false positive under MSVC headers.
     : mImpl(std::make_unique<internal::TcpServerProducerImpl>(std::move(options)))
 {
 }
@@ -729,9 +745,9 @@ std::string TcpServerProducer::DisplayName() const
     return mImpl->DisplayName();
 }
 
-void TcpServerProducer::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TcpServerProducer::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
-    mImpl->SetStatusCallback(std::move(callback));
+    mImpl->SetStatusCallback(callback);
 }
 
 uint16_t TcpServerProducer::BoundPort() const noexcept

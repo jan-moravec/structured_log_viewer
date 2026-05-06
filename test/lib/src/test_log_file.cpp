@@ -3,18 +3,17 @@
 #include <loglib/log_file.hpp>
 
 #include <catch2/catch_all.hpp>
-#include <fstream>
 
 using namespace loglib;
 
 TEST_CASE("Successfully open a valid log file", "[LogFile]")
 {
     // Create a temporary test file
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2\nLine 3\n");
 
     // Verify successful file opening
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
     CHECK(logFile->GetPath() == testLogFile.GetFilePath());
 
     // Verify we can read the lines
@@ -30,10 +29,10 @@ TEST_CASE("Read last line without trailing newline", "[LogFile]")
 {
     // The last line of a file may not end with '\n'; JsonParser handles that by pushing a
     // virtual terminator one byte past EOF. Verify GetLine still returns the full content.
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2");
 
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
 
     CHECK(logFile->GetLineCount() == 2);
     CHECK(logFile->GetLine(0) == "Line 1");
@@ -44,10 +43,10 @@ TEST_CASE("Read lines from file with CRLF line endings", "[LogFile]")
 {
     // Ensure byte offsets and CRLF stripping work regardless of the host's line-ending
     // conventions.
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("Line 1\r\nLine 2\r\nLine 3\r\n");
 
-    std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
+    const std::unique_ptr<LogFile> logFile = testLogFile.CreateLogFile();
 
     CHECK(logFile->GetLine(0) == "Line 1");
     CHECK(logFile->GetLine(1) == "Line 2");
@@ -67,7 +66,7 @@ TEST_CASE("Throw runtime error when opening a non-existent file", "[LogFile]")
 // changes that contract would fail this test loudly.
 TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-stability]")
 {
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     testLogFile.Write("Line 1\nLine 2\nLine 3\n");
 
     auto original = testLogFile.CreateLogFile();
@@ -82,7 +81,7 @@ TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-sta
     // the post-move comparison uses this as ground truth.
     const std::string snapshot(originalData, originalSize);
 
-    LogFile moved = std::move(*original);
+    const LogFile moved = std::move(*original);
 
     // Pointer-stability under move. `mio::mmap_source` is documented to
     // transfer the underlying handle on move; we pin that fact here so an

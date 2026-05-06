@@ -1,8 +1,6 @@
 #include "loglib/log_processing.hpp"
 
 #include "loglib/internal/timestamp_promotion.hpp"
-#include "loglib/line_source.hpp"
-#include "loglib/log_file.hpp"
 
 #include <date/date.h>
 #include <date/tz.h>
@@ -22,6 +20,22 @@ namespace loglib
 namespace
 {
 
+constexpr int DECIMAL_RADIX = 10;
+constexpr size_t ISO_DASH1_INDEX = 4;
+constexpr size_t MONTH_DIGITS_OFFSET = 5;
+constexpr size_t ISO_DASH2_INDEX = 7;
+constexpr size_t DAY_DIGITS_OFFSET = 8;
+constexpr size_t DATE_TIME_SEPARATOR_INDEX = 10;
+constexpr size_t HOUR_DIGITS_OFFSET = 11;
+constexpr size_t TIME_COLON1_INDEX = 13;
+constexpr size_t MINUTE_DIGITS_OFFSET = 14;
+constexpr size_t TIME_COLON2_INDEX = 16;
+constexpr size_t SECOND_DIGITS_OFFSET = 17;
+constexpr size_t FRACTION_DIGITS_SCALE = 6;
+constexpr int MAX_HOUR_INCLUSIVE = 23;
+constexpr int MAX_MINUTE_INCLUSIVE = 59;
+constexpr int MAX_SECOND_INCLUSIVE_LEAP = 60;
+
 bool ParseFixedDigits(const char *p, size_t n, int &out)
 {
     int value = 0;
@@ -32,7 +46,7 @@ bool ParseFixedDigits(const char *p, size_t n, int &out)
         {
             return false;
         }
-        value = value * 10 + (c - '0');
+        value = (value * DECIMAL_RADIX) + (c - '0');
     }
     out = value;
     return true;
@@ -74,43 +88,43 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     {
         return false;
     }
-    if (sv[4] != '-')
+    if (sv[ISO_DASH1_INDEX] != '-')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 5, 2, month))
+    if (!ParseFixedDigits(sv.data() + MONTH_DIGITS_OFFSET, 2, month))
     {
         return false;
     }
-    if (sv[7] != '-')
+    if (sv[ISO_DASH2_INDEX] != '-')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 8, 2, day))
+    if (!ParseFixedDigits(sv.data() + DAY_DIGITS_OFFSET, 2, day))
     {
         return false;
     }
-    if (sv[10] != dateTimeSep)
+    if (sv[DATE_TIME_SEPARATOR_INDEX] != dateTimeSep)
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 11, 2, hour))
+    if (!ParseFixedDigits(sv.data() + HOUR_DIGITS_OFFSET, 2, hour))
     {
         return false;
     }
-    if (sv[13] != ':')
+    if (sv[TIME_COLON1_INDEX] != ':')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 14, 2, minute))
+    if (!ParseFixedDigits(sv.data() + MINUTE_DIGITS_OFFSET, 2, minute))
     {
         return false;
     }
-    if (sv[16] != ':')
+    if (sv[TIME_COLON2_INDEX] != ':')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + 17, 2, second))
+    if (!ParseFixedDigits(sv.data() + SECOND_DIGITS_OFFSET, 2, second))
     {
         return false;
     }
@@ -123,7 +137,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
             return false;
         }
         const size_t fractionStart = PREFIX_LEN + 1;
-        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + 6);
+        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + FRACTION_DIGITS_SCALE);
         size_t fractionEnd = fractionStart;
         while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
         {
@@ -137,16 +151,16 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
         }
         for (size_t i = fractionStart; i < fractionEnd; ++i)
         {
-            fractionalUs = fractionalUs * 10 + (sv[i] - '0');
+            fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[i] - '0');
         }
-        for (size_t i = fractionLen; i < 6; ++i)
+        for (size_t i = fractionLen; i < FRACTION_DIGITS_SCALE; ++i)
         {
-            fractionalUs *= 10;
+            fractionalUs *= DECIMAL_RADIX;
         }
     }
 
     // Accept second == 60 to match `date::parse("%T")` leap-second handling.
-    if (hour > 23 || minute > 59 || second > 60)
+    if (hour > MAX_HOUR_INCLUSIVE || minute > MAX_MINUTE_INCLUSIVE || second > MAX_SECOND_INCLUSIVE_LEAP)
     {
         return false;
     }
@@ -160,11 +174,11 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     const auto days = date::sys_days{ymd};
-    const auto totalUs =
-        std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::seconds{hour * 3600 + minute * 60 + second}
-        ) +
-        std::chrono::microseconds{fractionalUs};
+    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+                         std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::seconds{(hour * 3600) + (minute * 60) + second}
+                         ) +
+                         std::chrono::microseconds{fractionalUs};
     out = TimeStamp{totalUs};
     // Syntactically valid Y/M/D/H/M/S/fraction is success; the POSIX epoch
     // and pre-1970 timestamps are valid outputs, not failures.
@@ -179,7 +193,12 @@ bool TryParseGenericTimestamp(
     scratch.stream.clear();
     scratch.stream.str(scratch.str);
     out = TimeStamp{};
-    scratch.stream >> date::parse(format, out);
+    // Call `date::from_stream` directly rather than using
+    // `scratch.stream >> date::parse(format, out)`. The latter expands inside
+    // `date::parse` to an unqualified `from_stream(...)` call, which becomes
+    // ambiguous in C++20+/libc++ where `std::chrono::from_stream` is also a
+    // viable overload for `std::chrono::time_point<system_clock, microseconds>`.
+    date::from_stream(scratch.stream, format.c_str(), out);
     // Stream-fail bit alone is the success signal: the POSIX epoch and
     // pre-1970 timestamps are valid outputs.
     return !scratch.stream.fail();
@@ -326,16 +345,15 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 {
     std::vector<std::string> errors;
 
-    for (size_t i = 0; i < configuration.columns.size(); ++i)
+    for (const auto &column : configuration.columns)
     {
-        const LogConfiguration::Column &column = configuration.columns[i];
         if (column.type == LogConfiguration::Type::time)
         {
             auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
             if (!columnErrors.empty())
             {
                 errors.reserve(errors.size() + columnErrors.size());
-                std::move(columnErrors.begin(), columnErrors.end(), std::back_inserter(errors));
+                std::ranges::move(columnErrors, std::back_inserter(errors));
             }
         }
     }

@@ -38,7 +38,7 @@ std::string_view FileLineSource::ResolveMmapBytes(uint64_t offset, uint32_t leng
     {
         return {};
     }
-    return std::string_view(data + offset, length);
+    return {data + offset, length};
 }
 
 std::string_view FileLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t /*lineId*/) const noexcept
@@ -59,7 +59,7 @@ std::span<const char> FileLineSource::StableBytes() const noexcept
     {
         return {};
     }
-    return std::span<const char>(data, size);
+    return {data, size};
 }
 
 uint64_t FileLineSource::AppendOwnedBytes(size_t /*lineId*/, std::string_view bytes)

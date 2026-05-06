@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -20,12 +20,15 @@ namespace loglib::internal
 namespace
 {
 
-#if defined(_WIN32)
+#ifdef _WIN32
+constexpr unsigned K_FILE_INDEX_HIGH_SHIFT = 32U;
+
 FileIdentity FromBhfi(const BY_HANDLE_FILE_INFORMATION &info) noexcept
 {
     FileIdentity identity;
     identity.high = static_cast<uint64_t>(info.dwVolumeSerialNumber);
-    identity.low = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | static_cast<uint64_t>(info.nFileIndexLow);
+    identity.low = (static_cast<uint64_t>(info.nFileIndexHigh) << K_FILE_INDEX_HIGH_SHIFT) |
+                   static_cast<uint64_t>(info.nFileIndexLow);
     identity.valid = true;
     return identity;
 }
@@ -44,10 +47,10 @@ FileIdentity FromStat(const struct stat &st) noexcept
 
 FileIdentity FromPath(const std::filesystem::path &path) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     // Full sharing so we don't disturb a concurrent producer.
     // FILE_FLAG_BACKUP_SEMANTICS lets the call also work on directories.
-    const HANDLE handle = ::CreateFileW(
+    HANDLE handle = ::CreateFileW(
         path.c_str(),
         0, // metadata only
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -80,7 +83,7 @@ FileIdentity FromPath(const std::filesystem::path &path) noexcept
 
 FileIdentity FromOpenHandle(NativeFileHandle handle) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     if (handle == INVALID_HANDLE_VALUE || handle == nullptr)
     {
         return FileIdentity{};

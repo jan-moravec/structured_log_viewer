@@ -64,7 +64,7 @@ JsonLogLine GenerateRandomJsonLogLine(std::mt19937 &rng, std::size_t lineIndex)
     json["message"] = message;
     json["thread_id"] = static_cast<std::int64_t>(lineIndex % 16);
     json["component"] = std::string(COMPONENTS[static_cast<std::size_t>(componentDist(rng))]);
-    return JsonLogLine(std::move(json));
+    return {std::move(json)};
 }
 
 std::vector<JsonLogLine> GenerateRandomJsonLogs(std::size_t count, std::uint32_t seed)
@@ -212,15 +212,15 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
             {
             case Family::String:
             {
-                if (keyName.rfind("timestamp", 0) == 0)
+                if (keyName.starts_with("timestamp"))
                 {
                     json[keyName] = FormatNow();
                 }
-                else if (keyName.rfind("level", 0) == 0)
+                else if (keyName.starts_with("level"))
                 {
                     json[keyName] = std::string(LEVELS[static_cast<std::size_t>(levelDist(rng))]);
                 }
-                else if (keyName.rfind("component", 0) == 0)
+                else if (keyName.starts_with("component"))
                 {
                     json[keyName] = std::string(COMPONENTS[static_cast<std::size_t>(componentDist(rng))]);
                 }
@@ -242,11 +242,11 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
             }
             case Family::Numeric:
             {
-                if (keyName.rfind("thread_id", 0) == 0)
+                if (keyName.starts_with("thread_id"))
                 {
                     json[keyName] = static_cast<std::int64_t>(i % 16);
                 }
-                else if (keyName.rfind("cpu_usage_pct", 0) == 0)
+                else if (keyName.starts_with("cpu_usage_pct"))
                 {
                     json[keyName] = static_cast<std::int64_t>(smallIntDist(rng));
                 }
@@ -272,7 +272,7 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
                 arr.emplace_back(static_cast<std::int64_t>(intDist(rng)));
                 arr.emplace_back(static_cast<std::int64_t>(smallIntDist(rng)));
                 arr.emplace_back(std::string(WORDS[static_cast<std::size_t>(wordDist(rng))]));
-                json[keyName] = std::move(arr);
+                json[keyName] = arr;
                 break;
             }
             case Family::Object:

@@ -1,6 +1,7 @@
 # Structured Log Viewer
 
 [![Build](https://github.com/jan-moravec/structured_log_viewer/workflows/Build/badge.svg)](https://github.com/jan-moravec/structured_log_viewer/actions?query=workflow%3ABuild)
+[![Coverage](https://codecov.io/gh/jan-moravec/structured_log_viewer/branch/main/graph/badge.svg)](https://codecov.io/gh/jan-moravec/structured_log_viewer)
 [![GitHub Releases](https://img.shields.io/github/release/jan-moravec/structured_log_viewer.svg)](https://github.com/jan-moravec/structured_log_viewer/releases)
 
 ## Overview

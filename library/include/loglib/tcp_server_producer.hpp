@@ -132,7 +132,7 @@ public:
     /// `Options::port == 0`.
     [[nodiscard]] std::string DisplayName() const override;
 
-    void SetStatusCallback(std::function<void(SourceStatus)> callback) override;
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
     /// Actual port the listener is bound to.
     [[nodiscard]] uint16_t BoundPort() const noexcept;

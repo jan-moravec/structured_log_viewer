@@ -10,7 +10,6 @@
 #include <cassert>
 #include <cstddef>
 #include <deque>
-#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -74,14 +73,14 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
     Impl::Shard &shard = mImpl->shards[Impl::ShardIndex(key)];
 
     {
-        std::shared_lock<std::shared_mutex> lock(shard.mutex);
+        const std::shared_lock<std::shared_mutex> lock(shard.mutex);
         if (auto it = shard.map.find(key); it != shard.map.end())
         {
             return it->second;
         }
     }
 
-    std::scoped_lock locks(shard.mutex, mImpl->reverseMutex);
+    const std::scoped_lock locks(shard.mutex, mImpl->reverseMutex);
 
     if (auto it = shard.map.find(key); it != shard.map.end())
     {
@@ -92,7 +91,7 @@ KeyId KeyIndex::GetOrInsert(std::string_view key)
     // other thread can observe the new id. The assert pins the 2^32 cap:
     // wrapping past it would collide with `INVALID_KEY_ID`.
     assert(static_cast<uint64_t>(mImpl->reverse.size()) < static_cast<uint64_t>(INVALID_KEY_ID));
-    const KeyId id = static_cast<KeyId>(mImpl->reverse.size());
+    const auto id = static_cast<KeyId>(mImpl->reverse.size());
     mImpl->reverse.emplace_back(key);
     shard.map.emplace(mImpl->reverse.back(), id);
 
@@ -107,7 +106,7 @@ KeyId KeyIndex::Find(std::string_view key) const
 #endif
 
     const Impl::Shard &shard = mImpl->shards[Impl::ShardIndex(key)];
-    std::shared_lock<std::shared_mutex> lock(shard.mutex);
+    const std::shared_lock<std::shared_mutex> lock(shard.mutex);
     if (auto it = shard.map.find(key); it != shard.map.end())
     {
         return it->second;
@@ -120,7 +119,7 @@ std::string_view KeyIndex::KeyOf(KeyId id) const
     // Shared lock excludes `GetOrInsert`'s `emplace_back` from racing with
     // `operator[]`. The returned view remains valid after release because
     // deque element addresses are stable across inserts.
-    std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
+    const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
     return mImpl->reverse[id];
 }
 
@@ -131,9 +130,9 @@ size_t KeyIndex::Size() const noexcept
 
 std::vector<std::string> KeyIndex::SortedKeys() const
 {
-    std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
+    const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
     std::vector<std::string> result(mImpl->reverse.begin(), mImpl->reverse.end());
-    std::sort(result.begin(), result.end());
+    std::ranges::sort(result);
     return result;
 }
 
@@ -146,7 +145,7 @@ size_t KeyIndex::EstimatedMemoryBytes() const
     size_t bytes = 0;
     for (const auto &shard : mImpl->shards)
     {
-        std::shared_lock<std::shared_mutex> lock(shard.mutex);
+        const std::shared_lock<std::shared_mutex> lock(shard.mutex);
         bytes += shard.map.bucket_count() * (sizeof(std::string) + sizeof(KeyId));
         for (const auto &kv : shard.map)
         {
@@ -157,7 +156,7 @@ size_t KeyIndex::EstimatedMemoryBytes() const
         }
     }
     {
-        std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
+        const std::shared_lock<std::shared_mutex> lock(mImpl->reverseMutex);
         // `std::deque` typically uses fixed-size chunks; approximate by the
         // string objects' size. The chunk-pointer map overhead is negligible
         // relative to the strings themselves for any realistic key count.

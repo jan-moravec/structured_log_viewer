@@ -213,7 +213,7 @@ TEST_CASE("StreamLineSource: Producer() returns the underlying BytesProducer", "
 
     // Round-trip a couple of producer methods through the source to
     // confirm the wiring is live (real parser code would use this seam).
-    std::span<char> buffer;
+    const std::span<char> buffer;
     CHECK(source.Producer()->Read(buffer) == 0);
     CHECK(raw->mReadCalls == 1);
 }

@@ -1,0 +1,33 @@
+# LeakSanitizer suppressions for the Clang ASan+UBSan CI job.
+#
+# Pattern syntax: `leak:<token>` matches stack frames whose symbol name
+# (or library path) contains <token>. See:
+# https://clang.llvm.org/docs/AddressSanitizer.html#issue-suppression
+#
+# Add an entry here only when the leak is a *one-shot* allocation in a
+# system library that we don't control, NOT when it's our own code. Each
+# entry should carry a one-line comment explaining where it came from so
+# the next reader can audit and prune it.
+
+# Qt initialises a handful of process-global singletons (icon engines,
+# theme database, plugin registry) that are intentionally never torn
+# down before exit. These show up as definite leaks under LSan even
+# though Qt is using them correctly.
+leak:libQt6Core
+leak:libQt6Gui
+leak:libQt6Widgets
+leak:libQt6Test
+
+# fontconfig caches a process-global FcConfig that survives until exit.
+# The Qt platform plugin pulls it in indirectly.
+leak:libfontconfig
+
+# glibc's dlopen path keeps internal bookkeeping alive across the
+# process lifetime; the typical fingerprint is `_dl_init` /
+# `_dl_close_worker` showing up as the leak root.
+leak:_dl_init
+leak:_dl_close_worker
+
+# oneTBB's task arena lazily allocates a worker pool that's reused for
+# the whole process and torn down by an exit handler LSan can't see.
+leak:tbb::detail

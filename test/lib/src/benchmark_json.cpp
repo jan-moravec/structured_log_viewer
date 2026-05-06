@@ -8,7 +8,6 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/key_index.hpp>
-#include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parser.hpp>
@@ -27,7 +26,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <numeric>
@@ -35,7 +33,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -103,7 +101,7 @@ struct SampleStats
 /// clock. Avoids the Catch2 iteration-estimation pass and 100-resample
 /// bootstrap, which together added 3-5x wall-time on multi-second-per-
 /// sample fixtures and timed the 1M-line streaming case out at 30 min.
-template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn &&fn)
+template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn fn)
 {
     REQUIRE(samples > 0);
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -117,10 +115,10 @@ template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn &&fn)
 
     const auto sum = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero());
     const auto mean = sum / static_cast<long long>(samples);
-    const auto low = *std::min_element(elapsed.begin(), elapsed.end());
-    const auto high = *std::max_element(elapsed.begin(), elapsed.end());
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
 
-    double meanNs = static_cast<double>(mean.count());
+    const auto meanNs = static_cast<double>(mean.count());
     double sqAccum = 0.0;
     for (const auto &e : elapsed)
     {
@@ -129,16 +127,16 @@ template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn &&fn)
     }
     const double stddevNs = std::sqrt(sqAccum / static_cast<double>(samples));
 
-    return SampleStats{mean, low, high, stddevNs};
+    return SampleStats{.mean = mean, .low = low, .high = high, .stddevNs = stddevNs};
 }
 
 template <typename Fn> void RunTimedSamples(const char *label, std::size_t samples, Fn &&fn)
 {
     const SampleStats stats = CollectSamples(samples, std::forward<Fn>(fn));
-    using ms = std::chrono::duration<double, std::milli>;
+    using Ms = std::chrono::duration<double, std::milli>;
     WARN(
-        label << " (samples=" << samples << "): mean=" << ms(stats.mean).count() << " ms, low=" << ms(stats.low).count()
-              << " ms, high=" << ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms"
+        label << " (samples=" << samples << "): mean=" << Ms(stats.mean).count() << " ms, low=" << Ms(stats.low).count()
+              << " ms, high=" << Ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms"
     );
 }
 
@@ -151,24 +149,24 @@ template <typename Fn>
 void RunTimedSamples(const char *label, std::size_t samples, ThroughputInputs throughput, Fn &&fn)
 {
     const SampleStats stats = CollectSamples(samples, std::forward<Fn>(fn));
-    using ms = std::chrono::duration<double, std::milli>;
-    using s = std::chrono::duration<double>;
+    using Ms = std::chrono::duration<double, std::milli>;
+    using S = std::chrono::duration<double>;
 
-    const double meanSec = s(stats.mean).count();
-    const double lowSec = s(stats.low).count();
-    const double highSec = s(stats.high).count();
+    const double meanSec = S(stats.mean).count();
+    const double lowSec = S(stats.low).count();
+    const double highSec = S(stats.high).count();
     const double bytesMB = static_cast<double>(throughput.bytes) / (1024.0 * 1024.0);
-    const double linesD = static_cast<double>(throughput.lines);
+    const auto linesD = static_cast<double>(throughput.lines);
     const double meanMBps = meanSec == 0.0 ? 0.0 : bytesMB / meanSec;
     const double highMBps = lowSec == 0.0 ? 0.0 : bytesMB / lowSec;
     const double lowMBps = highSec == 0.0 ? 0.0 : bytesMB / highSec;
     const double meanLinesPerSec = meanSec == 0.0 ? 0.0 : linesD / meanSec;
-    const double meanNs = static_cast<double>(stats.mean.count());
+    const auto meanNs = static_cast<double>(stats.mean.count());
     const double stddevMBps = meanNs == 0.0 ? 0.0 : meanMBps * (stats.stddevNs / meanNs);
 
     WARN(
-        label << " (samples=" << samples << "): mean=" << ms(stats.mean).count() << " ms, low=" << ms(stats.low).count()
-              << " ms, high=" << ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms | "
+        label << " (samples=" << samples << "): mean=" << Ms(stats.mean).count() << " ms, low=" << Ms(stats.low).count()
+              << " ms, high=" << Ms(stats.high).count() << " ms, stddev=" << (stats.stddevNs / 1'000'000.0) << " ms | "
               << meanMBps << " MB/s mean (low=" << lowMBps << ", high=" << highMBps << ", stddev=" << stddevMBps
               << "), " << meanLinesPerSec << " lines/s mean"
     );
@@ -216,7 +214,7 @@ StructuralBytes ComputeStructuralBytes(const LogTable &table)
 /// number, hence "informational".
 std::size_t SamplePeakWorkingSetBytes()
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     PROCESS_MEMORY_COUNTERS counters{};
     counters.cb = sizeof(counters);
     if (::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof(counters)) != 0)
@@ -310,7 +308,6 @@ struct StreamingRunResult
 };
 
 StreamingRunResult RunStreamingFlow(
-    const JsonParser &parser,
     const std::filesystem::path &configPath,
     const std::filesystem::path &logPath,
     std::shared_ptr<const LogConfiguration> configuration,
@@ -318,7 +315,7 @@ StreamingRunResult RunStreamingFlow(
 )
 {
     StreamingRunResult result;
-    internal::AdvancedParserOptions advanced;
+    const internal::AdvancedParserOptions advanced;
 
     const std::size_t peakBefore = captureMemory ? SamplePeakWorkingSetBytes() : 0;
 
@@ -343,9 +340,9 @@ StreamingRunResult RunStreamingFlow(
         sink.table = &table;
 
         ParserOptions opts;
-        opts.configuration = configuration;
+        opts.configuration = std::move(configuration);
 
-        parser.ParseStreaming(*parseSource, sink, opts, advanced);
+        loglib::JsonParser::ParseStreaming(*parseSource, sink, opts, advanced);
 
         result.appendTotal = sink.appendTotal;
         result.appendBatches = sink.appendBatches;
@@ -374,7 +371,6 @@ StreamingRunResult RunStreamingFlow(
 /// `RunTimedSamples`'s throughput overload.
 void RunStreamingBenchmark(
     const char *label,
-    const JsonParser &parser,
     const std::filesystem::path &configPath,
     const std::filesystem::path &logPath,
     std::shared_ptr<const LogConfiguration> configuration,
@@ -388,8 +384,7 @@ void RunStreamingBenchmark(
         // signal is deterministic across runs, so a single sample suffices,
         // and we avoid paying for the introspection walk on every timed
         // sample.
-        StreamingRunResult warmup =
-            RunStreamingFlow(parser, configPath, logPath, configuration, /*captureMemory=*/true);
+        const StreamingRunResult warmup = RunStreamingFlow(configPath, logPath, configuration, /*captureMemory=*/true);
         REQUIRE(warmup.rowCount == expectedRows);
         ReportThroughput((std::string(label) + " warm-up").c_str(), warmup.elapsed, bytes, expectedRows);
 
@@ -404,7 +399,7 @@ void RunStreamingBenchmark(
         if (warmup.memoryCaptured)
         {
             constexpr double MIB = 1024.0 * 1024.0;
-            const double linesD = static_cast<double>(expectedRows == 0 ? 1 : expectedRows);
+            const auto linesD = static_cast<double>(expectedRows == 0 ? 1 : expectedRows);
             const double bytesPerLine =
                 expectedRows == 0 ? 0.0 : static_cast<double>(warmup.structuralBytes.Total()) / linesD;
             const double fileBytesMiB = static_cast<double>(bytes) / MIB;
@@ -424,8 +419,8 @@ void RunStreamingBenchmark(
         }
     }
 
-    RunTimedSamples(label, samples, {bytes, expectedRows}, [&]() {
-        StreamingRunResult run = RunStreamingFlow(parser, configPath, logPath, configuration);
+    RunTimedSamples(label, samples, {.bytes = bytes, .lines = expectedRows}, [&]() {
+        const StreamingRunResult run = RunStreamingFlow(configPath, logPath, configuration);
         REQUIRE(run.rowCount == expectedRows);
     });
 }
@@ -457,7 +452,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
         ReportThroughput("Parse 10'000 (sync) warm-up", elapsed, bytes, logs.size());
     }
 
-    RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {bytes, logs.size()}, [&]() {
+    RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = logs.size()}, [&]() {
         LogTable table;
         ParseResult result = ParseFile(parser, testFile.GetFilePath());
         REQUIRE(result.data.Lines().size() == testFile.Lines().size());
@@ -476,18 +471,16 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
 
     auto logs = GenerateRandomJsonLogs(1'000'000);
     const TestJsonLogFile testFile(logs);
-    const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     InitializeTimezoneData();
 
     auto configuration = MakeTimestampConfiguration();
-    TestLogConfiguration configFile;
+    const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
     RunStreamingBenchmark(
         "Stream 1'000'000 JSON log entries to LogTable",
-        parser,
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
@@ -508,18 +501,16 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 
     auto logs = GenerateWideJsonLogs(200'000);
     const TestJsonLogFile testFile(logs);
-    const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     InitializeTimezoneData();
 
     auto configuration = MakeTimestampConfiguration();
-    TestLogConfiguration configFile;
+    const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
     RunStreamingBenchmark(
         "Stream 200'000 wide JSON log entries to LogTable",
-        parser,
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
@@ -540,7 +531,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    ParseResult result = ParseFile(parser, testFile.GetFilePath());
+    const ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     const LogData &data = result.data;
     const std::vector<LogLine> &lines = data.Lines();
@@ -618,7 +609,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     // (which would always allocate a `std::string` for the slow path),
     // so the per-value cost of this benchmark stays representative of
     // the parse hot path.
-    size_t lineCount = result.data.Lines().size();
+    const size_t lineCount = result.data.Lines().size();
     size_t totalValues = 0;
     size_t mmapSliceValues = 0;
     size_t ownedStringValues = 0;
@@ -626,7 +617,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     {
         for (size_t i = 0; i < result.data.Keys().Size(); ++i)
         {
-            const KeyId id = static_cast<KeyId>(i);
+            const auto id = static_cast<KeyId>(i);
             const bool mmap = line.IsMmapSlice(id);
             const bool owned = line.IsOwnedString(id);
             if (mmap)
@@ -682,8 +673,8 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
     {
         KeyIndex keys;
         loglib::StopSource stop;
-        std::chrono::steady_clock::time_point requestedAt{};
-        std::chrono::steady_clock::time_point finishedAt{};
+        std::chrono::steady_clock::time_point requestedAt;
+        std::chrono::steady_clock::time_point finishedAt;
         bool cancelled = false;
         size_t batches = 0;
 
@@ -727,7 +718,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
         latenciesUs.push_back(latency);
     }
 
-    std::sort(latenciesUs.begin(), latenciesUs.end());
+    std::ranges::sort(latenciesUs);
     const double median = latenciesUs[latenciesUs.size() / 2];
     const double p95 = latenciesUs[(latenciesUs.size() * 95) / 100];
     const double maxLatency = latenciesUs.back();

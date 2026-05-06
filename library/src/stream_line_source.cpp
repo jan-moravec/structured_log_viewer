@@ -24,7 +24,7 @@ const std::filesystem::path &StreamLineSource::Path() const noexcept
 
 std::string StreamLineSource::RawLine(size_t lineId) const
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     if (!LineIsLiveLocked(lineId))
     {
         throw std::out_of_range("StreamLineSource::RawLine: lineId " + std::to_string(lineId) + " is not available");
@@ -42,7 +42,7 @@ std::string_view StreamLineSource::ResolveMmapBytes(
 
 std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId) const noexcept
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     if (!LineIsLiveLocked(lineId))
     {
         return {};
@@ -55,7 +55,7 @@ std::string_view StreamLineSource::ResolveOwnedBytes(uint64_t offset, uint32_t l
     // Deque entries are reference-stable until evicted, so the view
     // outlives the lock release. Callers must not retain it past the
     // next `EvictBefore` for this line id.
-    return std::string_view(arena.data() + offset, length);
+    return {arena.data() + offset, length};
 }
 
 std::span<const char> StreamLineSource::StableBytes() const noexcept
@@ -67,7 +67,7 @@ std::span<const char> StreamLineSource::StableBytes() const noexcept
 
 uint64_t StreamLineSource::AppendOwnedBytes(size_t lineId, std::string_view bytes)
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     if (!LineIsLiveLocked(lineId))
     {
         throw std::out_of_range(
@@ -87,7 +87,7 @@ bool StreamLineSource::SupportsEviction() const noexcept
 
 void StreamLineSource::EvictBefore(size_t firstSurvivingLineId)
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     if (firstSurvivingLineId <= mFirstAvailableLineId)
     {
         return;
@@ -106,7 +106,7 @@ void StreamLineSource::EvictBefore(size_t firstSurvivingLineId)
 
 size_t StreamLineSource::FirstAvailableLineId() const noexcept
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     return mFirstAvailableLineId;
 }
 
@@ -122,7 +122,7 @@ const BytesProducer *StreamLineSource::Producer() const noexcept
 
 size_t StreamLineSource::AppendLine(std::string rawLine, std::string ownedBytes)
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     const size_t lineId = mNextLineId++;
     mLines.push_back(std::move(rawLine));
     mLineOwnedBytes.push_back(std::move(ownedBytes));
@@ -131,13 +131,13 @@ size_t StreamLineSource::AppendLine(std::string rawLine, std::string ownedBytes)
 
 size_t StreamLineSource::Size() const noexcept
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     return mLines.size();
 }
 
 size_t StreamLineSource::OwnedMemoryBytes() const noexcept
 {
-    std::lock_guard<std::mutex> guard(mLock);
+    const std::scoped_lock guard(mLock);
     // STRICT LOWER BOUND: this counts the per-string control block
     // (`sizeof(std::string)` per element) plus each string's heap
     // `capacity()`. It does NOT count `std::deque`'s per-block

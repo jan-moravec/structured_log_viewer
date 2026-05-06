@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 namespace
@@ -14,18 +15,16 @@ namespace
 std::string ToLower(const std::string &str)
 {
     std::string lower = str;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](auto c) {
-        return static_cast<unsigned char>(std::tolower(c));
-    });
+    std::ranges::transform(lower, lower.begin(), [](auto c) { return static_cast<unsigned char>(std::tolower(c)); });
     return lower;
 }
 
 bool IsTimestampKey(const std::string &key)
 {
     static const std::vector<std::string> TIMESTAMP_KEYS = {"timestamp", "time", "t"};
-    return std::any_of(
-        TIMESTAMP_KEYS.begin(),
-        TIMESTAMP_KEYS.end(),
+    return std::ranges::any_of(
+        TIMESTAMP_KEYS,
+
         [lowerKey = ToLower(key)](const std::string &value) { return (lowerKey == value); }
     );
 }
@@ -44,7 +43,7 @@ namespace loglib
 
 void LogConfigurationManager::Load(const std::filesystem::path &path)
 {
-    std::ifstream file(path);
+    const std::ifstream file(path);
     if (file.is_open())
     {
         std::ostringstream buffer;
@@ -93,7 +92,11 @@ void LogConfigurationManager::Update(const LogData &logData)
             if (IsTimestampKey(key))
             {
                 mConfiguration.columns.push_back(LogConfiguration::Column{
-                    key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                    .header = key,
+                    .keys = {key},
+                    .printFormat = "%F %H:%M:%S",
+                    .type = LogConfiguration::Type::time,
+                    .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
                 // Timestamps land in the first column; shift everything else right.
                 for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
@@ -103,9 +106,13 @@ void LogConfigurationManager::Update(const LogData &logData)
             }
             else
             {
-                mConfiguration.columns.push_back(
-                    LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
-                );
+                mConfiguration.columns.push_back(LogConfiguration::Column{
+                    .header = key,
+                    .keys = {key},
+                    .printFormat = "{}",
+                    .type = LogConfiguration::Type::any,
+                    .parseFormats = {}
+                });
             }
             mKeysInColumns.insert(key);
         }
@@ -125,13 +132,22 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         if (IsTimestampKey(key))
         {
             mConfiguration.columns.push_back(LogConfiguration::Column{
-                key, {key}, "%F %H:%M:%S", LogConfiguration::Type::time, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                .header = key,
+                .keys = {key},
+                .printFormat = "%F %H:%M:%S",
+                .type = LogConfiguration::Type::time,
+                .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
             });
         }
         else
         {
-            mConfiguration.columns.push_back(LogConfiguration::Column{key, {key}, "{}", LogConfiguration::Type::any, {}}
-            );
+            mConfiguration.columns.push_back(LogConfiguration::Column{
+                .header = key,
+                .keys = {key},
+                .printFormat = "{}",
+                .type = LogConfiguration::Type::any,
+                .parseFormats = {}
+            });
         }
         mKeysInColumns.insert(key);
     }
@@ -144,14 +160,23 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
     {
         return;
     }
+    using Diff = std::vector<LogConfiguration::Column>::difference_type;
     auto begin = mConfiguration.columns.begin();
     if (srcIndex > destIndex)
     {
-        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(destIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1))
+        );
     }
     else
     {
-        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1)),
+            std::next(begin, static_cast<Diff>(destIndex + 1))
+        );
     }
     // The cached key set is unchanged by a pure reorder.
 }
@@ -207,7 +232,7 @@ void LogConfigurationManager::EnsureKeyCacheBuilt() const
 bool LogConfigurationManager::IsKeyInAnyColumnCached(const std::string &key) const
 {
     EnsureKeyCacheBuilt();
-    return mKeysInColumns.find(key) != mKeysInColumns.end();
+    return mKeysInColumns.contains(key);
 }
 
 } // namespace loglib

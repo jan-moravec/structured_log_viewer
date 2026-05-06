@@ -3,23 +3,21 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
-#include <loglib/log_file.hpp>
 #include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>
 
 #include <filesystem>
-#include <fstream>
 
 using namespace loglib;
 
 TEST_CASE("Save and load empty configuration", "[LogConfigurationManager]")
 {
-    TestLogConfiguration testConfiguration;
+    const TestLogConfiguration testConfiguration;
 
     {
-        LogConfigurationManager manager;
+        const LogConfigurationManager manager;
         manager.Save(testConfiguration.GetFilePath());
     }
 
@@ -29,8 +27,8 @@ TEST_CASE("Save and load empty configuration", "[LogConfigurationManager]")
         manager.Load(testConfiguration.GetFilePath());
 
         // Verify loaded configuration is empty
-        CHECK(manager.Configuration().columns.size() == 0);
-        CHECK(manager.Configuration().filters.size() == 0);
+        CHECK(manager.Configuration().columns.empty());
+        CHECK(manager.Configuration().filters.empty());
     }
 }
 
@@ -44,7 +42,7 @@ TEST_CASE("Handle missing file", "[LogConfigurationManager]")
 
 TEST_CASE("Handle empty file", "[LogConfigurationManager]")
 {
-    TestLogConfiguration testConfiguration;
+    const TestLogConfiguration testConfiguration;
     LogConfigurationManager manager;
 
     CHECK_THROWS_AS(manager.Load(testConfiguration.GetFilePath()), std::runtime_error);
@@ -52,10 +50,12 @@ TEST_CASE("Handle empty file", "[LogConfigurationManager]")
 
 TEST_CASE("Update with empty LogData should not modify configuration", "[LogConfigurationManager]")
 {
-    TestLogConfiguration testLogConfiguration;
+    const TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
-    const LogConfiguration::Column defaultColumn = {"test", {"test"}, "{}", LogConfiguration::Type::any, {}};
+    const LogConfiguration::Column defaultColumn = {
+        .header = "test", .keys = {"test"}, .printFormat = "{}", .type = LogConfiguration::Type::any, .parseFormats = {}
+    };
     logConfiguration.columns.push_back(defaultColumn);
     testLogConfiguration.Write(logConfiguration);
 
@@ -64,7 +64,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
 
     const size_t initialColumnCount = manager.Configuration().columns.size();
 
-    LogData emptyLogData;
+    const LogData emptyLogData;
     manager.Update(emptyLogData);
 
     CHECK(manager.Configuration().columns.size() == initialColumnCount);
@@ -77,16 +77,22 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
 
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
 {
-    TestLogConfiguration testLogConfiguration;
+    const TestLogConfiguration testLogConfiguration;
 
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"regular", {"regular"}, "{}", LogConfiguration::Type::any, {}});
+    logConfiguration.columns.push_back(
+        {.header = "regular",
+         .keys = {"regular"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
     testLogConfiguration.Write(logConfiguration);
 
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
@@ -94,7 +100,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, *source, 0);
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
 
-    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     manager.Update(logData);
 
@@ -148,13 +154,13 @@ TEST_CASE(
 
     // Update must skip "regular", add "timestamp" as Type::time, and place
     // it at position 0.
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
     testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
-    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     manager.Update(logData);
 
@@ -169,16 +175,28 @@ TEST_CASE(
     "[LogConfigurationManager][cache_invalidation]"
 )
 {
-    TestLogConfiguration firstConfigOnDisk("test_config_first.json");
+    const TestLogConfiguration firstConfigOnDisk("test_config_first.json");
     {
         LogConfiguration logConfiguration;
-        logConfiguration.columns.push_back({"loaded_key", {"loaded_key"}, "{}", LogConfiguration::Type::any, {}});
+        logConfiguration.columns.push_back(
+            {.header = "loaded_key",
+             .keys = {"loaded_key"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::any,
+             .parseFormats = {}}
+        );
         firstConfigOnDisk.Write(logConfiguration);
     }
-    TestLogConfiguration secondConfigOnDisk("test_config_second.json");
+    const TestLogConfiguration secondConfigOnDisk("test_config_second.json");
     {
         LogConfiguration logConfiguration;
-        logConfiguration.columns.push_back({"other_key", {"other_key"}, "{}", LogConfiguration::Type::any, {}});
+        logConfiguration.columns.push_back(
+            {.header = "other_key",
+             .keys = {"other_key"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::any,
+             .parseFormats = {}}
+        );
         secondConfigOnDisk.Write(logConfiguration);
     }
 
@@ -219,22 +237,28 @@ TEST_CASE(
 {
     // Re-run the "mixed keys organizes timestamp first" shape with the
     // cached path; regression boundary against the old free-function walk.
-    TestLogConfiguration testLogConfiguration;
+    const TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"regular", {"regular"}, "{}", LogConfiguration::Type::any, {}});
+    logConfiguration.columns.push_back(
+        {.header = "regular",
+         .keys = {"regular"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
     testLogConfiguration.Write(logConfiguration);
 
     LogConfigurationManager manager;
     manager.Load(testLogConfiguration.GetFilePath());
 
-    TestLogFile testLogFile;
+    const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
     testLines.emplace_back(LogMap{{"regular", std::string("value")}}, testKeys, *source, 0);
     testLines.emplace_back(LogMap{{"newKey", std::string("test")}}, testKeys, *source, 0);
     testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
-    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
     manager.Update(logData);
 
@@ -252,9 +276,15 @@ TEST_CASE(
     // The cache mirrors `column.keys`, not `column.header`. With diverging
     // header/keys, AppendKeys must skip keys already listed under any
     // column's `keys`.
-    TestLogConfiguration testLogConfiguration;
+    const TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
-    logConfiguration.columns.push_back({"display", {"raw_key", "alias"}, "{}", LogConfiguration::Type::any, {}});
+    logConfiguration.columns.push_back(
+        {.header = "display",
+         .keys = {"raw_key", "alias"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
     testLogConfiguration.Write(logConfiguration);
 
     LogConfigurationManager manager;

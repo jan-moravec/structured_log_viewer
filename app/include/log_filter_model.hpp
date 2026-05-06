@@ -55,5 +55,5 @@ private:
     std::vector<std::unique_ptr<FilterRule>> mFilterRules;
 
 private:
-    bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags) const;
+    static bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags);
 };

@@ -116,8 +116,8 @@ RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
     const auto t0 = std::chrono::steady_clock::now();
     model->BeginStreaming(std::move(fileSource), [fileSourcePtr, sink = model->Sink()](loglib::StopToken token) {
         loglib::ParserOptions options;
-        options.stopToken = token;
-        loglib::JsonParser parser;
+        options.stopToken = std::move(token);
+        const loglib::JsonParser parser;
         parser.ParseStreaming(*fileSourcePtr, *sink, options);
     });
 
@@ -153,6 +153,7 @@ QString FormatThroughput(const QString &label, std::chrono::nanoseconds elapsed,
 
 } // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` test fixture; moc + QTest registration expect this shape.
 class MainWindowBench : public QObject
 {
     Q_OBJECT
@@ -173,25 +174,25 @@ private slots:
         QVERIFY(mBytes > 0);
     }
 
-    void benchNewestFirstOff()
+    void BenchNewestFirstOff()
     {
-        runConfig(QStringLiteral("Qt path, newest-first OFF (default)"), false);
+        RunConfig(QStringLiteral("Qt path, newest-first OFF (default)"), false);
     }
 
-    void benchNewestFirstStreamMode()
+    void BenchNewestFirstStreamMode()
     {
-        runConfig(QStringLiteral("Qt path, newest-first ON (stream mode)"), true);
+        RunConfig(QStringLiteral("Qt path, newest-first ON (stream mode)"), true);
     }
 
-    void benchNewestFirstStaticMode()
+    void BenchNewestFirstStaticMode()
     {
-        runConfig(QStringLiteral("Qt path, newest-first ON (static mode)"), true);
+        RunConfig(QStringLiteral("Qt path, newest-first ON (static mode)"), true);
     }
 
 private:
     static constexpr std::size_t LINE_COUNT = 1'000'000;
 
-    void runConfig(const QString &label, bool reversed)
+    void RunConfig(const QString &label, bool reversed)
     {
         const RunResult run = RunOnce(mLogPath, reversed);
         QVERIFY2(run.finished, "streamingFinished must fire within the 180 s timeout");

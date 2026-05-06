@@ -37,7 +37,9 @@ public:
         mPath = std::filesystem::temp_directory_path() / ("loglib_tcp_tls_" + std::to_string(gen()));
         std::filesystem::create_directories(mPath);
     }
-    ~TempDir()
+    // NOLINTNEXTLINE(bugprone-exception-escape): MSVC may model throwing paths through STL `remove_all`; teardown
+    // ignores errors via `error_code`.
+    ~TempDir() noexcept
     {
         std::error_code ec;
         std::filesystem::remove_all(mPath, ec);
@@ -164,7 +166,7 @@ std::string DrainUntil(TcpServerProducer &producer, size_t target, std::chrono::
 
 TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tcp_producer][tls]")
 {
-    TempDir tmp;
+    const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
     const auto keyPath = tmp.File("key.pem");
     GenerateSelfSignedCert(certPath, keyPath);
@@ -186,8 +188,9 @@ TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tc
     {
         plain.Send("plaintext-into-tls\n");
     }
-    catch (const std::exception &)
+    catch (const std::exception &ex)
     {
+        static_cast<void>(ex); // send may fail if the server side closes first
     }
     const std::string drained = DrainUntil(producer, /*target*/ 1, ScaledMs(500ms));
     REQUIRE(drained.empty());
@@ -195,7 +198,7 @@ TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tc
 
 TEST_CASE("TcpServerProducer (TLS): TLS client send-receive with self-signed cert", "[tcp_producer][tls]")
 {
-    TempDir tmp;
+    const TempDir tmp;
     const auto certPath = tmp.File("cert.pem");
     const auto keyPath = tmp.File("key.pem");
     GenerateSelfSignedCert(certPath, keyPath);

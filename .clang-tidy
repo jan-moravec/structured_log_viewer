@@ -1,0 +1,124 @@
+# Configure clang-tidy checks
+#
+# Each check has a name and the checks to run can be chosen with the Checks list,
+# which specifies a comma-separated list of positive and negative (prefixed with -) globs.
+# Positive globs add subsets of checks, and negative globs remove them.
+
+# First disable all checks, then enable the groups we like,
+# finally disable again specific checks.
+#
+# Disabled checks:
+#   -modernize-use-trailing-return-type: Stylistic preference only.
+#   -modernize-use-nodiscard: Too noisy; flags every function with a return value.
+#   -readability-function-cognitive-complexity: Noisy for complex functions.
+#   -cppcoreguidelines-pro-type-reinterpret-cast: Necessary for low-level buffer code.
+#   -cppcoreguidelines-pro-bounds-*: Too strict for pointer/array operations.
+#   -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access: Same family;
+#        flags every `vec[i]` in tests/macros and nlohmann/json `operator[]`.
+#   -cppcoreguidelines-avoid-c-arrays: C arrays sometimes needed for constexpr.
+#   -modernize-avoid-c-arrays: Alias for the above.
+#   -cppcoreguidelines-macro-usage: Some macros are necessary.
+#   -readability-identifier-length: Short names often appropriate (i, rd).
+#   -bugprone-easily-swappable-parameters: Too noisy.
+#   -performance-enum-size: Micro-optimization, not worth the noise.
+#   -portability-avoid-pragma-once: pragma once is supported by all modern compilers.
+#   -bugprone-implicit-widening-of-multiplication-result: Fires on size_t = int*int
+#        idioms; suppressing avoids sprinkling static_cast<size_t> everywhere.
+#   -cppcoreguidelines-narrowing-conversions: Dozens of false positives on
+#        size_t -> difference_type iterator arithmetic.
+#   -readability-uppercase-literal-suffix: Cosmetic (1u vs 1U).
+#   -readability-implicit-bool-conversion: Noisy on Qt pointer `if (mWidget)` idioms.
+#   -misc-include-cleaner: With MissingIncludes/UnusedIncludes off it only prints
+#        a no-op banner per TU; disabling avoids noise until include-cleaner is adopted.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -readability-function-cognitive-complexity,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -cppcoreguidelines-avoid-c-arrays,
+  -modernize-avoid-c-arrays,
+  -cppcoreguidelines-macro-usage,
+  -readability-identifier-length,
+  -bugprone-easily-swappable-parameters,
+  -performance-enum-size,
+  -portability-avoid-pragma-once,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -cppcoreguidelines-narrowing-conversions,
+  -readability-uppercase-literal-suffix,
+  -readability-implicit-bool-conversion,
+  -misc-include-cleaner
+
+WarningsAsErrors: ""
+FormatStyle: "file"
+
+# Additional options for checks.
+# Includes the style naming conventions.
+CheckOptions:
+  - { key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor, value: true }
+  - { key: cppcoreguidelines-special-member-functions.AllowMissingMoveFunctionsWhenCopyIsDeleted, value: true }
+  - { key: modernize-avoid-c-arrays.AllowStringArrays, value: false }
+
+  # ------- Identifier naming -------
+  # Types and type-like constructs: CamelCase.
+  - { key: readability-identifier-naming.NamespaceCase,          value: lower_case }
+  - { key: readability-identifier-naming.ClassCase,              value: CamelCase }
+  - { key: readability-identifier-naming.StructCase,             value: CamelCase }
+  - { key: readability-identifier-naming.UnionCase,              value: CamelCase }
+  - { key: readability-identifier-naming.EnumCase,               value: CamelCase }
+  - { key: readability-identifier-naming.TypeAliasCase,          value: CamelCase }
+  - { key: readability-identifier-naming.TypedefCase,            value: CamelCase }
+  - { key: readability-identifier-naming.ConceptCase,            value: CamelCase }
+  - { key: readability-identifier-naming.TemplateParameterCase,  value: CamelCase }
+
+  # Functions / methods: CamelCase. Qt-forced camelBack names (overrides,
+  # signals, public slots) are allowed via app/.clang-tidy which relaxes
+  # PublicMethodCase to aNy_CasE for the GUI code only.
+  - { key: readability-identifier-naming.FunctionCase,           value: CamelCase }
+  - { key: readability-identifier-naming.MethodCase,             value: CamelCase }
+  - { key: readability-identifier-naming.ClassMethodCase,        value: CamelCase }
+
+  # Enum constants: CamelCase. Scoped and unscoped both. This matches Qt's
+  # style (Qt::UserRole etc.) and avoids UPPER_CASE collisions with
+  # Windows macros (ERROR, FAILED, IN, OUT, MIN, MAX, ...).
+  - { key: readability-identifier-naming.EnumConstantCase,       value: CamelCase }
+  - { key: readability-identifier-naming.ScopedEnumConstantCase, value: CamelCase }
+
+  # Data members. Struct fields are plain camelBack (value-type aggregates);
+  # class fields are private-with-m-prefix by default.
+  - { key: readability-identifier-naming.StructMemberCase,       value: camelBack }
+  - { key: readability-identifier-naming.ClassMemberCase,        value: CamelCase }
+  - { key: readability-identifier-naming.PrivateMemberCase,      value: CamelCase }
+  - { key: readability-identifier-naming.PrivateMemberPrefix,    value: m }
+  - { key: readability-identifier-naming.ProtectedMemberCase,    value: CamelCase }
+  - { key: readability-identifier-naming.ProtectedMemberPrefix,  value: m }
+
+  # Local variables, parameters: camelBack. Local const (non-constexpr) is
+  # just a local variable in the clang-tidy sense, not a "constant".
+  - { key: readability-identifier-naming.ParameterCase,          value: camelBack }
+  - { key: readability-identifier-naming.LocalVariableCase,      value: camelBack }
+  - { key: readability-identifier-naming.LocalConstantCase,      value: camelBack }
+  - { key: readability-identifier-naming.VariableCase,           value: camelBack }
+
+  # True compile-time constants: UPPER_CASE. Covers constexpr (local and
+  # namespace), global const, static const at namespace or class scope,
+  # and macros.
+  - { key: readability-identifier-naming.MacroDefinitionCase,    value: UPPER_CASE }
+  - { key: readability-identifier-naming.ConstexprVariableCase,  value: UPPER_CASE }
+  - { key: readability-identifier-naming.GlobalConstantCase,     value: UPPER_CASE }
+  - { key: readability-identifier-naming.StaticConstantCase,     value: UPPER_CASE }
+  - { key: readability-identifier-naming.ClassConstantCase,      value: UPPER_CASE }

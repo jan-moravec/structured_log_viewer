@@ -76,12 +76,12 @@ public:
 
     /// Merges @p other in place, rewiring back-pointers and remapping KeyIds
     /// to this side's canonical `KeyIndex`.
-    void Merge(LogData &&other);
+    void Merge(LogData other);
 
     /// Append a parsed batch. `lineOffsets` populates
     /// `LogFile::mLineOffsets` for file sources; the live-tail path
     /// passes an empty vector (the source owns its per-line storage).
-    void AppendBatch(std::vector<LogLine> lines, std::vector<uint64_t> lineOffsets);
+    void AppendBatch(std::vector<LogLine> lines, const std::vector<uint64_t> &lineOffsets);
 
 private:
     std::vector<std::unique_ptr<LineSource>> mSources;

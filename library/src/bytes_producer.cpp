@@ -3,12 +3,12 @@
 namespace loglib
 {
 
-void BytesProducer::SetRotationCallback(std::function<void()> /*callback*/)
+void BytesProducer::SetRotationCallback(const std::function<void()> & /*callback*/)
 {
     // No-op: finite producers never rotate.
 }
 
-void BytesProducer::SetStatusCallback(std::function<void(SourceStatus)> /*callback*/)
+void BytesProducer::SetStatusCallback(const std::function<void(SourceStatus)> & /*callback*/)
 {
     // No-op: producers that never become unavailable stay `Running`.
 }

@@ -22,6 +22,7 @@
 #include <QVariant>
 #include <QtConcurrent/QtConcurrent>
 
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -181,10 +182,11 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     // FileLineSource fast path: pre-reserve per-line offsets so per-batch
     // inserts stay amortised O(1). ~100 bytes/line matches the benchmark
     // fixture. The hint is a no-op for stream sources.
+    constexpr size_t BYTES_PER_LINE_RESERVE_HINT = 100;
     std::optional<size_t> reserveCount;
     if (auto *fileSource = dynamic_cast<loglib::FileLineSource *>(source.get()); fileSource != nullptr)
     {
-        reserveCount = fileSource->File().Size() / 100;
+        reserveCount = fileSource->File().Size() / BYTES_PER_LINE_RESERVE_HINT;
     }
 
     mLogTable.BeginStreaming(std::move(source));
@@ -280,11 +282,11 @@ loglib::StopToken LogModel::BeginStreaming(
 
     QtStreamingLogSink *sinkForWorker = mSink;
     auto callable = std::move(parseCallable);
-    QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
+    const QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
         RunParserWorkerWithBoundary(sinkForWorker, [&] { callable(stopToken); });
     });
 
-    mStreamingWatcher->setFuture(std::move(future));
+    mStreamingWatcher->setFuture(future);
     return stopToken;
 }
 
@@ -314,11 +316,11 @@ loglib::StopToken LogModel::AppendStreaming(
 
     QtStreamingLogSink *sinkForWorker = mSink;
     auto callable = std::move(parseCallable);
-    QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
+    const QFuture<void> future = QtConcurrent::run([sinkForWorker, stopToken, callable = std::move(callable)]() {
         RunParserWorkerWithBoundary(sinkForWorker, [&] { callable(stopToken); });
     });
 
-    mStreamingWatcher->setFuture(std::move(future));
+    mStreamingWatcher->setFuture(future);
     return stopToken;
 }
 
@@ -361,7 +363,7 @@ loglib::StopToken LogModel::BeginStreaming(
     // synchronously from this thread); re-emit via a queued connection
     // so the GUI receives them on the model's thread. `QPointer` makes
     // destruction mid-hop a graceful no-op.
-    QPointer<LogModel> self(this);
+    const QPointer<LogModel> self(this);
     if (loglib::BytesProducer *producer = streamSourcePtr->Producer(); producer != nullptr)
     {
         producer->SetRotationCallback([self]() {
@@ -398,22 +400,22 @@ loglib::StopToken LogModel::BeginStreaming(
         });
     }
 
-    QFuture<void> future =
+    const QFuture<void> future =
         QtConcurrent::run([sinkForWorker, streamSourcePtr, capturedOptions = std::move(options)]() mutable {
             RunParserWorkerWithBoundary(sinkForWorker, [&] {
-                loglib::JsonParser parser;
+                const loglib::JsonParser parser;
                 parser.ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
             });
         });
 
-    mStreamingWatcher->setFuture(std::move(future));
+    mStreamingWatcher->setFuture(future);
     return stopToken;
 }
 
 void LogModel::AppendBatch(loglib::StreamedBatch batch)
 {
     // Capture errors before `LogTable::AppendBatch` swallows them.
-    const qsizetype capturedErrorCount = static_cast<qsizetype>(batch.errors.size());
+    const auto capturedErrorCount = static_cast<qsizetype>(batch.errors.size());
     if (!batch.errors.empty())
     {
         mStreamingErrors.reserve(mStreamingErrors.size() + batch.errors.size());
@@ -442,20 +444,17 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // counts, fire `beginInsert*`, then commit. Columns first so
     // headers are live when inserted rows query `data()`.
     const auto preview = mLogTable.PreviewAppend(batch);
-    int newColumnCount = static_cast<int>(preview.newColumnCount);
+    const int newColumnCount = static_cast<int>(preview.newColumnCount);
     int newRowCount = static_cast<int>(preview.newRowCount);
 
     // FIFO eviction: drop the oldest rows before inserting the new
     // batch so the visible model stays within the cap. Order is
     // remove → insert.
     int dropCount = 0;
-    if (mRetentionCap != 0 && newRowCount > 0 && static_cast<size_t>(newRowCount) > mRetentionCap)
+    if (mRetentionCap != 0 && newRowCount > 0 && std::cmp_greater(newRowCount, mRetentionCap))
     {
         dropCount = newRowCount - static_cast<int>(mRetentionCap);
-        if (dropCount > oldRowCount)
-        {
-            dropCount = oldRowCount;
-        }
+        dropCount = std::min(dropCount, oldRowCount);
     }
 
     if (dropCount > 0)
@@ -520,7 +519,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         // Process low-to-high: each move targets index 0, and because
         // every source index is > 0 the unprocessed (higher) indices do
         // not shift.
-        for (int srcIndex : newTimestampColumnIndices)
+        for (const int srcIndex : newTimestampColumnIndices)
         {
             if (srcIndex == 0)
             {
@@ -566,7 +565,7 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
 {
     if (role != Qt::DisplayRole)
     {
-        return QVariant();
+        return {};
     }
 
     if (orientation == Qt::Horizontal && section >= 0 && section < columnCount())
@@ -574,14 +573,14 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
     }
 
-    return QVariant();
+    return {};
 }
 
 QVariant LogModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.row() >= rowCount() || index.column() >= columnCount())
     {
-        return QVariant();
+        return {};
     }
 
     if (role == Qt::DisplayRole)
@@ -590,7 +589,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             mLogTable.GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()))
         );
     }
-    else if (role == LogModelItemDataRole::SortRole)
+    if (role == LogModelItemDataRole::SortRole)
     {
         loglib::LogValue value =
             mLogTable.GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
@@ -614,13 +613,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 {
                     return QVariant::fromValue<qulonglong>(arg);
                 }
-                else if constexpr (std::is_same_v<T, double>)
+                else if constexpr (std::is_same_v<T, double> || std::is_same_v<T, bool>)
                 {
-                    return QVariant(arg);
-                }
-                else if constexpr (std::is_same_v<T, bool>)
-                {
-                    return QVariant(arg);
+                    return {arg};
                 }
                 else if constexpr (std::is_same_v<T, loglib::TimeStamp>)
                 {
@@ -628,7 +623,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
                 else if constexpr (std::is_same_v<T, std::monostate>)
                 {
-                    return QVariant();
+                    return {};
                 }
                 else
                 {
@@ -638,28 +633,28 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             value
         );
     }
-    else if (role == LogModelItemDataRole::InsertionOrderRole)
+    if (role == LogModelItemDataRole::InsertionOrderRole)
     {
         // Bare source row index, column-independent (see the role's
         // declaration). Historically `StreamOrderProxyModel` sorted by
         // it for newest-first mode; the role is retained for tests that
         // need the source-side row index, and for the `LogFilterModel`
         // sort tie-break.
-        return QVariant(index.row());
+        return {index.row()};
     }
-    else if (role == LogModelItemDataRole::CopyLine)
+    if (role == LogModelItemDataRole::CopyLine)
     {
         // The `LineSource *` on each `LogLine` disambiguates between
         // the mmap arena (file path) and per-line owned bytes
         // (live-tail path).
-        const size_t row = static_cast<size_t>(index.row());
+        const auto row = static_cast<size_t>(index.row());
         const auto &line = mLogTable.Data().Lines()[row];
         const loglib::LineSource *source = line.Source();
         const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
-        return QVariant(QString::fromStdString(raw));
+        return {QString::fromStdString(raw)};
     }
 
-    return QVariant();
+    return {};
 }
 
 template <typename T> std::optional<std::pair<T, T>> LogModel::GetMinMaxValues(int column) const

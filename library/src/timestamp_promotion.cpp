@@ -2,7 +2,6 @@
 
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/line_source.hpp"
-#include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
 
 #include <algorithm>
@@ -41,6 +40,8 @@ std::optional<std::string_view> ExtractStringBytes(
         return std::nullopt;
     }
     const auto compact = line.CompactValues();
+    // Asymmetric comparator: std::ranges::lower_bound rejects it.
+    // NOLINTNEXTLINE(modernize-use-ranges)
     auto it = std::lower_bound(compact.begin(), compact.end(), keyId, [](const auto &entry, KeyId target) {
         return entry.first < target;
     });
@@ -49,7 +50,7 @@ std::optional<std::string_view> ExtractStringBytes(
         return std::nullopt;
     }
     const CompactLogValue &value = it->second;
-    LineSource *source = line.Source();
+    const LineSource *source = line.Source();
     if (value.tag == CompactTag::MmapSlice)
     {
         if (source == nullptr)
@@ -184,7 +185,7 @@ bool PromoteLineTimestamps(
                     const TimestampFormatKind kind = spec.formatKinds[f];
                     if (tryPromote(keyId, format, kind, *sv))
                     {
-                        lv = LastValidTimestampParse{keyId, format, kind};
+                        lv = LastValidTimestampParse{.keyId = keyId, .format = format, .kind = kind};
                         promoted = true;
                         break;
                     }

@@ -8,7 +8,6 @@
 #include <glaze/glaze.hpp>
 
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -20,7 +19,7 @@ public:
     TestJsonLogFile(std::string filePath = FILE_PATH);
     TestJsonLogFile(Line line, std::string filePath = FILE_PATH);
     TestJsonLogFile(std::vector<Line> lines, std::string filePath = FILE_PATH);
-    ~TestJsonLogFile();
+    ~TestJsonLogFile() noexcept;
 
     const std::string &GetFilePath() const;
     void WriteToFile(std::vector<Line> lines);
@@ -31,6 +30,7 @@ public:
 private:
     static constexpr char FILE_PATH[] = "test.json";
     std::string mFilePath;
+    std::filesystem::path mFsPath;
     std::vector<Line> mLines;
     std::vector<std::string> mStringLines;
     std::vector<glz::generic_sorted_u64> mJsonLines;
@@ -40,21 +40,22 @@ class TestLogConfiguration
 {
 public:
     TestLogConfiguration(std::string filePath = FILE_PATH);
-    ~TestLogConfiguration();
+    ~TestLogConfiguration() noexcept;
 
     const std::string &GetFilePath() const;
-    void Write(const loglib::LogConfiguration &configuration);
+    void Write(const loglib::LogConfiguration &configuration) const;
 
 private:
     static constexpr char FILE_PATH[] = "test_config.json";
     std::string mFilePath;
+    std::filesystem::path mFsPath;
 };
 
 class TestLogFile
 {
 public:
     TestLogFile(std::string filePath = FILE_PATH);
-    ~TestLogFile();
+    ~TestLogFile() noexcept;
 
     const std::string &GetFilePath() const;
     void Write(const std::string &content) const;
@@ -68,6 +69,7 @@ public:
 private:
     static constexpr char FILE_PATH[] = "test_file.json";
     std::string mFilePath;
+    std::filesystem::path mFsPath;
 };
 
 void InitializeTimezoneData();

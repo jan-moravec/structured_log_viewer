@@ -17,7 +17,7 @@ LogTableView::LogTableView(QWidget *parent)
 {
     setAcceptDrops(true);
 
-    QScrollBar *vbar = verticalScrollBar();
+    const QScrollBar *vbar = verticalScrollBar();
 
     // Edge-triggered scroll detection gated on `mNextValueChangeIsUser`
     // so non-user changes (programmatic `scrollTo`, `endInsertRows`
@@ -104,7 +104,7 @@ void LogTableView::wheelEvent(QWheelEvent *event)
 
 bool LogTableView::ComputeAtTailEdge(int value) const
 {
-    QScrollBar *bar = verticalScrollBar();
+    const QScrollBar *bar = verticalScrollBar();
     if (mTailEdge == TailEdge::Bottom)
     {
         return value >= bar->maximum();
@@ -184,7 +184,7 @@ void LogTableView::SaveAnchorIfShouldPreserve()
         return;
     }
 
-    QAbstractItemModel *m = model();
+    const QAbstractItemModel *m = model();
     if (m == nullptr || m->rowCount() == 0)
     {
         return;
