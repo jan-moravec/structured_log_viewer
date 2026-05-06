@@ -1,8 +1,14 @@
 # Structured Log Viewer
 
-[![Build](https://github.com/jan-moravec/structured_log_viewer/workflows/Build/badge.svg)](https://github.com/jan-moravec/structured_log_viewer/actions?query=workflow%3ABuild)
+[![Build](https://github.com/jan-moravec/structured_log_viewer/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/jan-moravec/structured_log_viewer/actions/workflows/build.yml)
 [![Coverage](https://codecov.io/gh/jan-moravec/structured_log_viewer/branch/main/graph/badge.svg)](https://codecov.io/gh/jan-moravec/structured_log_viewer)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/jan-moravec/structured_log_viewer/badge)](https://securityscorecards.dev/viewer/?uri=github.com/jan-moravec/structured_log_viewer)
 [![GitHub Releases](https://img.shields.io/github/release/jan-moravec/structured_log_viewer.svg)](https://github.com/jan-moravec/structured_log_viewer/releases)
+![Downloads](https://img.shields.io/github/downloads/jan-moravec/structured_log_viewer/total)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-blue)
+![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)
+![Qt 6.8](https://img.shields.io/badge/Qt-6.8-41cd52?logo=qt&logoColor=white)
+[![License: MIT](https://img.shields.io/github/license/jan-moravec/structured_log_viewer.svg)](LICENSE)
 
 ## Overview
 

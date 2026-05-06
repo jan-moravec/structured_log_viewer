@@ -1,0 +1,24 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 5%
+        if_ci_failed: success
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 50%
+        if_ci_failed: success
+        informational: true
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
+
+ignore:
+  - "test/**/*"
+  - "**/_deps/**"
+  - "build/**"
