@@ -1994,8 +1994,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(rowOrderProxy != nullptr);
         QVERIFY(model != nullptr);
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts the test if
-        // pointers are null.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         QVERIFY(!rowOrderProxy->IsReversed());
 
         // Drive a tiny streaming session with three rows so the proxy
