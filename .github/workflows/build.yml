@@ -61,15 +61,18 @@ jobs:
     #   tsan       -> ThreadSanitizer (excludes apptest; Qt trips it)
     #   coverage   -> source-based coverage + Codecov upload; also runs
     #                 cpp-linter-action against the build's compile_commands.json.
-    # Coverage requires a CODECOV_TOKEN repo secret (fail_ci_if_error=true).
+    # Coverage uploads tokenlessly via OIDC; the Codecov GitHub App must be
+    # installed on the repo (fail_ci_if_error=true catches a misconfigured app).
     needs: pre-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       # pull-requests: write lets cpp-linter-action post inline tidy review
-      # comments on PRs; contents: read is inherited.
+      # comments on PRs; id-token: write enables tokenless Codecov OIDC upload;
+      # contents: read is inherited.
       contents: read
       pull-requests: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -177,15 +180,17 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload coverage to Codecov
-        # fail_ci_if_error: missing/expired token fails the leg loudly
-        # instead of silently producing zero-coverage runs.
+        # Tokenless OIDC upload via the Codecov GitHub App (installed on the repo).
+        # fail_ci_if_error: a broken upload (e.g. app uninstalled) fails the leg
+        # loudly instead of silently producing zero-coverage runs.
+        # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@aa56896cf108bd10b5eb883cd1d24196da57f695 # v5.5.4
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.lcov
           fail_ci_if_error: true
           verbose: true
+          use_oidc: true
 
   build-linux:
     needs: pre-commit
