@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -142,6 +143,22 @@ std::optional<uint64_t> SizeOfOpenHandle(internal::NativeFileHandle handle) noex
 #endif
 }
 
+#ifdef _WIN32
+/// Split a 64-bit file offset into `OVERLAPPED::Offset` / `OffsetHigh`.
+/// `OVERLAPPED` stores these fields in a union; this is the documented
+/// Win32 pattern for overlapped reads.
+constexpr DWORD K_OVERLAPPED_OFFSET_LOW_MASK = 0xFFFFFFFFu;
+constexpr unsigned K_OVERLAPPED_OFFSET_HIGH_SHIFT = 32U;
+
+void SetOverlappedFileOffset(OVERLAPPED &ov, uint64_t offset) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access): Win32 API layout
+    ov.Offset = static_cast<DWORD>(offset & K_OVERLAPPED_OFFSET_LOW_MASK);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
+    ov.OffsetHigh = static_cast<DWORD>(offset >> K_OVERLAPPED_OFFSET_HIGH_SHIFT);
+}
+#endif
+
 /// Pread-style read: up to @p size bytes from @p offset, without
 /// advancing a persistent file pointer. Short reads at EOF are normal.
 /// Returns -1 on hard error.
@@ -153,8 +170,7 @@ SsizeType ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size
     }
 #ifdef _WIN32
     OVERLAPPED ov{};
-    ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFu);
-    ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+    SetOverlappedFileOffset(ov, offset);
     DWORD bytesRead = 0;
     const DWORD toRead = static_cast<DWORD>(std::min<size_t>(size, std::numeric_limits<DWORD>::max()));
     if (!::ReadFile(handle, out, toRead, &bytesRead, &ov))
@@ -198,6 +214,9 @@ namespace internal
 
 class TailingBytesProducerImpl;
 
+namespace
+{
+
 /// efsw listener glue. Filters parent-directory events down to the
 /// basename of our open file and forwards to the source.
 class TailingBytesProducerWatcherListener final : public efsw::FileWatchListener
@@ -221,6 +240,8 @@ private:
     std::string mFilename;
 };
 
+} // namespace
+
 /// Pimpl for `TailingBytesProducer`. Owns the worker thread, the mutex /
 /// cv pair guarding the byte queue, and the efsw watcher.
 class TailingBytesProducerImpl
@@ -240,8 +261,8 @@ public:
     void Stop() noexcept;
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] std::string DisplayName() const;
-    void SetRotationCallback(std::function<void()> callback);
-    void SetStatusCallback(std::function<void(SourceStatus)> callback);
+    void SetRotationCallback(const std::function<void()> &callback);
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] size_t RotationCount() const noexcept;
 
     /// Called from the efsw thread. Wakes the worker.
@@ -314,6 +335,9 @@ private:
     std::thread mWorker;
 };
 
+namespace
+{
+
 void TailingBytesProducerWatcherListener::handleFileAction(
     efsw::WatchID /*watchid*/,
     const std::string & /*dir*/,
@@ -331,6 +355,8 @@ void TailingBytesProducerWatcherListener::handleFileAction(
         mImpl->OnWatcherEvent();
     }
 }
+
+} // namespace
 
 TailingBytesProducerImpl::TailingBytesProducerImpl(
     std::filesystem::path path, size_t retentionLines, TailingBytesProducer::Options options
@@ -474,13 +500,13 @@ std::string TailingBytesProducerImpl::DisplayName() const
     return mDisplayName;
 }
 
-void TailingBytesProducerImpl::SetRotationCallback(std::function<void()> callback)
+void TailingBytesProducerImpl::SetRotationCallback(const std::function<void()> &callback)
 {
     const std::scoped_lock lock(mCallbackMutex);
-    mRotationCallback = std::move(callback);
+    mRotationCallback = callback;
 }
 
-void TailingBytesProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TailingBytesProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
     // Mirror `TcpServerProducer` / `UdpServerProducer`: snapshot the
     // last-reported status under the lock and replay it once outside
@@ -494,7 +520,7 @@ void TailingBytesProducerImpl::SetStatusCallback(std::function<void(SourceStatus
     SourceStatus current{};
     {
         const std::scoped_lock lock(mCallbackMutex);
-        mStatusCallback = std::move(callback);
+        mStatusCallback = callback;
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
     }
@@ -625,7 +651,8 @@ void TailingBytesProducerImpl::Prefill()
         scannedBytes += static_cast<uint64_t>(n);
         for (auto i = static_cast<size_t>(n); i > 0; --i)
         {
-            if (chunk[i - 1] == '\n')
+            const size_t idx = i - 1U;
+            if (chunk.at(idx) == '\n')
             {
                 ++newlinesSeen;
                 if (newlinesSeen == targetNewlines)
@@ -829,7 +856,8 @@ void TailingBytesProducerImpl::AppendBytesAndSplitLocked(const char *data, size_
         return;
     }
     const size_t completeBytes = lastNewline + 1;
-    mReadyBuffer.insert(mReadyBuffer.end(), mPartialLine.begin(), mPartialLine.begin() + completeBytes);
+    const auto completeEnd = std::next(mPartialLine.begin(), static_cast<std::string::difference_type>(completeBytes));
+    mReadyBuffer.insert(mReadyBuffer.end(), mPartialLine.begin(), completeEnd);
     mPartialLine.erase(0, completeBytes);
 }
 
@@ -854,7 +882,8 @@ void TailingBytesProducerImpl::CompactReadyBufferIfNeededLocked()
     constexpr size_t MIN_COMPACT_BYTES = 64 * 1024;
     if (mReadyConsumed >= MIN_COMPACT_BYTES && mReadyConsumed * 2 >= mReadyBuffer.size())
     {
-        mReadyBuffer.erase(mReadyBuffer.begin(), mReadyBuffer.begin() + mReadyConsumed);
+        const auto eraseEnd = std::next(mReadyBuffer.begin(), static_cast<std::vector<char>::difference_type>(mReadyConsumed));
+        mReadyBuffer.erase(mReadyBuffer.begin(), eraseEnd);
         mReadyConsumed = 0;
     }
 }
@@ -935,14 +964,14 @@ std::string TailingBytesProducer::DisplayName() const
     return mImpl->DisplayName();
 }
 
-void TailingBytesProducer::SetRotationCallback(std::function<void()> callback)
+void TailingBytesProducer::SetRotationCallback(const std::function<void()> &callback)
 {
-    mImpl->SetRotationCallback(std::move(callback));
+    mImpl->SetRotationCallback(callback);
 }
 
-void TailingBytesProducer::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TailingBytesProducer::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
-    mImpl->SetStatusCallback(std::move(callback));
+    mImpl->SetStatusCallback(callback);
 }
 
 size_t TailingBytesProducer::RotationCount() const noexcept

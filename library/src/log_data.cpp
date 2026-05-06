@@ -165,7 +165,7 @@ void LogData::MarkTimestampsParsed()
     mTimestampsAlreadyParsed = true;
 }
 
-void LogData::Merge(LogData &&other)
+void LogData::Merge(LogData other)
 {
     // Splice sources first: each `LogLine` already points at a heap
     // `LineSource` inside `other.mSources`; moving the `unique_ptr`s

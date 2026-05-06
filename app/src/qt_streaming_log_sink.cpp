@@ -196,7 +196,6 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
     // While paused, route batches into the paused buffer instead of
     // posting them across threads, so the Qt event queue does not
     // become a third unbounded memory pool.
-    bool routedToPausedBuffer = false;
     if (mPaused.load(std::memory_order_acquire))
     {
         const size_t cap = mRetentionCap.load(std::memory_order_acquire);
@@ -245,12 +244,8 @@ void QtStreamingLogSink::OnBatch(loglib::StreamedBatch batch)
                     mPausedDropCount.fetch_add(linesDropped, std::memory_order_acq_rel);
                 }
             }
-            routedToPausedBuffer = true;
+            return;
         }
-    }
-    if (routedToPausedBuffer)
-    {
-        return;
     }
 
     // Park the worker once the bounded queue is full. The drain on the
@@ -331,7 +326,7 @@ std::size_t QtStreamingLogSink::BatchesDroppedDuringShutdown() const noexcept
     return mPending.BatchesDroppedDuringShutdown();
 }
 
-loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::StreamedBatch> &&batches)
+loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::StreamedBatch> batches)
 {
     loglib::StreamedBatch out;
     if (batches.empty())

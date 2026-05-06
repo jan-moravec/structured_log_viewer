@@ -140,12 +140,14 @@ TEST_CASE("TcpServerProducer: accept cap rejects extra connections", "[tcp_produ
         {
             c.Send("rejected\n");
         }
-        catch (const std::exception &)
+        catch (const std::exception &ex)
         {
+            static_cast<void>(ex);
         }
     }
-    catch (const std::exception &)
+    catch (const std::exception &ex)
     {
+        static_cast<void>(ex);
     }
 
     REQUIRE(WaitFor([&] { return producer.TotalClientsRejected() >= 1; }, ScaledMs(2000ms)));

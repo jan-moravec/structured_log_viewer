@@ -37,7 +37,7 @@ public:
         mPath = std::filesystem::temp_directory_path() / ("loglib_tcp_tls_" + std::to_string(gen()));
         std::filesystem::create_directories(mPath);
     }
-    ~TempDir()
+    ~TempDir() noexcept
     {
         std::error_code ec;
         std::filesystem::remove_all(mPath, ec);
@@ -186,8 +186,9 @@ TEST_CASE("TcpServerProducer (TLS): plaintext client cannot exchange data", "[tc
     {
         plain.Send("plaintext-into-tls\n");
     }
-    catch (const std::exception &)
+    catch (const std::exception &ex)
     {
+        static_cast<void>(ex); // send may fail if the server side closes first
     }
     const std::string drained = DrainUntil(producer, /*target*/ 1, ScaledMs(500ms));
     REQUIRE(drained.empty());

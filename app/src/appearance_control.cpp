@@ -9,8 +9,10 @@
 
 namespace
 {
-const QString CONFIGURATION_STYLE = "appearance/style";
-const QString CONFIGURATION_FONT = "appearance/font";
+const QString CONFIGURATION_STYLE = QStringLiteral("appearance/style");
+const QString CONFIGURATION_FONT = QStringLiteral("appearance/font");
+
+constexpr int kMidGrayBrightness = 128;
 } // namespace
 
 AppearanceControl::Configuration AppearanceControl::mConfiguration;
@@ -19,7 +21,7 @@ bool AppearanceControl::IsDarkTheme()
 {
     const QColor bgColor = qApp->palette().color(QPalette::Window);
     const int brightness = ((bgColor.red() * 299) + (bgColor.green() * 587) + (bgColor.blue() * 114)) / 1000;
-    return brightness < 128;
+    return brightness < kMidGrayBrightness;
 }
 
 void AppearanceControl::SaveConfiguration()

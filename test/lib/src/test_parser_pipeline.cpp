@@ -230,9 +230,10 @@ public:
         file.write(content.data(), static_cast<std::streamsize>(content.size()));
     }
 
-    ~TempTextFile()
+    ~TempTextFile() noexcept
     {
-        std::filesystem::remove(mFilePath);
+        std::error_code ec;
+        std::filesystem::remove(mFilePath, ec);
     }
 
     const std::string &Path() const

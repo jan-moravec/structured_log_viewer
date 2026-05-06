@@ -6,6 +6,8 @@
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 
+#include <filesystem>
+#include <fstream>
 #include <utility>
 
 using namespace loglib;
@@ -29,9 +31,10 @@ TestJsonLogFile::TestJsonLogFile(std::vector<Line> lines, std::string filePath)
     WriteToFile(std::move(lines));
 }
 
-TestJsonLogFile::~TestJsonLogFile()
+TestJsonLogFile::~TestJsonLogFile() noexcept
 {
-    std::filesystem::remove(GetFilePath());
+    std::error_code ec;
+    std::filesystem::remove(GetFilePath(), ec);
 }
 
 const std::string &TestJsonLogFile::GetFilePath() const
@@ -83,9 +86,10 @@ TestLogConfiguration::TestLogConfiguration(std::string filePath)
     REQUIRE(file.is_open());
 }
 
-TestLogConfiguration::~TestLogConfiguration()
+TestLogConfiguration::~TestLogConfiguration() noexcept
 {
-    std::filesystem::remove(GetFilePath());
+    std::error_code ec;
+    std::filesystem::remove(GetFilePath(), ec);
 }
 
 const std::string &TestLogConfiguration::GetFilePath() const
@@ -125,9 +129,10 @@ void TestLogFile::Write(const std::string &content) const
     file << content;
 }
 
-TestLogFile::~TestLogFile()
+TestLogFile::~TestLogFile() noexcept
 {
-    std::filesystem::remove(GetFilePath());
+    std::error_code ec;
+    std::filesystem::remove(GetFilePath(), ec);
 }
 
 std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const

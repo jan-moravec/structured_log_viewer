@@ -40,7 +40,7 @@ public:
         std::filesystem::create_directories(mPath);
     }
 
-    ~TempDir()
+    ~TempDir() noexcept
     {
         std::error_code ec;
         std::filesystem::remove_all(mPath, ec);

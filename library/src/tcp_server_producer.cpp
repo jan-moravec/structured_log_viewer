@@ -107,7 +107,7 @@ public:
     void Stop() noexcept;
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] std::string DisplayName() const;
-    void SetStatusCallback(std::function<void(SourceStatus)> callback);
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] uint16_t BoundPort() const noexcept;
     [[nodiscard]] size_t ActiveClientCount() const noexcept;
     [[nodiscard]] size_t TotalClientsAccepted() const noexcept;
@@ -409,6 +409,7 @@ TcpServerProducerImpl::TcpServerProducerImpl(TcpServerProducer::Options options)
         catch (...)
         {
             // Asio handlers in this TU never throw; defensive only.
+            static_cast<void>(0);
         }
         mWorkerExited.store(true, std::memory_order_release);
         mCv.notify_all();
@@ -512,13 +513,13 @@ std::string TcpServerProducerImpl::DisplayName() const
     return mDisplayName;
 }
 
-void TcpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TcpServerProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
         const std::scoped_lock lock(mCallbackMutex);
-        mStatusCallback = std::move(callback);
+        mStatusCallback = callback;
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
     }
@@ -733,9 +734,9 @@ std::string TcpServerProducer::DisplayName() const
     return mImpl->DisplayName();
 }
 
-void TcpServerProducer::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void TcpServerProducer::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
-    mImpl->SetStatusCallback(std::move(callback));
+    mImpl->SetStatusCallback(callback);
 }
 
 uint16_t TcpServerProducer::BoundPort() const noexcept

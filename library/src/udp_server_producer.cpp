@@ -37,7 +37,7 @@ public:
     void Stop() noexcept;
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] std::string DisplayName() const;
-    void SetStatusCallback(std::function<void(SourceStatus)> callback);
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
     [[nodiscard]] uint16_t BoundPort() const noexcept;
     [[nodiscard]] size_t DatagramCount() const noexcept;
     [[nodiscard]] size_t DroppedByteCount() const noexcept;
@@ -145,6 +145,7 @@ UdpServerProducerImpl::UdpServerProducerImpl(UdpServerProducer::Options options)
             // Asio handlers in this TU never throw, but defensive: if
             // a future change does, we want the worker to exit
             // gracefully rather than terminate the process.
+            static_cast<void>(0);
         }
         mWorkerExited.store(true, std::memory_order_release);
         mCv.notify_all();
@@ -229,13 +230,13 @@ std::string UdpServerProducerImpl::DisplayName() const
     return mDisplayName;
 }
 
-void UdpServerProducerImpl::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void UdpServerProducerImpl::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
     std::function<void(SourceStatus)> snapshot;
     SourceStatus current{};
     {
         const std::scoped_lock lock(mCallbackMutex);
-        mStatusCallback = std::move(callback);
+        mStatusCallback = callback;
         snapshot = mStatusCallback;
         current = mLastReportedStatus;
     }
@@ -391,9 +392,9 @@ std::string UdpServerProducer::DisplayName() const
     return mImpl->DisplayName();
 }
 
-void UdpServerProducer::SetStatusCallback(std::function<void(SourceStatus)> callback)
+void UdpServerProducer::SetStatusCallback(const std::function<void(SourceStatus)> &callback)
 {
-    mImpl->SetStatusCallback(std::move(callback));
+    mImpl->SetStatusCallback(callback);
 }
 
 uint16_t UdpServerProducer::BoundPort() const noexcept

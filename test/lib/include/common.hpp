@@ -7,8 +7,6 @@
 
 #include <glaze/glaze.hpp>
 
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -20,7 +18,7 @@ public:
     TestJsonLogFile(std::string filePath = FILE_PATH);
     TestJsonLogFile(Line line, std::string filePath = FILE_PATH);
     TestJsonLogFile(std::vector<Line> lines, std::string filePath = FILE_PATH);
-    ~TestJsonLogFile();
+    ~TestJsonLogFile() noexcept;
 
     const std::string &GetFilePath() const;
     void WriteToFile(std::vector<Line> lines);
@@ -40,7 +38,7 @@ class TestLogConfiguration
 {
 public:
     TestLogConfiguration(std::string filePath = FILE_PATH);
-    ~TestLogConfiguration();
+    ~TestLogConfiguration() noexcept;
 
     const std::string &GetFilePath() const;
     void Write(const loglib::LogConfiguration &configuration) const;
@@ -54,7 +52,7 @@ class TestLogFile
 {
 public:
     TestLogFile(std::string filePath = FILE_PATH);
-    ~TestLogFile();
+    ~TestLogFile() noexcept;
 
     const std::string &GetFilePath() const;
     void Write(const std::string &content) const;

@@ -76,7 +76,7 @@ public:
 
     /// Merges @p other in place, rewiring back-pointers and remapping KeyIds
     /// to this side's canonical `KeyIndex`.
-    void Merge(LogData &&other);
+    void Merge(LogData other);
 
     /// Append a parsed batch. `lineOffsets` populates
     /// `LogFile::mLineOffsets` for file sources; the live-tail path

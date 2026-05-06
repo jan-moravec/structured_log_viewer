@@ -75,12 +75,12 @@ public:
     /// Rotation-event callback, invoked from the producer's worker
     /// thread on detected rotations. Default no-op for non-rotating
     /// producers; an empty callback clears any previous installation.
-    virtual void SetRotationCallback(std::function<void()> callback);
+    virtual void SetRotationCallback(const std::function<void()> &callback);
 
     /// Status-change callback, invoked on edge transitions between
     /// `Running` and `Waiting`. Default no-op; an empty callback
     /// clears any previous installation.
-    virtual void SetStatusCallback(std::function<void(SourceStatus)> callback);
+    virtual void SetStatusCallback(const std::function<void(SourceStatus)> &callback);
 };
 
 } // namespace loglib

@@ -7,9 +7,9 @@
 
 namespace
 {
-const QString CONFIGURATION_RETENTION_LINES = "streaming/retentionLines";
-const QString CONFIGURATION_NEWEST_FIRST = "streaming/newestFirst";
-const QString CONFIGURATION_STATIC_NEWEST_FIRST = "static/newestFirst";
+const QString CONFIGURATION_RETENTION_LINES = QStringLiteral("streaming/retentionLines");
+const QString CONFIGURATION_NEWEST_FIRST = QStringLiteral("streaming/newestFirst");
+const QString CONFIGURATION_STATIC_NEWEST_FIRST = QStringLiteral("static/newestFirst");
 } // namespace
 
 StreamingControl::Configuration StreamingControl::mConfiguration;

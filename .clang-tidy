@@ -13,6 +13,8 @@
 #   -readability-function-cognitive-complexity: Noisy for complex functions.
 #   -cppcoreguidelines-pro-type-reinterpret-cast: Necessary for low-level buffer code.
 #   -cppcoreguidelines-pro-bounds-*: Too strict for pointer/array operations.
+#   -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access: Same family;
+#        flags every `vec[i]` in tests/macros and nlohmann/json `operator[]`.
 #   -cppcoreguidelines-avoid-c-arrays: C arrays sometimes needed for constexpr.
 #   -modernize-avoid-c-arrays: Alias for the above.
 #   -cppcoreguidelines-macro-usage: Some macros are necessary.
@@ -47,6 +49,7 @@ Checks: >
   -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
   -cppcoreguidelines-pro-bounds-constant-array-index,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
   -cppcoreguidelines-avoid-c-arrays,
   -modernize-avoid-c-arrays,
   -cppcoreguidelines-macro-usage,

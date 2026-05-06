@@ -21,11 +21,14 @@ namespace
 {
 
 #ifdef _WIN32
+constexpr unsigned kFileIndexHighShift = 32U;
+
 FileIdentity FromBhfi(const BY_HANDLE_FILE_INFORMATION &info) noexcept
 {
     FileIdentity identity;
     identity.high = static_cast<uint64_t>(info.dwVolumeSerialNumber);
-    identity.low = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | static_cast<uint64_t>(info.nFileIndexLow);
+    identity.low = (static_cast<uint64_t>(info.nFileIndexHigh) << kFileIndexHighShift) |
+                     static_cast<uint64_t>(info.nFileIndexLow);
     identity.valid = true;
     return identity;
 }
@@ -47,7 +50,7 @@ FileIdentity FromPath(const std::filesystem::path &path) noexcept
 #ifdef _WIN32
     // Full sharing so we don't disturb a concurrent producer.
     // FILE_FLAG_BACKUP_SEMANTICS lets the call also work on directories.
-    const HANDLE handle = ::CreateFileW(
+    HANDLE const handle = ::CreateFileW(
         path.c_str(),
         0, // metadata only
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

@@ -17,7 +17,7 @@ ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &ad
     {
         out.effectiveThreads = 1;
     }
-    out.ntokens = static_cast<size_t>(2 * out.effectiveThreads);
+    out.ntokens = size_t{2} * static_cast<size_t>(out.effectiveThreads);
     return out;
 }
 

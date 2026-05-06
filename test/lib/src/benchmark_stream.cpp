@@ -71,7 +71,7 @@ public:
         mPath = base / ("loglib_stream_latency_" + std::to_string(suffix));
         std::filesystem::create_directories(mPath);
     }
-    ~TempDir()
+    ~TempDir() noexcept
     {
         std::error_code ec;
         std::filesystem::remove_all(mPath, ec);

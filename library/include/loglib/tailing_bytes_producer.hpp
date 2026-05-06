@@ -100,9 +100,9 @@ public:
 
     [[nodiscard]] std::string DisplayName() const override;
 
-    void SetRotationCallback(std::function<void()> callback) override;
+    void SetRotationCallback(const std::function<void()> &callback) override;
 
-    void SetStatusCallback(std::function<void(SourceStatus)> callback) override;
+    void SetStatusCallback(const std::function<void(SourceStatus)> &callback) override;
 
     /// Total rotations the worker has observed since construction.
     /// Used by tests to assert debounce coalescing (the user-visible

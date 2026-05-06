@@ -341,7 +341,8 @@ void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
 
 void CompactLineFields::AssignSorted(std::vector<value_type> &&values)
 {
-    AssignSorted(values.data(), static_cast<uint32_t>(values.size()));
+    std::vector<value_type> local = std::move(values);
+    AssignSorted(local.data(), static_cast<uint32_t>(local.size()));
 }
 
 void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
