@@ -44,6 +44,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -263,7 +264,7 @@ double TestTimeScale() noexcept
 std::chrono::milliseconds ScaledDeadline(std::chrono::milliseconds base) noexcept
 {
     const double scaled = static_cast<double>(base.count()) * TestTimeScale();
-    const auto rounded = static_cast<long long>(scaled + 0.5);
+    const auto rounded = std::llround(scaled);
     return std::chrono::milliseconds(rounded < 1 ? 1 : rounded);
 }
 
@@ -1111,7 +1112,8 @@ private slots:
         const int linesPerBatch = 5;
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
-            const auto firstLineId = static_cast<size_t>((b * linesPerBatch) + 1);
+            const auto firstLineId =
+                static_cast<size_t>(static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch) + size_t{1});
             const bool declareNewKey = (b == 0);
             // Direct call to OnBatch from this thread mirrors the worker.
             sink->OnBatch(MakeSyntheticBatch(
@@ -1185,12 +1187,15 @@ private slots:
         for (int b = 0; b < batchesWhilePaused; ++b)
         {
             loglib::StreamedBatch batch;
-            batch.firstLineNumber = static_cast<size_t>((b * linesPerBatch) + 1);
+            batch.firstLineNumber =
+                static_cast<size_t>(static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch) + size_t{1});
             batch.lines.reserve(linesPerBatch);
             batch.localLineOffsets.reserve(linesPerBatch);
             for (int i = 0; i < linesPerBatch; ++i)
             {
-                const auto lineNumber = static_cast<size_t>((b * linesPerBatch) + i + 1);
+                const auto lineNumber = static_cast<size_t>(
+                    static_cast<size_t>(b) * static_cast<size_t>(linesPerBatch) + static_cast<size_t>(i) + size_t{1}
+                );
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
                 values.emplace_back(keyId, loglib::LogValue(static_cast<int64_t>(lineNumber)));
                 batch.lines.emplace_back(std::move(values), keys, *sourcePtr, lineNumber);
@@ -2165,7 +2170,7 @@ private slots:
         // identity, which is what the constructor saw) should sit at
         // proxy row (kRows - 1 - kRows/2).
         QVERIFY(pinned.isValid());
-        QCOMPARE(pinned.row(), K_ROWS - 1 - K_ROWS / 2);
+        QCOMPARE(pinned.row(), K_ROWS - 1 - (K_ROWS / 2));
 
         rowOrderProxy->SetReversed(false);
         model->EndStreaming(false);

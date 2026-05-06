@@ -7,6 +7,7 @@
 
 #include <glaze/glaze.hpp>
 
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -29,6 +30,7 @@ public:
 private:
     static constexpr char FILE_PATH[] = "test.json";
     std::string mFilePath;
+    std::filesystem::path mFsPath;
     std::vector<Line> mLines;
     std::vector<std::string> mStringLines;
     std::vector<glz::generic_sorted_u64> mJsonLines;
@@ -46,6 +48,7 @@ public:
 private:
     static constexpr char FILE_PATH[] = "test_config.json";
     std::string mFilePath;
+    std::filesystem::path mFsPath;
 };
 
 class TestLogFile
@@ -66,6 +69,7 @@ public:
 private:
     static constexpr char FILE_PATH[] = "test_file.json";
     std::string mFilePath;
+    std::filesystem::path mFsPath;
 };
 
 void InitializeTimezoneData();

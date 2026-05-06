@@ -28,8 +28,8 @@
 #        size_t -> difference_type iterator arithmetic.
 #   -readability-uppercase-literal-suffix: Cosmetic (1u vs 1U).
 #   -readability-implicit-bool-conversion: Noisy on Qt pointer `if (mWidget)` idioms.
-# Note: misc-include-cleaner is left enabled but its "MissingIncludes"
-# pass is turned off via CheckOptions below (transitive-include noise).
+#   -misc-include-cleaner: With MissingIncludes/UnusedIncludes off it only prints
+#        a no-op banner per TU; disabling avoids noise until include-cleaner is adopted.
 Checks: >
   -*,
   bugprone-*,
@@ -60,7 +60,8 @@ Checks: >
   -bugprone-implicit-widening-of-multiplication-result,
   -cppcoreguidelines-narrowing-conversions,
   -readability-uppercase-literal-suffix,
-  -readability-implicit-bool-conversion
+  -readability-implicit-bool-conversion,
+  -misc-include-cleaner
 
 WarningsAsErrors: ""
 FormatStyle: "file"
@@ -70,8 +71,6 @@ FormatStyle: "file"
 CheckOptions:
   - { key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor, value: true }
   - { key: cppcoreguidelines-special-member-functions.AllowMissingMoveFunctionsWhenCopyIsDeleted, value: true }
-  - { key: misc-include-cleaner.MissingIncludes, value: false }
-  - { key: misc-include-cleaner.UnusedIncludes,  value: false }
   - { key: modernize-avoid-c-arrays.AllowStringArrays, value: false }
 
   # ------- Identifier naming -------

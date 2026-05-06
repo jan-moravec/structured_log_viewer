@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 namespace
@@ -159,14 +160,23 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
     {
         return;
     }
+    using Diff = std::vector<LogConfiguration::Column>::difference_type;
     auto begin = mConfiguration.columns.begin();
     if (srcIndex > destIndex)
     {
-        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(destIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1))
+        );
     }
     else
     {
-        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1)),
+            std::next(begin, static_cast<Diff>(destIndex + 1))
+        );
     }
     // The cached key set is unchanged by a pure reorder.
 }

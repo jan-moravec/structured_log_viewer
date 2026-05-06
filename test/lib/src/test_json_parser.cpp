@@ -245,8 +245,8 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
     REQUIRE(result.errors.size() == 2);
     const std::string expectedA = "Error on line " + std::to_string(INVALID_LINE_NUMBER_A);
     const std::string expectedB = "Error on line " + std::to_string(INVALID_LINE_NUMBER_B);
-    CHECK(result.errors[0].find(expectedA) != std::string::npos);
-    CHECK(result.errors[1].find(expectedB) != std::string::npos);
+    CHECK(result.errors[0].contains(expectedA));
+    CHECK(result.errors[1].contains(expectedB));
 }
 
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
@@ -842,9 +842,9 @@ TEST_CASE("Per-worker key cache survives move construction", "[json_parser][key_
     TestPerWorkerKeyCache moved(std::move(source));
 
     REQUIRE(moved.size() == 3);
-    REQUIRE(moved.find(std::string_view{"alpha"}) != moved.end());
-    REQUIRE(moved.find(std::string_view{"beta"}) != moved.end());
-    REQUIRE(moved.find(std::string_view{"gamma"}) != moved.end());
+    REQUIRE(moved.count(std::string_view{"alpha"}) == 1);
+    REQUIRE(moved.count(std::string_view{"beta"}) == 1);
+    REQUIRE(moved.count(std::string_view{"gamma"}) == 1);
     CHECK(moved.find(std::string_view{"alpha"})->second == static_cast<KeyId>(7));
     CHECK(moved.find(std::string_view{"beta"})->second == static_cast<KeyId>(11));
     CHECK(moved.find(std::string_view{"gamma"})->second == static_cast<KeyId>(13));
@@ -1401,5 +1401,5 @@ TEST_CASE(
     INFO(errors.front());
     // Absolute line number 2 is the bad line; the surrounding "Error on
     // line N:" wrapper is composed by the streaming pipeline.
-    CHECK(errors.front().find("Error on line 2:") != std::string::npos);
+    CHECK(errors.front().contains("Error on line 2:"));
 }

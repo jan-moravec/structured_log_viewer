@@ -327,9 +327,9 @@ TEST_CASE(
     Append(path, "\nafter\n");
     const auto post =
         DrainUntil(source, ScaledMs(2000ms), [](const std::string &acc) { return acc.contains("after\n"); });
-    CHECK(post.find("after\n") != std::string::npos);
+    CHECK(post.contains("after\n"));
     // The 2 MiB "xxx…" prefix must NOT have been synthesized into a line.
-    CHECK(post.find("xxxxx") == std::string::npos);
+    CHECK(!post.contains("xxxxx"));
 }
 
 TEST_CASE("TailingBytesProducer detects growth across many small writes", "[TailingBytesProducer]")
@@ -518,7 +518,7 @@ TEST_CASE("TailingBytesProducer discards partial line on rotation", "[TailingByt
     REQUIRE(!postLines.empty());
     CHECK(postLines.back() == "after");
     // The partial "incomplete" must NEVER appear.
-    CHECK(post.find("incomplete") == std::string::npos);
+    CHECK(!post.contains("incomplete"));
 }
 
 TEST_CASE("TailingBytesProducer flushes the partial line on Stop", "[TailingBytesProducer]")

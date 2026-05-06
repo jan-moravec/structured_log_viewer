@@ -432,4 +432,5 @@ TEST_CASE("TimeStampToDateTimeString", "[log_processing]")
 
     const date::zoned_time futureLocalTime{tz, std::chrono::round<std::chrono::milliseconds>(futureDate)};
     const std::string expectedFutureDate = date::format("%F %T", futureLocalTime);
+    CHECK(futureFormatted == expectedFutureDate);
 }

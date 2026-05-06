@@ -7,7 +7,9 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
@@ -214,14 +216,23 @@ void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
         return;
     }
     mConfiguration.MoveColumn(srcIndex, destIndex);
+    using Diff = std::vector<std::vector<KeyId>>::difference_type;
     auto begin = mColumnKeyIds.begin();
     if (srcIndex > destIndex)
     {
-        std::rotate(begin + destIndex, begin + srcIndex, begin + srcIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(destIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1))
+        );
     }
     else
     {
-        std::rotate(begin + srcIndex, begin + srcIndex + 1, begin + destIndex + 1);
+        std::rotate(
+            std::next(begin, static_cast<Diff>(srcIndex)),
+            std::next(begin, static_cast<Diff>(srcIndex + 1)),
+            std::next(begin, static_cast<Diff>(destIndex + 1))
+        );
     }
 }
 

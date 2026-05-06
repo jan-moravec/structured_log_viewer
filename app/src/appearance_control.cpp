@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QFont>
+#include <QLatin1String>
 #include <QPalette>
 #include <QSettings>
 #include <QStyle>
@@ -9,10 +10,10 @@
 
 namespace
 {
-const QString CONFIGURATION_STYLE = QStringLiteral("appearance/style");
-const QString CONFIGURATION_FONT = QStringLiteral("appearance/font");
+constexpr char CONFIGURATION_STYLE[] = "appearance/style";
+constexpr char CONFIGURATION_FONT[] = "appearance/font";
 
-constexpr int kMidGrayBrightness = 128;
+constexpr int K_MID_GRAY_BRIGHTNESS = 128;
 } // namespace
 
 AppearanceControl::Configuration AppearanceControl::mConfiguration;
@@ -21,7 +22,7 @@ bool AppearanceControl::IsDarkTheme()
 {
     const QColor bgColor = qApp->palette().color(QPalette::Window);
     const int brightness = ((bgColor.red() * 299) + (bgColor.green() * 587) + (bgColor.blue() * 114)) / 1000;
-    return brightness < kMidGrayBrightness;
+    return brightness < K_MID_GRAY_BRIGHTNESS;
 }
 
 void AppearanceControl::SaveConfiguration()
@@ -30,16 +31,15 @@ void AppearanceControl::SaveConfiguration()
     mConfiguration.font = qApp->font().toString();
 
     QSettings settings;
-    settings.setValue(CONFIGURATION_STYLE, mConfiguration.style);
-    settings.setValue(CONFIGURATION_FONT, mConfiguration.font);
+    settings.setValue(QLatin1String(CONFIGURATION_STYLE), mConfiguration.style);
+    settings.setValue(QLatin1String(CONFIGURATION_FONT), mConfiguration.font);
 }
 
 void AppearanceControl::LoadConfiguration()
 {
     if (mConfiguration.style.isEmpty())
     {
-        static const QString DEFAULT_STYLE = "fusion";
-        mConfiguration.style = DEFAULT_STYLE;
+        mConfiguration.style = QStringLiteral("fusion");
     }
     if (mConfiguration.font.isEmpty())
     {
@@ -47,11 +47,11 @@ void AppearanceControl::LoadConfiguration()
     }
 
     QSettings settings;
-    if (const QVariant value = settings.value(CONFIGURATION_STYLE); value.isValid())
+    if (const QVariant value = settings.value(QLatin1String(CONFIGURATION_STYLE)); value.isValid())
     {
         mConfiguration.style = value.toString();
     }
-    if (const QVariant value = settings.value(CONFIGURATION_FONT); value.isValid())
+    if (const QVariant value = settings.value(QLatin1String(CONFIGURATION_FONT)); value.isValid())
     {
         mConfiguration.font = value.toString();
     }
@@ -65,7 +65,7 @@ void AppearanceControl::LoadConfiguration()
         }
         else
         {
-            settings.remove(CONFIGURATION_STYLE);
+            settings.remove(QLatin1String(CONFIGURATION_STYLE));
             mConfiguration.style.clear();
         }
     }
@@ -78,7 +78,7 @@ void AppearanceControl::LoadConfiguration()
         }
         else
         {
-            settings.remove(CONFIGURATION_FONT);
+            settings.remove(QLatin1String(CONFIGURATION_FONT));
             mConfiguration.font.clear();
         }
     }

@@ -882,7 +882,8 @@ void TailingBytesProducerImpl::CompactReadyBufferIfNeededLocked()
     constexpr size_t MIN_COMPACT_BYTES = 64 * 1024;
     if (mReadyConsumed >= MIN_COMPACT_BYTES && mReadyConsumed * 2 >= mReadyBuffer.size())
     {
-        const auto eraseEnd = std::next(mReadyBuffer.begin(), static_cast<std::vector<char>::difference_type>(mReadyConsumed));
+        const auto eraseEnd =
+            std::next(mReadyBuffer.begin(), static_cast<std::vector<char>::difference_type>(mReadyConsumed));
         mReadyBuffer.erase(mReadyBuffer.begin(), eraseEnd);
         mReadyConsumed = 0;
     }

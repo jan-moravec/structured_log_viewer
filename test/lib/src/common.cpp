@@ -13,9 +13,9 @@
 using namespace loglib;
 
 TestJsonLogFile::TestJsonLogFile(std::string filePath)
-    : mFilePath(std::move(filePath))
+    : mFilePath(std::move(filePath)), mFsPath(mFilePath)
 {
-    const std::ofstream file(mFilePath);
+    const std::ofstream file(mFsPath);
     REQUIRE(file.is_open());
 }
 
@@ -34,7 +34,7 @@ TestJsonLogFile::TestJsonLogFile(std::vector<Line> lines, std::string filePath)
 TestJsonLogFile::~TestJsonLogFile() noexcept
 {
     std::error_code ec;
-    std::filesystem::remove(GetFilePath(), ec);
+    std::filesystem::remove(mFsPath, ec);
 }
 
 const std::string &TestJsonLogFile::GetFilePath() const
@@ -48,7 +48,7 @@ void TestJsonLogFile::WriteToFile(std::vector<Line> lines)
     mStringLines.clear();
     mJsonLines.clear();
 
-    std::ofstream file(GetFilePath(), std::ios::app);
+    std::ofstream file(mFsPath, std::ios::app);
     if (file.is_open())
     {
         for (const auto &line : lines)
@@ -80,16 +80,16 @@ const std::vector<glz::generic_sorted_u64> &TestJsonLogFile::JsonLines() const
 }
 
 TestLogConfiguration::TestLogConfiguration(std::string filePath)
-    : mFilePath(std::move(filePath))
+    : mFilePath(std::move(filePath)), mFsPath(mFilePath)
 {
-    const std::ofstream file(GetFilePath());
+    const std::ofstream file(mFsPath);
     REQUIRE(file.is_open());
 }
 
 TestLogConfiguration::~TestLogConfiguration() noexcept
 {
     std::error_code ec;
-    std::filesystem::remove(GetFilePath(), ec);
+    std::filesystem::remove(mFsPath, ec);
 }
 
 const std::string &TestLogConfiguration::GetFilePath() const
@@ -99,7 +99,7 @@ const std::string &TestLogConfiguration::GetFilePath() const
 
 void TestLogConfiguration::Write(const LogConfiguration &configuration) const
 {
-    std::ofstream file(GetFilePath());
+    std::ofstream file(mFsPath);
     REQUIRE(file.is_open());
     std::string json;
     const auto error = glz::write_json(configuration, json);
@@ -116,15 +116,15 @@ const std::string &TestLogFile::GetFilePath() const
 }
 
 TestLogFile::TestLogFile(std::string filePath)
-    : mFilePath(std::move(filePath))
+    : mFilePath(std::move(filePath)), mFsPath(mFilePath)
 {
-    const std::ofstream file(GetFilePath(), std::ios::binary);
+    const std::ofstream file(mFsPath, std::ios::binary);
     REQUIRE(file.is_open());
 }
 
 void TestLogFile::Write(const std::string &content) const
 {
-    std::ofstream file(GetFilePath(), std::ios::binary);
+    std::ofstream file(mFsPath, std::ios::binary);
     REQUIRE(file.is_open());
     file << content;
 }
@@ -132,15 +132,15 @@ void TestLogFile::Write(const std::string &content) const
 TestLogFile::~TestLogFile() noexcept
 {
     std::error_code ec;
-    std::filesystem::remove(GetFilePath(), ec);
+    std::filesystem::remove(mFsPath, ec);
 }
 
 std::unique_ptr<loglib::LogFile> TestLogFile::CreateLogFile() const
 {
     // Binary stream so streampos matches LogFile's byte offsets on every
     // platform (no CRLF translation).
-    std::ifstream file(GetFilePath(), std::ios::binary);
-    auto logFile = std::make_unique<LogFile>(GetFilePath());
+    std::ifstream file(mFsPath, std::ios::binary);
+    auto logFile = std::make_unique<LogFile>(mFsPath);
 
     // Push one offset per '\n'; for an unterminated last line, push
     // `fileSize + 1` as the virtual terminator (see LogFile::GetLine).
