@@ -261,6 +261,13 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
     std::atomic<KeyId> highWater{0};
     std::atomic<bool> writerDone{false};
 
+    // Catch2's REQUIRE/CHECK macros are not thread-safe (they touch
+    // process-global state in RunContext), so reader threads only record
+    // mismatches into atomics and the actual assertions happen post-join.
+    std::atomic<uint64_t> mismatchCount{0};
+    std::atomic<KeyId> firstMismatchId{INVALID_KEY_ID};
+    std::atomic<KeyId> firstMismatchFound{INVALID_KEY_ID};
+
     std::thread writer([&] {
         for (const auto &k : keys)
         {
@@ -281,7 +288,15 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
             }
             const KeyId id = static_cast<KeyId>(i) % limit;
             const std::string_view view = index.KeyOf(id);
-            REQUIRE(index.Find(view) == id);
+            const KeyId found = index.Find(view);
+            if (found != id)
+            {
+                if (mismatchCount.fetch_add(1, std::memory_order_relaxed) == 0)
+                {
+                    firstMismatchId.store(id, std::memory_order_relaxed);
+                    firstMismatchFound.store(found, std::memory_order_relaxed);
+                }
+            }
             if (writerDone.load(std::memory_order_acquire) && i > 1024)
             {
                 break;
@@ -300,6 +315,13 @@ TEST_CASE("KeyIndex KeyOf is safe to call while GetOrInsert grows the dictionary
     {
         th.join();
     }
+
+    INFO(
+        "mismatches=" << mismatchCount.load(std::memory_order_relaxed)
+                      << " firstMismatchId=" << firstMismatchId.load(std::memory_order_relaxed)
+                      << " firstMismatchFound=" << firstMismatchFound.load(std::memory_order_relaxed)
+    );
+    REQUIRE(mismatchCount.load(std::memory_order_relaxed) == 0);
 
     REQUIRE(index.Size() == static_cast<size_t>(KEY_COUNT));
     for (KeyId id = 0; id < static_cast<KeyId>(KEY_COUNT); ++id)
