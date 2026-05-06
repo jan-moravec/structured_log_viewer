@@ -13,9 +13,8 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded PR runs; let push and tag runs finish so we never abort a
-# half-published release. On `push` events `head_ref` is empty, so the
-# `run_id` fallback gives each push its own group.
+# Cancel superseded PR runs; let push/tag runs finish so we never abort a
+# half-published release. `run_id` fallback gives each push its own group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -40,7 +39,7 @@ jobs:
           python-version: "3.x"
 
       - name: Cache pre-commit environments
-        # Resolved Python version is in the key so a runner-image 3.12 -> 3.13
+        # Resolved Python version in the key so a runner-image 3.12 -> 3.13
         # bump invalidates venvs with stale interpreter paths.
         uses: actions/cache@v4
         with:
@@ -57,23 +56,18 @@ jobs:
         run: pre-commit run --all-files --show-diff-on-failure --color=always
 
   clang-ci:
-    # Three Clang 22 matrix legs:
+    # Clang 22 matrix:
     #   asan-ubsan -> AddressSanitizer + UBSan
-    #   tsan       -> ThreadSanitizer (excludes apptest; Qt internals trip it)
+    #   tsan       -> ThreadSanitizer (excludes apptest; Qt trips it)
     #   coverage   -> source-based coverage + Codecov upload; also runs
-    #                 cpp-linter-action *after* the build (Qt AUTOMOC/AUTOUIC
-    #                 outputs must exist before clang-tidy can parse the TUs)
-    #                 but before tests/coverage so a tidy hit still skips the
-    #                 long-running Codecov path.
-    # Coverage requires a CODECOV_TOKEN repo secret; without it the upload
-    # fails the leg by design (fail_ci_if_error=true).
+    #                 cpp-linter-action against the build's compile_commands.json.
+    # Coverage requires a CODECOV_TOKEN repo secret (fail_ci_if_error=true).
     needs: pre-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      # contents: read inherited from the workflow scope is enough for
-      # cpp-linter-action's PR-files API call. pull-requests: write is what
-      # lets it post the inline tidy-review + rolling thread comment on PRs.
+      # pull-requests: write lets cpp-linter-action post inline tidy review
+      # comments on PRs; contents: read is inherited.
       contents: read
       pull-requests: write
     strategy:
@@ -82,15 +76,12 @@ jobs:
         mode: [asan-ubsan, tsan, coverage]
     steps:
       - name: Checkout code
-        # cpp-linter-action gets the changed-files list from the GitHub API,
-        # so the default shallow checkout is fine for every leg.
         uses: actions/checkout@v5
 
       - name: Install Clang 22 + LLVM tools
-        # `llvm.sh 22 all` -> clang-22, clang-tidy-22, clang-tools-22
-        # (clang-tidy-diff-22.py), llvm-profdata-22, llvm-cov-22, sanitizer
-        # runtimes, libc++-22-dev. The compiler is pinned via the preset's
-        # CMAKE_C(XX)_COMPILER, not via apt's default `clang` symlink.
+        # llvm.sh 22 all installs clang-22, clang-tidy-22, llvm-profdata/cov-22,
+        # sanitizer runtimes, libc++-22-dev. The compiler is pinned via the
+        # preset's CMAKE_C(XX)_COMPILER, not apt's default `clang` symlink.
         run: |
           set -euo pipefail
           wget --quiet https://apt.llvm.org/llvm.sh
@@ -118,35 +109,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libssl-dev libxcb-cursor0
 
       - name: Configure
-        # TLS pinned ON so TcpServerProducer + asio::ssl is in scope for
-        # sanitizers / coverage / tidy.
+        # TLS pinned ON so TcpServerProducer + asio::ssl is in scope for tidy/sanitizers.
         run: cmake --preset clang-${{ matrix.mode }} -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset clang-${{ matrix.mode }}
 
       - name: Run clang-tidy on PR changes
-        # Coverage leg only, *after* the build so Qt's AUTOMOC/AUTOUIC/AUTORCC
-        # outputs (moc_*.cpp, *.moc, ui_*.h, qrc_*.cpp) are on disk; without
-        # them clang-tidy fails the entire TU with "<file>.moc: file not
-        # found" before any real check can run. We still gate the test run +
-        # Codecov upload on the result, so a tidy hit short-circuits the leg.
-        #
-        # cpp-linter-action drives clang-tidy-22 against the PR diff using
-        # this build's compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS=ON
-        # in the preset). Findings are surfaced as inline PR review comments
-        # and a step-summary; no YAML artifact to chase down.
-        #
-        # clang-format is intentionally skipped (`style: ''`): pre-commit
-        # already enforces formatting, and we don't want this leg to start
-        # double-reporting it.
-        # `tidy-checks: ''` defers entirely to .clang-tidy.
-        # `lines-changed-only: true` matches the previous clang-tidy-diff
-        # behaviour: only diagnostics on lines added by the PR fail the leg.
-        #
-        # SHA-pinned to v2.18.0 so a tag re-cut can't silently change what
-        # we run; bump deliberately. Resolved SHA verified against
-        # https://api.github.com/repos/cpp-linter/cpp-linter-action/git/ref/tags/v2.18.0
+        # Coverage leg only, after the build so AUTOMOC/AUTOUIC/AUTORCC outputs
+        # exist (without them clang-tidy fails with "<file>.moc: file not found").
+        # style/tidy-checks empty -> defer to pre-commit and .clang-tidy.
+        # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
         id: cpp-linter
         uses: cpp-linter/cpp-linter-action@77c390c5ba9c947ebc185a3e49cc754f1558abb5 # v2.18.0
@@ -165,24 +138,20 @@ jobs:
           step-summary: true
 
       - name: Fail leg if clang-tidy reported issues
-        # cpp-linter-action itself never fails the workflow; gate on its
-        # output so a tidy hit aborts before the expensive test/codecov work
-        # and CI status reflects the lint result.
+        # cpp-linter-action never fails the workflow itself; gate on its
+        # output so a tidy hit aborts before the expensive test/codecov work.
         if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.checks-failed > 0
         run: |
           echo "::error title=clang-tidy::clang-tidy reported issues on changed lines. See the PR review comments and the job's step summary for details."
           exit 1
 
       - name: Run tests
-        # ASAN/UBSAN/TSAN/LSAN_OPTIONS + LLVM_PROFILE_FILE come from the
-        # preset's `environment` block, so local `ctest --preset` matches CI.
+        # Sanitizer + LLVM_PROFILE_FILE env comes from the preset.
         run: ctest --preset clang-${{ matrix.mode }}
 
       - name: Merge coverage profiles + export lcov
-        # Merge the per-(PID,binary) .profraw files written by the test
-        # step into one .profdata, then export lcov for the binaries
-        # ctest actually ran. ignore-filename-regex drops _deps/ (FetchContent),
-        # build/ (generated headers), and test/ (we want library+app coverage).
+        # Drop _deps/ (FetchContent), build/ (generated headers) and test/
+        # so the report covers only library + app source.
         if: matrix.mode == 'coverage'
         run: |
           set -euo pipefail
@@ -208,8 +177,8 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload coverage to Codecov
-        # fail_ci_if_error: a missing/expired CODECOV_TOKEN fails the leg
-        # loudly instead of silently producing zero-coverage runs.
+        # fail_ci_if_error: missing/expired token fails the leg loudly
+        # instead of silently producing zero-coverage runs.
         if: matrix.mode == 'coverage'
         uses: codecov/codecov-action@v5
         with:
@@ -258,25 +227,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev
 
       - name: Configure
-        # TLS pinned ON so a future project-default flip can't silently
-        # disable it in the published AppImage.
+        # TLS pinned ON so the published AppImage can't silently lose it.
         run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
 
       - name: Run unit tests
-        # `release` preset excludes the `benchmark` label; benchmarks run below.
+        # release preset excludes the `benchmark` label; benchmarks run below.
         run: ctest --preset release
 
       - name: Run parser benchmarks
-        # `release-benchmark` runs only the `benchmark` label, verbose, so the
-        # WARN-line throughput numbers show up in the CI log. See
-        # CONTRIBUTING.md `## Benchmarking` for the regression-gate convention.
         run: ctest --preset release-benchmark
 
       - name: Install linuxdeploy and plugin
-        # Tagged releases (not `continuous`) so two runs of the same commit
+        # Pinned tags (not `continuous`) so two runs of the same commit
         # produce identical AppImages. Bump deliberately.
         env:
           LINUXDEPLOY_TAG: "1-alpha-20251107-1"
@@ -290,8 +255,8 @@ jobs:
 
       - name: Package application
         env:
-          # Enables delta/zsync updates; linuxdeploy embeds this and writes a
-          # sibling .zsync file. https://docs.appimage.org/packaging-guide/optional/updates.html
+          # Enables delta/zsync updates; linuxdeploy embeds this entry and
+          # writes a sibling .zsync file.
           UPDATE_INFORMATION: "gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|latest|${{ env.APP_NAME }}-*x86_64.AppImage.zsync"
         run: |
           APP_DIR="${{ env.APP_NAME }}.AppDir"
@@ -303,8 +268,6 @@ jobs:
           cp -r build/release/bin/Release/tzdata $APP_DIR/usr/share/
           cp resources/icon-white.png $APP_DIR/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           cp resources/app.desktop $APP_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop
-          # Third-party licenses + LICENSE: stage under usr/ so linuxdeploy
-          # preserves them in the AppImage.
           mkdir -p $APP_DIR/usr/share/doc/${{ env.APP_NAME }}
           cp build/release/bin/Release/THIRD_PARTY_LICENSES.txt \
              build/release/bin/Release/LICENSE \
@@ -312,9 +275,8 @@ jobs:
           ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
 
       - name: Smoke-test packaged AppImage
-        # Launches the AppImage headlessly so a missing bundled Qt plugin /
-        # shared library fails CI before we ship a broken release. ctest
-        # only exercises the build tree, not the packaged artifact.
+        # Headless launch so a missing bundled plugin / shared library fails
+        # CI before we ship a broken release. ctest only covers the build tree.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -327,7 +289,6 @@ jobs:
           chmod +x "$APPIMAGE"
           QT_QPA_PLATFORM=offscreen "./$APPIMAGE" &
           PID=$!
-          # 5s: a missing shared library aborts almost immediately.
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
             RC=0
@@ -347,8 +308,8 @@ jobs:
           done
 
       - name: Upload artifact
-        # No `if: always()`: combined with `if-no-files-found: error` it would
-        # pile a noisy second failure on top of an earlier build failure.
+        # No `if: always()`: with `if-no-files-found: error` it would pile a
+        # second failure on top of an earlier build failure.
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-linux
@@ -395,25 +356,21 @@ jobs:
         uses: lukka/get-cmake@v4.3.2
 
       - name: Set up MSVC environment
-        # Adds cl.exe + INCLUDE/LIB to the job env via vswhere, so we don't
-        # hard-code `vcvarsall.bat` against a specific VS edition path
+        # vswhere-based discovery so we don't hard-code a VS edition path
         # (the hosted image has flipped Community <-> Enterprise before).
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
       - name: Install OpenSSL
-        # Strawberry Perl's openssl on PATH lacks import libraries, so it's
-        # unusable for find_package. Install the full SLP build via choco;
-        # the install path varies between bundles, so the next step probes.
+        # Strawberry Perl's openssl lacks import libraries; use the full
+        # SLP build via choco. Install path varies, so the next step probes.
         shell: powershell
         run: choco install openssl --version=$env:OPENSSL_VERSION --yes --no-progress
 
       - name: Locate OpenSSL and export OPENSSL_ROOT_DIR
-        # Probe the SLP / choco install roots for openssl.exe + include/openssl/
-        # (find_package needs both) and export the match into GITHUB_ENV.
-        # Fails loud with a directory listing so installer-layout drift is
-        # diagnosable without reproducing the CI run locally.
+        # Probe known SLP / choco install roots for openssl.exe + headers
+        # and export the match into GITHUB_ENV for find_package(OpenSSL).
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -436,50 +393,50 @@ jobs:
           }
           $version = & "$found\bin\openssl.exe" version
           Write-Host "Located OpenSSL: $version at $found"
-          # List the runtime DLLs (libssl-<major>-x64.dll convention) that
-          # the LOGLIB_NETWORK_TLS POST_BUILD rule will copy next to the exe.
           Get-ChildItem "$found\bin" -Filter "libssl*.dll"
           Get-ChildItem "$found\bin" -Filter "libcrypto*.dll"
           "OPENSSL_ROOT_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Configure
-        # TLS pinned ON so a future project-default flip can't silently
-        # disable it in the published binary.
+        # TLS pinned ON so the published binary can't silently lose it.
         run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
 
       - name: Run unit tests
-        # `release` preset excludes the `benchmark` label; benchmarks run below.
         run: ctest --preset release
 
       - name: Run parser benchmarks
-        # `release-benchmark` runs only the `benchmark` label, verbose.
         run: ctest --preset release-benchmark
 
       - name: Package application
+        # All runtime DLLs (TBB, MSVC CRT, OpenSSL) and license files are
+        # staged next to the .exe by POST_BUILD rules in app/CMakeLists.txt.
+        # `--no-compiler-runtime` skips the ~25 MB vc_redist.x64.exe installer;
+        # we ship the individual CRT DLLs instead so the zip is portable.
         shell: powershell
         run: |
           mkdir ${{ env.APP_NAME }}
           cd ${{ env.APP_NAME }}
           mv ../build/release/bin/Release/${{ env.APP_NAME }}.exe .
           mv ../build/release/bin/Release/tzdata .
-          # tbb*.dll: oneTBB runtime, copied next to the exe by app/CMakeLists.txt.
           Move-Item ../build/release/bin/Release/tbb*.dll .
-          # libssl-*/libcrypto-*: OpenSSL runtime, also placed by the
-          # LOGLIB_NETWORK_TLS POST_BUILD rule. Missing -> STATUS_DLL_NOT_FOUND.
+          Move-Item ../build/release/bin/Release/msvcp*.dll .
+          Move-Item ../build/release/bin/Release/vcruntime*.dll .
+          if (Test-Path ../build/release/bin/Release/concrt*.dll) {
+              Move-Item ../build/release/bin/Release/concrt*.dll .
+          }
           Move-Item ../build/release/bin/Release/libssl-*.dll .
           Move-Item ../build/release/bin/Release/libcrypto-*.dll .
-          # Third-party licenses + LICENSE staged by the BundleLicenses rule.
           Move-Item ../build/release/bin/Release/THIRD_PARTY_LICENSES.txt .
           Move-Item ../build/release/bin/Release/LICENSE .
-          windeployqt --release ${{ env.APP_NAME }}.exe
+          windeployqt --release --no-compiler-runtime ${{ env.APP_NAME }}.exe
           Compress-Archive -Path . -DestinationPath ../${{ env.APP_NAME }}.zip
 
       - name: Smoke-test packaged binary
-        # Headless launch so a missing tbb12.dll (STATUS_DLL_NOT_FOUND,
-        # 0xc0000135) fails CI before we ship a broken zip.
+        # Headless launch so a missing DLL (STATUS_DLL_NOT_FOUND, 0xc0000135)
+        # fails CI before we ship a broken zip.
         shell: powershell
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
@@ -541,12 +498,10 @@ jobs:
         uses: lukka/get-cmake@v4.3.2
 
       - name: Install OpenSSL
-        # `brew install openssl@3` is a no-op when present. The keg prefix
-        # differs between arm64 and Intel runners; resolved in the next step.
+        # No-op when present. Keg prefix varies by arch; resolved next step.
         run: brew install openssl@3
 
       - name: Locate OpenSSL and export OPENSSL_ROOT_DIR
-        # `brew --prefix openssl@3` works on both arm64 and Intel runners.
         run: |
           set -euo pipefail
           OPENSSL_PREFIX="$(brew --prefix openssl@3)"
@@ -559,31 +514,27 @@ jobs:
           echo "OPENSSL_ROOT_DIR=$OPENSSL_PREFIX" >> "$GITHUB_ENV"
 
       - name: Configure
-        # TLS pinned ON so a future project-default flip can't silently
-        # disable it in the published DMG.
+        # TLS pinned ON so the published DMG can't silently lose it.
         run: cmake --preset release -DLOGLIB_NETWORK_TLS=ON
 
       - name: Build
         run: cmake --build --preset release
 
       - name: Run unit tests
-        # `release` preset excludes the `benchmark` label; benchmarks run below.
         run: ctest --preset release
 
       - name: Run parser benchmarks
-        # `release-benchmark` runs only the `benchmark` label, verbose.
         run: ctest --preset release-benchmark
 
       - name: Package application
+        # POST_BUILD rules (app/CMakeLists.txt) stage tzdata + licenses into
+        # the bundle's Resources/. Verify before macdeployqt rewrites @rpaths.
         run: |
           cd build/release/bin/Release
-          # tzdata is staged into the bundle by the app's POST_BUILD step.
           if [ ! -d "${{ env.APP_NAME }}.app/Contents/Resources/tzdata" ]; then
             echo "ERROR: tzdata missing from bundle Resources" >&2
             exit 1
           fi
-          # Same POST_BUILD step stages the licenses; fail loud rather than
-          # ship a non-compliant DMG.
           if [ ! -f "${{ env.APP_NAME }}.app/Contents/Resources/THIRD_PARTY_LICENSES.txt" ]; then
             echo "ERROR: THIRD_PARTY_LICENSES.txt missing from bundle Resources" >&2
             exit 1
@@ -592,9 +543,8 @@ jobs:
           mv ${{ env.APP_NAME }}.dmg "$GITHUB_WORKSPACE/${{ env.APP_NAME }}.dmg"
 
       - name: Smoke-test packaged .app bundle
-        # Headless launch of the macdeployqt-rewritten .app so a missing
-        # bundled framework / plugin or a broken @rpath fails CI before
-        # we ship a broken DMG.
+        # Headless launch so a missing bundled framework / plugin or broken
+        # @rpath fails CI before we ship a broken DMG.
         run: |
           set -euo pipefail
           APP_BUNDLE="build/release/bin/Release/${{ env.APP_NAME }}.app"
@@ -605,7 +555,6 @@ jobs:
           fi
           QT_QPA_PLATFORM=offscreen "$EXE" &
           PID=$!
-          # 5s: a missing dylib / unresolved @rpath aborts almost immediately.
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
             RC=0

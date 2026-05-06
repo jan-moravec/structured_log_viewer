@@ -104,17 +104,38 @@ if(WIN32)
     install(FILES $<TARGET_FILE:TBB::tbb> DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
-# Windows + LOGLIB_NETWORK_TLS=ON requires the OpenSSL runtime DLLs
-# (libssl-3-x64.dll, libcrypto-3-x64.dll on a 64-bit OpenSSL 3 install)
-# to sit next to StructuredLogViewer.exe. `find_package(OpenSSL)` only
-# locates the import libraries; the runtime DLLs live under the
-# `bin/` subdir of the OpenSSL install root. We derive that root from
-# `OPENSSL_INCLUDE_DIR` (which CMake fills out reliably) and probe a
-# couple of common file-name variants. CI-side: the GitHub Actions
-# Windows job points OPENSSL_ROOT_DIR at the chocolatey-installed
-# OpenSSL so this discovery succeeds; on a developer machine without
-# OpenSSL we silently fall through (LOGLIB_NETWORK_TLS=OFF on dev
-# builds is the documented default).
+# Ship the MSVC runtime DLLs (msvcp140*, vcruntime140*, concrt140*)
+# app-locally so the zip is portable without the user installing the
+# VC++ redist. `_LIBS_SKIP=TRUE` suppresses the module's own install
+# rule — we stage via POST_BUILD and install ourselves so the layout
+# matches the other runtime DLLs (TBB, OpenSSL).
+if(WIN32 AND MSVC)
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    set(CMAKE_INSTALL_DEBUG_LIBRARIES FALSE)
+    include(InstallRequiredSystemLibraries)
+    if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        message(STATUS "MSVC runtime DLLs (staged next to ${PROJECT_NAME}): ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}")
+        add_custom_command(
+            TARGET StructuredLogViewer
+            POST_BUILD
+            COMMAND
+                ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+                $<TARGET_FILE_DIR:StructuredLogViewer>
+            COMMENT "Copying MSVC runtime DLLs next to StructuredLogViewer.exe"
+            VERBATIM
+        )
+        install(PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ${CMAKE_INSTALL_BINDIR})
+    else()
+        message(
+            WARNING
+            "InstallRequiredSystemLibraries resolved no MSVC runtime DLLs; binary will require system VC++ redist."
+        )
+    endif()
+endif()
+
+# With LOGLIB_NETWORK_TLS=ON, ship libssl/libcrypto next to the exe.
+# find_package(OpenSSL) only locates the import libraries; the
+# runtime DLLs live in `<root>/bin`, derived from OPENSSL_INCLUDE_DIR.
 if(WIN32 AND LOGLIB_NETWORK_TLS)
     get_filename_component(OPENSSL_BIN_HINT "${OPENSSL_INCLUDE_DIR}/../bin" ABSOLUTE)
     find_file(
@@ -130,10 +151,7 @@ if(WIN32 AND LOGLIB_NETWORK_TLS)
         NO_DEFAULT_PATH
     )
     if(OPENSSL_DLL_LIBSSL AND OPENSSL_DLL_LIBCRYPTO)
-        message(
-            STATUS
-            "OpenSSL runtime DLLs: ${OPENSSL_DLL_LIBSSL}, ${OPENSSL_DLL_LIBCRYPTO} (will be staged next to ${PROJECT_NAME})"
-        )
+        message(STATUS "OpenSSL runtime DLLs: ${OPENSSL_DLL_LIBSSL}, ${OPENSSL_DLL_LIBCRYPTO}")
         add_custom_command(
             TARGET StructuredLogViewer
             POST_BUILD
@@ -147,19 +165,15 @@ if(WIN32 AND LOGLIB_NETWORK_TLS)
     else()
         message(
             WARNING
-            "LOGLIB_NETWORK_TLS=ON but OpenSSL runtime DLLs were not found under ${OPENSSL_BIN_HINT}; the binary "
-            "will fail at startup with STATUS_DLL_NOT_FOUND. Set OPENSSL_ROOT_DIR or rebuild with "
-            "-DLOGLIB_NETWORK_TLS=OFF for a plaintext-only build."
+            "LOGLIB_NETWORK_TLS=ON but OpenSSL runtime DLLs not found under ${OPENSSL_BIN_HINT}; "
+            "binary will fail at startup with STATUS_DLL_NOT_FOUND. Set OPENSSL_ROOT_DIR or rebuild "
+            "with -DLOGLIB_NETWORK_TLS=OFF."
         )
     endif()
 endif()
 
-# Bundle every third-party license text plus the project's own
-# LICENSE next to the StructuredLogViewer executable. Closes a
-# pre-existing compliance gap where the packaged artifacts shipped
-# without any third-party attribution. `BundleLicenses.cmake` writes
-# the aggregated `THIRD_PARTY_LICENSES.txt` at configure time and
-# stages it (plus `LICENSE`) via POST_BUILD copy + install rules.
+# Aggregate third-party license texts + project LICENSE next to the
+# binary. See cmake/BundleLicenses.cmake for the dep list.
 bundle_third_party_licenses(StructuredLogViewer)
 
 qt_finalize_executable(StructuredLogViewer)
