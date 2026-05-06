@@ -358,7 +358,7 @@ TEST_CASE("TailingBytesProducer detects growth across many small writes", "[Tail
 
     const auto lines = SplitLines(drained);
     REQUIRE(lines.size() >= static_cast<size_t>(COUNT));
-    for (int i = 0; i < COUNT; ++i)
+    for (size_t i = 0; i < static_cast<size_t>(COUNT); ++i)
     {
         CHECK(lines[i] == "g" + std::to_string(i));
     }

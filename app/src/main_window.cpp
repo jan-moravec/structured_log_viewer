@@ -367,7 +367,7 @@ MainWindow::MainWindow(QWidget *parent)
     ApplyStreamingRetention();
     ApplyDisplayOrder();
 
-    QTimer::singleShot(0, [this] {
+    QTimer::singleShot(0, [] {
         // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
         std::vector<std::filesystem::path> searched;
         const auto tzdata = FindTzdata(searched);

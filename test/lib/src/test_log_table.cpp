@@ -384,14 +384,14 @@ TEST_CASE("LogTable column to KeyId cache is append-only across Update and Appen
         for (size_t i = 0; i < pinnedHeaders.size(); ++i)
         {
             REQUIRE(t.ColumnCount() > i);
-            CHECK(t.GetHeader(static_cast<int>(i)) == pinnedHeaders[i]);
+            CHECK(t.GetHeader(i) == pinnedHeaders[i]);
         }
         pinnedHeaders.clear();
         const size_t total = t.ColumnCount();
         pinnedHeaders.reserve(total);
         for (size_t i = 0; i < total; ++i)
         {
-            pinnedHeaders.emplace_back(t.GetHeader(static_cast<int>(i)));
+            pinnedHeaders.emplace_back(t.GetHeader(i));
         }
     };
 

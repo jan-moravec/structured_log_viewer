@@ -188,7 +188,8 @@ SsizeType ReadAtOffset(internal::NativeFileHandle handle, void *out, size_t size
     char *outChars = static_cast<char *>(out);
     while (total < static_cast<SsizeType>(size))
     {
-        const ssize_t n = ::pread(handle, outChars + total, size - static_cast<size_t>(total), offset + total);
+        const auto pos = static_cast<off_t>(offset + static_cast<uint64_t>(total));
+        const ssize_t n = ::pread(handle, outChars + total, size - static_cast<size_t>(total), pos);
         if (n == 0)
         {
             break; // EOF

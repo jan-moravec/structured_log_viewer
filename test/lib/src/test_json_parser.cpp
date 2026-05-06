@@ -661,7 +661,7 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     {
         glz::generic_sorted_u64 json;
         json["index"] = static_cast<int64_t>(i);
-        json["level"] = std::string(LEVELS[levelDist(rng)]);
+        json["level"] = std::string(LEVELS[static_cast<size_t>(levelDist(rng))]);
         json["component"] = std::string("component_") + std::to_string(i % 7);
         json["message"] = std::string("event ") + std::to_string(i) + " — value " + std::to_string(intDist(rng));
         json["counter"] = static_cast<int64_t>(intDist(rng));
