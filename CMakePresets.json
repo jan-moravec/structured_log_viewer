@@ -74,7 +74,7 @@
         {
             "name": "clang-coverage",
             "displayName": "Clang source-based coverage",
-            "description": "Clang 22 RelWithDebInfo + -fprofile-instr-generate -fcoverage-mapping. The CI coverage job also runs `clang-tidy-diff-22.py` against this build's `compile_commands.json` (no separate tidy preset needed). Local repro: `cmake --workflow --preset clang-coverage` then `llvm-profdata-22 merge build/clang-coverage/profiles/*.profraw -o merged.profdata` + `llvm-cov-22 export -format=lcov ...`.",
+            "description": "Clang 22 RelWithDebInfo + -fprofile-instr-generate -fcoverage-mapping. The CI coverage job also runs `cpp-linter-action` against this build's `compile_commands.json` (no separate tidy preset needed). Local repro: `cmake --workflow --preset clang-coverage` then `llvm-profdata-22 merge build/clang-coverage/profiles/*.profraw -o merged.profdata` + `llvm-cov-22 export -format=lcov ...`.",
             "inherits": "_clang_ci_base",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",

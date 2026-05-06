@@ -61,7 +61,10 @@ jobs:
     #   asan-ubsan -> AddressSanitizer + UBSan
     #   tsan       -> ThreadSanitizer (excludes apptest; Qt internals trip it)
     #   coverage   -> source-based coverage + Codecov upload; also runs
-    #                 cpp-linter-action before the build so style hits fail fast.
+    #                 cpp-linter-action *after* the build (Qt AUTOMOC/AUTOUIC
+    #                 outputs must exist before clang-tidy can parse the TUs)
+    #                 but before tests/coverage so a tidy hit still skips the
+    #                 long-running Codecov path.
     # Coverage requires a CODECOV_TOKEN repo secret; without it the upload
     # fails the leg by design (fail_ci_if_error=true).
     needs: pre-commit
@@ -119,8 +122,16 @@ jobs:
         # sanitizers / coverage / tidy.
         run: cmake --preset clang-${{ matrix.mode }} -DLOGLIB_NETWORK_TLS=ON
 
+      - name: Build
+        run: cmake --build --preset clang-${{ matrix.mode }}
+
       - name: Run clang-tidy on PR changes
-        # Coverage leg only, *before* the build so style hits fail fast.
+        # Coverage leg only, *after* the build so Qt's AUTOMOC/AUTOUIC/AUTORCC
+        # outputs (moc_*.cpp, *.moc, ui_*.h, qrc_*.cpp) are on disk; without
+        # them clang-tidy fails the entire TU with "<file>.moc: file not
+        # found" before any real check can run. We still gate the test run +
+        # Codecov upload on the result, so a tidy hit short-circuits the leg.
+        #
         # cpp-linter-action drives clang-tidy-22 against the PR diff using
         # this build's compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS=ON
         # in the preset). Findings are surfaced as inline PR review comments
@@ -155,15 +166,12 @@ jobs:
 
       - name: Fail leg if clang-tidy reported issues
         # cpp-linter-action itself never fails the workflow; gate on its
-        # output so a tidy hit aborts before the expensive build/test/codecov
-        # work and CI status reflects the lint result.
+        # output so a tidy hit aborts before the expensive test/codecov work
+        # and CI status reflects the lint result.
         if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.checks-failed > 0
         run: |
           echo "::error title=clang-tidy::clang-tidy reported issues on changed lines. See the PR review comments and the job's step summary for details."
           exit 1
-
-      - name: Build
-        run: cmake --build --preset clang-${{ matrix.mode }}
 
       - name: Run tests
         # ASAN/UBSAN/TSAN/LSAN_OPTIONS + LLVM_PROFILE_FILE come from the

@@ -446,10 +446,13 @@ llvm-cov-22 report \
     -object build/clang-coverage/bin/RelWithDebInfo/apptest_queue
 ```
 
-The CI coverage leg also runs [`cpp-linter-action`](https://github.com/cpp-linter/cpp-linter-action) against this build's `compile_commands.json` *before* the build step, so a tidy hit fails fast without paying for the instrumented build + test run + Codecov upload. The action posts inline review comments and a rolling thread comment on the PR — no YAML artifact to download and replay locally. To reproduce the same diff-only tidy check at the command line before pushing:
+The CI coverage leg also runs [`cpp-linter-action`](https://github.com/cpp-linter/cpp-linter-action) against this build's `compile_commands.json` *after* the build step (Qt's AUTOMOC/AUTOUIC/AUTORCC outputs must exist for clang-tidy to parse the touched translation units) but *before* the test run + Codecov upload, so a tidy hit short-circuits the long tail of the leg. The action posts inline review comments and a rolling thread comment on the PR — no YAML artifact to download and replay locally. To reproduce the same diff-only tidy check at the command line before pushing:
 
 ```sh
+# Configure + build so Qt's AUTOMOC/AUTOUIC/AUTORCC outputs exist; without
+# them clang-tidy fails the affected TUs with "*.moc / ui_*.h: file not found".
 cmake --preset clang-coverage
+cmake --build --preset clang-coverage
 git diff -U0 origin/main...HEAD -- '*.cpp' '*.hpp' '*.h' '*.cc' \
     | clang-tidy-diff-22.py -p1 -path build/clang-coverage \
         -clang-tidy-binary clang-tidy-22 -j"$(nproc)" -fix=false -quiet
