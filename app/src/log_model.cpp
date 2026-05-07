@@ -493,9 +493,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     {
         const int firstColumn = static_cast<int>(range->first);
         const int lastColumn = static_cast<int>(range->second);
-        // `EnumValueRole` is part of the changed roles too: a column
-        // promoted to enum within this batch produces fresh `DictRef`
-        // slots that the filter UI needs to re-evaluate even when the
+        // `EnumValueRole` is in the role list: an enum-promotion
+        // back-fill produces fresh `DictRef` slots even when the
         // displayed string is unchanged.
         emit dataChanged(
             index(0, firstColumn),
@@ -505,15 +504,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
              static_cast<int>(LogModelItemDataRole::EnumValueRole)}
         );
 
-        // Whenever the back-fill range covers an enum column, rules
-        // built against the prior dictionary snapshot may now be
-        // partially inert: either a column flipped to
-        // `Type::enumeration` for the first time, or its dictionary
-        // grew. `MainWindow` listens to this to call `UpdateFilters`
-        // (which re-resolves bytes -> `EnumValueId`s) when an enum
-        // filter is currently active. The connection on the receiver
-        // side gates the rebuild so file streams that finish parsing
-        // without ever growing an enum dictionary pay zero cost.
+        // Notify if any back-filled column is now `Type::enumeration`
+        // so `MainWindow` can rebuild active enum-filter rules.
         const auto &columns = mLogTable.Configuration().Configuration().columns;
         for (int columnIndex = firstColumn; columnIndex <= lastColumn; ++columnIndex)
         {
@@ -684,13 +676,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
     if (role == LogModelItemDataRole::EnumValueRole)
     {
-        // Fast path for `EnumFilterRule`: returns the raw `EnumValueId`
-        // (as `qint32`) for `DictRef` slots, invalid `QVariant`
-        // otherwise. The rule uses the id to test a bitset of selected
-        // ids (O(1) per row); falling back to `SortRole` only for
-        // non-`DictRef` slots (numeric / monostate / pre-encode
-        // `OwnedString`). Returning invalid here is the explicit
-        // signal for the rule to take the fallback string path.
+        // `qint32` for `DictRef` slots, invalid otherwise (which is
+        // the explicit signal for `EnumFilterRule` to use the string
+        // fallback path).
         const auto enumId =
             mLogTable.GetEnumValueId(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
         if (!enumId.has_value())

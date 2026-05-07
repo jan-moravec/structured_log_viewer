@@ -9,10 +9,8 @@ using namespace loglib;
 
 TEST_CASE("EnumDictionary inserts up to its instance cap", "[enum_dictionary]")
 {
-    // Construct with the hard ceiling so the "fill it up" section
-    // exercises the upper bound of `EnumValueId`'s value space; the
-    // default-constructed cap (`DEFAULT_ENUM_VALUE_CAP = 64`) is
-    // covered separately below.
+    // Use the hard ceiling so the "fill it up" section exercises the
+    // upper bound of `EnumValueId`.
     EnumDictionary dict{MAX_ENUM_VALUES};
     REQUIRE(dict.Empty());
     REQUIRE_FALSE(dict.Full());
@@ -61,10 +59,6 @@ TEST_CASE("EnumDictionary inserts up to its instance cap", "[enum_dictionary]")
 
 TEST_CASE("EnumDictionary honours an explicit cap below MAX_ENUM_VALUES", "[enum_dictionary]")
 {
-    // Mirrors the runtime knob (`AdvancedParserOptions::enumValueCap`)
-    // path: dictionaries created with a small cap stop accepting
-    // inserts at exactly that boundary, regardless of the compile-time
-    // ceiling.
     EnumDictionary dict{8};
     REQUIRE(dict.Cap() == 8);
 
@@ -85,13 +79,8 @@ TEST_CASE("EnumDictionary honours an explicit cap below MAX_ENUM_VALUES", "[enum
 
 TEST_CASE("EnumDictionary::Find resolves heterogeneous string_view lookups", "[enum_dictionary]")
 {
-    // `Find` goes through `mIndex` (transparent hashmap) so the
-    // `string_view` / `string` / character-array overloads must all
-    // resolve to the same id without round-tripping through a
-    // temporary `std::string`. The pointer-stability check below
-    // catches the original bug where `Find` walked `mValues` and
-    // would silently degrade once the dictionary grew past a handful
-    // of entries.
+    // `string_view` / `string` / `const char*` all hit the same
+    // bucket via the transparent hash.
     EnumDictionary dict{MAX_ENUM_VALUES};
     const EnumValueId info = dict.Insert("info");
     const EnumValueId warn = dict.Insert("warn");
@@ -102,9 +91,8 @@ TEST_CASE("EnumDictionary::Find resolves heterogeneous string_view lookups", "[e
     CHECK(dict.Find("error") == error);
     CHECK(dict.Find("absent") == INVALID_ENUM_VALUE_ID);
 
-    // Sanity: large dictionaries still resolve via the index, not a
-    // linear scan. Pump in 200 values and make sure every one round-
-    // trips correctly under string_view lookup.
+    // Bulk round-trip to make sure large dictionaries still resolve
+    // via the hash, not a linear scan.
     for (int i = 0; i < 200; ++i)
     {
         const std::string value = "bulk-" + std::to_string(i);
@@ -163,7 +151,6 @@ TEST_CASE("EnumDictionaryRegistry isolates per-column dictionaries", "[enum_dict
     CHECK(registry.Find(kLevel)->Size() == 2);
     CHECK(registry.Find(kComponent)->Size() == 1);
 
-    // Erasing one column leaves the others intact.
     registry.Erase(kLevel);
     CHECK(registry.Find(kLevel) == nullptr);
     CHECK_FALSE(registry.Contains(kLevel));
@@ -190,12 +177,11 @@ TEST_CASE("EnumDictionaryRegistry::Alias makes multiple KeyIds share storage", "
     CHECK(registry.Find(kLevel) == registry.Find(kSeverity));
     CHECK(registry.Find(kLevel) == registry.Find(kVerbosity));
 
-    // Mutating the canonical reflects through every alias view.
+    // Aliases observe canonical mutations.
     static_cast<void>(dict.Insert("warn"));
     CHECK(registry.Find(kSeverity)->Size() == 2);
     CHECK(registry.Find(kVerbosity)->Resolve(static_cast<EnumValueId>(1)) == "warn");
 
-    // Erase by canonical drops every alias too.
     registry.Erase(kLevel);
     CHECK(registry.Find(kLevel) == nullptr);
     CHECK(registry.Find(kSeverity) == nullptr);

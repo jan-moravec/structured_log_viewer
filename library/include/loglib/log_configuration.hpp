@@ -22,11 +22,9 @@ struct LogConfiguration
     {
         any,
         time,
-        /// Column whose values are drawn from a small set
-        /// (<= `loglib::MAX_ENUM_VALUES`) and stored as
-        /// `CompactTag::DictRef` after auto-detection. Promoted /
-        /// demoted by `LogTable::AppendBatch`'s enum pass; never
-        /// auto-promoted by the timestamp-name heuristic.
+        /// Column with a small set of distinct string values
+        /// (<= `MAX_ENUM_VALUES`), stored as `CompactTag::DictRef`.
+        /// Promoted/demoted by `LogTable`'s enum pass.
         enumeration
     };
 
@@ -36,19 +34,17 @@ struct LogConfiguration
         std::vector<std::string> keys;
         std::string printFormat;
         /// Per-cell rendering type. `Type::any` renders via `printFormat`;
-        /// `Type::time` pre-parses into a `TimeStamp` for numeric sort/filter;
-        /// `Type::enumeration` stores values as dictionary references for
-        /// memory savings and a value-picker filter UX.
+        /// `Type::time` pre-parses into a `TimeStamp`;
+        /// `Type::enumeration` stores values as dictionary references.
         ///
-        /// **`Type::time` promotion is destructive**: Stage B replaces the
-        /// per-line `LogValue` with the parsed `TimeStamp` in place, and the
-        /// streaming path auto-flips `Type::any` → `Type::time` for keys
-        /// matching the timestamp heuristic. Only `LogTable::Reset()` reverts.
+        /// **Time promotion is destructive**: Stage B replaces the
+        /// per-line `LogValue` with a parsed `TimeStamp` in place; only
+        /// `LogTable::Reset()` reverts.
         ///
-        /// `Type::enumeration` promotion is also destructive but reversible:
-        /// when a 17th distinct value would arrive, `LogTable::AppendBatch`
-        /// demotes the column back to `Type::any` and rewrites every slot
-        /// from `DictRef` to `OwnedString`.
+        /// **Enum promotion is destructive but reversible**: when a
+        /// new value would push the dictionary past the cap,
+        /// `LogTable::AppendBatch` demotes the column back to
+        /// `Type::any` and rewrites every slot to `OwnedString`.
         Type type = Type::any;
         std::vector<std::string> parseFormats;
     };
@@ -59,11 +55,9 @@ struct LogConfiguration
         {
             string,
             time,
-            /// Multi-select picker over the column's
-            /// `EnumDictionary::Values()`. Persisted as a list of
-            /// strings (`filterValues`); resolved to `EnumValueId`s at
-            /// rule construction time so filtering is one `uint16`
-            /// compare per row.
+            /// Multi-select over an enum column's dictionary values.
+            /// Persisted as `filterValues` strings; resolved to a
+            /// bitset of `EnumValueId`s at rule construction.
             enumeration
         };
 
@@ -123,29 +117,15 @@ public:
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
     /// Flip the `Type` of the column at @p columnIndex. Used by
-    /// `LogTable`'s enum auto-detector for promotion (`any` ->
-    /// `enumeration`) and demotion (`enumeration` -> `any`). Caller is
-    /// responsible for any matching backfill of the row data;
-    /// `LogConfigurationManager` only tracks the configuration value.
-    /// No-op when @p columnIndex is out of range.
+    /// the enum auto-detector. Caller backfills any row data; this
+    /// only updates the configuration. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
-    /// Returns true iff @p canonicalKey was added by `Update` or
-    /// `AppendKeys` (i.e. discovered from streamed/observed data) and
-    /// has not since been overridden by a `Load`. Used by the enum
-    /// auto-detector to lock columns whose `Type::any` came from a
-    /// loaded configuration: such columns are not eligible for
-    /// auto-promotion to `Type::enumeration`. Demotion is unaffected
-    /// (a configured `Type::enumeration` column that overflows the
-    /// cap demotes regardless of this flag and stays demoted via
-    /// `LogTable::mEnumPermanentlyKilled`).
-    ///
-    /// The set is transient runtime state; it is not serialised by
-    /// `Save`. A `Save` followed by `Load` round-trip therefore drops
-    /// the auto-discovered status, which is the explicit semantic of
-    /// the lock: persisting `Type::any` in a saved config means the
-    /// user has accepted that column as `any`, so a future session
-    /// must not re-promote it without further data-driven discovery.
+    /// True iff @p canonicalKey was added by `Update` or `AppendKeys`
+    /// and not since overridden by `Load`. The enum auto-detector uses
+    /// this to lock columns whose `Type::any` came from a saved
+    /// configuration; persisting `Type::any` is treated as the user
+    /// accepting it. Not serialised.
     [[nodiscard]] bool IsAutoDiscoveredColumn(const std::string &canonicalKey) const;
 
     const LogConfiguration &Configuration() const;
@@ -161,12 +141,9 @@ private:
     mutable std::unordered_set<std::string> mKeysInColumns;
     mutable bool mCacheStale = true;
 
-    /// Set of canonical column keys (`column.keys.front()`) that were
-    /// added by data-driven discovery -- `Update` (synchronous parse)
-    /// or `AppendKeys` (streaming) -- and have not since been
-    /// overridden by `Load`. Read by `IsAutoDiscoveredColumn`.
-    /// Transient: not serialised; cleared by `Load`. See
-    /// `IsAutoDiscoveredColumn` for the locking semantic.
+    /// Canonical keys (`column.keys.front()`) added by data-driven
+    /// discovery (`Update` / `AppendKeys`). Cleared by `Load`. Not
+    /// serialised. Read by `IsAutoDiscoveredColumn`.
     std::unordered_set<std::string> mAutoDiscoveredCanonicalKeys;
 };
 

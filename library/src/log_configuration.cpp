@@ -55,13 +55,9 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
         mCacheStale = true;
-        // The saved configuration wins: any column it carries is
-        // *user-locked* (per the `configLocksAny` rule). Drop the
-        // auto-discovered set so `IsAutoDiscoveredColumn` returns
-        // false for every column the loaded config defines, which
-        // gates `LogTable::RunEnumPassForAppendBatch`'s auto-promote
-        // path. Future `AppendKeys` / `Update` calls add freshly
-        // discovered keys back into the set.
+        // The loaded configuration is authoritative; drop the
+        // auto-discovered set so the enum auto-detector treats every
+        // configured column as user-locked.
         mAutoDiscoveredCanonicalKeys.clear();
     }
     else
@@ -123,10 +119,8 @@ void LogConfigurationManager::Update(const LogData &logData)
                 });
             }
             mKeysInColumns.insert(key);
-            // Data-driven discovery: the column was synthesised from
-            // streamed/observed data, so its `Type::any` is *not*
-            // user-locked. The enum auto-detector will consider it for
-            // promotion. See `IsAutoDiscoveredColumn`.
+            // Data-driven discovery: not user-locked; eligible for
+            // enum auto-promotion.
             mAutoDiscoveredCanonicalKeys.insert(key);
         }
     }
@@ -163,10 +157,8 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
             });
         }
         mKeysInColumns.insert(key);
-        // Data-driven discovery: the column was synthesised from
-        // streamed bytes, so its `Type::any` is *not* user-locked
-        // and the enum auto-detector should consider it for
-        // promotion. See `IsAutoDiscoveredColumn`.
+        // Data-driven discovery: not user-locked; eligible for enum
+        // auto-promotion.
         mAutoDiscoveredCanonicalKeys.insert(key);
     }
 }
@@ -206,8 +198,8 @@ void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration
         return;
     }
     mConfiguration.columns[columnIndex].type = type;
-    // The cached key set is by-key, not by-type, so a type flip alone
-    // does not invalidate it.
+    // `mKeysInColumns` is keyed on key strings, not type, so a pure
+    // type flip leaves it valid.
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const

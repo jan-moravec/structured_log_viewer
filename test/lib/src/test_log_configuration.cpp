@@ -330,11 +330,9 @@ TEST_CASE(
     "[log_configuration][lock_any]"
 )
 {
-    // The `configLocksAny` rule: a column whose `Type::any` came from
-    // a loaded configuration is implicitly user-locked, so the enum
-    // auto-detector skips it. Locking is encoded as "not in the
-    // auto-discovered set"; the set is populated by `Update` and
-    // `AppendKeys` and cleared by `Load`.
+    // configLocksAny: `Type::any` from a loaded config is treated as
+    // user-locked. The set is populated by `Update`/`AppendKeys` and
+    // cleared by `Load`.
 
     SECTION("AppendKeys marks the new key as auto-discovered")
     {
@@ -381,9 +379,8 @@ TEST_CASE(
         testCfg.Write(cfg);
 
         LogConfigurationManager manager;
-        // Pre-populate the auto-discovered set with a stale entry to
-        // prove `Load` actively wipes it (rather than just not
-        // adding to it).
+        // Stale auto-discovered entry confirms `Load` actively wipes
+        // the set rather than just leaving it untouched.
         manager.AppendKeys({"stale"});
         REQUIRE(manager.IsAutoDiscoveredColumn("stale"));
 
@@ -413,8 +410,7 @@ TEST_CASE(
 
         manager.AppendKeys({"freshly_streamed"});
         CHECK(manager.IsAutoDiscoveredColumn("freshly_streamed"));
-        // `Load` did not retroactively mark `level` as auto-discovered;
-        // the lock persists.
+        // The lock on `level` persists across the post-Load discovery.
         CHECK_FALSE(manager.IsAutoDiscoveredColumn("level"));
     }
 }

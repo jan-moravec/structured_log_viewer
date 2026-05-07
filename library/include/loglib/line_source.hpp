@@ -87,26 +87,15 @@ public:
     /// First lineId still resolvable. Advances by `EvictBefore`.
     [[nodiscard]] virtual size_t FirstAvailableLineId() const noexcept = 0;
 
-    /// Pointer to the session-wide enum dictionary registry, or nullptr
-    /// when no registry has been installed (e.g. ad-hoc sources used in
-    /// tests). `LogTable` calls `SetEnumDictionaries` on every owned
-    /// source whenever a new source enters the session
-    /// (`BeginStreaming`, `AppendStreaming`, `Update`, ctor); the
-    /// pointer must outlive every `LogLine` referencing the source.
-    /// `CompactLogValue::Materialise` consults this when resolving
-    /// `CompactTag::DictRef` payloads.
+    /// Session-wide enum dictionary registry (or nullptr in ad-hoc
+    /// sources). Set by `LogTable` for every owned source; must outlive
+    /// any referencing `LogLine`. Consulted by
+    /// `CompactLogValue::Materialise(DictRef)`.
     ///
-    /// **Thread safety / single-writer contract.** The
-    /// `EnumDictionaryRegistry` (and the `EnumDictionary`s it owns) is
-    /// *not* internally synchronised. Mutators (`Insert`, `Clear`,
-    /// `Erase`, `GetOrInsert`, `Alias`) and readers (`Find`, `Resolve`,
-    /// `Values`, `Size`, `LogLine::GetValue` for `DictRef` slots) must
-    /// all run on the thread that owns the registry. In the live
-    /// pipeline that thread is the GUI thread: `QtStreamingLogSink`
-    /// posts every `OnBatch` via `Qt::QueuedConnection`, so all
-    /// promotion / encode / demote work and every read from the model
-    /// runs on the GUI event loop. New sources must respect the same
-    /// rule -- never mutate the registry from a worker thread.
+    /// Single-writer: the registry is not internally synchronised; all
+    /// mutations and reads must happen on the registry-owning thread
+    /// (the GUI thread in the live pipeline, since
+    /// `QtStreamingLogSink` posts batches via queued connection).
     [[nodiscard]] const EnumDictionaryRegistry *EnumDictionaries() const noexcept
     {
         return mEnumDictionaries;

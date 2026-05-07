@@ -61,15 +61,10 @@ struct CompactLogValue
     static CompactLogValue MakeTimestamp(TimeStamp value) noexcept;
 
     /// Materialise into the public `LogValue` variant. @p source provides
-    /// the `MmapSlice` and `OwnedString` byte storage via
-    /// `LineSource::ResolveMmapBytes` / `ResolveOwnedBytes`; @p lineId
-    /// addresses the per-line arena for stream sources (file sources
-    /// ignore it). For `DictRef` payloads @p keyId selects the per-column
-    /// dictionary in `LineSource::EnumDictionaries`; pass
-    /// `INVALID_KEY_ID` (the default) when no dictionary lookup is
-    /// possible -- the `DictRef` slot then materialises as `monostate`.
-    /// Passing `nullptr` source is safe and yields `monostate` for the
-    /// string tags.
+    /// `MmapSlice` / `OwnedString` byte storage; @p lineId addresses the
+    /// per-line arena for stream sources (ignored by file sources). For
+    /// `DictRef`, @p keyId selects the dictionary; pass `INVALID_KEY_ID`
+    /// to materialise as `monostate`. `nullptr` source is safe.
     LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };
 
@@ -85,12 +80,9 @@ CompactLogValue ToCompactLogValue(
     const LogValue &value, std::string &ownedStringArena, const char *fileBegin = nullptr, size_t fileSize = 0
 );
 
-/// In-place add @p delta to every `OwnedString` payload in @p values.
-/// Called from Stage C of the parser pipeline (see
-/// `static_parser_pipeline.hpp`) after the per-batch
-/// `ownedStringsArena` is concatenated onto `LogFile::mOwnedStrings` via
-/// `LogFile::AppendOwnedStrings`. `BufferingSink::OnBatch` is purely a
-/// splice in current code and does not touch the arena.
+/// Add @p delta to every `OwnedString` payload in @p values. Called by
+/// the parser pipeline after concatenating a per-batch arena into
+/// `LogFile::mOwnedStrings`.
 void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept;
 
 /// Per-line compact field storage: an exact-fit heap array of

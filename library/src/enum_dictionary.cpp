@@ -17,12 +17,6 @@ EnumDictionary::EnumDictionary(uint16_t cap) noexcept
 
 EnumValueId EnumDictionary::Find(std::string_view bytes) const noexcept
 {
-    // `mIndex` is a transparent hashmap (`is_transparent` hasher +
-    // `std::equal_to<>`) so the `string_view` lookup hits the bucket
-    // without materialising a temporary `std::string`. O(1) regardless
-    // of dictionary size, so the dictionary stays cheap as the runtime
-    // cap (`AdvancedParserOptions::enumValueCap`) grows past the v1
-    // hard-coded 16.
     const auto it = mIndex.find(bytes);
     if (it == mIndex.end())
     {
@@ -102,26 +96,15 @@ void EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
     {
         return;
     }
-    // Refuse to overwrite an existing canonical with an alias entry.
-    // `mDictionaries.contains(alias)` would mean the caller owns a
-    // separate dictionary under @p alias; pointing the alias index at
-    // @p canonical would orphan the prior dictionary's bytes (the
-    // `unique_ptr` stays alive in `mDictionaries`, but `Find(alias)`
-    // would now resolve to the wrong storage). Caller should `Erase`
-    // first if reparenting is genuinely intended.
+    // Aliasing onto an existing canonical would orphan its dictionary;
+    // caller must `Erase` first.
     assert(!mDictionaries.contains(alias) && "EnumDictionaryRegistry::Alias overwrites canonical entry");
     if (mDictionaries.contains(alias))
     {
-        // In release builds the assert above is compiled out; the
-        // early return then silently swallows the misuse and leaves
-        // the registry in a half-aliased state. Surface it on stderr
-        // (mirroring the demote telemetry pattern) so the caller has
-        // a chance to notice the call-site bug. The contract still
-        // holds: the alias index is unchanged and `Find(alias)`
-        // resolves to whatever dictionary `alias` already canonicalises.
         fmt::print(
             stderr,
-            "[loglib] EnumDictionaryRegistry::Alias refused: alias key {} already has a canonical dictionary; call Erase first to reparent\n",
+            "[loglib] EnumDictionaryRegistry::Alias refused: alias key {} already has a canonical dictionary; call "
+            "Erase first to reparent\n",
             static_cast<uint32_t>(alias)
         );
         return;
@@ -137,8 +120,6 @@ void EnumDictionaryRegistry::Erase(KeyId canonical) noexcept
         return;
     }
     EnumDictionary *raw = canonicalIt->second.get();
-    // Drop every alias pointing at this dictionary. Walk the index map
-    // because aliases are not tracked back-pointer-style.
     for (auto it = mIndex.begin(); it != mIndex.end();)
     {
         if (it->second == raw)

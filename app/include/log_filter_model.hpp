@@ -41,11 +41,8 @@ protected:
             QModelIndex index = sourceModel()->index(sourceRow, rule->FilteredColumn(), sourceParent);
             if (index.isValid())
             {
-                // Hand the rule both the typed display/sort value and
-                // the raw `EnumValueRole` payload. Non-enum rules
-                // ignore the second argument; the bitset fast-path on
-                // `EnumFilterRule` short-circuits its string-set
-                // lookup when the slot is `DictRef`-encoded.
+                // `EnumFilterRule` uses the bitset fast path when the
+                // slot is `DictRef`-encoded; other rules ignore it.
                 const QVariant displayOrSort = sourceModel()->data(index, LogModelItemDataRole::SortRole);
                 const QVariant enumValueId = sourceModel()->data(index, LogModelItemDataRole::EnumValueRole);
                 if (!rule->Matches(displayOrSort, enumValueId))

@@ -279,10 +279,8 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     CHECK(std::get<int64_t>(slowInt) == 99);
 }
 
-// `DictRef` slots resolve through the source's `EnumDictionaryRegistry`.
-// Materialise must round-trip the bytes (zero-copy `string_view`) for
-// any column whose KeyId is registered, and yield `monostate` for any
-// row whose source has no registry installed.
+// `DictRef` slots resolve through the source's registry; absence
+// of a registry yields `monostate` rather than crashing.
 TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryRegistry", "[log_line][enum]")
 {
     const TestLogFile testFile;
@@ -300,8 +298,6 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
 
     source->SetEnumDictionaries(&registry);
 
-    // Build a line with a DictRef slot for `levelKey` and a plain
-    // string slot for an unrelated key.
     const KeyId messageKey = keys.GetOrInsert("message");
     LogLine line({}, keys, *source, 1);
     line.SetEnumDictRef(levelKey, warnId);
@@ -313,15 +309,11 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
     REQUIRE(sv.has_value());
     CHECK(*sv == "warn");
 
-    // The non-enum slot is untouched.
     CHECK(std::get<std::string>(line.GetValue(messageKey)) == "hello");
 
-    // Without a registry the DictRef slot materialises as monostate
-    // rather than crashing.
     source->SetEnumDictionaries(nullptr);
     CHECK(std::holds_alternative<std::monostate>(line.GetValue(levelKey)));
 
-    // Re-installing the registry restores resolution.
     source->SetEnumDictionaries(&registry);
     CHECK(*AsStringView(line.GetValue(levelKey)) == "warn");
 }

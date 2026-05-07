@@ -32,10 +32,8 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
 
     mStackedWidget = new QStackedWidget(this);
 
-    // Picker model + proxy: model owns one checkable item per dict
-    // value, sorted alphabetically; proxy filters by the search box.
-    // `setUniformItemSizes(true)` keeps the layout tractable when the
-    // dictionary holds the full `MAX_ENUM_VALUES = 1024` entries.
+    // Picker model + proxy. `setUniformItemSizes(true)` keeps the
+    // layout tractable up to `MAX_ENUM_VALUES = 1024` items.
     mEnumValuesModel = new QStandardItemModel(this);
     mEnumValuesProxy = new QSortFilterProxyModel(this);
     mEnumValuesProxy->setSourceModel(mEnumValuesModel);
@@ -96,16 +94,13 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         mBeginTimeEdit->setMaximumTime(time);
     });
 
-    // Search box → proxy filter; also clears the warning border and
-    // refreshes the selection-count denominator.
     connect(mEnumSearchEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
         mEnumValuesProxy->setFilterFixedString(text);
         ClearWarningStyles();
     });
 
-    // Select All / Clear All operate on *visible* rows so the bulk
-    // action respects the active search filter (the typical UX in
-    // Excel-style multi-select pickers).
+    // Select All / Clear All operate on visible rows so they respect
+    // the active search filter.
     connect(mEnumSelectAllButton, &QPushButton::clicked, this, [this]() {
         for (int row = 0; row < mEnumValuesProxy->rowCount(); ++row)
         {
@@ -127,9 +122,6 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         }
     });
 
-    // `dataChanged` fires on every check-state toggle; refresh the
-    // count label and clear the warning border so the user sees both
-    // the new "N of M" total and a clean picker as they edit.
     connect(
         mEnumValuesModel,
         &QStandardItemModel::dataChanged,
@@ -143,7 +135,6 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         }
     );
 
-    // Same intent for the empty-string warning on the text editor.
     connect(mStringLineEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
 
     UpdateSelectedColumn(0);
@@ -166,10 +157,6 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
 {
     mRowComboBox->setCurrentIndex(row);
     PopulateEnumValues(row);
-    // Build a `QSet` for O(1) membership checks while we walk the
-    // model. The selection list typically holds a handful of values,
-    // but the dictionary can hold up to `MAX_ENUM_VALUES = 1024` so
-    // an O(rows * selection.size) `contains` would be wasteful.
     const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
     for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
     {
@@ -201,8 +188,7 @@ int FilterEditor::GetMatchType() const
 QStringList FilterEditor::GetSelectedEnumValues() const
 {
     QStringList selected;
-    // Walk the source model, not the proxy: the user's selection
-    // includes items currently hidden by the search filter.
+    // Source model, not proxy: include items hidden by the search box.
     for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
     {
         const QStandardItem *item = mEnumValuesModel->item(i);
@@ -266,10 +252,8 @@ void FilterEditor::SetupLayout()
     enumActionLayout->addWidget(mEnumSelectionCount);
     thirdPageLayout->addLayout(enumActionLayout);
     thirdPageLayout->addWidget(mEnumValuesView);
-    // Visible only when the column's dictionary is empty; see
-    // `PopulateEnumValues`. The placeholder is hidden by default and
-    // toggled with `mEnumValuesView` so the third page never shows
-    // both.
+    // Toggled exclusively with `mEnumValuesView` by
+    // `UpdateEnumSelectionCount`; visible only on an empty dictionary.
     thirdPageLayout->addWidget(mEnumEmptyPlaceholder);
     thirdPage->setLayout(thirdPageLayout);
 
@@ -337,12 +321,9 @@ void FilterEditor::OnOkClicked()
         const QStringList selected = GetSelectedEnumValues();
         if (selected.isEmpty())
         {
-            // Empty selection would filter every row out; warn rather
-            // than silently swallow the click. The border is cleared
-            // by `ClearWarningStyles` on the user's next interaction
-            // (`mEnumValuesModel::dataChanged` /
-            // `mEnumSearchEdit::textChanged`) so the picker doesn't
-            // look broken after they fix the selection.
+            // Empty selection would hide every row; warn instead of
+            // silently swallowing the click. `ClearWarningStyles`
+            // drops the border on the user's next interaction.
             mEnumValuesView->setStyleSheet("QListView { border: 1px solid red; }");
             return;
         }
@@ -389,10 +370,8 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(0);
         break;
     }
-    // Refresh the empty-picker / OK-enabled gating after every page
-    // swap. `PopulateEnumValues` already does this for the enum page,
-    // but for non-enum columns we still need to clear the disabled
-    // OK button if the editor was previously on an empty enum page.
+    // Refresh OK-enabled gating after every page swap so leaving an
+    // empty enum page re-enables OK on the destination page.
     UpdateEnumSelectionCount();
 }
 
@@ -410,9 +389,7 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
     {
         return;
     }
-    // Resolve any of the column's keys against the registry; the
-    // canonical/alias indirection means any registered KeyId returns
-    // the same dictionary.
+    // Aliases share the dictionary, so any registered KeyId works.
     const auto &registry = mModel.Table().EnumDictionaries();
     const auto &keys = mModel.Table().Keys();
     const EnumDictionary *dict = nullptr;
@@ -431,22 +408,12 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
     }
     if (dict == nullptr || dict->Empty())
     {
-        // No values observed for this column yet -- show the
-        // placeholder, hide the picker, and disable OK so the user
-        // can't submit an empty (i.e. "hide everything") enum filter.
-        // `UpdateEnumSelectionCount` rewires both the placeholder
-        // visibility and the OK enabled state every call, so a future
-        // `PopulateEnumValues` invoked after the dictionary grows
-        // (e.g. live-tail batch landed and the user re-opens the
-        // editor) restores the picker.
+        // Empty dictionary: `UpdateEnumSelectionCount` will swap in
+        // the placeholder and disable OK.
         UpdateEnumSelectionCount();
         return;
     }
-    // Snapshot the dictionary into a sorted `QStringList` once so the
-    // proxy's later sort hits already-ordered data. Insertion order in
-    // the dictionary is observation order, which is rarely what the
-    // user wants to scan (alphabetic is the conventional choice for
-    // multi-select pickers).
+    // Pre-sort alphabetically (dictionary order is observation order).
     QStringList sortedValues;
     sortedValues.reserve(static_cast<qsizetype>(dict->Values().size()));
     for (const std::string &value : dict->Values())
@@ -480,14 +447,9 @@ void FilterEditor::UpdateEnumSelectionCount()
     }
     mEnumSelectionCount->setText(QString("%1 of %2 selected").arg(selected).arg(total));
 
-    // Empty-picker UX: when the third (enum) page is active and the
-    // dictionary is empty, swap the picker for the placeholder and
-    // disable OK so the user can't submit a "hide everything" rule.
-    // For non-empty dictionaries OK gates on `selected > 0` -- the
-    // existing submit-time guard still catches click-OK-with-zero,
-    // but disabling proactively gives feedback at the picker level.
-    // Other pages (string / time) leave OK enabled and rely on
-    // `OnOkClicked`'s per-page validation.
+    // On the enum page, swap in the placeholder and disable OK when
+    // the dictionary is empty or nothing is checked. Other pages keep
+    // OK enabled and rely on `OnOkClicked`'s per-page validation.
     const bool onEnumPage = mStackedWidget->currentIndex() == 2;
     if (onEnumPage)
     {
@@ -501,8 +463,6 @@ void FilterEditor::UpdateEnumSelectionCount()
     }
     else
     {
-        // Non-enum pages keep OK enabled; the page-specific validation
-        // in `OnOkClicked` handles empty input.
         mOkButton->setEnabled(true);
         mEnumEmptyPlaceholder->hide();
         mEnumValuesView->show();

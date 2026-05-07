@@ -137,9 +137,8 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, K
             return LogValue{std::monostate{}};
         }
         const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(payload));
-        // Materialise as `string_view` because the registry's bytes are
-        // stable for the dictionary's lifetime (no eviction in v1) and
-        // every consumer treats `string_view` as the zero-copy fast path.
+        // `string_view` because the dictionary's bytes are stable for
+        // its lifetime and every consumer treats this as zero-copy.
         return LogValue{bytes};
     }
     case CompactTag::Int64:

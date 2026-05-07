@@ -360,16 +360,9 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
-    // `EnumFilterRule::mSelectedIds` is sized once at rule construction
-    // against the column's `EnumDictionary` snapshot. Live-tail
-    // sessions where the dictionary grows past that snapshot, or a
-    // column that auto-promotes to `Type::enumeration` after the rule
-    // was built, leave the fast-path bitset partially inert until the
-    // rule is rebuilt. The model fires `enumColumnsChanged` whenever
-    // an `AppendBatch` back-fill range covers an enum column; we
-    // rebuild the rule list iff at least one enum filter is currently
-    // active so static-file sessions and sessions without enum
-    // filters pay zero cost.
+    // Rebuild active enum filter rules when an `AppendBatch` grew or
+    // promoted an enum dictionary, so the fast-path bitset stays in
+    // sync. Skipped when no enum filter is currently active.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
         const bool hasEnumFilter = std::any_of(mFilters.begin(), mFilters.end(), [](const auto &kv) {
             return kv.second.type == loglib::LogConfiguration::LogFilter::Type::enumeration;
@@ -1166,28 +1159,20 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
         return;
     }
 
-    // Reloading a saved filter against a column whose `type` has since
-    // shifted (e.g. a string column auto-promoted to `Type::enumeration`
-    // between sessions) would silently re-open the editor on the
-    // *previously* saved page (text page on a now-enum column),
-    // confusing both the user and the rule resolver downstream. Detect
-    // and drop with a status-bar message rather than passing on a
-    // mismatched filter; the editor still opens empty so the user can
-    // recreate the filter against the current column type.
+    // Drop saved filters whose type no longer matches the column's
+    // current `Type` (e.g. a string filter against a now-enum column
+    // after auto-promotion). Editor still opens empty so the user can
+    // recreate the filter.
     std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
         const auto &columns = mModel->Configuration().columns;
         const auto rowIndex = static_cast<size_t>(resolvedFilter->row);
-        // Saved enumeration filters with no `filterValues` would build
-        // an `EnumFilterRule` with an empty selection set, which
-        // `Matches` evaluates as "hide everything". The editor's
-        // submit guard prevents users from authoring this state, but
-        // a hand-edited or future-incompatible saved config can still
-        // round-trip through. Drop the filter outright and surface a
-        // status-bar note instead of opening the editor on a
-        // pre-doomed selection.
-        if (rowIndex < columns.size() && resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::enumeration &&
+        // Saved empty enum selections would hide every row -- drop
+        // them outright (the editor's submit guard already blocks
+        // users from authoring this state).
+        if (rowIndex < columns.size() &&
+            resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::enumeration &&
             resolvedFilter->filterValues.empty())
         {
             statusBar()->showMessage(
@@ -1195,8 +1180,6 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
                     .arg(QString::fromStdString(columns[rowIndex].header)),
                 5000
             );
-            // Clear any prior active rule for this id so the proxy
-            // model isn't left holding a stale one.
             ClearFilter(filterId);
             return;
         }
@@ -1214,14 +1197,8 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
                                      columnType != loglib::LogConfiguration::Type::enumeration);
             if (!typesMatch)
             {
-                // Resetting `resolvedFilter` here only stops the editor
-                // from re-opening pre-populated; an *active* rule for
-                // this filter id (e.g. a saved string filter that the
-                // session restored before the column auto-promoted to
-                // enumeration) would still be applying. `ClearFilter`
-                // erases `mFilters[filterId]`, removes the menu entry,
-                // and runs `UpdateFilters()` so the proxy model drops
-                // the stale rule.
+                // Drop any active rule for this id along with the
+                // pre-populated load.
                 ClearFilter(filterId);
                 statusBar()->showMessage(
                     QString("Filter '%1' was removed because the column type changed")
@@ -1436,13 +1413,9 @@ void MainWindow::UpdateFilters()
             {
                 values.append(QString::fromStdString(v));
             }
-            // Resolve the column's canonical dictionary so the rule
-            // can pre-compute its bitset of selected `EnumValueId`s
-            // for the fast filter path. The dictionary may be absent
-            // when the rule fires before promotion has happened (e.g.
-            // a freshly loaded saved filter against a column that has
-            // not yet been encoded); the rule then uses its
-            // string-set fallback until UpdateFilters is called again.
+            // Pre-resolve the canonical dictionary for the bitset
+            // fast path; the rule falls back to its string-set path
+            // when the column has not yet been promoted.
             const loglib::EnumDictionary *dictionary = nullptr;
             const auto &columns = mModel->Configuration().columns;
             const auto rowIndex = static_cast<size_t>(filter.second.row);

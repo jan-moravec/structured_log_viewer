@@ -71,9 +71,8 @@ public:
     /// Throws if @p key is unknown.
     void SetValue(const std::string &key, const LogValue &value);
 
-    /// Replace (or insert) the slot for @p id with a `DictRef`
-    /// referencing @p vid. Used by `LogTable`'s enum pass; the
-    /// dictionary lifetime is the caller's concern.
+    /// Replace (or insert) the slot for @p id with a `DictRef` for
+    /// @p vid. Caller owns the dictionary lifetime.
     void SetEnumDictRef(KeyId id, EnumValueId vid);
 
     std::vector<std::string> GetKeys() const;
@@ -124,14 +123,11 @@ public:
     /// True when @p id is stored as `OwnedString` (escape-decoded).
     bool IsOwnedString(KeyId id) const noexcept;
 
-    /// True when @p id is stored as `DictRef` (enum-encoded). Resolution
-    /// happens via the source's `EnumDictionaryRegistry`.
+    /// True when @p id is stored as `DictRef`.
     bool IsDictRef(KeyId id) const noexcept;
 
-    /// Raw `EnumValueId` payload for a `DictRef` slot, or nullopt if
-    /// @p id is missing or stored under a non-`DictRef` tag. Used by
-    /// the model's `EnumValueRole` fast-filter path so the rule can
-    /// match against a bitset without round-tripping through a string.
+    /// `EnumValueId` payload for a `DictRef` slot, else nullopt.
+    /// Powers the model's `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(KeyId id) const noexcept;
 
 private:
@@ -140,12 +136,7 @@ private:
     const internal::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
     /// Replace (or insert) the slot for @p id with @p compact. Shared
-    /// implementation of `SetValue(KeyId, ...)` (after variant ->
-    /// compact) and `SetEnumDictRef(KeyId, EnumValueId)` (after
-    /// `MakeDictRef`); both performed the same `lower_bound` +
-    /// `Set`/`Insert` dance and previously diverged independently.
-    /// May allocate via `mValues.Insert` when @p id is new, so not
-    /// `noexcept`.
+    /// by `SetValue` and `SetEnumDictRef`. May allocate.
     void SetCompact(KeyId id, internal::CompactLogValue compact);
 
     internal::CompactLineFields mValues;

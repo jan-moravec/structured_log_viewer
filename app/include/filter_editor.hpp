@@ -31,10 +31,8 @@ public:
 
     void Load(int row, const QString &filterString, int matchType);
     void Load(int row, qint64 begin, qint64 end);
-    /// Pre-select the given enum values in the multi-select picker for
-    /// `Type::enumeration` columns. Values not present in the column's
-    /// current dictionary are silently skipped (rather than blocking
-    /// the editor from opening).
+    /// Preselect @p selectedValues in the multi-select picker.
+    /// Values absent from the current dictionary are skipped.
     void Load(int row, const QStringList &selectedValues);
 
     int GetRowToFilter() const;
@@ -61,12 +59,9 @@ private:
     QDateEdit *mEndDateEdit;
     QTimeEdit *mEndTimeEdit;
 
-    /// Picker widgets for `Type::enumeration` columns. The model holds
-    /// one checkable item per dictionary value (alphabetised) and is
-    /// shared across `Load` calls; the proxy applies the search-box
-    /// filter case-insensitively. Both Select All / Clear All operate
-    /// over the *visible* (proxy-filtered) rows so users can scope a
-    /// bulk action to the search hits.
+    /// Multi-select picker for `Type::enumeration` columns. Items are
+    /// alphabetised; Select All / Clear All operate on the
+    /// proxy-filtered (visible) rows.
     QListView *mEnumValuesView;
     QStandardItemModel *mEnumValuesModel;
     QSortFilterProxyModel *mEnumValuesProxy;
@@ -74,13 +69,8 @@ private:
     QPushButton *mEnumSelectAllButton;
     QPushButton *mEnumClearAllButton;
     QLabel *mEnumSelectionCount;
-    /// Shown in place of the picker when the column's
-    /// `EnumDictionary` is empty (or the column is configured as
-    /// `Type::enumeration` but no values have been observed yet --
-    /// can happen on a freshly-opened live-tail before the first
-    /// batch lands). The OK button is disabled while the placeholder
-    /// is visible; `UpdateEnumSelectionCount` re-enables it once the
-    /// user has at least one value checked.
+    /// Shown when the dictionary is empty (e.g. live-tail before the
+    /// first batch). OK stays disabled while it is visible.
     QLabel *mEnumEmptyPlaceholder;
 
     QPushButton *mOkButton;
@@ -90,14 +80,9 @@ private:
     void SetBeginEnd(qint64 begin, qint64 end);
     /// Repopulate the enum picker from the column's current dictionary.
     void PopulateEnumValues(int columnIndex);
-    /// Refresh "N of M selected" label after every check/uncheck or
-    /// search-box change. Cheap O(model rows) walk; the picker is
-    /// capped at `MAX_ENUM_VALUES = 1024`.
+    /// Refresh the "N of M selected" label.
     void UpdateEnumSelectionCount();
-    /// Drop the sticky red warning border that the empty-submit guard
-    /// stamps on `mEnumValuesView` / `mStringLineEdit`. Connected to
-    /// `dataChanged`/`textChanged` so the warning clears on the user's
-    /// next interaction rather than persisting until close.
+    /// Clear the red warning border stamped by the empty-submit guard.
     void ClearWarningStyles();
     static QDateTime ConvertToQDateTime(qint64 timestamp);
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);

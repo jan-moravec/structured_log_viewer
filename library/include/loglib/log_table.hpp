@@ -34,14 +34,10 @@ public:
     LogTable(LogTable &) = delete;
     LogTable &operator=(const LogTable &) = delete;
 
-    // Move ops are defined out-of-line because every `LineSource` in
-    // `mData.Sources()` caches a `const EnumDictionaryRegistry*` to
-    // *this*'s `mEnumDictionaries`. A naive defaulted move would leave
-    // those pointers dangling at the moved-from address; instead the
-    // body member-by-member moves and then re-runs
-    // `RewireSourceRegistries()` so every source points at the new
-    // owner. No production code move-assigns today, but this guards
-    // against silent regression if that changes.
+    // Out-of-line so the move re-runs `RewireSourceRegistries()`:
+    // every `LineSource` caches a pointer to `mEnumDictionaries`, and a
+    // defaulted move would leave those pointing at the moved-from
+    // address.
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
 
@@ -114,28 +110,19 @@ public:
     KeyIndex &Keys();
     const KeyIndex &Keys() const;
 
-    /// Read-only access to the per-column enum dictionaries. Filter UI
-    /// reads `Find(keyId)->Values()` to populate the multi-select picker.
+    /// Per-column enum dictionaries. Filter UI reads
+    /// `Find(keyId)->Values()` for the multi-select picker.
     const EnumDictionaryRegistry &EnumDictionaries() const noexcept;
 
-    /// Override the per-column distinct-value cap before the first
-    /// `AppendBatch` / `Update`. Clamped to `[1, MAX_ENUM_VALUES]`.
-    /// Streaming pipelines forward `AdvancedParserOptions::enumValueCap`
-    /// through this; tests use it to drive the demote path with a
-    /// smaller cap. No effect on dictionaries already created.
+    /// Override the per-column distinct-value cap. Clamped to
+    /// `[1, MAX_ENUM_VALUES]`. No effect on existing dictionaries.
     void SetEnumValueCap(uint16_t cap) noexcept;
 
-    /// Currently-effective per-column distinct-value cap. Reflects the
-    /// last `SetEnumValueCap` call (or `DEFAULT_ENUM_VALUE_CAP`).
     [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
-    /// Returns the dictionary id for the slot at @p row / @p column iff
-    /// the underlying `CompactLogValue` is a `DictRef`; nullopt
-    /// otherwise. Used by the model's `EnumValueRole` fast-filter path
-    /// so `EnumFilterRule` can match without round-tripping through a
-    /// `QString`. Walks `mColumnKeyIds[column]` and returns the first
-    /// `DictRef` slot it finds (after `EncodeColumnRange` there is at
-    /// most one such slot per row, by construction).
+    /// Dictionary id for the slot at @p row / @p column iff it is a
+    /// `DictRef`; nullopt otherwise. Powers the model's
+    /// `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(size_t row, size_t column) const noexcept;
 
     const LogConfigurationManager &Configuration() const;
@@ -144,21 +131,16 @@ public:
     LogConfigurationManager &Configuration();
 
 private:
-    /// Per-column "is this column still a candidate?" tracker. Tracks
-    /// up to `cap` distinct observed values; the (cap+1)th value flips
-    /// `killed`, drops the buffer, and the column is no longer a
-    /// promotion candidate. `LogTable` then folds the canonical KeyId
-    /// into `mEnumPermanentlyKilled` so the column stays demoted.
+    /// Per-column observed-value tracker for enum auto-detection.
+    /// Tracks up to `cap` distinct values; the (cap+1)th flips `killed`
+    /// and drops the buffers.
     struct EnumCandidateTracker
     {
-        /// Heterogeneous hasher mirrors `EnumDictionary::StringHash`
-        /// (kept private to that class). `mSeen` uses the
-        /// transparent-key API so the hot-path `Observe` lookup
-        /// hashes the incoming `string_view` without materialising a
+        /// Heterogeneous hasher so `string_view` lookups skip the temp
         /// `std::string`.
         struct StringHash
         {
-            // NOLINTNEXTLINE(readability-identifier-naming) -- standard
+            // NOLINTNEXTLINE(readability-identifier-naming): standard
             // library tag name required for heterogeneous lookup.
             using is_transparent = void;
             [[nodiscard]] size_t operator()(std::string_view s) const noexcept
@@ -171,21 +153,12 @@ private:
             }
         };
 
-        /// Insertion-ordered observed distinct values. Sized by `cap`
-        /// at construction; backed by a `vector` (rather than the prior
-        /// `array`) so the runtime cap from
-        /// `AdvancedParserOptions::enumValueCap` can drive its capacity.
         std::vector<std::string> values;
-        /// Mirror of `values` for O(1) "have we seen this byte
-        /// sequence before?" checks. The set is capped by `cap`
-        /// (matches `values.size()`) so even at `MAX_ENUM_VALUES =
-        /// 1024` the memory footprint is bounded. Both are dropped
-        /// when `killed = true`.
         std::unordered_set<std::string, StringHash, std::equal_to<>> seen;
         uint16_t size = 0;
         uint16_t cap = DEFAULT_ENUM_VALUE_CAP;
         size_t rowsObserved = 0;
-        bool killed = false; ///< Tracker exceeded the cap; column is not promotable.
+        bool killed = false;
 
         EnumCandidateTracker() = default;
         explicit EnumCandidateTracker(uint16_t capValue) noexcept
@@ -195,9 +168,8 @@ private:
             seen.reserve(capValue);
         }
 
-        /// Observes @p bytes. Returns true iff @p bytes was new (strictly
-        /// grew the distinct-value set). Side effect: flips `killed` when
-        /// a new value pushes `size` past `cap`.
+        /// True iff @p bytes was new (grew the distinct set). Flips
+        /// `killed` when a new value pushes `size` past `cap`.
         bool Observe(std::string_view bytes);
     };
 
@@ -208,39 +180,33 @@ private:
     void RefreshSnapshotTimeKeys();
     void RefreshSnapshotEnumKeys();
 
-    /// Hook every line source to `mEnumDictionaries`. Called whenever a
-    /// new source enters the session.
+    /// Point every owned `LineSource` at `mEnumDictionaries`.
     void RewireSourceRegistries();
 
-    /// Run the enum pass over the most recent batch (rows
-    /// `[oldLineCount, mData.Lines().size())`). Updates trackers,
-    /// performs reactive demotion, encode-if-fits, and quiescence-based
-    /// auto-promotion. Updates @p firstBackfilled / @p lastBackfilled
-    /// when columns are touched table-wide.
+    /// Enum pass over rows `[oldLineCount, Lines().size())`. Updates
+    /// trackers, demotes overflowing columns, encodes the slice for
+    /// already-promoted columns, and auto-promotes quiescent
+    /// candidates. Extends @p firstBackfilled / @p lastBackfilled when
+    /// table-wide work is done.
     void RunEnumPassForAppendBatch(
         size_t oldLineCount, std::optional<size_t> &firstBackfilled, std::optional<size_t> &lastBackfilled
     );
 
-    /// Auto-promote @p columnIndex (currently `Type::any`) to
-    /// `Type::enumeration`. Walks all rows, encodes every slot for the
-    /// column's keys as `DictRef`, and flips the configuration entry.
+    /// Promote @p columnIndex from `Type::any` to `Type::enumeration`,
+    /// encoding every existing row's slot as `DictRef`.
     void PromoteColumnToEnum(size_t columnIndex);
 
-    /// Demote @p columnIndex (currently `Type::enumeration`) back to
-    /// `Type::any`. Walks all rows, materialises every `DictRef` slot
-    /// to `OwnedString`, and flips the configuration entry. The
-    /// dictionary entry for the column's keys is dropped.
+    /// Demote @p columnIndex from `Type::enumeration` back to
+    /// `Type::any`, materialising every `DictRef` to `OwnedString` and
+    /// dropping the dictionary.
     void DemoteColumnFromEnum(size_t columnIndex);
 
-    /// Encode the column's slot in the new-batch slice as `DictRef`,
-    /// growing the dictionary if necessary. Returns false when the
-    /// dictionary would have to grow past `MAX_ENUM_VALUES`; caller
-    /// should demote instead.
+    /// Encode the column's slots in `[rowBegin, rowEnd)` as `DictRef`,
+    /// growing the dictionary as needed. Returns false if the
+    /// dictionary would exceed `MAX_ENUM_VALUES`; caller should demote.
     bool EncodeColumnRangeAsEnum(const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd);
 
-    /// Inner loop shared by the column-by-name and column-by-cached-id
-    /// entry points. @p keyIds must contain only resolved (`KeyId !=
-    /// INVALID_KEY_ID`) entries.
+    /// Shared inner loop. @p keyIds must contain only resolved entries.
     bool EncodeColumnRange(const std::vector<KeyId> &keyIds, size_t rowBegin, size_t rowEnd);
 
     LogData mData;
@@ -256,44 +222,27 @@ private:
     /// them, so every `AppendBatch` back-fills the rows it appended.
     std::unordered_set<KeyId> mPostSnapshotTimeKeys;
 
-    /// Per-column dictionaries for `Type::enumeration` columns.
-    /// `LineSource::EnumDictionaries()` points at this registry on
-    /// every line source in the current session.
+    /// Per-column dictionaries for `Type::enumeration` columns. Every
+    /// owned `LineSource` points at this registry.
     EnumDictionaryRegistry mEnumDictionaries;
 
-    /// Effective per-column distinct-value cap. Defaulted to
-    /// `DEFAULT_ENUM_VALUE_CAP`; streaming pipelines override via
-    /// `SetEnumValueCap` from `AdvancedParserOptions::enumValueCap`.
-    /// Used both when stamping freshly-created `EnumDictionary`s and
-    /// when constructing fresh `EnumCandidateTracker`s.
+    /// Effective per-column distinct-value cap; stamped on new
+    /// dictionaries and trackers.
     uint16_t mEnumValueCap = DEFAULT_ENUM_VALUE_CAP;
 
-    /// Per-column observed-value trackers used by the auto-detector.
-    /// Keyed on `column.keys.front()` (the *configured* canonical key
-    /// string), which is stable for the column's lifetime even when
-    /// keys arrive in different batches. Earlier KeyId-based keying
-    /// was unstable: for multi-key columns (`keys: ["level",
-    /// "severity"]`) the tracker key was `mScratchResolvedKeyIds.front()`,
-    /// the first *resolved* KeyId in the batch -- and that flips
-    /// whenever a new alias key shows up, orphaning prior
-    /// observations. Kept only while the column is still a promotion
-    /// candidate (`Type::any` and tracker not killed).
+    /// Trackers for promotion candidates, keyed on `column.keys.front()`
+    /// (the configured canonical key string -- stable across batches
+    /// even when alias keys arrive out of order). Live only while the
+    /// column is still `Type::any` and not yet killed.
     std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
 
-    /// Canonical-key strings for columns whose tracker has overflowed
-    /// at least once (either by exceeding the distinct-value cap
-    /// during observation, or by reactive demotion from
-    /// `Type::enumeration`). `RunEnumPassForAppendBatch` skips these
-    /// columns so a column that has already shown >cap distinct values
-    /// is never re-tracked or re-promoted (avoids promote/demote
-    /// oscillation when data shape sits around the cap). Cleared by
-    /// `Reset()`.
+    /// Canonical-key strings for columns that have overflowed the cap
+    /// at least once. Skipped by `RunEnumPassForAppendBatch` to avoid
+    /// promote/demote oscillation. Cleared by `Reset()`.
     std::unordered_set<std::string> mEnumPermanentlyKilled;
 
-    /// Reusable scratch buffer for `RunEnumPassForAppendBatch`'s
-    /// per-column resolved-KeyId list. Kept as a member so the inner
-    /// loop's `clear()` reuses the existing capacity instead of
-    /// allocating a fresh vector per (column, batch) pair.
+    /// Scratch buffer reused across the per-column inner loop in
+    /// `RunEnumPassForAppendBatch`.
     std::vector<KeyId> mScratchResolvedKeyIds;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;

@@ -266,11 +266,8 @@ void LogLine::SetCompact(KeyId id, internal::CompactLogValue compact)
     }
     if (lo < size && data[lo].first == id)
     {
-        // In-place replacement: hot path for inline timestamp promotion
-        // (`tryPromote` swaps the field's string value for a `TimeStamp`)
-        // and for the enum encode/decode paths
-        // (`SetEnumDictRef` / `DemoteColumnFromEnum`'s back-conversion to
-        // `OwnedString`).
+        // In-place replacement: timestamp promotion, enum encode
+        // (`SetEnumDictRef`), and demote back to `OwnedString`.
         mValues.Set(lo, compact);
         return;
     }

@@ -595,10 +595,9 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         hitsSink = hits;
     });
 
-    // DictRef variant: pre-encode `level` as a per-column enum
-    // dictionary so each `GetValue` resolves through the registry. Same
-    // KeyId fast-path as above but with the extra `EnumDictionary::Resolve`
-    // hop, so the gap quantifies the registry-lookup tax.
+    // DictRef variant: pre-encode `level` so each `GetValue` resolves
+    // through the registry. Gap vs the KeyId path quantifies the
+    // dictionary-lookup tax.
     {
         LogData &mutableData = result.data;
         const KeyId levelKey = mutableData.Keys().Find("level");
@@ -728,12 +727,9 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     REQUIRE(mmapSliceValues > 0);
 }
 
-// Enum auto-detection benchmark: streams a fixture whose `level` field
-// has only 4 distinct values (well below `MAX_ENUM_VALUES`) and reports
-// the per-row encoded-as-DictRef fraction plus the registry's memory
-// footprint relative to the equivalent owned-string arena. Validates
-// (a) the auto-detector fires, (b) the dictionary stays small, and
-// (c) the column actually flips to `Type::enumeration`.
+// Enum auto-detection benchmark: 4 distinct `level` values across many
+// rows. Reports DictRef fraction + dictionary heap bytes; checks the
+// column actually flipped to `Type::enumeration`.
 TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][json_parser][enum]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
@@ -764,8 +760,6 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
 
     REQUIRE(table.RowCount() == logs.size());
 
-    // The fixture's `level` field is drawn from a small set — the
-    // auto-detector must promote it.
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
 

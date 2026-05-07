@@ -165,6 +165,10 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
 
   > **Note:** the heuristic is **destructive** for streaming opens. If a key matching the heuristic appears mid-parse, the corresponding column is flipped from `any` to `time` in-place and every row already in the table is back-filled with the parsed `TimeStamp`. The original raw string variant is replaced by the parsed value, so disabling the column's `time` type later (via a saved configuration) does not bring the original textual value back without re-opening the file.
 
+- Columns whose values are drawn from a small, stable set of strings (e.g. `level`, `service`, `host`) are auto-promoted to **enumeration columns** once at least 256 rows have been observed and no more than 64 distinct values have been seen. Enum columns are stored compactly as dictionary references and unlock the value-picker filter UI (see [Filtering an enumeration column](#filtering-an-enumeration-column)). If a 65th distinct value later arrives, the column is silently demoted back to a generic text column and stays demoted for the rest of the session, so a column that briefly looked enum-like never oscillates.
+
+  > **Note:** auto-promotion only happens for columns that were **not** explicitly defined in a loaded [configuration](#configurations). Saving a layout with a column as the generic `any` type therefore locks it as text in future sessions, even if the data shape would otherwise look enum-like. To force a column to remain text, save a configuration that explicitly carries it as `any`.
+
 - All other keys become generic columns with the format `{}` (pass-through).
 
 You can persist a customized column layout and filter set via [configurations](#configurations).
@@ -206,7 +210,19 @@ Structured Log Viewer supports any number of simultaneous filters. A row is show
 1. Depending on the column type:
    - **Text columns** — enter a filter string and pick a match mode: *Exactly*, *Contains*, *Regular Expression*, or *Wildcards*.
    - **Timestamp columns** — pick a **Begin** and **End** date/time. The dialog constrains the two so Begin ≤ End, and pre-fills them with the range of values present in the table.
-1. Click **Ok**. The active filter is added as an entry in the **Filters** menu, titled with its value (or timestamp range).
+   - **Enumeration columns** — see [Filtering an enumeration column](#filtering-an-enumeration-column).
+1. Click **Ok**. The active filter is added as an entry in the **Filters** menu, titled with its value (or timestamp range, or comma-separated list of enum values).
+
+### Filtering an enumeration column
+
+When the **Row to filter** dropdown points at an [enumeration column](#automatic-column-detection), the dialog swaps in a **Selected values** list:
+
+- The list shows every distinct value seen so far for that column, sorted alphabetically.
+- Tick the values to keep — a row passes the filter if its value is one of the ticked entries.
+- The header above the list (`Selected: X / Y`) and the **Select all** / **Clear all** buttons make bulk selection cheap.
+- Adding a filter with zero values selected is rejected with a warning — the empty selection would hide every row.
+
+If a column gets demoted from enum back to text mid-session (because a 65th distinct value arrived), saved enum filters fall back to comparing the row's text value against the saved selection so they keep working without intervention. Conversely, a saved *text* filter on a column that auto-promotes to enum keeps matching rows by their text representation; you can re-edit it through the dialog to switch to the value picker.
 
 ### Editing or Clearing a Filter
 

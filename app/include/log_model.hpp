@@ -31,13 +31,9 @@ enum LogModelItemDataRole
     /// row index); the `RowOrderProxyModel` mirrors row indices
     /// directly without consulting any role.
     InsertionOrderRole,
-    /// Raw `loglib::EnumValueId` (as `qint32`) for slots stored as
-    /// `CompactTag::DictRef`; invalid `QVariant` for non-enum slots.
-    /// `EnumFilterRule::Matches` consumes this to short-circuit the
-    /// per-row filter check via a bitset of selected ids, falling
-    /// back to the string path only when the slot has not been
-    /// (or cannot be) enum-encoded (numeric value, monostate,
-    /// post-demote `OwnedString`).
+    /// `loglib::EnumValueId` (as `qint32`) for `DictRef` slots;
+    /// invalid `QVariant` otherwise. Consumed by `EnumFilterRule` for
+    /// the bitset fast path.
     EnumValueRole,
 };
 
@@ -160,15 +156,10 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
-    /// Override the per-column enum distinct-value cap on the embedded
-    /// `LogTable`. Forwards to `LogTable::SetEnumValueCap`. Tests use
-    /// it to drive demote behaviour without staging 64+ distinct
-    /// values; future settings UI can plumb
-    /// `AdvancedParserOptions::enumValueCap` here before `BeginStreaming`
-    /// runs. No effect on dictionaries that already exist.
+    /// Forward to `LogTable::SetEnumValueCap`. No effect on existing
+    /// dictionaries.
     void SetEnumValueCap(uint16_t cap) noexcept;
 
-    /// Currently-effective per-column enum distinct-value cap.
     [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
 signals:
@@ -193,18 +184,10 @@ signals:
     /// `BytesProducer`. Re-emitted via queued connection to the GUI.
     void sourceStatusChanged(loglib::SourceStatus status);
 
-    /// Emitted from `AppendBatch` whenever the just-applied batch's
-    /// back-fill range covers at least one `Type::enumeration` column
-    /// -- i.e. either an auto-promotion just flipped a column to
-    /// enumeration, or a previously-promoted column's dictionary
-    /// grew. `EnumFilterRule::mSelectedIds` is sized once at rule
-    /// construction against the column's `EnumDictionary` snapshot,
-    /// so a dictionary that grows after the rule was built leaves
-    /// the fast-path bitset partially inert until the rules are
-    /// rebuilt. `MainWindow::UpdateFilters` re-resolves bytes ->
-    /// `EnumValueId`s; we wire the slot only when an enum-type
-    /// filter is currently active to avoid pointless rebuilds in the
-    /// common case.
+    /// Emitted when an `AppendBatch` back-fill range covers an enum
+    /// column (auto-promotion or a dictionary grew). `MainWindow`
+    /// rebuilds active enum-filter rules so newly-appearing values are
+    /// included in the bitset fast path.
     void enumColumnsChanged();
 
 private:
