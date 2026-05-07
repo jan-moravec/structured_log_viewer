@@ -1,6 +1,7 @@
 #include "common.hpp"
 
 #include <loglib/bytes_producer.hpp>
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
@@ -1147,4 +1148,264 @@ TEST_CASE(
     const auto &line1 = table.Data().Lines()[1];
     CHECK(line0.Source() == sourceAPtr);
     CHECK(line1.Source() == sourceBPtr);
+}
+
+namespace
+{
+
+/// Append @p enoughRows rows alternating between @p values so the
+/// per-column tracker accumulates `tracker.rowsObserved >=
+/// ENUM_PROMOTION_MIN_ROWS` and the auto-detector promotes the column.
+StreamedBatch BuildEnumBatch(
+    KeyIndex &keys,
+    LineSource &source,
+    const std::string &columnKey,
+    const std::vector<std::string> &values,
+    size_t firstLineNumber,
+    size_t rowCount,
+    bool announceNewKey
+)
+{
+    std::vector<std::vector<std::pair<std::string, LogValue>>> rows;
+    rows.reserve(rowCount);
+    for (size_t i = 0; i < rowCount; ++i)
+    {
+        rows.push_back({{columnKey, std::string(values[i % values.size()])}});
+    }
+    StreamedBatch batch = BuildStreamedBatch(keys, source, rows, announceNewKey ? 0 : keys.Size(), firstLineNumber);
+    if (!announceNewKey)
+    {
+        batch.newKeys.clear();
+    }
+    return batch;
+}
+
+} // namespace
+
+TEST_CASE(
+    "LogTable::AppendBatch -- auto-detected enum column promotes existing rows to DictRef",
+    "[log_table][append_batch][enum]"
+)
+{
+    const TestLogFile testFile("enum_promote.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    const std::vector<std::string> levels = {"info", "warn", "error", "debug"};
+
+    // Below the promotion threshold: column stays Type::any with all
+    // slots as `MmapSlice` / `OwnedString`.
+    constexpr size_t SUBSET_ROWS = 64;
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, SUBSET_ROWS, true));
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    CHECK(!table.Data().Lines()[0].IsDictRef(levelKey));
+
+    // Crossing the 256-row threshold triggers auto-promotion. The
+    // column flips to `Type::enumeration` and every existing row is
+    // back-filled to `DictRef`.
+    constexpr size_t ROWS_TO_REACH_THRESHOLD = 220;
+    table.AppendBatch(
+        BuildEnumBatch(keys, *sourcePtr, "level", levels, SUBSET_ROWS + 1, ROWS_TO_REACH_THRESHOLD, false)
+    );
+
+    REQUIRE(table.RowCount() == SUBSET_ROWS + ROWS_TO_REACH_THRESHOLD);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+
+    // All rows are now DictRef-encoded; the dictionary holds exactly
+    // the four observed levels.
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(table.Data().Lines()[row].IsDictRef(levelKey));
+    }
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    CHECK(dict->Size() == levels.size());
+
+    // GetValue still resolves the strings end-to-end through the
+    // registry (zero-copy `string_view`).
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const LogValue v = table.GetValue(row, 0);
+        const auto sv = AsStringView(v);
+        REQUIRE(sv.has_value());
+        CHECK(*sv == levels[row % levels.size()]);
+    }
+
+    // The promotion should have recorded a back-fill range so Qt can
+    // emit `dataChanged` over column index 0.
+    REQUIRE(table.LastBackfillRange().has_value());
+    CHECK(table.LastBackfillRange()->first == 0);
+    CHECK(table.LastBackfillRange()->second == 0);
+}
+
+TEST_CASE(
+    "LogTable::AppendBatch -- pre-configured Type::enumeration column encodes incoming rows without re-walking",
+    "[log_table][append_batch][enum]"
+)
+{
+    const TestLogFile testFile("enum_preconfigured.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, 4, true));
+
+    REQUIRE(table.RowCount() == 4);
+    REQUIRE(table.ColumnCount() == 1);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+
+    // Every row hits the dictionary on its first arrival; no whole-table
+    // back-fill is recorded because the column was already configured.
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(table.Data().Lines()[row].IsDictRef(levelKey));
+    }
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    CHECK(dict->Size() == 2);
+
+    // No `mLastBackfillRange` flip: the column did not transition.
+    CHECK(!table.LastBackfillRange().has_value());
+}
+
+TEST_CASE(
+    "LogTable::AppendBatch -- 17th distinct value demotes enum column to string",
+    "[log_table][append_batch][enum]"
+)
+{
+    const TestLogFile testFile("enum_demote.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "tag",
+         .keys = {"tag"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+
+    // Fill the dictionary to exactly the cap.
+    std::vector<std::string> capValues;
+    capValues.reserve(MAX_ENUM_VALUES);
+    for (uint16_t i = 0; i < MAX_ENUM_VALUES; ++i)
+    {
+        capValues.emplace_back("tag" + std::to_string(i));
+    }
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", capValues, 1, MAX_ENUM_VALUES, true));
+
+    const KeyId tagKey = keys.Find("tag");
+    REQUIRE(tagKey != INVALID_KEY_ID);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    REQUIRE(table.EnumDictionaries().Contains(tagKey));
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(table.Data().Lines()[row].IsDictRef(tagKey));
+    }
+
+    // The 17th distinct value lands in the next batch; the column
+    // demotes back to `Type::any`, every prior row's `DictRef` is
+    // rewritten to `OwnedString`, and the dictionary entry is dropped.
+    table.AppendBatch(
+        BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, MAX_ENUM_VALUES + 1, 1, false)
+    );
+
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    CHECK(!table.EnumDictionaries().Contains(tagKey));
+    REQUIRE(table.RowCount() == MAX_ENUM_VALUES + 1);
+
+    // Demotion preserves every prior row's bytes.
+    for (uint16_t i = 0; i < MAX_ENUM_VALUES; ++i)
+    {
+        const LogValue v = table.GetValue(i, 0);
+        const auto sv = AsStringView(v);
+        REQUIRE(sv.has_value());
+        CHECK(*sv == capValues[i]);
+        CHECK_FALSE(table.Data().Lines()[i].IsDictRef(tagKey));
+    }
+    // The 17th row still has its bytes intact too.
+    const LogValue lastValue = table.GetValue(MAX_ENUM_VALUES, 0);
+    REQUIRE(AsStringView(lastValue).has_value());
+    CHECK(*AsStringView(lastValue) == "never-seen");
+    CHECK_FALSE(table.Data().Lines()[MAX_ENUM_VALUES].IsDictRef(tagKey));
+
+    // The demotion records a back-fill range so the GUI re-renders
+    // the affected column.
+    REQUIRE(table.LastBackfillRange().has_value());
+    CHECK(table.LastBackfillRange()->first == 0);
+    CHECK(table.LastBackfillRange()->second == 0);
+}
+
+TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table][reset][enum]")
+{
+    const TestLogFile testFile("enum_reset.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, 4, true));
+    REQUIRE_FALSE(table.EnumDictionaries().Empty());
+
+    table.Reset();
+    CHECK(table.EnumDictionaries().Empty());
+    CHECK(table.RowCount() == 0);
+    // Configuration is preserved.
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
 }

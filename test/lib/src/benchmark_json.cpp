@@ -5,6 +5,7 @@
 
 #include "common.hpp"
 
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/key_index.hpp>
@@ -12,6 +13,7 @@
 #include <loglib/log_line.hpp>
 #include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/log_value.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
@@ -189,6 +191,11 @@ struct StructuralBytes
     }
 };
 
+struct StructuralBytesWithEnums : StructuralBytes
+{
+    std::size_t enumDictionaries = 0;
+};
+
 StructuralBytes ComputeStructuralBytes(const LogTable &table)
 {
     StructuralBytes result;
@@ -205,6 +212,14 @@ StructuralBytes ComputeStructuralBytes(const LogTable &table)
         result.ownedStrings += file.OwnedStringsMemoryBytes();
     }
     result.keyIndex = data.Keys().EstimatedMemoryBytes();
+    return result;
+}
+
+StructuralBytesWithEnums ComputeStructuralBytesWithEnums(const LogTable &table)
+{
+    StructuralBytesWithEnums result;
+    static_cast<StructuralBytes &>(result) = ComputeStructuralBytes(table);
+    result.enumDictionaries = table.EnumDictionaries().EstimatedMemoryBytes();
     return result;
 }
 
@@ -531,7 +546,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     const TestJsonLogFile testFile(logs);
     const JsonParser parser;
 
-    const ParseResult result = ParseFile(parser, testFile.GetFilePath());
+    ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     const LogData &data = result.data;
     const std::vector<LogLine> &lines = data.Lines();
@@ -580,6 +595,55 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         hitsSink = hits;
     });
 
+    // DictRef variant: pre-encode `level` as a per-column enum
+    // dictionary so each `GetValue` resolves through the registry. Same
+    // KeyId fast-path as above but with the extra `EnumDictionary::Resolve`
+    // hop, so the gap quantifies the registry-lookup tax.
+    {
+        LogData &mutableData = result.data;
+        const KeyId levelKey = mutableData.Keys().Find("level");
+        REQUIRE(levelKey != INVALID_KEY_ID);
+
+        EnumDictionaryRegistry registry;
+        EnumDictionary &dict = registry.GetOrInsert(levelKey);
+        std::vector<std::pair<size_t, EnumValueId>> rowDictRefs;
+        rowDictRefs.reserve(mutableData.Lines().size());
+        for (size_t i = 0; i < mutableData.Lines().size(); ++i)
+        {
+            const LogValue v = mutableData.Lines()[i].GetValue(levelKey);
+            if (auto sv = AsStringView(v); sv.has_value())
+            {
+                const EnumValueId vid = dict.Insert(*sv);
+                if (vid != INVALID_ENUM_VALUE_ID)
+                {
+                    rowDictRefs.emplace_back(i, vid);
+                }
+            }
+        }
+
+        for (auto &source : mutableData.Sources())
+        {
+            source->SetEnumDictionaries(&registry);
+        }
+        std::vector<LogLine> &mutLines = mutableData.Lines();
+        for (auto &[rowIdx, vid] : rowDictRefs)
+        {
+            mutLines[rowIdx].SetEnumDictRef(levelKey, vid);
+        }
+
+        RunTimedSamples("LogLine::GetValue(KeyId) — DictRef path", 11, [&]() {
+            size_t hits = 0;
+            for (const LogLine &line : mutLines)
+            {
+                if (!std::holds_alternative<std::monostate>(line.GetValue(levelKey)))
+                {
+                    ++hits;
+                }
+            }
+            hitsSink = hits;
+        });
+    }
+
     (void)hitsSink;
 }
 
@@ -613,6 +677,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     size_t totalValues = 0;
     size_t mmapSliceValues = 0;
     size_t ownedStringValues = 0;
+    size_t dictRefValues = 0;
     for (const LogLine &line : result.data.Lines())
     {
         for (size_t i = 0; i < result.data.Keys().Size(); ++i)
@@ -620,6 +685,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
             const auto id = static_cast<KeyId>(i);
             const bool mmap = line.IsMmapSlice(id);
             const bool owned = line.IsOwnedString(id);
+            const bool dict = line.IsDictRef(id);
             if (mmap)
             {
                 ++mmapSliceValues;
@@ -630,6 +696,11 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
                 ++ownedStringValues;
                 ++totalValues;
             }
+            else if (dict)
+            {
+                ++dictRefValues;
+                ++totalValues;
+            }
             else if (!std::holds_alternative<std::monostate>(line.GetValue(id)))
             {
                 ++totalValues;
@@ -637,7 +708,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
         }
     }
 
-    const size_t totalStringValues = mmapSliceValues + ownedStringValues;
+    const size_t totalStringValues = mmapSliceValues + ownedStringValues + dictRefValues;
     const double fastPathFraction =
         totalStringValues == 0 ? 0.0 : static_cast<double>(mmapSliceValues) / static_cast<double>(totalStringValues);
     // One vector heap allocation per line (the compact-pair vector), plus
@@ -648,13 +719,87 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     WARN(
         "Allocation footprint over " << lineCount << " lines: " << totalValues << " values, " << mmapSliceValues
                                      << " MmapSlice (fast path), " << ownedStringValues
-                                     << " OwnedString (slow path), fast-path fraction=" << (fastPathFraction * 100.0)
+                                     << " OwnedString (slow path), " << dictRefValues
+                                     << " DictRef (enum-encoded), fast-path fraction=" << (fastPathFraction * 100.0)
                                      << "%, allocation upper bound=" << allocUpperBound << " (~"
                                      << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
                                      << "/line)"
     );
 
     REQUIRE(mmapSliceValues > 0);
+}
+
+// Enum auto-detection benchmark: streams a fixture whose `level` field
+// has only 4 distinct values (well below `MAX_ENUM_VALUES`) and reports
+// the per-row encoded-as-DictRef fraction plus the registry's memory
+// footprint relative to the equivalent owned-string arena. Validates
+// (a) the auto-detector fires, (b) the dictionary stays small, and
+// (c) the column actually flips to `Type::enumeration`.
+TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][json_parser][enum]")
+{
+    BENCHMARK_REQUIRES_RELEASE_BUILD();
+
+    auto logs = GenerateRandomJsonLogs(20'000);
+    const TestJsonLogFile testFile(logs);
+
+    InitializeTimezoneData();
+    auto configuration = MakeTimestampConfiguration();
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(*configuration);
+
+    LogConfigurationManager configManager;
+    configManager.Load(cfgFile.GetFilePath());
+    LogTable table(LogData{}, std::move(configManager));
+
+    auto sourceForTable =
+        std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *parseSource = sourceForTable.get();
+    table.BeginStreaming(std::move(sourceForTable));
+
+    StreamSink sink;
+    sink.table = &table;
+
+    ParserOptions opts;
+    opts.configuration = std::move(configuration);
+
+    JsonParser::ParseStreaming(*parseSource, sink, opts, internal::AdvancedParserOptions{});
+
+    REQUIRE(table.RowCount() == logs.size());
+
+    // The fixture's `level` field is drawn from a small set — the
+    // auto-detector must promote it.
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+
+    const auto &columns = table.Configuration().Configuration().columns;
+    auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
+        return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
+    });
+    const bool levelIsEnumeration =
+        levelColumn != columns.end() && levelColumn->type == LogConfiguration::Type::enumeration;
+
+    size_t dictRefValues = 0;
+    for (const LogLine &line : table.Data().Lines())
+    {
+        if (line.IsDictRef(levelKey))
+        {
+            ++dictRefValues;
+        }
+    }
+
+    const StructuralBytesWithEnums bytes = ComputeStructuralBytesWithEnums(table);
+
+    WARN(
+        "Enum auto-detection over " << table.RowCount() << " lines: dict-ref values=" << dictRefValues << " ("
+                                    << (100.0 * static_cast<double>(dictRefValues) /
+                                        static_cast<double>(table.RowCount()))
+                                    << "%), level column is enumeration=" << (levelIsEnumeration ? "yes" : "no")
+                                    << ", dictionary heap bytes=" << bytes.enumDictionaries
+                                    << ", lines+offsets+ownedStrings+keyIndex bytes=" << bytes.Total()
+    );
+
+    CHECK(levelIsEnumeration);
+    CHECK(dictRefValues == table.RowCount());
 }
 
 // Cancellation-latency benchmark. Asks for a stop after the first batch

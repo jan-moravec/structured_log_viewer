@@ -181,6 +181,17 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
     // The cached key set is unchanged by a pure reorder.
 }
 
+void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration::Type type)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].type = type;
+    // The cached key set is by-key, not by-type, so a type flip alone
+    // does not invalidate it.
+}
+
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
 {
     if (newKeys.empty())

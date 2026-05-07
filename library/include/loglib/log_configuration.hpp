@@ -21,7 +21,13 @@ struct LogConfiguration
     enum class Type
     {
         any,
-        time
+        time,
+        /// Column whose values are drawn from a small set
+        /// (<= `loglib::MAX_ENUM_VALUES`) and stored as
+        /// `CompactTag::DictRef` after auto-detection. Promoted /
+        /// demoted by `LogTable::AppendBatch`'s enum pass; never
+        /// auto-promoted by the timestamp-name heuristic.
+        enumeration
     };
 
     struct Column
@@ -30,12 +36,19 @@ struct LogConfiguration
         std::vector<std::string> keys;
         std::string printFormat;
         /// Per-cell rendering type. `Type::any` renders via `printFormat`;
-        /// `Type::time` pre-parses into a `TimeStamp` for numeric sort/filter.
+        /// `Type::time` pre-parses into a `TimeStamp` for numeric sort/filter;
+        /// `Type::enumeration` stores values as dictionary references for
+        /// memory savings and a value-picker filter UX.
         ///
         /// **`Type::time` promotion is destructive**: Stage B replaces the
         /// per-line `LogValue` with the parsed `TimeStamp` in place, and the
         /// streaming path auto-flips `Type::any` → `Type::time` for keys
         /// matching the timestamp heuristic. Only `LogTable::Reset()` reverts.
+        ///
+        /// `Type::enumeration` promotion is also destructive but reversible:
+        /// when a 17th distinct value would arrive, `LogTable::AppendBatch`
+        /// demotes the column back to `Type::any` and rewrites every slot
+        /// from `DictRef` to `OwnedString`.
         Type type = Type::any;
         std::vector<std::string> parseFormats;
     };
@@ -45,7 +58,13 @@ struct LogConfiguration
         enum class Type
         {
             string,
-            time
+            time,
+            /// Multi-select picker over the column's
+            /// `EnumDictionary::Values()`. Persisted as a list of
+            /// strings (`filterValues`); resolved to `EnumValueId`s at
+            /// rule construction time so filtering is one `uint16`
+            /// compare per row.
+            enumeration
         };
 
         enum class Match
@@ -62,6 +81,9 @@ struct LogConfiguration
         std::optional<Match> matchType;
         std::optional<int64_t> filterBegin;
         std::optional<int64_t> filterEnd;
+        /// Selected dictionary values for `Type::enumeration` filters.
+        /// Empty for the other filter types.
+        std::vector<std::string> filterValues;
     };
 
     std::vector<Column> columns;
@@ -99,6 +121,14 @@ public:
     /// the `Update` synchronous-parse behaviour) once Qt has been informed
     /// via `beginMoveColumns`. Indices must be in `[0, columns.size())`.
     void MoveColumn(size_t srcIndex, size_t destIndex);
+
+    /// Flip the `Type` of the column at @p columnIndex. Used by
+    /// `LogTable`'s enum auto-detector for promotion (`any` ->
+    /// `enumeration`) and demotion (`enumeration` -> `any`). Caller is
+    /// responsible for any matching backfill of the row data;
+    /// `LogConfigurationManager` only tracks the configuration value.
+    /// No-op when @p columnIndex is out of range.
+    void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
     const LogConfiguration &Configuration() const;
 

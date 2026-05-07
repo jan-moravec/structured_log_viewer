@@ -7,6 +7,7 @@ add_library(
     src/buffering_sink.cpp
     src/bytes_producer.cpp
     src/compact_log_value.cpp
+    src/enum_dictionary.cpp
     src/file_identity.cpp
     src/file_line_source.cpp
     src/key_index.cpp

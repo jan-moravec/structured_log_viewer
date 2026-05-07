@@ -3,6 +3,9 @@
 #include <loglib/log_configuration.hpp>
 
 #include <QRegularExpression>
+#include <QSet>
+#include <QString>
+#include <QStringList>
 #include <QVariant>
 
 class FilterRule
@@ -81,4 +84,31 @@ public:
 private:
     qint64 mBegin;
     qint64 mEnd;
+};
+
+/// Multi-select equality filter for `Type::enumeration` columns. The
+/// rule passes a row iff the column's value is byte-equal to any of the
+/// selected strings. Strings are compared via the existing `SortRole`
+/// (which returns the materialised value as a `QString`).
+class EnumFilterRule : public FilterRule
+{
+public:
+    EnumFilterRule(int filteredColumn, const QStringList &selectedValues)
+        : FilterRule(filteredColumn), mSelected(selectedValues.cbegin(), selectedValues.cend())
+    {
+    }
+
+    bool Matches(const QVariant &data) const override
+    {
+        if (mSelected.isEmpty())
+        {
+            // Empty selection => no row matches; mirrors the
+            // empty-substring contract of the other rules.
+            return false;
+        }
+        return mSelected.contains(data.toString());
+    }
+
+private:
+    QSet<QString> mSelected;
 };

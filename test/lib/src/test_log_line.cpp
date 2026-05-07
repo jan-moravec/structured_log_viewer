@@ -1,5 +1,7 @@
 #include "common.hpp"
 
+#include <loglib/enum_dictionary.hpp>
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_line.hpp>
 
@@ -275,4 +277,76 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     REQUIRE(std::holds_alternative<int64_t>(slowInt));
     CHECK(std::get<int64_t>(fastInt) == 99);
     CHECK(std::get<int64_t>(slowInt) == 99);
+}
+
+// `DictRef` slots resolve through the source's `EnumDictionaryRegistry`.
+// Materialise must round-trip the bytes (zero-copy `string_view`) for
+// any column whose KeyId is registered, and yield `monostate` for any
+// row whose source has no registry installed.
+TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryRegistry", "[log_line][enum]")
+{
+    const TestLogFile testFile;
+    auto source = testFile.CreateFileLineSource();
+
+    EnumDictionaryRegistry registry;
+    KeyIndex keys;
+    const KeyId levelKey = keys.GetOrInsert("level");
+
+    EnumDictionary &dict = registry.GetOrInsert(levelKey);
+    const EnumValueId infoId = dict.Insert("info");
+    const EnumValueId warnId = dict.Insert("warn");
+    REQUIRE(infoId != INVALID_ENUM_VALUE_ID);
+    REQUIRE(warnId != INVALID_ENUM_VALUE_ID);
+
+    source->SetEnumDictionaries(&registry);
+
+    // Build a line with a DictRef slot for `levelKey` and a plain
+    // string slot for an unrelated key.
+    const KeyId messageKey = keys.GetOrInsert("message");
+    LogLine line({}, keys, *source, 1);
+    line.SetEnumDictRef(levelKey, warnId);
+    line.SetValue(messageKey, LogValue{std::string("hello")});
+
+    REQUIRE(line.IsDictRef(levelKey));
+    const LogValue resolved = line.GetValue(levelKey);
+    const auto sv = AsStringView(resolved);
+    REQUIRE(sv.has_value());
+    CHECK(*sv == "warn");
+
+    // The non-enum slot is untouched.
+    CHECK(std::get<std::string>(line.GetValue(messageKey)) == "hello");
+
+    // Without a registry the DictRef slot materialises as monostate
+    // rather than crashing.
+    source->SetEnumDictionaries(nullptr);
+    CHECK(std::holds_alternative<std::monostate>(line.GetValue(levelKey)));
+
+    // Re-installing the registry restores resolution.
+    source->SetEnumDictionaries(&registry);
+    CHECK(*AsStringView(line.GetValue(levelKey)) == "warn");
+}
+
+TEST_CASE(
+    "LogLine::IsDictRef discriminates DictRef slots from MmapSlice / OwnedString", "[log_line][enum][helpers]"
+)
+{
+    const TestLogFile testFile;
+    auto source = testFile.CreateFileLineSource();
+
+    EnumDictionaryRegistry registry;
+    KeyIndex keys;
+    const KeyId enumKey = keys.GetOrInsert("level");
+    const KeyId stringKey = keys.GetOrInsert("msg");
+    const EnumValueId vid = registry.GetOrInsert(enumKey).Insert("info");
+
+    source->SetEnumDictionaries(&registry);
+
+    LogLine line({}, keys, *source, 1);
+    line.SetEnumDictRef(enumKey, vid);
+    line.SetValue(stringKey, LogValue{std::string("hello")});
+
+    CHECK(line.IsDictRef(enumKey));
+    CHECK_FALSE(line.IsDictRef(stringKey));
+    CHECK_FALSE(line.IsOwnedString(enumKey));
+    CHECK(line.IsOwnedString(stringKey));
 }

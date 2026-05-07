@@ -1,5 +1,6 @@
 #include "loglib/internal/compact_log_value.hpp"
 
+#include "loglib/enum_dictionary.hpp"
 #include "loglib/line_source.hpp"
 #include "loglib/log_line.hpp"
 
@@ -36,6 +37,15 @@ CompactLogValue CompactLogValue::MakeOwnedString(uint64_t offset, uint32_t lengt
     v.payload = offset;
     v.aux = length;
     v.tag = CompactTag::OwnedString;
+    return v;
+}
+
+CompactLogValue CompactLogValue::MakeDictRef(EnumValueId id) noexcept
+{
+    CompactLogValue v;
+    v.payload = static_cast<uint64_t>(id);
+    v.aux = 0;
+    v.tag = CompactTag::DictRef;
     return v;
 }
 
@@ -79,7 +89,7 @@ CompactLogValue CompactLogValue::MakeTimestamp(TimeStamp value) noexcept
     return v;
 }
 
-LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) const
+LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, KeyId keyId) const
 {
     switch (tag)
     {
@@ -109,6 +119,28 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) c
         // stream source's per-line arena can be evicted later, but a
         // returned `std::string` is independent of source lifetime.
         return LogValue{std::string(bytes)};
+    }
+    case CompactTag::DictRef:
+    {
+        if (source == nullptr || keyId == INVALID_KEY_ID)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const EnumDictionaryRegistry *registry = source->EnumDictionaries();
+        if (registry == nullptr)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const EnumDictionary *dict = registry->Find(keyId);
+        if (dict == nullptr)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(payload));
+        // Materialise as `string_view` because the registry's bytes are
+        // stable for the dictionary's lifetime (no eviction in v1) and
+        // every consumer treats `string_view` as the zero-copy fast path.
+        return LogValue{bytes};
     }
     case CompactTag::Int64:
         return LogValue{static_cast<int64_t>(payload)};

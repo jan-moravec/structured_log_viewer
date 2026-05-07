@@ -1,8 +1,10 @@
 #include "filter_editor.hpp"
 
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/log_processing.hpp>
 
 #include <QLabel>
+#include <QListWidgetItem>
 #include <QMessageBox>
 #include <QTimeZone>
 
@@ -23,6 +25,9 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mEndTimeEdit = new QTimeEdit(this);
 
     mStackedWidget = new QStackedWidget(this);
+
+    mEnumValuesList = new QListWidget(this);
+    mEnumValuesList->setSelectionMode(QAbstractItemView::NoSelection);
 
     mOkButton = new QPushButton("Ok", this);
     mCancelButton = new QPushButton("Cancel", this);
@@ -75,6 +80,18 @@ void FilterEditor::Load(int row, const qint64 begin, qint64 end)
     SetBeginEnd(begin, end);
 }
 
+void FilterEditor::Load(int row, const QStringList &selectedValues)
+{
+    mRowComboBox->setCurrentIndex(row);
+    PopulateEnumValues(row);
+    for (int i = 0; i < mEnumValuesList->count(); ++i)
+    {
+        QListWidgetItem *item = mEnumValuesList->item(i);
+        const Qt::CheckState state = selectedValues.contains(item->text()) ? Qt::Checked : Qt::Unchecked;
+        item->setCheckState(state);
+    }
+}
+
 int FilterEditor::GetRowToFilter() const
 {
     return mRowComboBox->currentIndex();
@@ -88,6 +105,20 @@ QString FilterEditor::GetStringToFilter() const
 int FilterEditor::GetMatchType() const
 {
     return mMatchTypeComboBox->currentData().toInt();
+}
+
+QStringList FilterEditor::GetSelectedEnumValues() const
+{
+    QStringList selected;
+    for (int i = 0; i < mEnumValuesList->count(); ++i)
+    {
+        const QListWidgetItem *item = mEnumValuesList->item(i);
+        if (item->checkState() == Qt::Checked)
+        {
+            selected.append(item->text());
+        }
+    }
+    return selected;
 }
 
 void FilterEditor::SetupLayout()
@@ -131,8 +162,15 @@ void FilterEditor::SetupLayout()
     secondPageLayout->addLayout(beginLayout);
     secondPageLayout->addLayout(endLayout);
 
+    auto *thirdPage = new QWidget(this);
+    auto *thirdPageLayout = new QVBoxLayout(thirdPage);
+    thirdPageLayout->addWidget(new QLabel("Values to include:", this));
+    thirdPageLayout->addWidget(mEnumValuesList);
+    thirdPage->setLayout(thirdPageLayout);
+
     mStackedWidget->addWidget(firstPage);
     mStackedWidget->addWidget(secondPage);
+    mStackedWidget->addWidget(thirdPage);
     mainLayout->addWidget(mStackedWidget);
 
     auto *buttonLayout = new QHBoxLayout();
@@ -179,11 +217,6 @@ void FilterEditor::OnOkClicked()
     }
 
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
-    if (column.type != LogConfiguration::Type::time && mStringLineEdit->text().isEmpty())
-    {
-        mStringLineEdit->setStyleSheet("border: 1px solid red");
-        return;
-    }
 
     if (column.type == LogConfiguration::Type::time)
     {
@@ -194,8 +227,25 @@ void FilterEditor::OnOkClicked()
             ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())
         );
     }
+    else if (column.type == LogConfiguration::Type::enumeration)
+    {
+        const QStringList selected = GetSelectedEnumValues();
+        if (selected.isEmpty())
+        {
+            // Empty selection would filter every row out; warn rather
+            // than silently swallow the click.
+            mEnumValuesList->setStyleSheet("border: 1px solid red");
+            return;
+        }
+        emit FilterEnumSubmitted(mFilterID, index, selected);
+    }
     else
     {
+        if (mStringLineEdit->text().isEmpty())
+        {
+            mStringLineEdit->setStyleSheet("border: 1px solid red");
+            return;
+        }
         emit FilterSubmitted(mFilterID, index, GetStringToFilter(), GetMatchType());
     }
 
@@ -208,18 +258,69 @@ void FilterEditor::UpdateSelectedColumn(int index)
     {
         return;
     }
-    if (mModel.Configuration().columns[static_cast<size_t>(index)].type == LogConfiguration::Type::time)
+    const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
+    switch (column.type)
+    {
+    case LogConfiguration::Type::time:
     {
         mStackedWidget->setCurrentIndex(1);
-
         const auto minMax = mModel.GetMinMaxValues<qint64>(index);
         if (minMax.has_value())
         {
             SetBeginEnd(minMax->first, minMax->second);
         }
+        break;
     }
-    else
-    {
+    case LogConfiguration::Type::enumeration:
+        mStackedWidget->setCurrentIndex(2);
+        PopulateEnumValues(index);
+        break;
+    case LogConfiguration::Type::any:
+    default:
         mStackedWidget->setCurrentIndex(0);
+        break;
+    }
+}
+
+void FilterEditor::PopulateEnumValues(int columnIndex)
+{
+    mEnumValuesList->clear();
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
+    {
+        return;
+    }
+    const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
+    if (column.type != LogConfiguration::Type::enumeration)
+    {
+        return;
+    }
+    // Resolve any of the column's keys against the registry; the
+    // canonical/alias indirection means any registered KeyId returns
+    // the same dictionary.
+    const auto &registry = mModel.Table().EnumDictionaries();
+    const auto &keys = mModel.Table().Keys();
+    const EnumDictionary *dict = nullptr;
+    for (const std::string &key : column.keys)
+    {
+        const KeyId id = keys.Find(key);
+        if (id == INVALID_KEY_ID)
+        {
+            continue;
+        }
+        dict = registry.Find(id);
+        if (dict != nullptr)
+        {
+            break;
+        }
+    }
+    if (dict == nullptr)
+    {
+        return;
+    }
+    for (const std::string &value : dict->Values())
+    {
+        auto *item = new QListWidgetItem(QString::fromStdString(value), mEnumValuesList);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
     }
 }

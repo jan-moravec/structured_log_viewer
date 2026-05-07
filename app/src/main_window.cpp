@@ -1147,11 +1147,22 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
         auto *filterEditor = new FilterEditor(*mModel, filterId, this);
         connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
         connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
+        connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
         if (filter.has_value())
         {
             if (filter->type == loglib::LogConfiguration::LogFilter::Type::time)
             {
                 filterEditor->Load(filter->row, *filter->filterBegin, *filter->filterEnd);
+            }
+            else if (filter->type == loglib::LogConfiguration::LogFilter::Type::enumeration)
+            {
+                QStringList values;
+                values.reserve(static_cast<qsizetype>(filter->filterValues.size()));
+                for (const std::string &v : filter->filterValues)
+                {
+                    values.append(QString::fromStdString(v));
+                }
+                filterEditor->Load(filter->row, values);
             }
             else
             {
@@ -1235,22 +1246,51 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     AddLogFilter(filterID, filter);
 }
 
+void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues)
+{
+    ClearFilter(filterID);
+
+    loglib::LogConfiguration::LogFilter filter;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::enumeration;
+    filter.row = row;
+    filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
+    for (const QString &v : selectedValues)
+    {
+        filter.filterValues.push_back(v.toStdString());
+    }
+
+    AddLogFilter(filterID, filter);
+}
+
 void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter)
 {
     mFilters[id.toStdString()] = filter;
     UpdateFilters();
 
     QString title;
-    if (filter.type == loglib::LogConfiguration::LogFilter::Type::time)
+    switch (filter.type)
     {
+    case loglib::LogConfiguration::LogFilter::Type::time:
         title = QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
-    }
-    else
+        break;
+    case loglib::LogConfiguration::LogFilter::Type::enumeration:
     {
+        QStringList values;
+        values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
+        for (const std::string &v : filter.filterValues)
+        {
+            values.append(QString::fromStdString(v));
+        }
+        title = values.join(QStringLiteral(", "));
+        break;
+    }
+    case loglib::LogConfiguration::LogFilter::Type::string:
+    default:
         title = QString::fromStdString(*filter.filterString);
+        break;
     }
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
@@ -1291,17 +1331,30 @@ void MainWindow::UpdateFilters()
     std::vector<std::unique_ptr<FilterRule>> rules;
     for (const auto &filter : mFilters)
     {
-        if (filter.second.type == loglib::LogConfiguration::LogFilter::Type::time)
+        switch (filter.second.type)
         {
+        case loglib::LogConfiguration::LogFilter::Type::time:
             rules.push_back(std::make_unique<TimeStampFilterRule>(
                 filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd
             ));
-        }
-        else
+            break;
+        case loglib::LogConfiguration::LogFilter::Type::enumeration:
         {
+            QStringList values;
+            values.reserve(static_cast<qsizetype>(filter.second.filterValues.size()));
+            for (const std::string &v : filter.second.filterValues)
+            {
+                values.append(QString::fromStdString(v));
+            }
+            rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values));
+            break;
+        }
+        case loglib::LogConfiguration::LogFilter::Type::string:
+        default:
             rules.push_back(std::make_unique<TextFilterRule>(
                 filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
             ));
+            break;
         }
     }
     mSortFilterProxyModel->SetFilterRules(std::move(rules));

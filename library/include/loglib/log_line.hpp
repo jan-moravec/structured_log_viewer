@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loglib/enum_dictionary.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_value.hpp"
@@ -69,6 +70,11 @@ public:
     /// Throws if @p key is unknown.
     void SetValue(const std::string &key, const LogValue &value);
 
+    /// Replace (or insert) the slot for @p id with a `DictRef`
+    /// referencing @p vid. Used by `LogTable`'s enum pass; the
+    /// dictionary lifetime is the caller's concern.
+    void SetEnumDictRef(KeyId id, EnumValueId vid);
+
     std::vector<std::string> GetKeys() const;
 
     /// (KeyId, LogValue) pairs in ascending KeyId order. Materialises
@@ -116,6 +122,10 @@ public:
 
     /// True when @p id is stored as `OwnedString` (escape-decoded).
     bool IsOwnedString(KeyId id) const noexcept;
+
+    /// True when @p id is stored as `DictRef` (enum-encoded). Resolution
+    /// happens via the source's `EnumDictionaryRegistry`.
+    bool IsDictRef(KeyId id) const noexcept;
 
 private:
     /// `lower_bound` over the small sorted `mValues`. Returns nullptr

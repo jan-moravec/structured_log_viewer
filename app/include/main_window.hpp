@@ -106,6 +106,7 @@ private slots:
     void ClearFilter(const QString &filterID);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
+    void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
 
     /// Pause / resume on the bridging sink. Bound to `actionPauseStream`.
     void TogglePauseStream(bool paused);

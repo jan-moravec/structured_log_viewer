@@ -301,3 +301,49 @@ TEST_CASE(
     CHECK(manager.Configuration().columns[1].keys == std::vector<std::string>{"display"});
     CHECK(manager.Configuration().columns[2].keys == std::vector<std::string>{"fresh"});
 }
+
+TEST_CASE("Save and load configuration with Type::enumeration column", "[log_configuration][enum]")
+{
+    const TestLogConfiguration testLogConfiguration("test_log_configuration_enum.json");
+
+    LogConfiguration logConfiguration;
+    logConfiguration.columns.push_back(
+        {.header = "Level",
+         .keys = {"level", "severity"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    testLogConfiguration.Write(logConfiguration);
+
+    LogConfigurationManager manager;
+    manager.Load(testLogConfiguration.GetFilePath());
+
+    REQUIRE(manager.Configuration().columns.size() == 1);
+    CHECK(manager.Configuration().columns[0].header == "Level");
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"level", "severity"});
+}
+
+TEST_CASE("Round-trip LogFilter with Type::enumeration and filterValues", "[log_configuration][enum]")
+{
+    LogConfiguration original;
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::enumeration;
+    filter.row = 2;
+    filter.filterValues = {"info", "warn", "error"};
+    original.filters.push_back(filter);
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.filters.size() == 1);
+    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::enumeration);
+    CHECK(loaded.filters[0].row == 2);
+    CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"info", "warn", "error"});
+}

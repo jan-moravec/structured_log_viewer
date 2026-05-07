@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loglib/enum_dictionary.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_value.hpp"
 
@@ -26,6 +27,7 @@ enum class CompactTag : uint8_t
     Monostate = 0,
     MmapSlice,   ///< payload = byte offset into `LineSource::ResolveMmapBytes`, aux = length
     OwnedString, ///< payload = byte offset into `LineSource::ResolveOwnedBytes`, aux = length
+    DictRef,     ///< payload = `EnumValueId` cast to `uint16_t`, aux unused; resolved via `LineSource::EnumDictionaries`
     Int64,
     Uint64,
     Double,
@@ -51,6 +53,7 @@ struct CompactLogValue
     static CompactLogValue MakeMonostate() noexcept;
     static CompactLogValue MakeMmapSlice(uint64_t offset, uint32_t length) noexcept;
     static CompactLogValue MakeOwnedString(uint64_t offset, uint32_t length) noexcept;
+    static CompactLogValue MakeDictRef(EnumValueId id) noexcept;
     static CompactLogValue MakeInt64(int64_t value) noexcept;
     static CompactLogValue MakeUint64(uint64_t value) noexcept;
     static CompactLogValue MakeDouble(double value) noexcept;
@@ -61,9 +64,13 @@ struct CompactLogValue
     /// the `MmapSlice` and `OwnedString` byte storage via
     /// `LineSource::ResolveMmapBytes` / `ResolveOwnedBytes`; @p lineId
     /// addresses the per-line arena for stream sources (file sources
-    /// ignore it). Passing `nullptr` source is safe and yields
-    /// `monostate` for the string tags.
-    LogValue Materialise(const LineSource *source, size_t lineId) const;
+    /// ignore it). For `DictRef` payloads @p keyId selects the per-column
+    /// dictionary in `LineSource::EnumDictionaries`; pass
+    /// `INVALID_KEY_ID` (the default) when no dictionary lookup is
+    /// possible -- the `DictRef` slot then materialises as `monostate`.
+    /// Passing `nullptr` source is safe and yields `monostate` for the
+    /// string tags.
+    LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };
 
 static_assert(sizeof(CompactLogValue) == 16, "CompactLogValue must stay 16 bytes (Phase 1 RAM target)");
@@ -79,9 +86,11 @@ CompactLogValue ToCompactLogValue(
 );
 
 /// In-place add @p delta to every `OwnedString` payload in @p values.
-/// Used by `LogData::AppendBatch` and `BufferingSink::OnBatch` when they
-/// concatenate a per-batch owned-string arena into the canonical
-/// `LogFile::mOwnedStrings`.
+/// Called from Stage C of the parser pipeline (see
+/// `static_parser_pipeline.hpp`) after the per-batch
+/// `ownedStringsArena` is concatenated onto `LogFile::mOwnedStrings` via
+/// `LogFile::AppendOwnedStrings`. `BufferingSink::OnBatch` is purely a
+/// splice in current code and does not touch the arena.
 void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept;
 
 /// Per-line compact field storage: an exact-fit heap array of

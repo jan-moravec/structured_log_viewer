@@ -10,6 +10,8 @@
 namespace loglib
 {
 
+class EnumDictionaryRegistry;
+
 /// Abstract source of logical log lines. Owns the bytes backing each
 /// line (raw text and escape-decoded payloads referenced by `LogLine`
 /// compact values) and resolves byte ranges by offset/length so
@@ -84,6 +86,27 @@ public:
 
     /// First lineId still resolvable. Advances by `EvictBefore`.
     [[nodiscard]] virtual size_t FirstAvailableLineId() const noexcept = 0;
+
+    /// Pointer to the session-wide enum dictionary registry, or nullptr
+    /// when no registry has been installed (e.g. ad-hoc sources used in
+    /// tests). `LogTable` calls `SetEnumDictionaries` on every owned
+    /// source whenever a new source enters the session
+    /// (`BeginStreaming`, `AppendStreaming`, `Update`, ctor); the
+    /// pointer must outlive every `LogLine` referencing the source.
+    /// `CompactLogValue::Materialise` consults this when resolving
+    /// `CompactTag::DictRef` payloads.
+    [[nodiscard]] const EnumDictionaryRegistry *EnumDictionaries() const noexcept
+    {
+        return mEnumDictionaries;
+    }
+
+    void SetEnumDictionaries(const EnumDictionaryRegistry *registry) noexcept
+    {
+        mEnumDictionaries = registry;
+    }
+
+private:
+    const EnumDictionaryRegistry *mEnumDictionaries = nullptr;
 };
 
 } // namespace loglib

@@ -194,7 +194,7 @@ LogValue LogLine::GetValue(KeyId id) const
     {
         return LogValue{std::monostate{}};
     }
-    return compact->Materialise(mSource, mLineId);
+    return compact->Materialise(mSource, mLineId, id);
 }
 
 LogValue LogLine::GetValue(const std::string &key) const
@@ -265,6 +265,33 @@ void LogLine::SetValue(const std::string &key, const LogValue &value)
     SetValue(id, value);
 }
 
+void LogLine::SetEnumDictRef(KeyId id, EnumValueId vid)
+{
+    const internal::CompactLogValue compact = internal::CompactLogValue::MakeDictRef(vid);
+    auto *data = mValues.Data();
+    const uint32_t size = mValues.Size();
+    uint32_t lo = 0;
+    uint32_t hi = size;
+    while (lo < hi)
+    {
+        const uint32_t mid = lo + ((hi - lo) / 2U);
+        if (data[mid].first < id)
+        {
+            lo = mid + 1U;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    if (lo < size && data[lo].first == id)
+    {
+        mValues.Set(lo, compact);
+        return;
+    }
+    mValues.Insert(lo, id, compact);
+}
+
 std::vector<std::string> LogLine::GetKeys() const
 {
     std::vector<std::string> keys;
@@ -287,7 +314,7 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId));
+        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId, entry.first));
     }
     return result;
 }
@@ -308,7 +335,9 @@ LogMap LogLine::Values() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        snapshot.emplace(std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId));
+        snapshot.emplace(
+            std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId, entry.first)
+        );
     }
     return snapshot;
 }
@@ -372,6 +401,12 @@ bool LogLine::IsOwnedString(KeyId id) const noexcept
 {
     const internal::CompactLogValue *compact = FindCompact(id);
     return compact != nullptr && compact->tag == internal::CompactTag::OwnedString;
+}
+
+bool LogLine::IsDictRef(KeyId id) const noexcept
+{
+    const internal::CompactLogValue *compact = FindCompact(id);
+    return compact != nullptr && compact->tag == internal::CompactTag::DictRef;
 }
 
 } // namespace loglib
