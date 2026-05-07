@@ -11,6 +11,7 @@
 #include <QFuture>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -30,6 +31,14 @@ enum LogModelItemDataRole
     /// row index); the `RowOrderProxyModel` mirrors row indices
     /// directly without consulting any role.
     InsertionOrderRole,
+    /// Raw `loglib::EnumValueId` (as `qint32`) for slots stored as
+    /// `CompactTag::DictRef`; invalid `QVariant` for non-enum slots.
+    /// `EnumFilterRule::Matches` consumes this to short-circuit the
+    /// per-row filter check via a bitset of selected ids, falling
+    /// back to the string path only when the slot has not been
+    /// (or cannot be) enum-encoded (numeric value, monostate,
+    /// post-demote `OwnedString`).
+    EnumValueRole,
 };
 
 /// Outcome reported by `LogModel::streamingFinished`. `Failed` is the
@@ -150,6 +159,17 @@ public:
 
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
+
+    /// Override the per-column enum distinct-value cap on the embedded
+    /// `LogTable`. Forwards to `LogTable::SetEnumValueCap`. Tests use
+    /// it to drive demote behaviour without staging 64+ distinct
+    /// values; future settings UI can plumb
+    /// `AdvancedParserOptions::enumValueCap` here before `BeginStreaming`
+    /// runs. No effect on dictionaries that already exist.
+    void SetEnumValueCap(uint16_t cap) noexcept;
+
+    /// Currently-effective per-column enum distinct-value cap.
+    [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
 signals:
     /// Cumulative error count since the last `Reset` / `BeginStreaming`,

@@ -1142,37 +1142,78 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 
 void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter)
 {
-    if (mModel->rowCount() > 0)
+    if (mModel->rowCount() == 0)
     {
-        auto *filterEditor = new FilterEditor(*mModel, filterId, this);
-        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
-        connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
-        connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
-        if (filter.has_value())
+        return;
+    }
+
+    // Reloading a saved filter against a column whose `type` has since
+    // shifted (e.g. a string column auto-promoted to `Type::enumeration`
+    // between sessions) would silently re-open the editor on the
+    // *previously* saved page (text page on a now-enum column),
+    // confusing both the user and the rule resolver downstream. Detect
+    // and drop with a status-bar message rather than passing on a
+    // mismatched filter; the editor still opens empty so the user can
+    // recreate the filter against the current column type.
+    std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
+    if (resolvedFilter.has_value())
+    {
+        const auto &columns = mModel->Configuration().columns;
+        const auto rowIndex = static_cast<size_t>(resolvedFilter->row);
+        if (rowIndex < columns.size())
         {
-            if (filter->type == loglib::LogConfiguration::LogFilter::Type::time)
+            const loglib::LogConfiguration::Type columnType = columns[rowIndex].type;
+            const loglib::LogConfiguration::LogFilter::Type filterType = resolvedFilter->type;
+
+            const bool typesMatch = (filterType == loglib::LogConfiguration::LogFilter::Type::time &&
+                                     columnType == loglib::LogConfiguration::Type::time) ||
+                                    (filterType == loglib::LogConfiguration::LogFilter::Type::enumeration &&
+                                     columnType == loglib::LogConfiguration::Type::enumeration) ||
+                                    (filterType == loglib::LogConfiguration::LogFilter::Type::string &&
+                                     columnType != loglib::LogConfiguration::Type::time &&
+                                     columnType != loglib::LogConfiguration::Type::enumeration);
+            if (!typesMatch)
             {
-                filterEditor->Load(filter->row, *filter->filterBegin, *filter->filterEnd);
-            }
-            else if (filter->type == loglib::LogConfiguration::LogFilter::Type::enumeration)
-            {
-                QStringList values;
-                values.reserve(static_cast<qsizetype>(filter->filterValues.size()));
-                for (const std::string &v : filter->filterValues)
-                {
-                    values.append(QString::fromStdString(v));
-                }
-                filterEditor->Load(filter->row, values);
-            }
-            else
-            {
-                filterEditor->Load(
-                    filter->row, QString::fromStdString(*filter->filterString), static_cast<int>(*filter->matchType)
+                statusBar()->showMessage(
+                    QString("Filter dropped: column '%1' is no longer compatible with the saved filter")
+                        .arg(QString::fromStdString(columns[rowIndex].header)),
+                    5000
                 );
+                resolvedFilter.reset();
             }
         }
-        filterEditor->show();
     }
+
+    auto *filterEditor = new FilterEditor(*mModel, filterId, this);
+    connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+    connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
+    connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
+    if (resolvedFilter.has_value())
+    {
+        if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::time)
+        {
+            filterEditor->Load(resolvedFilter->row, *resolvedFilter->filterBegin, *resolvedFilter->filterEnd);
+        }
+        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::enumeration)
+        {
+            QStringList values;
+            values.reserve(static_cast<qsizetype>(resolvedFilter->filterValues.size()));
+            for (const std::string &v : resolvedFilter->filterValues)
+            {
+                values.append(QString::fromStdString(v));
+            }
+            filterEditor->Load(resolvedFilter->row, values);
+        }
+        else
+        {
+            filterEditor->Load(
+                resolvedFilter->row,
+                QString::fromStdString(*resolvedFilter->filterString),
+                static_cast<int>(*resolvedFilter->matchType)
+            );
+        }
+    }
+    filterEditor->show();
 }
 
 void MainWindow::ClearAllFilters()
@@ -1346,7 +1387,25 @@ void MainWindow::UpdateFilters()
             {
                 values.append(QString::fromStdString(v));
             }
-            rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values));
+            // Resolve the column's canonical dictionary so the rule
+            // can pre-compute its bitset of selected `EnumValueId`s
+            // for the fast filter path. The dictionary may be absent
+            // when the rule fires before promotion has happened (e.g.
+            // a freshly loaded saved filter against a column that has
+            // not yet been encoded); the rule then uses its
+            // string-set fallback until UpdateFilters is called again.
+            const loglib::EnumDictionary *dictionary = nullptr;
+            const auto &columns = mModel->Configuration().columns;
+            const auto rowIndex = static_cast<size_t>(filter.second.row);
+            if (rowIndex < columns.size() && !columns[rowIndex].keys.empty())
+            {
+                const loglib::KeyId canonicalKeyId = mModel->Table().Keys().Find(columns[rowIndex].keys.front());
+                if (canonicalKeyId != loglib::INVALID_KEY_ID)
+                {
+                    dictionary = mModel->Table().EnumDictionaries().Find(canonicalKeyId);
+                }
+            }
+            rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values, dictionary));
             break;
         }
         case loglib::LogConfiguration::LogFilter::Type::string:

@@ -27,7 +27,7 @@ enum class CompactTag : uint8_t
     Monostate = 0,
     MmapSlice,   ///< payload = byte offset into `LineSource::ResolveMmapBytes`, aux = length
     OwnedString, ///< payload = byte offset into `LineSource::ResolveOwnedBytes`, aux = length
-    DictRef,     ///< payload = `EnumValueId` cast to `uint16_t`, aux unused; resolved via `LineSource::EnumDictionaries`
+    DictRef, ///< payload = `EnumValueId` cast to `uint16_t`, aux unused; resolved via `LineSource::EnumDictionaries`
     Int64,
     Uint64,
     Double,

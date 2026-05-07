@@ -493,10 +493,16 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     {
         const int firstColumn = static_cast<int>(range->first);
         const int lastColumn = static_cast<int>(range->second);
+        // `EnumValueRole` is part of the changed roles too: a column
+        // promoted to enum within this batch produces fresh `DictRef`
+        // slots that the filter UI needs to re-evaluate even when the
+        // displayed string is unchanged.
         emit dataChanged(
             index(0, firstColumn),
             index(newRowCount - 1, lastColumn),
-            {Qt::DisplayRole, static_cast<int>(LogModelItemDataRole::SortRole)}
+            {Qt::DisplayRole,
+             static_cast<int>(LogModelItemDataRole::SortRole),
+             static_cast<int>(LogModelItemDataRole::EnumValueRole)}
         );
     }
 
@@ -653,6 +659,23 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
         return {QString::fromStdString(raw)};
     }
+    if (role == LogModelItemDataRole::EnumValueRole)
+    {
+        // Fast path for `EnumFilterRule`: returns the raw `EnumValueId`
+        // (as `qint32`) for `DictRef` slots, invalid `QVariant`
+        // otherwise. The rule uses the id to test a bitset of selected
+        // ids (O(1) per row); falling back to `SortRole` only for
+        // non-`DictRef` slots (numeric / monostate / pre-encode
+        // `OwnedString`). Returning invalid here is the explicit
+        // signal for the rule to take the fallback string path.
+        const auto enumId =
+            mLogTable.GetEnumValueId(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
+        if (!enumId.has_value())
+        {
+            return {};
+        }
+        return QVariant::fromValue<qint32>(static_cast<qint32>(*enumId));
+    }
 
     return {};
 }
@@ -799,6 +822,16 @@ void LogModel::SetRetentionCap(size_t cap)
 size_t LogModel::RetentionCap() const noexcept
 {
     return mRetentionCap;
+}
+
+void LogModel::SetEnumValueCap(uint16_t cap) noexcept
+{
+    mLogTable.SetEnumValueCap(cap);
+}
+
+uint16_t LogModel::EnumValueCap() const noexcept
+{
+    return mLogTable.EnumValueCap();
 }
 
 QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)

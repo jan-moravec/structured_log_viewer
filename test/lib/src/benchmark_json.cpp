@@ -718,11 +718,10 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
 
     WARN(
         "Allocation footprint over " << lineCount << " lines: " << totalValues << " values, " << mmapSliceValues
-                                     << " MmapSlice (fast path), " << ownedStringValues
-                                     << " OwnedString (slow path), " << dictRefValues
-                                     << " DictRef (enum-encoded), fast-path fraction=" << (fastPathFraction * 100.0)
-                                     << "%, allocation upper bound=" << allocUpperBound << " (~"
-                                     << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
+                                     << " MmapSlice (fast path), " << ownedStringValues << " OwnedString (slow path), "
+                                     << dictRefValues << " DictRef (enum-encoded), fast-path fraction="
+                                     << (fastPathFraction * 100.0) << "%, allocation upper bound=" << allocUpperBound
+                                     << " (~" << (static_cast<double>(allocUpperBound) / static_cast<double>(lineCount))
                                      << "/line)"
     );
 
@@ -751,8 +750,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     configManager.Load(cfgFile.GetFilePath());
     LogTable table(LogData{}, std::move(configManager));
 
-    auto sourceForTable =
-        std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    auto sourceForTable = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *parseSource = sourceForTable.get();
     table.BeginStreaming(std::move(sourceForTable));
 

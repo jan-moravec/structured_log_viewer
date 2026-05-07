@@ -3,12 +3,18 @@
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/log_processing.hpp>
 
-#include <QLabel>
-#include <QListWidgetItem>
 #include <QMessageBox>
+#include <QStandardItem>
 #include <QTimeZone>
 
+#include <algorithm>
+
 using namespace loglib;
+
+namespace
+{
+constexpr int ENUM_PICKER_MAX_HEIGHT_PX = 320;
+}
 
 FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
@@ -26,8 +32,30 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
 
     mStackedWidget = new QStackedWidget(this);
 
-    mEnumValuesList = new QListWidget(this);
-    mEnumValuesList->setSelectionMode(QAbstractItemView::NoSelection);
+    // Picker model + proxy: model owns one checkable item per dict
+    // value, sorted alphabetically; proxy filters by the search box.
+    // `setUniformItemSizes(true)` keeps the layout tractable when the
+    // dictionary holds the full `MAX_ENUM_VALUES = 1024` entries.
+    mEnumValuesModel = new QStandardItemModel(this);
+    mEnumValuesProxy = new QSortFilterProxyModel(this);
+    mEnumValuesProxy->setSourceModel(mEnumValuesModel);
+    mEnumValuesProxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    mEnumValuesProxy->setSortCaseSensitivity(Qt::CaseInsensitive);
+    mEnumValuesProxy->sort(0, Qt::AscendingOrder);
+    mEnumValuesView = new QListView(this);
+    mEnumValuesView->setModel(mEnumValuesProxy);
+    mEnumValuesView->setSelectionMode(QAbstractItemView::NoSelection);
+    mEnumValuesView->setUniformItemSizes(true);
+    mEnumValuesView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mEnumValuesView->setMaximumHeight(ENUM_PICKER_MAX_HEIGHT_PX);
+
+    mEnumSearchEdit = new QLineEdit(this);
+    mEnumSearchEdit->setPlaceholderText("Filter values...");
+    mEnumSearchEdit->setClearButtonEnabled(true);
+
+    mEnumSelectAllButton = new QPushButton("Select All", this);
+    mEnumClearAllButton = new QPushButton("Clear All", this);
+    mEnumSelectionCount = new QLabel("0 of 0 selected", this);
 
     mOkButton = new QPushButton("Ok", this);
     mCancelButton = new QPushButton("Cancel", this);
@@ -64,6 +92,56 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         mBeginTimeEdit->setMaximumTime(time);
     });
 
+    // Search box → proxy filter; also clears the warning border and
+    // refreshes the selection-count denominator.
+    connect(mEnumSearchEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
+        mEnumValuesProxy->setFilterFixedString(text);
+        ClearWarningStyles();
+    });
+
+    // Select All / Clear All operate on *visible* rows so the bulk
+    // action respects the active search filter (the typical UX in
+    // Excel-style multi-select pickers).
+    connect(mEnumSelectAllButton, &QPushButton::clicked, this, [this]() {
+        for (int row = 0; row < mEnumValuesProxy->rowCount(); ++row)
+        {
+            const QModelIndex sourceIndex = mEnumValuesProxy->mapToSource(mEnumValuesProxy->index(row, 0));
+            if (auto *item = mEnumValuesModel->itemFromIndex(sourceIndex); item != nullptr)
+            {
+                item->setCheckState(Qt::Checked);
+            }
+        }
+    });
+    connect(mEnumClearAllButton, &QPushButton::clicked, this, [this]() {
+        for (int row = 0; row < mEnumValuesProxy->rowCount(); ++row)
+        {
+            const QModelIndex sourceIndex = mEnumValuesProxy->mapToSource(mEnumValuesProxy->index(row, 0));
+            if (auto *item = mEnumValuesModel->itemFromIndex(sourceIndex); item != nullptr)
+            {
+                item->setCheckState(Qt::Unchecked);
+            }
+        }
+    });
+
+    // `dataChanged` fires on every check-state toggle; refresh the
+    // count label and clear the warning border so the user sees both
+    // the new "N of M" total and a clean picker as they edit.
+    connect(
+        mEnumValuesModel,
+        &QStandardItemModel::dataChanged,
+        this,
+        [this](const QModelIndex &, const QModelIndex &, const QList<int> &roles) {
+            if (roles.isEmpty() || roles.contains(Qt::CheckStateRole))
+            {
+                UpdateEnumSelectionCount();
+                ClearWarningStyles();
+            }
+        }
+    );
+
+    // Same intent for the empty-string warning on the text editor.
+    connect(mStringLineEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
+
     UpdateSelectedColumn(0);
 }
 
@@ -84,12 +162,21 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
 {
     mRowComboBox->setCurrentIndex(row);
     PopulateEnumValues(row);
-    for (int i = 0; i < mEnumValuesList->count(); ++i)
+    // Build a `QSet` for O(1) membership checks while we walk the
+    // model. The selection list typically holds a handful of values,
+    // but the dictionary can hold up to `MAX_ENUM_VALUES = 1024` so
+    // an O(rows * selection.size) `contains` would be wasteful.
+    const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
+    for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
     {
-        QListWidgetItem *item = mEnumValuesList->item(i);
-        const Qt::CheckState state = selectedValues.contains(item->text()) ? Qt::Checked : Qt::Unchecked;
-        item->setCheckState(state);
+        QStandardItem *item = mEnumValuesModel->item(i);
+        if (item == nullptr)
+        {
+            continue;
+        }
+        item->setCheckState(selectionSet.contains(item->text()) ? Qt::Checked : Qt::Unchecked);
     }
+    UpdateEnumSelectionCount();
 }
 
 int FilterEditor::GetRowToFilter() const
@@ -110,10 +197,12 @@ int FilterEditor::GetMatchType() const
 QStringList FilterEditor::GetSelectedEnumValues() const
 {
     QStringList selected;
-    for (int i = 0; i < mEnumValuesList->count(); ++i)
+    // Walk the source model, not the proxy: the user's selection
+    // includes items currently hidden by the search filter.
+    for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
     {
-        const QListWidgetItem *item = mEnumValuesList->item(i);
-        if (item->checkState() == Qt::Checked)
+        const QStandardItem *item = mEnumValuesModel->item(i);
+        if (item != nullptr && item->checkState() == Qt::Checked)
         {
             selected.append(item->text());
         }
@@ -165,7 +254,14 @@ void FilterEditor::SetupLayout()
     auto *thirdPage = new QWidget(this);
     auto *thirdPageLayout = new QVBoxLayout(thirdPage);
     thirdPageLayout->addWidget(new QLabel("Values to include:", this));
-    thirdPageLayout->addWidget(mEnumValuesList);
+    thirdPageLayout->addWidget(mEnumSearchEdit);
+    auto *enumActionLayout = new QHBoxLayout();
+    enumActionLayout->addWidget(mEnumSelectAllButton);
+    enumActionLayout->addWidget(mEnumClearAllButton);
+    enumActionLayout->addStretch(1);
+    enumActionLayout->addWidget(mEnumSelectionCount);
+    thirdPageLayout->addLayout(enumActionLayout);
+    thirdPageLayout->addWidget(mEnumValuesView);
     thirdPage->setLayout(thirdPageLayout);
 
     mStackedWidget->addWidget(firstPage);
@@ -233,8 +329,12 @@ void FilterEditor::OnOkClicked()
         if (selected.isEmpty())
         {
             // Empty selection would filter every row out; warn rather
-            // than silently swallow the click.
-            mEnumValuesList->setStyleSheet("border: 1px solid red");
+            // than silently swallow the click. The border is cleared
+            // by `ClearWarningStyles` on the user's next interaction
+            // (`mEnumValuesModel::dataChanged` /
+            // `mEnumSearchEdit::textChanged`) so the picker doesn't
+            // look broken after they fix the selection.
+            mEnumValuesView->setStyleSheet("QListView { border: 1px solid red; }");
             return;
         }
         emit FilterEnumSubmitted(mFilterID, index, selected);
@@ -284,7 +384,9 @@ void FilterEditor::UpdateSelectedColumn(int index)
 
 void FilterEditor::PopulateEnumValues(int columnIndex)
 {
-    mEnumValuesList->clear();
+    mEnumValuesModel->clear();
+    mEnumSearchEdit->clear();
+    UpdateEnumSelectionCount();
     if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
     {
         return;
@@ -315,12 +417,50 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
     }
     if (dict == nullptr)
     {
+        UpdateEnumSelectionCount();
         return;
     }
+    // Snapshot the dictionary into a sorted `QStringList` once so the
+    // proxy's later sort hits already-ordered data. Insertion order in
+    // the dictionary is observation order, which is rarely what the
+    // user wants to scan (alphabetic is the conventional choice for
+    // multi-select pickers).
+    QStringList sortedValues;
+    sortedValues.reserve(static_cast<qsizetype>(dict->Values().size()));
     for (const std::string &value : dict->Values())
     {
-        auto *item = new QListWidgetItem(QString::fromStdString(value), mEnumValuesList);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(Qt::Unchecked);
+        sortedValues.append(QString::fromStdString(value));
     }
+    std::sort(sortedValues.begin(), sortedValues.end(), [](const QString &a, const QString &b) {
+        return a.localeAwareCompare(b) < 0;
+    });
+    for (const QString &value : sortedValues)
+    {
+        auto *item = new QStandardItem(value);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        mEnumValuesModel->appendRow(item);
+    }
+    UpdateEnumSelectionCount();
+}
+
+void FilterEditor::UpdateEnumSelectionCount()
+{
+    int total = mEnumValuesModel->rowCount();
+    int selected = 0;
+    for (int i = 0; i < total; ++i)
+    {
+        const QStandardItem *item = mEnumValuesModel->item(i);
+        if (item != nullptr && item->checkState() == Qt::Checked)
+        {
+            ++selected;
+        }
+    }
+    mEnumSelectionCount->setText(QString("%1 of %2 selected").arg(selected).arg(total));
+}
+
+void FilterEditor::ClearWarningStyles()
+{
+    mEnumValuesView->setStyleSheet(QString());
+    mStringLineEdit->setStyleSheet(QString());
 }

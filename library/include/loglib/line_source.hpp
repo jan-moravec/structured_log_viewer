@@ -95,6 +95,18 @@ public:
     /// pointer must outlive every `LogLine` referencing the source.
     /// `CompactLogValue::Materialise` consults this when resolving
     /// `CompactTag::DictRef` payloads.
+    ///
+    /// **Thread safety / single-writer contract.** The
+    /// `EnumDictionaryRegistry` (and the `EnumDictionary`s it owns) is
+    /// *not* internally synchronised. Mutators (`Insert`, `Clear`,
+    /// `Erase`, `GetOrInsert`, `Alias`) and readers (`Find`, `Resolve`,
+    /// `Values`, `Size`, `LogLine::GetValue` for `DictRef` slots) must
+    /// all run on the thread that owns the registry. In the live
+    /// pipeline that thread is the GUI thread: `QtStreamingLogSink`
+    /// posts every `OnBatch` via `Qt::QueuedConnection`, so all
+    /// promotion / encode / demote work and every read from the model
+    /// runs on the GUI event loop. New sources must respect the same
+    /// rule -- never mutate the registry from a worker thread.
     [[nodiscard]] const EnumDictionaryRegistry *EnumDictionaries() const noexcept
     {
         return mEnumDictionaries;

@@ -24,12 +24,19 @@ enum class EnumValueId : uint16_t
 
 inline constexpr EnumValueId INVALID_ENUM_VALUE_ID{std::numeric_limits<uint16_t>::max()};
 
-/// Hard cap on distinct values per column for v1. Both the storage path
-/// (`uint16_t` id field with sentinel) and the filter-UI value picker
-/// assume this stays small. Must remain well under `1 << 16` to keep the
-/// sentinel valid; a future runtime-configurable knob lives in
-/// `advanced_parser_options`.
-inline constexpr uint16_t MAX_ENUM_VALUES = 16;
+/// Compile-time hard ceiling on distinct values per column. Storage path
+/// (`uint16_t` id field with `INVALID_ENUM_VALUE_ID = 0xFFFF` sentinel)
+/// and the filter-UI value picker both rely on this staying well under
+/// `1 << 16`. The *effective* per-column cap is runtime-configurable via
+/// `internal::AdvancedParserOptions::enumValueCap` (default 64); the
+/// constant below is the maximum that knob can be clamped to.
+inline constexpr uint16_t MAX_ENUM_VALUES = 1024;
+
+/// Default per-column distinct-value cap when no `AdvancedParserOptions`
+/// override is supplied. Picked to comfortably cover real-world enum
+/// columns (`level`, `host`, `service`, build IDs) without inflating the
+/// filter picker's sorted list past the point of usability.
+inline constexpr uint16_t DEFAULT_ENUM_VALUE_CAP = 64;
 
 /// Per-column dictionary of distinct string values. Values are
 /// insertion-ordered; their `EnumValueId`s are the index in that order
@@ -43,6 +50,11 @@ class EnumDictionary
 {
 public:
     EnumDictionary() = default;
+
+    /// @p cap is the maximum number of distinct values this dictionary
+    /// will accept; further `Insert` calls return `INVALID_ENUM_VALUE_ID`
+    /// and `Full()` reports true. Clamped to `[1, MAX_ENUM_VALUES]`.
+    explicit EnumDictionary(uint16_t cap) noexcept;
 
     EnumDictionary(const EnumDictionary &) = delete;
     EnumDictionary &operator=(const EnumDictionary &) = delete;
@@ -75,7 +87,12 @@ public:
 
     [[nodiscard]] bool Full() const noexcept
     {
-        return mValues.size() >= MAX_ENUM_VALUES;
+        return mValues.size() >= mCap;
+    }
+
+    [[nodiscard]] uint16_t Cap() const noexcept
+    {
+        return mCap;
     }
 
     /// Snapshot for the filter UI (multi-select picker). View bytes are
@@ -89,8 +106,29 @@ public:
     void Clear() noexcept;
 
 private:
+    /// Heterogeneous hasher so `mIndex.find(string_view)` does not have
+    /// to construct a temporary `std::string`. The `equal_to<>`
+    /// specialisation in the map type below pairs with this.
+    struct StringHash
+    {
+        using is_transparent = void;
+        [[nodiscard]] size_t operator()(std::string_view s) const noexcept
+        {
+            return std::hash<std::string_view>{}(s);
+        }
+        [[nodiscard]] size_t operator()(const std::string &s) const noexcept
+        {
+            return std::hash<std::string_view>{}(std::string_view(s));
+        }
+    };
+
     std::vector<std::string> mValues;
-    std::unordered_map<std::string, EnumValueId> mIndex;
+    std::unordered_map<std::string, EnumValueId, StringHash, std::equal_to<>> mIndex;
+    /// Per-instance cap; stamped at construction by
+    /// `EnumDictionaryRegistry::GetOrInsert` from
+    /// `LogTable::mEnumValueCap`. Defaulted to `DEFAULT_ENUM_VALUE_CAP`
+    /// so a default-constructed dictionary in tests still behaves.
+    uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };
 
 /// `KeyId` -> `EnumDictionary` for every column currently configured as
@@ -122,8 +160,10 @@ public:
     /// Mutable access; inserts a fresh dictionary for @p key if absent.
     /// The returned reference is stable as long as the registry exists
     /// and `Erase`/`Clear` are not called; subsequent `GetOrInsert`
-    /// calls for *different* keys do not invalidate it.
-    [[nodiscard]] EnumDictionary &GetOrInsert(KeyId key);
+    /// calls for *different* keys do not invalidate it. @p cap is the
+    /// per-column distinct-value cap stamped on the freshly-created
+    /// dictionary; ignored when an entry for @p key already exists.
+    [[nodiscard]] EnumDictionary &GetOrInsert(KeyId key, uint16_t cap = DEFAULT_ENUM_VALUE_CAP);
 
     /// Make @p alias resolve to the same dictionary as @p canonical.
     /// `canonical` must already have a dictionary (`GetOrInsert` it

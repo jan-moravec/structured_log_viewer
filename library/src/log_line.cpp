@@ -409,4 +409,14 @@ bool LogLine::IsDictRef(KeyId id) const noexcept
     return compact != nullptr && compact->tag == internal::CompactTag::DictRef;
 }
 
+std::optional<EnumValueId> LogLine::GetEnumValueId(KeyId id) const noexcept
+{
+    const internal::CompactLogValue *compact = FindCompact(id);
+    if (compact == nullptr || compact->tag != internal::CompactTag::DictRef)
+    {
+        return std::nullopt;
+    }
+    return static_cast<EnumValueId>(static_cast<uint16_t>(compact->payload));
+}
+
 } // namespace loglib

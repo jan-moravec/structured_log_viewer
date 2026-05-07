@@ -7,11 +7,16 @@
 
 using namespace loglib;
 
-TEST_CASE("EnumDictionary inserts up to MAX_ENUM_VALUES distinct strings", "[enum_dictionary]")
+TEST_CASE("EnumDictionary inserts up to its instance cap", "[enum_dictionary]")
 {
-    EnumDictionary dict;
+    // Construct with the hard ceiling so the "fill it up" section
+    // exercises the upper bound of `EnumValueId`'s value space; the
+    // default-constructed cap (`DEFAULT_ENUM_VALUE_CAP = 64`) is
+    // covered separately below.
+    EnumDictionary dict{MAX_ENUM_VALUES};
     REQUIRE(dict.Empty());
     REQUIRE_FALSE(dict.Full());
+    REQUIRE(dict.Cap() == MAX_ENUM_VALUES);
 
     SECTION("Inserting the same value twice returns the same id")
     {
@@ -51,6 +56,61 @@ TEST_CASE("EnumDictionary inserts up to MAX_ENUM_VALUES distinct strings", "[enu
         // A new value would overflow.
         CHECK(dict.Insert("never-seen-before") == INVALID_ENUM_VALUE_ID);
         CHECK(dict.Size() == MAX_ENUM_VALUES);
+    }
+}
+
+TEST_CASE("EnumDictionary honours an explicit cap below MAX_ENUM_VALUES", "[enum_dictionary]")
+{
+    // Mirrors the runtime knob (`AdvancedParserOptions::enumValueCap`)
+    // path: dictionaries created with a small cap stop accepting
+    // inserts at exactly that boundary, regardless of the compile-time
+    // ceiling.
+    EnumDictionary dict{8};
+    REQUIRE(dict.Cap() == 8);
+
+    for (uint16_t i = 0; i < 8; ++i)
+    {
+        const auto id = dict.Insert("level-" + std::to_string(i));
+        REQUIRE(id != INVALID_ENUM_VALUE_ID);
+    }
+    REQUIRE(dict.Full());
+    REQUIRE(dict.Size() == 8);
+
+    // Re-inserting an already-present value still resolves to its id.
+    CHECK(dict.Insert("level-0") == static_cast<EnumValueId>(0));
+    // First over-cap insert returns the sentinel; the dict stays at cap.
+    CHECK(dict.Insert("level-9") == INVALID_ENUM_VALUE_ID);
+    CHECK(dict.Size() == 8);
+}
+
+TEST_CASE("EnumDictionary::Find resolves heterogeneous string_view lookups", "[enum_dictionary]")
+{
+    // `Find` goes through `mIndex` (transparent hashmap) so the
+    // `string_view` / `string` / character-array overloads must all
+    // resolve to the same id without round-tripping through a
+    // temporary `std::string`. The pointer-stability check below
+    // catches the original bug where `Find` walked `mValues` and
+    // would silently degrade once the dictionary grew past a handful
+    // of entries.
+    EnumDictionary dict{MAX_ENUM_VALUES};
+    const EnumValueId info = dict.Insert("info");
+    const EnumValueId warn = dict.Insert("warn");
+    const EnumValueId error = dict.Insert("error");
+
+    CHECK(dict.Find(std::string_view{"info"}) == info);
+    CHECK(dict.Find(std::string{"warn"}) == warn);
+    CHECK(dict.Find("error") == error);
+    CHECK(dict.Find("absent") == INVALID_ENUM_VALUE_ID);
+
+    // Sanity: large dictionaries still resolve via the index, not a
+    // linear scan. Pump in 200 values and make sure every one round-
+    // trips correctly under string_view lookup.
+    for (int i = 0; i < 200; ++i)
+    {
+        const std::string value = "bulk-" + std::to_string(i);
+        const EnumValueId id = dict.Insert(value);
+        REQUIRE(id != INVALID_ENUM_VALUE_ID);
+        CHECK(dict.Find(std::string_view{value}) == id);
     }
 }
 

@@ -1,25 +1,31 @@
 #include "loglib/enum_dictionary.hpp"
 
+#include <algorithm>
+#include <cassert>
 #include <utility>
 
 namespace loglib
 {
 
+EnumDictionary::EnumDictionary(uint16_t cap) noexcept
+    : mCap(std::clamp<uint16_t>(cap, 1, MAX_ENUM_VALUES))
+{
+}
+
 EnumValueId EnumDictionary::Find(std::string_view bytes) const noexcept
 {
-    // `std::unordered_map<std::string, ...>::find(string_view)` requires
-    // a heterogeneous comparator (C++20+) which the default specialisation
-    // does not provide; the dictionary is small (<= MAX_ENUM_VALUES) so a
-    // linear scan over `mValues` is cheaper than constructing a temporary
-    // `std::string` for the lookup.
-    for (size_t i = 0; i < mValues.size(); ++i)
+    // `mIndex` is a transparent hashmap (`is_transparent` hasher +
+    // `std::equal_to<>`) so the `string_view` lookup hits the bucket
+    // without materialising a temporary `std::string`. O(1) regardless
+    // of dictionary size, so the dictionary stays cheap as the runtime
+    // cap (`AdvancedParserOptions::enumValueCap`) grows past the v1
+    // hard-coded 16.
+    const auto it = mIndex.find(bytes);
+    if (it == mIndex.end())
     {
-        if (mValues[i] == bytes)
-        {
-            return static_cast<EnumValueId>(i);
-        }
+        return INVALID_ENUM_VALUE_ID;
     }
-    return INVALID_ENUM_VALUE_ID;
+    return it->second;
 }
 
 EnumValueId EnumDictionary::Insert(std::string_view bytes)
@@ -69,13 +75,13 @@ const EnumDictionary *EnumDictionaryRegistry::Find(KeyId key) const noexcept
     return it->second;
 }
 
-EnumDictionary &EnumDictionaryRegistry::GetOrInsert(KeyId key)
+EnumDictionary &EnumDictionaryRegistry::GetOrInsert(KeyId key, uint16_t cap)
 {
     if (auto it = mDictionaries.find(key); it != mDictionaries.end())
     {
         return *it->second;
     }
-    auto dict = std::make_unique<EnumDictionary>();
+    auto dict = std::make_unique<EnumDictionary>(cap);
     EnumDictionary *raw = dict.get();
     mDictionaries.emplace(key, std::move(dict));
     mIndex[key] = raw;
@@ -90,6 +96,18 @@ void EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
     }
     const auto canonicalIt = mDictionaries.find(canonical);
     if (canonicalIt == mDictionaries.end())
+    {
+        return;
+    }
+    // Refuse to overwrite an existing canonical with an alias entry.
+    // `mDictionaries.contains(alias)` would mean the caller owns a
+    // separate dictionary under @p alias; pointing the alias index at
+    // @p canonical would orphan the prior dictionary's bytes (the
+    // `unique_ptr` stays alive in `mDictionaries`, but `Find(alias)`
+    // would now resolve to the wrong storage). Caller should `Erase`
+    // first if reparenting is genuinely intended.
+    assert(!mDictionaries.contains(alias) && "EnumDictionaryRegistry::Alias overwrites canonical entry");
+    if (mDictionaries.contains(alias))
     {
         return;
     }

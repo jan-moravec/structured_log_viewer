@@ -1,6 +1,9 @@
 #pragma once
 
+#include "loglib/enum_dictionary.hpp"
+
 #include <cstddef>
+#include <cstdint>
 
 namespace loglib::internal
 {
@@ -23,6 +26,13 @@ struct AdvancedParserOptions
 
     /// Values smaller than a single line auto-expand so a line never spans batches.
     size_t batchSizeBytes = DEFAULT_BATCH_SIZE_BYTES;
+
+    /// Per-column distinct-value cap for enum auto-detection. Forwarded
+    /// to `LogTable::SetEnumValueCap` before the first batch arrives;
+    /// clamped to `[1, MAX_ENUM_VALUES]`. The default sits well above
+    /// typical enum-column cardinalities (`level`, `service`, `host`)
+    /// while keeping the filter picker comfortably scrollable.
+    uint16_t enumValueCap = DEFAULT_ENUM_VALUE_CAP;
 };
 
 } // namespace loglib::internal

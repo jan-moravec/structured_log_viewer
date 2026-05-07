@@ -326,9 +326,7 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
     CHECK(*AsStringView(line.GetValue(levelKey)) == "warn");
 }
 
-TEST_CASE(
-    "LogLine::IsDictRef discriminates DictRef slots from MmapSlice / OwnedString", "[log_line][enum][helpers]"
-)
+TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / OwnedString", "[log_line][enum][helpers]")
 {
     const TestLogFile testFile;
     auto source = testFile.CreateFileLineSource();

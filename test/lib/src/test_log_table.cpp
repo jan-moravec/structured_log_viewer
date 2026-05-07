@@ -1212,8 +1212,7 @@ TEST_CASE(
     // column flips to `Type::enumeration` and every existing row is
     // back-filled to `DictRef`.
     constexpr size_t ROWS_TO_REACH_THRESHOLD = 220;
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "level", levels, SUBSET_ROWS + 1, ROWS_TO_REACH_THRESHOLD, false)
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", levels, SUBSET_ROWS + 1, ROWS_TO_REACH_THRESHOLD, false)
     );
 
     REQUIRE(table.RowCount() == SUBSET_ROWS + ROWS_TO_REACH_THRESHOLD);
@@ -1297,8 +1296,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable::AppendBatch -- 17th distinct value demotes enum column to string",
-    "[log_table][append_batch][enum]"
+    "LogTable::AppendBatch -- (cap+1)th distinct value demotes enum column to string", "[log_table][append_batch][enum]"
 )
 {
     const TestLogFile testFile("enum_demote.json");
@@ -1320,18 +1318,24 @@ TEST_CASE(
     mgr.Load(cfgFile.GetFilePath());
 
     LogTable table({}, std::move(mgr));
+    // Drive demotion with a small explicit cap rather than the default
+    // (`DEFAULT_ENUM_VALUE_CAP = 64`) or the hard ceiling
+    // (`MAX_ENUM_VALUES = 1024`); keeps the test fast and pinned to
+    // the boundary behaviour rather than the bulk-fill path.
+    constexpr uint16_t TEST_CAP = 16;
+    table.SetEnumValueCap(TEST_CAP);
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
 
     // Fill the dictionary to exactly the cap.
     std::vector<std::string> capValues;
-    capValues.reserve(MAX_ENUM_VALUES);
-    for (uint16_t i = 0; i < MAX_ENUM_VALUES; ++i)
+    capValues.reserve(TEST_CAP);
+    for (uint16_t i = 0; i < TEST_CAP; ++i)
     {
         capValues.emplace_back("tag" + std::to_string(i));
     }
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", capValues, 1, MAX_ENUM_VALUES, true));
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", capValues, 1, TEST_CAP, true));
 
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
@@ -1342,19 +1346,17 @@ TEST_CASE(
         CHECK(table.Data().Lines()[row].IsDictRef(tagKey));
     }
 
-    // The 17th distinct value lands in the next batch; the column
+    // The (cap+1)th distinct value lands in the next batch; the column
     // demotes back to `Type::any`, every prior row's `DictRef` is
     // rewritten to `OwnedString`, and the dictionary entry is dropped.
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, MAX_ENUM_VALUES + 1, 1, false)
-    );
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, TEST_CAP + 1, 1, false));
 
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
     CHECK(!table.EnumDictionaries().Contains(tagKey));
-    REQUIRE(table.RowCount() == MAX_ENUM_VALUES + 1);
+    REQUIRE(table.RowCount() == TEST_CAP + 1);
 
     // Demotion preserves every prior row's bytes.
-    for (uint16_t i = 0; i < MAX_ENUM_VALUES; ++i)
+    for (uint16_t i = 0; i < TEST_CAP; ++i)
     {
         const LogValue v = table.GetValue(i, 0);
         const auto sv = AsStringView(v);
@@ -1362,11 +1364,11 @@ TEST_CASE(
         CHECK(*sv == capValues[i]);
         CHECK_FALSE(table.Data().Lines()[i].IsDictRef(tagKey));
     }
-    // The 17th row still has its bytes intact too.
-    const LogValue lastValue = table.GetValue(MAX_ENUM_VALUES, 0);
+    // The (cap+1)th row still has its bytes intact too.
+    const LogValue lastValue = table.GetValue(TEST_CAP, 0);
     REQUIRE(AsStringView(lastValue).has_value());
     CHECK(*AsStringView(lastValue) == "never-seen");
-    CHECK_FALSE(table.Data().Lines()[MAX_ENUM_VALUES].IsDictRef(tagKey));
+    CHECK_FALSE(table.Data().Lines()[TEST_CAP].IsDictRef(tagKey));
 
     // The demotion records a back-fill range so the GUI re-renders
     // the affected column.
@@ -1408,4 +1410,255 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     // Configuration is preserved.
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+}
+
+TEST_CASE(
+    "LogTable -- a column killed by overflow stays Type::any across subsequent batches",
+    "[log_table][append_batch][enum][kill_once]"
+)
+{
+    // Repro for the kill-once-stay-killed regression: when the
+    // tracker overflows we *permanently* refuse to retry promotion
+    // for that column. Without `mEnumPermanentlyKilled` the column
+    // would oscillate between `enumeration` and `any` whenever the
+    // distinct-value count drifted across the cap boundary.
+    const TestLogFile testFile("enum_kill_once.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    constexpr uint16_t TEST_CAP = 8;
+    table.SetEnumValueCap(TEST_CAP);
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+
+    // Batch 1: drive the tracker over the cap with `cap+1` distinct
+    // values across `ENUM_PROMOTION_MIN_ROWS`-many rows. The tracker
+    // kills itself before promotion fires; the column stays Type::any.
+    constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
+    std::vector<std::string> manyValues;
+    manyValues.reserve(TEST_CAP + 1);
+    for (uint16_t i = 0; i < TEST_CAP + 1; ++i)
+    {
+        manyValues.emplace_back("level-" + std::to_string(i));
+    }
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", manyValues, 1, MIN_ROWS_FOR_PROMOTION, true));
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+
+    // Batch 2: feed *only* in-cap values. A naive tracker would
+    // re-default-construct, observe `<= cap` distinct values, hit
+    // the row threshold, and promote -- driving the column back to
+    // `Type::enumeration`. With `mEnumPermanentlyKilled` populated
+    // the canonical KeyId is short-circuited and the column stays
+    // `Type::any` forever.
+    std::vector<std::string> fewValues;
+    fewValues.reserve(TEST_CAP);
+    for (uint16_t i = 0; i < TEST_CAP; ++i)
+    {
+        fewValues.emplace_back("level-" + std::to_string(i));
+    }
+    table.AppendBatch(
+        BuildEnumBatch(keys, *sourcePtr, "level", fewValues, MIN_ROWS_FOR_PROMOTION + 1, MIN_ROWS_FOR_PROMOTION, false)
+    );
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+
+    // Demote-then-feed-only-low-cardinality also stays demoted: drive
+    // a configured enum column past the cap, then feed cap-friendly
+    // values. The column should not re-promote because demotion also
+    // populates `mEnumPermanentlyKilled`.
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
+}
+
+TEST_CASE(
+    "LogTable -- multi-key enum column emits exactly one DictRef slot per row",
+    "[log_table][append_batch][enum][multi_key]"
+)
+{
+    // A column whose `keys = {"level", "severity"}` aliases two
+    // KeyIds onto one canonical dictionary. Rows that populate both
+    // keys must end up with a single `DictRef` slot (under the first
+    // matching key); encoding both would double the per-row footprint
+    // and pre-aggregation queries would count the same value twice.
+    const TestLogFile testFile("enum_multi_key.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "severity",
+         .keys = {"level", "severity"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"level", "severity"};
+    batch.lines.push_back(
+        MakeLine(keys, *sourcePtr, {{"level", std::string("info")}, {"severity", std::string("warn")}})
+    );
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.RowCount() == 1);
+    const KeyId levelKey = keys.Find("level");
+    const KeyId severityKey = keys.Find("severity");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    REQUIRE(severityKey != INVALID_KEY_ID);
+
+    // Exactly one of the two slots is `DictRef`; the other keeps its
+    // original `OwnedString`/`MmapSlice` storage. The plan does not
+    // mandate which key wins (the encode loop breaks on the first
+    // match), but exactly one should land in the dictionary.
+    const auto &line = table.Data().Lines()[0];
+    const bool levelDict = line.IsDictRef(levelKey);
+    const bool severityDict = line.IsDictRef(severityKey);
+    CHECK((levelDict ^ severityDict));
+
+    // The dictionary holds only the encoded value; the un-encoded
+    // sibling key's bytes never enter the dict.
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    REQUIRE(dict == table.EnumDictionaries().Find(severityKey));
+    CHECK(dict->Size() == 1);
+}
+
+TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged KeyIndex", "[log_table][update][enum]")
+{
+    // `Update(LogData&&)` rebuilds `mData` from a freshly-merged
+    // dataset and must call `RefreshSnapshotEnumKeys` so any
+    // `Type::enumeration` column survives the cycle. Without it, the
+    // canonical KeyId on the merged-in source would not have a
+    // dictionary entry and the encode pass would silently skip the
+    // column.
+    const TestLogFile testFile("enum_update.json");
+    testFile.Write("");
+    auto sourceA = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourceAPtr = sourceA.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+
+    // First Update: merges 4 lines of an enum column.
+    KeyIndex keysA;
+    std::vector<LogLine> linesA;
+    linesA.push_back(MakeLine(keysA, *sourceAPtr, {{"level", std::string("info")}}));
+    linesA.push_back(MakeLine(keysA, *sourceAPtr, {{"level", std::string("warn")}}));
+    linesA.push_back(MakeLine(keysA, *sourceAPtr, {{"level", std::string("info")}}));
+    linesA.push_back(MakeLine(keysA, *sourceAPtr, {{"level", std::string("error")}}));
+    LogData dataA(std::move(sourceA), std::move(linesA), std::move(keysA));
+    dataA.MarkTimestampsParsed();
+
+    table.Update(std::move(dataA));
+
+    REQUIRE(table.RowCount() == 4);
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    REQUIRE(table.EnumDictionaries().Contains(levelKey));
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    CHECK(dict->Size() == 3);
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(table.Data().Lines()[row].IsDictRef(levelKey));
+    }
+}
+
+TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[log_table][enum][get_value]")
+{
+    const TestLogFile testFile("enum_get_value.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
+
+    REQUIRE(table.RowCount() == 6);
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const auto vid = table.GetEnumValueId(row, 0);
+        REQUIRE(vid.has_value());
+        // Round-trip: the resolved id maps back to the same string the
+        // model would render via `GetValue`.
+        const auto sv = AsStringView(table.GetValue(row, 0));
+        REQUIRE(sv.has_value());
+        CHECK(dict->Resolve(*vid) == *sv);
+    }
+
+    // Out-of-range row / column → nullopt; never crash.
+    CHECK_FALSE(table.GetEnumValueId(table.RowCount(), 0).has_value());
+    CHECK_FALSE(table.GetEnumValueId(0, table.ColumnCount()).has_value());
+}
+
+TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[log_table][enum][get_value]")
+{
+    // Pre-encoding (or post-demote) the column's slots are
+    // `OwnedString` / `MmapSlice`, not `DictRef`. The model uses the
+    // nullopt return as the cue to fall back to the string-set
+    // matching path inside `EnumFilterRule`.
+    const TestLogFile testFile("enum_get_value_owned.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table; // no configured enum column
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info"}, 1, 4, true));
+
+    // Tracker hasn't promoted yet (rows < ENUM_PROMOTION_MIN_ROWS),
+    // so every slot is `OwnedString` and `GetEnumValueId` is nullopt
+    // for every row.
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK_FALSE(table.GetEnumValueId(row, 0).has_value());
+    }
 }

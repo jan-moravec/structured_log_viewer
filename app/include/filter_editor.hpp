@@ -10,10 +10,13 @@
 #include <QDateTimeEdit>
 #include <QDialog>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
+#include <QListView>
 #include <QPushButton>
+#include <QSortFilterProxyModel>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStringList>
 #include <QTime>
 #include <QTimeEdit>
@@ -58,15 +61,36 @@ private:
     QDateEdit *mEndDateEdit;
     QTimeEdit *mEndTimeEdit;
 
-    QListWidget *mEnumValuesList;
+    /// Picker widgets for `Type::enumeration` columns. The model holds
+    /// one checkable item per dictionary value (alphabetised) and is
+    /// shared across `Load` calls; the proxy applies the search-box
+    /// filter case-insensitively. Both Select All / Clear All operate
+    /// over the *visible* (proxy-filtered) rows so users can scope a
+    /// bulk action to the search hits.
+    QListView *mEnumValuesView;
+    QStandardItemModel *mEnumValuesModel;
+    QSortFilterProxyModel *mEnumValuesProxy;
+    QLineEdit *mEnumSearchEdit;
+    QPushButton *mEnumSelectAllButton;
+    QPushButton *mEnumClearAllButton;
+    QLabel *mEnumSelectionCount;
 
     QPushButton *mOkButton;
     QPushButton *mCancelButton;
 
     void SetupLayout();
     void SetBeginEnd(qint64 begin, qint64 end);
-    /// Repopulate `mEnumValuesList` from the column's current dictionary.
+    /// Repopulate the enum picker from the column's current dictionary.
     void PopulateEnumValues(int columnIndex);
+    /// Refresh "N of M selected" label after every check/uncheck or
+    /// search-box change. Cheap O(model rows) walk; the picker is
+    /// capped at `MAX_ENUM_VALUES = 1024`.
+    void UpdateEnumSelectionCount();
+    /// Drop the sticky red warning border that the empty-submit guard
+    /// stamps on `mEnumValuesView` / `mStringLineEdit`. Connected to
+    /// `dataChanged`/`textChanged` so the warning clears on the user's
+    /// next interaction rather than persisting until close.
+    void ClearWarningStyles();
     static QDateTime ConvertToQDateTime(qint64 timestamp);
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);
 

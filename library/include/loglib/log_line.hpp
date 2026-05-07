@@ -6,6 +6,7 @@
 #include "loglib/log_value.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -126,6 +127,12 @@ public:
     /// True when @p id is stored as `DictRef` (enum-encoded). Resolution
     /// happens via the source's `EnumDictionaryRegistry`.
     bool IsDictRef(KeyId id) const noexcept;
+
+    /// Raw `EnumValueId` payload for a `DictRef` slot, or nullopt if
+    /// @p id is missing or stored under a non-`DictRef` tag. Used by
+    /// the model's `EnumValueRole` fast-filter path so the rule can
+    /// match against a bitset without round-tripping through a string.
+    [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(KeyId id) const noexcept;
 
 private:
     /// `lower_bound` over the small sorted `mValues`. Returns nullptr

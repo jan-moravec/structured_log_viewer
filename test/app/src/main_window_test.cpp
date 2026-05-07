@@ -1,3 +1,5 @@
+#include "filter_editor.hpp"
+#include "filter_rule.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
@@ -6,6 +8,7 @@
 #include "row_order_proxy_model.hpp"
 #include "streaming_control.hpp"
 
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/compact_log_value.hpp>
@@ -25,16 +28,23 @@
 
 #include <test_common/network_log_client.hpp>
 
+#include <QAbstractItemModel>
 #include <QAction>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QLineEdit>
+#include <QListView>
 #include <QMenu>
 #include <QMenuBar>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollBar>
 #include <QSignalSpy>
+#include <QSortFilterProxyModel>
+#include <QStandardItem>
+#include <QStandardItemModel>
+#include <QStatusBar>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -2887,6 +2897,276 @@ private slots:
         }
 
         model.EndStreaming(false);
+    }
+
+    // Picker UI: stream a fixture whose `level` column auto-promotes to
+    // `Type::enumeration` (5 distinct values, well under the default cap),
+    // open `FilterEditor` against that column, and verify that typing
+    // into the search box prunes the visible item count via the proxy
+    // chain. Confirms the picker rebuild (`QListView` +
+    // `QSortFilterProxyModel` + `QLineEdit`) actually plumbs the search
+    // text through to the proxy.
+    static void TestFilterEditorPickerSearchFiltersVisibleCount()
+    {
+        // `LogTable` requires at least `ENUM_PROMOTION_MIN_ROWS` (256)
+        // observed rows before a `Type::any` column is auto-promoted to
+        // `Type::enumeration`. We cycle through 5 distinct values so the
+        // dictionary stays well under the default cap.
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+            QStringLiteral("debug"),
+            QStringLiteral("trace"),
+        };
+        QStringList lines;
+        lines.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model->StreamingErrors().empty());
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "auto-promoted level column must exist");
+        const auto &columns = run.model->Configuration().columns;
+        QVERIFY(static_cast<size_t>(levelCol) < columns.size());
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+
+        FilterEditor editor(*run.model, QStringLiteral("test-filter"));
+        editor.Load(levelCol, QStringList{});
+
+        // The QComboBox column-picker also has an internal QListView for
+        // its dropdown, so pick the picker explicitly by looking for the
+        // one whose model is a `QSortFilterProxyModel` (the enum picker
+        // is the only `QListView` in `FilterEditor` with a proxy model).
+        QListView *picker = nullptr;
+        QSortFilterProxyModel *proxy = nullptr;
+        for (QListView *candidate : editor.findChildren<QListView *>())
+        {
+            if (auto *p = qobject_cast<QSortFilterProxyModel *>(candidate->model()))
+            {
+                picker = candidate;
+                proxy = p;
+                break;
+            }
+        }
+        QVERIFY2(picker != nullptr, "FilterEditor must expose its enum picker QListView");
+        QVERIFY2(proxy != nullptr, "picker must wrap a QSortFilterProxyModel");
+        QCOMPARE(proxy->rowCount(), 5);
+
+        QLineEdit *searchBox = nullptr;
+        for (QLineEdit *edit : editor.findChildren<QLineEdit *>())
+        {
+            if (edit->placeholderText().contains(QStringLiteral("Filter values"), Qt::CaseInsensitive))
+            {
+                searchBox = edit;
+                break;
+            }
+        }
+        QVERIFY2(searchBox != nullptr, "FilterEditor must expose the picker search QLineEdit");
+
+        searchBox->setText(QStringLiteral("err"));
+        QCoreApplication::processEvents();
+        QCOMPARE(proxy->rowCount(), 1);
+        QCOMPARE(proxy->data(proxy->index(0, 0), Qt::DisplayRole).toString(), QStringLiteral("error"));
+
+        searchBox->setText(QStringLiteral("e"));
+        QCoreApplication::processEvents();
+        // error / debug / trace contain 'e'; info and warn do not.
+        QCOMPARE(proxy->rowCount(), 3);
+
+        searchBox->clear();
+        QCoreApplication::processEvents();
+        QCOMPARE(proxy->rowCount(), 5);
+    }
+
+    // Cross-session config drift: a saved string filter on a column that
+    // has since auto-promoted to `Type::enumeration` must be dropped at
+    // `AddFilter` time with a status-bar message rather than silently
+    // re-opening the editor on a stale page or feeding a mismatched
+    // rule into `LogFilterModel`. Verifies the type-mismatch guard in
+    // `MainWindow::AddFilter`.
+    void TestSavedStringFilterDroppedOnNowEnumColumn()
+    {
+        // Need >= ENUM_PROMOTION_MIN_ROWS (256) observed rows before
+        // `level` flips to `Type::enumeration`.
+        const QStringList levels{QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error")};
+        QStringList lines;
+        lines.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        // Drive the streaming open path on the live MainWindow so the
+        // status-bar / model wiring matches production.
+        LogModel *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+
+        const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
+        QVERIFY2(finished, "streamingFinished must arrive within the timeout");
+        QCOMPARE(model->rowCount(), 300);
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+        const auto &columns = model->Configuration().columns;
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+
+        // Build a saved *string* filter targeting the now-enum column.
+        loglib::LogConfiguration::LogFilter savedFilter;
+        savedFilter.type = loglib::LogConfiguration::LogFilter::Type::string;
+        savedFilter.row = levelCol;
+        savedFilter.filterString = std::string("info");
+        savedFilter.matchType = loglib::LogConfiguration::LogFilter::Match::exactly;
+
+        mWindow->statusBar()->clearMessage();
+        // `AddFilter` is a private slot; reach it through the meta-object
+        // system rather than friending the test fixture.
+        const bool invoked = QMetaObject::invokeMethod(
+            mWindow,
+            "AddFilter",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("saved-string")),
+            Q_ARG(std::optional<loglib::LogConfiguration::LogFilter>, savedFilter)
+        );
+        QVERIFY2(invoked, "AddFilter slot must be invokable via meta-object");
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("Filter dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("expected status-bar drop message; got '%1'").arg(message))
+        );
+
+        // The editor still opens (so the user can re-author the filter)
+        // but on an empty page. Close any modeless dialog the AddFilter
+        // path popped so the test cleanup teardown doesn't trip over it.
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *editor = qobject_cast<FilterEditor *>(widget))
+            {
+                editor->close();
+                editor->deleteLater();
+            }
+        }
+        QCoreApplication::processEvents();
+
+        model->EndStreaming(false);
+    }
+
+    // Fast-filter parity: the bitset path (rule built with the column's
+    // `EnumDictionary`) and the string fallback (rule built without)
+    // must accept the same rows for an enum-encoded column. Exercises
+    // both `LogModelItemDataRole::EnumValueRole` and
+    // `EnumFilterRule::Matches`'s fallback branch on the same input.
+    static void TestEnumFilterRuleFastPathMatchesFallbackPath()
+    {
+        // Same 256-row floor for `level` to flip to `Type::enumeration`.
+        // We rotate through 4 levels so 2 selected ones produce a clean
+        // 50% pass rate; the `n` column is left numeric so the model
+        // also exercises the *non*-enum slot path (no `EnumValueRole`).
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+            QStringLiteral("debug"),
+        };
+        constexpr int FIXTURE_LINES = 320;
+        QStringList lines;
+        lines.reserve(FIXTURE_LINES);
+        for (int i = 0; i < FIXTURE_LINES; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1", "n": %2})").arg(levels[i % levels.size()]).arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model->StreamingErrors().empty());
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+        const auto &columns = run.model->Configuration().columns;
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+
+        const loglib::EnumDictionary *dictionary = nullptr;
+        QVERIFY(!columns[static_cast<size_t>(levelCol)].keys.empty());
+        const loglib::KeyId canonicalKeyId =
+            run.model->Table().Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
+        QVERIFY(canonicalKeyId != loglib::INVALID_KEY_ID);
+        dictionary = run.model->Table().EnumDictionaries().Find(canonicalKeyId);
+        QVERIFY2(dictionary != nullptr, "the enum-encoded column must have a dictionary");
+
+        const QStringList selected{QStringLiteral("info"), QStringLiteral("warn")};
+        const EnumFilterRule fastRule(levelCol, selected, dictionary);
+        const EnumFilterRule fallbackRule(levelCol, selected, /*dictionary=*/nullptr);
+
+        const int rows = run.model->rowCount();
+        QCOMPARE(rows, FIXTURE_LINES);
+
+        int matchedRows = 0;
+        for (int row = 0; row < rows; ++row)
+        {
+            const QModelIndex idx = run.model->index(row, levelCol);
+            const QVariant displayOrSort = run.model->data(idx, LogModelItemDataRole::SortRole);
+            const QVariant enumId = run.model->data(idx, LogModelItemDataRole::EnumValueRole);
+
+            const bool fast = fastRule.Matches(displayOrSort, enumId);
+            const bool fallback = fallbackRule.Matches(displayOrSort, QVariant{});
+
+            QVERIFY2(
+                fast == fallback,
+                qPrintable(QStringLiteral("row %1: fast=%2 vs fallback=%3 (display='%4', enumId valid=%5)")
+                               .arg(row)
+                               .arg(fast)
+                               .arg(fallback)
+                               .arg(displayOrSort.toString())
+                               .arg(enumId.isValid()))
+            );
+            if (fast)
+            {
+                ++matchedRows;
+            }
+        }
+
+        // Sanity: half of the rows alternate "info"/"warn"; the other
+        // half alternate "error"/"debug" -- so exactly 50% pass.
+        QCOMPARE(matchedRows, FIXTURE_LINES / 2);
+
+        // Fast path is actually exercised: every enum-encoded row must
+        // expose a valid `EnumValueRole`.
+        for (int row = 0; row < rows; ++row)
+        {
+            const QVariant enumId =
+                run.model->data(run.model->index(row, levelCol), LogModelItemDataRole::EnumValueRole);
+            QVERIFY2(
+                enumId.isValid(),
+                qPrintable(QStringLiteral("row %1: EnumValueRole must be valid post-promotion").arg(row))
+            );
+        }
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
