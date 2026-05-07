@@ -139,6 +139,15 @@ private:
     /// if @p id is absent.
     const internal::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
+    /// Replace (or insert) the slot for @p id with @p compact. Shared
+    /// implementation of `SetValue(KeyId, ...)` (after variant ->
+    /// compact) and `SetEnumDictRef(KeyId, EnumValueId)` (after
+    /// `MakeDictRef`); both performed the same `lower_bound` +
+    /// `Set`/`Insert` dance and previously diverged independently.
+    /// May allocate via `mValues.Insert` when @p id is new, so not
+    /// `noexcept`.
+    void SetCompact(KeyId id, internal::CompactLogValue compact);
+
     internal::CompactLineFields mValues;
     const KeyIndex *mKeys = nullptr;
     LineSource *mSource = nullptr;

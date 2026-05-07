@@ -46,12 +46,17 @@ bool LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
     {
         return false;
     }
-    for (uint16_t i = 0; i < size; ++i)
+    // O(1) "have we seen this exact byte sequence before?" via the
+    // transparent-hash mirror of `values`. Pre-fix this was an O(N)
+    // linear scan of `values`; with `cap = DEFAULT_ENUM_VALUE_CAP =
+    // 64` and the (cap+1)th-value kill rule, that meant up to 64
+    // string compares per observed row pre-promotion. The compares
+    // are branch-predictor-friendly ASCII compares, but the hash
+    // path is strictly cheaper at any cap >> 8 and bounded by `cap`
+    // memory.
+    if (seen.contains(bytes))
     {
-        if (values[i] == bytes)
-        {
-            return false;
-        }
+        return false;
     }
     if (size >= cap)
     {
@@ -59,14 +64,17 @@ bool LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
         // promotion candidate. Drop the buffer to free memory; we keep
         // observing only to maintain `rowsObserved` for parity with the
         // `killed == false` path, but we do not record the new value.
-        // `LogTable` then folds the canonical KeyId into
-        // `mEnumPermanentlyKilled` so the column is never re-tracked.
+        // `LogTable` then folds the configured canonical key string
+        // into `mEnumPermanentlyKilled` so the column is never
+        // re-tracked.
         killed = true;
         values = {};
+        seen = {};
         size = 0;
         return true;
     }
     values.emplace_back(bytes);
+    seen.emplace(values.back());
     ++size;
     return true;
 }
@@ -83,6 +91,49 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(0U, firstBackfilled, lastBackfilled);
+}
+
+LogTable::LogTable(LogTable &&other) noexcept
+    : mData(std::move(other.mData)),
+      mConfiguration(std::move(other.mConfiguration)),
+      mColumnKeyIds(std::move(other.mColumnKeyIds)),
+      mStageBSnapshotTimeKeys(std::move(other.mStageBSnapshotTimeKeys)),
+      mPostSnapshotTimeKeys(std::move(other.mPostSnapshotTimeKeys)),
+      mEnumDictionaries(std::move(other.mEnumDictionaries)),
+      mEnumValueCap(other.mEnumValueCap),
+      mEnumTrackers(std::move(other.mEnumTrackers)),
+      mEnumPermanentlyKilled(std::move(other.mEnumPermanentlyKilled)),
+      mScratchResolvedKeyIds(std::move(other.mScratchResolvedKeyIds)),
+      mLastBackfillRange(std::move(other.mLastBackfillRange))
+{
+    // Every `LineSource` in `mData.Sources()` cached a pointer to
+    // `other.mEnumDictionaries`; rebind to *this so resolution lands
+    // on the moved-into registry.
+    RewireSourceRegistries();
+}
+
+LogTable &LogTable::operator=(LogTable &&other) noexcept
+{
+    if (this == &other)
+    {
+        return *this;
+    }
+    mData = std::move(other.mData);
+    mConfiguration = std::move(other.mConfiguration);
+    mColumnKeyIds = std::move(other.mColumnKeyIds);
+    mStageBSnapshotTimeKeys = std::move(other.mStageBSnapshotTimeKeys);
+    mPostSnapshotTimeKeys = std::move(other.mPostSnapshotTimeKeys);
+    mEnumDictionaries = std::move(other.mEnumDictionaries);
+    mEnumValueCap = other.mEnumValueCap;
+    mEnumTrackers = std::move(other.mEnumTrackers);
+    mEnumPermanentlyKilled = std::move(other.mEnumPermanentlyKilled);
+    mScratchResolvedKeyIds = std::move(other.mScratchResolvedKeyIds);
+    mLastBackfillRange = std::move(other.mLastBackfillRange);
+    // Every `LineSource` in `mData.Sources()` cached a pointer to
+    // `other.mEnumDictionaries`; rebind to *this so resolution lands
+    // on the moved-into registry.
+    RewireSourceRegistries();
+    return *this;
 }
 
 void LogTable::Update(LogData &&data)
@@ -709,15 +760,36 @@ void LogTable::RunEnumPassForAppendBatch(
         // demoted enum column that drifts back under the cap on later
         // batches would re-promote and demote in a loop, churning
         // dictionaries and `dataChanged` notifications.
-        const KeyId trackerKey = mScratchResolvedKeyIds.front();
+        //
+        // The tracker is keyed on `column.keys.front()` -- the first
+        // *configured* key string, which is stable for the column's
+        // lifetime. Earlier KeyId-based keying was unstable for
+        // multi-key columns: the key used to be
+        // `mScratchResolvedKeyIds.front()`, which flips whenever a new
+        // alias key arrives in a later batch.
+        if (column.keys.empty())
+        {
+            continue;
+        }
+        const std::string &trackerKey = column.keys.front();
+        // `configLocksAny`: a column whose `Type::any` came from a
+        // loaded configuration is implicitly locked by the user.
+        // Only data-driven discoveries (`Update`/`AppendKeys`) are
+        // eligible for auto-promotion to `Type::enumeration`. The
+        // saved configuration is treated as authoritative; if a user
+        // wants a column to stay `any`, they save it that way.
+        // Demotion is unaffected: a configured `Type::enumeration`
+        // column that overflows the cap demotes via the
+        // `Type::enumeration` branch above and stays demoted via
+        // `mEnumPermanentlyKilled`.
+        if (!mConfiguration.IsAutoDiscoveredColumn(trackerKey))
+        {
+            continue;
+        }
         if (mEnumPermanentlyKilled.contains(trackerKey))
         {
             continue;
         }
-        // Pick a single tracker for the column keyed on the first
-        // resolved KeyId so multi-key columns share observations (and
-        // so `mEnumTrackers.erase` with the same key works after
-        // promotion).
         auto trackerIt = mEnumTrackers.find(trackerKey);
         if (trackerIt == mEnumTrackers.end())
         {
@@ -728,14 +800,24 @@ void LogTable::RunEnumPassForAppendBatch(
         // Walk the new-batch slice for tracker observations. The
         // tracker is monotonic so prior-batch observations are already
         // accounted for in `tracker.values` / `tracker.size`.
+        //
+        // `valueHolder` is hoisted to the outer-loop scope so its
+        // lifetime spans `tracker.Observe(*bytes)`. `OwnedString` slots
+        // (every value materialised through `StreamLineSource`, plus
+        // escape-decoded values from `FileLineSource`) materialise as
+        // a `std::string` owned by `valueHolder`; if the holder went
+        // out of scope at `break`, `bytes` would dangle into freed
+        // heap. Test fixtures hide this via SSO; non-SSO column values
+        // (>15 bytes) make it crash under ASan.
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
             const auto &line = mData.Lines()[row];
+            LogValue valueHolder;
             std::optional<std::string_view> bytes;
             for (const KeyId id : mScratchResolvedKeyIds)
             {
-                const LogValue value = line.GetValue(id);
-                if (auto sv = AsStringView(value); sv.has_value())
+                valueHolder = line.GetValue(id);
+                if (auto sv = AsStringView(valueHolder); sv.has_value())
                 {
                     bytes = *sv;
                     break;
@@ -932,9 +1014,16 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
             }
         }
         mEnumDictionaries.Erase(keyIds.front());
-        // Permanently kill the canonical KeyId so the next pass over
-        // `Type::any` does not re-tracker / re-promote this column.
-        mEnumPermanentlyKilled.insert(keyIds.front());
+        // Permanently kill the canonical configured key so the next
+        // pass over `Type::any` does not re-tracker / re-promote this
+        // column. Keyed on the column-key string (matching the
+        // tracker / kill-set type) so multi-key columns with
+        // out-of-order key arrival stay killed regardless of which
+        // KeyId resolved first.
+        if (!column.keys.empty())
+        {
+            mEnumPermanentlyKilled.insert(column.keys.front());
+        }
     }
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::any);

@@ -34,8 +34,16 @@ public:
     LogTable(LogTable &) = delete;
     LogTable &operator=(const LogTable &) = delete;
 
-    LogTable(LogTable &&) = default;
-    LogTable &operator=(LogTable &&) = default;
+    // Move ops are defined out-of-line because every `LineSource` in
+    // `mData.Sources()` caches a `const EnumDictionaryRegistry*` to
+    // *this*'s `mEnumDictionaries`. A naive defaulted move would leave
+    // those pointers dangling at the moved-from address; instead the
+    // body member-by-member moves and then re-runs
+    // `RewireSourceRegistries()` so every source points at the new
+    // owner. No production code move-assigns today, but this guards
+    // against silent regression if that changes.
+    LogTable(LogTable &&) noexcept;
+    LogTable &operator=(LogTable &&) noexcept;
 
     /// Replaces the table's data with a freshly-merged @p data.
     void Update(LogData &&data);
@@ -143,11 +151,37 @@ private:
     /// into `mEnumPermanentlyKilled` so the column stays demoted.
     struct EnumCandidateTracker
     {
+        /// Heterogeneous hasher mirrors `EnumDictionary::StringHash`
+        /// (kept private to that class). `mSeen` uses the
+        /// transparent-key API so the hot-path `Observe` lookup
+        /// hashes the incoming `string_view` without materialising a
+        /// `std::string`.
+        struct StringHash
+        {
+            // NOLINTNEXTLINE(readability-identifier-naming) -- standard
+            // library tag name required for heterogeneous lookup.
+            using is_transparent = void;
+            [[nodiscard]] size_t operator()(std::string_view s) const noexcept
+            {
+                return std::hash<std::string_view>{}(s);
+            }
+            [[nodiscard]] size_t operator()(const std::string &s) const noexcept
+            {
+                return std::hash<std::string_view>{}(std::string_view(s));
+            }
+        };
+
         /// Insertion-ordered observed distinct values. Sized by `cap`
         /// at construction; backed by a `vector` (rather than the prior
         /// `array`) so the runtime cap from
         /// `AdvancedParserOptions::enumValueCap` can drive its capacity.
         std::vector<std::string> values;
+        /// Mirror of `values` for O(1) "have we seen this byte
+        /// sequence before?" checks. The set is capped by `cap`
+        /// (matches `values.size()`) so even at `MAX_ENUM_VALUES =
+        /// 1024` the memory footprint is bounded. Both are dropped
+        /// when `killed = true`.
+        std::unordered_set<std::string, StringHash, std::equal_to<>> seen;
         uint16_t size = 0;
         uint16_t cap = DEFAULT_ENUM_VALUE_CAP;
         size_t rowsObserved = 0;
@@ -158,6 +192,7 @@ private:
             : cap(capValue)
         {
             values.reserve(capValue);
+            seen.reserve(capValue);
         }
 
         /// Observes @p bytes. Returns true iff @p bytes was new (strictly
@@ -234,19 +269,26 @@ private:
     uint16_t mEnumValueCap = DEFAULT_ENUM_VALUE_CAP;
 
     /// Per-column observed-value trackers used by the auto-detector.
-    /// Keyed by KeyId so that columns aliasing multiple keys still
-    /// share state. Kept only while the column is still a promotion
+    /// Keyed on `column.keys.front()` (the *configured* canonical key
+    /// string), which is stable for the column's lifetime even when
+    /// keys arrive in different batches. Earlier KeyId-based keying
+    /// was unstable: for multi-key columns (`keys: ["level",
+    /// "severity"]`) the tracker key was `mScratchResolvedKeyIds.front()`,
+    /// the first *resolved* KeyId in the batch -- and that flips
+    /// whenever a new alias key shows up, orphaning prior
+    /// observations. Kept only while the column is still a promotion
     /// candidate (`Type::any` and tracker not killed).
-    std::unordered_map<KeyId, EnumCandidateTracker> mEnumTrackers;
+    std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
 
-    /// Canonical `KeyId`s for columns whose tracker has overflowed at
-    /// least once (either by exceeding the distinct-value cap during
-    /// observation, or by reactive demotion from `Type::enumeration`).
-    /// `RunEnumPassForAppendBatch` skips these columns so a column
-    /// that has already shown >cap distinct values is never re-tracked
-    /// or re-promoted (avoids promote/demote oscillation when data
-    /// shape sits around the cap). Cleared by `Reset()`.
-    std::unordered_set<KeyId> mEnumPermanentlyKilled;
+    /// Canonical-key strings for columns whose tracker has overflowed
+    /// at least once (either by exceeding the distinct-value cap
+    /// during observation, or by reactive demotion from
+    /// `Type::enumeration`). `RunEnumPassForAppendBatch` skips these
+    /// columns so a column that has already shown >cap distinct values
+    /// is never re-tracked or re-promoted (avoids promote/demote
+    /// oscillation when data shape sits around the cap). Cleared by
+    /// `Reset()`.
+    std::unordered_set<std::string> mEnumPermanentlyKilled;
 
     /// Reusable scratch buffer for `RunEnumPassForAppendBatch`'s
     /// per-column resolved-KeyId list. Kept as a member so the inner

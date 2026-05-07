@@ -193,6 +193,20 @@ signals:
     /// `BytesProducer`. Re-emitted via queued connection to the GUI.
     void sourceStatusChanged(loglib::SourceStatus status);
 
+    /// Emitted from `AppendBatch` whenever the just-applied batch's
+    /// back-fill range covers at least one `Type::enumeration` column
+    /// -- i.e. either an auto-promotion just flipped a column to
+    /// enumeration, or a previously-promoted column's dictionary
+    /// grew. `EnumFilterRule::mSelectedIds` is sized once at rule
+    /// construction against the column's `EnumDictionary` snapshot,
+    /// so a dictionary that grows after the rule was built leaves
+    /// the fast-path bitset partially inert until the rules are
+    /// rebuilt. `MainWindow::UpdateFilters` re-resolves bytes ->
+    /// `EnumValueId`s; we wire the slot only when an enum-type
+    /// filter is currently active to avoid pointless rebuilds in the
+    /// common case.
+    void enumColumnsChanged();
+
 private:
     /// Shared `BeginStreaming` setup: install @p source into `LogTable`
     /// (or nothing for the sync-test entry), reset the model, and arm

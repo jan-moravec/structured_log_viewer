@@ -130,6 +130,24 @@ public:
     /// No-op when @p columnIndex is out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
+    /// Returns true iff @p canonicalKey was added by `Update` or
+    /// `AppendKeys` (i.e. discovered from streamed/observed data) and
+    /// has not since been overridden by a `Load`. Used by the enum
+    /// auto-detector to lock columns whose `Type::any` came from a
+    /// loaded configuration: such columns are not eligible for
+    /// auto-promotion to `Type::enumeration`. Demotion is unaffected
+    /// (a configured `Type::enumeration` column that overflows the
+    /// cap demotes regardless of this flag and stays demoted via
+    /// `LogTable::mEnumPermanentlyKilled`).
+    ///
+    /// The set is transient runtime state; it is not serialised by
+    /// `Save`. A `Save` followed by `Load` round-trip therefore drops
+    /// the auto-discovered status, which is the explicit semantic of
+    /// the lock: persisting `Type::any` in a saved config means the
+    /// user has accepted that column as `any`, so a future session
+    /// must not re-promote it without further data-driven discovery.
+    [[nodiscard]] bool IsAutoDiscoveredColumn(const std::string &canonicalKey) const;
+
     const LogConfiguration &Configuration() const;
 
 private:
@@ -142,6 +160,14 @@ private:
     /// `mCacheStale`.
     mutable std::unordered_set<std::string> mKeysInColumns;
     mutable bool mCacheStale = true;
+
+    /// Set of canonical column keys (`column.keys.front()`) that were
+    /// added by data-driven discovery -- `Update` (synchronous parse)
+    /// or `AppendKeys` (streaming) -- and have not since been
+    /// overridden by `Load`. Read by `IsAutoDiscoveredColumn`.
+    /// Transient: not serialised; cleared by `Load`. See
+    /// `IsAutoDiscoveredColumn` for the locking semantic.
+    std::unordered_set<std::string> mAutoDiscoveredCanonicalKeys;
 };
 
 } // namespace loglib

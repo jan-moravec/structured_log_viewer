@@ -224,7 +224,30 @@ void LogLine::SetValue(KeyId id, const LogValue &value)
 void LogLine::SetValue(KeyId id, const LogValue &value, LogValueTrustView /*trust*/)
 {
     assert(mSource != nullptr);
-    const internal::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
+    SetCompact(id, MakeCompactFromVariant(*mSource, mLineId, value));
+}
+
+void LogLine::SetValue(const std::string &key, const LogValue &value)
+{
+    if (mKeys == nullptr)
+    {
+        throw std::runtime_error("LogLine::SetValue(string): KeyIndex back-pointer is unset");
+    }
+    const KeyId id = mKeys->Find(key);
+    if (id == INVALID_KEY_ID)
+    {
+        throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
+    }
+    SetValue(id, value);
+}
+
+void LogLine::SetEnumDictRef(KeyId id, EnumValueId vid)
+{
+    SetCompact(id, internal::CompactLogValue::MakeDictRef(vid));
+}
+
+void LogLine::SetCompact(KeyId id, internal::CompactLogValue compact)
+{
     auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     uint32_t lo = 0;
@@ -244,48 +267,10 @@ void LogLine::SetValue(KeyId id, const LogValue &value, LogValueTrustView /*trus
     if (lo < size && data[lo].first == id)
     {
         // In-place replacement: hot path for inline timestamp promotion
-        // (`tryPromote` swaps the field's string value for a `TimeStamp`).
-        mValues.Set(lo, compact);
-        return;
-    }
-    mValues.Insert(lo, id, compact);
-}
-
-void LogLine::SetValue(const std::string &key, const LogValue &value)
-{
-    if (mKeys == nullptr)
-    {
-        throw std::runtime_error("LogLine::SetValue(string): KeyIndex back-pointer is unset");
-    }
-    const KeyId id = mKeys->Find(key);
-    if (id == INVALID_KEY_ID)
-    {
-        throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
-    }
-    SetValue(id, value);
-}
-
-void LogLine::SetEnumDictRef(KeyId id, EnumValueId vid)
-{
-    const internal::CompactLogValue compact = internal::CompactLogValue::MakeDictRef(vid);
-    auto *data = mValues.Data();
-    const uint32_t size = mValues.Size();
-    uint32_t lo = 0;
-    uint32_t hi = size;
-    while (lo < hi)
-    {
-        const uint32_t mid = lo + ((hi - lo) / 2U);
-        if (data[mid].first < id)
-        {
-            lo = mid + 1U;
-        }
-        else
-        {
-            hi = mid;
-        }
-    }
-    if (lo < size && data[lo].first == id)
-    {
+        // (`tryPromote` swaps the field's string value for a `TimeStamp`)
+        // and for the enum encode/decode paths
+        // (`SetEnumDictRef` / `DemoteColumnFromEnum`'s back-conversion to
+        // `OwnedString`).
         mValues.Set(lo, compact);
         return;
     }

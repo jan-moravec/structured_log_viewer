@@ -360,6 +360,25 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
+    // `EnumFilterRule::mSelectedIds` is sized once at rule construction
+    // against the column's `EnumDictionary` snapshot. Live-tail
+    // sessions where the dictionary grows past that snapshot, or a
+    // column that auto-promotes to `Type::enumeration` after the rule
+    // was built, leave the fast-path bitset partially inert until the
+    // rule is rebuilt. The model fires `enumColumnsChanged` whenever
+    // an `AppendBatch` back-fill range covers an enum column; we
+    // rebuild the rule list iff at least one enum filter is currently
+    // active so static-file sessions and sessions without enum
+    // filters pay zero cost.
+    connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
+        const bool hasEnumFilter = std::any_of(mFilters.begin(), mFilters.end(), [](const auto &kv) {
+            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::enumeration;
+        });
+        if (hasEnumFilter)
+        {
+            UpdateFilters();
+        }
+    });
 
     // Pull persisted streaming preferences into the model and proxy on
     // startup so the first session honours the user's choices.
@@ -1160,6 +1179,27 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
     {
         const auto &columns = mModel->Configuration().columns;
         const auto rowIndex = static_cast<size_t>(resolvedFilter->row);
+        // Saved enumeration filters with no `filterValues` would build
+        // an `EnumFilterRule` with an empty selection set, which
+        // `Matches` evaluates as "hide everything". The editor's
+        // submit guard prevents users from authoring this state, but
+        // a hand-edited or future-incompatible saved config can still
+        // round-trip through. Drop the filter outright and surface a
+        // status-bar note instead of opening the editor on a
+        // pre-doomed selection.
+        if (rowIndex < columns.size() && resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::enumeration &&
+            resolvedFilter->filterValues.empty())
+        {
+            statusBar()->showMessage(
+                QString("Saved enumeration filter for '%1' had no values selected; ignoring")
+                    .arg(QString::fromStdString(columns[rowIndex].header)),
+                5000
+            );
+            // Clear any prior active rule for this id so the proxy
+            // model isn't left holding a stale one.
+            ClearFilter(filterId);
+            return;
+        }
         if (rowIndex < columns.size())
         {
             const loglib::LogConfiguration::Type columnType = columns[rowIndex].type;
@@ -1174,8 +1214,17 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
                                      columnType != loglib::LogConfiguration::Type::enumeration);
             if (!typesMatch)
             {
+                // Resetting `resolvedFilter` here only stops the editor
+                // from re-opening pre-populated; an *active* rule for
+                // this filter id (e.g. a saved string filter that the
+                // session restored before the column auto-promoted to
+                // enumeration) would still be applying. `ClearFilter`
+                // erases `mFilters[filterId]`, removes the menu entry,
+                // and runs `UpdateFilters()` so the proxy model drops
+                // the stale rule.
+                ClearFilter(filterId);
                 statusBar()->showMessage(
-                    QString("Filter dropped: column '%1' is no longer compatible with the saved filter")
+                    QString("Filter '%1' was removed because the column type changed")
                         .arg(QString::fromStdString(columns[rowIndex].header)),
                     5000
                 );

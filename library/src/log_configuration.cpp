@@ -55,6 +55,14 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
         mCacheStale = true;
+        // The saved configuration wins: any column it carries is
+        // *user-locked* (per the `configLocksAny` rule). Drop the
+        // auto-discovered set so `IsAutoDiscoveredColumn` returns
+        // false for every column the loaded config defines, which
+        // gates `LogTable::RunEnumPassForAppendBatch`'s auto-promote
+        // path. Future `AppendKeys` / `Update` calls add freshly
+        // discovered keys back into the set.
+        mAutoDiscoveredCanonicalKeys.clear();
     }
     else
     {
@@ -115,6 +123,11 @@ void LogConfigurationManager::Update(const LogData &logData)
                 });
             }
             mKeysInColumns.insert(key);
+            // Data-driven discovery: the column was synthesised from
+            // streamed/observed data, so its `Type::any` is *not*
+            // user-locked. The enum auto-detector will consider it for
+            // promotion. See `IsAutoDiscoveredColumn`.
+            mAutoDiscoveredCanonicalKeys.insert(key);
         }
     }
 }
@@ -150,6 +163,11 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
             });
         }
         mKeysInColumns.insert(key);
+        // Data-driven discovery: the column was synthesised from
+        // streamed bytes, so its `Type::any` is *not* user-locked
+        // and the enum auto-detector should consider it for
+        // promotion. See `IsAutoDiscoveredColumn`.
+        mAutoDiscoveredCanonicalKeys.insert(key);
     }
 }
 
@@ -220,6 +238,11 @@ size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::strin
 const LogConfiguration &LogConfigurationManager::Configuration() const
 {
     return mConfiguration;
+}
+
+bool LogConfigurationManager::IsAutoDiscoveredColumn(const std::string &canonicalKey) const
+{
+    return mAutoDiscoveredCanonicalKeys.contains(canonicalKey);
 }
 
 void LogConfigurationManager::EnsureKeyCacheBuilt() const

@@ -325,6 +325,100 @@ TEST_CASE("Save and load configuration with Type::enumeration column", "[log_con
     CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"level", "severity"});
 }
 
+TEST_CASE(
+    "LogConfigurationManager::IsAutoDiscoveredColumn tracks data-driven discovery, cleared by Load",
+    "[log_configuration][lock_any]"
+)
+{
+    // The `configLocksAny` rule: a column whose `Type::any` came from
+    // a loaded configuration is implicitly user-locked, so the enum
+    // auto-detector skips it. Locking is encoded as "not in the
+    // auto-discovered set"; the set is populated by `Update` and
+    // `AppendKeys` and cleared by `Load`.
+
+    SECTION("AppendKeys marks the new key as auto-discovered")
+    {
+        LogConfigurationManager manager;
+        manager.AppendKeys({"level"});
+        CHECK(manager.IsAutoDiscoveredColumn("level"));
+        CHECK_FALSE(manager.IsAutoDiscoveredColumn("severity"));
+    }
+
+    SECTION("Update marks every freshly-added key as auto-discovered")
+    {
+        const TestLogFile testLogFile;
+        auto source = testLogFile.CreateFileLineSource();
+        KeyIndex keys;
+        std::vector<LogLine> lines;
+        lines.emplace_back(LogMap{{"k1", std::string("v1")}, {"k2", std::string("v2")}}, keys, *source, 0);
+        const LogData logData(std::move(source), std::move(lines), std::move(keys));
+
+        LogConfigurationManager manager;
+        manager.Update(logData);
+
+        CHECK(manager.IsAutoDiscoveredColumn("k1"));
+        CHECK(manager.IsAutoDiscoveredColumn("k2"));
+    }
+
+    SECTION("Load clears the auto-discovered set so saved columns are user-locked")
+    {
+        const TestLogConfiguration testCfg;
+        LogConfiguration cfg;
+        cfg.columns.push_back(
+            {.header = "level",
+             .keys = {"level"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::any,
+             .parseFormats = {}}
+        );
+        cfg.columns.push_back(
+            {.header = "service",
+             .keys = {"service"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::any,
+             .parseFormats = {}}
+        );
+        testCfg.Write(cfg);
+
+        LogConfigurationManager manager;
+        // Pre-populate the auto-discovered set with a stale entry to
+        // prove `Load` actively wipes it (rather than just not
+        // adding to it).
+        manager.AppendKeys({"stale"});
+        REQUIRE(manager.IsAutoDiscoveredColumn("stale"));
+
+        manager.Load(testCfg.GetFilePath());
+
+        CHECK_FALSE(manager.IsAutoDiscoveredColumn("level"));
+        CHECK_FALSE(manager.IsAutoDiscoveredColumn("service"));
+        CHECK_FALSE(manager.IsAutoDiscoveredColumn("stale"));
+    }
+
+    SECTION("Post-Load AppendKeys still marks new keys as auto-discovered")
+    {
+        const TestLogConfiguration testCfg;
+        LogConfiguration cfg;
+        cfg.columns.push_back(
+            {.header = "level",
+             .keys = {"level"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::any,
+             .parseFormats = {}}
+        );
+        testCfg.Write(cfg);
+
+        LogConfigurationManager manager;
+        manager.Load(testCfg.GetFilePath());
+        REQUIRE_FALSE(manager.IsAutoDiscoveredColumn("level"));
+
+        manager.AppendKeys({"freshly_streamed"});
+        CHECK(manager.IsAutoDiscoveredColumn("freshly_streamed"));
+        // `Load` did not retroactively mark `level` as auto-discovered;
+        // the lock persists.
+        CHECK_FALSE(manager.IsAutoDiscoveredColumn("level"));
+    }
+}
+
 TEST_CASE("Round-trip LogFilter with Type::enumeration and filterValues", "[log_configuration][enum]")
 {
     LogConfiguration original;

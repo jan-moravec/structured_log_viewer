@@ -1,7 +1,10 @@
 #include "loglib/enum_dictionary.hpp"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cassert>
+#include <cstdio> // for stderr
 #include <utility>
 
 namespace loglib
@@ -109,6 +112,18 @@ void EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
     assert(!mDictionaries.contains(alias) && "EnumDictionaryRegistry::Alias overwrites canonical entry");
     if (mDictionaries.contains(alias))
     {
+        // In release builds the assert above is compiled out; the
+        // early return then silently swallows the misuse and leaves
+        // the registry in a half-aliased state. Surface it on stderr
+        // (mirroring the demote telemetry pattern) so the caller has
+        // a chance to notice the call-site bug. The contract still
+        // holds: the alias index is unchanged and `Find(alias)`
+        // resolves to whatever dictionary `alias` already canonicalises.
+        fmt::print(
+            stderr,
+            "[loglib] EnumDictionaryRegistry::Alias refused: alias key {} already has a canonical dictionary; call Erase first to reparent\n",
+            static_cast<uint32_t>(alias)
+        );
         return;
     }
     mIndex[alias] = canonicalIt->second.get();

@@ -504,6 +504,29 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
              static_cast<int>(LogModelItemDataRole::SortRole),
              static_cast<int>(LogModelItemDataRole::EnumValueRole)}
         );
+
+        // Whenever the back-fill range covers an enum column, rules
+        // built against the prior dictionary snapshot may now be
+        // partially inert: either a column flipped to
+        // `Type::enumeration` for the first time, or its dictionary
+        // grew. `MainWindow` listens to this to call `UpdateFilters`
+        // (which re-resolves bytes -> `EnumValueId`s) when an enum
+        // filter is currently active. The connection on the receiver
+        // side gates the rebuild so file streams that finish parsing
+        // without ever growing an enum dictionary pay zero cost.
+        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        for (int columnIndex = firstColumn; columnIndex <= lastColumn; ++columnIndex)
+        {
+            if (columnIndex < 0 || std::cmp_greater_equal(columnIndex, columns.size()))
+            {
+                continue;
+            }
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::enumeration)
+            {
+                emit enumColumnsChanged();
+                break;
+            }
+        }
     }
 
     // Match the synchronous-parse path's `LogConfigurationManager::Update`

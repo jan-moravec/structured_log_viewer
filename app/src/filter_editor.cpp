@@ -56,6 +56,10 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mEnumSelectAllButton = new QPushButton("Select All", this);
     mEnumClearAllButton = new QPushButton("Clear All", this);
     mEnumSelectionCount = new QLabel("0 of 0 selected", this);
+    mEnumEmptyPlaceholder = new QLabel("No values observed for this column yet.", this);
+    mEnumEmptyPlaceholder->setAlignment(Qt::AlignCenter);
+    mEnumEmptyPlaceholder->setWordWrap(true);
+    mEnumEmptyPlaceholder->hide();
 
     mOkButton = new QPushButton("Ok", this);
     mCancelButton = new QPushButton("Cancel", this);
@@ -262,6 +266,11 @@ void FilterEditor::SetupLayout()
     enumActionLayout->addWidget(mEnumSelectionCount);
     thirdPageLayout->addLayout(enumActionLayout);
     thirdPageLayout->addWidget(mEnumValuesView);
+    // Visible only when the column's dictionary is empty; see
+    // `PopulateEnumValues`. The placeholder is hidden by default and
+    // toggled with `mEnumValuesView` so the third page never shows
+    // both.
+    thirdPageLayout->addWidget(mEnumEmptyPlaceholder);
     thirdPage->setLayout(thirdPageLayout);
 
     mStackedWidget->addWidget(firstPage);
@@ -380,6 +389,11 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(0);
         break;
     }
+    // Refresh the empty-picker / OK-enabled gating after every page
+    // swap. `PopulateEnumValues` already does this for the enum page,
+    // but for non-enum columns we still need to clear the disabled
+    // OK button if the editor was previously on an empty enum page.
+    UpdateEnumSelectionCount();
 }
 
 void FilterEditor::PopulateEnumValues(int columnIndex)
@@ -415,8 +429,16 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
             break;
         }
     }
-    if (dict == nullptr)
+    if (dict == nullptr || dict->Empty())
     {
+        // No values observed for this column yet -- show the
+        // placeholder, hide the picker, and disable OK so the user
+        // can't submit an empty (i.e. "hide everything") enum filter.
+        // `UpdateEnumSelectionCount` rewires both the placeholder
+        // visibility and the OK enabled state every call, so a future
+        // `PopulateEnumValues` invoked after the dictionary grows
+        // (e.g. live-tail batch landed and the user re-opens the
+        // editor) restores the picker.
         UpdateEnumSelectionCount();
         return;
     }
@@ -457,6 +479,37 @@ void FilterEditor::UpdateEnumSelectionCount()
         }
     }
     mEnumSelectionCount->setText(QString("%1 of %2 selected").arg(selected).arg(total));
+
+    // Empty-picker UX: when the third (enum) page is active and the
+    // dictionary is empty, swap the picker for the placeholder and
+    // disable OK so the user can't submit a "hide everything" rule.
+    // For non-empty dictionaries OK gates on `selected > 0` -- the
+    // existing submit-time guard still catches click-OK-with-zero,
+    // but disabling proactively gives feedback at the picker level.
+    // Other pages (string / time) leave OK enabled and rely on
+    // `OnOkClicked`'s per-page validation.
+    const bool onEnumPage = mStackedWidget->currentIndex() == 2;
+    if (onEnumPage)
+    {
+        const bool empty = total == 0;
+        mEnumEmptyPlaceholder->setVisible(empty);
+        mEnumValuesView->setVisible(!empty);
+        mEnumSearchEdit->setEnabled(!empty);
+        mEnumSelectAllButton->setEnabled(!empty);
+        mEnumClearAllButton->setEnabled(!empty);
+        mOkButton->setEnabled(!empty && selected > 0);
+    }
+    else
+    {
+        // Non-enum pages keep OK enabled; the page-specific validation
+        // in `OnOkClicked` handles empty input.
+        mOkButton->setEnabled(true);
+        mEnumEmptyPlaceholder->hide();
+        mEnumValuesView->show();
+        mEnumSearchEdit->setEnabled(true);
+        mEnumSelectAllButton->setEnabled(true);
+        mEnumClearAllButton->setEnabled(true);
+    }
 }
 
 void FilterEditor::ClearWarningStyles()

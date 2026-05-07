@@ -74,6 +74,14 @@ private:
     QPushButton *mEnumSelectAllButton;
     QPushButton *mEnumClearAllButton;
     QLabel *mEnumSelectionCount;
+    /// Shown in place of the picker when the column's
+    /// `EnumDictionary` is empty (or the column is configured as
+    /// `Type::enumeration` but no values have been observed yet --
+    /// can happen on a freshly-opened live-tail before the first
+    /// batch lands). The OK button is disabled while the placeholder
+    /// is visible; `UpdateEnumSelectionCount` re-enables it once the
+    /// user has at least one value checked.
+    QLabel *mEnumEmptyPlaceholder;
 
     QPushButton *mOkButton;
     QPushButton *mCancelButton;

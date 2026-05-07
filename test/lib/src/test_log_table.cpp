@@ -1246,6 +1246,68 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "LogTable::AppendBatch -- enum auto-detection observes long (>SSO) string values without dangling reads",
+    "[log_table][append_batch][enum][regression]"
+)
+{
+    // Regression for a use-after-free in `RunEnumPassForAppendBatch`:
+    // the inner loop used to materialise `LogValue` inside the loop
+    // body, then form a `string_view` over its `OwnedString` bytes,
+    // then `break` out of the loop -- which destroyed the `LogValue`
+    // and freed the heap-allocated `std::string` *before*
+    // `tracker.Observe(*bytes)` ran. SSO hid this for short fixture
+    // values like "info"/"warn" because the `std::string`'s buffer
+    // was inline; values >15 bytes land on the heap and ASan/HWASan
+    // catch the dangling read.
+    const TestLogFile testFile("enum_promote_long_strings.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    // Every value is well above the libstdc++/libc++/MSVC STL SSO
+    // threshold (≈15 bytes) so each `Materialise` allocates on the
+    // heap and the bug, if reintroduced, is reachable.
+    const std::vector<std::string> levels = {
+        "long-component-name-alpha-22",
+        "long-component-name-beta-23",
+        "long-component-name-gamma-24",
+        "long-component-name-delta-25",
+    };
+    for (const auto &v : levels)
+    {
+        REQUIRE(v.size() > 15);
+    }
+
+    // Drive the tracker past `ENUM_PROMOTION_MIN_ROWS` so the column
+    // promotes; the regression specifically lives in the
+    // `tracker.Observe(*bytes)` path executed for each pre-promotion
+    // row.
+    constexpr size_t ROWS = 320;
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, ROWS, true));
+
+    REQUIRE(table.RowCount() == ROWS);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    CHECK(dict->Size() == levels.size());
+
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const LogValue v = table.GetValue(row, 0);
+        const auto sv = AsStringView(v);
+        REQUIRE(sv.has_value());
+        CHECK(*sv == levels[row % levels.size()]);
+    }
+}
+
+TEST_CASE(
     "LogTable::AppendBatch -- pre-configured Type::enumeration column encodes incoming rows without re-walking",
     "[log_table][append_batch][enum]"
 )
@@ -1375,6 +1437,145 @@ TEST_CASE(
     REQUIRE(table.LastBackfillRange().has_value());
     CHECK(table.LastBackfillRange()->first == 0);
     CHECK(table.LastBackfillRange()->second == 0);
+}
+
+TEST_CASE(
+    "LogTable -- Type::any column loaded from saved configuration is locked from auto-promotion",
+    "[log_table][append_batch][enum][lock_any][regression]"
+)
+{
+    // The `configLocksAny` rule: a `Type::any` column that came from
+    // a *saved* configuration is implicitly locked. The auto-detector
+    // skips it even when the data shape (low cardinality, plenty of
+    // rows) would otherwise trigger promotion. This protects users
+    // who deliberately preserved a column as `any` in their saved
+    // config.
+    const TestLogFile testFile("enum_locked_any.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::any,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+    REQUIRE_FALSE(mgr.IsAutoDiscoveredColumn("level"));
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    // 320 rows over 4 distinct values; well past the
+    // `ENUM_PROMOTION_MIN_ROWS` and `cap` thresholds. An
+    // auto-discovered column with this shape would have promoted
+    // long before the final batch.
+    constexpr size_t ROWS = 320;
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "debug"}, 1, ROWS, false));
+
+    REQUIRE(table.RowCount() == ROWS);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
+}
+
+TEST_CASE(
+    "LogTable -- multi-key column kill state is keyed on the configured canonical key, not the first-resolved KeyId",
+    "[log_table][append_batch][enum][multi_key][kill_once][regression]"
+)
+{
+    // Regression for an unstable tracker / kill key. The auto-detector
+    // used to key `mEnumTrackers` and `mEnumPermanentlyKilled` on
+    // `mScratchResolvedKeyIds.front()` -- the first KeyId that
+    // happened to be present in the current batch -- and demotion
+    // killed `keyIds.front()`, the first *resolved* KeyId. For a
+    // multi-key column where keys arrive in different batches, that
+    // key flips between batches, so a column killed via the alias key
+    // could get a fresh tracker (and re-promote) once the canonical
+    // key turned up in a later batch.
+    //
+    // The fix re-keys both maps on `column.keys.front()` -- the first
+    // *configured* key string, which is stable for the column's
+    // lifetime. This test sets up a multi-key configured enum column,
+    // demotes it via cap overflow on the alias key only, then feeds
+    // the canonical key in a later batch and asserts the column stays
+    // `Type::any`.
+    //
+    // (Note: with the `configLocksAny` rule from Phase 2.2 also in
+    // place, a column whose `Type::any` came from a loaded config is
+    // additionally locked, so a re-promotion would be blocked even
+    // without the kill-key fix. This test still catches a regression
+    // in *either* fix because both must be intact for the demotion to
+    // stick across out-of-order multi-key arrivals.)
+    const TestLogFile testFile("enum_multi_key_kill_stable.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         // Canonical key is "level"; "severity" is the alias. The
+         // tracker / kill key must be the canonical one regardless of
+         // arrival order.
+         .keys = {"level", "severity"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    constexpr uint16_t TEST_CAP = 4;
+    table.SetEnumValueCap(TEST_CAP);
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+
+    // Batch 1: only the alias key `severity` arrives, with `cap + 1`
+    // distinct values. The first encode pass tries to grow the
+    // dictionary, can't fit the (cap+1)th value, and demotes the
+    // column.
+    std::vector<std::string> overflowValues;
+    overflowValues.reserve(TEST_CAP + 1);
+    for (uint16_t i = 0; i < TEST_CAP + 1; ++i)
+    {
+        overflowValues.emplace_back("sev-" + std::to_string(i));
+    }
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "severity", overflowValues, 1, TEST_CAP + 1, true));
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+
+    // Batch 2: the canonical key `level` arrives for the first time,
+    // with strictly fewer than `cap` distinct values. Without the fix,
+    // the tracker was keyed on `mScratchResolvedKeyIds.front()` --
+    // which now resolves to the `level` KeyId -- and the kill set
+    // contained only the `severity` KeyId, so the column would be
+    // observed afresh, hit `ENUM_PROMOTION_MIN_ROWS`, and re-promote.
+    // With the fix, the kill set holds the canonical-key string
+    // `"level"` so the early `mEnumPermanentlyKilled.contains` check
+    // skips this column on every subsequent batch.
+    constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
+    std::vector<std::string> fewLevelValues = {"info", "warn"};
+    table.AppendBatch(BuildEnumBatch(
+        keys, *sourcePtr, "level", fewLevelValues, TEST_CAP + 2, MIN_ROWS_FOR_PROMOTION + 1, /*announceNewKey=*/true
+    ));
+
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
 }
 
 TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table][reset][enum]")
