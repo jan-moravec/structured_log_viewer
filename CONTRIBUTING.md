@@ -31,6 +31,7 @@ Thanks for your interest in contributing! This document is the developer referen
   - [Acceptance bar](#acceptance-bar)
 - [Code style and pre-commit](#code-style-and-pre-commit)
 - [Pull requests](#pull-requests)
+- [Repository security (maintainers)](#repository-security-maintainers)
 - [Release process](#release-process)
   - [Steps](#steps)
   - [Verifying a release](#verifying-a-release)
@@ -601,6 +602,29 @@ pre-commit run --all-files
 ```
 
 The pinned tool versions live in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
+
+## Repository security (maintainers)
+
+These settings live in GitHub, not in git. They improve [OpenSSF Scorecard](https://securityscorecards.dev/) governance checks when enabled.
+
+### Branch protection on `main`
+
+In **Settings → Branches → Branch protection rules** for `main`, consider enabling:
+
+- Require a pull request before merging
+- Require approvals (at least one reviewer other than the author, if you want a non-zero **Code-Review** signal on Scorecard)
+- Dismiss stale pull request approvals when new commits are pushed
+- Require status checks to pass before merging (include the jobs from [`.github/workflows/build.yml`](.github/workflows/build.yml) and CodeQL)
+- Require branches to be up to date before merging
+- Require conversation resolution before merging (optional)
+- Include administrators
+- Require code owner reviews (optional; requires [`.github/CODEOWNERS`](.github/CODEOWNERS) and matching team access)
+
+### OpenSSF Best Practices badge
+
+1. Open [bestpractices.dev — add project](https://www.bestpractices.dev/en/projects/new) and register this repository.
+1. Work through the criteria questionnaire until you reach at least the passing tier you care about.
+1. Copy the HTML/Markdown badge snippet from the project dashboard into [`README.md`](README.md) next to the other badges (replace the shields.io placeholder badge once the project exists).
 
 ## Pull requests
 

@@ -3,6 +3,7 @@
 [![Build](https://github.com/jan-moravec/structured_log_viewer/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/jan-moravec/structured_log_viewer/actions/workflows/build.yml)
 [![Coverage](https://codecov.io/gh/jan-moravec/structured_log_viewer/branch/main/graph/badge.svg)](https://codecov.io/gh/jan-moravec/structured_log_viewer)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/jan-moravec/structured_log_viewer/badge)](https://securityscorecards.dev/viewer/?uri=github.com/jan-moravec/structured_log_viewer)
+[![OpenSSF Best Practices](https://img.shields.io/badge/OpenSSF%20Best%20Practices-track%20on%20bestpractices.dev-blue)](https://www.bestpractices.dev/en/projects/new)
 [![GitHub Releases](https://img.shields.io/github/release/jan-moravec/structured_log_viewer.svg)](https://github.com/jan-moravec/structured_log_viewer/releases)
 ![Downloads](https://img.shields.io/github/downloads/jan-moravec/structured_log_viewer/total)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-blue)

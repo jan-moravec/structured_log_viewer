@@ -1,0 +1,2 @@
+# Default owner for review (used when branch protection requires CODEOWNERS review).
+* @jan-moravec
