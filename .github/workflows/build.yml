@@ -30,18 +30,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Set up Python
         id: python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.x"
 
       - name: Cache pre-commit environments
         # Resolved Python version in the key so a runner-image 3.12 -> 3.13
         # bump invalidates venvs with stale interpreter paths.
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -50,7 +50,7 @@ jobs:
             pre-commit-${{ runner.os }}-
 
       - name: Install pre-commit
-        run: pip install pre-commit
+        run: pip install pre-commit==4.2.0
 
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure --color=always
@@ -79,24 +79,24 @@ jobs:
         mode: [asan-ubsan, tsan, coverage]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Install Clang 22 + LLVM tools
         # llvm.sh 22 all installs clang-22, clang-tidy-22, llvm-profdata/cov-22,
         # sanitizer runtimes, libc++-22-dev. The compiler is pinned via the
         # preset's CMAKE_C(XX)_COMPILER, not apt's default `clang` symlink.
+        # Script is vendored under scripts/ci so CI does not downloadThenRun.
         run: |
           set -euo pipefail
-          wget --quiet https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 22 all
+          chmod +x scripts/ci/llvm.sh
+          sudo ./scripts/ci/llvm.sh 22 all
           clang-22 --version
           clang-tidy-22 --version
           llvm-cov-22 --version
           which clang-tidy-diff-22.py
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@d325aaf2a8baeeda41ad0b5d39f84a6af9bcf005 # v4.3.0
         with:
           version: ${{ env.QT_VERSION }}
           host: "linux"
@@ -105,7 +105,7 @@ jobs:
           cache: true
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@v4.3.2
+        uses: lukka/get-cmake@7bfc9baacbbdcb5e37957ad05c3546b3e222be3c # v4.3.2
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libxcb-cursor0: offscreen QPA.
@@ -204,7 +204,7 @@ jobs:
       EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Install newer GCC
         run: |
@@ -215,7 +215,7 @@ jobs:
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@d325aaf2a8baeeda41ad0b5d39f84a6af9bcf005 # v4.3.0
         with:
           version: ${{ env.QT_VERSION }}
           host: "linux"
@@ -224,7 +224,7 @@ jobs:
           cache: true
 
       - name: Install CMake
-        uses: lukka/get-cmake@v4.3.2
+        uses: lukka/get-cmake@7bfc9baacbbdcb5e37957ad05c3546b3e222be3c # v4.3.2
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
@@ -315,7 +315,7 @@ jobs:
       - name: Upload artifact
         # No `if: always()`: with `if-no-files-found: error` it would pile a
         # second failure on top of an earlier build failure.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.APP_NAME }}-linux
           path: |
@@ -326,7 +326,7 @@ jobs:
           if-no-files-found: error
 
       - name: Release binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2.4.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
@@ -346,10 +346,10 @@ jobs:
       OPENSSL_VERSION: "3.6.2"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@d325aaf2a8baeeda41ad0b5d39f84a6af9bcf005 # v4.3.0
         with:
           version: ${{ env.QT_VERSION }}
           host: "windows"
@@ -358,12 +358,12 @@ jobs:
           cache: true
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@v4.3.2
+        uses: lukka/get-cmake@7bfc9baacbbdcb5e37957ad05c3546b3e222be3c # v4.3.2
 
       - name: Set up MSVC environment
         # vswhere-based discovery so we don't hard-code a VS edition path
         # (the hosted image has flipped Community <-> Enterprise before).
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
 
@@ -464,7 +464,7 @@ jobs:
 
       - name: Upload artifact
         # See build-linux for why no `if: always()` here.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.APP_NAME }}-windows
           path: |
@@ -473,7 +473,7 @@ jobs:
           if-no-files-found: error
 
       - name: Release binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2.4.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
@@ -488,10 +488,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@d325aaf2a8baeeda41ad0b5d39f84a6af9bcf005 # v4.3.0
         with:
           version: ${{ env.QT_VERSION }}
           host: "mac"
@@ -500,7 +500,7 @@ jobs:
           cache: true
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@v4.3.2
+        uses: lukka/get-cmake@7bfc9baacbbdcb5e37957ad05c3546b3e222be3c # v4.3.2
 
       - name: Install OpenSSL
         # No-op when present. Keg prefix varies by arch; resolved next step.
@@ -576,7 +576,7 @@ jobs:
 
       - name: Upload artifact
         # See build-linux for why no `if: always()` here.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.APP_NAME }}-macos
           path: |
@@ -585,7 +585,7 @@ jobs:
           if-no-files-found: error
 
       - name: Release binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2.4.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
