@@ -196,6 +196,39 @@ TEST_CASE("EnumDictionaryRegistry::Alias makes multiple KeyIds share storage", "
     CHECK(registry.Find(kVerbosity) == nullptr);
 }
 
+TEST_CASE("EnumDictionaryRegistry::GetOrInsert honours existing alias mapping", "[enum_dictionary]")
+{
+    // Regression: pre-fix, `GetOrInsert(alias_key)` consulted only
+    // `mDictionaries` (canonicals) and so silently created a new
+    // dictionary, clobbering `mIndex[alias_key]` -> canonical's dict
+    // with a fresh entry. That left the canonical entry's `aliases`
+    // list still pointing at the alias key; a later `Erase(canonical)`
+    // would then nuke the freshly-created dict via the stale alias
+    // record.
+    EnumDictionaryRegistry registry;
+
+    constexpr KeyId kLevel = 1;
+    constexpr KeyId kSeverity = 2;
+
+    EnumDictionary &canonical = registry.GetOrInsert(kLevel);
+    static_cast<void>(canonical.Insert("info"));
+    REQUIRE(registry.Alias(kLevel, kSeverity));
+
+    // Calling `GetOrInsert` on the alias key must return the canonical
+    // dictionary, not a brand-new one.
+    EnumDictionary &resolved = registry.GetOrInsert(kSeverity);
+    CHECK(&resolved == &canonical);
+    CHECK(resolved.Size() == 1);
+    CHECK(resolved.Find("info") != INVALID_ENUM_VALUE_ID);
+
+    // Erasing the canonical must drop the alias too (only one
+    // dictionary ever existed).
+    registry.Erase(kLevel);
+    CHECK(registry.Find(kLevel) == nullptr);
+    CHECK(registry.Find(kSeverity) == nullptr);
+    CHECK(registry.Empty());
+}
+
 TEST_CASE("EnumDictionaryRegistry::Clear wipes everything", "[enum_dictionary]")
 {
     EnumDictionaryRegistry registry;

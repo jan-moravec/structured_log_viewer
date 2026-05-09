@@ -289,9 +289,7 @@ private:
     /// (aliases share its dictionary). Updates @p health with
     /// `totalSlots` / `longValueSlots` / `wrongTypeSlots`; returns
     /// false on hard dictionary-cap overflow.
-    bool EncodeColumnRange(
-        std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
-    );
+    bool EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health);
 
     LogData mData;
     LogConfigurationManager mConfiguration;

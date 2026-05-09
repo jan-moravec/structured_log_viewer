@@ -190,7 +190,11 @@ bool LogTable::EnumColumnHealth::ShouldDemote(double tolerance, size_t minSample
     {
         return false;
     }
-    const double bad = static_cast<double>(longValueSlots + wrongTypeSlots);
+    // Sum in `double` to dodge any `size_t` overflow if the budgets
+    // ever grow pathological (the addition is otherwise safe today,
+    // but the type allows a wrap that the threshold check could not
+    // detect).
+    const double bad = static_cast<double>(longValueSlots) + static_cast<double>(wrongTypeSlots);
     return bad > tolerance * static_cast<double>(totalSlots);
 }
 
@@ -316,10 +320,15 @@ void LogTable::Update(LogData &&data)
     }
     mData.Merge(std::move(data));
     RewireSourceRegistries();
-    RefreshColumnKeyIds();
-    // Must run after `mConfiguration.Update(data)` so any newly
-    // grown enum columns get a registry entry before the encode pass.
+    // Order matches the constructor: snapshot the enum keys first so
+    // `GetOrInsert` registers any not-yet-seen `Type::enumeration`
+    // keys into `mData.Keys()`, then resolve column keys against the
+    // now-complete `KeyIndex`. Resolving first would leave
+    // `mColumnKeyIds` populated with `INVALID_KEY_ID` for columns
+    // whose configured keys had not yet appeared in the data, and
+    // the immediately-following enum pass would then skip them.
     RefreshSnapshotEnumKeys();
+    RefreshColumnKeyIds();
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(oldLineCount, firstBackfilled, lastBackfilled);
@@ -971,9 +980,14 @@ void LogTable::RunEnumPassForAppendBatch(
         // removes it from `IsEnumPassEligible` for the next batch --
         // the type itself enforces kill-once-stay-killed.
         const std::string &trackerKey = column.header;
-        // Well-known threshold still consults the canonical key
-        // (the JSON field name), not the display header.
-        const bool wellKnown = IsWellKnownEnumKey(column.keys.front());
+        // Well-known threshold consults every JSON field name in
+        // the alias list (not just the first), so that reordering
+        // `column.keys` to put a vendor-specific synonym first
+        // (`["log_level", "level"]`) does not drop the column out
+        // of the well-known fast path.
+        const bool wellKnown = std::any_of(column.keys.begin(), column.keys.end(), [](const std::string &key) {
+            return IsWellKnownEnumKey(key);
+        });
         const size_t promotionMinRows =
             mIsStreaming ? STREAM_PROMOTION_MIN_ROWS
                          : (wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS);

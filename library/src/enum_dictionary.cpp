@@ -39,9 +39,24 @@ EnumValueId EnumDictionary::Insert(std::string_view bytes)
     // avoids storing the same bytes twice (once in the value vector,
     // once as the index key) which the old vector + robin_map<string,..>
     // pair did.
+    //
+    // Strong exception guarantee: if the index insert throws (e.g.
+    // `bad_alloc` on a robin_map rehash) we roll back the value
+    // append so `mValues` and `mIndex` stay in lock-step. Without
+    // this rollback an OOM mid-`Insert` would leave the value
+    // findable via `Resolve` but invisible to `Find`, and `Size()`
+    // would silently disagree with the index population.
     mValues.emplace_back(bytes);
-    const std::string_view key{mValues.back()};
-    mIndex.emplace(key, id);
+    try
+    {
+        const std::string_view key{mValues.back()};
+        mIndex.emplace(key, id);
+    }
+    catch (...)
+    {
+        mValues.pop_back();
+        throw;
+    }
     return id;
 }
 
@@ -80,9 +95,16 @@ const EnumDictionary *EnumDictionaryRegistry::Find(KeyId key) const noexcept
 
 EnumDictionary &EnumDictionaryRegistry::GetOrInsert(KeyId key, uint16_t cap)
 {
-    if (auto it = mDictionaries.find(key); it != mDictionaries.end())
+    // Consult `mIndex` (canonicals + aliases) first so calling
+    // `GetOrInsert(alias_key)` returns the canonical's dictionary
+    // instead of clobbering the alias mapping with a fresh entry.
+    // Pre-fix this branch silently broke aliasing when the canonical
+    // key fell out of the resolved-keys list (e.g. a column whose
+    // canonical key dropped to `INVALID_KEY_ID` while the alias was
+    // still alive in the data).
+    if (auto it = mIndex.find(key); it != mIndex.end())
     {
-        return *it->second.dict;
+        return *it->second;
     }
     DictionaryEntry entry;
     entry.dict = std::make_unique<EnumDictionary>(cap);

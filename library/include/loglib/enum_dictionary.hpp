@@ -125,11 +125,7 @@ private:
     // lookup keeps `string_view` queries allocation-free; the keys
     // here point into `mValues`'s stable bytes (one source of truth
     // per interned value).
-    tsl::robin_map<
-        std::string_view,
-        EnumValueId,
-        internal::TransparentStringHash,
-        internal::TransparentStringEqual>
+    tsl::robin_map<std::string_view, EnumValueId, internal::TransparentStringHash, internal::TransparentStringEqual>
         mIndex;
     uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };

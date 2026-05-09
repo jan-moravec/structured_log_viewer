@@ -32,10 +32,9 @@ bool IsTimestampKey(const std::string &key)
     static const std::vector<std::string> TIMESTAMP_KEYS = {
         "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
     };
-    return std::ranges::any_of(
-        TIMESTAMP_KEYS,
-        [lowerKey = ToLower(key)](const std::string &value) { return (lowerKey == value); }
-    );
+    return std::ranges::any_of(TIMESTAMP_KEYS, [lowerKey = ToLower(key)](const std::string &value) {
+        return (lowerKey == value);
+    });
 }
 
 // Glaze 7.x: indentation_width moved off of glz::opts into an inheritable option.

@@ -48,12 +48,10 @@ protected:
             // a `LogModel::data()` round-trip per (row, rule).
             // `EnumFilterRule` uses the bitset fast path when the
             // slot is `DictRef`-encoded.
-            const QVariant displayOrSort = rule->NeedsDisplayOrSort()
-                                               ? sourceModel()->data(index, LogModelItemDataRole::SortRole)
-                                               : QVariant{};
-            const QVariant enumValueId = rule->NeedsEnumValueId()
-                                             ? sourceModel()->data(index, LogModelItemDataRole::EnumValueRole)
-                                             : QVariant{};
+            const QVariant displayOrSort =
+                rule->NeedsDisplayOrSort() ? sourceModel()->data(index, LogModelItemDataRole::SortRole) : QVariant{};
+            const QVariant enumValueId =
+                rule->NeedsEnumValueId() ? sourceModel()->data(index, LogModelItemDataRole::EnumValueRole) : QVariant{};
             if (!rule->Matches(displayOrSort, enumValueId))
             {
                 return false;
