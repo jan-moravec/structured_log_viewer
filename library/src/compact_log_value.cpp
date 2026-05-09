@@ -89,7 +89,7 @@ CompactLogValue CompactLogValue::MakeTimestamp(TimeStamp value) noexcept
     return v;
 }
 
-LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) const
+LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, KeyId keyId) const
 {
     switch (tag)
     {
@@ -121,10 +121,26 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) c
         return LogValue{std::string(bytes)};
     }
     case CompactTag::DictRef:
-        // DictRef goes through `MaterialiseDictRef`; the caller
-        // (`LogLine::GetValue` / `IndexedValues` / `Values`)
-        // dispatches on tag.
-        return LogValue{std::monostate{}};
+    {
+        if (source == nullptr || keyId == INVALID_KEY_ID)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const EnumDictionaryRegistry *registry = source->EnumDictionaries();
+        if (registry == nullptr)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const EnumDictionary *dict = registry->Find(keyId);
+        if (dict == nullptr)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(payload));
+        // `string_view` because the dictionary's bytes are stable for
+        // its lifetime and every consumer treats this as zero-copy.
+        return LogValue{bytes};
+    }
     case CompactTag::Int64:
         return LogValue{static_cast<int64_t>(payload)};
     case CompactTag::Uint64:
@@ -137,28 +153,6 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) c
         return LogValue{TimeStamp{std::chrono::microseconds{static_cast<int64_t>(payload)}}};
     }
     return LogValue{std::monostate{}};
-}
-
-LogValue CompactLogValue::MaterialiseDictRef(const LineSource *source, KeyId keyId) const
-{
-    if (tag != CompactTag::DictRef || source == nullptr || keyId == INVALID_KEY_ID)
-    {
-        return LogValue{std::monostate{}};
-    }
-    const EnumDictionaryRegistry *registry = source->EnumDictionaries();
-    if (registry == nullptr)
-    {
-        return LogValue{std::monostate{}};
-    }
-    const EnumDictionary *dict = registry->Find(keyId);
-    if (dict == nullptr)
-    {
-        return LogValue{std::monostate{}};
-    }
-    const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(payload));
-    // `string_view` because the dictionary's bytes are stable for its
-    // lifetime and every consumer treats this as zero-copy.
-    return LogValue{bytes};
 }
 
 CompactLogValue ToCompactLogValue(

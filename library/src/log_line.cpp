@@ -207,16 +207,6 @@ std::optional<std::string_view> LogLine::PeekStringView(KeyId id) const noexcept
     return PeekStringView(*compact);
 }
 
-std::optional<internal::CompactTag> LogLine::PeekTag(KeyId id) const noexcept
-{
-    const internal::CompactLogValue *compact = FindCompact(id);
-    if (compact == nullptr)
-    {
-        return std::nullopt;
-    }
-    return compact->tag;
-}
-
 std::optional<std::string_view> LogLine::PeekStringView(const internal::CompactLogValue &slot) const noexcept
 {
     if (mSource == nullptr)
@@ -246,14 +236,7 @@ LogValue LogLine::GetValue(KeyId id) const
     {
         return LogValue{std::monostate{}};
     }
-    // Tag-dispatch keeps the hot path (no enum columns) free of the
-    // `KeyId` argument and the registry-lookup branch — see the
-    // comment on `CompactLogValue::Materialise` for context.
-    if (compact->tag == internal::CompactTag::DictRef)
-    {
-        return compact->MaterialiseDictRef(mSource, id);
-    }
-    return compact->Materialise(mSource, mLineId);
+    return compact->Materialise(mSource, mLineId, id);
 }
 
 LogValue LogLine::GetValue(const std::string &key) const
@@ -355,14 +338,7 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        if (entry.second.tag == internal::CompactTag::DictRef)
-        {
-            result.emplace_back(entry.first, entry.second.MaterialiseDictRef(mSource, entry.first));
-        }
-        else
-        {
-            result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId));
-        }
+        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId, entry.first));
     }
     return result;
 }
@@ -383,10 +359,9 @@ LogMap LogLine::Values() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        LogValue materialised = entry.second.tag == internal::CompactTag::DictRef
-                                    ? entry.second.MaterialiseDictRef(mSource, entry.first)
-                                    : entry.second.Materialise(mSource, mLineId);
-        snapshot.emplace(std::string(mKeys->KeyOf(entry.first)), std::move(materialised));
+        snapshot.emplace(
+            std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId, entry.first)
+        );
     }
     return snapshot;
 }

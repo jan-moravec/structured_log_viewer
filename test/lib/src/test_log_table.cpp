@@ -2042,9 +2042,10 @@ TEST_CASE(
     "[log_table][append_batch][enum][routing][integer]"
 )
 {
-    // The candidate scan counts `Int64`/`UInt64` tags via
-    // `LogLine::PeekTag` so the no-string bail can flip the column
-    // straight to the semantically-correct numeric terminal type.
+    // The candidate scan counts `Int64`/`UInt64` tags via the slot's
+    // `CompactTag` (single `LogLine::FindCompact` walk) so the
+    // no-string bail can flip the column straight to the
+    // semantically-correct numeric terminal type.
     const TestLogFile testFile("enum_no_string_int.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));

@@ -247,9 +247,6 @@ LogTable::LogTable(LogTable &&other) noexcept
       mEnumValueMaxLen(other.mEnumValueMaxLen),
       mEnumTrackers(std::move(other.mEnumTrackers)),
       mIsStreaming(other.mIsStreaming),
-      mScratchResolvedKeyIds(std::move(other.mScratchResolvedKeyIds)),
-      mScratchEnumActiveColumns(std::move(other.mScratchEnumActiveColumns)),
-      mScratchEnumCandidateColumns(std::move(other.mScratchEnumCandidateColumns)),
       mLastBackfillRange(std::move(other.mLastBackfillRange))
 {
     other.mIsStreaming = false;
@@ -274,9 +271,6 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mEnumTrackers = std::move(other.mEnumTrackers);
     mIsStreaming = other.mIsStreaming;
     other.mIsStreaming = false;
-    mScratchResolvedKeyIds = std::move(other.mScratchResolvedKeyIds);
-    mScratchEnumActiveColumns = std::move(other.mScratchEnumActiveColumns);
-    mScratchEnumCandidateColumns = std::move(other.mScratchEnumCandidateColumns);
     mLastBackfillRange = std::move(other.mLastBackfillRange);
     // Sources cached a pointer to `other.mEnumDictionaries`; rebind.
     RewireSourceRegistries();
@@ -311,7 +305,6 @@ void LogTable::Reset()
     mEnumDictionaries.Clear();
     mEnumTrackers.clear();
     mIsStreaming = false;
-    mScratchResolvedKeyIds.clear();
     mLastBackfillRange.reset();
     RefreshColumnKeyIds();
 }
@@ -747,7 +740,10 @@ void LogTable::RefreshSnapshotEnumKeys()
     // Pre-create empty dictionaries for every configured enum column
     // so the encode pass treats their slots as already-promoted
     // targets. Multi-key columns share one canonical dictionary via
-    // `Alias`.
+    // `Alias`. Idempotent: snapshot, promotion, and re-promotion
+    // paths all route through this same canonical-key + alias
+    // pattern so `EncodeColumnRange`'s hot loop can skip the per-row
+    // alias bookkeeping.
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
     {
@@ -755,28 +751,19 @@ void LogTable::RefreshSnapshotEnumKeys()
         {
             continue;
         }
-        EnsureColumnDictionary(column);
-    }
-}
-
-void LogTable::EnsureColumnDictionary(const LogConfiguration::Column &column)
-{
-    // Allocate the canonical dictionary and wire alias keys onto it.
-    // Idempotent: snapshot, promotion, and re-promotion paths all
-    // route through here so `EncodeColumnRange`'s hot loop can skip
-    // the per-row alias bookkeeping.
-    std::optional<KeyId> canonical;
-    for (const std::string &key : column.keys)
-    {
-        const KeyId id = mData.Keys().GetOrInsert(key);
-        if (!canonical.has_value())
+        std::optional<KeyId> canonical;
+        for (const std::string &key : column.keys)
         {
-            (void)mEnumDictionaries.GetOrInsert(id, mEnumValueCap);
-            canonical = id;
-        }
-        else
-        {
-            mEnumDictionaries.Alias(*canonical, id);
+            const KeyId id = mData.Keys().GetOrInsert(key);
+            if (!canonical.has_value())
+            {
+                (void)mEnumDictionaries.GetOrInsert(id, mEnumValueCap);
+                canonical = id;
+            }
+            else
+            {
+                mEnumDictionaries.Alias(*canonical, id);
+            }
         }
     }
 }
@@ -857,42 +844,11 @@ void LogTable::RunEnumPassForAppendBatch(
     // `floating` / `number` / `any` produced by previous bail paths)
     // is skipped automatically.
     //
-    // The "at least one resolved KeyId" check is deferred to the
-    // per-list loops below (via the `mScratchResolvedKeyIds.empty()`
-    // continue-guard). Columns with all `INVALID_KEY_ID` aliases will
-    // appear in the scratch lists for one extra index push and a
-    // second linear pass over the alias array, but each column owns
-    // a tiny alias set (almost always 1) so the cost is below noise
-    // and the saved duplication is worth it.
-    mScratchEnumActiveColumns.clear();
-    mScratchEnumCandidateColumns.clear();
-    for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
-    {
-        const auto &column = columns[columnIndex];
-        if (!IsEnumPassEligible(column.type))
-        {
-            continue;
-        }
-        if (columnIndex >= mColumnKeyIds.size())
-        {
-            continue;
-        }
-        if (column.type == LogConfiguration::Type::enumeration)
-        {
-            mScratchEnumActiveColumns.push_back(columnIndex);
-            continue;
-        }
-        if (column.keys.empty())
-        {
-            continue;
-        }
-        mScratchEnumCandidateColumns.push_back(columnIndex);
-    }
-
-    if (mScratchEnumActiveColumns.empty() && mScratchEnumCandidateColumns.empty())
-    {
-        return;
-    }
+    // Active (`Type::enumeration`) and candidate (`Type::unknown`)
+    // columns are handled inline in a single column walk. Empty
+    // alias-id sets are filtered after `resolveKeys` rather than
+    // pre-bucketed, since each column owns a tiny alias set
+    // (almost always 1) and the duplicated work is below noise.
 
     auto recordBackfill = [&](size_t columnIndex) {
         if (!firstBackfilled.has_value() || columnIndex < *firstBackfilled)
@@ -905,47 +861,66 @@ void LogTable::RunEnumPassForAppendBatch(
         }
     };
 
+    // Function-local scratch: reused across the per-column loop and
+    // freed at function exit. Heap-allocated once on first push;
+    // typical alias counts are 1, so the buffer never grows.
+    std::vector<KeyId> resolvedKeys;
     auto resolveKeys = [&](size_t columnIndex) {
-        mScratchResolvedKeyIds.clear();
-        mScratchResolvedKeyIds.reserve(mColumnKeyIds[columnIndex].size());
+        resolvedKeys.clear();
+        resolvedKeys.reserve(mColumnKeyIds[columnIndex].size());
         for (const KeyId id : mColumnKeyIds[columnIndex])
         {
             if (id != INVALID_KEY_ID)
             {
-                mScratchResolvedKeyIds.push_back(id);
+                resolvedKeys.push_back(id);
             }
         }
     };
 
-    // Encode pre-existing / pre-configured enum columns over the
-    // appended slice. The length cap only applies to the candidate
-    // scan (where the tracker still might bail); once a column is
-    // promoted to `enumeration`, the dictionary cap is the
-    // authoritative growth limit and overflow routes through
-    // `DemoteColumnFromEnum`.
-    for (const size_t columnIndex : mScratchEnumActiveColumns)
+    for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
-        resolveKeys(columnIndex);
-        if (mScratchResolvedKeyIds.empty())
+        const auto &column = columns[columnIndex];
+        if (!IsEnumPassEligible(column.type))
         {
             continue;
         }
-        if (!EncodeColumnRange(mScratchResolvedKeyIds, oldLineCount, totalRows, 0U))
+        if (columnIndex >= mColumnKeyIds.size())
         {
-            DemoteColumnFromEnum(columnIndex);
-            recordBackfill(columnIndex);
+            continue;
         }
-    }
 
-    // Candidate scan. The tracker is keyed on the canonical key
-    // string (stable across batches). On bail / kill the column type
-    // is flipped to a terminal (`string` / `integer` / `floating` /
-    // `number` / `any`), which removes it from `IsEnumPassEligible`
-    // for the next batch -- the type itself enforces
-    // kill-once-stay-killed.
-    for (const size_t columnIndex : mScratchEnumCandidateColumns)
-    {
-        const auto &column = columns[columnIndex];
+        // Active enum column: encode pre-existing / pre-configured
+        // enum columns over the appended slice. The length cap only
+        // applies to the candidate scan (where the tracker still
+        // might bail); once a column is promoted to `enumeration`,
+        // the dictionary cap is the authoritative growth limit and
+        // overflow routes through `DemoteColumnFromEnum`.
+        if (column.type == LogConfiguration::Type::enumeration)
+        {
+            resolveKeys(columnIndex);
+            if (resolvedKeys.empty())
+            {
+                continue;
+            }
+            if (!EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, 0U))
+            {
+                DemoteColumnFromEnum(columnIndex);
+                recordBackfill(columnIndex);
+            }
+            continue;
+        }
+
+        if (column.keys.empty())
+        {
+            continue;
+        }
+
+        // Candidate scan. The tracker is keyed on the canonical key
+        // string (stable across batches). On bail / kill the column
+        // type is flipped to a terminal (`string` / `integer` /
+        // `floating` / `number` / `any`), which removes it from
+        // `IsEnumPassEligible` for the next batch -- the type itself
+        // enforces kill-once-stay-killed.
         const std::string &trackerKey = column.keys.front();
         const bool wellKnown = IsWellKnownEnumKey(trackerKey);
         const size_t promotionMinRows = mIsStreaming
@@ -953,7 +928,7 @@ void LogTable::RunEnumPassForAppendBatch(
                                             : (wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS);
 
         resolveKeys(columnIndex);
-        if (mScratchResolvedKeyIds.empty())
+        if (resolvedKeys.empty())
         {
             continue;
         }
@@ -975,42 +950,47 @@ void LogTable::RunEnumPassForAppendBatch(
         // make a promote decision (size > 0 && >= promotionMinRows),
         // stop scanning rows for this column in this batch.
         //
-        // Numeric tag counting (`PeekTag`) lets the no-string bail
-        // route the column to `Type::integer` / `Type::floating` /
-        // `Type::number` instead of the catch-all `Type::any`.
+        // Numeric tag counting lets the no-string bail route the column
+        // to `Type::integer` / `Type::floating` / `Type::number` instead
+        // of the catch-all `Type::any`. We do a single `FindCompact`
+        // walk per (row, key) and dispatch on the returned slot's tag,
+        // rather than separate scans for the tag and the string bytes.
         const size_t scanCap = 2 * promotionMinRows;
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
             const LogLine &line = mData.Lines()[row];
-            std::optional<std::string_view> bytes;
-            std::optional<internal::CompactTag> seenTag;
-            for (const KeyId id : mScratchResolvedKeyIds)
+            const internal::CompactLogValue *slot = nullptr;
+            for (const KeyId id : resolvedKeys)
             {
-                seenTag = line.PeekTag(id);
-                if (seenTag.has_value())
+                slot = line.FindCompact(id);
+                if (slot != nullptr)
                 {
-                    bytes = line.PeekStringView(id);
                     break;
                 }
             }
-            if (bytes.has_value())
+            if (slot != nullptr)
             {
-                tracker.Observe(*bytes);
-            }
-            else
-            {
-                ++tracker.rowsObserved;
-                if (seenTag.has_value())
+                std::optional<std::string_view> bytes = line.PeekStringView(*slot);
+                if (bytes.has_value())
                 {
-                    if (*seenTag == internal::CompactTag::Int64 || *seenTag == internal::CompactTag::Uint64)
+                    tracker.Observe(*bytes);
+                }
+                else
+                {
+                    ++tracker.rowsObserved;
+                    if (slot->tag == internal::CompactTag::Int64 || slot->tag == internal::CompactTag::Uint64)
                     {
                         ++tracker.intObservations;
                     }
-                    else if (*seenTag == internal::CompactTag::Double)
+                    else if (slot->tag == internal::CompactTag::Double)
                     {
                         ++tracker.doubleObservations;
                     }
                 }
+            }
+            else
+            {
+                ++tracker.rowsObserved;
             }
             if (tracker.killed)
             {
@@ -1228,9 +1208,24 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     }
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::enumeration);
-    // Phase 1.4: pre-create the dictionary and wire alias keys onto
-    // it so the encode hot path skips alias bookkeeping.
-    EnsureColumnDictionary(columns[columnIndex]);
+    // Phase 1.4: pre-create the canonical dictionary and wire alias
+    // keys onto it so the encode hot path skips alias bookkeeping.
+    {
+        std::optional<KeyId> canonical;
+        for (const std::string &key : columns[columnIndex].keys)
+        {
+            const KeyId id = mData.Keys().GetOrInsert(key);
+            if (!canonical.has_value())
+            {
+                (void)mEnumDictionaries.GetOrInsert(id, mEnumValueCap);
+                canonical = id;
+            }
+            else
+            {
+                mEnumDictionaries.Alias(*canonical, id);
+            }
+        }
+    }
 
     // The encode walk can still overflow the cap (the tracker only
     // saw a subset of rows); demote immediately if so.

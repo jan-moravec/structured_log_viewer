@@ -246,12 +246,6 @@ private:
     /// disable the per-value length cap (user-pinned columns).
     bool EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, uint32_t maxLen);
 
-    /// Allocate (or look up) the canonical dictionary for @p column
-    /// and wire every alias key onto it. Idempotent. Run once per
-    /// promotion / snapshot so the encode hot path can skip the
-    /// `Alias` set-up.
-    void EnsureColumnDictionary(const LogConfiguration::Column &column);
-
     LogData mData;
     LogConfigurationManager mConfiguration;
     std::vector<std::vector<KeyId>> mColumnKeyIds;
@@ -290,19 +284,6 @@ private:
     /// wants enum chips to appear after a couple of rows; demote tax
     /// is bounded). Static parses leave this false.
     bool mIsStreaming = false;
-
-    /// Scratch buffer reused across the per-column inner loop in
-    /// `RunEnumPassForAppendBatch`.
-    std::vector<KeyId> mScratchResolvedKeyIds;
-
-    /// Column indices currently `Type::enumeration`. Rebuilt at the
-    /// top of `RunEnumPassForAppendBatch`; powers the early-exit when
-    /// neither active nor candidate columns exist.
-    std::vector<size_t> mScratchEnumActiveColumns;
-
-    /// Column indices currently `Type::unknown` (auto-detector
-    /// candidates). Rebuilt at the top of `RunEnumPassForAppendBatch`.
-    std::vector<size_t> mScratchEnumCandidateColumns;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
 };

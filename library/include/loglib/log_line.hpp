@@ -153,17 +153,10 @@ public:
     [[nodiscard]] std::optional<std::string_view> PeekStringView(KeyId id) const noexcept;
 
     /// Slot-pointer overload: callers that already located the slot
-    /// (e.g. via `FindCompactMutable` in the enum encode loop) can
-    /// skip the second linear scan.
+    /// (e.g. via `FindCompactMutable` in the enum encode loop, or via
+    /// `FindCompact` in the candidate scan) can skip the second
+    /// linear scan.
     [[nodiscard]] std::optional<std::string_view> PeekStringView(const internal::CompactLogValue &slot) const noexcept;
-
-    /// Tag of the slot for @p id without materialising the value;
-    /// `std::nullopt` if @p id is absent. Used by `LogTable`'s enum
-    /// candidate scan to count `Int64` / `UInt64` / `Double`
-    /// observations alongside string distinct-set tracking, so the
-    /// no-string bail can route to `Type::integer` / `Type::floating`
-    /// / `Type::number` instead of `Type::any`.
-    [[nodiscard]] std::optional<internal::CompactTag> PeekTag(KeyId id) const noexcept;
 
 private:
     /// Replace (or insert) the slot for @p id with @p compact. Shared

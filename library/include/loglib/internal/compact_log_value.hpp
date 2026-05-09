@@ -60,25 +60,12 @@ struct CompactLogValue
     static CompactLogValue MakeBool(bool value) noexcept;
     static CompactLogValue MakeTimestamp(TimeStamp value) noexcept;
 
-    /// Materialise into the public `LogValue` variant. @p source
-    /// provides `MmapSlice` / `OwnedString` byte storage; @p lineId
-    /// addresses the per-line arena for stream sources (ignored by
-    /// file sources). `nullptr` source is safe.
-    ///
-    /// Does NOT handle `CompactTag::DictRef` — callers that may
-    /// encounter dictionary-encoded slots must dispatch on `tag` and
-    /// route to `MaterialiseDictRef` instead. Splitting the two paths
-    /// keeps the parse / `GetValue` fast path free of the extra
-    /// `KeyId` parameter and registry-lookup branch (matters because
-    /// MSVC without LTCG can't prove the parameter dead for the
-    /// non-DictRef tags).
-    LogValue Materialise(const LineSource *source, size_t lineId) const;
-
-    /// Resolve a `CompactTag::DictRef` slot through the line source's
-    /// `EnumDictionaryRegistry`. Returns `monostate` when the slot
-    /// is not a `DictRef`, or when source / registry / dictionary
-    /// is missing.
-    LogValue MaterialiseDictRef(const LineSource *source, KeyId keyId) const;
+    /// Materialise into the public `LogValue` variant. @p source provides
+    /// `MmapSlice` / `OwnedString` byte storage; @p lineId addresses the
+    /// per-line arena for stream sources (ignored by file sources). For
+    /// `DictRef`, @p keyId selects the dictionary; pass `INVALID_KEY_ID`
+    /// to materialise as `monostate`. `nullptr` source is safe.
+    LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };
 
 static_assert(sizeof(CompactLogValue) == 16, "CompactLogValue must stay 16 bytes (Phase 1 RAM target)");
