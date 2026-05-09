@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
@@ -326,23 +327,23 @@ TEST_CASE("Save and load configuration with Type::enumeration column", "[log_con
 }
 
 TEST_CASE(
-    "LogConfigurationManager::IsAutoDiscoveredColumn tracks data-driven discovery, cleared by Load",
-    "[log_configuration][lock_any]"
+    "Newly-discovered keys default to Type::unknown so the auto-detector scans them",
+    "[log_configuration][type_unknown]"
 )
 {
-    // configLocksAny: `Type::any` from a loaded config is treated as
-    // user-locked. The set is populated by `Update`/`AppendKeys` and
-    // cleared by `Load`.
+    // The `Type::unknown` -> terminal-type transition replaces the
+    // old `mAutoDiscoveredCanonicalKeys` side-channel: provenance is
+    // carried by the column type itself, both in memory and on disk.
 
-    SECTION("AppendKeys marks the new key as auto-discovered")
+    SECTION("AppendKeys assigns Type::unknown to fresh keys")
     {
         LogConfigurationManager manager;
         manager.AppendKeys({"level"});
-        CHECK(manager.IsAutoDiscoveredColumn("level"));
-        CHECK_FALSE(manager.IsAutoDiscoveredColumn("severity"));
+        REQUIRE(manager.Configuration().columns.size() == 1);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::unknown);
     }
 
-    SECTION("Update marks every freshly-added key as auto-discovered")
+    SECTION("Update assigns Type::unknown to every freshly-added non-time key")
     {
         const TestLogFile testLogFile;
         auto source = testLogFile.CreateFileLineSource();
@@ -354,11 +355,14 @@ TEST_CASE(
         LogConfigurationManager manager;
         manager.Update(logData);
 
-        CHECK(manager.IsAutoDiscoveredColumn("k1"));
-        CHECK(manager.IsAutoDiscoveredColumn("k2"));
+        REQUIRE(manager.Configuration().columns.size() == 2);
+        for (const auto &column : manager.Configuration().columns)
+        {
+            CHECK(column.type == LogConfiguration::Type::unknown);
+        }
     }
 
-    SECTION("Load clears the auto-discovered set so saved columns are user-locked")
+    SECTION("Loaded columns keep their stored Type and are not rewritten to unknown")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -373,25 +377,20 @@ TEST_CASE(
             {.header = "service",
              .keys = {"service"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::any,
+             .type = LogConfiguration::Type::string,
              .parseFormats = {}}
         );
         testCfg.Write(cfg);
 
         LogConfigurationManager manager;
-        // Stale auto-discovered entry confirms `Load` actively wipes
-        // the set rather than just leaving it untouched.
-        manager.AppendKeys({"stale"});
-        REQUIRE(manager.IsAutoDiscoveredColumn("stale"));
-
         manager.Load(testCfg.GetFilePath());
 
-        CHECK_FALSE(manager.IsAutoDiscoveredColumn("level"));
-        CHECK_FALSE(manager.IsAutoDiscoveredColumn("service"));
-        CHECK_FALSE(manager.IsAutoDiscoveredColumn("stale"));
+        REQUIRE(manager.Configuration().columns.size() == 2);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::any);
+        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::string);
     }
 
-    SECTION("Post-Load AppendKeys still marks new keys as auto-discovered")
+    SECTION("Post-Load AppendKeys still assigns Type::unknown to genuinely-new keys")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -406,12 +405,63 @@ TEST_CASE(
 
         LogConfigurationManager manager;
         manager.Load(testCfg.GetFilePath());
-        REQUIRE_FALSE(manager.IsAutoDiscoveredColumn("level"));
 
         manager.AppendKeys({"freshly_streamed"});
-        CHECK(manager.IsAutoDiscoveredColumn("freshly_streamed"));
-        // The lock on `level` persists across the post-Load discovery.
-        CHECK_FALSE(manager.IsAutoDiscoveredColumn("level"));
+        REQUIRE(manager.Configuration().columns.size() == 2);
+        // Loaded `level` stays terminal; the freshly-streamed key
+        // becomes a candidate.
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::any);
+        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::unknown);
+    }
+}
+
+TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_configuration][type_round_trip]")
+{
+    // Glaze meta string mapping: the wire format uses human-readable
+    // enum names that match the C++ enumerator one-for-one. `double`
+    // is a reserved keyword in C++, so the enumerator and the JSON
+    // string both spell it `floating` — no translation table.
+    using Type = LogConfiguration::Type;
+    const std::vector<Type> variants = {
+        Type::unknown,  Type::any,    Type::string, Type::integer,
+        Type::floating, Type::number, Type::time,   Type::enumeration,
+    };
+
+    LogConfiguration original;
+    for (size_t i = 0; i < variants.size(); ++i)
+    {
+        original.columns.push_back(
+            {.header = "col-" + std::to_string(i),
+             .keys = {"col-" + std::to_string(i)},
+             .printFormat = "{}",
+             .type = variants[i],
+             .parseFormats = {}}
+        );
+    }
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+
+    // Sanity-check the wire format. Every variant uses its C++
+    // identifier verbatim on the wire; the legacy `"double"` spelling
+    // must never appear.
+    CHECK(json.find("\"unknown\"") != std::string::npos);
+    CHECK(json.find("\"any\"") != std::string::npos);
+    CHECK(json.find("\"integer\"") != std::string::npos);
+    CHECK(json.find("\"floating\"") != std::string::npos);
+    CHECK(json.find("\"double\"") == std::string::npos);
+    CHECK(json.find("\"number\"") != std::string::npos);
+    CHECK(json.find("\"enumeration\"") != std::string::npos);
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.columns.size() == variants.size());
+    for (size_t i = 0; i < variants.size(); ++i)
+    {
+        CHECK(loaded.columns[i].type == variants[i]);
     }
 }
 

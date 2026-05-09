@@ -565,6 +565,28 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 void LogModel::EndStreaming(bool cancelled)
 {
     mStreamingActive = false;
+
+    // Graceful end-of-stream: run the permissive auto-detection sweep
+    // so small streams / streams that ended between batches still get
+    // enum filter chips for the columns the per-batch threshold did
+    // not catch. Cancellation skips the sweep -- the user is shutting
+    // down and we don't want to do any more work than necessary.
+    //
+    // `FinalizeAutoDetection` returns true iff at least one column
+    // actually flipped to `Type::enumeration`. Gating the signal on
+    // that bool avoids spuriously rebuilding the filter editor's enum
+    // picker on every clean stream end where pre-existing enum
+    // columns are present but nothing new was promoted. Emit before
+    // `streamingFinished` so the picker model has a stable dictionary
+    // by the time the UI re-enables editing.
+    if (!cancelled)
+    {
+        if (mLogTable.FinalizeAutoDetection())
+        {
+            emit enumColumnsChanged();
+        }
+    }
+
     // The sink's bool only distinguishes clean finish vs. stop_token;
     // `StreamingResult::Failed` is wired up at the worker boundary.
     emit streamingFinished(cancelled ? StreamingResult::Cancelled : StreamingResult::Success);

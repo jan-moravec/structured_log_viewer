@@ -1,6 +1,9 @@
 #pragma once
 
+#include "loglib/internal/transparent_string_hash.hpp"
 #include "loglib/key_index.hpp"
+
+#include <tsl/robin_map.h>
 
 #include <cstdint>
 #include <limits>
@@ -8,7 +11,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace loglib
@@ -30,6 +32,17 @@ inline constexpr uint16_t MAX_ENUM_VALUES = 1024;
 
 /// Default per-column distinct-value cap.
 inline constexpr uint16_t DEFAULT_ENUM_VALUE_CAP = 64;
+
+/// Maximum byte length for a value to be considered an enum candidate
+/// during auto-discovery. Anything longer disqualifies the column —
+/// long strings rarely repeat enough to beat raw `OwnedString`
+/// storage and they balloon the dictionary's heap footprint.
+///
+/// Only enforced for *auto-discovered* `Type::any` columns and
+/// auto-promoted `Type::enumeration` columns. Columns the user
+/// explicitly pinned to `Type::enumeration` honour user intent and
+/// store values of any length.
+inline constexpr uint32_t MAX_ENUM_CANDIDATE_LEN = 64;
 
 /// Per-column dictionary of distinct string values. Values are
 /// insertion-ordered and their `EnumValueId`s are stable for the
@@ -94,23 +107,12 @@ public:
     void Clear() noexcept;
 
 private:
-    /// Heterogeneous hasher so `string_view` lookups skip the temp
-    /// `std::string`.
-    struct StringHash
-    {
-        using is_transparent = void;
-        [[nodiscard]] size_t operator()(std::string_view s) const noexcept
-        {
-            return std::hash<std::string_view>{}(s);
-        }
-        [[nodiscard]] size_t operator()(const std::string &s) const noexcept
-        {
-            return std::hash<std::string_view>{}(std::string_view(s));
-        }
-    };
-
     std::vector<std::string> mValues;
-    std::unordered_map<std::string, EnumValueId, StringHash, std::equal_to<>> mIndex;
+    // Phase 2.6: robin_map cuts the per-Insert hash lookup cost
+    // (open addressing + smaller per-probe footprint) and brings the
+    // dictionary's hot path closer to `KeyIndex`. Heterogeneous
+    // lookup keeps `string_view` queries allocation-free.
+    tsl::robin_map<std::string, EnumValueId, internal::TransparentStringHash, internal::TransparentStringEqual> mIndex;
     uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };
 
@@ -163,10 +165,13 @@ public:
     [[nodiscard]] size_t EstimatedMemoryBytes() const noexcept;
 
 private:
+    // Phase 2.6: robin_map again — `Find`/`Contains` are called every
+    // `LogLine::GetValue(KeyId)` on a `DictRef` slot, so the hot
+    // lookup matters.
     /// `unique_ptr` so dictionary refs survive rehashes.
-    std::unordered_map<KeyId, std::unique_ptr<EnumDictionary>> mDictionaries;
+    tsl::robin_map<KeyId, std::unique_ptr<EnumDictionary>> mDictionaries;
     /// Canonical and alias keys -> pointer into `mDictionaries`.
-    std::unordered_map<KeyId, EnumDictionary *> mIndex;
+    tsl::robin_map<KeyId, EnumDictionary *> mIndex;
 };
 
 } // namespace loglib

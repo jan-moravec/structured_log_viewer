@@ -365,8 +365,17 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(2);
         PopulateEnumValues(index);
         break;
+    case LogConfiguration::Type::unknown:
     case LogConfiguration::Type::any:
+    case LogConfiguration::Type::string:
+    case LogConfiguration::Type::integer:
+    case LogConfiguration::Type::floating:
+    case LogConfiguration::Type::number:
     default:
+        // String filter widget for every non-time / non-enum type.
+        // Numeric / range pickers are deferred to a follow-up PR;
+        // until then `integer` / `floating` / `number` behave like
+        // `string` for filtering purposes.
         mStackedWidget->setCurrentIndex(0);
         break;
     }

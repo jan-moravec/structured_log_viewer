@@ -31,6 +31,13 @@ struct AdvancedParserOptions
     /// Forwarded to `LogTable::SetEnumValueCap`; clamped to
     /// `[1, MAX_ENUM_VALUES]`.
     uint16_t enumValueCap = DEFAULT_ENUM_VALUE_CAP;
+
+    /// Maximum byte length for a value to be considered an enum
+    /// candidate during auto-discovery. `0` disables the cap (the
+    /// pre-1.6 behaviour). Forwarded to `LogTable::SetEnumValueMaxLen`;
+    /// only affects auto-discovered columns — user-pinned
+    /// `Type::enumeration` columns ignore it.
+    uint32_t enumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 };
 
 } // namespace loglib::internal

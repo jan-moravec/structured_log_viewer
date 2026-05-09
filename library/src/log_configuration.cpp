@@ -1,5 +1,6 @@
 #include "loglib/log_configuration.hpp"
 
+#include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/log_data.hpp"
 
 #include <glaze/glaze.hpp>
@@ -55,10 +56,6 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
             throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
         }
         mCacheStale = true;
-        // The loaded configuration is authoritative; drop the
-        // auto-discovered set so the enum auto-detector treats every
-        // configured column as user-locked.
-        mAutoDiscoveredCanonicalKeys.clear();
     }
     else
     {
@@ -114,14 +111,11 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .header = key,
                     .keys = {key},
                     .printFormat = "{}",
-                    .type = LogConfiguration::Type::any,
+                    .type = LogConfiguration::Type::unknown,
                     .parseFormats = {}
                 });
             }
             mKeysInColumns.insert(key);
-            // Data-driven discovery: not user-locked; eligible for
-            // enum auto-promotion.
-            mAutoDiscoveredCanonicalKeys.insert(key);
         }
     }
 }
@@ -152,14 +146,11 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 .header = key,
                 .keys = {key},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::any,
+                .type = LogConfiguration::Type::unknown,
                 .parseFormats = {}
             });
         }
         mKeysInColumns.insert(key);
-        // Data-driven discovery: not user-locked; eligible for enum
-        // auto-promotion.
-        mAutoDiscoveredCanonicalKeys.insert(key);
     }
 }
 
@@ -230,11 +221,6 @@ size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::strin
 const LogConfiguration &LogConfigurationManager::Configuration() const
 {
     return mConfiguration;
-}
-
-bool LogConfigurationManager::IsAutoDiscoveredColumn(const std::string &canonicalKey) const
-{
-    return mAutoDiscoveredCanonicalKeys.contains(canonicalKey);
 }
 
 void LogConfigurationManager::EnsureKeyCacheBuilt() const

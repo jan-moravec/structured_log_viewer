@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -130,11 +131,41 @@ public:
     /// Powers the model's `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(KeyId id) const noexcept;
 
-private:
-    /// `lower_bound` over the small sorted `mValues`. Returns nullptr
-    /// if @p id is absent.
-    const internal::CompactLogValue *FindCompact(KeyId id) const noexcept;
+    /// Linear forward scan over the (sorted) compact storage; returns
+    /// nullptr if @p id is absent. Exposed for hot paths
+    /// (`LogTable`'s enum encode/demote loops) that want to combine
+    /// the lookup with a tag-dispatch + in-place update without
+    /// repeating the scan.
+    [[nodiscard]] const internal::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
+    /// Mutable counterpart of `FindCompact`. Same lookup semantics.
+    /// Caller may overwrite `*slot` (e.g. with
+    /// `CompactLogValue::MakeDictRef`) without a second binary search.
+    [[nodiscard]] internal::CompactLogValue *FindCompactMutable(KeyId id) noexcept;
+
+    /// Resolve a `MmapSlice` or `OwnedString` slot to its underlying
+    /// bytes without constructing a `LogValue`. Returns `std::nullopt`
+    /// for any other tag (`Monostate`, `DictRef`, numeric, timestamp)
+    /// or when the slot is absent. `nullptr` source is safe.
+    ///
+    /// Used by `LogTable`'s enum candidate scan to skip non-string
+    /// slots before paying for a `LogValue` variant construction.
+    [[nodiscard]] std::optional<std::string_view> PeekStringView(KeyId id) const noexcept;
+
+    /// Slot-pointer overload: callers that already located the slot
+    /// (e.g. via `FindCompactMutable` in the enum encode loop) can
+    /// skip the second linear scan.
+    [[nodiscard]] std::optional<std::string_view> PeekStringView(const internal::CompactLogValue &slot) const noexcept;
+
+    /// Tag of the slot for @p id without materialising the value;
+    /// `std::nullopt` if @p id is absent. Used by `LogTable`'s enum
+    /// candidate scan to count `Int64` / `UInt64` / `Double`
+    /// observations alongside string distinct-set tracking, so the
+    /// no-string bail can route to `Type::integer` / `Type::floating`
+    /// / `Type::number` instead of `Type::any`.
+    [[nodiscard]] std::optional<internal::CompactTag> PeekTag(KeyId id) const noexcept;
+
+private:
     /// Replace (or insert) the slot for @p id with @p compact. Shared
     /// by `SetValue` and `SetEnumDictRef`. May allocate.
     void SetCompact(KeyId id, internal::CompactLogValue compact);

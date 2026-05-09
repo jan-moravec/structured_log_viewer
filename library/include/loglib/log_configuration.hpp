@@ -18,9 +18,44 @@ class LogData;
 
 struct LogConfiguration
 {
+    /// Per-column rendering / detection type.
+    ///
+    /// `unknown` is the only type the auto-detector scans; every
+    /// other variant is terminal (the detector skips it). Newly-
+    /// discovered keys default to `unknown`; the kill paths in
+    /// `LogTable::RunEnumPassForAppendBatch` route them to the
+    /// appropriate terminal based on what was observed.
+    ///
+    /// Provenance summary:
+    /// - `unknown`     - default for new keys; auto-detector candidate.
+    /// - `any`         - terminal: mixed / unclassifiable (e.g. all
+    ///                    nulls or bools, or a mix of value kinds).
+    /// - `string`      - terminal: strings too varied to enumerate
+    ///                    (cardinality bail / length cap / dict cap /
+    ///                    overflow demote).
+    /// - `integer`     - terminal: only Int64 / UInt64 observed.
+    /// - `floating`    - terminal: only Double observed. The C++
+    ///                    identifier mirrors `std::is_floating_point`
+    ///                    (the keyword `double` cannot be used as an
+    ///                    enumerator); glaze serialises it as the
+    ///                    JSON string "floating" — the wire and
+    ///                    source spellings are kept in lockstep.
+    /// - `number`      - terminal: a mix of integer and floating values.
+    /// - `time`        - terminal: name-matched timestamp column.
+    /// - `enumeration` - terminal: small fixed string vocabulary.
+    ///
+    /// `string`, `integer`, `floating`, and `number` currently fall
+    /// through the same default branches as `any` for filter UI
+    /// and rendering. Numeric sort, integer-vs-double formatting,
+    /// and range-filter widgets are deferred to follow-up PRs.
     enum class Type
     {
+        unknown,
         any,
+        string,
+        integer,
+        floating,
+        number,
         time,
         /// Column with a small set of distinct string values
         /// (<= `MAX_ENUM_VALUES`), stored as `CompactTag::DictRef`.
@@ -33,9 +68,8 @@ struct LogConfiguration
         std::string header;
         std::vector<std::string> keys;
         std::string printFormat;
-        /// Per-cell rendering type. `Type::any` renders via `printFormat`;
-        /// `Type::time` pre-parses into a `TimeStamp`;
-        /// `Type::enumeration` stores values as dictionary references.
+        /// Per-cell rendering type. See `Type` for the variant
+        /// summary. Newly-discovered keys default to `Type::unknown`.
         ///
         /// **Time promotion is destructive**: Stage B replaces the
         /// per-line `LogValue` with a parsed `TimeStamp` in place; only
@@ -43,9 +77,9 @@ struct LogConfiguration
         ///
         /// **Enum promotion is destructive but reversible**: when a
         /// new value would push the dictionary past the cap,
-        /// `LogTable::AppendBatch` demotes the column back to
-        /// `Type::any` and rewrites every slot to `OwnedString`.
-        Type type = Type::any;
+        /// `LogTable::AppendBatch` demotes the column to
+        /// `Type::string` and rewrites every slot to `OwnedString`.
+        Type type = Type::unknown;
         std::vector<std::string> parseFormats;
     };
 
@@ -121,13 +155,6 @@ public:
     /// only updates the configuration. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
-    /// True iff @p canonicalKey was added by `Update` or `AppendKeys`
-    /// and not since overridden by `Load`. The enum auto-detector uses
-    /// this to lock columns whose `Type::any` came from a saved
-    /// configuration; persisting `Type::any` is treated as the user
-    /// accepting it. Not serialised.
-    [[nodiscard]] bool IsAutoDiscoveredColumn(const std::string &canonicalKey) const;
-
     const LogConfiguration &Configuration() const;
 
 private:
@@ -140,11 +167,6 @@ private:
     /// `mCacheStale`.
     mutable std::unordered_set<std::string> mKeysInColumns;
     mutable bool mCacheStale = true;
-
-    /// Canonical keys (`column.keys.front()`) added by data-driven
-    /// discovery (`Update` / `AppendKeys`). Cleared by `Load`. Not
-    /// serialised. Read by `IsAutoDiscoveredColumn`.
-    std::unordered_set<std::string> mAutoDiscoveredCanonicalKeys;
 };
 
 } // namespace loglib

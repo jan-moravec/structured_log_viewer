@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -120,10 +121,42 @@ public:
 
     [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
+    /// Override the per-value byte-length cap used by auto-discovery.
+    /// `0` disables the cap. Only affects auto-discovered columns;
+    /// user-pinned `Type::enumeration` columns ignore the limit.
+    void SetEnumValueMaxLen(uint32_t maxLen) noexcept;
+
+    [[nodiscard]] uint32_t EnumValueMaxLen() const noexcept;
+
     /// Dictionary id for the slot at @p row / @p column iff it is a
     /// `DictRef`; nullopt otherwise. Powers the model's
     /// `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(size_t row, size_t column) const noexcept;
+
+    /// End-of-parse / end-of-stream auto-detection sweep.
+    ///
+    /// `RunEnumPassForAppendBatch`'s per-batch promotion gate uses
+    /// the `ENUM_PROMOTION_MIN_ROWS{,_WELL_KNOWN}` thresholds (or
+    /// `STREAM_PROMOTION_MIN_ROWS` in stream mode). Files smaller than
+    /// the static threshold and streams that cancel between batches
+    /// would otherwise leave their candidates languishing as
+    /// `Type::unknown`. This pass runs the permissive promotion rule
+    /// (`size in [1, cap] && rowsObserved >= 2 && !killed`) against
+    /// the surviving trackers, then transitions any remaining
+    /// `Type::unknown` columns to a terminal type based on what the
+    /// candidate scan saw.
+    ///
+    /// Called from the static-parse constructor and from
+    /// `LogModel::EndStreaming(false)` (i.e. only on graceful end;
+    /// cancellation skips the sweep). Idempotent. Clears
+    /// `mEnumTrackers` and `mIsStreaming` on exit.
+    ///
+    /// Returns `true` iff at least one column flipped to
+    /// `Type::enumeration` during the sweep. `LogModel::EndStreaming`
+    /// uses this to gate the `enumColumnsChanged` signal so a clean
+    /// stream end with no new enum columns does not spuriously
+    /// rebuild the filter editor's enum picker.
+    bool FinalizeAutoDetection();
 
     const LogConfigurationManager &Configuration() const;
     /// Non-const access for `Load`/`Save` menu actions. Must not be mutated
@@ -133,43 +166,43 @@ public:
 private:
     /// Per-column observed-value tracker for enum auto-detection.
     /// Tracks up to `cap` distinct values; the (cap+1)th flips `killed`
-    /// and drops the buffers.
+    /// and drops the buffer. A value longer than `valueMaxLen` (when
+    /// non-zero) also flips `killed` on first sight: long strings
+    /// almost never repeat enough to beat raw `OwnedString` storage
+    /// and the dictionary's heap footprint blows up otherwise.
+    ///
+    /// Uses a flat `std::vector<std::string>` for both storage and
+    /// membership: at the small caps in play (default 64) a linear
+    /// scan stays L1-resident and beats `unordered_set` on hash + heap
+    /// overhead — most observations are existing values, hit early in
+    /// the scan.
+    ///
+    /// `intObservations` and `doubleObservations` count Int64 / UInt64
+    /// (merged) and Double tags seen in the candidate scan. The
+    /// no-string bail uses these to route a column out of `unknown`:
+    /// int-only -> `Type::integer`; double-only -> `Type::floating`;
+    /// both -> `Type::number`; neither (all nulls / bools) -> `Type::any`.
     struct EnumCandidateTracker
     {
-        /// Heterogeneous hasher so `string_view` lookups skip the temp
-        /// `std::string`.
-        struct StringHash
-        {
-            // NOLINTNEXTLINE(readability-identifier-naming): standard
-            // library tag name required for heterogeneous lookup.
-            using is_transparent = void;
-            [[nodiscard]] size_t operator()(std::string_view s) const noexcept
-            {
-                return std::hash<std::string_view>{}(s);
-            }
-            [[nodiscard]] size_t operator()(const std::string &s) const noexcept
-            {
-                return std::hash<std::string_view>{}(std::string_view(s));
-            }
-        };
-
         std::vector<std::string> values;
-        std::unordered_set<std::string, StringHash, std::equal_to<>> seen;
+        uint32_t valueMaxLen = 0;
         uint16_t size = 0;
         uint16_t cap = DEFAULT_ENUM_VALUE_CAP;
         size_t rowsObserved = 0;
+        size_t intObservations = 0;
+        size_t doubleObservations = 0;
         bool killed = false;
 
         EnumCandidateTracker() = default;
-        explicit EnumCandidateTracker(uint16_t capValue) noexcept
-            : cap(capValue)
+        EnumCandidateTracker(uint16_t capValue, uint32_t valueMaxLenValue) noexcept
+            : valueMaxLen(valueMaxLenValue), cap(capValue)
         {
             values.reserve(capValue);
-            seen.reserve(capValue);
         }
 
         /// True iff @p bytes was new (grew the distinct set). Flips
-        /// `killed` when a new value pushes `size` past `cap`.
+        /// `killed` when a new value pushes `size` past `cap` or
+        /// `bytes.size()` exceeds `valueMaxLen`.
         bool Observe(std::string_view bytes);
     };
 
@@ -203,11 +236,21 @@ private:
 
     /// Encode the column's slots in `[rowBegin, rowEnd)` as `DictRef`,
     /// growing the dictionary as needed. Returns false if the
-    /// dictionary would exceed `MAX_ENUM_VALUES`; caller should demote.
+    /// dictionary would exceed `MAX_ENUM_VALUES` or a value exceeds
+    /// the per-column length cap; caller should demote.
     bool EncodeColumnRangeAsEnum(const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd);
 
-    /// Shared inner loop. @p keyIds must contain only resolved entries.
-    bool EncodeColumnRange(const std::vector<KeyId> &keyIds, size_t rowBegin, size_t rowEnd);
+    /// Shared inner loop. @p aliasKeys must contain only resolved
+    /// entries; the first one is the canonical dictionary key
+    /// (aliases share its dictionary). Pass `0` for @p maxLen to
+    /// disable the per-value length cap (user-pinned columns).
+    bool EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, uint32_t maxLen);
+
+    /// Allocate (or look up) the canonical dictionary for @p column
+    /// and wire every alias key onto it. Idempotent. Run once per
+    /// promotion / snapshot so the encode hot path can skip the
+    /// `Alias` set-up.
+    void EnsureColumnDictionary(const LogConfiguration::Column &column);
 
     LogData mData;
     LogConfigurationManager mConfiguration;
@@ -230,20 +273,36 @@ private:
     /// dictionaries and trackers.
     uint16_t mEnumValueCap = DEFAULT_ENUM_VALUE_CAP;
 
+    /// Effective per-value byte-length cap for auto-discovered
+    /// columns. `0` disables the cap.
+    uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
+
     /// Trackers for promotion candidates, keyed on `column.keys.front()`
     /// (the configured canonical key string -- stable across batches
     /// even when alias keys arrive out of order). Live only while the
-    /// column is still `Type::any` and not yet killed.
+    /// column is still `Type::unknown`. Cleared by
+    /// `FinalizeAutoDetection` and `Reset`.
     std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
 
-    /// Canonical-key strings for columns that have overflowed the cap
-    /// at least once. Skipped by `RunEnumPassForAppendBatch` to avoid
-    /// promote/demote oscillation. Cleared by `Reset()`.
-    std::unordered_set<std::string> mEnumPermanentlyKilled;
+    /// True between `BeginStreaming` and `FinalizeAutoDetection`. When
+    /// set, `RunEnumPassForAppendBatch` uses the smaller stream
+    /// promotion threshold and skips the cardinality bail (live UI
+    /// wants enum chips to appear after a couple of rows; demote tax
+    /// is bounded). Static parses leave this false.
+    bool mIsStreaming = false;
 
     /// Scratch buffer reused across the per-column inner loop in
     /// `RunEnumPassForAppendBatch`.
     std::vector<KeyId> mScratchResolvedKeyIds;
+
+    /// Column indices currently `Type::enumeration`. Rebuilt at the
+    /// top of `RunEnumPassForAppendBatch`; powers the early-exit when
+    /// neither active nor candidate columns exist.
+    std::vector<size_t> mScratchEnumActiveColumns;
+
+    /// Column indices currently `Type::unknown` (auto-detector
+    /// candidates). Rebuilt at the top of `RunEnumPassForAppendBatch`.
+    std::vector<size_t> mScratchEnumCandidateColumns;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
 };

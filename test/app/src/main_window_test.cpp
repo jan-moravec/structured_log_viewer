@@ -2908,10 +2908,9 @@ private slots:
     // text through to the proxy.
     void TestFilterEditorPickerSearchFiltersVisibleCount()
     {
-        // `LogTable` requires at least `ENUM_PROMOTION_MIN_ROWS` (256)
-        // observed rows before a `Type::any` column is auto-promoted to
-        // `Type::enumeration`. We cycle through 5 distinct values so the
-        // dictionary stays well under the default cap.
+        // Stream-mode promotes after only `STREAM_PROMOTION_MIN_ROWS`
+        // (2) observed rows; 300 rows is comfortably past the
+        // threshold and stays under the default 64-value cap.
         const QStringList levels{
             QStringLiteral("info"),
             QStringLiteral("warn"),
@@ -2990,7 +2989,8 @@ private slots:
     // at `AddFilter` time rather than silently mismatching the rule.
     void TestSavedStringFilterDroppedOnNowEnumColumn()
     {
-        // 300 rows takes `level` past the 256-row promotion threshold.
+        // 300 rows takes `level` well past the stream-mode promotion
+        // threshold (2 rows).
         const QStringList levels{QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error")};
         QStringList lines;
         lines.reserve(300);
@@ -3384,7 +3384,8 @@ private slots:
     // column auto-promotes during streaming.
     void TestEnumColumnsChangedFiresOnPromotion()
     {
-        // 4 levels across 320 rows; well past the 256-row threshold.
+        // 4 levels across 320 rows; well past the stream-mode
+        // promotion threshold (2 rows).
         const QStringList levels{
             QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
         };
