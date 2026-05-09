@@ -423,8 +423,14 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     // string both spell it `floating` — no translation table.
     using Type = LogConfiguration::Type;
     const std::vector<Type> variants = {
-        Type::unknown,  Type::any,    Type::string, Type::integer,
-        Type::floating, Type::number, Type::time,   Type::enumeration,
+        Type::unknown,
+        Type::any,
+        Type::string,
+        Type::integer,
+        Type::floating,
+        Type::number,
+        Type::time,
+        Type::enumeration,
     };
 
     LogConfiguration original;

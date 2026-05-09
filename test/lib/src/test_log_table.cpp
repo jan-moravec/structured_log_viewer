@@ -1836,9 +1836,7 @@ TEST_CASE(
     // 32 rows with "level" — well above the well-known threshold (16)
     // but well below the standard one (256). Promotion must fire.
     constexpr size_t WELL_KNOWN_PROMOTION_ROWS = 32;
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, WELL_KNOWN_PROMOTION_ROWS, true)
-    );
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, WELL_KNOWN_PROMOTION_ROWS, true));
 
     REQUIRE(table.RowCount() == WELL_KNOWN_PROMOTION_ROWS);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
@@ -1869,9 +1867,7 @@ TEST_CASE(
     // candidate scan's `Observe` length-cap fires before the
     // stream-mode promotion threshold (2 rows) is reached.
     const std::string longValue(80, 'x');
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "tier", {longValue, "alpha", "beta"}, 1, 320, true)
-    );
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tier", {longValue, "alpha", "beta"}, 1, 320, true));
 
     REQUIRE(table.RowCount() == 320);
     // Length-cap kill routes the column to `Type::string`: the
@@ -2158,11 +2154,7 @@ LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 {
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = key,
-         .keys = {key},
-         .printFormat = "{}",
-         .type = LogConfiguration::Type::unknown,
-         .parseFormats = {}}
+        {.header = key, .keys = {key}, .printFormat = "{}", .type = LogConfiguration::Type::unknown, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -2273,8 +2265,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- static-mode constructor finalize promotes mid-size files",
-    "[log_table][static_mode][enum][threshold]"
+    "LogTable -- static-mode constructor finalize promotes mid-size files", "[log_table][static_mode][enum][threshold]"
 )
 {
     // The static-mode per-batch threshold is 256, so 100 rows do not

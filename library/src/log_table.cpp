@@ -923,9 +923,9 @@ void LogTable::RunEnumPassForAppendBatch(
         // enforces kill-once-stay-killed.
         const std::string &trackerKey = column.keys.front();
         const bool wellKnown = IsWellKnownEnumKey(trackerKey);
-        const size_t promotionMinRows = mIsStreaming
-                                            ? STREAM_PROMOTION_MIN_ROWS
-                                            : (wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS);
+        const size_t promotionMinRows =
+            mIsStreaming ? STREAM_PROMOTION_MIN_ROWS
+                         : (wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS);
 
         resolveKeys(columnIndex);
         if (resolvedKeys.empty())
@@ -936,9 +936,7 @@ void LogTable::RunEnumPassForAppendBatch(
         auto trackerIt = mEnumTrackers.find(trackerKey);
         if (trackerIt == mEnumTrackers.end())
         {
-            trackerIt = mEnumTrackers
-                            .emplace(trackerKey, EnumCandidateTracker{mEnumValueCap, mEnumValueMaxLen})
-                            .first;
+            trackerIt = mEnumTrackers.emplace(trackerKey, EnumCandidateTracker{mEnumValueCap, mEnumValueMaxLen}).first;
         }
         EnumCandidateTracker &tracker = trackerIt->second;
 
@@ -1032,10 +1030,9 @@ void LogTable::RunEnumPassForAppendBatch(
         if (tracker.rowsObserved >= scanCap)
         {
             const bool noStringSeen = tracker.size == 0;
-            const bool highCardinality =
-                !mIsStreaming && tracker.size > 0 &&
-                static_cast<double>(tracker.size) >
-                    ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.rowsObserved);
+            const bool highCardinality = !mIsStreaming && tracker.size > 0 &&
+                                         static_cast<double>(tracker.size) >
+                                             ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.rowsObserved);
             if (noStringSeen)
             {
                 mConfiguration.SetColumnType(
