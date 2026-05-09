@@ -1,10 +1,7 @@
 #include "loglib/enum_dictionary.hpp"
 
-#include <fmt/format.h>
-
 #include <algorithm>
 #include <cassert>
-#include <cstdio> // for stderr
 #include <utility>
 
 namespace loglib
@@ -36,8 +33,15 @@ EnumValueId EnumDictionary::Insert(std::string_view bytes)
         return INVALID_ENUM_VALUE_ID;
     }
     const auto id = static_cast<EnumValueId>(mValues.size());
+    // Construct the string in `mValues` first so the address is
+    // stable; key the index against a `string_view` over those
+    // stable bytes (deque elements never move on push_back). This
+    // avoids storing the same bytes twice (once in the value vector,
+    // once as the index key) which the old vector + robin_map<string,..>
+    // pair did.
     mValues.emplace_back(bytes);
-    mIndex.emplace(mValues.back(), id);
+    const std::string_view key{mValues.back()};
+    mIndex.emplace(key, id);
     return id;
 }
 
@@ -53,8 +57,10 @@ std::string_view EnumDictionary::Resolve(EnumValueId id) const noexcept
 
 void EnumDictionary::Clear() noexcept
 {
-    mValues.clear();
+    // Index references string_views into `mValues`, so clear it
+    // before destroying the underlying bytes.
     mIndex.clear();
+    mValues.clear();
 }
 
 bool EnumDictionaryRegistry::Contains(KeyId key) const noexcept
@@ -76,40 +82,47 @@ EnumDictionary &EnumDictionaryRegistry::GetOrInsert(KeyId key, uint16_t cap)
 {
     if (auto it = mDictionaries.find(key); it != mDictionaries.end())
     {
-        return *it->second;
+        return *it->second.dict;
     }
-    auto dict = std::make_unique<EnumDictionary>(cap);
-    EnumDictionary *raw = dict.get();
-    mDictionaries.emplace(key, std::move(dict));
+    DictionaryEntry entry;
+    entry.dict = std::make_unique<EnumDictionary>(cap);
+    entry.aliases.push_back(key);
+    EnumDictionary *raw = entry.dict.get();
+    mDictionaries.emplace(key, std::move(entry));
     mIndex[key] = raw;
     return *raw;
 }
 
-void EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
+bool EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
 {
     if (canonical == alias)
     {
-        return;
+        // Idempotent identity: caller can pass the canonical key as
+        // its own alias without it being treated as an error.
+        return true;
     }
-    const auto canonicalIt = mDictionaries.find(canonical);
+    auto canonicalIt = mDictionaries.find(canonical);
     if (canonicalIt == mDictionaries.end())
     {
-        return;
+        return false;
     }
-    // Aliasing onto an existing canonical would orphan its dictionary;
-    // caller must `Erase` first.
-    assert(!mDictionaries.contains(alias) && "EnumDictionaryRegistry::Alias overwrites canonical entry");
+    EnumDictionary *raw = canonicalIt->second.dict.get();
+    if (auto indexIt = mIndex.find(alias); indexIt != mIndex.end())
+    {
+        // Already pointing at the same dictionary: idempotent. Any
+        // other target is a configuration error -- the caller must
+        // `Erase` the existing dictionary before reparenting.
+        return indexIt->second == raw;
+    }
     if (mDictionaries.contains(alias))
     {
-        fmt::print(
-            stderr,
-            "[loglib] EnumDictionaryRegistry::Alias refused: alias key {} already has a canonical dictionary; call "
-            "Erase first to reparent\n",
-            static_cast<uint32_t>(alias)
-        );
-        return;
+        // The alias key has its own canonical entry; aliasing onto
+        // `canonical` would orphan it. Caller must `Erase` first.
+        return false;
     }
-    mIndex[alias] = canonicalIt->second.get();
+    mIndex[alias] = raw;
+    canonicalIt.value().aliases.push_back(alias);
+    return true;
 }
 
 void EnumDictionaryRegistry::Erase(KeyId canonical) noexcept
@@ -119,17 +132,11 @@ void EnumDictionaryRegistry::Erase(KeyId canonical) noexcept
     {
         return;
     }
-    EnumDictionary *raw = canonicalIt->second.get();
-    for (auto it = mIndex.begin(); it != mIndex.end();)
+    // O(aliases per column) instead of O(|mIndex|): walk the entry's
+    // own alias list rather than scanning every entry in the index.
+    for (const KeyId alias : canonicalIt->second.aliases)
     {
-        if (it->second == raw)
-        {
-            it = mIndex.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
+        mIndex.erase(alias);
     }
     mDictionaries.erase(canonicalIt);
 }
@@ -143,12 +150,13 @@ void EnumDictionaryRegistry::Clear() noexcept
 size_t EnumDictionaryRegistry::EstimatedMemoryBytes() const noexcept
 {
     size_t bytes = sizeof(EnumDictionaryRegistry);
-    for (const auto &[key, dict] : mDictionaries)
+    for (const auto &[key, entry] : mDictionaries)
     {
-        bytes += sizeof(KeyId) + sizeof(EnumDictionary);
-        if (dict)
+        bytes += sizeof(KeyId) + sizeof(DictionaryEntry);
+        bytes += entry.aliases.capacity() * sizeof(KeyId);
+        if (entry.dict)
         {
-            for (const std::string &value : dict->Values())
+            for (const std::string &value : entry.dict->Values())
             {
                 bytes += sizeof(std::string) + value.capacity();
             }

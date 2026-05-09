@@ -73,8 +73,11 @@ public:
     void SetValue(const std::string &key, const LogValue &value);
 
     /// Replace (or insert) the slot for @p id with a `DictRef` for
-    /// @p vid. Caller owns the dictionary lifetime.
-    void SetEnumDictRef(KeyId id, EnumValueId vid);
+    /// @p vid. Caller owns the dictionary lifetime. Cold-path
+    /// helper: the encode hot path in `LogTable::EncodeColumnRange`
+    /// goes through `FindCompactMutable` and writes the slot in
+    /// place to skip the `KeyId` lookup performed here.
+    void SetOrReplaceEnumDictRef(KeyId id, EnumValueId vid);
 
     std::vector<std::string> GetKeys() const;
 
@@ -160,7 +163,7 @@ public:
 
 private:
     /// Replace (or insert) the slot for @p id with @p compact. Shared
-    /// by `SetValue` and `SetEnumDictRef`. May allocate.
+    /// by `SetValue` and `SetOrReplaceEnumDictRef`. May allocate.
     void SetCompact(KeyId id, internal::CompactLogValue compact);
 
     internal::CompactLineFields mValues;

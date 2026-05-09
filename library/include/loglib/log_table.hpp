@@ -115,15 +115,19 @@ public:
     /// `Find(keyId)->Values()` for the multi-select picker.
     const EnumDictionaryRegistry &EnumDictionaries() const noexcept;
 
-    /// Override the per-column distinct-value cap. Clamped to
-    /// `[1, MAX_ENUM_VALUES]`. No effect on existing dictionaries.
+    /// Test/tuning hook: override the per-column distinct-value cap.
+    /// Clamped to `[1, MAX_ENUM_VALUES]`. No effect on existing
+    /// dictionaries. Not exposed via the GUI; tests use it to keep
+    /// fixtures small.
     void SetEnumValueCap(uint16_t cap) noexcept;
 
     [[nodiscard]] uint16_t EnumValueCap() const noexcept;
 
-    /// Override the per-value byte-length cap used by auto-discovery.
-    /// `0` disables the cap. Only affects auto-discovered columns;
-    /// user-pinned `Type::enumeration` columns ignore the limit.
+    /// Test/tuning hook: override the per-value byte-length cap used
+    /// by the health policy. `0` disables the cap. Long values are
+    /// not killed on first sight; the percentile tolerance in
+    /// `RunEnumPassForAppendBatch` decides whether the column gets
+    /// demoted.
     void SetEnumValueMaxLen(uint32_t maxLen) noexcept;
 
     [[nodiscard]] uint32_t EnumValueMaxLen() const noexcept;
@@ -166,10 +170,13 @@ public:
 private:
     /// Per-column observed-value tracker for enum auto-detection.
     /// Tracks up to `cap` distinct values; the (cap+1)th flips `killed`
-    /// and drops the buffer. A value longer than `valueMaxLen` (when
-    /// non-zero) also flips `killed` on first sight: long strings
-    /// almost never repeat enough to beat raw `OwnedString` storage
-    /// and the dictionary's heap footprint blows up otherwise.
+    /// and drops the buffer (hard cap, no tolerance — there is no way
+    /// to encode a (cap+2)th value into a fixed dictionary). A value
+    /// longer than `valueMaxLen` (when non-zero) is counted in
+    /// `longValueCount`; the column is killed only when the long-value
+    /// fraction exceeds `ENUM_HEALTH_TOLERANCE_RATIO` past
+    /// `ENUM_HEALTH_MIN_SAMPLES` presences. Single stray long values
+    /// no longer disqualify the column.
     ///
     /// Uses a flat `std::vector<std::string>` for both storage and
     /// membership: at the small caps in play (default 64) a linear
@@ -177,11 +184,21 @@ private:
     /// overhead — most observations are existing values, hit early in
     /// the scan.
     ///
-    /// `intObservations` and `doubleObservations` count Int64 / UInt64
-    /// (merged) and Double tags seen in the candidate scan. The
-    /// no-string bail uses these to route a column out of `unknown`:
-    /// int-only -> `Type::integer`; double-only -> `Type::floating`;
-    /// both -> `Type::number`; neither (all nulls / bools) -> `Type::any`.
+    /// `intObservations`, `uintObservations`, and `doubleObservations`
+    /// count Int64, UInt64, and Double tags seen in the candidate scan.
+    /// The no-string bail uses these to route a column out of
+    /// `unknown`: int / uint -> `Type::integer`; double -> `Type::floating`;
+    /// any mix of integral and floating -> `Type::number`; neither
+    /// (all nulls / bools) -> `Type::any`. The signed/unsigned split is
+    /// kept in the counters so future numeric widgets can differentiate
+    /// without a wire-format change; today's routing collapses both to
+    /// `Type::integer`.
+    ///
+    /// `presenceCount` counts rows where the slot was actually present
+    /// (any non-monostate tag, including DictRef). `rowsObserved` counts
+    /// loop progress (every row scanned, present or absent). The split
+    /// keeps sparse columns out of the no-string bail until they have
+    /// actually been seen.
     struct EnumCandidateTracker
     {
         std::vector<std::string> values;
@@ -189,7 +206,10 @@ private:
         uint16_t size = 0;
         uint16_t cap = DEFAULT_ENUM_VALUE_CAP;
         size_t rowsObserved = 0;
+        size_t presenceCount = 0;
+        size_t longValueCount = 0;
         size_t intObservations = 0;
+        size_t uintObservations = 0;
         size_t doubleObservations = 0;
         bool killed = false;
 
@@ -200,10 +220,30 @@ private:
             values.reserve(capValue);
         }
 
-        /// True iff @p bytes was new (grew the distinct set). Flips
-        /// `killed` when a new value pushes `size` past `cap` or
-        /// `bytes.size()` exceeds `valueMaxLen`.
-        bool Observe(std::string_view bytes);
+        /// Caller has already incremented `presenceCount` for this row.
+        /// Updates `values` / `size`, counts long values into
+        /// `longValueCount`, and flips `killed` when the long-value
+        /// percentile exceeds `ENUM_HEALTH_TOLERANCE_RATIO` past
+        /// `ENUM_HEALTH_MIN_SAMPLES` presences, or when a (cap+1)th
+        /// distinct value arrives.
+        void Observe(std::string_view bytes);
+    };
+
+    /// Cumulative health for an active `Type::enumeration` column.
+    /// `EncodeColumnRange` updates these counters per encoded slot;
+    /// `RunEnumPassForAppendBatch` consults the tolerance ratio to
+    /// decide whether to demote the column back to `Type::string`.
+    /// Long values and wrong-type slots both accrue against the same
+    /// budget — a dictionary that started seeing strings but is now
+    /// receiving numbers is just as suspect as one accumulating
+    /// over-cap-length values.
+    struct EnumColumnHealth
+    {
+        size_t totalSlots = 0;
+        size_t longValueSlots = 0;
+        size_t wrongTypeSlots = 0;
+
+        [[nodiscard]] bool ShouldDemote(double tolerance, size_t minSamples) const noexcept;
     };
 
     static std::string FormatLogValue(const std::string &format, const LogValue &value);
@@ -235,16 +275,23 @@ private:
     void DemoteColumnFromEnum(size_t columnIndex);
 
     /// Encode the column's slots in `[rowBegin, rowEnd)` as `DictRef`,
-    /// growing the dictionary as needed. Returns false if the
-    /// dictionary would exceed `MAX_ENUM_VALUES` or a value exceeds
-    /// the per-column length cap; caller should demote.
-    bool EncodeColumnRangeAsEnum(const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd);
+    /// growing the dictionary as needed. Returns false only on the
+    /// hard dictionary-cap overflow (no tolerance for that path);
+    /// long values and wrong-type slots accumulate in @p health, and
+    /// the caller decides whether the percentile threshold has been
+    /// crossed.
+    bool EncodeColumnRangeAsEnum(
+        const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
+    );
 
     /// Shared inner loop. @p aliasKeys must contain only resolved
     /// entries; the first one is the canonical dictionary key
-    /// (aliases share its dictionary). Pass `0` for @p maxLen to
-    /// disable the per-value length cap (user-pinned columns).
-    bool EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, uint32_t maxLen);
+    /// (aliases share its dictionary). Updates @p health with
+    /// `totalSlots` / `longValueSlots` / `wrongTypeSlots`; returns
+    /// false on hard dictionary-cap overflow.
+    bool EncodeColumnRange(
+        std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
+    );
 
     LogData mData;
     LogConfigurationManager mConfiguration;
@@ -271,12 +318,17 @@ private:
     /// columns. `0` disables the cap.
     uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 
-    /// Trackers for promotion candidates, keyed on `column.keys.front()`
-    /// (the configured canonical key string -- stable across batches
-    /// even when alias keys arrive out of order). Live only while the
-    /// column is still `Type::unknown`. Cleared by
+    /// Trackers for promotion candidates, keyed on `column.header`
+    /// (unique per column and stable across alias-list edits). Live
+    /// only while the column is still `Type::unknown`. Cleared by
     /// `FinalizeAutoDetection` and `Reset`.
     std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
+
+    /// Cumulative health counters for active `Type::enumeration`
+    /// columns, keyed on `column.header`. Survives across batches
+    /// (so the percentile tolerance reflects the full session, not
+    /// the last batch). Erased on `DemoteColumnFromEnum` and `Reset`.
+    std::unordered_map<std::string, EnumColumnHealth> mEnumColumnHealth;
 
     /// True between `BeginStreaming` and `FinalizeAutoDetection`. When
     /// set, `RunEnumPassForAppendBatch` uses the smaller stream

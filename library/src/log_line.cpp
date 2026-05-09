@@ -283,7 +283,7 @@ void LogLine::SetValue(const std::string &key, const LogValue &value)
     SetValue(id, value);
 }
 
-void LogLine::SetEnumDictRef(KeyId id, EnumValueId vid)
+void LogLine::SetOrReplaceEnumDictRef(KeyId id, EnumValueId vid)
 {
     SetCompact(id, internal::CompactLogValue::MakeDictRef(vid));
 }
@@ -309,7 +309,7 @@ void LogLine::SetCompact(KeyId id, internal::CompactLogValue compact)
     if (lo < size && data[lo].first == id)
     {
         // In-place replacement: timestamp promotion, enum encode
-        // (`SetEnumDictRef`), and demote back to `OwnedString`.
+        // (`SetOrReplaceEnumDictRef`), and demote back to `OwnedString`.
         mValues.Set(lo, compact);
         return;
     }

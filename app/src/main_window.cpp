@@ -1152,7 +1152,9 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 }
 
-void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter)
+void MainWindow::AddFilter(
+    const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter, bool openEditor
+)
 {
     if (mModel->rowCount() == 0)
     {
@@ -1161,8 +1163,10 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
 
     // Drop saved filters whose type no longer matches the column's
     // current `Type` (e.g. a string filter against a now-enum column
-    // after auto-promotion). Editor still opens empty so the user can
-    // recreate the filter.
+    // after auto-promotion). When called from the configuration-load
+    // path (`openEditor == false`) the diagnostic in the status bar
+    // is the only feedback -- popping a default editor on top of the
+    // user's just-loaded session would be noisy.
     std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
@@ -1206,8 +1210,24 @@ void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::
                     5000
                 );
                 resolvedFilter.reset();
+                if (!openEditor)
+                {
+                    // Configuration-load path: skip the editor pop.
+                    // Status-bar message is the only diagnostic.
+                    return;
+                }
             }
         }
+    }
+
+    if (!openEditor)
+    {
+        // Configuration-load path: nothing more to do. The filter
+        // (when type-compatible) is already stored in `mFilters`
+        // through `AddLogFilter` and pushed into the proxy via
+        // `UpdateFilters`; the editor is purely a UI surface for
+        // the user to re-tweak it.
+        return;
     }
 
     auto *filterEditor = new FilterEditor(*mModel, filterId, this);

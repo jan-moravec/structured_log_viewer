@@ -156,12 +156,6 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
-    /// Forward to `LogTable::SetEnumValueCap`. No effect on existing
-    /// dictionaries.
-    void SetEnumValueCap(uint16_t cap) noexcept;
-
-    [[nodiscard]] uint16_t EnumValueCap() const noexcept;
-
 signals:
     /// Cumulative error count since the last `Reset` / `BeginStreaming`,
     /// emitted whenever a batch carries errors.
@@ -184,10 +178,19 @@ signals:
     /// `BytesProducer`. Re-emitted via queued connection to the GUI.
     void sourceStatusChanged(loglib::SourceStatus status);
 
-    /// Emitted when an `AppendBatch` back-fill range covers an enum
-    /// column (auto-promotion or a dictionary grew). `MainWindow`
-    /// rebuilds active enum-filter rules so newly-appearing values are
-    /// included in the bitset fast path.
+    /// Emitted whenever the active set of `Type::enumeration` columns
+    /// or any of their dictionaries changes shape. Three triggers:
+    ///   1. An auto-detected column was promoted to `Type::enumeration`
+    ///      (covered by the back-fill range).
+    ///   2. An already-promoted column's dictionary grew during the
+    ///      batch (a new value showed up, so `EnumFilterRule`'s
+    ///      bitset is now under-sized).
+    ///   3. `EndStreaming` finalised auto-detection and produced new
+    ///      enum columns.
+    /// `MainWindow` rebuilds active enum-filter rules on every emit so
+    /// newly-interned ids stay on the bitset fast path; the slower
+    /// string-set fallback then only runs for in-flight rows where
+    /// the slot is still `OwnedString`.
     void enumColumnsChanged();
 
 private:

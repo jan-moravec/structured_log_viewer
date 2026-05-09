@@ -388,14 +388,15 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
 {
     mEnumValuesModel->clear();
     mEnumSearchEdit->clear();
-    UpdateEnumSelectionCount();
     if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
     {
+        UpdateEnumSelectionCount();
         return;
     }
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
     if (column.type != LogConfiguration::Type::enumeration)
     {
+        UpdateEnumSelectionCount();
         return;
     }
     // Aliases share the dictionary, so any registered KeyId works.
@@ -417,8 +418,8 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
     }
     if (dict == nullptr || dict->Empty())
     {
-        // Empty dictionary: `UpdateEnumSelectionCount` will swap in
-        // the placeholder and disable OK.
+        // Empty dictionary: the single `UpdateEnumSelectionCount`
+        // below swaps in the placeholder and disables OK.
         UpdateEnumSelectionCount();
         return;
     }
@@ -439,6 +440,9 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
         item->setCheckState(Qt::Unchecked);
         mEnumValuesModel->appendRow(item);
     }
+    // Single selection-count refresh: the early calls were redundant
+    // -- the model is empty until the loop above runs, so the
+    // placeholder / OK state is identical to the post-loop state.
     UpdateEnumSelectionCount();
 }
 

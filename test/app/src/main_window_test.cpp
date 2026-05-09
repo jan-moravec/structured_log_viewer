@@ -595,9 +595,11 @@ private slots:
             return nullptr;
         };
 
-        // All three IsTimestampKey-recognised keys ("time", "t", "Timestamp",
-        // case-insensitive) must auto-promote to Type::time.
-        for (const std::string &header : {std::string("time"), std::string("t"), std::string("Timestamp")})
+        // All three IsTimestampKey-recognised keys ("time", "ts", "Timestamp",
+        // case-insensitive) must auto-promote to Type::time. The bare "t"
+        // alias was deliberately dropped from TIMESTAMP_KEYS to avoid
+        // false positives on columns literally named `t`; use `ts` here.
+        for (const std::string &header : {std::string("time"), std::string("ts"), std::string("Timestamp")})
         {
             const auto *column = findColumn(header);
             QVERIFY2(
@@ -609,12 +611,12 @@ private slots:
 
         // Each row populated only its own timestamp column; the other two are empty.
         const int colTime = ColumnByHeader(*run.model, QStringLiteral("time"));
-        const int colT = ColumnByHeader(*run.model, QStringLiteral("t"));
+        const int colTs = ColumnByHeader(*run.model, QStringLiteral("ts"));
         const int colTimestamp = ColumnByHeader(*run.model, QStringLiteral("Timestamp"));
         QVERIFY(run.model->data(run.model->index(0, colTime), LogModelItemDataRole::SortRole).isValid());
-        QVERIFY(!run.model->data(run.model->index(0, colT), LogModelItemDataRole::SortRole).isValid());
+        QVERIFY(!run.model->data(run.model->index(0, colTs), LogModelItemDataRole::SortRole).isValid());
         QVERIFY(!run.model->data(run.model->index(0, colTimestamp), LogModelItemDataRole::SortRole).isValid());
-        QVERIFY(run.model->data(run.model->index(1, colT), LogModelItemDataRole::SortRole).isValid());
+        QVERIFY(run.model->data(run.model->index(1, colTs), LogModelItemDataRole::SortRole).isValid());
         QVERIFY(run.model->data(run.model->index(2, colTimestamp), LogModelItemDataRole::SortRole).isValid());
     }
 

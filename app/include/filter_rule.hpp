@@ -27,8 +27,29 @@ public:
     /// True iff the row passes. @p displayOrSort is the formatted /
     /// typed value (`SortRole`); @p enumValueId is the raw
     /// `EnumValueId` for `DictRef` slots (used only by
-    /// `EnumFilterRule`).
+    /// `EnumFilterRule`). Either may be a default-constructed
+    /// `QVariant` if `NeedsDisplayOrSort` / `NeedsEnumValueId` is
+    /// `false`.
     virtual bool Matches(const QVariant &displayOrSort, const QVariant &enumValueId) const = 0;
+
+    /// Filter-model batch-resolves data needs across the rule list
+    /// before each row, so a session with no enum filters skips the
+    /// `EnumValueRole` query entirely (saves one `LogModel::data()`
+    /// round-trip per (row, rule)).
+    [[nodiscard]] virtual bool NeedsEnumValueId() const noexcept
+    {
+        return false;
+    }
+
+    /// True when the rule consumes the `SortRole` payload. Default
+    /// `true` for backward compatibility; an override can opt out
+    /// when the rule is known to only need the enum id (currently
+    /// every rule consults the display value via the string-fallback
+    /// path, so no override exists today).
+    [[nodiscard]] virtual bool NeedsDisplayOrSort() const noexcept
+    {
+        return true;
+    }
 
 private:
     int mFilteredColumn = 0;
@@ -158,6 +179,11 @@ public:
         }
 
         return mSelected.contains(displayOrSort.toString());
+    }
+
+    [[nodiscard]] bool NeedsEnumValueId() const noexcept override
+    {
+        return true;
     }
 
 private:

@@ -478,7 +478,51 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
+    // Snapshot pre-batch dictionary sizes for already-promoted enum
+    // columns. `EnumFilterRule` builds its bitset against these
+    // sizes; if a batch grows any of them, emit `enumColumnsChanged`
+    // post-AppendBatch so `MainWindow` rebuilds the rules and the
+    // bitset stays current. Cheap: one `KeyId` + size pair per
+    // active enum column.
+    std::vector<std::pair<loglib::KeyId, uint16_t>> enumDictSizesBefore;
+    {
+        const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+        const auto &keysBefore = mLogTable.Keys();
+        const auto &registryBefore = mLogTable.EnumDictionaries();
+        for (const auto &column : columnsBefore)
+        {
+            if (column.type != loglib::LogConfiguration::Type::enumeration || column.keys.empty())
+            {
+                continue;
+            }
+            const loglib::KeyId kid = keysBefore.Find(column.keys.front());
+            if (kid == loglib::INVALID_KEY_ID)
+            {
+                continue;
+            }
+            if (const loglib::EnumDictionary *dict = registryBefore.Find(kid); dict != nullptr)
+            {
+                enumDictSizesBefore.emplace_back(kid, dict->Size());
+            }
+        }
+    }
+
     mLogTable.AppendBatch(std::move(batch));
+
+    bool enumDictionariesGrew = false;
+    if (!enumDictSizesBefore.empty())
+    {
+        const auto &registryAfter = mLogTable.EnumDictionaries();
+        for (const auto &[kid, sizeBefore] : enumDictSizesBefore)
+        {
+            const loglib::EnumDictionary *dict = registryAfter.Find(kid);
+            if (dict != nullptr && dict->Size() > sizeBefore)
+            {
+                enumDictionariesGrew = true;
+                break;
+            }
+        }
+    }
 
     if (rowsGrew)
     {
@@ -489,6 +533,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
+    bool emittedEnumColumnsChanged = false;
     if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
     {
         const int firstColumn = static_cast<int>(range->first);
@@ -516,9 +561,20 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::enumeration)
             {
                 emit enumColumnsChanged();
+                emittedEnumColumnsChanged = true;
                 break;
             }
         }
+    }
+
+    // Active enum columns whose dictionary grew this batch (without a
+    // promotion / back-fill) also need a refresh: `EnumFilterRule`'s
+    // bitset is sized from the dictionary at construction and would
+    // otherwise stale-fall-back to the slow string-set path for any
+    // newly-interned id.
+    if (!emittedEnumColumnsChanged && enumDictionariesGrew)
+    {
+        emit enumColumnsChanged();
     }
 
     // Match the synchronous-parse path's `LogConfigurationManager::Update`
@@ -855,16 +911,6 @@ void LogModel::SetRetentionCap(size_t cap)
 size_t LogModel::RetentionCap() const noexcept
 {
     return mRetentionCap;
-}
-
-void LogModel::SetEnumValueCap(uint16_t cap) noexcept
-{
-    mLogTable.SetEnumValueCap(cap);
-}
-
-uint16_t LogModel::EnumValueCap() const noexcept
-{
-    return mLogTable.EnumValueCap();
 }
 
 QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)

@@ -76,6 +76,46 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
     CHECK(manager.Configuration().columns[0].type == defaultColumn.type);
 }
 
+TEST_CASE(
+    "AppendKeys recognises common timestamp aliases as Type::time and ignores bare 't'",
+    "[LogConfigurationManager][timestamp_keys][regression]"
+)
+{
+    // Regression: the bare "t" used to land here (one-letter
+    // columns named `t` were silently auto-promoted to a date
+    // column). Widen-and-prune the canonical list at the same
+    // time: the well-known JSON timestamp aliases (`@timestamp`,
+    // `datetime`, `created_at`, `ts`) now route through the same
+    // first-column promotion path.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"timestamp", "time", "ts", "@timestamp", "datetime", "created_at", "t", "tag"});
+
+    const auto &columns = manager.Configuration().columns;
+    REQUIRE(columns.size() == 8);
+
+    auto findColumn = [&columns](std::string_view header) {
+        return std::ranges::find_if(columns, [header](const auto &c) { return c.header == header; });
+    };
+
+    auto checkType = [&](std::string_view header, LogConfiguration::Type expected) {
+        const auto it = findColumn(header);
+        REQUIRE(it != columns.end());
+        CHECK(it->type == expected);
+    };
+
+    checkType("timestamp", LogConfiguration::Type::time);
+    checkType("time", LogConfiguration::Type::time);
+    checkType("ts", LogConfiguration::Type::time);
+    checkType("@timestamp", LogConfiguration::Type::time);
+    checkType("datetime", LogConfiguration::Type::time);
+    checkType("created_at", LogConfiguration::Type::time);
+
+    // `t` and `tag` are NOT timestamp keys: they keep the
+    // free-text-friendly `Type::unknown` and are not promoted.
+    checkType("t", LogConfiguration::Type::unknown);
+    checkType("tag", LogConfiguration::Type::unknown);
+}
+
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
 {
     const TestLogConfiguration testLogConfiguration;

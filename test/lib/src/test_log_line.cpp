@@ -300,7 +300,7 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
 
     const KeyId messageKey = keys.GetOrInsert("message");
     LogLine line({}, keys, *source, 1);
-    line.SetEnumDictRef(levelKey, warnId);
+    line.SetOrReplaceEnumDictRef(levelKey, warnId);
     line.SetValue(messageKey, LogValue{std::string("hello")});
 
     REQUIRE(line.IsDictRef(levelKey));
@@ -332,7 +332,7 @@ TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / Owned
     source->SetEnumDictionaries(&registry);
 
     LogLine line({}, keys, *source, 1);
-    line.SetEnumDictRef(enumKey, vid);
+    line.SetOrReplaceEnumDictRef(enumKey, vid);
     line.SetValue(stringKey, LogValue{std::string("hello")});
 
     CHECK(line.IsDictRef(enumKey));

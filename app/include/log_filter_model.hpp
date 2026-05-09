@@ -39,16 +39,24 @@ protected:
         for (const auto &rule : mFilterRules)
         {
             QModelIndex index = sourceModel()->index(sourceRow, rule->FilteredColumn(), sourceParent);
-            if (index.isValid())
+            if (!index.isValid())
             {
-                // `EnumFilterRule` uses the bitset fast path when the
-                // slot is `DictRef`-encoded; other rules ignore it.
-                const QVariant displayOrSort = sourceModel()->data(index, LogModelItemDataRole::SortRole);
-                const QVariant enumValueId = sourceModel()->data(index, LogModelItemDataRole::EnumValueRole);
-                if (!rule->Matches(displayOrSort, enumValueId))
-                {
-                    return false;
-                }
+                continue;
+            }
+            // Per-rule data needs: the common case (TextFilterRule
+            // only) skips the `EnumValueRole` query entirely, saving
+            // a `LogModel::data()` round-trip per (row, rule).
+            // `EnumFilterRule` uses the bitset fast path when the
+            // slot is `DictRef`-encoded.
+            const QVariant displayOrSort = rule->NeedsDisplayOrSort()
+                                               ? sourceModel()->data(index, LogModelItemDataRole::SortRole)
+                                               : QVariant{};
+            const QVariant enumValueId = rule->NeedsEnumValueId()
+                                             ? sourceModel()->data(index, LogModelItemDataRole::EnumValueRole)
+                                             : QVariant{};
+            if (!rule->Matches(displayOrSort, enumValueId))
+            {
+                return false;
             }
         }
 

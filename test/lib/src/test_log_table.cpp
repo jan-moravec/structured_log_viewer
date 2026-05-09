@@ -1846,13 +1846,17 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- auto-discovered column rejects values longer than MAX_ENUM_CANDIDATE_LEN",
+    "LogTable -- auto-discovered column tolerates a single stray long value",
     "[log_table][append_batch][enum][length_cap]"
 )
 {
-    // Phase 1.6: long strings rarely repeat enough to amortise the
-    // dictionary's heap cost, so a single overlong value disqualifies
-    // an auto-discovered column from promotion.
+    // Percentile-based length-cap policy: a single overlong line in
+    // an otherwise enum-shaped column no longer disqualifies the
+    // column. The candidate scan sees the long value, counts it
+    // against the column's `longValueCount`, but the ratio (1 / N)
+    // stays under `ENUM_HEALTH_TOLERANCE_RATIO = 0.05` past
+    // `ENUM_HEALTH_MIN_SAMPLES = 20` presences, so the column is
+    // free to promote.
     const TestLogFile testFile("enum_length_cap.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1862,16 +1866,75 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // One value squarely over the 64-byte cap mixed with otherwise
-    // enum-friendly short ones. The long value lands in row 1 so the
-    // candidate scan's `Observe` length-cap fires before the
-    // stream-mode promotion threshold (2 rows) is reached.
+    // 1/320 = 0.3% long values: well below the 5% tolerance.
     const std::string longValue(80, 'x');
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tier", {longValue, "alpha", "beta"}, 1, 320, true));
+    std::vector<std::string> values;
+    values.reserve(320);
+    values.push_back(longValue);
+    for (size_t i = 1; i < 320; ++i)
+    {
+        values.push_back((i % 2) == 0 ? "alpha" : "beta");
+    }
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"tier"};
+    for (const std::string &value : values)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", LogValue{value}}}));
+    }
+    table.AppendBatch(std::move(batch));
 
     REQUIRE(table.RowCount() == 320);
-    // Length-cap kill routes the column to `Type::string`: the
-    // candidate scan concluded "strings, but too varied to enumerate".
+    // Column promoted: stream-mode threshold met after a couple of
+    // rows, the lone long line accrued one slot against the health
+    // budget (well under the 5% tolerance) and got left as
+    // OwnedString.
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    const KeyId tierKey = keys.Find("tier");
+    REQUIRE(tierKey != INVALID_KEY_ID);
+    REQUIRE(table.EnumDictionaries().Contains(tierKey));
+    const EnumDictionary *dict = table.EnumDictionaries().Find(tierKey);
+    REQUIRE(dict != nullptr);
+    // {alpha, beta}: long value never made it into the dictionary.
+    CHECK(dict->Size() == 2);
+}
+
+TEST_CASE(
+    "LogTable -- auto-discovered column demotes when long values exceed the percentile tolerance",
+    "[log_table][append_batch][enum][length_cap]"
+)
+{
+    // Inverse of the previous test: 10% long values over 200 rows
+    // (20 long, 180 short) blows the 5% tolerance budget once the
+    // 20-sample minimum is satisfied. The candidate scan kills the
+    // tracker and the column flips to `Type::string`.
+    const TestLogFile testFile("enum_length_cap_demote.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    const std::string longValue(80, 'x');
+    std::vector<std::string> values;
+    values.reserve(200);
+    for (size_t i = 0; i < 200; ++i)
+    {
+        // Every 10th row is over-cap.
+        values.push_back((i % 10 == 0) ? longValue : "alpha");
+    }
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"tier"};
+    for (const std::string &value : values)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", LogValue{value}}}));
+    }
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.RowCount() == 200);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
@@ -1879,13 +1942,19 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- user-pinned enum column ignores the per-value length cap",
-    "[log_table][append_batch][enum][length_cap]"
+    "LogTable -- user-pinned enum column applies the same percentile length-cap policy",
+    "[log_table][append_batch][enum][length_cap][user_pinned]"
 )
 {
-    // Phase 1.6 spec: the length cap only applies to *auto-discovered*
-    // columns. A user who pinned `Type::enumeration` via the saved
-    // configuration is asking us to dictionary-encode regardless.
+    // The plan deliberately collapses the auto vs. user-pinned
+    // distinction: user-pinned columns are honoured up to the same
+    // tolerance, then demoted. With only 4 rows we are below the
+    // 20-sample min so the column stays `Type::enumeration` even
+    // though 50% of slots are over-cap. Long values are NOT
+    // encoded into the dictionary -- they sit as `OwnedString`
+    // until their share of the column either dilutes (column
+    // stays) or the threshold trips (column demotes on a later
+    // batch).
     const TestLogFile testFile("enum_length_cap_pinned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1911,11 +1980,154 @@ TEST_CASE(
     const std::string longValue(80, 'q');
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {longValue, "short"}, 1, 4, true));
 
+    // Below the min-sample threshold: column stays.
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tagKey));
     const EnumDictionary *dict = table.EnumDictionaries().Find(tagKey);
+    REQUIRE(dict != nullptr);
+    // Only "short" enters the dictionary; the long value is
+    // counted in `EnumColumnHealth::longValueSlots` and left as an
+    // `OwnedString` slot.
+    CHECK(dict->Size() == 1);
+}
+
+TEST_CASE(
+    "LogTable -- user-pinned enum column demotes once long-value tolerance is exceeded across batches",
+    "[log_table][append_batch][enum][length_cap][user_pinned]"
+)
+{
+    // Cumulative health check: a user-pinned column's
+    // `EnumColumnHealth` accumulates across batches. Once the
+    // sample size is large enough and the over-cap fraction blows
+    // the 5% threshold, the column demotes to `Type::string`. The
+    // pre-1.7 escape hatch ("user pinned, ignore the cap forever")
+    // is gone.
+    const TestLogFile testFile("enum_length_cap_pinned_demote.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "tag",
+         .keys = {"tag"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    const std::string longValue(80, 'q');
+    std::vector<std::string> values;
+    values.reserve(50);
+    for (size_t i = 0; i < 50; ++i)
+    {
+        // 5/50 = 10% long values: above the 5% tolerance, and the
+        // total slot count is past the 20-sample min.
+        values.push_back((i % 10 == 0) ? longValue : "short");
+    }
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"tag"};
+    for (const std::string &value : values)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tag", LogValue{value}}}));
+    }
+    table.AppendBatch(std::move(batch));
+
+    // Health-driven demote: column type flipped to `Type::string`.
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    const KeyId tagKey = keys.Find("tag");
+    REQUIRE(tagKey != INVALID_KEY_ID);
+    CHECK_FALSE(table.EnumDictionaries().Contains(tagKey));
+    // Demote also fires the back-fill notification so the GUI can
+    // refresh the affected column.
+    REQUIRE(table.LastBackfillRange().has_value());
+}
+
+TEST_CASE(
+    "LogTable -- sparse stream column with leading missing rows still promotes",
+    "[log_table][append_batch][enum][stream_mode][sparse]"
+)
+{
+    // Regression: pre-1.7 the candidate-scan loop incremented
+    // `rowsObserved` even when the slot was missing, so 4+ leading
+    // missing rows tripped the no-string bail and routed the
+    // column to `Type::any` permanently. With `presenceCount`
+    // gating that bail (and powering the promotion threshold), and
+    // `rowsObserved` resetting when the scanCap is hit with no
+    // presence, the candidate stays alive across batches and
+    // promotes once the strings actually arrive.
+    const TestLogFile testFile("enum_sparse_stream.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // Pre-register both keys so `feature` lands in the
+    // configuration as a `Type::unknown` column on the first
+    // batch even though no row in batch 1 carries that field.
+    static_cast<void>(keys.GetOrInsert("unrelated"));
+    static_cast<void>(keys.GetOrInsert("feature"));
+
+    // Batch 1: 6 rows where the column slot is absent. Both keys
+    // are announced; the `feature` slot stays unset on every row
+    // (the shape of a sparse column whose first appearance is
+    // delayed). The candidate scan walks the first
+    // `scanCap = 4` rows, sees no presence, and (with the fix)
+    // resets the tracker's `rowsObserved` instead of bailing to
+    // `Type::any`.
+    StreamedBatch batch1;
+    batch1.firstLineNumber = 1;
+    batch1.newKeys = {"unrelated", "feature"};
+    for (size_t i = 0; i < 6; ++i)
+    {
+        batch1.lines.push_back(MakeLine(keys, *sourcePtr, {{"unrelated", LogValue{static_cast<int64_t>(i)}}}));
+    }
+    table.AppendBatch(std::move(batch1));
+
+    {
+        const auto &columns = table.Configuration().Configuration().columns;
+        const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
+        REQUIRE(featureCol != columns.end());
+        // Stays a candidate -- no premature route to `Type::any`.
+        CHECK(featureCol->type == LogConfiguration::Type::unknown);
+    }
+
+    // Batch 2: the column finally appears with `info` / `warn`.
+    // The candidate scan resumes with a fresh `scanCap` window
+    // (rowsObserved was reset above), sees two presences, and
+    // promotes via the stream-mode threshold.
+    StreamedBatch batch2;
+    batch2.firstLineNumber = 7;
+    for (size_t i = 0; i < 4; ++i)
+    {
+        const char *value = (i % 2 == 0) ? "info" : "warn";
+        batch2.lines.push_back(MakeLine(keys, *sourcePtr, {{"feature", LogValue{std::string(value)}}}));
+    }
+    table.AppendBatch(std::move(batch2));
+
+    REQUIRE(table.RowCount() == 10);
+    const auto &columns = table.Configuration().Configuration().columns;
+    const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
+    REQUIRE(featureCol != columns.end());
+    CHECK(featureCol->type == LogConfiguration::Type::enumeration);
+    const KeyId featureKey = keys.Find("feature");
+    REQUIRE(featureKey != INVALID_KEY_ID);
+    REQUIRE(table.EnumDictionaries().Contains(featureKey));
+    const EnumDictionary *dict = table.EnumDictionaries().Find(featureKey);
     REQUIRE(dict != nullptr);
     CHECK(dict->Size() == 2);
 }

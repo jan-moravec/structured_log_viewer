@@ -6,9 +6,9 @@
 #include <tsl/robin_map.h>
 
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,17 +26,18 @@ enum class EnumValueId : uint16_t
 inline constexpr EnumValueId INVALID_ENUM_VALUE_ID{std::numeric_limits<uint16_t>::max()};
 
 /// Hard ceiling on distinct values per column. The runtime cap
-/// (`AdvancedParserOptions::enumValueCap`, default 64) is clamped to
-/// this.
+/// (`DEFAULT_ENUM_VALUE_CAP`, default 64; overridable via the
+/// `LogTable::SetEnumValueCap` test/tuning hook) is clamped to this.
 inline constexpr uint16_t MAX_ENUM_VALUES = 1024;
 
 /// Default per-column distinct-value cap.
 inline constexpr uint16_t DEFAULT_ENUM_VALUE_CAP = 64;
 
-/// Maximum byte length for a value to be considered an enum candidate
-/// during auto-discovery. Anything longer disqualifies the column —
-/// long strings rarely repeat enough to beat raw `OwnedString`
-/// storage and they balloon the dictionary's heap footprint.
+/// Maximum byte length for a value to be considered enum-shaped.
+/// Values longer than this accrue against the column's health
+/// budget (`LogTable::EnumColumnHealth`); a single stray long line
+/// no longer disqualifies the column, but exceeding the percentile
+/// tolerance over a sufficient sample demotes it to `Type::string`.
 ///
 /// Only enforced for *auto-discovered* `Type::any` columns and
 /// auto-promoted `Type::enumeration` columns. Columns the user
@@ -98,21 +99,38 @@ public:
     }
 
     /// Snapshot for the filter UI picker. Bytes are stable for the
-    /// dictionary's lifetime.
-    [[nodiscard]] std::span<const std::string> Values() const noexcept
+    /// dictionary's lifetime. `std::deque` instead of a contiguous
+    /// vector so the `string_view` keys in `mIndex` stay valid as
+    /// new values are appended (deque elements never move).
+    [[nodiscard]] const std::deque<std::string> &Values() const noexcept
     {
-        return {mValues};
+        return mValues;
     }
 
     void Clear() noexcept;
 
 private:
-    std::vector<std::string> mValues;
+    /// `std::deque` instead of `std::vector` so each interned string's
+    /// address is stable across `Insert`. The index below keys on
+    /// `string_view` pointing into these stable bytes — switching to
+    /// a vector would force a re-key on every reallocation. Costs
+    /// one indirection on `Resolve(id)` (deque element access) for
+    /// roughly 50% off the dictionary's heap footprint vs. the old
+    /// `std::vector<std::string>` + `robin_map<std::string, ...>`
+    /// pair (which kept two copies of every interned string).
+    std::deque<std::string> mValues;
     // Phase 2.6: robin_map cuts the per-Insert hash lookup cost
     // (open addressing + smaller per-probe footprint) and brings the
     // dictionary's hot path closer to `KeyIndex`. Heterogeneous
-    // lookup keeps `string_view` queries allocation-free.
-    tsl::robin_map<std::string, EnumValueId, internal::TransparentStringHash, internal::TransparentStringEqual> mIndex;
+    // lookup keeps `string_view` queries allocation-free; the keys
+    // here point into `mValues`'s stable bytes (one source of truth
+    // per interned value).
+    tsl::robin_map<
+        std::string_view,
+        EnumValueId,
+        internal::TransparentStringHash,
+        internal::TransparentStringEqual>
+        mIndex;
     uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };
 
@@ -143,8 +161,13 @@ public:
     [[nodiscard]] EnumDictionary &GetOrInsert(KeyId key, uint16_t cap = DEFAULT_ENUM_VALUE_CAP);
 
     /// Make @p alias resolve to @p canonical's dictionary. @p canonical
-    /// must already have one. Idempotent.
-    void Alias(KeyId canonical, KeyId alias);
+    /// must already have a dictionary; @p alias must not already be
+    /// either canonical or an alias of a different dictionary.
+    /// Idempotent: aliasing the same pair twice returns `true` both
+    /// times. Returns `false` (without modifying state) when the
+    /// preconditions are violated; previously this was a silent
+    /// `stderr` warning that masked configuration bugs.
+    [[nodiscard]] bool Alias(KeyId canonical, KeyId alias);
 
     /// Drop the dictionary at @p canonical and every alias to it.
     void Erase(KeyId canonical) noexcept;
@@ -165,11 +188,22 @@ public:
     [[nodiscard]] size_t EstimatedMemoryBytes() const noexcept;
 
 private:
+    /// One entry per canonical key. `aliases` always contains at
+    /// least the canonical key itself plus any keys aliased onto it,
+    /// so `Erase` can drop only the affected `mIndex` entries
+    /// instead of walking the whole index.
+    struct DictionaryEntry
+    {
+        std::unique_ptr<EnumDictionary> dict;
+        std::vector<KeyId> aliases;
+    };
+
     // Phase 2.6: robin_map again — `Find`/`Contains` are called every
     // `LogLine::GetValue(KeyId)` on a `DictRef` slot, so the hot
     // lookup matters.
-    /// `unique_ptr` so dictionary refs survive rehashes.
-    tsl::robin_map<KeyId, std::unique_ptr<EnumDictionary>> mDictionaries;
+    /// `unique_ptr` (inside the entry) so dictionary refs survive
+    /// `mDictionaries` rehashes.
+    tsl::robin_map<KeyId, DictionaryEntry> mDictionaries;
     /// Canonical and alias keys -> pointer into `mDictionaries`.
     tsl::robin_map<KeyId, EnumDictionary *> mIndex;
 };

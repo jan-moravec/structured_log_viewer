@@ -168,8 +168,16 @@ TEST_CASE("EnumDictionaryRegistry::Alias makes multiple KeyIds share storage", "
     EnumDictionary &dict = registry.GetOrInsert(kLevel);
     static_cast<void>(dict.Insert("info"));
 
-    registry.Alias(kLevel, kSeverity);
-    registry.Alias(kLevel, kVerbosity);
+    REQUIRE(registry.Alias(kLevel, kSeverity));
+    REQUIRE(registry.Alias(kLevel, kVerbosity));
+    // Idempotent: aliasing the same pair twice succeeds.
+    REQUIRE(registry.Alias(kLevel, kSeverity));
+    // Aliasing a key onto its own canonical entry succeeds (identity).
+    REQUIRE(registry.Alias(kLevel, kLevel));
+    // Aliasing onto a non-existent canonical fails.
+    constexpr KeyId kMissingCanonical = 99;
+    constexpr KeyId kMissingAlias = 100;
+    CHECK_FALSE(registry.Alias(kMissingCanonical, kMissingAlias));
 
     REQUIRE(registry.Find(kLevel) != nullptr);
     REQUIRE(registry.Find(kSeverity) != nullptr);

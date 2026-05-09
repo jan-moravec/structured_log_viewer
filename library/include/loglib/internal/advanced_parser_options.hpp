@@ -1,9 +1,6 @@
 #pragma once
 
-#include "loglib/enum_dictionary.hpp"
-
 #include <cstddef>
-#include <cstdint>
 
 namespace loglib::internal
 {
@@ -11,6 +8,13 @@ namespace loglib::internal
 /// Tuning knobs for the streaming pipeline. A default-constructed instance
 /// reproduces the public `Parse(path)` behaviour; tests and benchmarks use
 /// it to pin determinism (single thread, smaller batches).
+///
+/// Enum auto-detection no longer exposes UI-visible knobs here. The
+/// per-column distinct-value cap and per-value length cap are compile-time
+/// constants (see `DEFAULT_ENUM_VALUE_CAP` and `MAX_ENUM_CANDIDATE_LEN`)
+/// fed by a percentile-based health policy in `LogTable`. Tests that need
+/// to vary either limit reach for the `LogTable::SetEnumValueCap` /
+/// `SetEnumValueMaxLen` test/tuning hooks directly.
 struct AdvancedParserOptions
 {
     /// Cap on per-process oneTBB parallelism so the parser does not monopolise
@@ -26,18 +30,6 @@ struct AdvancedParserOptions
 
     /// Values smaller than a single line auto-expand so a line never spans batches.
     size_t batchSizeBytes = DEFAULT_BATCH_SIZE_BYTES;
-
-    /// Per-column distinct-value cap for enum auto-detection.
-    /// Forwarded to `LogTable::SetEnumValueCap`; clamped to
-    /// `[1, MAX_ENUM_VALUES]`.
-    uint16_t enumValueCap = DEFAULT_ENUM_VALUE_CAP;
-
-    /// Maximum byte length for a value to be considered an enum
-    /// candidate during auto-discovery. `0` disables the cap (the
-    /// pre-1.6 behaviour). Forwarded to `LogTable::SetEnumValueMaxLen`;
-    /// only affects auto-discovered columns — user-pinned
-    /// `Type::enumeration` columns ignore it.
-    uint32_t enumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 };
 
 } // namespace loglib::internal

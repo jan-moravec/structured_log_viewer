@@ -99,8 +99,15 @@ private slots:
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
+    /// Add a filter rule, optionally opening the editor dialog. Set
+    /// @p openEditor to `false` from the configuration-load path so a
+    /// dropped saved filter (column-type mismatch, missing column,
+    /// etc.) does not pop a default editor on top of the user's
+    /// just-loaded session.
     void AddFilter(
-        const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt
+        const QString &filterId,
+        const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt,
+        bool openEditor = true
     );
     void ClearAllFilters();
     void ClearFilter(const QString &filterID);

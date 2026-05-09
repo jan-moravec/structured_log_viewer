@@ -65,27 +65,43 @@ constexpr size_t STREAM_PROMOTION_MIN_ROWS = 2;
 /// candidate scans.
 constexpr double ENUM_CARDINALITY_BAIL_RATIO = 0.25;
 
+/// Maximum fraction of over-cap-length or wrong-type observations a
+/// column may carry before the auto-detector demotes it back to
+/// `Type::string`. Replaces the pre-1.7 single-strike length-cap kill
+/// (which was too eager: one stray long line in an otherwise
+/// well-shaped enum column locked the column out of promotion for the
+/// whole session). Applies uniformly to candidate columns and to
+/// active `Type::enumeration` columns regardless of provenance —
+/// user-pinned columns are honoured up to the same tolerance, then
+/// demoted when the noise exceeds 5%.
+constexpr double ENUM_HEALTH_TOLERANCE_RATIO = 0.05;
+
+/// Minimum sample size before the tolerance ratio is consulted. Avoids
+/// demoting on a single observation where a 1/1 over-cap ratio would
+/// trip the threshold. Works for both the candidate scan
+/// (`presenceCount`) and the active-column health (`totalSlots`).
+constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 20;
+
 /// Routes a no-string-bail tracker to a concrete numeric / any type
-/// based on `intObservations` / `doubleObservations`. Mirrors the
-/// per-batch and finalize flows. See the `LogConfiguration::Type`
-/// docblock.
+/// based on `intObservations` / `uintObservations` / `doubleObservations`.
+/// Mirrors the per-batch and finalize flows. See the
+/// `LogConfiguration::Type` docblock.
 ///
-/// Note: `intObservations` collapses `Int64` and `UInt64` tags into
-/// a single counter; the routing emits `Type::integer` for both.
-/// That is fine while the only consumer is the default `"{}"`
-/// rendering, which prints either kind correctly. Once numeric sort
-/// or range-filter widgets land we will need a dedicated
-/// `uintObservations` counter (or a richer terminal type) to
-/// distinguish signed from unsigned formatting and overflow rules.
-LogConfiguration::Type RouteNoStringBail(size_t intObservations, size_t doubleObservations) noexcept
+/// `intObservations` and `uintObservations` are tracked separately so
+/// future numeric widgets can differentiate signed from unsigned, but
+/// today the routing collapses both into `Type::integer`. Mixing any
+/// integer kind with a double routes to `Type::number`.
+LogConfiguration::Type RouteNoStringBail(
+    size_t intObservations, size_t uintObservations, size_t doubleObservations
+) noexcept
 {
-    const bool sawInt = intObservations > 0;
+    const bool sawIntegral = intObservations > 0 || uintObservations > 0;
     const bool sawDouble = doubleObservations > 0;
-    if (sawInt && sawDouble)
+    if (sawIntegral && sawDouble)
     {
         return LogConfiguration::Type::number;
     }
-    if (sawInt)
+    if (sawIntegral)
     {
         return LogConfiguration::Type::integer;
     }
@@ -168,32 +184,43 @@ bool IsEnumPassEligible(LogConfiguration::Type type) noexcept
 
 } // namespace
 
-bool LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
+bool LogTable::EnumColumnHealth::ShouldDemote(double tolerance, size_t minSamples) const noexcept
 {
-    ++rowsObserved;
-    if (killed)
+    if (totalSlots < minSamples)
     {
         return false;
     }
-    // Length cap (auto-discovered columns only): an overlong value
-    // disqualifies the column on first sight. Long strings rarely
-    // repeat enough to amortise the dictionary's heap cost.
-    //
-    // Single-strike kill is intentional. A column where one stray
-    // long value lands in the candidate window is statistically
-    // unlikely to be a small fixed enum: even one outlier suggests
-    // the field is free-form. The verdict is permanent for the
-    // session AND persists into the saved configuration as
-    // `Type::string`, so a user who knows better can pin the column
-    // to `Type::enumeration` (which ignores the length cap entirely)
-    // instead. Loosening to a multi-strike rule would only delay the
-    // same conclusion at the cost of more dict / heap traffic.
+    const double bad = static_cast<double>(longValueSlots + wrongTypeSlots);
+    return bad > tolerance * static_cast<double>(totalSlots);
+}
+
+void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
+{
+    // Caller increments `presenceCount` and `rowsObserved` for every
+    // row scanned (present or absent); this method only handles the
+    // string-typed slot path.
+    if (killed)
+    {
+        return;
+    }
     if (valueMaxLen != 0 && bytes.size() > valueMaxLen)
     {
-        killed = true;
-        values = {};
-        size = 0;
-        return true;
+        // Long values accrue against a tolerance budget instead of
+        // killing on first sight. The candidate stays alive while
+        // the over-cap fraction stays under
+        // `ENUM_HEALTH_TOLERANCE_RATIO`; once we have enough samples
+        // we kill if the budget is blown. Min-sample gate avoids
+        // demoting a column whose first observation happens to be a
+        // single long line.
+        ++longValueCount;
+        if (presenceCount >= ENUM_HEALTH_MIN_SAMPLES &&
+            static_cast<double>(longValueCount) > ENUM_HEALTH_TOLERANCE_RATIO * static_cast<double>(presenceCount))
+        {
+            killed = true;
+            values = {};
+            size = 0;
+        }
+        return;
     }
     // Linear membership check over the flat values vector. At
     // `cap=64` the working set fits comfortably in L1 and most
@@ -202,22 +229,22 @@ bool LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
     {
         if (existing == bytes)
         {
-            return false;
+            return;
         }
     }
     if (size >= cap)
     {
-        // (cap+1)th distinct value: column is no longer promotable.
+        // (cap+1)th distinct value: hard cap (no tolerance — the
+        // dictionary itself cannot grow past `MAX_ENUM_VALUES` slots).
         // Drop the buffer; caller flips the column type to
         // `Type::string` so the next batch skips it.
         killed = true;
         values = {};
         size = 0;
-        return true;
+        return;
     }
     values.emplace_back(bytes);
     ++size;
-    return true;
 }
 
 LogTable::LogTable(LogData data, LogConfigurationManager configuration)
@@ -246,6 +273,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mEnumValueCap(other.mEnumValueCap),
       mEnumValueMaxLen(other.mEnumValueMaxLen),
       mEnumTrackers(std::move(other.mEnumTrackers)),
+      mEnumColumnHealth(std::move(other.mEnumColumnHealth)),
       mIsStreaming(other.mIsStreaming),
       mLastBackfillRange(std::move(other.mLastBackfillRange))
 {
@@ -269,6 +297,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mEnumValueCap = other.mEnumValueCap;
     mEnumValueMaxLen = other.mEnumValueMaxLen;
     mEnumTrackers = std::move(other.mEnumTrackers);
+    mEnumColumnHealth = std::move(other.mEnumColumnHealth);
     mIsStreaming = other.mIsStreaming;
     other.mIsStreaming = false;
     mLastBackfillRange = std::move(other.mLastBackfillRange);
@@ -304,6 +333,7 @@ void LogTable::Reset()
     mPostSnapshotTimeKeys.clear();
     mEnumDictionaries.Clear();
     mEnumTrackers.clear();
+    mEnumColumnHealth.clear();
     mIsStreaming = false;
     mLastBackfillRange.reset();
     RefreshColumnKeyIds();
@@ -332,6 +362,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 
     mEnumDictionaries.Clear();
     mEnumTrackers.clear();
+    mEnumColumnHealth.clear();
     RewireSourceRegistries();
 
     // Order matters: snapshot inserts the time-column keys before the
@@ -762,7 +793,17 @@ void LogTable::RefreshSnapshotEnumKeys()
             }
             else
             {
-                mEnumDictionaries.Alias(*canonical, id);
+                if (!mEnumDictionaries.Alias(*canonical, id))
+                {
+                    fmt::print(
+                        stderr,
+                        "[loglib] RefreshSnapshotEnumKeys: failed to alias key {} onto canonical {} for column "
+                        "'{}'\n",
+                        static_cast<uint32_t>(id),
+                        static_cast<uint32_t>(*canonical),
+                        column.header
+                    );
+                }
             }
         }
     }
@@ -890,11 +931,12 @@ void LogTable::RunEnumPassForAppendBatch(
         }
 
         // Active enum column: encode pre-existing / pre-configured
-        // enum columns over the appended slice. The length cap only
-        // applies to the candidate scan (where the tracker still
-        // might bail); once a column is promoted to `enumeration`,
-        // the dictionary cap is the authoritative growth limit and
-        // overflow routes through `DemoteColumnFromEnum`.
+        // enum columns over the appended slice. Length cap and
+        // wrong-type observations accrue against the column's
+        // health budget (`mEnumColumnHealth`); a hard dictionary-cap
+        // overflow demotes immediately. The percentile policy
+        // applies uniformly here regardless of whether the column
+        // was auto-promoted or user-pinned.
         if (column.type == LogConfiguration::Type::enumeration)
         {
             resolveKeys(columnIndex);
@@ -902,7 +944,14 @@ void LogTable::RunEnumPassForAppendBatch(
             {
                 continue;
             }
-            if (!EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, 0U))
+            EnumColumnHealth &health = mEnumColumnHealth[column.header];
+            if (!EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, health))
+            {
+                DemoteColumnFromEnum(columnIndex);
+                recordBackfill(columnIndex);
+                continue;
+            }
+            if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, ENUM_HEALTH_MIN_SAMPLES))
             {
                 DemoteColumnFromEnum(columnIndex);
                 recordBackfill(columnIndex);
@@ -915,14 +964,16 @@ void LogTable::RunEnumPassForAppendBatch(
             continue;
         }
 
-        // Candidate scan. The tracker is keyed on the canonical key
-        // string (stable across batches). On bail / kill the column
-        // type is flipped to a terminal (`string` / `integer` /
-        // `floating` / `number` / `any`), which removes it from
-        // `IsEnumPassEligible` for the next batch -- the type itself
-        // enforces kill-once-stay-killed.
-        const std::string &trackerKey = column.keys.front();
-        const bool wellKnown = IsWellKnownEnumKey(trackerKey);
+        // Candidate scan. Tracker keyed on `column.header` so an
+        // alias-list reorder cannot orphan the running counters. On
+        // bail / kill the column type is flipped to a terminal
+        // (`string` / `integer` / `floating` / `number` / `any`), which
+        // removes it from `IsEnumPassEligible` for the next batch --
+        // the type itself enforces kill-once-stay-killed.
+        const std::string &trackerKey = column.header;
+        // Well-known threshold still consults the canonical key
+        // (the JSON field name), not the display header.
+        const bool wellKnown = IsWellKnownEnumKey(column.keys.front());
         const size_t promotionMinRows =
             mIsStreaming ? STREAM_PROMOTION_MIN_ROWS
                          : (wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS);
@@ -944,15 +995,15 @@ void LogTable::RunEnumPassForAppendBatch(
         // both the LogValue variant construction and the AsStringView
         // alternative-check on numeric / monostate / DictRef slots.
         //
-        // Phase 2.1 sampled scan: once we have enough observations to
-        // make a promote decision (size > 0 && >= promotionMinRows),
-        // stop scanning rows for this column in this batch.
+        // Phase 2.1 sampled scan: once we have enough presences to
+        // make a promote decision (size > 0 && presenceCount >=
+        // promotionMinRows), stop scanning rows for this column in
+        // this batch.
         //
-        // Numeric tag counting lets the no-string bail route the column
-        // to `Type::integer` / `Type::floating` / `Type::number` instead
-        // of the catch-all `Type::any`. We do a single `FindCompact`
-        // walk per (row, key) and dispatch on the returned slot's tag,
-        // rather than separate scans for the tag and the string bytes.
+        // `presenceCount` (slot present, any tag) is decoupled from
+        // `rowsObserved` (loop progress) so a sparse column with
+        // leading missing rows does not get killed by the no-string
+        // bail before its strings show up.
         const size_t scanCap = 2 * promotionMinRows;
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
@@ -966,36 +1017,34 @@ void LogTable::RunEnumPassForAppendBatch(
                     break;
                 }
             }
+            ++tracker.rowsObserved;
             if (slot != nullptr)
             {
+                ++tracker.presenceCount;
                 std::optional<std::string_view> bytes = line.PeekStringView(*slot);
                 if (bytes.has_value())
                 {
                     tracker.Observe(*bytes);
                 }
-                else
+                else if (slot->tag == internal::CompactTag::Int64)
                 {
-                    ++tracker.rowsObserved;
-                    if (slot->tag == internal::CompactTag::Int64 || slot->tag == internal::CompactTag::Uint64)
-                    {
-                        ++tracker.intObservations;
-                    }
-                    else if (slot->tag == internal::CompactTag::Double)
-                    {
-                        ++tracker.doubleObservations;
-                    }
+                    ++tracker.intObservations;
                 }
-            }
-            else
-            {
-                ++tracker.rowsObserved;
+                else if (slot->tag == internal::CompactTag::Uint64)
+                {
+                    ++tracker.uintObservations;
+                }
+                else if (slot->tag == internal::CompactTag::Double)
+                {
+                    ++tracker.doubleObservations;
+                }
             }
             if (tracker.killed)
             {
                 break;
             }
-            // Sampled scan: have we seen enough to decide?
-            if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.rowsObserved >= promotionMinRows)
+            // Sampled scan: have we seen enough strings to decide?
+            if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= promotionMinRows)
             {
                 break;
             }
@@ -1007,15 +1056,16 @@ void LogTable::RunEnumPassForAppendBatch(
 
         if (tracker.killed)
         {
-            // Length cap or dict cap exceeded: column is too varied
-            // to enumerate. Route to `string` so the next batch skips
-            // it and so save/load preserves the conclusion.
+            // Length-cap tolerance exceeded or hard dict cap hit:
+            // column is too varied to enumerate. Route to `string`
+            // so the next batch skips it and so save/load preserves
+            // the conclusion.
             mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
             mEnumTrackers.erase(trackerIt);
             continue;
         }
 
-        if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.rowsObserved >= promotionMinRows)
+        if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= promotionMinRows)
         {
             PromoteColumnToEnum(columnIndex);
             mEnumTrackers.erase(trackerIt);
@@ -1029,14 +1079,26 @@ void LogTable::RunEnumPassForAppendBatch(
         // is watching live).
         if (tracker.rowsObserved >= scanCap)
         {
+            // Skip the no-string bail entirely if the column has
+            // never appeared yet -- a sparse column whose first
+            // presence falls past the scanCap window deserves a
+            // chance in a later batch. We also reset `rowsObserved`
+            // so the next batch gets a fresh scanCap budget instead
+            // of bailing immediately on its first row.
+            if (tracker.presenceCount == 0)
+            {
+                tracker.rowsObserved = 0;
+                continue;
+            }
             const bool noStringSeen = tracker.size == 0;
             const bool highCardinality = !mIsStreaming && tracker.size > 0 &&
                                          static_cast<double>(tracker.size) >
-                                             ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.rowsObserved);
+                                             ENUM_CARDINALITY_BAIL_RATIO * static_cast<double>(tracker.presenceCount);
             if (noStringSeen)
             {
                 mConfiguration.SetColumnType(
-                    columnIndex, RouteNoStringBail(tracker.intObservations, tracker.doubleObservations)
+                    columnIndex,
+                    RouteNoStringBail(tracker.intObservations, tracker.uintObservations, tracker.doubleObservations)
                 );
                 mEnumTrackers.erase(trackerIt);
             }
@@ -1070,8 +1132,7 @@ bool LogTable::FinalizeAutoDetection()
         {
             continue;
         }
-        const std::string &trackerKey = column.keys.front();
-        auto trackerIt = mEnumTrackers.find(trackerKey);
+        auto trackerIt = mEnumTrackers.find(column.header);
         if (trackerIt == mEnumTrackers.end())
         {
             continue;
@@ -1085,20 +1146,22 @@ bool LogTable::FinalizeAutoDetection()
             mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
             continue;
         }
-        if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.rowsObserved >= 2)
+        if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
         {
             PromoteColumnToEnum(columnIndex);
             promoted = true;
             continue;
         }
-        if (tracker.size == 0 && tracker.rowsObserved > 0)
+        if (tracker.size == 0 && tracker.presenceCount > 0)
         {
             mConfiguration.SetColumnType(
-                columnIndex, RouteNoStringBail(tracker.intObservations, tracker.doubleObservations)
+                columnIndex,
+                RouteNoStringBail(tracker.intObservations, tracker.uintObservations, tracker.doubleObservations)
             );
             continue;
         }
-        // Insufficient evidence (e.g. a single string row): leave
+        // Insufficient evidence (e.g. a single string row, or the
+        // column has not appeared yet in any row): leave
         // `Type::unknown`. A future re-load with more rows can still
         // decide.
     }
@@ -1108,7 +1171,9 @@ bool LogTable::FinalizeAutoDetection()
     return promoted;
 }
 
-bool LogTable::EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, uint32_t maxLen)
+bool LogTable::EncodeColumnRange(
+    std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
+)
 {
     if (aliasKeys.empty())
     {
@@ -1128,11 +1193,15 @@ bool LogTable::EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBeg
         LogLine &line = lines[row];
         // At most one DictRef per row: aliases share the dictionary,
         // so encoding under the first matching key is enough.
+        bool encoded = false;
+        bool sawLong = false;
+        bool sawWrongType = false;
+        bool alreadyEncoded = false;
         for (const KeyId id : aliasKeys)
         {
             // Phase 1.2: single linear scan per slot — read tag,
             // peek bytes, write `DictRef` in place. Replaces the
-            // old IsDictRef + GetValue + SetEnumDictRef triple
+            // old IsDictRef + GetValue + SetOrReplaceEnumDictRef triple
             // lookup.
             internal::CompactLogValue *slot = line.FindCompactMutable(id);
             if (slot == nullptr)
@@ -1141,33 +1210,66 @@ bool LogTable::EncodeColumnRange(std::span<const KeyId> aliasKeys, size_t rowBeg
             }
             if (slot->tag == internal::CompactTag::DictRef)
             {
+                alreadyEncoded = true;
                 break;
             }
             const auto bytes = line.PeekStringView(*slot);
             if (!bytes.has_value())
             {
+                // Numeric / bool / timestamp / monostate slot in a
+                // column we expected to be a string enum. Try the
+                // next alias before charging the column's health
+                // budget.
+                sawWrongType = true;
                 continue;
             }
-            if (maxLen != 0 && bytes->size() > maxLen)
+            if (mEnumValueMaxLen != 0 && bytes->size() > mEnumValueMaxLen)
             {
-                // Auto-discovered column exceeded the per-value
-                // length cap. Bail to demote — the column is
-                // unlikely to be enum-shaped after all.
-                return false;
+                // Long values do not bail; they accrue against the
+                // column's health budget (caller demotes when the
+                // tolerance ratio is exceeded).
+                sawLong = true;
+                continue;
             }
             const EnumValueId vid = dict->Insert(*bytes);
             if (vid == INVALID_ENUM_VALUE_ID)
             {
+                // Hard dictionary cap (no tolerance — the dict
+                // cannot grow further). Caller demotes immediately.
                 return false;
             }
             *slot = internal::CompactLogValue::MakeDictRef(vid);
+            encoded = true;
             break;
         }
+        if (alreadyEncoded)
+        {
+            // Already counted by a previous batch's `EncodeColumnRange`
+            // pass; do not double-count.
+            continue;
+        }
+        if (encoded)
+        {
+            ++health.totalSlots;
+        }
+        else if (sawLong)
+        {
+            ++health.totalSlots;
+            ++health.longValueSlots;
+        }
+        else if (sawWrongType)
+        {
+            ++health.totalSlots;
+            ++health.wrongTypeSlots;
+        }
+        // Slot absent on every alias: not counted.
     }
     return true;
 }
 
-bool LogTable::EncodeColumnRangeAsEnum(const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd)
+bool LogTable::EncodeColumnRangeAsEnum(
+    const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
+)
 {
     std::vector<KeyId> keyIds;
     keyIds.reserve(column.keys.size());
@@ -1183,13 +1285,7 @@ bool LogTable::EncodeColumnRangeAsEnum(const LogConfiguration::Column &column, s
     {
         return true;
     }
-    // No length cap on the encode path: the candidate scan already
-    // enforced `mEnumValueMaxLen` via `EnumCandidateTracker::Observe`.
-    // Once the column is `Type::enumeration`, the dictionary cap is
-    // the authoritative growth limit and overflow routes through
-    // `DemoteColumnFromEnum` -> `Type::string`. User-pinned
-    // enumerations also benefit -- their long values are honoured.
-    return EncodeColumnRange(keyIds, rowBegin, rowEnd, 0U);
+    return EncodeColumnRange(keyIds, rowBegin, rowEnd, health);
 }
 
 void LogTable::PromoteColumnToEnum(size_t columnIndex)
@@ -1219,14 +1315,33 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
             }
             else
             {
-                mEnumDictionaries.Alias(*canonical, id);
+                if (!mEnumDictionaries.Alias(*canonical, id))
+                {
+                    fmt::print(
+                        stderr,
+                        "[loglib] PromoteColumnToEnum: failed to alias key {} onto canonical {} for column '{}'\n",
+                        static_cast<uint32_t>(id),
+                        static_cast<uint32_t>(*canonical),
+                        columns[columnIndex].header
+                    );
+                }
             }
         }
     }
 
-    // The encode walk can still overflow the cap (the tracker only
-    // saw a subset of rows); demote immediately if so.
-    if (!EncodeColumnRangeAsEnum(columns[columnIndex], 0U, mData.Lines().size()))
+    // The encode walk over all existing rows seeds the column health
+    // tracker. A hard dict-cap overflow demotes immediately; the
+    // tolerance check below catches a candidate whose un-scanned
+    // tail had too many over-cap or wrong-type slots for the column
+    // to be enum-shaped after all.
+    const std::string headerKey = columns[columnIndex].header;
+    EnumColumnHealth &health = mEnumColumnHealth[headerKey];
+    if (!EncodeColumnRangeAsEnum(columns[columnIndex], 0U, mData.Lines().size(), health))
+    {
+        DemoteColumnFromEnum(columnIndex);
+        return;
+    }
+    if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, ENUM_HEALTH_MIN_SAMPLES))
     {
         DemoteColumnFromEnum(columnIndex);
     }
@@ -1301,10 +1416,16 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
     }
 
     // Demote routes the column to `Type::string`: dictionary overflow
-    // is a string-cardinality conclusion, not a "we don't know"
-    // verdict. The terminal type also stops the candidate pass from
-    // re-tracking it (see `IsEnumPassEligible`).
+    // (or health-tolerance breach) is a string-cardinality conclusion,
+    // not a "we don't know" verdict. The terminal type also stops the
+    // candidate pass from re-tracking it (see `IsEnumPassEligible`).
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
+
+    // Drop the column's health entry; it is meaningless once the
+    // column is no longer `Type::enumeration`. A re-promotion (only
+    // possible via a manual configuration edit) will start a fresh
+    // budget.
+    mEnumColumnHealth.erase(column.header);
 
     const auto demoteElapsed =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - demoteStart);

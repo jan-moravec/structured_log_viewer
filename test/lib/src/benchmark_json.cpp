@@ -627,7 +627,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
         std::vector<LogLine> &mutLines = mutableData.Lines();
         for (auto &[rowIdx, vid] : rowDictRefs)
         {
-            mutLines[rowIdx].SetEnumDictRef(levelKey, vid);
+            mutLines[rowIdx].SetOrReplaceEnumDictRef(levelKey, vid);
         }
 
         RunTimedSamples("LogLine::GetValue(KeyId) — DictRef path", 11, [&]() {

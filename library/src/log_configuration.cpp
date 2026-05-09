@@ -22,10 +22,18 @@ std::string ToLower(const std::string &str)
 
 bool IsTimestampKey(const std::string &key)
 {
-    static const std::vector<std::string> TIMESTAMP_KEYS = {"timestamp", "time", "t"};
+    // Common JSON / structured-log timestamp field names. The bare
+    // "t" was intentionally dropped: it matches one-letter columns
+    // literally named `t` (e.g. a counter or a tag), which the
+    // user-facing first-column auto-promote then renders as a
+    // formatted date. Keep the list explicit and widely-used; users
+    // who need a custom timestamp key can pin the column type via
+    // configuration.
+    static const std::vector<std::string> TIMESTAMP_KEYS = {
+        "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
+    };
     return std::ranges::any_of(
         TIMESTAMP_KEYS,
-
         [lowerKey = ToLower(key)](const std::string &value) { return (lowerKey == value); }
     );
 }
