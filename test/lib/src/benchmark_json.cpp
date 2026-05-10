@@ -285,7 +285,7 @@ struct StreamSink : LogParseSink
     }
 };
 
-/// Build a `LogConfiguration` with one `Type::time` column for `timestamp`,
+/// Build a `LogConfiguration` with one `Type::Time` column for `timestamp`,
 /// matching the GUI's typical column shape so the parser has real inline
 /// timestamp-promotion work to do.
 std::shared_ptr<const LogConfiguration> MakeTimestampConfiguration()
@@ -294,7 +294,7 @@ std::shared_ptr<const LogConfiguration> MakeTimestampConfiguration()
     LogConfiguration::Column timestampColumn;
     timestampColumn.header = "timestamp";
     timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.type = LogConfiguration::Type::Time;
     timestampColumn.parseFormats = {"%FT%T"};
     timestampColumn.printFormat = "%F %H:%M:%S";
     baseConfig.columns.push_back(std::move(timestampColumn));
@@ -478,7 +478,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 
 // Large-file streaming benchmark (1'000'000 lines, ~170 MB). End-to-end
 // GUI flow: `LogTable::BeginStreaming` + a sink that calls
-// `LogTable::AppendBatch` per `OnBatch`, with a `Type::time` column so the
+// `LogTable::AppendBatch` per `OnBatch`, with a `Type::Time` column so the
 // streaming parser does real inline timestamp promotion.
 TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_parser][large]")
 {
@@ -766,7 +766,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
         return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
     });
     const bool levelIsEnumeration =
-        levelColumn != columns.end() && levelColumn->type == LogConfiguration::Type::enumeration;
+        levelColumn != columns.end() && levelColumn->type == LogConfiguration::Type::Enumeration;
 
     size_t dictRefValues = 0;
     for (const LogLine &line : table.Data().Lines())

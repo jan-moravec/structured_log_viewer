@@ -44,14 +44,14 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
         {.header = "Header1",
          .keys = {"key1"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     logConfiguration.columns.push_back(
         {.header = "Header2",
          .keys = {"key2"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     const TestLogConfiguration testLogConfiguration;
@@ -106,7 +106,7 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
         {.header = "Header1",
          .keys = {"key1"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     const TestLogConfiguration testLogConfiguration;
@@ -179,21 +179,21 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
         {.header = "CustomA",
          .keys = {"key1"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     logConfiguration.columns.push_back(
         {.header = "CustomB",
          .keys = {"key2"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::string;
+    filter.type = LogConfiguration::LogFilter::Type::String;
     filter.row = 0;
     filter.filterString = "value1";
-    filter.matchType = LogConfiguration::LogFilter::Match::contains;
+    filter.matchType = LogConfiguration::LogFilter::Match::Contains;
     logConfiguration.filters.push_back(filter);
 
     const TestLogConfiguration testLogConfiguration;
@@ -478,14 +478,14 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
         {.header = "alpha",
          .keys = {"alpha"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     cfg.columns.push_back(
         {.header = "beta",
          .keys = {"beta"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -569,7 +569,7 @@ TEST_CASE(
     // column 0; the timestamp back-fill in batch 2 is what this test checks.
 
     // Batch 2: introduces `timestamp`. The auto-promotion heuristic in
-    // `LogConfigurationManager::AppendKeys` recognises the name and creates a Type::time
+    // `LogConfigurationManager::AppendKeys` recognises the name and creates a Type::Time
     // column at the END of the configuration, so column index 1 should be the new time
     // column. The two already-appended rows did not see Stage B's timestamp pass (their
     // batch did not even contain the key) so AppendBatch must back-fill them — the new row
@@ -661,11 +661,11 @@ TEST_CASE(
         {.header = "timestamp",
          .keys = {"timestamp"},
          .printFormat = "%F %H:%M:%S",
-         .type = LogConfiguration::Type::time,
+         .type = LogConfiguration::Type::Time,
          .parseFormats = {"%FT%T", "%F %T"}}
     );
     cfg.columns.push_back(
-        {.header = "msg", .keys = {"msg"}, .printFormat = "{}", .type = LogConfiguration::Type::any, .parseFormats = {}}
+        {.header = "msg", .keys = {"msg"}, .printFormat = "{}", .type = LogConfiguration::Type::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -761,7 +761,7 @@ TEST_CASE(
     LogConfiguration::Column wide;
     wide.header = "Wide";
     wide.printFormat = "{}";
-    wide.type = LogConfiguration::Type::any;
+    wide.type = LogConfiguration::Type::Any;
     wide.keys.reserve(KEY_COUNT);
     for (int i = 0; i < KEY_COUNT; ++i)
     {
@@ -844,14 +844,14 @@ TEST_CASE(
     LogConfiguration::Column touched;
     touched.header = "Touched";
     touched.printFormat = "{}";
-    touched.type = LogConfiguration::Type::any;
+    touched.type = LogConfiguration::Type::Any;
     touched.keys = {"k0", "k0_new"};
     cfg.columns.push_back(std::move(touched));
 
     LogConfiguration::Column untouched;
     untouched.header = "Untouched";
     untouched.printFormat = "{}";
-    untouched.type = LogConfiguration::Type::any;
+    untouched.type = LogConfiguration::Type::Any;
     untouched.keys.reserve(UNTOUCHED_KEY_COUNT);
     for (int i = 0; i < UNTOUCHED_KEY_COUNT; ++i)
     {
@@ -1207,7 +1207,7 @@ TEST_CASE(
     constexpr size_t FIRST_BATCH_ROWS = 8;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, columnName, tiers, 1, FIRST_BATCH_ROWS, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 
     const KeyId tierKey = keys.Find(columnName);
     REQUIRE(tierKey != INVALID_KEY_ID);
@@ -1223,7 +1223,7 @@ TEST_CASE(
     );
 
     REQUIRE(table.RowCount() == FIRST_BATCH_ROWS + SECOND_BATCH_ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         CHECK(table.Data().Lines()[row].IsDictRef(tierKey));
@@ -1237,6 +1237,7 @@ TEST_CASE(
         const LogValue v = table.GetValue(row, 0);
         const auto sv = AsStringView(v);
         REQUIRE(sv.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         CHECK(*sv == tiers[row % tiers.size()]);
     }
 }
@@ -1276,7 +1277,7 @@ TEST_CASE(
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, ROWS, true));
 
     REQUIRE(table.RowCount() == ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -1289,12 +1290,13 @@ TEST_CASE(
         const LogValue v = table.GetValue(row, 0);
         const auto sv = AsStringView(v);
         REQUIRE(sv.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         CHECK(*sv == levels[row % levels.size()]);
     }
 }
 
 TEST_CASE(
-    "LogTable::AppendBatch -- pre-configured Type::enumeration column encodes incoming rows without re-walking",
+    "LogTable::AppendBatch -- pre-configured Type::Enumeration column encodes incoming rows without re-walking",
     "[log_table][append_batch][enum]"
 )
 {
@@ -1308,7 +1310,7 @@ TEST_CASE(
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1324,7 +1326,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -1356,7 +1358,7 @@ TEST_CASE(
         {.header = "tag",
          .keys = {"tag"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1382,7 +1384,7 @@ TEST_CASE(
 
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     REQUIRE(table.EnumDictionaries().Contains(tagKey));
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
@@ -1390,10 +1392,10 @@ TEST_CASE(
     }
 
     // (cap+1)th distinct value forces demotion: prior `DictRef`s become
-    // `OwnedString` and the column flips to the terminal `Type::string`.
+    // `OwnedString` and the column flips to the terminal `Type::String`.
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, TEST_CAP + 1, 1, false));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
     CHECK(!table.EnumDictionaries().Contains(tagKey));
     REQUIRE(table.RowCount() == TEST_CAP + 1);
 
@@ -1402,11 +1404,13 @@ TEST_CASE(
         const LogValue v = table.GetValue(i, 0);
         const auto sv = AsStringView(v);
         REQUIRE(sv.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         CHECK(*sv == capValues[i]);
         CHECK_FALSE(table.Data().Lines()[i].IsDictRef(tagKey));
     }
     const LogValue lastValue = table.GetValue(TEST_CAP, 0);
     REQUIRE(AsStringView(lastValue).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(lastValue) == "never-seen");
     CHECK_FALSE(table.Data().Lines()[TEST_CAP].IsDictRef(tagKey));
 
@@ -1420,11 +1424,11 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- Type::any column loaded from saved configuration is locked from auto-promotion",
+    "LogTable -- Type::Any column loaded from saved configuration is locked from auto-promotion",
     "[log_table][append_batch][enum][lock_any][regression]"
 )
 {
-    // A loaded `Type::any` is terminal and never re-promotes, even if
+    // A loaded `Type::Any` is terminal and never re-promotes, even if
     // the data shape looks enum-like.
     const TestLogFile testFile("enum_locked_any.json");
     testFile.Write("");
@@ -1436,7 +1440,7 @@ TEST_CASE(
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1449,12 +1453,12 @@ TEST_CASE(
 
     KeyIndex &keys = table.Keys();
     // Plenty of rows + low cardinality would normally promote, but the
-    // user-locked `Type::any` is terminal and skipped by the auto-detector.
+    // user-locked `Type::Any` is terminal and skipped by the auto-detector.
     constexpr size_t ROWS = 320;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "debug"}, 1, ROWS, false));
 
     REQUIRE(table.RowCount() == ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -1478,7 +1482,7 @@ TEST_CASE(
          // "level" is canonical; "severity" is the alias.
          .keys = {"level", "severity"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1502,18 +1506,18 @@ TEST_CASE(
     }
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "severity", overflowValues, 1, TEST_CAP + 1, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    // Demote routes to terminal `Type::string`, blocking re-promotion.
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    // Demote routes to terminal `Type::String`, blocking re-promotion.
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
 
     // Batch 2: canonical key `level` arrives with cap-friendly data.
-    // Terminal `Type::string` blocks re-promotion.
+    // Terminal `Type::String` blocks re-promotion.
     constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
     const std::vector<std::string> fewLevelValues = {"info", "warn"};
     table.AppendBatch(BuildEnumBatch(
         keys, *sourcePtr, "level", fewLevelValues, TEST_CAP + 2, MIN_ROWS_FOR_PROMOTION + 1, /*announceNewKey=*/true
     ));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -1531,7 +1535,7 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1550,15 +1554,15 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     CHECK(table.EnumDictionaries().Empty());
     CHECK(table.RowCount() == 0);
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 }
 
 TEST_CASE(
-    "LogTable -- a column killed by overflow stays Type::string across subsequent batches",
+    "LogTable -- a column killed by overflow stays Type::String across subsequent batches",
     "[log_table][append_batch][enum][kill_once]"
 )
 {
-    // A tracker overflow flips the column to `Type::string`; the type itself
+    // A tracker overflow flips the column to `Type::String`; the type itself
     // blocks future re-promotion via `IsEnumPassEligible`.
     const TestLogFile testFile("enum_kill_once.json");
     testFile.Write("");
@@ -1583,7 +1587,7 @@ TEST_CASE(
     }
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", manyValues, 1, MIN_ROWS_FOR_PROMOTION, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
 
     // Batch 2: cap-friendly data must NOT re-promote.
     std::vector<std::string> fewValues;
@@ -1595,7 +1599,7 @@ TEST_CASE(
     table.AppendBatch(
         BuildEnumBatch(keys, *sourcePtr, "level", fewValues, MIN_ROWS_FOR_PROMOTION + 1, MIN_ROWS_FOR_PROMOTION, false)
     );
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
 
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -1619,7 +1623,7 @@ TEST_CASE(
         {.header = "severity",
          .keys = {"level", "severity"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1672,7 +1676,7 @@ TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged 
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1718,7 +1722,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1744,6 +1748,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
         REQUIRE(vid.has_value());
         const auto sv = AsStringView(table.GetValue(row, 0));
         REQUIRE(sv.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - both REQUIREs above abort the test on `nullopt`.
         CHECK(dict->Resolve(*vid) == *sv);
     }
 
@@ -1753,7 +1758,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
 
 TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[log_table][enum][get_value]")
 {
-    // Pin the column to `Type::any` so the auto-detector skips it; pre-
+    // Pin the column to `Type::Any` so the auto-detector skips it; pre-
     // promotion / post-demote slots stay `OwnedString` for the filter's
     // string-set fallback path.
     const TestLogFile testFile("enum_get_value_owned.json");
@@ -1766,7 +1771,7 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
         {.header = "channel",
          .keys = {"channel"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1782,7 +1787,7 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "channel", {"alpha"}, 1, 4, true));
 
     REQUIRE(table.RowCount() == 4);
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         CHECK_FALSE(table.GetEnumValueId(row, 0).has_value());
@@ -1810,7 +1815,7 @@ TEST_CASE(
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, WELL_KNOWN_PROMOTION_ROWS, true));
 
     REQUIRE(table.RowCount() == WELL_KNOWN_PROMOTION_ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK(table.EnumDictionaries().Contains(levelKey));
@@ -1854,7 +1859,7 @@ TEST_CASE(
     REQUIRE(table.RowCount() == 320);
     // Column promoted; the lone long line stays as `OwnedString`
     // (under the 5% health tolerance).
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tierKey));
@@ -1870,7 +1875,7 @@ TEST_CASE(
 )
 {
     // Inverse of the previous test: 10% long values blow the 5% tolerance
-    // once the 20-sample min is satisfied; column flips to `Type::string`.
+    // once the 20-sample min is satisfied; column flips to `Type::String`.
     const TestLogFile testFile("enum_length_cap_demote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1898,7 +1903,7 @@ TEST_CASE(
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.RowCount() == 200);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(tierKey));
@@ -1910,7 +1915,7 @@ TEST_CASE(
 )
 {
     // User-pinned columns share the same tolerance. With 4 rows we are
-    // under the 20-sample min, so the column stays `Type::enumeration`
+    // under the 20-sample min, so the column stays `Type::Enumeration`
     // even though 50% of slots are over-cap; long values stay as
     // `OwnedString` and never enter the dictionary.
     const TestLogFile testFile("enum_length_cap_pinned.json");
@@ -1923,7 +1928,7 @@ TEST_CASE(
         {.header = "tag",
          .keys = {"tag"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1939,7 +1944,7 @@ TEST_CASE(
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {longValue, "short"}, 1, 4, true));
 
     // Below the min-sample threshold: column stays.
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tagKey));
@@ -1958,7 +1963,7 @@ TEST_CASE(
     // Cumulative health check: a user-pinned column's `EnumColumnHealth`
     // accumulates across batches. Once the sample size is large enough
     // and the over-cap fraction breaks 5%, the column demotes to
-    // `Type::string` (no more "pinned forever" escape hatch).
+    // `Type::String` (no more "pinned forever" escape hatch).
     const TestLogFile testFile("enum_length_cap_pinned_demote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1969,7 +1974,7 @@ TEST_CASE(
         {.header = "tag",
          .keys = {"tag"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -1998,7 +2003,7 @@ TEST_CASE(
     }
     table.AppendBatch(std::move(batch));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(tagKey));
@@ -2012,7 +2017,7 @@ TEST_CASE(
 )
 {
     // Regression: leading missing rows used to trip the no-string bail
-    // and route the column to `Type::any` permanently. `presenceCount`
+    // and route the column to `Type::Any` permanently. `presenceCount`
     // now gates that bail and the candidate stays alive across batches.
     const TestLogFile testFile("enum_sparse_stream.json");
     testFile.Write("");
@@ -2023,14 +2028,14 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Pre-register both keys so `feature` lands as a `Type::unknown` column
+    // Pre-register both keys so `feature` lands as a `Type::Unknown` column
     // on the first batch, even though no row in batch 1 carries it.
     static_cast<void>(keys.GetOrInsert("unrelated"));
     static_cast<void>(keys.GetOrInsert("feature"));
 
     // Batch 1: 6 rows where `feature` is absent. The candidate scan walks
     // the first `scanCap = 4` rows, sees no presence, and resets
-    // `rowsObserved` instead of bailing to `Type::any`.
+    // `rowsObserved` instead of bailing to `Type::Any`.
     StreamedBatch batch1;
     batch1.firstLineNumber = 1;
     batch1.newKeys = {"unrelated", "feature"};
@@ -2044,8 +2049,8 @@ TEST_CASE(
         const auto &columns = table.Configuration().Configuration().columns;
         const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
         REQUIRE(featureCol != columns.end());
-        // Stays a candidate -- no premature route to `Type::any`.
-        CHECK(featureCol->type == LogConfiguration::Type::unknown);
+        // Stays a candidate -- no premature route to `Type::Any`.
+        CHECK(featureCol->type == LogConfiguration::Type::Unknown);
     }
 
     // Batch 2: the column finally appears; the candidate scan sees two
@@ -2063,7 +2068,7 @@ TEST_CASE(
     const auto &columns = table.Configuration().Configuration().columns;
     const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
     REQUIRE(featureCol != columns.end());
-    CHECK(featureCol->type == LogConfiguration::Type::enumeration);
+    CHECK(featureCol->type == LogConfiguration::Type::Enumeration);
     const KeyId featureKey = keys.Find("feature");
     REQUIRE(featureKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(featureKey));
@@ -2073,12 +2078,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- a loaded Type::any column opts the user out of auto-detection",
+    "LogTable -- a loaded Type::Any column opts the user out of auto-detection",
     "[log_table][append_batch][enum][type_any_opt_out]"
 )
 {
     // To opt out of auto-detection per-column, save the column with a
-    // terminal type (e.g. `Type::any`); only `Type::unknown` columns are
+    // terminal type (e.g. `Type::Any`); only `Type::Unknown` columns are
     // candidates.
     const TestLogFile testFile("enum_loaded_any_opt_out.json");
     testFile.Write("");
@@ -2090,7 +2095,7 @@ TEST_CASE(
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -2103,12 +2108,12 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // Plenty of rows + well-known key would normally promote; the
-    // user-locked `Type::any` keeps it as text.
+    // user-locked `Type::Any` keeps it as text.
     constexpr size_t ROWS = 320;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, ROWS, false));
 
     REQUIRE(table.RowCount() == ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -2119,7 +2124,7 @@ TEST_CASE(
     "[log_table][append_batch][enum][user_pinned]"
 )
 {
-    // A user-pinned `Type::enumeration` column still encodes as `DictRef`
+    // A user-pinned `Type::Enumeration` column still encodes as `DictRef`
     // regardless of what the auto-detector would do.
     const TestLogFile testFile("enum_user_pinned.json");
     testFile.Write("");
@@ -2131,7 +2136,7 @@ TEST_CASE(
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -2144,7 +2149,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, 6, true));
 
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(levelKey));
@@ -2181,12 +2186,12 @@ StreamedBatch BuildNumericBatch(
 } // namespace
 
 TEST_CASE(
-    "LogTable -- no-string bail routes int-only candidates to Type::integer",
+    "LogTable -- no-string bail routes int-only candidates to Type::Integer",
     "[log_table][append_batch][enum][routing][integer]"
 )
 {
     // The candidate scan counts `Int64`/`UInt64` tags so the no-string
-    // bail flips int-only columns straight to `Type::integer`.
+    // bail flips int-only columns straight to `Type::Integer`.
     const TestLogFile testFile("enum_no_string_int.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2199,11 +2204,11 @@ TEST_CASE(
     table.AppendBatch(BuildNumericBatch<int64_t>(keys, *sourcePtr, "count", 42, 8, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::integer);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Integer);
 }
 
 TEST_CASE(
-    "LogTable -- no-string bail routes double-only candidates to Type::floating",
+    "LogTable -- no-string bail routes double-only candidates to Type::Floating",
     "[log_table][append_batch][enum][routing][double]"
 )
 {
@@ -2218,15 +2223,15 @@ TEST_CASE(
     table.AppendBatch(BuildNumericBatch<double>(keys, *sourcePtr, "ratio", 1.5, 8, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::floating);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Floating);
 }
 
 TEST_CASE(
-    "LogTable -- no-string bail routes mixed numeric candidates to Type::number",
+    "LogTable -- no-string bail routes mixed numeric candidates to Type::Number",
     "[log_table][append_batch][enum][routing][number]"
 )
 {
-    // Mixed int + double observations route to `Type::number`.
+    // Mixed int + double observations route to `Type::Number`.
     const TestLogFile testFile("enum_no_string_mixed.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2253,16 +2258,16 @@ TEST_CASE(
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::number);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Number);
 }
 
 TEST_CASE(
-    "LogTable -- no-string bail with no observed values stays Type::any",
+    "LogTable -- no-string bail with no observed values stays Type::Any",
     "[log_table][append_batch][enum][routing][any]"
 )
 {
     // Bool / monostate / DictRef-only columns: no string or numeric
-    // observations, so the bail falls through to `Type::any`.
+    // observations, so the bail falls through to `Type::Any`.
     const TestLogFile testFile("enum_no_string_bool.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2282,19 +2287,19 @@ TEST_CASE(
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::any);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
 }
 
 namespace
 {
 
-/// Build a `LogConfigurationManager` pre-loaded with a `Type::unknown`
+/// Build a `LogConfigurationManager` pre-loaded with a `Type::Unknown`
 /// column for `key`, bypassing `Update`.
 LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 {
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = key, .keys = {key}, .printFormat = "{}", .type = LogConfiguration::Type::unknown, .parseFormats = {}}
+        {.header = key, .keys = {key}, .printFormat = "{}", .type = LogConfiguration::Type::Unknown, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -2306,7 +2311,7 @@ LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 } // namespace
 
 TEST_CASE(
-    "LogTable -- static-mode high-cardinality string bail routes to Type::string",
+    "LogTable -- static-mode high-cardinality string bail routes to Type::String",
     "[log_table][update][enum][routing][cardinality_bail][static_mode]"
 )
 {
@@ -2333,7 +2338,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 600);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
 }
 
 TEST_CASE(
@@ -2362,7 +2367,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     const KeyId tierKey = table.Keys().Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tierKey));
@@ -2373,12 +2378,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable::FinalizeAutoDetection -- single-row candidate stays Type::unknown",
+    "LogTable::FinalizeAutoDetection -- single-row candidate stays Type::Unknown",
     "[log_table][finalize][enum][small_file]"
 )
 {
     // The permissive rule needs `rowsObserved >= 2`; a 1-row file leaves
-    // the column as `Type::unknown` so a later re-load can decide.
+    // the column as `Type::Unknown` so a later re-load can decide.
     const TestLogFile testFile("enum_finalize_one_row.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2394,7 +2399,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 1);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::unknown);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Unknown);
 }
 
 TEST_CASE(
@@ -2422,5 +2427,5 @@ TEST_CASE(
     LogTable table(std::move(data), MakeUnknownColumnManager("tier"));
 
     REQUIRE(table.RowCount() == 100);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 }

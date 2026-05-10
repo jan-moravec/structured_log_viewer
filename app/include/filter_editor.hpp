@@ -85,7 +85,7 @@ private:
     QDateEdit *mEndDateEdit;
     QTimeEdit *mEndTimeEdit;
 
-    /// Multi-select picker for `Type::enumeration` columns. Items are
+    /// Multi-select picker for `Type::Enumeration` columns. Items are
     /// alphabetised; Select/Clear All operate on visible rows only.
     QListView *mEnumValuesView;
     QStandardItemModel *mEnumValuesModel;

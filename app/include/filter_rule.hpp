@@ -59,16 +59,16 @@ public:
     {
         switch (mMatch)
         {
-        case loglib::LogConfiguration::LogFilter::Match::exactly:
+        case loglib::LogConfiguration::LogFilter::Match::Exactly:
             return data == mValue;
-        case loglib::LogConfiguration::LogFilter::Match::contains:
+        case loglib::LogConfiguration::LogFilter::Match::Contains:
             return data.toString().contains(mValue);
-        case loglib::LogConfiguration::LogFilter::Match::regularExpression:
+        case loglib::LogConfiguration::LogFilter::Match::RegularExpression:
         {
             QRegularExpression regex(mValue);
             return regex.match(data.toString()).hasMatch();
         }
-        case loglib::LogConfiguration::LogFilter::Match::wildcard:
+        case loglib::LogConfiguration::LogFilter::Match::Wildcard:
         {
             QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(mValue));
             return regex.match(data.toString()).hasMatch();
@@ -107,7 +107,7 @@ private:
     qint64 mEnd;
 };
 
-/// Multi-select equality filter for `Type::enumeration` columns.
+/// Multi-select equality filter for `Type::Enumeration` columns.
 ///
 /// Fast path: pre-resolves selected strings to `EnumValueId`s and
 /// matches via a `vector<bool>` bit test.

@@ -596,7 +596,7 @@ private slots:
         };
 
         // "time", "ts", "Timestamp" (case-insensitive) all auto-promote to
-        // `Type::time`. The bare "t" alias was dropped to avoid false
+        // `Type::Time`. The bare "t" alias was dropped to avoid false
         // positives on columns literally named `t`.
         for (const std::string &header : {std::string("time"), std::string("ts"), std::string("Timestamp")})
         {
@@ -605,7 +605,7 @@ private slots:
                 column != nullptr,
                 qPrintable(QStringLiteral("column '%1' must exist").arg(QString::fromStdString(header)))
             );
-            QCOMPARE(column->type, loglib::LogConfiguration::Type::time);
+            QCOMPARE(column->type, loglib::LogConfiguration::Type::Time);
         }
 
         // Each row populated only its own timestamp column; the other two are empty.
@@ -690,7 +690,7 @@ private slots:
         QVERIFY(tsCol >= 0 && msgCol >= 0);
 
         const auto &columns = run.model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::LogConfiguration::Type::time);
+        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::LogConfiguration::Type::Time);
 
         // (1) Loading: rows preserve file order (msg column).
         QCOMPARE(run.model->data(run.model->index(0, msgCol), Qt::DisplayRole).toString(), QStringLiteral("line1"));
@@ -2901,7 +2901,7 @@ private slots:
     }
 
     // Picker UI: stream a fixture whose `level` column auto-promotes to
-    // `Type::enumeration`, open `FilterEditor` against it, and verify
+    // `Type::Enumeration`, open `FilterEditor` against it, and verify
     // that typing into the search box prunes the visible item count.
     void TestFilterEditorPickerSearchFiltersVisibleCount()
     {
@@ -2930,7 +2930,7 @@ private slots:
         QVERIFY2(levelCol >= 0, "auto-promoted level column must exist");
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
 
         FilterEditor editor(*run.model, QStringLiteral("test-filter"));
         editor.Load(levelCol, QStringList{});
@@ -3003,7 +3003,7 @@ private slots:
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
 
         // Find the Filters-menu action whose data matches `filterId`.
         // Reach the menu via `MainWindow::FiltersMenu()` rather than
@@ -3036,7 +3036,7 @@ private slots:
                 Q_ARG(QString, filterId),
                 Q_ARG(int, levelCol),
                 Q_ARG(QString, QStringLiteral("info")),
-                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::exactly))
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Exactly))
             ),
             "FilterSubmitted slot must be invocable via meta-object"
         );
@@ -3058,10 +3058,10 @@ private slots:
         // Stage 2: replay the saved string filter against the now-enum
         // column. The type-mismatch guard must drop the active rule.
         loglib::LogConfiguration::LogFilter savedFilter;
-        savedFilter.type = loglib::LogConfiguration::LogFilter::Type::string;
+        savedFilter.type = loglib::LogConfiguration::LogFilter::Type::String;
         savedFilter.row = levelCol;
         savedFilter.filterString = std::string("info");
-        savedFilter.matchType = loglib::LogConfiguration::LogFilter::Match::exactly;
+        savedFilter.matchType = loglib::LogConfiguration::LogFilter::Match::Exactly;
 
         mWindow->statusBar()->clearMessage();
         // `AddFilter` is private; invoke via the meta-object system.
@@ -3128,7 +3128,7 @@ private slots:
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = run.model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
 
         const loglib::EnumDictionary *dictionary = nullptr;
         QVERIFY(!columns[static_cast<size_t>(levelCol)].keys.empty());
@@ -3200,13 +3200,13 @@ private slots:
         {
             loglib::LogConfigurationManager scratch;
             scratch.AppendKeys({"level"});
-            scratch.SetColumnType(0, loglib::LogConfiguration::Type::enumeration);
+            scratch.SetColumnType(0, loglib::LogConfiguration::Type::Enumeration);
             scratch.Save(cfgPath.toStdString());
         }
         model->ConfigurationManager().Load(cfgPath.toStdString());
 
         QCOMPARE(model->Configuration().columns.size(), static_cast<size_t>(1));
-        QCOMPARE(model->Configuration().columns[0].type, loglib::LogConfiguration::Type::enumeration);
+        QCOMPARE(model->Configuration().columns[0].type, loglib::LogConfiguration::Type::Enumeration);
 
         const FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
         // `UpdateSelectedColumn(0)` settles the OK / placeholder state.
@@ -3270,11 +3270,11 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::enumeration
+            loglib::LogConfiguration::Type::Enumeration
         );
 
         loglib::LogConfiguration::LogFilter savedFilter;
-        savedFilter.type = loglib::LogConfiguration::LogFilter::Type::enumeration;
+        savedFilter.type = loglib::LogConfiguration::LogFilter::Type::Enumeration;
         savedFilter.row = levelCol;
 
         mWindow->statusBar()->clearMessage();
@@ -3368,7 +3368,7 @@ private slots:
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = model->Configuration().columns;
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
 
         // Don't pin an exact count: dictionary growth may re-fire.
         QVERIFY2(
@@ -3394,7 +3394,7 @@ private slots:
 
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(tsCol) < columns.size());
-        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::LogConfiguration::Type::time);
+        QCOMPARE(columns[static_cast<size_t>(tsCol)].type, loglib::LogConfiguration::Type::Time);
 
         // `FormatLogValue` rounds to milliseconds before formatting, so the
         // date library always emits a `.fff` fractional suffix even with the

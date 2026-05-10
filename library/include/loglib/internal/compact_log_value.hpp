@@ -58,7 +58,11 @@ struct CompactLogValue
     LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };
 
-static_assert(sizeof(CompactLogValue) == 16, "CompactLogValue must stay 16 bytes");
+/// Per-field storage size invariant. Growing `CompactLogValue` past this
+/// inflates every per-line allocation; the static_assert below is the
+/// enforcer.
+inline constexpr size_t COMPACT_LOG_VALUE_EXPECTED_BYTES = 16;
+static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "CompactLogValue must stay 16 bytes");
 
 /// Convert a `LogValue` to a `CompactLogValue`. Strings inside
 /// `[fileBegin, fileBegin + fileSize)` become `MmapSlice`; others are
@@ -163,6 +167,10 @@ private:
     uint32_t mCapacity = 0;
 };
 
-static_assert(sizeof(CompactLineFields) == 16, "CompactLineFields must stay 16 bytes");
+/// `CompactLineFields` packs three pointer/size words; growing past this
+/// would inflate every per-line allocation and break the cache-friendly
+/// layout the parsers rely on. The static_assert below is the enforcer.
+inline constexpr size_t COMPACT_LINE_FIELDS_EXPECTED_BYTES = 16;
+static_assert(sizeof(CompactLineFields) == COMPACT_LINE_FIELDS_EXPECTED_BYTES, "CompactLineFields must stay 16 bytes");
 
 } // namespace loglib::internal

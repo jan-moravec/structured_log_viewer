@@ -27,7 +27,7 @@ namespace loglib
 namespace
 {
 
-/// Static-parse min rows before promoting `Type::unknown` to enum.
+/// Static-parse min rows before promoting `Type::Unknown` to enum.
 constexpr size_t ENUM_PROMOTION_MIN_ROWS = 256;
 
 /// Tighter promotion threshold for `WELL_KNOWN_ENUM_KEYS`.
@@ -58,17 +58,17 @@ LogConfiguration::Type RouteNoStringBail(
     const bool sawDouble = doubleObservations > 0;
     if (sawIntegral && sawDouble)
     {
-        return LogConfiguration::Type::number;
+        return LogConfiguration::Type::Number;
     }
     if (sawIntegral)
     {
-        return LogConfiguration::Type::integer;
+        return LogConfiguration::Type::Integer;
     }
     if (sawDouble)
     {
-        return LogConfiguration::Type::floating;
+        return LogConfiguration::Type::Floating;
     }
-    return LogConfiguration::Type::any;
+    return LogConfiguration::Type::Any;
 }
 
 /// Canonical keys (case-insensitive) treated as well-known enum columns.
@@ -118,7 +118,7 @@ bool IsWellKnownEnumKey(std::string_view canonicalKey) noexcept
 bool IsEnumPassEligible(LogConfiguration::Type type) noexcept
 {
     // `unknown` -> candidate scan; `enumeration` -> per-batch encode.
-    return type == LogConfiguration::Type::unknown || type == LogConfiguration::Type::enumeration;
+    return type == LogConfiguration::Type::Unknown || type == LogConfiguration::Type::Enumeration;
 }
 
 } // namespace
@@ -160,7 +160,7 @@ void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
     }
     if (size >= cap)
     {
-        // Cap exceeded: caller flips the column to `Type::string`.
+        // Cap exceeded: caller flips the column to `Type::String`.
         killed = true;
         values = {};
         seen = {};
@@ -179,7 +179,7 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
     // Encode pre-configured enum columns and run auto-detection on
-    // `Type::unknown` ones over the loaded data. The finalize sweep then
+    // `Type::Unknown` ones over the loaded data. The finalize sweep then
     // promotes small-file candidates that missed the per-batch threshold.
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -280,7 +280,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
-        // Both pipelines promote `Type::time` inline.
+        // Both pipelines promote `Type::Time` inline.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
@@ -348,7 +348,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::time)
+        if (column.type != LogConfiguration::Type::Time)
         {
             continue;
         }
@@ -678,7 +678,7 @@ void LogTable::RefreshSnapshotTimeKeys()
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
     {
-        if (column.type != LogConfiguration::Type::time)
+        if (column.type != LogConfiguration::Type::Time)
         {
             continue;
         }
@@ -698,7 +698,7 @@ void LogTable::RefreshSnapshotEnumKeys()
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
     {
-        if (column.type != LogConfiguration::Type::enumeration)
+        if (column.type != LogConfiguration::Type::Enumeration)
         {
             continue;
         }
@@ -797,7 +797,7 @@ void LogTable::RunEnumPassForAppendBatch(
         return;
     }
 
-    // Active (`Type::enumeration`) and candidate (`Type::unknown`) columns
+    // Active (`Type::Enumeration`) and candidate (`Type::Unknown`) columns
     // are handled inline in a single walk; every other type is skipped.
 
     auto recordBackfill = [&](size_t columnIndex) {
@@ -840,7 +840,7 @@ void LogTable::RunEnumPassForAppendBatch(
         // Active enum column: encode the appended slice. Length-cap and
         // wrong-type hits accrue against the health budget; dictionary-cap
         // overflow demotes immediately.
-        if (column.type == LogConfiguration::Type::enumeration)
+        if (column.type == LogConfiguration::Type::Enumeration)
         {
             resolveKeys(columnIndex);
             if (resolvedKeys.empty())
@@ -952,7 +952,7 @@ void LogTable::RunEnumPassForAppendBatch(
         if (tracker.killed)
         {
             // Too varied to enumerate; route to `string`.
-            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
+            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
             mEnumTrackers.erase(trackerIt);
             continue;
         }
@@ -990,7 +990,7 @@ void LogTable::RunEnumPassForAppendBatch(
             }
             else if (highCardinality)
             {
-                mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
+                mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
                 mEnumTrackers.erase(trackerIt);
             }
         }
@@ -1012,7 +1012,7 @@ bool LogTable::FinalizeAutoDetection()
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::unknown || column.keys.empty())
+        if (column.type != LogConfiguration::Type::Unknown || column.keys.empty())
         {
             continue;
         }
@@ -1024,7 +1024,7 @@ bool LogTable::FinalizeAutoDetection()
         const EnumCandidateTracker &tracker = trackerIt->second;
         if (tracker.killed)
         {
-            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
+            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
             continue;
         }
         if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
@@ -1041,7 +1041,7 @@ bool LogTable::FinalizeAutoDetection()
             );
             continue;
         }
-        // Insufficient evidence: leave `Type::unknown` for a future re-load.
+        // Insufficient evidence: leave `Type::Unknown` for a future re-load.
     }
 
     mEnumTrackers.clear();
@@ -1156,12 +1156,12 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     {
         return;
     }
-    if (columns[columnIndex].type == LogConfiguration::Type::enumeration)
+    if (columns[columnIndex].type == LogConfiguration::Type::Enumeration)
     {
         return;
     }
 
-    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::enumeration);
+    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Enumeration);
     // Pre-create canonical dictionary and alias-wire so the encode hot
     // path can skip alias bookkeeping.
     {
@@ -1214,7 +1214,7 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
         return;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::enumeration)
+    if (column.type != LogConfiguration::Type::Enumeration)
     {
         return;
     }
@@ -1272,9 +1272,9 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
         mEnumDictionaries.Erase(keyIds.front());
     }
 
-    // Route to `Type::string` (terminal): a dictionary or health-budget
+    // Route to `Type::String` (terminal): a dictionary or health-budget
     // breach is a string-cardinality conclusion, not "we don't know".
-    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
+    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
 
     mEnumColumnHealth.erase(column.header);
 

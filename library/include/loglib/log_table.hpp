@@ -54,7 +54,7 @@ public:
     void AppendStreaming(std::unique_ptr<LineSource> source);
 
     /// Splice @p batch in, extending the configuration for any
-    /// `batch.newKeys` and back-filling new `Type::time` columns.
+    /// `batch.newKeys` and back-filling new `Type::Time` columns.
     void AppendBatch(StreamedBatch batch);
 
     /// Non-mutating preview of `AppendBatch(batch)`'s effect; lets the
@@ -114,9 +114,9 @@ public:
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(size_t row, size_t column) const noexcept;
 
     /// End-of-parse/end-of-stream auto-detection sweep: promote permissive
-    /// candidates and transition leftover `Type::unknown` columns to a
+    /// candidates and transition leftover `Type::Unknown` columns to a
     /// terminal type. Idempotent. Returns true if at least one column was
-    /// promoted to `Type::enumeration`.
+    /// promoted to `Type::Enumeration`.
     bool FinalizeAutoDetection();
 
     const LogConfigurationManager &Configuration() const;
@@ -130,6 +130,9 @@ private:
     /// to a numeric type instead of `string`. `presenceCount` and
     /// `rowsObserved` are kept separate so sparse columns aren't bailed
     /// before their first observation.
+    // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
+    // Private nested aggregate POD: public data members are intentional;
+    // accessors would only obscure the per-row hot path.
     struct EnumCandidateTracker
     {
         /// Distinct values seen so far (insertion order, capped at `cap`).
@@ -162,9 +165,12 @@ private:
         /// and flips `killed` on tolerance breach or hard-cap overflow.
         void Observe(std::string_view bytes);
     };
+    // NOLINTEND(misc-non-private-member-variables-in-classes)
 
     /// Cumulative health for an active enum column; long values and
     /// wrong-type slots share one budget.
+    // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
+    // Private nested aggregate POD: public data members are intentional.
     struct EnumColumnHealth
     {
         size_t totalSlots = 0;
@@ -173,6 +179,7 @@ private:
 
         [[nodiscard]] bool ShouldDemote(double tolerance, size_t minSamples) const noexcept;
     };
+    // NOLINTEND(misc-non-private-member-variables-in-classes)
 
     static std::string FormatLogValue(const std::string &format, const LogValue &value);
 
@@ -191,7 +198,7 @@ private:
         size_t oldLineCount, std::optional<size_t> &firstBackfilled, std::optional<size_t> &lastBackfilled
     );
 
-    /// Promote @p columnIndex to `Type::enumeration`, encoding every
+    /// Promote @p columnIndex to `Type::Enumeration`, encoding every
     /// existing row's slot as `DictRef`.
     void PromoteColumnToEnum(size_t columnIndex);
 
@@ -213,10 +220,10 @@ private:
     LogConfigurationManager mConfiguration;
     std::vector<std::vector<KeyId>> mColumnKeyIds;
 
-    /// `Type::time` KeyIds present at `BeginStreaming`; Stage B promotes inline.
+    /// `Type::Time` KeyIds present at `BeginStreaming`; Stage B promotes inline.
     std::unordered_set<KeyId> mStageBSnapshotTimeKeys;
 
-    /// `Type::time` KeyIds discovered post-snapshot.
+    /// `Type::Time` KeyIds discovered post-snapshot.
     std::unordered_set<KeyId> mPostSnapshotTimeKeys;
 
     /// Per-column enum dictionaries. Owned `LineSource`s point here.
@@ -228,7 +235,7 @@ private:
     uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 
     /// Promotion candidates keyed on `column.header`; live while
-    /// `Type::unknown`.
+    /// `Type::Unknown`.
     std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
 
     /// Cumulative health for active enum columns, keyed on `column.header`.

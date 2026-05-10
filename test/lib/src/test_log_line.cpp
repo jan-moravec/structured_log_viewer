@@ -164,9 +164,11 @@ TEST_CASE("AsStringView returns bytes for both string alternatives, nullopt for 
     const LogValue monoValue{std::monostate{}};
 
     REQUIRE(AsStringView(ownedValue).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(ownedValue) == owned);
 
     REQUIRE(AsStringView(viewValue).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(viewValue) == view);
 
     CHECK_FALSE(AsStringView(intValue).has_value());
@@ -263,12 +265,14 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     const LogValue slowView = line.GetValue(std::string("view-key"));
     REQUIRE(LogValueEquivalent(fastView, slowView));
     REQUIRE(AsStringView(fastView).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(fastView) == "view-bytes");
 
     const LogValue fastOwned = line.GetValue(ownedKey);
     const LogValue slowOwned = line.GetValue(std::string("owned-key"));
     REQUIRE(LogValueEquivalent(fastOwned, slowOwned));
     REQUIRE(AsStringView(fastOwned).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(fastOwned) == "owned-bytes");
 
     const LogValue fastInt = line.GetValue(intKey);
@@ -305,6 +309,7 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
     const LogValue resolved = line.GetValue(levelKey);
     const auto sv = AsStringView(resolved);
     REQUIRE(sv.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*sv == "warn");
 
     CHECK(std::get<std::string>(line.GetValue(messageKey)) == "hello");
@@ -313,6 +318,8 @@ TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryReg
     CHECK(std::holds_alternative<std::monostate>(line.GetValue(levelKey)));
 
     source->SetEnumDictionaries(&registry);
+    // SetEnumDictionaries(&registry) above restores the dict; the slot is a known DictRef.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*AsStringView(line.GetValue(levelKey)) == "warn");
 }
 

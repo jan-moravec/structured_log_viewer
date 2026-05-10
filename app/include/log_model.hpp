@@ -149,7 +149,7 @@ signals:
     /// Producer status transition; re-emitted on the GUI.
     void sourceStatusChanged(loglib::SourceStatus status);
 
-    /// Emitted when the set of `Type::enumeration` columns or any of
+    /// Emitted when the set of `Type::Enumeration` columns or any of
     /// their dictionaries changes shape (auto-promotion, dict growth,
     /// or end-of-stream finalisation). `MainWindow` rebuilds active
     /// enum filter rules on every emit so newly-interned ids stay on

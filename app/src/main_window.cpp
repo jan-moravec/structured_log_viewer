@@ -332,7 +332,7 @@ MainWindow::MainWindow(QWidget *parent)
     // sync after dictionary growth or promotion.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
         const bool hasEnumFilter = std::ranges::any_of(mFilters, [](const auto &kv) {
-            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::enumeration;
+            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
         });
         if (hasEnumFilter)
         {
@@ -1096,7 +1096,7 @@ void MainWindow::AddFilter(
         const auto rowIndex = static_cast<size_t>(resolvedFilter->row);
         // Saved empty enum selection: would hide every row.
         if (rowIndex < columns.size() &&
-            resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::enumeration &&
+            resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
             resolvedFilter->filterValues.empty())
         {
             statusBar()->showMessage(
@@ -1112,13 +1112,13 @@ void MainWindow::AddFilter(
             const loglib::LogConfiguration::Type columnType = columns[rowIndex].type;
             const loglib::LogConfiguration::LogFilter::Type filterType = resolvedFilter->type;
 
-            const bool typesMatch = (filterType == loglib::LogConfiguration::LogFilter::Type::time &&
-                                     columnType == loglib::LogConfiguration::Type::time) ||
-                                    (filterType == loglib::LogConfiguration::LogFilter::Type::enumeration &&
-                                     columnType == loglib::LogConfiguration::Type::enumeration) ||
-                                    (filterType == loglib::LogConfiguration::LogFilter::Type::string &&
-                                     columnType != loglib::LogConfiguration::Type::time &&
-                                     columnType != loglib::LogConfiguration::Type::enumeration);
+            const bool typesMatch = (filterType == loglib::LogConfiguration::LogFilter::Type::Time &&
+                                     columnType == loglib::LogConfiguration::Type::Time) ||
+                                    (filterType == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                                     columnType == loglib::LogConfiguration::Type::Enumeration) ||
+                                    (filterType == loglib::LogConfiguration::LogFilter::Type::String &&
+                                     columnType != loglib::LogConfiguration::Type::Time &&
+                                     columnType != loglib::LogConfiguration::Type::Enumeration);
             if (!typesMatch)
             {
                 ClearFilter(filterId);
@@ -1148,11 +1148,21 @@ void MainWindow::AddFilter(
     connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
     if (resolvedFilter.has_value())
     {
-        if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::time)
+        if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
         {
+            if (!resolvedFilter->filterBegin.has_value() || !resolvedFilter->filterEnd.has_value())
+            {
+                statusBar()->showMessage(
+                    QString("Filter '%1' was dropped because its time range is missing").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                delete filterEditor;
+                return;
+            }
             filterEditor->Load(resolvedFilter->row, *resolvedFilter->filterBegin, *resolvedFilter->filterEnd);
         }
-        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::enumeration)
+        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration)
         {
             QStringList values;
             values.reserve(static_cast<qsizetype>(resolvedFilter->filterValues.size()));
@@ -1164,6 +1174,16 @@ void MainWindow::AddFilter(
         }
         else
         {
+            if (!resolvedFilter->filterString.has_value() || !resolvedFilter->matchType.has_value())
+            {
+                statusBar()->showMessage(
+                    QString("Filter '%1' was dropped because its string match is missing").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                delete filterEditor;
+                return;
+            }
             filterEditor->Load(
                 resolvedFilter->row,
                 QString::fromStdString(*resolvedFilter->filterString),
@@ -1224,7 +1244,7 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::string;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::String;
     filter.row = row;
     filter.filterString = filterString.toStdString();
     filter.matchType = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
@@ -1237,7 +1257,7 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::time;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Time;
     filter.row = row;
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
@@ -1250,7 +1270,7 @@ void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QSt
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::enumeration;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Enumeration;
     filter.row = row;
     filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
     for (const QString &v : selectedValues)
@@ -1269,13 +1289,13 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     QString title;
     switch (filter.type)
     {
-    case loglib::LogConfiguration::LogFilter::Type::time:
+    case loglib::LogConfiguration::LogFilter::Type::Time:
         title = QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
         break;
-    case loglib::LogConfiguration::LogFilter::Type::enumeration:
+    case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
         QStringList values;
         values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
@@ -1286,7 +1306,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         title = values.join(QStringLiteral(", "));
         break;
     }
-    case loglib::LogConfiguration::LogFilter::Type::string:
+    case loglib::LogConfiguration::LogFilter::Type::String:
     default:
         title = QString::fromStdString(*filter.filterString);
         break;
@@ -1332,12 +1352,12 @@ void MainWindow::UpdateFilters()
     {
         switch (filter.second.type)
         {
-        case loglib::LogConfiguration::LogFilter::Type::time:
+        case loglib::LogConfiguration::LogFilter::Type::Time:
             rules.push_back(std::make_unique<TimeStampFilterRule>(
                 filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd
             ));
             break;
-        case loglib::LogConfiguration::LogFilter::Type::enumeration:
+        case loglib::LogConfiguration::LogFilter::Type::Enumeration:
         {
             QStringList values;
             values.reserve(static_cast<qsizetype>(filter.second.filterValues.size()));
@@ -1361,7 +1381,7 @@ void MainWindow::UpdateFilters()
             rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values, dictionary));
             break;
         }
-        case loglib::LogConfiguration::LogFilter::Type::string:
+        case loglib::LogConfiguration::LogFilter::Type::String:
         default:
             rules.push_back(std::make_unique<TextFilterRule>(
                 filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType

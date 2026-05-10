@@ -444,7 +444,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         const auto &registryBefore = mLogTable.EnumDictionaries();
         for (const auto &column : columnsBefore)
         {
-            if (column.type != loglib::LogConfiguration::Type::enumeration || column.keys.empty())
+            if (column.type != loglib::LogConfiguration::Type::Enumeration || column.keys.empty())
             {
                 continue;
             }
@@ -509,7 +509,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 continue;
             }
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::enumeration)
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Enumeration)
             {
                 emit enumColumnsChanged();
                 emittedEnumColumnsChanged = true;
@@ -526,14 +526,14 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     // Match `LogConfigurationManager::Update`: bubble each freshly
-    // appended `Type::time` column to position 0.
+    // appended `Type::Time` column to position 0.
     if (columnsGrew)
     {
         const auto &columns = mLogTable.Configuration().Configuration().columns;
         std::vector<int> newTimestampColumnIndices;
         for (int columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
         {
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::time)
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Time)
             {
                 newTimestampColumnIndices.push_back(columnIndex);
             }

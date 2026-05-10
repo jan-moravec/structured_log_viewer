@@ -98,7 +98,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .header = key,
                     .keys = {key},
                     .printFormat = "%F %H:%M:%S",
-                    .type = LogConfiguration::Type::time,
+                    .type = LogConfiguration::Type::Time,
                     .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
                 // Bubble timestamps to column 0.
@@ -113,7 +113,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .header = key,
                     .keys = {key},
                     .printFormat = "{}",
-                    .type = LogConfiguration::Type::unknown,
+                    .type = LogConfiguration::Type::Unknown,
                     .parseFormats = {}
                 });
             }
@@ -138,7 +138,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 .header = key,
                 .keys = {key},
                 .printFormat = "%F %H:%M:%S",
-                .type = LogConfiguration::Type::time,
+                .type = LogConfiguration::Type::Time,
                 .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
             });
         }
@@ -148,7 +148,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 .header = key,
                 .keys = {key},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::unknown,
+                .type = LogConfiguration::Type::Unknown,
                 .parseFormats = {}
             });
         }

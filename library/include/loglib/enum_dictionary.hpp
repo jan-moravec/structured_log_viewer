@@ -52,6 +52,8 @@ public:
     EnumDictionary(EnumDictionary &&) noexcept = default;
     EnumDictionary &operator=(EnumDictionary &&) noexcept = default;
 
+    ~EnumDictionary() = default;
+
     /// Existing id for @p bytes, or `INVALID_ENUM_VALUE_ID`.
     [[nodiscard]] EnumValueId Find(std::string_view bytes) const noexcept;
 
@@ -100,7 +102,7 @@ private:
     uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };
 
-/// `KeyId` -> `EnumDictionary` for every `Type::enumeration` column.
+/// `KeyId` -> `EnumDictionary` for every `Type::Enumeration` column.
 /// Owned by `LogTable`; each `LineSource` points at it so
 /// `CompactLogValue::Materialise(DictRef)` can resolve bytes. Multiple
 /// alias keys can share one dictionary via `Alias`.
@@ -114,6 +116,8 @@ public:
 
     EnumDictionaryRegistry(EnumDictionaryRegistry &&) noexcept = default;
     EnumDictionaryRegistry &operator=(EnumDictionaryRegistry &&) noexcept = default;
+
+    ~EnumDictionaryRegistry() = default;
 
     [[nodiscard]] bool Contains(KeyId key) const noexcept;
 

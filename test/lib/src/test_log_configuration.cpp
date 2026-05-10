@@ -55,7 +55,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
 
     LogConfiguration logConfiguration;
     const LogConfiguration::Column defaultColumn = {
-        .header = "test", .keys = {"test"}, .printFormat = "{}", .type = LogConfiguration::Type::any, .parseFormats = {}
+        .header = "test", .keys = {"test"}, .printFormat = "{}", .type = LogConfiguration::Type::Any, .parseFormats = {}
     };
     logConfiguration.columns.push_back(defaultColumn);
     testLogConfiguration.Write(logConfiguration);
@@ -77,7 +77,7 @@ TEST_CASE("Update with empty LogData should not modify configuration", "[LogConf
 }
 
 TEST_CASE(
-    "AppendKeys recognises common timestamp aliases as Type::time and ignores bare 't'",
+    "AppendKeys recognises common timestamp aliases as Type::Time and ignores bare 't'",
     "[LogConfigurationManager][timestamp_keys][regression]"
 )
 {
@@ -100,15 +100,15 @@ TEST_CASE(
         CHECK(it->type == expected);
     };
 
-    checkType("timestamp", LogConfiguration::Type::time);
-    checkType("time", LogConfiguration::Type::time);
-    checkType("ts", LogConfiguration::Type::time);
-    checkType("@timestamp", LogConfiguration::Type::time);
-    checkType("datetime", LogConfiguration::Type::time);
-    checkType("created_at", LogConfiguration::Type::time);
+    checkType("timestamp", LogConfiguration::Type::Time);
+    checkType("time", LogConfiguration::Type::Time);
+    checkType("ts", LogConfiguration::Type::Time);
+    checkType("@timestamp", LogConfiguration::Type::Time);
+    checkType("datetime", LogConfiguration::Type::Time);
+    checkType("created_at", LogConfiguration::Type::Time);
 
-    checkType("t", LogConfiguration::Type::unknown);
-    checkType("tag", LogConfiguration::Type::unknown);
+    checkType("t", LogConfiguration::Type::Unknown);
+    checkType("tag", LogConfiguration::Type::Unknown);
 }
 
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
@@ -120,7 +120,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
         {.header = "regular",
          .keys = {"regular"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
@@ -143,7 +143,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     REQUIRE(manager.Configuration().columns.size() == 3);
 
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::time);
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
 
     CHECK(manager.Configuration().columns[1].header == "regular");
     CHECK(manager.Configuration().columns[2].header == "newKey");
@@ -183,7 +183,7 @@ TEST_CASE(
     manager.AppendKeys({"regular"});
     REQUIRE(manager.Configuration().columns.size() == 1);
 
-    // Update must skip "regular" and add "timestamp" as Type::time at index 0.
+    // Update must skip "regular" and add "timestamp" as Type::Time at index 0.
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
@@ -196,7 +196,7 @@ TEST_CASE(
 
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::time);
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
     CHECK(manager.Configuration().columns[1].header == "regular");
 }
 
@@ -212,7 +212,7 @@ TEST_CASE(
             {.header = "loaded_key",
              .keys = {"loaded_key"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::any,
+             .type = LogConfiguration::Type::Any,
              .parseFormats = {}}
         );
         firstConfigOnDisk.Write(logConfiguration);
@@ -224,7 +224,7 @@ TEST_CASE(
             {.header = "other_key",
              .keys = {"other_key"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::any,
+             .type = LogConfiguration::Type::Any,
              .parseFormats = {}}
         );
         secondConfigOnDisk.Write(logConfiguration);
@@ -271,7 +271,7 @@ TEST_CASE(
         {.header = "regular",
          .keys = {"regular"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
@@ -309,7 +309,7 @@ TEST_CASE(
         {.header = "display",
          .keys = {"raw_key", "alias"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::any,
+         .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
@@ -328,7 +328,7 @@ TEST_CASE(
     CHECK(manager.Configuration().columns[2].keys == std::vector<std::string>{"fresh"});
 }
 
-TEST_CASE("Save and load configuration with Type::enumeration column", "[log_configuration][enum]")
+TEST_CASE("Save and load configuration with Type::Enumeration column", "[log_configuration][enum]")
 {
     const TestLogConfiguration testLogConfiguration("test_log_configuration_enum.json");
 
@@ -337,7 +337,7 @@ TEST_CASE("Save and load configuration with Type::enumeration column", "[log_con
         {.header = "Level",
          .keys = {"level", "severity"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::enumeration,
+         .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
@@ -347,27 +347,27 @@ TEST_CASE("Save and load configuration with Type::enumeration column", "[log_con
 
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "Level");
-    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::enumeration);
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"level", "severity"});
 }
 
 TEST_CASE(
-    "Newly-discovered keys default to Type::unknown so the auto-detector scans them",
+    "Newly-discovered keys default to Type::Unknown so the auto-detector scans them",
     "[log_configuration][type_unknown]"
 )
 {
     // Provenance is carried by the column type itself, both in memory
-    // and on disk; `Type::unknown` marks an auto-detector candidate.
+    // and on disk; `Type::Unknown` marks an auto-detector candidate.
 
-    SECTION("AppendKeys assigns Type::unknown to fresh keys")
+    SECTION("AppendKeys assigns Type::Unknown to fresh keys")
     {
         LogConfigurationManager manager;
         manager.AppendKeys({"level"});
         REQUIRE(manager.Configuration().columns.size() == 1);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::unknown);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Unknown);
     }
 
-    SECTION("Update assigns Type::unknown to every freshly-added non-time key")
+    SECTION("Update assigns Type::Unknown to every freshly-added non-time key")
     {
         const TestLogFile testLogFile;
         auto source = testLogFile.CreateFileLineSource();
@@ -382,7 +382,7 @@ TEST_CASE(
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
         {
-            CHECK(column.type == LogConfiguration::Type::unknown);
+            CHECK(column.type == LogConfiguration::Type::Unknown);
         }
     }
 
@@ -394,14 +394,14 @@ TEST_CASE(
             {.header = "level",
              .keys = {"level"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::any,
+             .type = LogConfiguration::Type::Any,
              .parseFormats = {}}
         );
         cfg.columns.push_back(
             {.header = "service",
              .keys = {"service"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::string,
+             .type = LogConfiguration::Type::String,
              .parseFormats = {}}
         );
         testCfg.Write(cfg);
@@ -410,11 +410,11 @@ TEST_CASE(
         manager.Load(testCfg.GetFilePath());
 
         REQUIRE(manager.Configuration().columns.size() == 2);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::any);
-        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::string);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::String);
     }
 
-    SECTION("Post-Load AppendKeys still assigns Type::unknown to genuinely-new keys")
+    SECTION("Post-Load AppendKeys still assigns Type::Unknown to genuinely-new keys")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -422,7 +422,7 @@ TEST_CASE(
             {.header = "level",
              .keys = {"level"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::any,
+             .type = LogConfiguration::Type::Any,
              .parseFormats = {}}
         );
         testCfg.Write(cfg);
@@ -432,25 +432,27 @@ TEST_CASE(
 
         manager.AppendKeys({"freshly_streamed"});
         REQUIRE(manager.Configuration().columns.size() == 2);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::any);
-        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::unknown);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::Unknown);
     }
 }
 
 TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_configuration][type_round_trip]")
 {
-    // The Glaze meta uses the C++ enumerator names verbatim on the wire;
-    // `double` is reserved, so both spell it `floating`.
+    // C++ enumerators are UpperCamelCase but the Glaze meta keeps the
+    // wire format as the original lowerCamelCase strings so existing
+    // saved configurations stay loadable. `double` is reserved, so both
+    // sides spell it `floating`.
     using Type = LogConfiguration::Type;
     const std::vector<Type> variants = {
-        Type::unknown,
-        Type::any,
-        Type::string,
-        Type::integer,
-        Type::floating,
-        Type::number,
-        Type::time,
-        Type::enumeration,
+        Type::Unknown,
+        Type::Any,
+        Type::String,
+        Type::Integer,
+        Type::Floating,
+        Type::Number,
+        Type::Time,
+        Type::Enumeration,
     };
 
     LogConfiguration original;
@@ -488,11 +490,11 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     }
 }
 
-TEST_CASE("Round-trip LogFilter with Type::enumeration and filterValues", "[log_configuration][enum]")
+TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")
 {
     LogConfiguration original;
     LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::enumeration;
+    filter.type = LogConfiguration::LogFilter::Type::Enumeration;
     filter.row = 2;
     filter.filterValues = {"info", "warn", "error"};
     original.filters.push_back(filter);
@@ -506,7 +508,81 @@ TEST_CASE("Round-trip LogFilter with Type::enumeration and filterValues", "[log_
     REQUIRE_FALSE(readError);
 
     REQUIRE(loaded.filters.size() == 1);
-    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::enumeration);
+    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Enumeration);
     CHECK(loaded.filters[0].row == 2);
     CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"info", "warn", "error"});
+}
+
+TEST_CASE(
+    "Legacy lowerCamelCase JSON keys still load after enum rename to UpperCamelCase",
+    "[log_configuration][wire_format_compat]"
+)
+{
+    // Hand-written JSON in the historical on-disk shape (lowerCamelCase
+    // enum keys for `Type`, `LogFilter::Type`, and `LogFilter::Match`).
+    // The C++ enumerators are now UpperCamelCase, but the Glaze meta
+    // pins the wire format so existing saved configurations keep
+    // working. Every `Type`, `LogFilter::Type`, and `LogFilter::Match`
+    // variant is exercised so renaming any one would break the test.
+    constexpr std::string_view LEGACY_JSON = R"({
+        "columns": [
+            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]},
+            {"header":"b","keys":["b"],"printFormat":"{}","type":"any","parseFormats":[]},
+            {"header":"c","keys":["c"],"printFormat":"{}","type":"string","parseFormats":[]},
+            {"header":"d","keys":["d"],"printFormat":"{}","type":"integer","parseFormats":[]},
+            {"header":"e","keys":["e"],"printFormat":"{}","type":"floating","parseFormats":[]},
+            {"header":"f","keys":["f"],"printFormat":"{}","type":"number","parseFormats":[]},
+            {"header":"g","keys":["g"],"printFormat":"{}","type":"time","parseFormats":[]},
+            {"header":"h","keys":["h"],"printFormat":"{}","type":"enumeration","parseFormats":[]}
+        ],
+        "filters": [
+            {"type":"string","row":0,"filterString":"foo","matchType":"exactly","filterValues":[]},
+            {"type":"string","row":1,"filterString":"bar","matchType":"contains","filterValues":[]},
+            {"type":"string","row":2,"filterString":"^baz$","matchType":"regularExpression","filterValues":[]},
+            {"type":"string","row":3,"filterString":"qux*","matchType":"wildcard","filterValues":[]},
+            {"type":"time","row":4,"filterBegin":1000,"filterEnd":2000,"filterValues":[]},
+            {"type":"enumeration","row":5,"filterValues":["info","warn"]}
+        ]
+    })";
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, LEGACY_JSON);
+    REQUIRE_FALSE(readError);
+
+    using Type = LogConfiguration::Type;
+    REQUIRE(loaded.columns.size() == 8);
+    CHECK(loaded.columns[0].type == Type::Unknown);
+    CHECK(loaded.columns[1].type == Type::Any);
+    CHECK(loaded.columns[2].type == Type::String);
+    CHECK(loaded.columns[3].type == Type::Integer);
+    CHECK(loaded.columns[4].type == Type::Floating);
+    CHECK(loaded.columns[5].type == Type::Number);
+    CHECK(loaded.columns[6].type == Type::Time);
+    CHECK(loaded.columns[7].type == Type::Enumeration);
+
+    using FilterType = LogConfiguration::LogFilter::Type;
+    using Match = LogConfiguration::LogFilter::Match;
+    REQUIRE(loaded.filters.size() == 6);
+    CHECK(loaded.filters[0].type == FilterType::String);
+    REQUIRE(loaded.filters[0].matchType.has_value());
+    CHECK(*loaded.filters[0].matchType == Match::Exactly);
+    REQUIRE(loaded.filters[1].matchType.has_value());
+    CHECK(*loaded.filters[1].matchType == Match::Contains);
+    REQUIRE(loaded.filters[2].matchType.has_value());
+    CHECK(*loaded.filters[2].matchType == Match::RegularExpression);
+    REQUIRE(loaded.filters[3].matchType.has_value());
+    CHECK(*loaded.filters[3].matchType == Match::Wildcard);
+    CHECK(loaded.filters[4].type == FilterType::Time);
+    CHECK(loaded.filters[5].type == FilterType::Enumeration);
+
+    // Re-serialise and confirm the wire format keeps the original keys.
+    std::string roundTripJson;
+    const auto writeError = glz::write_json(loaded, roundTripJson);
+    REQUIRE_FALSE(writeError);
+    CHECK(roundTripJson.contains("\"unknown\""));
+    CHECK(roundTripJson.contains("\"enumeration\""));
+    CHECK(roundTripJson.contains("\"regularExpression\""));
+    CHECK_FALSE(roundTripJson.contains("\"Unknown\""));
+    CHECK_FALSE(roundTripJson.contains("\"Enumeration\""));
+    CHECK_FALSE(roundTripJson.contains("\"RegularExpression\""));
 }

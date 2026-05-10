@@ -67,12 +67,12 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         mRowComboBox->addItem(QString::fromStdString(column.header));
     }
 
-    mMatchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::exactly));
-    mMatchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::contains));
+    mMatchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::Exactly));
+    mMatchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::Contains));
     mMatchTypeComboBox->addItem(
-        "Regular Expression", static_cast<int>(LogConfiguration::LogFilter::Match::regularExpression)
+        "Regular Expression", static_cast<int>(LogConfiguration::LogFilter::Match::RegularExpression)
     );
-    mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::wildcard));
+    mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::Wildcard));
 
     SetupLayout();
 
@@ -305,7 +305,7 @@ void FilterEditor::OnOkClicked()
 
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
 
-    if (column.type == LogConfiguration::Type::time)
+    if (column.type == LogConfiguration::Type::Time)
     {
         emit FilterTimeStampSubmitted(
             mFilterID,
@@ -314,7 +314,7 @@ void FilterEditor::OnOkClicked()
             ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())
         );
     }
-    else if (column.type == LogConfiguration::Type::enumeration)
+    else if (column.type == LogConfiguration::Type::Enumeration)
     {
         const QStringList selected = GetSelectedEnumValues();
         if (selected.isEmpty())
@@ -347,7 +347,7 @@ void FilterEditor::UpdateSelectedColumn(int index)
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(index)];
     switch (column.type)
     {
-    case LogConfiguration::Type::time:
+    case LogConfiguration::Type::Time:
     {
         mStackedWidget->setCurrentIndex(1);
         const auto minMax = mModel.GetMinMaxValues<qint64>(index);
@@ -357,16 +357,16 @@ void FilterEditor::UpdateSelectedColumn(int index)
         }
         break;
     }
-    case LogConfiguration::Type::enumeration:
+    case LogConfiguration::Type::Enumeration:
         mStackedWidget->setCurrentIndex(2);
         PopulateEnumValues(index);
         break;
-    case LogConfiguration::Type::unknown:
-    case LogConfiguration::Type::any:
-    case LogConfiguration::Type::string:
-    case LogConfiguration::Type::integer:
-    case LogConfiguration::Type::floating:
-    case LogConfiguration::Type::number:
+    case LogConfiguration::Type::Unknown:
+    case LogConfiguration::Type::Any:
+    case LogConfiguration::Type::String:
+    case LogConfiguration::Type::Integer:
+    case LogConfiguration::Type::Floating:
+    case LogConfiguration::Type::Number:
     default:
         // Numeric / range pickers TBD: integer/floating/number use the
         // string widget for now.
@@ -387,7 +387,7 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
         return;
     }
     const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
-    if (column.type != LogConfiguration::Type::enumeration)
+    if (column.type != LogConfiguration::Type::Enumeration)
     {
         UpdateEnumSelectionCount();
         return;

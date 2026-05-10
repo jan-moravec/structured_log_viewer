@@ -15,26 +15,29 @@ class LogData;
 
 struct LogConfiguration
 {
-    /// Per-column rendering / detection type. `unknown` is the only
+    /// Per-column rendering / detection type. `Unknown` is the only
     /// state the auto-detector scans; every other variant is terminal.
-    ///   - `unknown`     - new keys; auto-detector candidate.
-    ///   - `any`         - mixed / unclassifiable.
-    ///   - `string`      - too varied to enumerate.
-    ///   - `integer`     - only Int64/UInt64 observed.
-    ///   - `floating`    - only Double observed.
-    ///   - `number`      - mix of integer and floating.
-    ///   - `time`        - timestamp column.
-    ///   - `enumeration` - small fixed vocabulary stored as `DictRef`.
+    /// JSON wire format keeps the original lowerCamelCase keys
+    /// (`"unknown"`, `"any"`, ...); see
+    /// `internal/log_configuration_glaze_meta.hpp`.
+    ///   - `Unknown`     - new keys; auto-detector candidate.
+    ///   - `Any`         - mixed / unclassifiable.
+    ///   - `String`      - too varied to enumerate.
+    ///   - `Integer`     - only Int64/UInt64 observed.
+    ///   - `Floating`    - only Double observed.
+    ///   - `Number`      - mix of integer and floating.
+    ///   - `Time`        - timestamp column.
+    ///   - `Enumeration` - small fixed vocabulary stored as `DictRef`.
     enum class Type
     {
-        unknown,
-        any,
-        string,
-        integer,
-        floating,
-        number,
-        time,
-        enumeration
+        Unknown,
+        Any,
+        String,
+        Integer,
+        Floating,
+        Number,
+        Time,
+        Enumeration
     };
 
     struct Column
@@ -42,10 +45,10 @@ struct LogConfiguration
         std::string header;
         std::vector<std::string> keys;
         std::string printFormat;
-        /// New keys default to `Type::unknown`. Time promotion is
+        /// New keys default to `Type::Unknown`. Time promotion is
         /// destructive (only `Reset()` reverts); enum promotion is
         /// reversible via demote-to-string on overflow.
-        Type type = Type::unknown;
+        Type type = Type::Unknown;
         std::vector<std::string> parseFormats;
     };
 
@@ -53,19 +56,19 @@ struct LogConfiguration
     {
         enum class Type
         {
-            string,
-            time,
+            String,
+            Time,
             /// Multi-select over an enum column. Persisted as strings,
             /// resolved to an id bitset at rule construction.
-            enumeration
+            Enumeration
         };
 
         enum class Match
         {
-            exactly,
-            contains,
-            regularExpression,
-            wildcard
+            Exactly,
+            Contains,
+            RegularExpression,
+            Wildcard
         };
 
         Type type;
@@ -74,7 +77,7 @@ struct LogConfiguration
         std::optional<Match> matchType;
         std::optional<int64_t> filterBegin;
         std::optional<int64_t> filterEnd;
-        /// Selected values for `Type::enumeration`. Empty otherwise.
+        /// Selected values for `Type::Enumeration`. Empty otherwise.
         std::vector<std::string> filterValues;
     };
 
