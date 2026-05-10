@@ -147,26 +147,28 @@ void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
         {
             killed = true;
             values = {};
+            seen = {};
             size = 0;
         }
         return;
     }
-    for (const std::string &existing : values)
+    // O(1) membership check; transparent hashing avoids constructing a
+    // temporary `std::string` from `bytes` on every call.
+    if (seen.contains(bytes))
     {
-        if (existing == bytes)
-        {
-            return;
-        }
+        return;
     }
     if (size >= cap)
     {
         // Cap exceeded: caller flips the column to `Type::string`.
         killed = true;
         values = {};
+        seen = {};
         size = 0;
         return;
     }
     values.emplace_back(bytes);
+    seen.emplace(values.back());
     ++size;
 }
 

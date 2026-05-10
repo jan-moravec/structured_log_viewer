@@ -1,6 +1,7 @@
 #pragma once
 
 #include "enum_dictionary.hpp"
+#include "internal/transparent_string_hash.hpp"
 #include "key_index.hpp"
 #include "line_source.hpp"
 #include "log_configuration.hpp"
@@ -131,7 +132,13 @@ private:
     /// before their first observation.
     struct EnumCandidateTracker
     {
+        /// Distinct values seen so far (insertion order, capped at `cap`).
         std::vector<std::string> values;
+        /// O(1) membership index over `values`. Transparent hashing avoids
+        /// the per-row `std::string` materialisation a non-transparent
+        /// `unordered_set<string>` would force on every `string_view`
+        /// lookup.
+        std::unordered_set<std::string, internal::TransparentStringHash, internal::TransparentStringEqual> seen;
         uint32_t valueMaxLen = 0;
         uint16_t size = 0;
         uint16_t cap = DEFAULT_ENUM_VALUE_CAP;
@@ -148,6 +155,7 @@ private:
             : valueMaxLen(valueMaxLenValue), cap(capValue)
         {
             values.reserve(capValue);
+            seen.reserve(capValue);
         }
 
         /// Caller has already incremented `presenceCount`. Updates state

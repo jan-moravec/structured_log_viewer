@@ -40,6 +40,32 @@ public:
     int GetMatchType() const;
     QStringList GetSelectedEnumValues() const;
 
+    /// Test-only accessors for the enum-picker page widgets. Tests cannot
+    /// rely on `findChildren<...>()` to locate them: on the Linux runner
+    /// with Qt 6.8 + offscreen QPA, QObject-tree traversal returns empty
+    /// for QDialog descendants the same way it does for `QAction`s in the
+    /// `MainWindow` `.ui` (see `MainWindow::FindUiAction`).
+    [[nodiscard]] QListView *EnumPickerView() const
+    {
+        return mEnumValuesView;
+    }
+    [[nodiscard]] QSortFilterProxyModel *EnumPickerProxy() const
+    {
+        return mEnumValuesProxy;
+    }
+    [[nodiscard]] QLineEdit *EnumSearchEdit() const
+    {
+        return mEnumSearchEdit;
+    }
+    [[nodiscard]] QLabel *EnumEmptyPlaceholder() const
+    {
+        return mEnumEmptyPlaceholder;
+    }
+    [[nodiscard]] QPushButton *OkButton() const
+    {
+        return mOkButton;
+    }
+
 signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);

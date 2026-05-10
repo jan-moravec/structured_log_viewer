@@ -939,6 +939,11 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     return nullptr;
 }
 
+QMenu *MainWindow::FiltersMenu() const
+{
+    return ui->menuFilters;
+}
+
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)

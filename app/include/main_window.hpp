@@ -32,6 +32,7 @@ namespace Ui
 {
 class MainWindow;
 }
+class QMenu;
 QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow
@@ -57,6 +58,17 @@ public:
     /// Test-only `QAction` lookup by `objectName`; works around a Qt
     /// 6.8 + offscreen-QPA `findChild<QAction*>` bug.
     [[nodiscard]] QAction *FindUiAction(const QString &name) const;
+
+    /// Test-only accessors for the filter pipeline. The same Qt 6.8 +
+    /// offscreen-QPA traversal bug that motivates `FindUiAction` also
+    /// strands `findChild<QMenu*>("menuFilters")` and `findChildren<
+    /// QSortFilterProxyModel*>()` on the Linux runner; tests reach
+    /// these owned objects through the explicit getters instead.
+    [[nodiscard]] LogFilterModel *FilterModel() const
+    {
+        return mSortFilterProxyModel;
+    }
+    [[nodiscard]] QMenu *FiltersMenu() const;
 
     /// Test-only override of the internal session mode so display-order
     /// tests can exercise the `Static` branch without driving a real

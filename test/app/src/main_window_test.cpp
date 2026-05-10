@@ -2935,32 +2935,17 @@ private slots:
         FilterEditor editor(*run.model, QStringLiteral("test-filter"));
         editor.Load(levelCol, QStringList{});
 
-        // Disambiguate from the QComboBox dropdown's QListView: the enum
-        // picker is the only `QListView` whose model is a `QSortFilterProxyModel`.
-        const QListView *picker = nullptr;
-        const QSortFilterProxyModel *proxy = nullptr;
-        for (const QListView *candidate : editor.findChildren<QListView *>())
-        {
-            if (auto *p = qobject_cast<QSortFilterProxyModel *>(candidate->model()))
-            {
-                picker = candidate;
-                proxy = p;
-                break;
-            }
-        }
+        // Reach the picker through the explicit accessor: on the Linux
+        // runner with Qt 6.8 + offscreen QPA, `findChildren<QListView*>`
+        // strands these widgets the same way it strands `QAction`s in
+        // the `MainWindow` `.ui` (see `MainWindow::FindUiAction`).
+        const QListView *picker = editor.EnumPickerView();
+        const QSortFilterProxyModel *proxy = editor.EnumPickerProxy();
         QVERIFY2(picker != nullptr, "FilterEditor must expose its enum picker QListView");
         QVERIFY2(proxy != nullptr, "picker must wrap a QSortFilterProxyModel");
         QCOMPARE(proxy->rowCount(), 5);
 
-        QLineEdit *searchBox = nullptr;
-        for (QLineEdit *edit : editor.findChildren<QLineEdit *>())
-        {
-            if (edit->placeholderText().contains(QStringLiteral("Filter values"), Qt::CaseInsensitive))
-            {
-                searchBox = edit;
-                break;
-            }
-        }
+        QLineEdit *searchBox = editor.EnumSearchEdit();
         QVERIFY2(searchBox != nullptr, "FilterEditor must expose the picker search QLineEdit");
 
         searchBox->setText(QStringLiteral("err"));
@@ -3021,8 +3006,12 @@ private slots:
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
 
         // Find the Filters-menu action whose data matches `filterId`.
+        // Reach the menu via `MainWindow::FiltersMenu()` rather than
+        // `findChild`: the Linux Qt 6.8 + offscreen-QPA traversal bug
+        // strands `findChild<QMenu*>("menuFilters")` the same way it
+        // strands `QAction` lookups (see `MainWindow::FindUiAction`).
         const auto findFilterMenuAction = [&](const QString &filterId) -> QAction * {
-            const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
+            const auto *menu = mWindow->FiltersMenu();
             if (menu == nullptr)
             {
                 return nullptr;
@@ -3053,20 +3042,12 @@ private slots:
         );
         QCoreApplication::processEvents();
         QVERIFY2(findFilterMenuAction(filterId) != nullptr, "active filter must have a menu entry before the drop");
-        // `LogFilterModel` has no `Q_OBJECT`; search by base type and downcast.
-        const auto findLogFilterModel = [&]() -> LogFilterModel * {
-            for (auto *proxy : mWindow->findChildren<QSortFilterProxyModel *>())
-            {
-                if (auto *concrete = dynamic_cast<LogFilterModel *>(proxy))
-                {
-                    return concrete;
-                }
-            }
-            return nullptr;
-        };
 
-        // 3 levels across 300 rows -> ~100 `info` rows pass.
-        const LogFilterModel *filterModel = findLogFilterModel();
+        // 3 levels across 300 rows -> ~100 `info` rows pass. Reach the
+        // proxy via `MainWindow::FilterModel()`: `findChildren<
+        // QSortFilterProxyModel*>()` is similarly stranded on the Linux
+        // offscreen runner.
+        const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         const int filteredRowCount = filterModel->rowCount();
         QVERIFY2(
@@ -3230,29 +3211,19 @@ private slots:
         const FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
         // `UpdateSelectedColumn(0)` settles the OK / placeholder state.
 
-        const QPushButton *okButton = nullptr;
-        for (const QPushButton *button : editor.findChildren<QPushButton *>())
-        {
-            if (button->text() == QStringLiteral("Ok"))
-            {
-                okButton = button;
-                break;
-            }
-        }
+        // Reach widgets via the explicit accessors: see the comment on
+        // `MainWindow::FindUiAction` for why `findChildren<...>` is
+        // unreliable on the Linux runner with Qt 6.8 + offscreen QPA.
+        const QPushButton *okButton = editor.OkButton();
         QVERIFY2(okButton != nullptr, "FilterEditor must expose an OK button");
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - QVERIFY2 control flow.
         QVERIFY2(!okButton->isEnabled(), "OK must be disabled when the picker dictionary is empty");
 
-        const QLabel *placeholder = nullptr;
-        for (const QLabel *label : editor.findChildren<QLabel *>())
-        {
-            if (label->text().contains(QStringLiteral("No values observed"), Qt::CaseInsensitive))
-            {
-                placeholder = label;
-                break;
-            }
-        }
+        const QLabel *placeholder = editor.EnumEmptyPlaceholder();
         QVERIFY2(placeholder != nullptr, "FilterEditor must expose the empty-picker placeholder");
+        QVERIFY2(
+            placeholder->text().contains(QStringLiteral("No values observed"), Qt::CaseInsensitive),
+            "placeholder text must explain why the picker is empty"
+        );
         // Use `!isHidden()`: `isVisible()` requires shown ancestors.
         QVERIFY2(!placeholder->isHidden(), "placeholder must not be explicitly hidden when the picker is empty");
     }
@@ -3327,20 +3298,14 @@ private slots:
         );
 
         // Unfiltered total: the empty enum filter never became active.
-        // Walk children manually since `LogFilterModel` has no `Q_OBJECT`.
-        const LogFilterModel *filterModel = nullptr;
-        for (auto *proxy : mWindow->findChildren<QSortFilterProxyModel *>())
-        {
-            if (auto *concrete = dynamic_cast<LogFilterModel *>(proxy))
-            {
-                filterModel = concrete;
-                break;
-            }
-        }
+        // Reach the proxy and menu via the explicit accessors: see
+        // `MainWindow::FindUiAction` for the offscreen-QPA traversal
+        // bug that strands `findChild`/`findChildren` here.
+        const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY(filterModel != nullptr);
         QCOMPARE(filterModel->rowCount(), 320);
 
-        const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
+        const auto *menu = mWindow->FiltersMenu();
         QVERIFY(menu != nullptr);
         for (const QAction *action : menu->actions())
         {
