@@ -165,9 +165,9 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
 
   > **Note:** the heuristic is **destructive** for streaming opens. If a key matching the heuristic appears mid-parse, the corresponding column is flipped from `any` to `time` in-place and every row already in the table is back-filled with the parsed `TimeStamp`. The original raw string variant is replaced by the parsed value, so disabling the column's `time` type later (via a saved configuration) does not bring the original textual value back without re-opening the file.
 
-- Columns whose values are drawn from a small, stable set of strings (e.g. `level`, `service`, `host`) are auto-promoted to **enumeration columns** once at least 256 rows have been observed and no more than 64 distinct values have been seen. Enum columns are stored compactly as dictionary references and unlock the value-picker filter UI (see [Filtering an enumeration column](#filtering-an-enumeration-column)). All enum columns — including ones loaded explicitly from a [configuration](#configurations) — share a single percentile-based **health policy**: a column may carry up to 5 % over-cap-length or wrong-type values before it is demoted back to a generic text column, evaluated only after at least 20 observations to avoid demoting on a sample of one. A column that exceeds 64 distinct values, breaches the health budget, or otherwise outgrows the dictionary is demoted and stays demoted for the rest of the session, so a column that briefly looked enum-like never oscillates.
+- Columns drawn from a small, stable set of strings (e.g. `level`, `service`, `host`) are auto-promoted to **enumeration columns** once at least 256 rows have been seen and the column holds at most 64 distinct values. Enum columns are stored compactly as dictionary references and unlock the value-picker filter UI (see [Filtering an enumeration column](#filtering-an-enumeration-column)). A 5 % tolerance for over-long or wrong-type values (evaluated after 20 observations) governs both promotion and demotion; a column that breaches the budget or outgrows 64 distinct values is demoted to text and stays demoted for the session.
 
-  > **Note:** auto-promotion only happens for columns that were **not** explicitly defined in a loaded [configuration](#configurations). Saving a layout with a column as the generic `any` type therefore locks it as text in future sessions, even if the data shape would otherwise look enum-like. To force a column to remain text, save a configuration that explicitly carries it as `any`.
+  > **Note:** auto-promotion only happens for columns that are **not** explicitly typed by a loaded [configuration](#configurations). Save a column as `any` to lock it as text.
 
 - All other keys become generic columns with the format `{}` (pass-through).
 
@@ -215,14 +215,14 @@ Structured Log Viewer supports any number of simultaneous filters. A row is show
 
 ### Filtering an enumeration column
 
-When the **Row to filter** dropdown points at an [enumeration column](#automatic-column-detection), the dialog swaps in a **Selected values** list:
+When the **Row to filter** dropdown points at an [enumeration column](#automatic-column-detection), the dialog shows a **Selected values** list instead of a text field:
 
-- The list shows every distinct value seen so far for that column, sorted alphabetically.
-- Tick the values to keep — a row passes the filter if its value is one of the ticked entries.
-- The header above the list (`Selected: X / Y`) and the **Select all** / **Clear all** buttons make bulk selection cheap.
-- Adding a filter with zero values selected is rejected with a warning — the empty selection would hide every row.
+- The list shows every distinct value seen so far, sorted alphabetically.
+- Tick the values to keep — rows whose value is ticked pass the filter.
+- A `Selected: X / Y` header plus **Select all** / **Clear all** buttons make bulk selection easy.
+- Saving the filter with zero values selected is rejected with a warning.
 
-If a column gets demoted from enum back to text mid-session (because the dictionary outgrew 64 distinct values, or the percentile-based health policy tripped on overlong / wrong-type values), saved enum filters fall back to comparing the row's text value against the saved selection so they keep working without intervention. Conversely, a saved *text* filter on a column that auto-promotes to enum keeps matching rows by their text representation; you can re-edit it through the dialog to switch to the value picker.
+If a column is demoted back to text mid-session, saved enum filters fall back to comparing the row's text value against the saved selection. A saved text filter on a column that later auto-promotes to enum continues to match by text; re-edit it to switch to the value picker.
 
 ### Editing or Clearing a Filter
 

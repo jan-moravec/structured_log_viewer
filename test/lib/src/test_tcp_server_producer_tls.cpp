@@ -37,8 +37,9 @@ public:
         mPath = std::filesystem::temp_directory_path() / ("loglib_tcp_tls_" + std::to_string(gen()));
         std::filesystem::create_directories(mPath);
     }
-    // NOLINTNEXTLINE(bugprone-exception-escape): MSVC may model throwing paths through STL `remove_all`; teardown
+    // MSVC may model throwing paths through STL `remove_all`; teardown
     // ignores errors via `error_code`.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~TempDir() noexcept
     {
         std::error_code ec;

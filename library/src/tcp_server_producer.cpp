@@ -41,8 +41,8 @@ class TcpServerProducerImpl;
 /// `Stop()` without needing the templated session type at the call
 /// site. The vtable is tiny (one virtual: `Close`) so the indirection
 /// cost is negligible vs the network I/O each call wraps.
-// NOLINTNEXTLINE(misc-use-internal-linkage): `loglib::internal` TU-local implementation detail for
-// `TcpServerProducerImpl`.
+// `loglib::internal` TU-local implementation detail for `TcpServerProducerImpl`.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 class SessionBase
 {
 public:
@@ -456,8 +456,9 @@ void TcpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     });
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape): `asio::io_context::stop()` may throw in rare error paths; `noexcept`
-// matches producer contract; catch block is the safety net.
+// `asio::io_context::stop()` may throw in rare error paths; `noexcept` matches
+// producer contract; the catch block below is the safety net.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 void TcpServerProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))

@@ -596,8 +596,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
     });
 
     // DictRef variant: pre-encode `level` so each `GetValue` resolves
-    // through the registry. Gap vs the KeyId path quantifies the
-    // dictionary-lookup tax.
+    // through the registry; the gap vs the KeyId path is the lookup cost.
     {
         LogData &mutableData = result.data;
         const KeyId levelKey = mutableData.Keys().Find("level");
@@ -728,8 +727,7 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
 }
 
 // Enum auto-detection benchmark: 4 distinct `level` values across many
-// rows. Reports DictRef fraction + dictionary heap bytes; checks the
-// column actually flipped to `Type::enumeration`.
+// rows. Reports DictRef fraction and dictionary heap bytes.
 TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][json_parser][enum]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();

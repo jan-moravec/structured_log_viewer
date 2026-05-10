@@ -81,12 +81,9 @@ TEST_CASE(
     "[LogConfigurationManager][timestamp_keys][regression]"
 )
 {
-    // Regression: the bare "t" used to land here (one-letter
-    // columns named `t` were silently auto-promoted to a date
-    // column). Widen-and-prune the canonical list at the same
-    // time: the well-known JSON timestamp aliases (`@timestamp`,
-    // `datetime`, `created_at`, `ts`) now route through the same
-    // first-column promotion path.
+    // Regression: bare `t` used to be auto-promoted to a date column.
+    // The well-known aliases (`@timestamp`, `datetime`, `created_at`,
+    // `ts`) now go through the same promotion path.
     LogConfigurationManager manager;
     manager.AppendKeys({"timestamp", "time", "ts", "@timestamp", "datetime", "created_at", "t", "tag"});
 
@@ -110,8 +107,6 @@ TEST_CASE(
     checkType("datetime", LogConfiguration::Type::time);
     checkType("created_at", LogConfiguration::Type::time);
 
-    // `t` and `tag` are NOT timestamp keys: they keep the
-    // free-text-friendly `Type::unknown` and are not promoted.
     checkType("t", LogConfiguration::Type::unknown);
     checkType("tag", LogConfiguration::Type::unknown);
 }
@@ -159,8 +154,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 }
 
 // `IsKeyInAnyColumn` cache-invalidation tests: every mutating path
-// (`Load`, `Update`, `AppendKeys`) must flip the cache-stale flag so the
-// next query reflects the new column set.
+// (`Load`, `Update`, `AppendKeys`) must invalidate the cache.
 
 TEST_CASE(
     "Cache: AppendKeys after a query sees the freshly appended key", "[LogConfigurationManager][cache_invalidation]"
@@ -168,14 +162,11 @@ TEST_CASE(
 {
     LogConfigurationManager manager;
 
-    // First AppendKeys builds the cache from an empty column set; it must
-    // stay coherent across the column appended below.
     manager.AppendKeys({"alpha"});
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "alpha");
 
-    // Existing-key check must hit the cache while the new key is added,
-    // and the duplicate "alpha" inside the call must not double-add.
+    // Duplicate "alpha" inside the call must not double-add.
     manager.AppendKeys({"alpha", "beta", "alpha"});
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "alpha");
@@ -189,12 +180,10 @@ TEST_CASE(
 {
     LogConfigurationManager manager;
 
-    // Seed via AppendKeys so the cache is primed across the next mutator.
     manager.AppendKeys({"regular"});
     REQUIRE(manager.Configuration().columns.size() == 1);
 
-    // Update must skip "regular", add "timestamp" as Type::time, and place
-    // it at position 0.
+    // Update must skip "regular" and add "timestamp" as Type::time at index 0.
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
@@ -243,8 +232,8 @@ TEST_CASE(
 
     LogConfigurationManager manager;
 
-    // Prime the cache with a key that is NOT in the on-disk configuration;
-    // Load must replace the cache so the post-Load AppendKeys re-adds it.
+    // Prime the cache with a key the on-disk config does not have; Load
+    // must replace the cache so the next AppendKeys re-adds it.
     manager.AppendKeys({"stale_key"});
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "stale_key");
@@ -253,13 +242,11 @@ TEST_CASE(
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "loaded_key");
 
-    // `stale_key` is gone post-Load; AppendKeys must re-add it.
     manager.AppendKeys({"stale_key", "loaded_key"});
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "loaded_key");
     CHECK(manager.Configuration().columns[1].header == "stale_key");
 
-    // A second Load again replaces the column set / cache wholesale.
     manager.Load(secondConfigOnDisk.GetFilePath());
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "other_key");
@@ -276,8 +263,8 @@ TEST_CASE(
     "[LogConfigurationManager][cache_invalidation]"
 )
 {
-    // Re-run the "mixed keys organizes timestamp first" shape with the
-    // cached path; regression boundary against the old free-function walk.
+    // Regression: the cached path matches the old O(M*K) walk on the
+    // "timestamp first" fixture.
     const TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
@@ -314,9 +301,8 @@ TEST_CASE(
     "[LogConfigurationManager][cache_invalidation]"
 )
 {
-    // The cache mirrors `column.keys`, not `column.header`. With diverging
-    // header/keys, AppendKeys must skip keys already listed under any
-    // column's `keys`.
+    // Cache keys on `column.keys`, not `column.header`: AppendKeys must
+    // skip keys already listed under any column's `keys`.
     const TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
@@ -333,8 +319,7 @@ TEST_CASE(
 
     manager.AppendKeys({"display", "raw_key", "alias", "fresh"});
 
-    // Existing column stays; only "display" and "fresh" are added
-    // ("raw_key"/"alias" hit the keys cache).
+    // Only "display" and "fresh" are added ("raw_key"/"alias" hit the cache).
     REQUIRE(manager.Configuration().columns.size() == 3);
     CHECK(manager.Configuration().columns[0].header == "display");
     CHECK(manager.Configuration().columns[1].header == "display"); // header reused; keys differ
@@ -371,9 +356,8 @@ TEST_CASE(
     "[log_configuration][type_unknown]"
 )
 {
-    // The `Type::unknown` -> terminal-type transition replaces the
-    // old `mAutoDiscoveredCanonicalKeys` side-channel: provenance is
-    // carried by the column type itself, both in memory and on disk.
+    // Provenance is carried by the column type itself, both in memory
+    // and on disk; `Type::unknown` marks an auto-detector candidate.
 
     SECTION("AppendKeys assigns Type::unknown to fresh keys")
     {
@@ -448,8 +432,6 @@ TEST_CASE(
 
         manager.AppendKeys({"freshly_streamed"});
         REQUIRE(manager.Configuration().columns.size() == 2);
-        // Loaded `level` stays terminal; the freshly-streamed key
-        // becomes a candidate.
         CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::any);
         CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::unknown);
     }
@@ -457,10 +439,8 @@ TEST_CASE(
 
 TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_configuration][type_round_trip]")
 {
-    // Glaze meta string mapping: the wire format uses human-readable
-    // enum names that match the C++ enumerator one-for-one. `double`
-    // is a reserved keyword in C++, so the enumerator and the JSON
-    // string both spell it `floating` — no translation table.
+    // The Glaze meta uses the C++ enumerator names verbatim on the wire;
+    // `double` is reserved, so both spell it `floating`.
     using Type = LogConfiguration::Type;
     const std::vector<Type> variants = {
         Type::unknown,
@@ -489,16 +469,13 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     const auto writeError = glz::write_json(original, json);
     REQUIRE_FALSE(writeError);
 
-    // Sanity-check the wire format. Every variant uses its C++
-    // identifier verbatim on the wire; the legacy `"double"` spelling
-    // must never appear.
-    CHECK(json.find("\"unknown\"") != std::string::npos);
-    CHECK(json.find("\"any\"") != std::string::npos);
-    CHECK(json.find("\"integer\"") != std::string::npos);
-    CHECK(json.find("\"floating\"") != std::string::npos);
-    CHECK(json.find("\"double\"") == std::string::npos);
-    CHECK(json.find("\"number\"") != std::string::npos);
-    CHECK(json.find("\"enumeration\"") != std::string::npos);
+    CHECK(json.contains("\"unknown\""));
+    CHECK(json.contains("\"any\""));
+    CHECK(json.contains("\"integer\""));
+    CHECK(json.contains("\"floating\""));
+    CHECK_FALSE(json.contains("\"double\""));
+    CHECK(json.contains("\"number\""));
+    CHECK(json.contains("\"enumeration\""));
 
     LogConfiguration loaded;
     const auto readError = glz::read_json(loaded, json);

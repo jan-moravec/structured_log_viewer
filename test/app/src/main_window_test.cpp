@@ -595,10 +595,9 @@ private slots:
             return nullptr;
         };
 
-        // All three IsTimestampKey-recognised keys ("time", "ts", "Timestamp",
-        // case-insensitive) must auto-promote to Type::time. The bare "t"
-        // alias was deliberately dropped from TIMESTAMP_KEYS to avoid
-        // false positives on columns literally named `t`; use `ts` here.
+        // "time", "ts", "Timestamp" (case-insensitive) all auto-promote to
+        // `Type::time`. The bare "t" alias was dropped to avoid false
+        // positives on columns literally named `t`.
         for (const std::string &header : {std::string("time"), std::string("ts"), std::string("Timestamp")})
         {
             const auto *column = findColumn(header);
@@ -2902,17 +2901,11 @@ private slots:
     }
 
     // Picker UI: stream a fixture whose `level` column auto-promotes to
-    // `Type::enumeration` (5 distinct values, well under the default cap),
-    // open `FilterEditor` against that column, and verify that typing
-    // into the search box prunes the visible item count via the proxy
-    // chain. Confirms the picker rebuild (`QListView` +
-    // `QSortFilterProxyModel` + `QLineEdit`) actually plumbs the search
-    // text through to the proxy.
+    // `Type::enumeration`, open `FilterEditor` against it, and verify
+    // that typing into the search box prunes the visible item count.
     void TestFilterEditorPickerSearchFiltersVisibleCount()
     {
-        // Stream-mode promotes after only `STREAM_PROMOTION_MIN_ROWS`
-        // (2) observed rows; 300 rows is comfortably past the
-        // threshold and stays under the default 64-value cap.
+        // Past `STREAM_PROMOTION_MIN_ROWS` (2) and under the 64-value cap.
         const QStringList levels{
             QStringLiteral("info"),
             QStringLiteral("warn"),
@@ -2928,7 +2921,7 @@ private slots:
         }
         const TempJsonFile fixture(lines);
 
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QVERIFY(run.model->StreamingErrors().empty());
@@ -2942,13 +2935,11 @@ private slots:
         FilterEditor editor(*run.model, QStringLiteral("test-filter"));
         editor.Load(levelCol, QStringList{});
 
-        // The QComboBox column-picker also has an internal QListView for
-        // its dropdown, so pick the picker explicitly by looking for the
-        // one whose model is a `QSortFilterProxyModel` (the enum picker
-        // is the only `QListView` in `FilterEditor` with a proxy model).
-        QListView *picker = nullptr;
-        QSortFilterProxyModel *proxy = nullptr;
-        for (QListView *candidate : editor.findChildren<QListView *>())
+        // Disambiguate from the QComboBox dropdown's QListView: the enum
+        // picker is the only `QListView` whose model is a `QSortFilterProxyModel`.
+        const QListView *picker = nullptr;
+        const QSortFilterProxyModel *proxy = nullptr;
+        for (const QListView *candidate : editor.findChildren<QListView *>())
         {
             if (auto *p = qobject_cast<QSortFilterProxyModel *>(candidate->model()))
             {
@@ -2987,12 +2978,11 @@ private slots:
         QCOMPARE(proxy->rowCount(), 5);
     }
 
-    // A saved string filter against a now-enum column must be dropped
-    // at `AddFilter` time rather than silently mismatching the rule.
+    // A saved string filter against a now-enum column must be dropped at
+    // `AddFilter` time, not silently retained as a type-mismatched rule.
     void TestSavedStringFilterDroppedOnNowEnumColumn()
     {
-        // 300 rows takes `level` well past the stream-mode promotion
-        // threshold (2 rows).
+        // 300 rows is well past the stream-mode promotion threshold.
         const QStringList levels{QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error")};
         QStringList lines;
         lines.reserve(300);
@@ -3002,9 +2992,8 @@ private slots:
         }
         const TempJsonFile fixture(lines);
 
-        // Drive the streaming open path on the live MainWindow so the
-        // status-bar / model wiring matches production.
-        LogModel *model = mWindow->findChild<LogModel *>();
+        // Drive streaming on the live MainWindow so wiring matches production.
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -3031,9 +3020,9 @@ private slots:
         const auto &columns = model->Configuration().columns;
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
 
-        // Find the Filters-menu action whose data matches @p filterId.
+        // Find the Filters-menu action whose data matches `filterId`.
         const auto findFilterMenuAction = [&](const QString &filterId) -> QAction * {
-            QMenu *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
+            const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
             if (menu == nullptr)
             {
                 return nullptr;
@@ -3048,8 +3037,7 @@ private slots:
             return nullptr;
         };
 
-        // Stage 1: install an active string rule (simulates a saved
-        // filter restored at session start, before promotion).
+        // Stage 1: install a string rule (simulates a saved pre-promotion filter).
         const QString filterId = QStringLiteral("saved-string");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -3065,8 +3053,7 @@ private slots:
         );
         QCoreApplication::processEvents();
         QVERIFY2(findFilterMenuAction(filterId) != nullptr, "active filter must have a menu entry before the drop");
-        // `LogFilterModel` lacks its own `Q_OBJECT`; search by base
-        // type and downcast.
+        // `LogFilterModel` has no `Q_OBJECT`; search by base type and downcast.
         const auto findLogFilterModel = [&]() -> LogFilterModel * {
             for (auto *proxy : mWindow->findChildren<QSortFilterProxyModel *>())
             {
@@ -3078,8 +3065,8 @@ private slots:
             return nullptr;
         };
 
-        // 3 levels cycled across 300 rows -> ~100 `info` rows pass.
-        LogFilterModel *filterModel = findLogFilterModel();
+        // 3 levels across 300 rows -> ~100 `info` rows pass.
+        const LogFilterModel *filterModel = findLogFilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         const int filteredRowCount = filterModel->rowCount();
         QVERIFY2(
@@ -3087,9 +3074,8 @@ private slots:
             qPrintable(QStringLiteral("active filter must trim row count; got %1").arg(filteredRowCount))
         );
 
-        // Stage 2: replay the saved string filter against the now-
-        // enum column. The type-mismatch guard must drop the active
-        // rule, not just skip pre-populating the editor.
+        // Stage 2: replay the saved string filter against the now-enum
+        // column. The type-mismatch guard must drop the active rule.
         loglib::LogConfiguration::LogFilter savedFilter;
         savedFilter.type = loglib::LogConfiguration::LogFilter::Type::string;
         savedFilter.row = levelCol;
@@ -3097,7 +3083,7 @@ private slots:
         savedFilter.matchType = loglib::LogConfiguration::LogFilter::Match::exactly;
 
         mWindow->statusBar()->clearMessage();
-        // `AddFilter` is private; reach it via the meta-object system.
+        // `AddFilter` is private; invoke via the meta-object system.
         const bool invoked = QMetaObject::invokeMethod(
             mWindow,
             "AddFilter",
@@ -3114,9 +3100,9 @@ private slots:
             qPrintable(QStringLiteral("expected status-bar drop message; got '%1'").arg(message))
         );
 
-        // The active rule and its menu entry are both gone.
+        // Active rule and menu entry are gone.
         QVERIFY2(findFilterMenuAction(filterId) == nullptr, "menu entry for the dropped filter must be removed");
-        // Unfiltered total = no active rule for `filterId`.
+        // Unfiltered total: no active rule for `filterId`.
         QCOMPARE(filterModel->rowCount(), 300);
 
         // Close the empty editor the drop path opens.
@@ -3133,12 +3119,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // The bitset fast path and the string fallback path must accept
-    // the same rows on an enum-encoded column.
+    // The bitset fast path and the string fallback must accept the same
+    // rows on an enum-encoded column.
     void TestEnumFilterRuleFastPathMatchesFallbackPath()
     {
-        // 4 levels rotated across rows; selecting 2 gives a clean 50%
-        // pass rate.
+        // 4 levels rotated; selecting 2 gives a 50% pass rate.
         const QStringList levels{
             QStringLiteral("info"),
             QStringLiteral("warn"),
@@ -3154,7 +3139,7 @@ private slots:
         }
         const TempJsonFile fixture(lines);
 
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
         QVERIFY(run.model->StreamingErrors().empty());
@@ -3206,7 +3191,7 @@ private slots:
 
         QCOMPARE(matchedRows, FIXTURE_LINES / 2);
 
-        // Sanity: every enum-encoded row exposes `EnumValueRole`.
+        // Every enum-encoded row exposes `EnumValueRole`.
         for (int row = 0; row < rows; ++row)
         {
             const QVariant enumId =
@@ -3218,21 +3203,19 @@ private slots:
         }
     }
 
-    // An enum column with an empty dictionary must show the
-    // placeholder and disable OK to prevent a "hide everything"
-    // filter being submitted.
+    // An enum column with an empty dictionary must show the placeholder
+    // and disable OK so a "hide everything" filter cannot be submitted.
     void TestFilterEditorEmptyEnumPickerDisablesOk()
     {
-        // Configure `level` as enumeration without streaming, so the
-        // dictionary stays empty.
-        LogModel *model = mWindow->findChild<LogModel *>();
+        // Configure `level` as enum without streaming so the dict stays empty.
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString cfgPath = dir.filePath("empty_enum.json");
-        // Build via the manager's own API + `Save` so the JSON matches
-        // the live schema, then load it back into the live model.
+        // Save through the manager so the JSON matches the live schema,
+        // then load it back into the model.
         {
             loglib::LogConfigurationManager scratch;
             scratch.AppendKeys({"level"});
@@ -3244,12 +3227,11 @@ private slots:
         QCOMPARE(model->Configuration().columns.size(), static_cast<size_t>(1));
         QCOMPARE(model->Configuration().columns[0].type, loglib::LogConfiguration::Type::enumeration);
 
-        FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
-        // The constructor's `UpdateSelectedColumn(0)` settles the OK
-        // / placeholder state via `PopulateEnumValues`.
+        const FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
+        // `UpdateSelectedColumn(0)` settles the OK / placeholder state.
 
-        QPushButton *okButton = nullptr;
-        for (QPushButton *button : editor.findChildren<QPushButton *>())
+        const QPushButton *okButton = nullptr;
+        for (const QPushButton *button : editor.findChildren<QPushButton *>())
         {
             if (button->text() == QStringLiteral("Ok"))
             {
@@ -3258,10 +3240,11 @@ private slots:
             }
         }
         QVERIFY2(okButton != nullptr, "FilterEditor must expose an OK button");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - QVERIFY2 control flow.
         QVERIFY2(!okButton->isEnabled(), "OK must be disabled when the picker dictionary is empty");
 
-        QLabel *placeholder = nullptr;
-        for (QLabel *label : editor.findChildren<QLabel *>())
+        const QLabel *placeholder = nullptr;
+        for (const QLabel *label : editor.findChildren<QLabel *>())
         {
             if (label->text().contains(QStringLiteral("No values observed"), Qt::CaseInsensitive))
             {
@@ -3270,18 +3253,15 @@ private slots:
             }
         }
         QVERIFY2(placeholder != nullptr, "FilterEditor must expose the empty-picker placeholder");
-        // `isVisible()` requires shown ancestors; `!isHidden()`
-        // tracks the explicit-hide state the picker logic toggles.
+        // Use `!isHidden()`: `isVisible()` requires shown ancestors.
         QVERIFY2(!placeholder->isHidden(), "placeholder must not be explicitly hidden when the picker is empty");
     }
 
-    // A saved enum filter with empty `filterValues` is a "hide
-    // everything" rule -- drop it at AddFilter time rather than
-    // opening the editor on a pre-doomed selection.
+    // A saved enum filter with empty `filterValues` is "hide everything";
+    // drop it at AddFilter time rather than opening a doomed editor.
     void TestSavedEmptyEnumFilterIsDropped()
     {
-        // Promote `level` so the filter is type-compatible (separate
-        // from the type-mismatch guard).
+        // Promote `level` so the filter is type-compatible.
         const QStringList levels{
             QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
         };
@@ -3293,7 +3273,7 @@ private slots:
         }
         const TempJsonFile fixture(lines);
 
-        LogModel *model = mWindow->findChild<LogModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -3346,10 +3326,9 @@ private slots:
             qPrintable(QStringLiteral("expected status-bar 'no values selected' message; got '%1'").arg(message))
         );
 
-        // Unfiltered total = the empty enum filter never became an
-        // active rule. Walk children manually since `LogFilterModel`
-        // has no `Q_OBJECT`.
-        LogFilterModel *filterModel = nullptr;
+        // Unfiltered total: the empty enum filter never became active.
+        // Walk children manually since `LogFilterModel` has no `Q_OBJECT`.
+        const LogFilterModel *filterModel = nullptr;
         for (auto *proxy : mWindow->findChildren<QSortFilterProxyModel *>())
         {
             if (auto *concrete = dynamic_cast<LogFilterModel *>(proxy))
@@ -3361,14 +3340,14 @@ private slots:
         QVERIFY(filterModel != nullptr);
         QCOMPARE(filterModel->rowCount(), 320);
 
-        QMenu *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
+        const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
         QVERIFY(menu != nullptr);
         for (const QAction *action : menu->actions())
         {
             QVERIFY2(action->data().toString() != filterId, "dropped enum filter must not have a menu entry");
         }
 
-        // No editor opens: the filter is dropped before construction.
+        // No editor opens; filter is dropped before construction.
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             if (auto *editor = qobject_cast<FilterEditor *>(widget))
@@ -3382,12 +3361,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // `enumColumnsChanged` must fire at least once when an enum
-    // column auto-promotes during streaming.
+    // `enumColumnsChanged` must fire when a column auto-promotes mid-stream.
     void TestEnumColumnsChangedFiresOnPromotion()
     {
-        // 4 levels across 320 rows; well past the stream-mode
-        // promotion threshold (2 rows).
+        // 4 levels across 320 rows; well past the promotion threshold.
         const QStringList levels{
             QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
         };
@@ -3399,10 +3376,10 @@ private slots:
         }
         const TempJsonFile fixture(lines);
 
-        LogModel *model = mWindow->findChild<LogModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+        const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
         QVERIFY(enumSpy.isValid());
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -3428,8 +3405,7 @@ private slots:
         const auto &columns = model->Configuration().columns;
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::enumeration);
 
-        // Don't pin an exact count -- subsequent batches may grow the
-        // dictionary and re-fire. At least one emission is enough.
+        // Don't pin an exact count: dictionary growth may re-fire.
         QVERIFY2(
             enumSpy.count() >= 1,
             qPrintable(QStringLiteral("enumColumnsChanged should have fired at least once; got %1").arg(enumSpy.count())

@@ -23,7 +23,7 @@ public:
     void SetFilterRules(std::vector<std::unique_ptr<FilterRule>> &&filterRules)
     {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-        // Qt 6.9+: limit invalidation to rows only (our filter never affects columns).
+        // Qt 6.9+: rows-only invalidation; this filter never touches columns.
         beginFilterChange();
         mFilterRules = std::move(filterRules);
         endFilterChange(QSortFilterProxyModel::Direction::Rows);
@@ -43,11 +43,7 @@ protected:
             {
                 continue;
             }
-            // Per-rule data needs: the common case (TextFilterRule
-            // only) skips the `EnumValueRole` query entirely, saving
-            // a `LogModel::data()` round-trip per (row, rule).
-            // `EnumFilterRule` uses the bitset fast path when the
-            // slot is `DictRef`-encoded.
+            // Skip the `EnumValueRole` query unless a rule needs it.
             const QVariant displayOrSort =
                 rule->NeedsDisplayOrSort() ? sourceModel()->data(index, LogModelItemDataRole::SortRole) : QVariant{};
             const QVariant enumValueId =
@@ -58,7 +54,7 @@ protected:
             }
         }
 
-        return true; // All filter rules have a match, accept the row.
+        return true;
     }
 
 private:

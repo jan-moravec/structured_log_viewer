@@ -651,8 +651,8 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     // each ≈ 1 MB, large enough to split.
     std::vector<TestJsonLogFile::Line> logs;
     logs.reserve(5'000);
-    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp): deterministic fixture for stable
-    // assertions.
+    // Deterministic fixture for stable assertions.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937 rng(0xC0FFEE);
     std::uniform_int_distribution<int> levelDist(0, 4);
     std::uniform_int_distribution<int> intDist(-1'000, 1'000);

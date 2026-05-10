@@ -31,8 +31,8 @@ public:
 
     void Load(int row, const QString &filterString, int matchType);
     void Load(int row, qint64 begin, qint64 end);
-    /// Preselect @p selectedValues in the multi-select picker.
-    /// Values absent from the current dictionary are skipped.
+    /// Preselect @p selectedValues; values absent from the current
+    /// dictionary are skipped.
     void Load(int row, const QStringList &selectedValues);
 
     int GetRowToFilter() const;
@@ -60,8 +60,7 @@ private:
     QTimeEdit *mEndTimeEdit;
 
     /// Multi-select picker for `Type::enumeration` columns. Items are
-    /// alphabetised; Select All / Clear All operate on the
-    /// proxy-filtered (visible) rows.
+    /// alphabetised; Select/Clear All operate on visible rows only.
     QListView *mEnumValuesView;
     QStandardItemModel *mEnumValuesModel;
     QSortFilterProxyModel *mEnumValuesProxy;
@@ -69,8 +68,7 @@ private:
     QPushButton *mEnumSelectAllButton;
     QPushButton *mEnumClearAllButton;
     QLabel *mEnumSelectionCount;
-    /// Shown when the dictionary is empty (e.g. live-tail before the
-    /// first batch). OK stays disabled while it is visible.
+    /// Shown when the dictionary is empty; OK stays disabled while visible.
     QLabel *mEnumEmptyPlaceholder;
 
     QPushButton *mOkButton;
@@ -80,9 +78,9 @@ private:
     void SetBeginEnd(qint64 begin, qint64 end);
     /// Repopulate the enum picker from the column's current dictionary.
     void PopulateEnumValues(int columnIndex);
-    /// Refresh the "N of M selected" label.
+    /// Refresh the "N of M selected" label and OK gating.
     void UpdateEnumSelectionCount();
-    /// Clear the red warning border stamped by the empty-submit guard.
+    /// Drop the red warning border from the empty-submit guard.
     void ClearWarningStyles();
     static QDateTime ConvertToQDateTime(qint64 timestamp);
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);

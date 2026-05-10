@@ -42,7 +42,7 @@ LogValue ToOwnedLogValue(const LogValue &value)
 
 bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 {
-    // Treat `string_view` and `string` as the same logical kind.
+    // `string_view` and `string` count as the same kind for equality.
     const auto lhsString = AsStringView(lhs);
     const auto rhsString = AsStringView(rhs);
     if (lhsString.has_value() || rhsString.has_value())
@@ -55,8 +55,8 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 namespace
 {
 
-/// Append @p sv to @p source's owned arena for @p lineId, returning
-/// the matching compact `OwnedString` value. Cold path.
+/// Append @p sv to @p source's owned arena and return the corresponding
+/// `OwnedString` value.
 internal::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
 {
     const uint64_t offset = source.AppendOwnedBytes(lineId, sv);
@@ -74,9 +74,8 @@ internal::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t line
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
             {
-                // MmapSlice fast path when the view aliases the
-                // source's stable bytes; stream sources fall through
-                // to `PromoteToOwnedString`.
+                // MmapSlice when the view aliases stable bytes;
+                // otherwise promote to owned.
                 const std::span<const char> stable = source.StableBytes();
                 if (!stable.empty() && alt.data() >= stable.data() &&
                     alt.data() + alt.size() <= stable.data() + stable.size())
@@ -147,10 +146,7 @@ LogLine::LogLine(
 #ifndef NDEBUG
     assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
 #endif
-    // Exact-fit copy: drops the temporary vector's `reserve(16)` capacity
-    // waste in one go, so each `LogLine` carries only `size * 16` bytes
-    // of field storage instead of `capacity * 16`. The temp vector is
-    // freed when @p sortedValues goes out of scope.
+    // Exact-fit copy keeps each LogLine at `size * 16` bytes.
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
 }
 
@@ -169,8 +165,7 @@ LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_
 
 const internal::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
 {
-    // Linear forward scan: typical line has <= 8 fields and the data is
-    // sorted ascending; bailing on `entry.first > id` keeps it branch-light.
+    // Linear scan; lines are tiny and sorted, with an early bail.
     const auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     for (uint32_t i = 0; i < size; ++i)
@@ -189,11 +184,7 @@ const internal::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
 
 internal::CompactLogValue *LogLine::FindCompactMutable(KeyId id) noexcept
 {
-    // Defer to the const overload to avoid duplicating the linear-scan
-    // loop (Meyers's mutable-from-const idiom). `mValues` is owned and
-    // mutable here, so the cast is sound; the const overload does not
-    // depend on any const-only invariants.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): canonical idiom.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     return const_cast<internal::CompactLogValue *>(std::as_const(*this).FindCompact(id));
 }
 
@@ -256,8 +247,7 @@ LogValue LogLine::GetValue(const std::string &key) const
 void LogLine::SetValue(KeyId id, const LogValue &value)
 {
 #ifndef NDEBUG
-    // Untagged setter is for owned values; callers passing a `string_view`
-    // must use the `LogValueTrustView` overload to declare the lifetime.
+    // Untagged setter is for owned values; views need `LogValueTrustView`.
     assert(!std::holds_alternative<std::string_view>(value));
 #endif
     SetValue(id, value, LogValueTrustView{});
@@ -308,8 +298,6 @@ void LogLine::SetCompact(KeyId id, internal::CompactLogValue compact)
     }
     if (lo < size && data[lo].first == id)
     {
-        // In-place replacement: timestamp promotion, enum encode
-        // (`SetOrReplaceEnumDictRef`), and demote back to `OwnedString`.
         mValues.Set(lo, compact);
         return;
     }

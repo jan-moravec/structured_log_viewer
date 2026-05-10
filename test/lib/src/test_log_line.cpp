@@ -279,8 +279,6 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     CHECK(std::get<int64_t>(slowInt) == 99);
 }
 
-// `DictRef` slots resolve through the source's registry; absence
-// of a registry yields `monostate` rather than crashing.
 TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryRegistry", "[log_line][enum]")
 {
     const TestLogFile testFile;

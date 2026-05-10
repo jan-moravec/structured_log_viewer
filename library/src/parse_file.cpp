@@ -17,6 +17,10 @@
 namespace loglib
 {
 
+// MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags
+// (e.g. _Follow_symlinks | _File_size = 9), and clang's analyzer flags the
+// resulting value as out-of-range. False positive originating in stdlib.
+// NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange)
 ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file)
 {
     if (!std::filesystem::exists(file))
@@ -56,5 +60,6 @@ ParseResult ParseFile(const std::filesystem::path &file)
 
     throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));
 }
+// NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
 
 } // namespace loglib

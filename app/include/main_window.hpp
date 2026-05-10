@@ -48,32 +48,19 @@ public:
 
     void UpdateUi();
 
-    /// Single sync point for newest-first display orientation. Picks
-    /// `StreamingControl::IsNewestFirst()` for stream sessions and
-    /// `StreamingControl::IsStaticNewestFirst()` for static sessions
-    /// (Idle inherits the stream-mode flag so the *next* session boots
-    /// in the right orientation), and propagates it to
-    /// `RowOrderProxyModel::SetReversed`, `LogTableView::SetTailEdge`,
-    /// and `setAlternatingRowColors`, which all need to move together.
+    /// Single sync point for newest-first display: picks the right
+    /// `StreamingControl` flag for the active session mode and
+    /// propagates it to the proxy, table view, and row colours.
     /// Idempotent.
     void ApplyDisplayOrder();
 
-    /// Test-only lookup that returns the UI-file-declared `QAction`
-    /// with the given `objectName`, or `nullptr` if no such action
-    /// is recognised. Works around a Qt 6.8 + Linux + offscreen-QPA
-    /// case where `QObject::findChild<QAction*>(name)` on the
-    /// `QMainWindow` returns null for actions declared inside
-    /// `<widget class="QMainWindow">` even though `ui->actionXxx`
-    /// is valid. Going through `ui->` directly bypasses the
-    /// QObject-tree traversal entirely.
+    /// Test-only `QAction` lookup by `objectName`; works around a Qt
+    /// 6.8 + offscreen-QPA `findChild<QAction*>` bug.
     [[nodiscard]] QAction *FindUiAction(const QString &name) const;
 
-    /// Test-only handle that flips the internal `mSessionMode` so
-    /// `ApplyDisplayOrder` exercises the `Static` branch without
-    /// having to drive a real `OpenFiles` / `OpenLogStream` flow
-    /// (both of which are `QFileDialog`-gated and async). Production
-    /// code never calls this; the regular open paths set the same
-    /// field internally.
+    /// Test-only override of the internal session mode so display-order
+    /// tests can exercise the `Static` branch without driving a real
+    /// open flow.
     enum class TestSessionMode
     {
         Idle,
@@ -88,10 +75,8 @@ protected:
 private slots:
     void OpenFiles();
     void OpenLogStream();
-    /// Pop the `NetworkStreamDialog`, build the matching producer
-    /// (`Tcp` / `UdpServerProducer`) wrapped in a `StreamLineSource`,
-    /// and call `LogModel::BeginStreaming`. Mirrors `OpenLogStream`'s
-    /// reset-then-arm sequence.
+    /// Pop the `NetworkStreamDialog`, build the matching producer, and
+    /// call `LogModel::BeginStreaming`.
     void OpenNetworkStream();
     void SaveConfiguration();
     void LoadConfiguration();
@@ -99,11 +84,9 @@ private slots:
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
-    /// Add a filter rule, optionally opening the editor dialog. Set
-    /// @p openEditor to `false` from the configuration-load path so a
-    /// dropped saved filter (column-type mismatch, missing column,
-    /// etc.) does not pop a default editor on top of the user's
-    /// just-loaded session.
+    /// Add a filter rule, optionally opening the editor. Pass
+    /// `openEditor = false` from the configuration-load path so a
+    /// dropped saved filter does not pop the editor.
     void AddFilter(
         const QString &filterId,
         const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt,
@@ -121,30 +104,26 @@ private slots:
     /// Stop the active stream. Bound to `actionStopStream`.
     void StopStream();
 
-    /// Rotation event from the source thread re-emitted on the GUI
-    /// thread; flashes the `— rotated` suffix in the status bar.
+    /// Rotation event re-emitted on the GUI thread; flashes the
+    /// `— rotated` status-bar suffix.
     void OnRotationDetected();
 
-    /// Source-thread status transition. Latches `mSourceWaiting` and
-    /// refreshes the status bar so it shows `Source unavailable …`
-    /// while the source is `Waiting`.
+    /// Producer status transition; latches `mSourceWaiting` and
+    /// refreshes the status bar.
     void OnSourceStatusChanged(loglib::SourceStatus status);
 
 private:
-    /// Try to load @p file as a `LogConfiguration`; returns true and
-    /// fires `UpdateUi` on success. Single-file open / drag-drop uses
-    /// this to preserve the "drop a config file to load it" affordance.
+    /// Try to load @p file as a `LogConfiguration`; returns true on
+    /// success.
     bool TryLoadAsConfiguration(const QString &file);
 
-    /// Reset model + filter state and start a sequential streaming open
-    /// of @p files. The first file uses `LogModel::BeginStreaming`; the
-    /// rest are queued and dispatched through `AppendStreaming` from
-    /// the `streamingFinished` slot.
+    /// Reset state and start a sequential streaming open of @p files.
+    /// The first file uses `BeginStreaming`; subsequent files are
+    /// dispatched through `AppendStreaming` on `streamingFinished`.
     void StartStreamingOpenQueue(QStringList files);
 
-    /// Pop the next file off `mPendingOpenFiles` and start parsing it.
-    /// File-open errors are collected on `mPendingOpenErrors` and the
-    /// summary is shown when the queue drains.
+    /// Pop the next file off `mPendingOpenFiles` and parse it. Open
+    /// errors accumulate in `mPendingOpenErrors`.
     void StreamNextPendingFile();
 
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
@@ -156,16 +135,14 @@ private:
     void UpdateStreamingStatus();
 
     /// Re-evaluate the stream toolbar's visibility against the current
-    /// session mode. Called from open paths and `streamingFinished`.
+    /// session mode.
     void UpdateStreamToolbarVisibility();
 
-    /// Scroll the table to the most-recently-appended source row when
-    /// Follow tail is on. Mapped through the proxy chain so the scroll
-    /// lands on the correct visual row even under a sort.
+    /// Scroll to the newest row when Follow tail is on; mapped through
+    /// the proxy chain so the scroll lands correctly under a sort.
     void ScrollToNewestRowIfFollowing();
 
-    /// Re-apply the persisted retention cap to the model. Called from
-    /// startup and from the preferences-Ok handler.
+    /// Re-apply the persisted retention cap to the model.
     void ApplyStreamingRetention();
 
     Ui::MainWindow *ui;
@@ -179,28 +156,24 @@ private:
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
-    /// Status-bar label rendered while a streaming session is active.
+    /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
 
-    /// Toolbar holding Pause / Follow tail / Stop. Visible only during
-    /// a live-tail session.
+    /// Toolbar holding Pause/Follow tail/Stop; visible only during a
+    /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
 
-    /// Filename of the active stream; empty when no session is in
-    /// flight.
+    /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;
 
-    /// Files queued by `StartStreamingOpenQueue` waiting to be streamed
-    /// after the current file finishes.
+    /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.
-    /// Surfaced as the post-parse summary when the queue drains.
     std::vector<std::string> mPendingOpenErrors;
 
-    /// Streaming session kind. Gates the configuration UI, the
-    /// post-parse error summary, and the live-tail-only status-bar
-    /// variants. Set on open, cleared in `streamingFinished`.
+    /// Streaming session kind; gates UI variants. Set on open, cleared
+    /// in `streamingFinished`.
     enum class SessionMode
     {
         Idle,
@@ -222,17 +195,14 @@ private:
     qsizetype mStreamingLineCount = 0;
     qsizetype mStreamingErrorCount = 0;
 
-    /// Flips true on the first non-empty batch of a session; gates the
-    /// one-shot column auto-resize so subsequent batches don't yank
-    /// columns under the user's mouse.
+    /// True after the first non-empty batch; gates the one-shot column
+    /// auto-resize.
     bool mFirstStreamingBatchSeen = false;
 
-    /// True during the 3 s `— rotated` flash on the status bar after a
-    /// rotation event (cleared by a `QTimer::singleShot`).
+    /// True during the `— rotated` status-bar flash.
     bool mRotationFlashActive = false;
 
-    /// Latched `SourceStatus::Waiting` flag. Set/cleared by
-    /// `OnSourceStatusChanged`; cleared by `streamingFinished`. Drives
-    /// the `Source unavailable …` status-bar variant.
+    /// Latched `SourceStatus::Waiting`; drives the `Source unavailable`
+    /// status-bar variant.
     bool mSourceWaiting = false;
 };

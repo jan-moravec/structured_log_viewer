@@ -294,10 +294,8 @@ TEST_CASE(
     CHECK(table.ColumnCount() == 2);
     CHECK(table.GetHeader(0) == firstHeader);
     CHECK(table.GetHeader(1) == secondHeader);
-    // Note: no `LastBackfillRange` check here. With stream-mode auto-detection
-    // (`STREAM_PROMOTION_MIN_ROWS == 2`) both columns get promoted to enum after the
-    // second row, which legitimately reports a backfill range. Column-count stability
-    // is what this test guards.
+    // No `LastBackfillRange` check: stream-mode auto-detection promotes both
+    // columns to enum after row 2, legitimately reporting a back-fill.
 }
 
 TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", "[log_table][append_batch]")
@@ -326,9 +324,8 @@ TEST_CASE("LogTable::AppendBatch -- new-key batches append columns at the end", 
     CHECK(table.GetHeader(0) == alphaHeader); // unchanged position
     CHECK(table.GetHeader(1) == betaHeader);  // unchanged position
     CHECK(table.GetHeader(2) == "gamma");     // appended at the end
-    // Note: no `LastBackfillRange` check here. `alpha` reaches the stream-mode
-    // promotion threshold (2 rows) and gets enum-encoded across both rows, which
-    // legitimately reports a backfill range. Column ordering is what this test guards.
+    // No `LastBackfillRange` check: `alpha` promotes to enum at row 2 and
+    // legitimately back-fills. Column ordering is what we guard.
 }
 
 TEST_CASE("LogTable::AppendBatch -- empty-rows-only batches do not crash", "[log_table][append_batch]")
@@ -568,9 +565,8 @@ TEST_CASE(
     ));
     REQUIRE(table.RowCount() == 2);
     REQUIRE(table.ColumnCount() == 1);
-    // Note: `msg` reached the stream-mode promotion threshold (2 rows) and was promoted
-    // to enum during this batch, so `LastBackfillRange()` legitimately reports column 0
-    // here. The point of this test is the timestamp back-fill triggered by batch 2 below.
+    // `msg` promotes to enum during this batch and legitimately back-fills
+    // column 0; the timestamp back-fill in batch 2 is what this test checks.
 
     // Batch 2: introduces `timestamp`. The auto-promotion heuristic in
     // `LogConfigurationManager::AppendKeys` recognises the name and creates a Type::time
@@ -1160,9 +1156,8 @@ TEST_CASE(
 namespace
 {
 
-/// Append @p enoughRows rows alternating between @p values so the
-/// per-column tracker accumulates `tracker.rowsObserved >=
-/// ENUM_PROMOTION_MIN_ROWS` and the auto-detector promotes the column.
+/// Append `enoughRows` rows alternating between `values` so the per-column
+/// tracker crosses the promotion threshold.
 StreamedBatch BuildEnumBatch(
     KeyIndex &keys,
     LineSource &source,
@@ -1194,10 +1189,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][stream_mode]"
 )
 {
-    // Streaming uses the eager `STREAM_PROMOTION_MIN_ROWS = 2` so the
-    // GUI gets enum-filter chips after the first couple of rows
-    // instead of waiting hundreds. The dictionary cap (default 64)
-    // and length cap still bound the false-positive rate.
+    // Streaming promotes at `STREAM_PROMOTION_MIN_ROWS = 2`; the dictionary
+    // cap and length cap still bound false positives.
     const TestLogFile testFile("enum_promote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1210,9 +1203,7 @@ TEST_CASE(
     const std::string columnName = "tier";
     const std::vector<std::string> tiers = {"alpha", "beta", "gamma", "delta"};
 
-    // Stream-mode threshold = 2 rows. After 2 distinct values the
-    // candidate scan promotes and the encode pass back-fills every
-    // pre-existing row.
+    // Stream-mode threshold = 2: promote and back-fill every prior row.
     constexpr size_t FIRST_BATCH_ROWS = 8;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, columnName, tiers, 1, FIRST_BATCH_ROWS, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
@@ -1225,8 +1216,7 @@ TEST_CASE(
         CHECK(table.Data().Lines()[row].IsDictRef(tierKey));
     }
 
-    // Subsequent batches just encode incrementally; no further
-    // back-fill, no type transition.
+    // Subsequent batches encode incrementally; no back-fill or type change.
     constexpr size_t SECOND_BATCH_ROWS = 16;
     table.AppendBatch(
         BuildEnumBatch(keys, *sourcePtr, columnName, tiers, FIRST_BATCH_ROWS + 1, SECOND_BATCH_ROWS, false)
@@ -1242,7 +1232,6 @@ TEST_CASE(
     REQUIRE(dict != nullptr);
     CHECK(dict->Size() == tiers.size());
 
-    // `GetValue` still resolves the strings via the registry.
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         const LogValue v = table.GetValue(row, 0);
@@ -1257,10 +1246,9 @@ TEST_CASE(
     "[log_table][append_batch][enum][regression]"
 )
 {
-    // Regression: `RunEnumPassForAppendBatch` previously freed the
-    // backing `LogValue` before `Observe` ran, which dangled
-    // non-SSO `OwnedString` payloads. Long values reach the heap so
-    // ASan catches the use-after-free if reintroduced.
+    // Regression: `RunEnumPassForAppendBatch` used to free the backing
+    // `LogValue` before `Observe` ran, dangling non-SSO `OwnedString`
+    // payloads. Long values reach the heap so ASan catches a regression.
     const TestLogFile testFile("enum_promote_long_strings.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1270,8 +1258,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    // Each value is past the SSO threshold (~15 bytes) so the
-    // backing `std::string` lives on the heap.
+    // Each value is past the SSO threshold so the bytes live on the heap.
     const std::vector<std::string> levels = {
         "long-component-name-alpha-22",
         "long-component-name-beta-23",
@@ -1283,8 +1270,8 @@ TEST_CASE(
         REQUIRE(v.size() > 15);
     }
 
-    // Drive the tracker past `ENUM_PROMOTION_MIN_ROWS` to exercise
-    // every pre-promotion `Observe` call.
+    // Drive the tracker past the promotion threshold to exercise every
+    // pre-promotion `Observe` call.
     constexpr size_t ROWS = 320;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", levels, 1, ROWS, true));
 
@@ -1342,8 +1329,8 @@ TEST_CASE(
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
 
-    // Every row hits the dictionary on its first arrival; no whole-table
-    // back-fill is recorded because the column was already configured.
+    // Every row encodes on first arrival; no whole-table back-fill since
+    // the column was already configured.
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
         CHECK(table.Data().Lines()[row].IsDictRef(levelKey));
@@ -1352,7 +1339,6 @@ TEST_CASE(
     REQUIRE(dict != nullptr);
     CHECK(dict->Size() == 2);
 
-    // No `mLastBackfillRange` flip: the column did not transition.
     CHECK(!table.LastBackfillRange().has_value());
 }
 
@@ -1379,7 +1365,7 @@ TEST_CASE(
     mgr.Load(cfgFile.GetFilePath());
 
     LogTable table({}, std::move(mgr));
-    // Smaller cap pins the boundary behaviour without bulk-filling.
+    // Small cap pins the boundary behaviour without bulk-filling.
     constexpr uint16_t TEST_CAP = 16;
     table.SetEnumValueCap(TEST_CAP);
     table.BeginStreaming(std::move(source));
@@ -1403,16 +1389,14 @@ TEST_CASE(
         CHECK(table.Data().Lines()[row].IsDictRef(tagKey));
     }
 
-    // (cap+1)th distinct value forces demotion: every prior row's
-    // `DictRef` becomes `OwnedString`, the dictionary is dropped,
-    // and the column type transitions to the terminal `Type::string`.
+    // (cap+1)th distinct value forces demotion: prior `DictRef`s become
+    // `OwnedString` and the column flips to the terminal `Type::string`.
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tag", {"never-seen"}, TEST_CAP + 1, 1, false));
 
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
     CHECK(!table.EnumDictionaries().Contains(tagKey));
     REQUIRE(table.RowCount() == TEST_CAP + 1);
 
-    // Demotion preserves every row's bytes.
     for (uint16_t i = 0; i < TEST_CAP; ++i)
     {
         const LogValue v = table.GetValue(i, 0);
@@ -1426,9 +1410,13 @@ TEST_CASE(
     CHECK(*AsStringView(lastValue) == "never-seen");
     CHECK_FALSE(table.Data().Lines()[TEST_CAP].IsDictRef(tagKey));
 
-    REQUIRE(table.LastBackfillRange().has_value());
-    CHECK(table.LastBackfillRange()->first == 0);
-    CHECK(table.LastBackfillRange()->second == 0);
+    const auto backfillRangeOpt = table.LastBackfillRange();
+    REQUIRE(backfillRangeOpt.has_value());
+    if (backfillRangeOpt.has_value())
+    {
+        CHECK(backfillRangeOpt->first == 0);
+        CHECK(backfillRangeOpt->second == 0);
+    }
 }
 
 TEST_CASE(
@@ -1436,8 +1424,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][lock_any][regression]"
 )
 {
-    // configLocksAny: `Type::any` from a loaded config is locked
-    // even when the data shape would otherwise trigger promotion.
+    // A loaded `Type::any` is terminal and never re-promotes, even if
+    // the data shape looks enum-like.
     const TestLogFile testFile("enum_locked_any.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1460,9 +1448,8 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    // Plenty of rows, low cardinality: would have promoted long ago
-    // if the column were not user-locked. Loaded `Type::any` is now
-    // a terminal type that the auto-detector skips entirely.
+    // Plenty of rows + low cardinality would normally promote, but the
+    // user-locked `Type::any` is terminal and skipped by the auto-detector.
     constexpr size_t ROWS = 320;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "debug"}, 1, ROWS, false));
 
@@ -1478,10 +1465,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][multi_key][kill_once][regression]"
 )
 {
-    // Regression: the tracker / kill key used to be a per-batch
-    // KeyId, so a multi-key column killed via its alias could
+    // Regression: a multi-key column killed via its alias used to
     // re-promote once the canonical key arrived in a later batch.
-    // Both maps now key on the configured canonical key string.
     const TestLogFile testFile("enum_multi_key_kill_stable.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1508,8 +1493,7 @@ TEST_CASE(
 
     KeyIndex &keys = table.Keys();
 
-    // Batch 1: alias-only with `cap + 1` distinct values forces
-    // demotion.
+    // Batch 1: alias-only with `cap + 1` distinct values forces demotion.
     std::vector<std::string> overflowValues;
     overflowValues.reserve(TEST_CAP + 1);
     for (uint16_t i = 0; i < TEST_CAP + 1; ++i)
@@ -1518,15 +1502,13 @@ TEST_CASE(
     }
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "severity", overflowValues, 1, TEST_CAP + 1, true));
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
-    // Demote routes the column to `Type::string`; the type itself
-    // gates the candidate scan so re-promotion is impossible.
+    // Demote routes to terminal `Type::string`, blocking re-promotion.
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
 
     // Batch 2: canonical key `level` arrives with cap-friendly data.
-    // The terminal `Type::string` short-circuits before re-promotion
-    // happens (was `mEnumPermanentlyKilled` in the previous design).
+    // Terminal `Type::string` blocks re-promotion.
     constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
-    std::vector<std::string> fewLevelValues = {"info", "warn"};
+    const std::vector<std::string> fewLevelValues = {"info", "warn"};
     table.AppendBatch(BuildEnumBatch(
         keys, *sourcePtr, "level", fewLevelValues, TEST_CAP + 2, MIN_ROWS_FOR_PROMOTION + 1, /*announceNewKey=*/true
     ));
@@ -1576,10 +1558,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][kill_once]"
 )
 {
-    // Once a tracker overflows we transition the column to
-    // `Type::string` -- the type itself gates `IsEnumPassEligible` so
-    // a future cap-friendly batch cannot re-promote. (Previously this
-    // was enforced by a session-only `mEnumPermanentlyKilled` set.)
+    // A tracker overflow flips the column to `Type::string`; the type itself
+    // blocks future re-promotion via `IsEnumPassEligible`.
     const TestLogFile testFile("enum_kill_once.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1592,10 +1572,8 @@ TEST_CASE(
 
     KeyIndex &keys = table.Keys();
 
-    // Batch 1: cap+1 distinct values across the row threshold kills
-    // the tracker before promotion fires. Stream-mode threshold (2)
-    // would otherwise promote on a tiny prefix; we use a non-well-
-    // known key + many unique values to force the dict-cap kill.
+    // Batch 1: cap+1 distinct values past the row threshold kills the
+    // tracker before promotion (non-well-known key, many unique values).
     constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
     std::vector<std::string> manyValues;
     manyValues.reserve(TEST_CAP + 1);
@@ -1629,8 +1607,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][multi_key]"
 )
 {
-    // Aliased keys share the dictionary, so a row populating both
-    // must end up with a single `DictRef` slot.
+    // Aliased keys share a dictionary; a row populating both ends up with
+    // a single `DictRef` slot.
     const TestLogFile testFile("enum_multi_key.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1667,8 +1645,7 @@ TEST_CASE(
     REQUIRE(levelKey != INVALID_KEY_ID);
     REQUIRE(severityKey != INVALID_KEY_ID);
 
-    // Exactly one of the two slots is `DictRef`; the encode loop
-    // breaks on the first match.
+    // Exactly one slot becomes `DictRef`; the encode loop breaks on the first match.
     const auto &line = table.Data().Lines()[0];
     const bool levelDict = line.IsDictRef(levelKey);
     const bool severityDict = line.IsDictRef(severityKey);
@@ -1683,8 +1660,8 @@ TEST_CASE(
 
 TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged KeyIndex", "[log_table][update][enum]")
 {
-    // `Update(LogData&&)` must call `RefreshSnapshotEnumKeys` so
-    // configured enum columns survive the merge cycle.
+    // `Update(LogData&&)` must refresh the enum-key snapshot so configured
+    // enum columns survive the merge.
     const TestLogFile testFile("enum_update.json");
     testFile.Write("");
     auto sourceA = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1776,11 +1753,9 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
 
 TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[log_table][enum][get_value]")
 {
-    // Pre-promotion / post-demote slots are `OwnedString` and
-    // `EnumFilterRule` falls back to its string-set path. Pin the
-    // column to `Type::any` in the loaded config so the auto-detector
-    // skips it -- otherwise the eager stream-mode threshold would
-    // promote within two rows.
+    // Pin the column to `Type::any` so the auto-detector skips it; pre-
+    // promotion / post-demote slots stay `OwnedString` for the filter's
+    // string-set fallback path.
     const TestLogFile testFile("enum_get_value_owned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1802,9 +1777,8 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
     LogTable table({}, std::move(mgr));
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
-    // `announceNewKey=true` so the column's KeyId cache is refreshed
-    // after the first batch (the column itself was loaded so it does
-    // not need to be added to the configuration).
+    // `announceNewKey=true` refreshes the column's KeyId cache after the
+    // first batch (the column itself was loaded, not freshly added).
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "channel", {"alpha"}, 1, 4, true));
 
     REQUIRE(table.RowCount() == 4);
@@ -1820,10 +1794,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][well_known]"
 )
 {
-    // Phase 1.8: keys in `WELL_KNOWN_ENUM_KEYS` (level, severity,
-    // status, ...) get a tighter promotion threshold so the 90% case
-    // is enum-encoded by the end of the very first batch instead of
-    // waiting for 256 rows.
+    // Keys in `WELL_KNOWN_ENUM_KEYS` (level, severity, status, ...) use a
+    // tighter promotion threshold (16 rows instead of 256).
     const TestLogFile testFile("enum_well_known.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1833,8 +1805,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // 32 rows with "level" — well above the well-known threshold (16)
-    // but well below the standard one (256). Promotion must fire.
+    // 32 rows: above the well-known threshold (16), below the standard one (256).
     constexpr size_t WELL_KNOWN_PROMOTION_ROWS = 32;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, WELL_KNOWN_PROMOTION_ROWS, true));
 
@@ -1850,13 +1821,9 @@ TEST_CASE(
     "[log_table][append_batch][enum][length_cap]"
 )
 {
-    // Percentile-based length-cap policy: a single overlong line in
-    // an otherwise enum-shaped column no longer disqualifies the
-    // column. The candidate scan sees the long value, counts it
-    // against the column's `longValueCount`, but the ratio (1 / N)
-    // stays under `ENUM_HEALTH_TOLERANCE_RATIO = 0.05` past
-    // `ENUM_HEALTH_MIN_SAMPLES = 20` presences, so the column is
-    // free to promote.
+    // Length-cap policy is percentile-based: a single overlong line in an
+    // otherwise enum-shaped column stays under the 5% tolerance and the
+    // column still promotes.
     const TestLogFile testFile("enum_length_cap.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1873,7 +1840,7 @@ TEST_CASE(
     values.push_back(longValue);
     for (size_t i = 1; i < 320; ++i)
     {
-        values.push_back((i % 2) == 0 ? "alpha" : "beta");
+        values.emplace_back((i % 2) == 0 ? "alpha" : "beta");
     }
     StreamedBatch batch;
     batch.firstLineNumber = 1;
@@ -1885,17 +1852,15 @@ TEST_CASE(
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.RowCount() == 320);
-    // Column promoted: stream-mode threshold met after a couple of
-    // rows, the lone long line accrued one slot against the health
-    // budget (well under the 5% tolerance) and got left as
-    // OwnedString.
+    // Column promoted; the lone long line stays as `OwnedString`
+    // (under the 5% health tolerance).
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::enumeration);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
     REQUIRE(table.EnumDictionaries().Contains(tierKey));
     const EnumDictionary *dict = table.EnumDictionaries().Find(tierKey);
     REQUIRE(dict != nullptr);
-    // {alpha, beta}: long value never made it into the dictionary.
+    // Dictionary holds {alpha, beta}; the long value never entered.
     CHECK(dict->Size() == 2);
 }
 
@@ -1904,10 +1869,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][length_cap]"
 )
 {
-    // Inverse of the previous test: 10% long values over 200 rows
-    // (20 long, 180 short) blows the 5% tolerance budget once the
-    // 20-sample minimum is satisfied. The candidate scan kills the
-    // tracker and the column flips to `Type::string`.
+    // Inverse of the previous test: 10% long values blow the 5% tolerance
+    // once the 20-sample min is satisfied; column flips to `Type::string`.
     const TestLogFile testFile("enum_length_cap_demote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1946,15 +1909,10 @@ TEST_CASE(
     "[log_table][append_batch][enum][length_cap][user_pinned]"
 )
 {
-    // The plan deliberately collapses the auto vs. user-pinned
-    // distinction: user-pinned columns are honoured up to the same
-    // tolerance, then demoted. With only 4 rows we are below the
-    // 20-sample min so the column stays `Type::enumeration` even
-    // though 50% of slots are over-cap. Long values are NOT
-    // encoded into the dictionary -- they sit as `OwnedString`
-    // until their share of the column either dilutes (column
-    // stays) or the threshold trips (column demotes on a later
-    // batch).
+    // User-pinned columns share the same tolerance. With 4 rows we are
+    // under the 20-sample min, so the column stays `Type::enumeration`
+    // even though 50% of slots are over-cap; long values stay as
+    // `OwnedString` and never enter the dictionary.
     const TestLogFile testFile("enum_length_cap_pinned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1987,9 +1945,8 @@ TEST_CASE(
     REQUIRE(table.EnumDictionaries().Contains(tagKey));
     const EnumDictionary *dict = table.EnumDictionaries().Find(tagKey);
     REQUIRE(dict != nullptr);
-    // Only "short" enters the dictionary; the long value is
-    // counted in `EnumColumnHealth::longValueSlots` and left as an
-    // `OwnedString` slot.
+    // Only "short" enters the dictionary; the long value stays as
+    // `OwnedString` and counts against `longValueSlots`.
     CHECK(dict->Size() == 1);
 }
 
@@ -1998,12 +1955,10 @@ TEST_CASE(
     "[log_table][append_batch][enum][length_cap][user_pinned]"
 )
 {
-    // Cumulative health check: a user-pinned column's
-    // `EnumColumnHealth` accumulates across batches. Once the
-    // sample size is large enough and the over-cap fraction blows
-    // the 5% threshold, the column demotes to `Type::string`. The
-    // pre-1.7 escape hatch ("user pinned, ignore the cap forever")
-    // is gone.
+    // Cumulative health check: a user-pinned column's `EnumColumnHealth`
+    // accumulates across batches. Once the sample size is large enough
+    // and the over-cap fraction breaks 5%, the column demotes to
+    // `Type::string` (no more "pinned forever" escape hatch).
     const TestLogFile testFile("enum_length_cap_pinned_demote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2031,8 +1986,7 @@ TEST_CASE(
     values.reserve(50);
     for (size_t i = 0; i < 50; ++i)
     {
-        // 5/50 = 10% long values: above the 5% tolerance, and the
-        // total slot count is past the 20-sample min.
+        // 10% long values: above the 5% tolerance, past the 20-sample min.
         values.push_back((i % 10 == 0) ? longValue : "short");
     }
     StreamedBatch batch;
@@ -2044,13 +1998,11 @@ TEST_CASE(
     }
     table.AppendBatch(std::move(batch));
 
-    // Health-driven demote: column type flipped to `Type::string`.
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::string);
     const KeyId tagKey = keys.Find("tag");
     REQUIRE(tagKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(tagKey));
-    // Demote also fires the back-fill notification so the GUI can
-    // refresh the affected column.
+    // Demote fires the back-fill notification.
     REQUIRE(table.LastBackfillRange().has_value());
 }
 
@@ -2059,14 +2011,9 @@ TEST_CASE(
     "[log_table][append_batch][enum][stream_mode][sparse]"
 )
 {
-    // Regression: pre-1.7 the candidate-scan loop incremented
-    // `rowsObserved` even when the slot was missing, so 4+ leading
-    // missing rows tripped the no-string bail and routed the
-    // column to `Type::any` permanently. With `presenceCount`
-    // gating that bail (and powering the promotion threshold), and
-    // `rowsObserved` resetting when the scanCap is hit with no
-    // presence, the candidate stays alive across batches and
-    // promotes once the strings actually arrive.
+    // Regression: leading missing rows used to trip the no-string bail
+    // and route the column to `Type::any` permanently. `presenceCount`
+    // now gates that bail and the candidate stays alive across batches.
     const TestLogFile testFile("enum_sparse_stream.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2076,19 +2023,14 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Pre-register both keys so `feature` lands in the
-    // configuration as a `Type::unknown` column on the first
-    // batch even though no row in batch 1 carries that field.
+    // Pre-register both keys so `feature` lands as a `Type::unknown` column
+    // on the first batch, even though no row in batch 1 carries it.
     static_cast<void>(keys.GetOrInsert("unrelated"));
     static_cast<void>(keys.GetOrInsert("feature"));
 
-    // Batch 1: 6 rows where the column slot is absent. Both keys
-    // are announced; the `feature` slot stays unset on every row
-    // (the shape of a sparse column whose first appearance is
-    // delayed). The candidate scan walks the first
-    // `scanCap = 4` rows, sees no presence, and (with the fix)
-    // resets the tracker's `rowsObserved` instead of bailing to
-    // `Type::any`.
+    // Batch 1: 6 rows where `feature` is absent. The candidate scan walks
+    // the first `scanCap = 4` rows, sees no presence, and resets
+    // `rowsObserved` instead of bailing to `Type::any`.
     StreamedBatch batch1;
     batch1.firstLineNumber = 1;
     batch1.newKeys = {"unrelated", "feature"};
@@ -2106,10 +2048,8 @@ TEST_CASE(
         CHECK(featureCol->type == LogConfiguration::Type::unknown);
     }
 
-    // Batch 2: the column finally appears with `info` / `warn`.
-    // The candidate scan resumes with a fresh `scanCap` window
-    // (rowsObserved was reset above), sees two presences, and
-    // promotes via the stream-mode threshold.
+    // Batch 2: the column finally appears; the candidate scan sees two
+    // presences and promotes via the stream-mode threshold.
     StreamedBatch batch2;
     batch2.firstLineNumber = 7;
     for (size_t i = 0; i < 4; ++i)
@@ -2137,12 +2077,9 @@ TEST_CASE(
     "[log_table][append_batch][enum][type_any_opt_out]"
 )
 {
-    // Replaces the old `autoDetectEnums` master switch. To skip
-    // auto-detection on a per-column basis the user pins the column
-    // to `Type::any` (or any other terminal type) in the saved
-    // configuration. `Type::unknown` is the only candidate type, so
-    // a loaded `Type::any` column is never re-tracked even when the
-    // data shape would otherwise promote it.
+    // To opt out of auto-detection per-column, save the column with a
+    // terminal type (e.g. `Type::any`); only `Type::unknown` columns are
+    // candidates.
     const TestLogFile testFile("enum_loaded_any_opt_out.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2165,8 +2102,8 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Plenty of rows, low cardinality, well-known key — would have
-    // promoted long ago if the column were not user-locked.
+    // Plenty of rows + well-known key would normally promote; the
+    // user-locked `Type::any` keeps it as text.
     constexpr size_t ROWS = 320;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, ROWS, false));
 
@@ -2182,10 +2119,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][user_pinned]"
 )
 {
-    // A user-pinned `Type::enumeration` column still encodes as
-    // `DictRef` regardless of how the auto-detector would treat the
-    // data. (Previously this also covered the now-removed
-    // `autoDetectEnums = false` master switch.)
+    // A user-pinned `Type::enumeration` column still encodes as `DictRef`
+    // regardless of what the auto-detector would do.
     const TestLogFile testFile("enum_user_pinned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2222,8 +2157,8 @@ TEST_CASE(
 namespace
 {
 
-/// Build a streaming batch where every row carries the same numeric
-/// kind under @p columnKey. Used by the no-string-bail routing tests.
+/// Build a batch where every row carries the same numeric kind under
+/// `columnKey`. Used by the no-string-bail routing tests.
 template <typename T>
 StreamedBatch BuildNumericBatch(
     KeyIndex &keys, LineSource &source, const std::string &columnKey, T value, size_t rowCount, bool announceNewKey
@@ -2250,10 +2185,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][routing][integer]"
 )
 {
-    // The candidate scan counts `Int64`/`UInt64` tags via the slot's
-    // `CompactTag` (single `LogLine::FindCompact` walk) so the
-    // no-string bail can flip the column straight to the
-    // semantically-correct numeric terminal type.
+    // The candidate scan counts `Int64`/`UInt64` tags so the no-string
+    // bail flips int-only columns straight to `Type::integer`.
     const TestLogFile testFile("enum_no_string_int.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2262,8 +2195,7 @@ TEST_CASE(
     LogTable table;
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
-    // Stream-mode threshold = 2, scanCap = 4. Need rowsObserved >=
-    // scanCap before the bail fires; 8 rows is comfortable.
+    // 8 rows comfortably exceeds scanCap (4) so the bail fires.
     table.AppendBatch(BuildNumericBatch<int64_t>(keys, *sourcePtr, "count", 42, 8, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
@@ -2294,8 +2226,7 @@ TEST_CASE(
     "[log_table][append_batch][enum][routing][number]"
 )
 {
-    // Mix of int and double observations -> `Type::number`. Future
-    // PRs can specialise rendering / sorting for this terminal.
+    // Mixed int + double observations route to `Type::number`.
     const TestLogFile testFile("enum_no_string_mixed.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2330,9 +2261,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][routing][any]"
 )
 {
-    // Bool / monostate / DictRef-only columns have no string and no
-    // numeric tag observations -- the bail falls through to the
-    // catch-all `Type::any`.
+    // Bool / monostate / DictRef-only columns: no string or numeric
+    // observations, so the bail falls through to `Type::any`.
     const TestLogFile testFile("enum_no_string_bool.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2358,10 +2288,8 @@ TEST_CASE(
 namespace
 {
 
-/// Build a `LogConfigurationManager` that already carries a
-/// `Type::unknown` column for @p key. Bypasses `Update` so the
-/// surrounding `LogTable` constructor does not need a separate
-/// configuration mutation step.
+/// Build a `LogConfigurationManager` pre-loaded with a `Type::unknown`
+/// column for `key`, bypassing `Update`.
 LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 {
     LogConfiguration cfg;
@@ -2382,10 +2310,8 @@ TEST_CASE(
     "[log_table][update][enum][routing][cardinality_bail][static_mode]"
 )
 {
-    // The cardinality bail only fires in static mode (constructor /
-    // `Update`). Stream mode skips it because low row counts make the
-    // ratio meaningless. We use one distinct value per row to push
-    // the ratio past `ENUM_CARDINALITY_BAIL_RATIO`.
+    // The cardinality bail only fires in static mode. We use one distinct
+    // value per row to push past `ENUM_CARDINALITY_BAIL_RATIO`.
     const TestLogFile testFile("enum_cardinality_bail.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2393,10 +2319,9 @@ TEST_CASE(
 
     KeyIndex keys;
     std::vector<LogLine> lines;
-    // Non-well-known key, so promotionMinRows = 256 and scanCap = 512.
-    // Need at least scanCap rows before the bail fires; produce 600
-    // distinct values to overshoot both the row count and the
-    // cardinality ratio.
+    // Non-well-known key (scanCap = 512). 600 distinct rows overshoot both
+    // the scan window and the cardinality ratio.
+    lines.reserve(600);
     for (size_t i = 0; i < 600; ++i)
     {
         lines.push_back(MakeLine(keys, *sourcePtr, {{"id", std::string("id-" + std::to_string(i))}}));
@@ -2416,12 +2341,9 @@ TEST_CASE(
     "[log_table][finalize][enum][small_file]"
 )
 {
-    // Static parse with only 4 rows: well below `ENUM_PROMOTION_MIN_ROWS`
-    // (256) so the per-batch enum pass never promotes. The
-    // constructor's `FinalizeAutoDetection` sweep applies the
-    // permissive rule (`size in [1, cap] && rowsObserved >= 2`) and
-    // promotes the column so the small file still gets enum filter
-    // chips in the UI.
+    // Static parse with only 4 rows: per-batch promotion never fires (256
+    // row threshold). `FinalizeAutoDetection` applies the permissive
+    // end-of-parse rule and promotes the column anyway.
     const TestLogFile testFile("enum_finalize_small.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2455,9 +2377,8 @@ TEST_CASE(
     "[log_table][finalize][enum][small_file]"
 )
 {
-    // Permissive rule requires `rowsObserved >= 2`. A 1-row file
-    // does not meet that bar; the column stays `Type::unknown` so a
-    // future re-load with more data can still decide.
+    // The permissive rule needs `rowsObserved >= 2`; a 1-row file leaves
+    // the column as `Type::unknown` so a later re-load can decide.
     const TestLogFile testFile("enum_finalize_one_row.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2480,12 +2401,9 @@ TEST_CASE(
     "LogTable -- static-mode constructor finalize promotes mid-size files", "[log_table][static_mode][enum][threshold]"
 )
 {
-    // The static-mode per-batch threshold is 256, so 100 rows do not
-    // promote in `RunEnumPassForAppendBatch`. The constructor's
-    // `FinalizeAutoDetection` sweep then applies the permissive rule
-    // and promotes the column. Confirms the constructor leaves
-    // `mIsStreaming = false` (otherwise the per-batch promotion
-    // would already have fired at row 2).
+    // 100 rows do not hit the static per-batch threshold (256); the
+    // constructor's `FinalizeAutoDetection` sweep promotes them anyway.
+    // Also confirms the constructor leaves `mIsStreaming = false`.
     const TestLogFile testFile("enum_static_threshold.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2493,6 +2411,7 @@ TEST_CASE(
 
     KeyIndex keys;
     std::vector<LogLine> lines;
+    lines.reserve(100);
     for (size_t i = 0; i < 100; ++i)
     {
         lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string(i % 2 == 0 ? "alpha" : "beta")}}));

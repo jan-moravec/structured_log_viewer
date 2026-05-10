@@ -27,70 +27,29 @@ namespace loglib
 namespace
 {
 
-/// Minimum rows observed in static-parse mode before a `Type::unknown`
-/// column can be promoted to enumeration (large files: dampens the
-/// cost of false-positive promote/demote cycles when scanning millions
-/// of rows).
+/// Static-parse min rows before promoting `Type::unknown` to enum.
 constexpr size_t ENUM_PROMOTION_MIN_ROWS = 256;
 
-/// Tighter promotion threshold (static mode) for columns whose
-/// canonical key matches one of the well-known enum names. Modeled on
-/// hl's hard-coded predefined fields: `level` / `severity` / `status`
-/// etc. carry low-cardinality enums in real-world logs, and the cost
-/// of being wrong is bounded.
+/// Tighter promotion threshold for `WELL_KNOWN_ENUM_KEYS`.
 constexpr size_t ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN = 16;
 
-/// Stream-mode promotion threshold (file tail / UDP / stdin). Streams
-/// produce data in small batches and the user is watching live, so
-/// promote eagerly. The dictionary cap (default 64) and length cap
-/// still protect against false positives; the cardinality bail does
-/// not apply in stream mode (meaningless at low row counts).
-///
-/// Trade-off: at threshold = 2, any column whose first 2 rows are
-/// strings is promoted. A wide log with several free-form string
-/// columns (e.g. `message`, `request_id`, `trace_id`) will pay an
-/// encode-then-materialise round trip per column once distinct
-/// values exceed the cap. The length cap catches most of these on
-/// first sight, and the demote path is correct, so we accept the
-/// churn in exchange for getting enum filter chips in the UI within
-/// the first couple of rows. Bumping this constant trades UX
-/// responsiveness for fewer promote/demote cycles.
+/// Streaming promotion threshold; promote eagerly, dictionary/length caps guard.
 constexpr size_t STREAM_PROMOTION_MIN_ROWS = 2;
 
-/// Static-mode cardinality bail: kill any candidate whose
-/// distinct/observed ratio exceeds this threshold once
-/// `rowsObserved >= 2 * promotionMinRows`. A column still adding new
-/// strings every fourth row is unlikely to ever stabilise as a finite
-/// enum; the permanently-killed type transition short-circuits future
-/// candidate scans.
+/// Static-mode cardinality bail: distinct/observed ratio limit.
 constexpr double ENUM_CARDINALITY_BAIL_RATIO = 0.25;
 
-/// Maximum fraction of over-cap-length or wrong-type observations a
-/// column may carry before the auto-detector demotes it back to
-/// `Type::string`. Replaces the pre-1.7 single-strike length-cap kill
-/// (which was too eager: one stray long line in an otherwise
-/// well-shaped enum column locked the column out of promotion for the
-/// whole session). Applies uniformly to candidate columns and to
-/// active `Type::enumeration` columns regardless of provenance —
-/// user-pinned columns are honoured up to the same tolerance, then
-/// demoted when the noise exceeds 5%.
+/// Max fraction of over-cap-length or wrong-type observations before demotion.
 constexpr double ENUM_HEALTH_TOLERANCE_RATIO = 0.05;
 
-/// Minimum sample size before the tolerance ratio is consulted. Avoids
-/// demoting on a single observation where a 1/1 over-cap ratio would
-/// trip the threshold. Works for both the candidate scan
-/// (`presenceCount`) and the active-column health (`totalSlots`).
+/// Minimum samples before consulting the tolerance ratio.
 constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 20;
 
-/// Routes a no-string-bail tracker to a concrete numeric / any type
-/// based on `intObservations` / `uintObservations` / `doubleObservations`.
-/// Mirrors the per-batch and finalize flows. See the
-/// `LogConfiguration::Type` docblock.
-///
-/// `intObservations` and `uintObservations` are tracked separately so
-/// future numeric widgets can differentiate signed from unsigned, but
-/// today the routing collapses both into `Type::integer`. Mixing any
-/// integer kind with a double routes to `Type::number`.
+/// Microsecond threshold above which `DemoteColumnFromEnum` emits a
+/// stderr telemetry line; below it the demote cost is uninteresting.
+constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
+
+/// Picks a terminal numeric type from observed integer/floating tag counts.
 LogConfiguration::Type RouteNoStringBail(
     size_t intObservations, size_t uintObservations, size_t doubleObservations
 ) noexcept
@@ -112,21 +71,7 @@ LogConfiguration::Type RouteNoStringBail(
     return LogConfiguration::Type::any;
 }
 
-/// Canonical-key strings (case-insensitive match) recognised as
-/// well-known enum columns. Kept short and conservative — the cost
-/// of a false positive is a promote/demote cycle on the first
-/// over-cap value, so we only list keys that are overwhelmingly
-/// enum-shaped in practice.
-///
-/// A few entries (`module`, `service`, `component`, `region`,
-/// `category`, `kind`) are *not* always low-cardinality — Python
-/// module names, microservice meshes, or geo-regions can blow past
-/// the default 64-value cap. We accept that cost knowingly: the
-/// false-positive path is bounded by the dictionary cap and routes
-/// through `DemoteColumnFromEnum` -> `Type::string` (terminal), so
-/// the column self-corrects within one batch and never oscillates.
-/// The win on real-world logs where these keys ARE small enums
-/// (the common case) outweighs a one-time demote on the rest.
+/// Canonical keys (case-insensitive) treated as well-known enum columns.
 constexpr std::array<std::string_view, 13> WELL_KNOWN_ENUM_KEYS = {
     "level",
     "severity",
@@ -151,8 +96,8 @@ bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
     }
     for (size_t i = 0; i < a.size(); ++i)
     {
-        const unsigned char ca = static_cast<unsigned char>(a[i]);
-        const unsigned char cb = static_cast<unsigned char>(b[i]);
+        const auto ca = static_cast<unsigned char>(a[i]);
+        const auto cb = static_cast<unsigned char>(b[i]);
         const unsigned char la = (ca >= 'A' && ca <= 'Z') ? static_cast<unsigned char>(ca + ('a' - 'A')) : ca;
         const unsigned char lb = (cb >= 'A' && cb <= 'Z') ? static_cast<unsigned char>(cb + ('a' - 'A')) : cb;
         if (la != lb)
@@ -165,20 +110,14 @@ bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
 
 bool IsWellKnownEnumKey(std::string_view canonicalKey) noexcept
 {
-    for (const std::string_view candidate : WELL_KNOWN_ENUM_KEYS)
-    {
-        if (EqualsIgnoreCaseAscii(canonicalKey, candidate))
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(WELL_KNOWN_ENUM_KEYS, [canonicalKey](std::string_view candidate) {
+        return EqualsIgnoreCaseAscii(canonicalKey, candidate);
+    });
 }
 
 bool IsEnumPassEligible(LogConfiguration::Type type) noexcept
 {
     // `unknown` -> candidate scan; `enumeration` -> per-batch encode.
-    // Every other type is terminal and skipped by the enum pass.
     return type == LogConfiguration::Type::unknown || type == LogConfiguration::Type::enumeration;
 }
 
@@ -190,32 +129,18 @@ bool LogTable::EnumColumnHealth::ShouldDemote(double tolerance, size_t minSample
     {
         return false;
     }
-    // Sum in `double` to dodge any `size_t` overflow if the budgets
-    // ever grow pathological (the addition is otherwise safe today,
-    // but the type allows a wrap that the threshold check could not
-    // detect).
     const double bad = static_cast<double>(longValueSlots) + static_cast<double>(wrongTypeSlots);
     return bad > tolerance * static_cast<double>(totalSlots);
 }
 
 void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
 {
-    // Caller increments `presenceCount` and `rowsObserved` for every
-    // row scanned (present or absent); this method only handles the
-    // string-typed slot path.
     if (killed)
     {
         return;
     }
     if (valueMaxLen != 0 && bytes.size() > valueMaxLen)
     {
-        // Long values accrue against a tolerance budget instead of
-        // killing on first sight. The candidate stays alive while
-        // the over-cap fraction stays under
-        // `ENUM_HEALTH_TOLERANCE_RATIO`; once we have enough samples
-        // we kill if the budget is blown. Min-sample gate avoids
-        // demoting a column whose first observation happens to be a
-        // single long line.
         ++longValueCount;
         if (presenceCount >= ENUM_HEALTH_MIN_SAMPLES &&
             static_cast<double>(longValueCount) > ENUM_HEALTH_TOLERANCE_RATIO * static_cast<double>(presenceCount))
@@ -226,9 +151,6 @@ void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
         }
         return;
     }
-    // Linear membership check over the flat values vector. At
-    // `cap=64` the working set fits comfortably in L1 and most
-    // observations hit existing values early in the scan.
     for (const std::string &existing : values)
     {
         if (existing == bytes)
@@ -238,10 +160,7 @@ void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
     }
     if (size >= cap)
     {
-        // (cap+1)th distinct value: hard cap (no tolerance — the
-        // dictionary itself cannot grow past `MAX_ENUM_VALUES` slots).
-        // Drop the buffer; caller flips the column type to
-        // `Type::string` so the next batch skips it.
+        // Cap exceeded: caller flips the column to `Type::string`.
         killed = true;
         values = {};
         size = 0;
@@ -258,15 +177,19 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
     // Encode pre-configured enum columns and run auto-detection on
-    // `Type::unknown` ones over the loaded data. Static parse: the
-    // finalize sweep then promotes any small-file candidates that
-    // didn't reach the per-batch threshold.
+    // `Type::unknown` ones over the loaded data. The finalize sweep then
+    // promotes small-file candidates that missed the per-batch threshold.
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(0U, firstBackfilled, lastBackfilled);
     FinalizeAutoDetection();
 }
 
+// MSVC's `unordered_set` move ctor allocates a 1-cell container proxy and
+// can theoretically throw `bad_array_new_length`; this `noexcept` matches
+// the public move-ctor contract that callers (e.g. `std::vector::resize`)
+// rely on.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 LogTable::LogTable(LogTable &&other) noexcept
     : mData(std::move(other.mData)),
       mConfiguration(std::move(other.mConfiguration)),
@@ -282,7 +205,7 @@ LogTable::LogTable(LogTable &&other) noexcept
       mLastBackfillRange(std::move(other.mLastBackfillRange))
 {
     other.mIsStreaming = false;
-    // Sources cached a pointer to `other.mEnumDictionaries`; rebind.
+    // Rebind sources' cached pointers to `other.mEnumDictionaries`.
     RewireSourceRegistries();
 }
 
@@ -305,7 +228,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mIsStreaming = other.mIsStreaming;
     other.mIsStreaming = false;
     mLastBackfillRange = std::move(other.mLastBackfillRange);
-    // Sources cached a pointer to `other.mEnumDictionaries`; rebind.
+    // Rebind sources' cached pointers to `other.mEnumDictionaries`.
     RewireSourceRegistries();
     return *this;
 }
@@ -320,13 +243,10 @@ void LogTable::Update(LogData &&data)
     }
     mData.Merge(std::move(data));
     RewireSourceRegistries();
-    // Order matches the constructor: snapshot the enum keys first so
-    // `GetOrInsert` registers any not-yet-seen `Type::enumeration`
-    // keys into `mData.Keys()`, then resolve column keys against the
-    // now-complete `KeyIndex`. Resolving first would leave
-    // `mColumnKeyIds` populated with `INVALID_KEY_ID` for columns
-    // whose configured keys had not yet appeared in the data, and
-    // the immediately-following enum pass would then skip them.
+    // Snapshot enum keys first so `GetOrInsert` registers them into
+    // `mData.Keys()`, then resolve column keys against the now-complete
+    // `KeyIndex`. Resolving first would leave column keys for not-yet-seen
+    // enums as `INVALID_KEY_ID`.
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
     std::optional<size_t> firstBackfilled;
@@ -358,8 +278,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
     {
         std::vector<LogLine> noLines;
         LogData fresh(std::move(source), std::move(noLines), KeyIndex{});
-        // Both pipelines promote `Type::time` inline; later-discovered
-        // time columns are back-filled in `AppendBatch`.
+        // Both pipelines promote `Type::time` inline.
         fresh.MarkTimestampsParsed();
         mData = std::move(fresh);
     }
@@ -374,8 +293,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
     mEnumColumnHealth.clear();
     RewireSourceRegistries();
 
-    // Order matters: snapshot inserts the time-column keys before the
-    // KeyId resolution runs.
+    // Snapshot inserts the time-column keys before KeyId resolution runs.
     RefreshSnapshotTimeKeys();
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
@@ -391,8 +309,8 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
 
     mLastBackfillRange.reset();
 
-    // Splice the new source in; lines and keys are preserved so prior
-    // rows stay visible and KeyIds line up across files.
+    // Splice in the new source; existing lines/keys stay so prior rows
+    // remain visible and KeyIds line up across files.
     source->SetEnumDictionaries(&mEnumDictionaries);
     mData.Sources().push_back(std::move(source));
 }
@@ -406,8 +324,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
         mConfiguration.AppendKeys(batch.newKeys);
     }
 
-    // Pre-append snapshot so slice back-fill targets only new rows;
-    // first-observation columns still back-fill all rows.
+    // Snapshot before append so slice back-fill only touches new rows.
     const size_t oldLineCount = mData.Lines().size();
 
     if (!batch.lines.empty() || !batch.localLineOffsets.empty())
@@ -420,10 +337,9 @@ void LogTable::AppendBatch(StreamedBatch batch)
         RefreshColumnKeyIdsForKeys(batch.newKeys);
     }
 
-    // Back-fill post-snapshot time columns (Stage B handles snapshot
-    // ones). First observation: back-fill all rows and record
-    // `mLastBackfillRange` so `dataChanged` reaches existing rows.
-    // Known post-snapshot column: back-fill only the appended slice.
+    // Back-fill post-snapshot time columns. First observation: back-fill
+    // all rows and report via `mLastBackfillRange`. Known post-snapshot
+    // column: back-fill only the appended slice.
     const auto &columns = mConfiguration.Configuration().columns;
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
@@ -636,8 +552,7 @@ void LogTable::EvictPrefixRows(size_t count)
     }
     auto &lines = mData.Lines();
 
-    // Release per-line storage for the rows we're about to drop.
-    // Non-evicting sources (e.g. mmap'd `FileLineSource`) no-op.
+    // Release per-line storage for evicted rows. Non-evicting sources no-op.
     auto evictSource = [&](size_t firstSurvivingLineId) {
         for (auto &source : mData.Sources())
         {
@@ -650,7 +565,7 @@ void LogTable::EvictPrefixRows(size_t count)
 
     if (count >= lines.size())
     {
-        // Past-the-end id so the source clears all live entries.
+        // Past-the-end id clears all live entries.
         size_t firstSurvivingLineId = 0;
         if (!lines.empty())
         {
@@ -767,8 +682,7 @@ void LogTable::RefreshSnapshotTimeKeys()
         }
         for (const std::string &key : column.keys)
         {
-            // `GetOrInsert` so the snapshot holds valid ids on the
-            // fresh post-`BeginStreaming` `KeyIndex`.
+            // GetOrInsert so the snapshot holds valid ids on a fresh KeyIndex.
             const KeyId id = mData.Keys().GetOrInsert(key);
             mStageBSnapshotTimeKeys.insert(id);
         }
@@ -777,13 +691,8 @@ void LogTable::RefreshSnapshotTimeKeys()
 
 void LogTable::RefreshSnapshotEnumKeys()
 {
-    // Pre-create empty dictionaries for every configured enum column
-    // so the encode pass treats their slots as already-promoted
-    // targets. Multi-key columns share one canonical dictionary via
-    // `Alias`. Idempotent: snapshot, promotion, and re-promotion
-    // paths all route through this same canonical-key + alias
-    // pattern so `EncodeColumnRange`'s hot loop can skip the per-row
-    // alias bookkeeping.
+    // Pre-create dictionaries for every configured enum column. Multi-key
+    // columns share one canonical dictionary via `Alias`. Idempotent.
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
     {
@@ -886,19 +795,8 @@ void LogTable::RunEnumPassForAppendBatch(
         return;
     }
 
-    // Phase 1.3: rebuild active/candidate index lists once and bail
-    // out when both are empty. Typical narrow logs with no enum-shaped
-    // columns now skip the per-row work entirely. The type itself
-    // gates candidacy: only `Type::unknown` columns are scanned;
-    // every other type (including the terminal `string` / `integer` /
-    // `floating` / `number` / `any` produced by previous bail paths)
-    // is skipped automatically.
-    //
-    // Active (`Type::enumeration`) and candidate (`Type::unknown`)
-    // columns are handled inline in a single column walk. Empty
-    // alias-id sets are filtered after `resolveKeys` rather than
-    // pre-bucketed, since each column owns a tiny alias set
-    // (almost always 1) and the duplicated work is below noise.
+    // Active (`Type::enumeration`) and candidate (`Type::unknown`) columns
+    // are handled inline in a single walk; every other type is skipped.
 
     auto recordBackfill = [&](size_t columnIndex) {
         if (!firstBackfilled.has_value() || columnIndex < *firstBackfilled)
@@ -911,9 +809,7 @@ void LogTable::RunEnumPassForAppendBatch(
         }
     };
 
-    // Function-local scratch: reused across the per-column loop and
-    // freed at function exit. Heap-allocated once on first push;
-    // typical alias counts are 1, so the buffer never grows.
+    // Scratch reused across the per-column loop.
     std::vector<KeyId> resolvedKeys;
     auto resolveKeys = [&](size_t columnIndex) {
         resolvedKeys.clear();
@@ -939,13 +835,9 @@ void LogTable::RunEnumPassForAppendBatch(
             continue;
         }
 
-        // Active enum column: encode pre-existing / pre-configured
-        // enum columns over the appended slice. Length cap and
-        // wrong-type observations accrue against the column's
-        // health budget (`mEnumColumnHealth`); a hard dictionary-cap
-        // overflow demotes immediately. The percentile policy
-        // applies uniformly here regardless of whether the column
-        // was auto-promoted or user-pinned.
+        // Active enum column: encode the appended slice. Length-cap and
+        // wrong-type hits accrue against the health budget; dictionary-cap
+        // overflow demotes immediately.
         if (column.type == LogConfiguration::Type::enumeration)
         {
             resolveKeys(columnIndex);
@@ -985,12 +877,10 @@ void LogTable::RunEnumPassForAppendBatch(
         // `column.keys` to put a vendor-specific synonym first
         // (`["log_level", "level"]`) does not drop the column out
         // of the well-known fast path.
-        const bool wellKnown = std::any_of(column.keys.begin(), column.keys.end(), [](const std::string &key) {
-            return IsWellKnownEnumKey(key);
-        });
-        const size_t promotionMinRows =
-            mIsStreaming ? STREAM_PROMOTION_MIN_ROWS
-                         : (wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS);
+        const bool wellKnown =
+            std::ranges::any_of(column.keys, [](const std::string &key) { return IsWellKnownEnumKey(key); });
+        const size_t staticPromotionMinRows = wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS;
+        const size_t promotionMinRows = mIsStreaming ? STREAM_PROMOTION_MIN_ROWS : staticPromotionMinRows;
 
         resolveKeys(columnIndex);
         if (resolvedKeys.empty())
@@ -1005,19 +895,9 @@ void LogTable::RunEnumPassForAppendBatch(
         }
         EnumCandidateTracker &tracker = trackerIt->second;
 
-        // Phase 1.5: peek string bytes directly off the slot — skips
-        // both the LogValue variant construction and the AsStringView
-        // alternative-check on numeric / monostate / DictRef slots.
-        //
-        // Phase 2.1 sampled scan: once we have enough presences to
-        // make a promote decision (size > 0 && presenceCount >=
-        // promotionMinRows), stop scanning rows for this column in
-        // this batch.
-        //
+        // Sampled scan: bail once we have enough evidence (or hit `scanCap`).
         // `presenceCount` (slot present, any tag) is decoupled from
-        // `rowsObserved` (loop progress) so a sparse column with
-        // leading missing rows does not get killed by the no-string
-        // bail before its strings show up.
+        // `rowsObserved` so leading sparse rows don't trigger no-string bail.
         const size_t scanCap = 2 * promotionMinRows;
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
@@ -1057,7 +937,6 @@ void LogTable::RunEnumPassForAppendBatch(
             {
                 break;
             }
-            // Sampled scan: have we seen enough strings to decide?
             if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= promotionMinRows)
             {
                 break;
@@ -1070,10 +949,7 @@ void LogTable::RunEnumPassForAppendBatch(
 
         if (tracker.killed)
         {
-            // Length-cap tolerance exceeded or hard dict cap hit:
-            // column is too varied to enumerate. Route to `string`
-            // so the next batch skips it and so save/load preserves
-            // the conclusion.
+            // Too varied to enumerate; route to `string`.
             mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
             mEnumTrackers.erase(trackerIt);
             continue;
@@ -1087,18 +963,12 @@ void LogTable::RunEnumPassForAppendBatch(
             continue;
         }
 
-        // Bail on candidates that are unlikely to ever stabilise.
-        // Static mode: applies the cardinality bail; stream mode skips
-        // it (low row counts make the ratio meaningless and the user
-        // is watching live).
+        // Bail on candidates unlikely to stabilise. Static-mode only applies
+        // the cardinality bail; stream-mode skips it.
         if (tracker.rowsObserved >= scanCap)
         {
-            // Skip the no-string bail entirely if the column has
-            // never appeared yet -- a sparse column whose first
-            // presence falls past the scanCap window deserves a
-            // chance in a later batch. We also reset `rowsObserved`
-            // so the next batch gets a fresh scanCap budget instead
-            // of bailing immediately on its first row.
+            // Sparse column not yet seen: refresh the scanCap budget
+            // and try again next batch instead of bailing.
             if (tracker.presenceCount == 0)
             {
                 tracker.rowsObserved = 0;
@@ -1127,10 +997,8 @@ void LogTable::RunEnumPassForAppendBatch(
 
 bool LogTable::FinalizeAutoDetection()
 {
-    // Permissive sweep over surviving candidate trackers. Runs at
-    // end-of-static-parse (constructor / `Update`) and at end-of-stream
-    // (`LogModel::EndStreaming(false)`). Idempotent: a re-entrant call
-    // sees an empty `mEnumTrackers` and only flips `mIsStreaming` off.
+    // Permissive sweep over surviving candidate trackers; runs at
+    // end-of-static-parse and end-of-stream. Idempotent.
     if (mEnumTrackers.empty())
     {
         mIsStreaming = false;
@@ -1154,9 +1022,6 @@ bool LogTable::FinalizeAutoDetection()
         const EnumCandidateTracker &tracker = trackerIt->second;
         if (tracker.killed)
         {
-            // Defensive: per-batch loop normally erases killed
-            // entries but the column is still `Type::unknown` here,
-            // so honour the kill.
             mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
             continue;
         }
@@ -1174,10 +1039,7 @@ bool LogTable::FinalizeAutoDetection()
             );
             continue;
         }
-        // Insufficient evidence (e.g. a single string row, or the
-        // column has not appeared yet in any row): leave
-        // `Type::unknown`. A future re-load with more rows can still
-        // decide.
+        // Insufficient evidence: leave `Type::unknown` for a future re-load.
     }
 
     mEnumTrackers.clear();
@@ -1193,9 +1055,6 @@ bool LogTable::EncodeColumnRange(
     {
         return true;
     }
-    // Phase 1.4: dictionary + alias setup is hoisted to
-    // `EnsureColumnDictionary` (snapshot + promotion). Here we just
-    // look the canonical dictionary up — a hot-path-cheap hash hit.
     EnumDictionary *dict = nullptr;
     {
         EnumDictionary &ref = mEnumDictionaries.GetOrInsert(aliasKeys.front(), mEnumValueCap);
@@ -1205,18 +1064,13 @@ bool LogTable::EncodeColumnRange(
     for (size_t row = rowBegin; row < rowEnd && row < lines.size(); ++row)
     {
         LogLine &line = lines[row];
-        // At most one DictRef per row: aliases share the dictionary,
-        // so encoding under the first matching key is enough.
+        // At most one DictRef per row: aliases share the dictionary.
         bool encoded = false;
         bool sawLong = false;
         bool sawWrongType = false;
         bool alreadyEncoded = false;
         for (const KeyId id : aliasKeys)
         {
-            // Phase 1.2: single linear scan per slot — read tag,
-            // peek bytes, write `DictRef` in place. Replaces the
-            // old IsDictRef + GetValue + SetOrReplaceEnumDictRef triple
-            // lookup.
             internal::CompactLogValue *slot = line.FindCompactMutable(id);
             if (slot == nullptr)
             {
@@ -1230,26 +1084,20 @@ bool LogTable::EncodeColumnRange(
             const auto bytes = line.PeekStringView(*slot);
             if (!bytes.has_value())
             {
-                // Numeric / bool / timestamp / monostate slot in a
-                // column we expected to be a string enum. Try the
-                // next alias before charging the column's health
-                // budget.
+                // Wrong-type slot in an expected enum column.
                 sawWrongType = true;
                 continue;
             }
             if (mEnumValueMaxLen != 0 && bytes->size() > mEnumValueMaxLen)
             {
-                // Long values do not bail; they accrue against the
-                // column's health budget (caller demotes when the
-                // tolerance ratio is exceeded).
+                // Long value: accrues against the health budget.
                 sawLong = true;
                 continue;
             }
             const EnumValueId vid = dict->Insert(*bytes);
             if (vid == INVALID_ENUM_VALUE_ID)
             {
-                // Hard dictionary cap (no tolerance — the dict
-                // cannot grow further). Caller demotes immediately.
+                // Hard dictionary cap; caller demotes immediately.
                 return false;
             }
             *slot = internal::CompactLogValue::MakeDictRef(vid);
@@ -1258,8 +1106,6 @@ bool LogTable::EncodeColumnRange(
         }
         if (alreadyEncoded)
         {
-            // Already counted by a previous batch's `EncodeColumnRange`
-            // pass; do not double-count.
             continue;
         }
         if (encoded)
@@ -1276,7 +1122,6 @@ bool LogTable::EncodeColumnRange(
             ++health.totalSlots;
             ++health.wrongTypeSlots;
         }
-        // Slot absent on every alias: not counted.
     }
     return true;
 }
@@ -1315,8 +1160,8 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     }
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::enumeration);
-    // Phase 1.4: pre-create the canonical dictionary and wire alias
-    // keys onto it so the encode hot path skips alias bookkeeping.
+    // Pre-create canonical dictionary and alias-wire so the encode hot
+    // path can skip alias bookkeeping.
     {
         std::optional<KeyId> canonical;
         for (const std::string &key : columns[columnIndex].keys)
@@ -1343,11 +1188,9 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
         }
     }
 
-    // The encode walk over all existing rows seeds the column health
-    // tracker. A hard dict-cap overflow demotes immediately; the
-    // tolerance check below catches a candidate whose un-scanned
-    // tail had too many over-cap or wrong-type slots for the column
-    // to be enum-shaped after all.
+    // Encode all existing rows; this seeds the health tracker. Hard cap
+    // demotes immediately; the tolerance check catches an unscanned tail
+    // whose shape does not actually match an enum.
     const std::string headerKey = columns[columnIndex].header;
     EnumColumnHealth &health = mEnumColumnHealth[headerKey];
     if (!EncodeColumnRangeAsEnum(columns[columnIndex], 0U, mData.Lines().size(), health))
@@ -1392,10 +1235,9 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
 
     if (!keyIds.empty())
     {
-        // Resolve the dictionary once via the canonical key; aliases
-        // share the entry. Bytes from `Resolve` are stable until
-        // `Erase` below, and `AppendOwnedBytes` copies them, so it's
-        // safe to keep the registry entry alive across the loop.
+        // Resolve via canonical key; aliases share the entry. Bytes from
+        // `Resolve` are stable until `Erase` below; `AppendOwnedBytes`
+        // copies them.
         const EnumDictionary *dict = mEnumDictionaries.Find(keyIds.front());
         for (auto &line : lines)
         {
@@ -1403,7 +1245,6 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
             const size_t lineId = line.LineId();
             for (const KeyId id : keyIds)
             {
-                // Phase 1.2: single lookup per slot, in-place rewrite.
                 internal::CompactLogValue *slot = line.FindCompactMutable(id);
                 if (slot == nullptr || slot->tag != internal::CompactTag::DictRef)
                 {
@@ -1429,24 +1270,16 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
         mEnumDictionaries.Erase(keyIds.front());
     }
 
-    // Demote routes the column to `Type::string`: dictionary overflow
-    // (or health-tolerance breach) is a string-cardinality conclusion,
-    // not a "we don't know" verdict. The terminal type also stops the
-    // candidate pass from re-tracking it (see `IsEnumPassEligible`).
+    // Route to `Type::string` (terminal): a dictionary or health-budget
+    // breach is a string-cardinality conclusion, not "we don't know".
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::string);
 
-    // Drop the column's health entry; it is meaningless once the
-    // column is no longer `Type::enumeration`. A re-promotion (only
-    // possible via a manual configuration edit) will start a fresh
-    // budget.
     mEnumColumnHealth.erase(column.header);
 
     const auto demoteElapsed =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - demoteStart);
-    if (demoteElapsed.count() > 1000)
+    if (demoteElapsed.count() > DEMOTE_TELEMETRY_LOG_THRESHOLD_US)
     {
-        // Telemetry for the demote-cost benchmark; stderr keeps it
-        // logger-free.
         fmt::print(
             stderr,
             "[loglib] DemoteColumnFromEnum column={} rows={} slots={} elapsed={}us\n",

@@ -22,13 +22,8 @@ std::string ToLower(const std::string &str)
 
 bool IsTimestampKey(const std::string &key)
 {
-    // Common JSON / structured-log timestamp field names. The bare
-    // "t" was intentionally dropped: it matches one-letter columns
-    // literally named `t` (e.g. a counter or a tag), which the
-    // user-facing first-column auto-promote then renders as a
-    // formatted date. Keep the list explicit and widely-used; users
-    // who need a custom timestamp key can pin the column type via
-    // configuration.
+    // Common JSON / structured-log timestamp field names; bare "t" is
+    // excluded to avoid false-positives.
     static const std::vector<std::string> TIMESTAMP_KEYS = {
         "timestamp", "time", "ts", "@timestamp", "datetime", "created_at"
     };
@@ -37,7 +32,7 @@ bool IsTimestampKey(const std::string &key)
     });
 }
 
-// Glaze 7.x: indentation_width moved off of glz::opts into an inheritable option.
+// Glaze 7.x: indentation_width is an inheritable option.
 struct PrettyOpts : glz::opts
 {
     uint8_t indentation_width = 4;
@@ -106,7 +101,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .type = LogConfiguration::Type::time,
                     .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
-                // Timestamps land in the first column; shift everything else right.
+                // Bubble timestamps to column 0.
                 for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
                 {
                     std::swap(mConfiguration.columns[i], mConfiguration.columns[i - 1]);
@@ -129,7 +124,7 @@ void LogConfigurationManager::Update(const LogData &logData)
 
 void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys)
 {
-    // Always append — never reorder — to keep Qt's `beginInsertColumns` valid.
+    // Append-only; Qt's `beginInsertColumns` expects appends.
     EnsureKeyCacheBuilt();
     for (const std::string &key : newKeys)
     {
@@ -186,7 +181,7 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // The cached key set is unchanged by a pure reorder.
+    // Pure reorder; key cache is unchanged.
 }
 
 void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration::Type type)
@@ -196,8 +191,6 @@ void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration
         return;
     }
     mConfiguration.columns[columnIndex].type = type;
-    // `mKeysInColumns` is keyed on key strings, not type, so a pure
-    // type flip leaves it valid.
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
@@ -207,7 +200,7 @@ size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::strin
         return 0;
     }
     EnsureKeyCacheBuilt();
-    // Mirror `AppendKeys`'s skip predicate plus a defensive in-input de-dupe.
+    // Mirrors `AppendKeys`'s skip predicate plus an in-input de-dupe.
     std::unordered_set<std::string_view> alreadyCounted;
     alreadyCounted.reserve(newKeys.size());
     size_t count = 0;

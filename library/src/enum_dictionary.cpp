@@ -7,6 +7,9 @@
 namespace loglib
 {
 
+// MSVC's `std::deque` default ctor can theoretically throw; `noexcept` is
+// the contract our storage relies on.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 EnumDictionary::EnumDictionary(uint16_t cap) noexcept
     : mCap(std::clamp<uint16_t>(cap, 1, MAX_ENUM_VALUES))
 {
@@ -33,19 +36,9 @@ EnumValueId EnumDictionary::Insert(std::string_view bytes)
         return INVALID_ENUM_VALUE_ID;
     }
     const auto id = static_cast<EnumValueId>(mValues.size());
-    // Construct the string in `mValues` first so the address is
-    // stable; key the index against a `string_view` over those
-    // stable bytes (deque elements never move on push_back). This
-    // avoids storing the same bytes twice (once in the value vector,
-    // once as the index key) which the old vector + robin_map<string,..>
-    // pair did.
-    //
-    // Strong exception guarantee: if the index insert throws (e.g.
-    // `bad_alloc` on a robin_map rehash) we roll back the value
-    // append so `mValues` and `mIndex` stay in lock-step. Without
-    // this rollback an OOM mid-`Insert` would leave the value
-    // findable via `Resolve` but invisible to `Find`, and `Size()`
-    // would silently disagree with the index population.
+    // Append first so the bytes have a stable address, then key the index
+    // against a view over them. Strong exception guarantee: roll back the
+    // append on index-insert failure.
     mValues.emplace_back(bytes);
     try
     {
@@ -72,8 +65,7 @@ std::string_view EnumDictionary::Resolve(EnumValueId id) const noexcept
 
 void EnumDictionary::Clear() noexcept
 {
-    // Index references string_views into `mValues`, so clear it
-    // before destroying the underlying bytes.
+    // Index references string_views into `mValues`, so clear it first.
     mIndex.clear();
     mValues.clear();
 }
@@ -95,13 +87,8 @@ const EnumDictionary *EnumDictionaryRegistry::Find(KeyId key) const noexcept
 
 EnumDictionary &EnumDictionaryRegistry::GetOrInsert(KeyId key, uint16_t cap)
 {
-    // Consult `mIndex` (canonicals + aliases) first so calling
-    // `GetOrInsert(alias_key)` returns the canonical's dictionary
-    // instead of clobbering the alias mapping with a fresh entry.
-    // Pre-fix this branch silently broke aliasing when the canonical
-    // key fell out of the resolved-keys list (e.g. a column whose
-    // canonical key dropped to `INVALID_KEY_ID` while the alias was
-    // still alive in the data).
+    // `mIndex` covers canonicals + aliases so an alias key returns the
+    // canonical's dictionary instead of clobbering the alias mapping.
     if (auto it = mIndex.find(key); it != mIndex.end())
     {
         return *it->second;
@@ -119,8 +106,7 @@ bool EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
 {
     if (canonical == alias)
     {
-        // Idempotent identity: caller can pass the canonical key as
-        // its own alias without it being treated as an error.
+        // Identity alias is idempotent.
         return true;
     }
     auto canonicalIt = mDictionaries.find(canonical);
@@ -131,15 +117,12 @@ bool EnumDictionaryRegistry::Alias(KeyId canonical, KeyId alias)
     EnumDictionary *raw = canonicalIt->second.dict.get();
     if (auto indexIt = mIndex.find(alias); indexIt != mIndex.end())
     {
-        // Already pointing at the same dictionary: idempotent. Any
-        // other target is a configuration error -- the caller must
-        // `Erase` the existing dictionary before reparenting.
+        // Idempotent if already pointing at the same dict; else a conflict.
         return indexIt->second == raw;
     }
     if (mDictionaries.contains(alias))
     {
-        // The alias key has its own canonical entry; aliasing onto
-        // `canonical` would orphan it. Caller must `Erase` first.
+        // Alias has its own canonical entry; aliasing would orphan it.
         return false;
     }
     mIndex[alias] = raw;
@@ -154,8 +137,6 @@ void EnumDictionaryRegistry::Erase(KeyId canonical) noexcept
     {
         return;
     }
-    // O(aliases per column) instead of O(|mIndex|): walk the entry's
-    // own alias list rather than scanning every entry in the index.
     for (const KeyId alias : canonicalIt->second.aliases)
     {
         mIndex.erase(alias);

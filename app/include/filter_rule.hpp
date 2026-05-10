@@ -24,28 +24,20 @@ public:
         return mFilteredColumn;
     }
 
-    /// True iff the row passes. @p displayOrSort is the formatted /
-    /// typed value (`SortRole`); @p enumValueId is the raw
-    /// `EnumValueId` for `DictRef` slots (used only by
-    /// `EnumFilterRule`). Either may be a default-constructed
-    /// `QVariant` if `NeedsDisplayOrSort` / `NeedsEnumValueId` is
-    /// `false`.
+    /// True iff the row passes. @p displayOrSort is the `SortRole` value;
+    /// @p enumValueId is the raw `EnumValueId` for `DictRef` slots (only
+    /// `EnumFilterRule` consumes it). Either may be invalid when the
+    /// matching `Needs…` predicate returns `false`.
     virtual bool Matches(const QVariant &displayOrSort, const QVariant &enumValueId) const = 0;
 
-    /// Filter-model batch-resolves data needs across the rule list
-    /// before each row, so a session with no enum filters skips the
-    /// `EnumValueRole` query entirely (saves one `LogModel::data()`
-    /// round-trip per (row, rule)).
+    /// Lets the filter model skip the `EnumValueRole` round-trip when no
+    /// rule needs it.
     [[nodiscard]] virtual bool NeedsEnumValueId() const noexcept
     {
         return false;
     }
 
-    /// True when the rule consumes the `SortRole` payload. Default
-    /// `true` for backward compatibility; an override can opt out
-    /// when the rule is known to only need the enum id (currently
-    /// every rule consults the display value via the string-fallback
-    /// path, so no override exists today).
+    /// True when the rule consumes the `SortRole` payload (default).
     [[nodiscard]] virtual bool NeedsDisplayOrSort() const noexcept
     {
         return true;
@@ -117,13 +109,10 @@ private:
 
 /// Multi-select equality filter for `Type::enumeration` columns.
 ///
-/// Fast path: pre-resolves selected strings to `EnumValueId`s at
-/// construction; per-row matching is a single bit test on a
-/// `vector<bool>` keyed by id.
-///
-/// Fallback: rows without a `DictRef` slot (numeric, monostate, or
-/// not-yet-encoded `OwnedString`) match via `QSet<QString>` against
-/// the display string. Empty selection matches no rows.
+/// Fast path: pre-resolves selected strings to `EnumValueId`s and
+/// matches via a `vector<bool>` bit test.
+/// Fallback: rows without a `DictRef` slot match via the display
+/// string set. Empty selection matches nothing.
 class EnumFilterRule : public FilterRule
 {
 public:
@@ -134,8 +123,8 @@ public:
         {
             return;
         }
-        // Index directly by id. Values added past `Size()` later fall
-        // back to the string path until the rule is rebuilt.
+        // Indexed by id; values interned past `Size()` later fall back
+        // to the string path until the rule is rebuilt.
         mSelectedIds.assign(static_cast<size_t>(dictionary->Size()), false);
         for (const QString &value : selectedValues)
         {
@@ -188,11 +177,9 @@ public:
 
 private:
     QSet<QString> mSelected;
-    /// Bitset indexed by `EnumValueId`; empty when no dictionary was
-    /// supplied or no selected string matched one.
+    /// Bitset indexed by `EnumValueId`; empty when no dictionary was supplied.
     std::vector<bool> mSelectedIds;
-    /// True when at least one selected string resolved to an id.
-    /// Otherwise the bitset would always say "no match" and shadow
-    /// the `mSelected` fallback.
+    /// True iff at least one selected string resolved to an id; gates the
+    /// fast path so an empty bitset does not shadow the string fallback.
     bool mFastPathArmed = false;
 };
