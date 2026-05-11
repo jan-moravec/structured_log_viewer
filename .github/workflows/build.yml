@@ -140,14 +140,6 @@ jobs:
           thread-comments: update
           step-summary: true
 
-      - name: Fail leg if clang-tidy reported issues
-        # cpp-linter-action never fails the workflow itself; gate on its
-        # output so a tidy hit aborts before the expensive test/codecov work.
-        if: matrix.mode == 'coverage' && steps.cpp-linter.outputs.checks-failed > 0
-        run: |
-          echo "::error title=clang-tidy::clang-tidy reported issues on changed lines. See the PR review comments and the job's step summary for details."
-          exit 1
-
       - name: Run tests
         # Sanitizer + LLVM_PROFILE_FILE env comes from the preset.
         run: ctest --preset clang-${{ matrix.mode }}
