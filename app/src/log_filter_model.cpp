@@ -8,6 +8,7 @@
 
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>
+#include <QDebug>
 #include <QModelIndex>
 #include <QObject>
 #include <QRegularExpression>
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 LogFilterModel::LogFilterModel(QObject *parent)
@@ -26,6 +28,15 @@ LogFilterModel::LogFilterModel(QObject *parent)
 
 void LogFilterModel::SetLogModel(LogModel *logModel)
 {
+    // The `columnsMoved` invalidation hook is owned by `setSourceModel`,
+    // not us; this guard documents the production ordering (`SetLogModel`
+    // before `setSourceModel`) without forbidding the reverse for tests
+    // that wire the proxy chain by hand.
+    Q_ASSERT_X(
+        sourceModel() == nullptr || static_cast<bool>(mColumnsMovedConn),
+        "LogFilterModel::SetLogModel",
+        "call SetLogModel before setSourceModel so the columnsMoved hook lives across the swap"
+    );
     mLogModel = logModel;
     mEnumRanks.clear();
 }
@@ -100,7 +111,18 @@ bool LogFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourcePa
     {
         // Predicates can't run without the table; treat as no-filter
         // rather than rejecting every row, matching the empty-rules
-        // semantics above.
+        // semantics above. Debug builds catch the misconfiguration
+        // (caller forgot `SetLogModel` after `setSourceModel`); release
+        // builds emit one diagnostic and otherwise carry on.
+        Q_ASSERT_X(
+            mFilterRules.empty(),
+            "LogFilterModel::filterAcceptsRow",
+            "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
+        );
+        static std::once_flag warnedNoLogModelFlag;
+        std::call_once(warnedNoLogModelFlag, [] {
+            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rules ignored";
+        });
         return true;
     }
     const int logRow = MapToLogModelRow(sourceRow, sourceParent);
@@ -222,14 +244,22 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     {
         return nullptr;
     }
+    // Rebuild when the cached rank is missing, smaller than the live
+    // dictionary (growth since the last access), or attached to a
+    // *different* `EnumDictionary` instance than the live one. The
+    // pointer check covers demote -> re-promote that re-creates the
+    // registry entry at the same `Size()` -- without it the cache
+    // would hand out a stale rank whose internal `EnumValueId` indices
+    // mean different bytes.
     auto it = mEnumRanks.find(columnIndex);
-    if (it != mEnumRanks.end() && it->second && it->second->DictSize() >= dictionary->Size())
+    if (it != mEnumRanks.end() && it->second.rank && it->second.source == dictionary &&
+        it->second.rank->DictSize() >= dictionary->Size())
     {
-        return it->second.get();
+        return it->second.rank.get();
     }
     auto rank = std::make_unique<const loglib::EnumDictRank>(*dictionary);
     const loglib::EnumDictRank *raw = rank.get();
-    mEnumRanks.insert_or_assign(columnIndex, std::move(rank));
+    mEnumRanks.insert_or_assign(columnIndex, EnumRankEntry{std::move(rank), dictionary});
     return raw;
 }
 
@@ -255,16 +285,22 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     const bool useFastPath = role == Qt::DisplayRole && mLogModel != nullptr;
     const QString needle = useFastPath ? value.toString() : QString{};
 
-    auto probeCell = [&](const QModelIndex &index) -> bool {
+    // `logRowCached` is the underlying `LogTable` row for the current
+    // outer-loop row, resolved lazily on the first fast-path probe and
+    // reused across every column scan for that row. Pre-fix every
+    // column paid a fresh `MapModelIndexToLogModelRow` walk (which
+    // descends each proxy layer); the mapping is constant per row, so
+    // hoisting it cuts the proxy-walk cost from O(rowCount*colCount)
+    // to O(rowCount) on the no-match worst case.
+    auto probeCell = [&](const QModelIndex &index, int logRowCached) -> bool {
         if (useFastPath)
         {
-            const int logRow = MapModelIndexToLogModelRow(index);
-            if (logRow < 0)
+            if (logRowCached < 0)
             {
                 return false;
             }
             const std::string formatted = mLogModel->Table().GetFormattedValue(
-                static_cast<size_t>(logRow), static_cast<size_t>(index.column())
+                static_cast<size_t>(logRowCached), static_cast<size_t>(index.column())
             );
             const QString text = LogModel::ConvertToSingleLineCompactQString(formatted);
             return Matches(text, needle, flags);
@@ -273,18 +309,33 @@ QList<QModelIndex> LogFilterModel::MatchRow(
         return Matches(data, value, flags);
     };
 
+    // Sentinel: -2 means "not yet resolved this row", -1 means "tried
+    // and failed (row outside the LogModel)". Both short-circuit the
+    // fast path identically inside `probeCell`, but the distinction
+    // lets us avoid re-running the failing map for every column.
+    constexpr int LOG_ROW_UNRESOLVED = -2;
+
+    auto resolveLogRow = [&](const QModelIndex &probeIndex, int &cache) {
+        if (useFastPath && cache == LOG_ROW_UNRESOLVED)
+        {
+            cache = MapModelIndexToLogModelRow(probeIndex);
+        }
+    };
+
     if (forward)
     {
         for (int row = skipFirstN; row < rowCount; ++row)
         {
             const int actualRow = (startRow + row) % rowCount;
+            int logRowCached = LOG_ROW_UNRESOLVED;
 
             for (int col = 0; col < columnCount; ++col)
             {
                 const int actualColumn = (startColumn + col) % columnCount;
                 const QModelIndex index = this->index(actualRow, actualColumn, start.parent());
+                resolveLogRow(index, logRowCached);
 
-                if (probeCell(index))
+                if (probeCell(index, logRowCached))
                 {
                     result.append(index);
                     if (result.size() == hits)
@@ -310,13 +361,15 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             {
                 actualRow += rowCount;
             }
+            int logRowCached = LOG_ROW_UNRESOLVED;
 
             for (int col = 0; col < columnCount; ++col)
             {
                 const int actualColumn = (startColumn + col) % columnCount;
                 const QModelIndex index = this->index(actualRow, actualColumn, start.parent());
+                resolveLogRow(index, logRowCached);
 
-                if (probeCell(index))
+                if (probeCell(index, logRowCached))
                 {
                     result.append(index);
                     if (result.size() == hits)

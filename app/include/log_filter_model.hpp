@@ -36,10 +36,27 @@ public:
 
     /// Install the underlying `LogModel`. Required before any filter
     /// rule walks rows -- predicates need direct table access.
+    /// Call this *before* `setSourceModel(...)` so the
+    /// `columnsMoved` invalidation hook set up there is wired against
+    /// the same source-model lifetime; the production `MainWindow`
+    /// wiring already follows this order. Calling `SetLogModel` after
+    /// `setSourceModel` is supported (it only clears the rank cache),
+    /// but the active `columnsMoved` connection remains attached to
+    /// whatever source model was current at the last `setSourceModel`
+    /// call -- swap source models too if the proxy chain changed.
     void SetLogModel(LogModel *logModel);
 
     void setSourceModel(QAbstractItemModel *sourceModel) override;
 
+    /// Sentinel for the `hits` argument of `MatchRow`: scan to the end
+    /// of the proxy without an early-stop hit count. Used by callers
+    /// that want every match (e.g. "find all"); production `Find`
+    /// passes `1` for first-hit semantics.
+    static constexpr int UNLIMITED_HITS = -1;
+
+    /// Look up rows in proxy-coords matching @p value (compared via
+    /// `Qt::MatchFlags` against @p role). Returns the first @p hits
+    /// matches, or all of them when @p hits is `UNLIMITED_HITS`.
     QList<QModelIndex> MatchRow(
         const QModelIndex &start,
         int role,
@@ -101,6 +118,21 @@ private:
     /// Refreshed whenever the source model swaps.
     QAbstractProxyModel *mImmediateProxy = nullptr;
 
+    /// Cached `EnumDictRank` for a column plus the live dictionary
+    /// pointer it was built from. Storing the pointer lets
+    /// `EnumRankFor` self-heal: if the underlying `EnumDictionary`
+    /// instance changes (e.g. demote -> erase -> re-promote yields a
+    /// fresh registry entry that may even have the same `Size()` as
+    /// the cached rank), the cache rebuilds even when the external
+    /// `InvalidateEnumRanks()` tick is missed. Pointer comparison is
+    /// safe because `EnumDictionaryRegistry` keeps each dictionary at
+    /// a stable address via `unique_ptr` (see `enum_dictionary.hpp`).
+    struct EnumRankEntry
+    {
+        std::unique_ptr<const loglib::EnumDictRank> rank;
+        const loglib::EnumDictionary *source = nullptr;
+    };
+
     /// Per-column rank cache; mutable so const `lessThan` can populate
     /// lazily without leaking ownership. Cleared on:
     /// - `SetLogModel` (different `LogTable` swapped in),
@@ -111,8 +143,10 @@ private:
     ///   shifts the per-index key, so the cached entry would attach
     ///   to the wrong column otherwise).
     /// Also invalidated piecemeal via `InvalidateEnumRanks()` on
-    /// `LogModel::enumColumnsChanged`.
-    mutable std::unordered_map<int, std::unique_ptr<const loglib::EnumDictRank>> mEnumRanks;
+    /// `LogModel::enumColumnsChanged`, and self-healed inside
+    /// `EnumRankFor` when the cached `EnumDictionary*` no longer
+    /// matches the live one.
+    mutable std::unordered_map<int, EnumRankEntry> mEnumRanks;
 
     /// Connection to the source model's `columnsMoved` signal; reset
     /// on every `setSourceModel` swap so the cache invalidation

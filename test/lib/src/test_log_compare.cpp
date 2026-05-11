@@ -211,6 +211,63 @@ TEST_CASE(
     }
 }
 
+TEST_CASE(
+    "CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_compare][integer][regression]"
+)
+{
+    // Regression for PR review finding #1: pre-fix `CompareTyped` ran
+    // `CompareMonostateOrder` before `Extract`, so NaN-in-Int compared
+    // strictly less than monostate (tail order was
+    // `representable < NaN < monostate`). Post-fix the unrepresentable
+    // tail bucket compares equal to monostate (header doc invariant).
+    const TestLogFile fixture("log_compare_int_nan_vs_monostate.json");
+    fixture.Write("");
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<LogValue> values = {int64_t{0}, nan, std::monostate{}, int64_t{42}};
+    LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+
+    // Tail-bucket equality: NaN <=> monostate is 0.
+    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0);  // NaN == monostate
+    CHECK(SignOf(CompareRows(table, 2, 1, 0)) == 0);  // antisymmetric: still equal swapped
+    CHECK(SignOf(CompareRows(table, 1, 1, 0)) == 0);  // NaN == NaN
+    CHECK(SignOf(CompareRows(table, 2, 2, 0)) == 0);  // monostate == monostate
+
+    // Representable < tail-bucket.
+    CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 0 < NaN
+    CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // 0 < monostate
+    CHECK(SignOf(CompareRows(table, 3, 1, 0)) == -1); // 42 < NaN
+    CHECK(SignOf(CompareRows(table, 3, 2, 0)) == -1); // 42 < monostate
+}
+
+TEST_CASE(
+    "CompareRows: stray-string-in-Floating sorts equal to monostate at the tail",
+    "[log_compare][floating][regression]"
+)
+{
+    // Parallel of the Integer regression above: a string slot in a
+    // `Floating` column is unrepresentable, so it must tie with
+    // monostate rather than sort strictly below it.
+    const TestLogFile fixture("log_compare_float_string_vs_monostate.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {
+        1.5,                 // 0: representable double
+        std::string("oops"), // 1: stray string -> tail bucket
+        std::monostate{},    // 2: monostate -> tail bucket
+        -3.25,               // 3: representable double
+    };
+    LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
+
+    // Tail-bucket equality.
+    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0);  // stray-string == monostate
+    CHECK(SignOf(CompareRows(table, 2, 1, 0)) == 0);  // antisymmetric
+
+    // Representable < tail-bucket.
+    CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 1.5 < stray-string
+    CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // 1.5 < monostate
+    CHECK(SignOf(CompareRows(table, 3, 1, 0)) == -1); // -3.25 < stray-string
+    CHECK(SignOf(CompareRows(table, 3, 2, 0)) == -1); // -3.25 < monostate
+}
+
 TEST_CASE("CompareRows handles Floating columns with NaN at the tail", "[log_compare][floating]")
 {
     const TestLogFile fixture("log_compare_floating.json");

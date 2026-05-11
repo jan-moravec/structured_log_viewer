@@ -139,8 +139,18 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
 
     // Fall back: format both sides through the column's `printFormat`
     // so e.g. an integer column sorts numerically below mixed strings.
-    const std::string lhsFormatted = table.GetFormattedValue(lhsRow, column);
-    const std::string rhsFormatted = table.GetFormattedValue(rhsRow, column);
+    //
+    // The buffers are `thread_local` so the steady-state allocation
+    // cost across millions of compare calls drops to zero: each
+    // `std::string` retains its capacity from the previous assignment.
+    // Sorts are GUI-thread-only today; the `thread_local` storage
+    // generalises that without locking. The function is not reentrant
+    // (no nested `CompareLogValuesBytewise` calls), so two thread-local
+    // buffers suffice.
+    thread_local std::string lhsFormatted;
+    thread_local std::string rhsFormatted;
+    lhsFormatted = table.GetFormattedValue(lhsRow, column);
+    rhsFormatted = table.GetFormattedValue(rhsRow, column);
     return ThreeWay(std::string_view(lhsFormatted), std::string_view(rhsFormatted));
 }
 
@@ -166,20 +176,26 @@ std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rh
     return std::nullopt;
 }
 
-/// Shared shape for "monostate first, extract to T, three-way the
-/// extracted values, mixed extracted/unextracted route extracted <
-/// unextracted". `Extract` returns `std::optional<T>` and `Compare` is
-/// a three-way comparator on `T`. The per-comparator definitions below
-/// reduce to one-liners.
+/// Shared shape for "extract to T, three-way the extracted values, mixed
+/// extracted/unextracted route extracted < unextracted". `Extract` returns
+/// `std::optional<T>` and `Compare` is a three-way comparator on `T`.
+/// The per-comparator definitions below reduce to one-liners.
+///
+/// Monostate is handled as the canonical "unextractable" slot: an explicit
+/// `std::monostate` short-circuits `extract` to `std::nullopt`, so the
+/// tail bucket -- monostate, NaN-in-Int, stray-string-in-Floating, etc. --
+/// all compare equal pairwise. This is the invariant the header doc
+/// promises (representable < tail-bucket; tail-bucket members tie). Running
+/// `extract` first (instead of routing monostate through a parallel
+/// short-circuit) is what lets unrepresentable values join the tie bucket
+/// instead of sorting strictly below monostate.
 template <class Extract, class Compare>
 int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Compare cmp)
 {
-    if (const auto order = CompareMonostateOrder(lhs, rhs); order.has_value())
-    {
-        return *order;
-    }
-    const auto lhsX = extract(lhs);
-    const auto rhsX = extract(rhs);
+    const bool lhsMono = std::holds_alternative<std::monostate>(lhs);
+    const bool rhsMono = std::holds_alternative<std::monostate>(rhs);
+    const auto lhsX = lhsMono ? std::nullopt : extract(lhs);
+    const auto rhsX = rhsMono ? std::nullopt : extract(rhs);
     if (lhsX.has_value() && rhsX.has_value())
     {
         return cmp(*lhsX, *rhsX);
@@ -194,6 +210,8 @@ int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Comp
     {
         return 1;
     }
+    // Tail vs tail: monostate vs monostate, monostate vs NaN, NaN vs NaN,
+    // stray-string vs monostate, etc. all compare equal.
     return 0;
 }
 

@@ -34,10 +34,15 @@ class LogTable;
 /// `mSelectedStrings` set so a stale predicate still produces correct
 /// matches against newly-interned selected values.
 ///
-/// Construction is not synchronised against concurrent dictionary
-/// growth: if a worker thread mints new ids while the constructor
-/// runs, the defensive past-bitset branch routes such selected values
-/// to `mSelectedStrings` and `mAllResolved` is left false.
+/// Threading: construction is single-threaded today. The GUI thread
+/// is the sole reader/writer of the dictionary -- `LogTable::AppendBatch`
+/// runs on the GUI thread (via the queued connection from
+/// `QtStreamingLogSink`), and `LogFilterModel::SetFilterRules` is
+/// only called from filter-submission slots that also live on the GUI
+/// thread. The defensive past-bitset branch + `mAllResolved` accounting
+/// keep the predicate correct even if a future caller resolves the
+/// selection from a worker thread that races with dictionary growth;
+/// they have no cost on the serial path.
 class EnumRowPredicate
 {
 public:

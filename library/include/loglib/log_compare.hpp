@@ -78,14 +78,23 @@ private:
 ///     `std::string_view`s materialised via `LogLine::PeekStringView`
 ///     or `LogTable::GetFormattedValue` for non-string slots.
 ///
-/// `std::monostate` slots sort after every populated slot in an
-/// ascending sort: monostate-vs-monostate is equal, monostate-vs-anything
-/// is strictly greater. Slots that are populated but not representable
-/// in the column's logical type (e.g., NaN in an `Integer` column, or a
-/// stray string slot in a `Floating` column) share that tail -- they
-/// compare equal to monostate and to each other, and strictly greater
-/// than every representable value. Callers wanting "monostate first"
-/// can negate the return.
+/// Tail-bucket invariant (ascending sort): every "unusable" slot for the
+/// column's logical type compares strictly greater than every representable
+/// slot, and equal to every other unusable slot. The bucket contents are
+/// type-dependent:
+///   - `Integer`     - `std::monostate`, NaN doubles, and any other slot
+///     that does not extract to an `int64_t` (with `±inf` / out-of-range
+///     doubles clamped to `INT64_MIN`/`INT64_MAX` instead of joining the
+///     tail).
+///   - `Floating` / `Number` - `std::monostate` and any slot that does not
+///     extract to a `double` (e.g. a stray string slot).
+///   - `Time`        - `std::monostate` and any slot that does not extract
+///     to microseconds-since-epoch.
+///   - `Enumeration` / `String` / `Any` / `Unknown` - just `std::monostate`;
+///     any string-shaped slot has a deterministic byte-wise order.
+/// Tail-bucket members compare equal pairwise, so `monostate == NaN-in-Int`
+/// (etc.) in the comparator's eyes. Callers wanting "monostate first" can
+/// negate the return.
 [[nodiscard]] int CompareRows(
     const LogTable &table,
     size_t lhsRow,

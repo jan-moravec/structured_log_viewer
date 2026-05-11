@@ -3633,7 +3633,7 @@ private slots:
             start,
             Qt::DisplayRole,
             QStringLiteral("info"),
-            -1, // unlimited
+            LogFilterModel::UNLIMITED_HITS,
             Qt::MatchContains | Qt::MatchWrap,
             true,
             0
@@ -3650,6 +3650,143 @@ private slots:
         QList<int> expectedSorted = expectedRows;
         std::sort(expectedSorted.begin(), expectedSorted.end());
         QCOMPARE(actualRows, expectedSorted);
+
+        model->EndStreaming(false);
+    }
+
+    // Regression for PR review finding #2: `MainWindow::FindRecords`
+    // pre-fix wrapped the proxy `currentIndex()` through `mModel->index(...)`
+    // before handing it to `LogFilterModel::MatchRow`, mixing proxy and
+    // source coordinate systems. `MatchRow` happens to read only
+    // `.row()` / `.parent()` from the start index today, so the bug was
+    // latent; the regression test exercises the production wiring with
+    // an active filter so any future change that consults `start.model()`
+    // (e.g. to short-circuit the proxy walk) will catch the coord mix.
+    void TestFindRespectsActiveFilter()
+    {
+        // 12 rows alternating info/warn -> filtered to 6 visible info rows.
+        const QStringList levels{QStringLiteral("info"), QStringLiteral("warn")};
+        constexpr int FIXTURE_LINES = 12;
+        QStringList lines;
+        lines.reserve(FIXTURE_LINES);
+        for (int i = 0; i < FIXTURE_LINES; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1", "msg": "row%2"})").arg(levels[i % levels.size()]).arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QCOMPARE(model->rowCount(), FIXTURE_LINES);
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+
+        // Install an enum filter selecting only "info" -> 6 visible rows.
+        const QString filterId = QStringLiteral("find-with-filter");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), FIXTURE_LINES / 2);
+
+        // Reach the table view through the same QObject tree the live
+        // window does. The view's selection model is what `Find` reads
+        // to pick the start index.
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        QCOMPARE(tableView->model(), filterModel);
+
+        // Place the proxy current index at proxy row 1 so the first
+        // forward hit (skipping the selected row) lands at proxy row 2.
+        const int startProxyRow = 1;
+        const QModelIndex startProxyIdx = filterModel->index(startProxyRow, 0);
+        QVERIFY(startProxyIdx.isValid());
+        tableView->selectionModel()->setCurrentIndex(
+            startProxyIdx, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        QVERIFY(tableView->selectionModel()->isRowSelected(startProxyRow));
+
+        // Capture the row count of the underlying source model so we
+        // can assert below that `Find` returned a *proxy* index, not a
+        // source-model index. Pre-fix code that handed `mModel->index(N, 0)`
+        // to `MatchRow` would have returned an index whose `.model() ==
+        // mSortFilterProxyModel` regardless (MatchRow always re-builds
+        // through `this->index(...)`), so the strongest invariant we
+        // can pin here is "result row < proxy rowCount and the cell
+        // really matches the needle".
+        QVERIFY(model->rowCount() > filterModel->rowCount());
+
+        // Drive `FindRecords`. `next=true`, no wildcard / regex flags.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("info")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        // The selection should have moved to the next visible info row.
+        const QModelIndex selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "FindRecords must move the current index to a match");
+        QCOMPARE(selected.model(), filterModel);
+        QVERIFY2(
+            selected.row() >= 0 && selected.row() < filterModel->rowCount(),
+            qPrintable(QStringLiteral("selected row %1 must be inside the filtered proxy [0, %2)")
+                           .arg(selected.row())
+                           .arg(filterModel->rowCount()))
+        );
+        QVERIFY2(
+            selected.row() != startProxyRow,
+            "next-match must advance past the selected start row when `skipFirstN==1`"
+        );
+
+        // The selected cell's `DisplayRole` must contain the needle.
+        const QString cellText =
+            filterModel->index(selected.row(), levelCol).data(Qt::DisplayRole).toString();
+        QCOMPARE(cellText, QStringLiteral("info"));
+
+        // Cross-check: every visible (post-filter) row contains "info";
+        // the filter is doing its job and Find lands inside that set.
+        for (int r = 0; r < filterModel->rowCount(); ++r)
+        {
+            const QString v =
+                filterModel->index(r, levelCol).data(Qt::DisplayRole).toString();
+            QCOMPARE(v, QStringLiteral("info"));
+        }
 
         model->EndStreaming(false);
     }

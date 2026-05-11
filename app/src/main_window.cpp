@@ -1078,9 +1078,17 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 
     const QVariant value = QVariant::fromValue(text);
-    QModelIndexList matches = mSortFilterProxyModel->MatchRow(
-        mModel->index(searchStartIndex.row(), 0), Qt::DisplayRole, value, 1, flags, next, skipFirstN
-    );
+    // `searchStartIndex` lives in the proxy's coord system (it comes
+    // from `mTableView->currentIndex()`, whose model is the proxy).
+    // Pre-fix we wrapped its `.row()` through `mModel->index(...)` and
+    // passed a source-model index; `MatchRow` happens to only read
+    // `.row()` / `.column()` / `.parent()` so the wrap was a no-op
+    // today, but it left a coordinate-mix footgun for any future
+    // `MatchRow` change that consults `start.model()` or
+    // `mapToSource(start)`. Pass the proxy index in directly so every
+    // coord inside `MatchRow` is in proxy space by construction.
+    QModelIndexList matches =
+        mSortFilterProxyModel->MatchRow(searchStartIndex, Qt::DisplayRole, value, 1, flags, next, skipFirstN);
 
     if (!matches.isEmpty())
     {
@@ -1145,6 +1153,14 @@ void MainWindow::AddFilter(
                 {
                     return;
                 }
+                // Intentional fallthrough: the saved filter was dropped
+                // above because the column type changed, so a fresh
+                // editor is opened (further down) to let the user
+                // re-pick values for the new column type. The dropped
+                // rule has already been removed from `mFilters`; the
+                // editor starts empty by virtue of `resolvedFilter`
+                // being reset. Regression coverage:
+                // `TestSavedStringFilterDroppedOnNowEnumColumn`.
             }
         }
     }
