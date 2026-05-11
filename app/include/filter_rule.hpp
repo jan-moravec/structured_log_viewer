@@ -164,6 +164,14 @@ public:
                 {
                     return mSelectedIds[idx];
                 }
+                // Fast-path armed but the id is past the bitset --
+                // it was minted after the rule was built. The
+                // `enumColumnsChanged` gate in `MainWindow` rebuilds
+                // any rule whose selection gains a newly-resolved id,
+                // so a still-stale bitset here is provably for an
+                // *unselected* value: reject without the (now-skipped)
+                // display-string round-trip.
+                return false;
             }
         }
 
@@ -173,6 +181,16 @@ public:
     [[nodiscard]] bool NeedsEnumValueId() const noexcept override
     {
         return true;
+    }
+
+    /// Skip the `SortRole` round-trip when the bitset fast path is
+    /// armed -- `Matches` only consults `enumValueId` in that case, so
+    /// materialising the display `QString` per row would be pure waste.
+    /// The string-fallback path needs the display value, so leave the
+    /// default behaviour intact when the fast path is disarmed.
+    [[nodiscard]] bool NeedsDisplayOrSort() const noexcept override
+    {
+        return !mFastPathArmed;
     }
 
 private:

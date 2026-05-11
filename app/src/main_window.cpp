@@ -8,6 +8,7 @@
 #include "streaming_control.hpp"
 
 #include <loglib/bytes_producer.hpp>
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -329,12 +330,21 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
     // Rebuild active enum filter rules so the fast-path bitset stays in
-    // sync after dictionary growth or promotion.
+    // sync after dictionary growth or promotion. Only refilter when at
+    // least one enum filter still has unresolved selected values --
+    // dictionary growth that only mints unselected ids cannot change
+    // the row outcome of an already-armed bitset, so re-walking the
+    // whole row set on every batch would be pure waste during streaming.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
-        const bool hasEnumFilter = std::ranges::any_of(mFilters, [](const auto &kv) {
-            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
+        const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
+            if (kv.second.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+            {
+                return false;
+            }
+            const auto it = mEnumFilterFullyResolved.find(kv.first);
+            return it == mEnumFilterFullyResolved.end() || !it->second;
         });
-        if (hasEnumFilter)
+        if (anyUnresolved)
         {
             UpdateFilters();
         }
@@ -1197,6 +1207,7 @@ void MainWindow::AddFilter(
 void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
+    mEnumFilterFullyResolved.clear();
     mSortFilterProxyModel->SetFilterRules({});
 
     for (QAction *action : ui->menuFilters->actions())
@@ -1345,9 +1356,47 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     }
 }
 
+const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex) const
+{
+    const auto &columns = mModel->Configuration().columns;
+    if (columnIndex < 0)
+    {
+        return nullptr;
+    }
+    const auto idx = static_cast<size_t>(columnIndex);
+    if (idx >= columns.size() || columns[idx].keys.empty())
+    {
+        return nullptr;
+    }
+    const loglib::KeyId canonicalKeyId = mModel->Table().Keys().Find(columns[idx].keys.front());
+    if (canonicalKeyId == loglib::INVALID_KEY_ID)
+    {
+        return nullptr;
+    }
+    return mModel->Table().EnumDictionaries().Find(canonicalKeyId);
+}
+
+bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const
+{
+    if (filter.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+    {
+        return true;
+    }
+    const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+    if (dictionary == nullptr)
+    {
+        // Column not yet promoted: defer resolution until first growth.
+        return false;
+    }
+    return std::ranges::all_of(filter.filterValues, [dictionary](const std::string &value) {
+        return dictionary->Find(value) != loglib::INVALID_ENUM_VALUE_ID;
+    });
+}
+
 void MainWindow::UpdateFilters()
 {
     std::vector<std::unique_ptr<FilterRule>> rules;
+    mEnumFilterFullyResolved.clear();
     for (const auto &filter : mFilters)
     {
         switch (filter.second.type)
@@ -1367,18 +1416,9 @@ void MainWindow::UpdateFilters()
             }
             // Pre-resolve the canonical dictionary for the bitset path;
             // the rule falls back to strings if the column isn't promoted.
-            const loglib::EnumDictionary *dictionary = nullptr;
-            const auto &columns = mModel->Configuration().columns;
-            const auto rowIndex = static_cast<size_t>(filter.second.row);
-            if (rowIndex < columns.size() && !columns[rowIndex].keys.empty())
-            {
-                const loglib::KeyId canonicalKeyId = mModel->Table().Keys().Find(columns[rowIndex].keys.front());
-                if (canonicalKeyId != loglib::INVALID_KEY_ID)
-                {
-                    dictionary = mModel->Table().EnumDictionaries().Find(canonicalKeyId);
-                }
-            }
+            const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.second.row);
             rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values, dictionary));
+            mEnumFilterFullyResolved[filter.first] = EnumFilterFullyResolved(filter.second);
             break;
         }
         case loglib::LogConfiguration::LogFilter::Type::String:

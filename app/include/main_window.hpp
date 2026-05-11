@@ -9,6 +9,11 @@
 
 #include <loglib/log_configuration.hpp>
 
+namespace loglib
+{
+class EnumDictionary;
+}
+
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -143,6 +148,16 @@ private:
     void UpdateFilters();
     void ApplyTableStyleSheet();
 
+    /// Resolve the canonical `EnumDictionary` for column @p columnIndex,
+    /// or nullptr when the column is not yet promoted / has no keys.
+    [[nodiscard]] const loglib::EnumDictionary *ResolveEnumDictionary(int columnIndex) const;
+
+    /// True iff every selected string in @p filter currently resolves
+    /// to an id in the canonical dictionary for its column. Used to
+    /// decide whether an `enumColumnsChanged` tick warrants a rebuild
+    /// of the proxy's filter rules.
+    [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
+
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
@@ -167,6 +182,13 @@ private:
     PreferencesEditor *mPreferencesEditor;
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
+
+    /// Snapshot of "all selected ids were resolved at last rebuild"
+    /// per enum filter, keyed by filter id. Lets the
+    /// `enumColumnsChanged` connection skip the full re-filter when
+    /// dictionary growth only adds *unselected* values. Recomputed by
+    /// `UpdateFilters()`.
+    std::unordered_map<std::string, bool> mEnumFilterFullyResolved;
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
