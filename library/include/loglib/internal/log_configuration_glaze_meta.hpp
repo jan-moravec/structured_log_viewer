@@ -12,6 +12,11 @@
 // enumerators are UpperCamelCase, so existing configurations keep working.
 // Out-of-line so the public header does not pull in `<glaze/glaze.hpp>`.
 // (`floating` rather than `double` since `double` is a reserved keyword.)
+//
+// `keys` and `value` are slot names mandated by glaze's reflection: its
+// template machinery looks them up by exact name, so they cannot adopt the
+// project-wide UPPER_CASE constexpr convention without breaking JSON I/O.
+// NOLINTBEGIN(readability-identifier-naming)
 
 template <> struct glz::meta<loglib::LogConfiguration::Type>
 {
@@ -35,3 +40,4 @@ template <> struct glz::meta<loglib::LogConfiguration::LogFilter::Match>
     static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
+// NOLINTEND(readability-identifier-naming)
