@@ -49,7 +49,7 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     auto errors = ParseTimestamps(logData, configuration);
     CHECK(errors.empty());
 
-    configuration.columns[0].type = LogConfiguration::Type::time;
+    configuration.columns[0].type = LogConfiguration::Type::Time;
     errors = ParseTimestamps(logData, configuration);
 
     CHECK(errors.size() == logData.Lines().size());
@@ -69,12 +69,12 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 
     LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
 
-    // Configuration with one Type::time column.
+    // Configuration with one Type::Time column.
     LogConfiguration configuration;
     LogConfiguration::Column column;
     column.header = "key";
     column.keys = {"key"};
-    column.type = LogConfiguration::Type::time;
+    column.type = LogConfiguration::Type::Time;
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 

@@ -23,7 +23,7 @@ public:
     void SetFilterRules(std::vector<std::unique_ptr<FilterRule>> &&filterRules)
     {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-        // Qt 6.9+: limit invalidation to rows only (our filter never affects columns).
+        // Qt 6.9+: rows-only invalidation; this filter never touches columns.
         beginFilterChange();
         mFilterRules = std::move(filterRules);
         endFilterChange(QSortFilterProxyModel::Direction::Rows);
@@ -39,16 +39,22 @@ protected:
         for (const auto &rule : mFilterRules)
         {
             QModelIndex index = sourceModel()->index(sourceRow, rule->FilteredColumn(), sourceParent);
-            if (index.isValid())
+            if (!index.isValid())
             {
-                if (!rule->Matches(sourceModel()->data(index, LogModelItemDataRole::SortRole)))
-                {
-                    return false;
-                }
+                continue;
+            }
+            // Skip the `EnumValueRole` query unless a rule needs it.
+            const QVariant displayOrSort =
+                rule->NeedsDisplayOrSort() ? sourceModel()->data(index, LogModelItemDataRole::SortRole) : QVariant{};
+            const QVariant enumValueId =
+                rule->NeedsEnumValueId() ? sourceModel()->data(index, LogModelItemDataRole::EnumValueRole) : QVariant{};
+            if (!rule->Matches(displayOrSort, enumValueId))
+            {
+                return false;
             }
         }
 
-        return true; // All filter rules have a match, accept the row.
+        return true;
     }
 
 private:

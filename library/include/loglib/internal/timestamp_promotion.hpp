@@ -25,7 +25,7 @@ struct LastTimestampBytesHit
     bool valid = false;
 };
 
-/// Pre-resolved view of one configured `Type::time` column: keys resolved to
+/// Pre-resolved view of one configured `Type::Time` column: keys resolved to
 /// `KeyId`s, formats pre-classified.
 struct TimeColumnSpec
 {
@@ -34,11 +34,11 @@ struct TimeColumnSpec
     std::vector<TimestampFormatKind> formatKinds;
 };
 
-/// Builds one `TimeColumnSpec` per `Type::time` column. Returns empty when
+/// Builds one `TimeColumnSpec` per `Type::Time` column. Returns empty when
 /// @p configuration is null.
 std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfiguration *configuration);
 
-/// Promotes one line's `Type::time` columns in place. Returns `true` iff at
+/// Promotes one line's `Type::Time` columns in place. Returns `true` iff at
 /// least one column was promoted on this line. Lines that don't match any
 /// (KeyId, format) pair are left untouched — the `LogTable` mid-stream
 /// back-fill picks them up.

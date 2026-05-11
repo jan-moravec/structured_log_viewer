@@ -347,7 +347,7 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 
     for (const auto &column : configuration.columns)
     {
-        if (column.type == LogConfiguration::Type::time)
+        if (column.type == LogConfiguration::Type::Time)
         {
             auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
             if (!columnErrors.empty())

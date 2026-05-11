@@ -37,8 +37,8 @@ void HintSequential(const mio::mmap_source &mmap)
 
 #ifdef _WIN32
     WIN32_MEMORY_RANGE_ENTRY range;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): Win32 `PrefetchVirtualMemory` takes non-const `void*`;
-    // mapping is read-only.
+    // Win32 `PrefetchVirtualMemory` takes non-const `void*`; mapping is read-only.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     range.VirtualAddress = const_cast<char *>(mmap.data());
     range.NumberOfBytes = mmap.size();
     (void)::PrefetchVirtualMemory(::GetCurrentProcess(), 1, &range, 0);
@@ -55,6 +55,9 @@ void HintSequential(const mio::mmap_source &mmap)
 LogFile::LogFile(std::filesystem::path filePath)
     : mPath(std::move(filePath))
 {
+    // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
+    // clang's analyzer flags the value as out-of-range. False positive in stdlib.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     if (!std::filesystem::exists(mPath))
     {
         throw std::runtime_error(fmt::format("File '{}' does not exist.", mPath.string()));
@@ -62,6 +65,9 @@ LogFile::LogFile(std::filesystem::path filePath)
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
     // leading offset sentinel below still keeps `GetLineCount() == 0` truthful.
+    // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
+    // clang's analyzer flags the value as out-of-range. False positive in stdlib.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(mPath);
     if (size > 0)
     {

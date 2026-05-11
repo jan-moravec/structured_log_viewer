@@ -42,7 +42,7 @@ LogValue ToOwnedLogValue(const LogValue &value)
 
 bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 {
-    // Treat `string_view` and `string` as the same logical kind.
+    // `string_view` and `string` count as the same kind for equality.
     const auto lhsString = AsStringView(lhs);
     const auto rhsString = AsStringView(rhs);
     if (lhsString.has_value() || rhsString.has_value())
@@ -55,8 +55,8 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 namespace
 {
 
-/// Append @p sv to @p source's owned arena for @p lineId, returning
-/// the matching compact `OwnedString` value. Cold path.
+/// Append @p sv to @p source's owned arena and return the corresponding
+/// `OwnedString` value.
 internal::CompactLogValue PromoteToOwnedString(LineSource &source, size_t lineId, std::string_view sv)
 {
     const uint64_t offset = source.AppendOwnedBytes(lineId, sv);
@@ -74,9 +74,8 @@ internal::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t line
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
             {
-                // MmapSlice fast path when the view aliases the
-                // source's stable bytes; stream sources fall through
-                // to `PromoteToOwnedString`.
+                // MmapSlice when the view aliases stable bytes;
+                // otherwise promote to owned.
                 const std::span<const char> stable = source.StableBytes();
                 if (!stable.empty() && alt.data() >= stable.data() &&
                     alt.data() + alt.size() <= stable.data() + stable.size())
@@ -147,10 +146,7 @@ LogLine::LogLine(
 #ifndef NDEBUG
     assert(std::ranges::is_sorted(sortedValues, [](const auto &a, const auto &b) { return a.first < b.first; }));
 #endif
-    // Exact-fit copy: drops the temporary vector's `reserve(16)` capacity
-    // waste in one go, so each `LogLine` carries only `size * 16` bytes
-    // of field storage instead of `capacity * 16`. The temp vector is
-    // freed when @p sortedValues goes out of scope.
+    // Exact-fit copy keeps each LogLine at `size * 16` bytes.
     mValues.AssignSorted(sortedValues.data(), static_cast<uint32_t>(sortedValues.size()));
 }
 
@@ -169,8 +165,7 @@ LogLine::LogLine(const LogMap &values, KeyIndex &keys, LineSource &source, size_
 
 const internal::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
 {
-    // Linear forward scan: typical line has <= 8 fields and the data is
-    // sorted ascending; bailing on `entry.first > id` keeps it branch-light.
+    // Linear scan; lines are tiny and sorted, with an early bail.
     const auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     for (uint32_t i = 0; i < size; ++i)
@@ -187,6 +182,44 @@ const internal::CompactLogValue *LogLine::FindCompact(KeyId id) const noexcept
     return nullptr;
 }
 
+internal::CompactLogValue *LogLine::FindCompactMutable(KeyId id) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    return const_cast<internal::CompactLogValue *>(std::as_const(*this).FindCompact(id));
+}
+
+std::optional<std::string_view> LogLine::PeekStringView(KeyId id) const noexcept
+{
+    const internal::CompactLogValue *compact = FindCompact(id);
+    if (compact == nullptr)
+    {
+        return std::nullopt;
+    }
+    return PeekStringView(*compact);
+}
+
+std::optional<std::string_view> LogLine::PeekStringView(const internal::CompactLogValue &slot) const noexcept
+{
+    if (mSource == nullptr)
+    {
+        return std::nullopt;
+    }
+    if (slot.tag == internal::CompactTag::MmapSlice)
+    {
+        const std::string_view bytes = mSource->ResolveMmapBytes(slot.payload, slot.aux, mLineId);
+        if (bytes.empty() && slot.aux != 0)
+        {
+            return std::nullopt;
+        }
+        return bytes;
+    }
+    if (slot.tag == internal::CompactTag::OwnedString)
+    {
+        return mSource->ResolveOwnedBytes(slot.payload, slot.aux, mLineId);
+    }
+    return std::nullopt;
+}
+
 LogValue LogLine::GetValue(KeyId id) const
 {
     const internal::CompactLogValue *compact = FindCompact(id);
@@ -194,7 +227,7 @@ LogValue LogLine::GetValue(KeyId id) const
     {
         return LogValue{std::monostate{}};
     }
-    return compact->Materialise(mSource, mLineId);
+    return compact->Materialise(mSource, mLineId, id);
 }
 
 LogValue LogLine::GetValue(const std::string &key) const
@@ -214,8 +247,7 @@ LogValue LogLine::GetValue(const std::string &key) const
 void LogLine::SetValue(KeyId id, const LogValue &value)
 {
 #ifndef NDEBUG
-    // Untagged setter is for owned values; callers passing a `string_view`
-    // must use the `LogValueTrustView` overload to declare the lifetime.
+    // Untagged setter is for owned values; views need `LogValueTrustView`.
     assert(!std::holds_alternative<std::string_view>(value));
 #endif
     SetValue(id, value, LogValueTrustView{});
@@ -224,7 +256,30 @@ void LogLine::SetValue(KeyId id, const LogValue &value)
 void LogLine::SetValue(KeyId id, const LogValue &value, LogValueTrustView /*trust*/)
 {
     assert(mSource != nullptr);
-    const internal::CompactLogValue compact = MakeCompactFromVariant(*mSource, mLineId, value);
+    SetCompact(id, MakeCompactFromVariant(*mSource, mLineId, value));
+}
+
+void LogLine::SetValue(const std::string &key, const LogValue &value)
+{
+    if (mKeys == nullptr)
+    {
+        throw std::runtime_error("LogLine::SetValue(string): KeyIndex back-pointer is unset");
+    }
+    const KeyId id = mKeys->Find(key);
+    if (id == INVALID_KEY_ID)
+    {
+        throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
+    }
+    SetValue(id, value);
+}
+
+void LogLine::SetOrReplaceEnumDictRef(KeyId id, EnumValueId vid)
+{
+    SetCompact(id, internal::CompactLogValue::MakeDictRef(vid));
+}
+
+void LogLine::SetCompact(KeyId id, internal::CompactLogValue compact)
+{
     auto *data = mValues.Data();
     const uint32_t size = mValues.Size();
     uint32_t lo = 0;
@@ -243,26 +298,10 @@ void LogLine::SetValue(KeyId id, const LogValue &value, LogValueTrustView /*trus
     }
     if (lo < size && data[lo].first == id)
     {
-        // In-place replacement: hot path for inline timestamp promotion
-        // (`tryPromote` swaps the field's string value for a `TimeStamp`).
         mValues.Set(lo, compact);
         return;
     }
     mValues.Insert(lo, id, compact);
-}
-
-void LogLine::SetValue(const std::string &key, const LogValue &value)
-{
-    if (mKeys == nullptr)
-    {
-        throw std::runtime_error("LogLine::SetValue(string): KeyIndex back-pointer is unset");
-    }
-    const KeyId id = mKeys->Find(key);
-    if (id == INVALID_KEY_ID)
-    {
-        throw std::runtime_error("LogLine::SetValue(string): key '" + key + "' is not registered in the KeyIndex");
-    }
-    SetValue(id, value);
 }
 
 std::vector<std::string> LogLine::GetKeys() const
@@ -287,7 +326,7 @@ std::vector<std::pair<KeyId, LogValue>> LogLine::IndexedValues() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId));
+        result.emplace_back(entry.first, entry.second.Materialise(mSource, mLineId, entry.first));
     }
     return result;
 }
@@ -308,7 +347,9 @@ LogMap LogLine::Values() const
     for (uint32_t i = 0; i < mValues.Size(); ++i)
     {
         const auto &entry = mValues.Data()[i];
-        snapshot.emplace(std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId));
+        snapshot.emplace(
+            std::string(mKeys->KeyOf(entry.first)), entry.second.Materialise(mSource, mLineId, entry.first)
+        );
     }
     return snapshot;
 }
@@ -372,6 +413,22 @@ bool LogLine::IsOwnedString(KeyId id) const noexcept
 {
     const internal::CompactLogValue *compact = FindCompact(id);
     return compact != nullptr && compact->tag == internal::CompactTag::OwnedString;
+}
+
+bool LogLine::IsDictRef(KeyId id) const noexcept
+{
+    const internal::CompactLogValue *compact = FindCompact(id);
+    return compact != nullptr && compact->tag == internal::CompactTag::DictRef;
+}
+
+std::optional<EnumValueId> LogLine::GetEnumValueId(KeyId id) const noexcept
+{
+    const internal::CompactLogValue *compact = FindCompact(id);
+    if (compact == nullptr || compact->tag != internal::CompactTag::DictRef)
+    {
+        return std::nullopt;
+    }
+    return static_cast<EnumValueId>(static_cast<uint16_t>(compact->payload));
 }
 
 } // namespace loglib

@@ -47,10 +47,10 @@
 namespace
 {
 
-// Locate the staged `tzdata/` directory. Tries (in order): next to the
-// binary, the macOS Resources/ bundle layout, $APPDIR/usr/share/tzdata
-// (Linux AppImage), then walks the CWD ancestor chain. On miss returns
-// an empty path and populates `searched` for diagnostics.
+// Locate the staged `tzdata/` directory. Tries (in order) the binary
+// directory, the macOS Resources bundle, $APPDIR/usr/share/tzdata, then
+// the CWD ancestor chain. Empty path on miss; `searched` accumulates
+// candidates for diagnostics.
 std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
 {
     auto pushAndCheck = [&searched](std::filesystem::path candidate) -> bool {
@@ -105,6 +105,10 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
     return {};
 }
 
+// How long transient status-bar messages (filter rejection / drop notices)
+// linger before the bar reverts to default state.
+constexpr int STATUS_BAR_MESSAGE_TIMEOUT_MS = 5000;
+
 // Diagnostic for "no tzdata found" matching common.cpp's shape.
 QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &searched)
 {
@@ -145,11 +149,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     ApplyTableStyleSheet();
 
-    // Two-stage proxy chain: the inner `RowOrderProxyModel` reverses
-    // row order in newest-first mode via O(1) per-row index mirroring;
-    // the outer `LogFilterModel` filters and supports user-clicked
-    // column sorts (sort role: `SortRole`). The layers never share sort
-    // state, so a column sort and newest-first coexist without fighting.
+    // Proxy chain: `RowOrderProxyModel` mirrors row indices for
+    // newest-first; `LogFilterModel` handles filtering and column
+    // sorts. They never share sort state.
     mRowOrderProxyModel = new RowOrderProxyModel(this);
     mRowOrderProxyModel->setSourceModel(mModel);
 
@@ -187,8 +189,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
-    // Stream toolbar. Hidden until a live-tail stream is opened; the
-    // same actions are reachable from the Stream menu.
+    // Stream toolbar; hidden until a live-tail stream is opened. The
+    // same actions are also in the Stream menu.
     mStreamToolbar = addToolBar(tr("Stream"));
     mStreamToolbar->setObjectName("streamToolbar");
     mStreamToolbar->addAction(ui->actionPauseStream);
@@ -196,10 +198,8 @@ MainWindow::MainWindow(QWidget *parent)
     mStreamToolbar->addAction(ui->actionStopStream);
     mStreamToolbar->setVisible(false);
 
-    // Disable the actions while idle so an idle-time Stream-menu click
-    // on `actionPauseStream` (checkable) cannot leak its checked state
-    // into the next session. `UpdateStreamToolbarVisibility` keeps the
-    // enabled flag in sync with toolbar visibility from then on.
+    // Disable while idle so a checked state cannot leak into the next
+    // session; `UpdateStreamToolbarVisibility` keeps these in sync after.
     ui->actionPauseStream->setEnabled(false);
     ui->actionFollowTail->setEnabled(false);
     ui->actionStopStream->setEnabled(false);
@@ -207,20 +207,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->actionPauseStream, &QAction::toggled, this, &MainWindow::TogglePauseStream);
     connect(ui->actionStopStream, &QAction::triggered, this, &MainWindow::StopStream);
 
-    // `actionFollowTail` is a stateless toggle observed by
-    // `ScrollToNewestRowIfFollowing`; the user-scroll signals below
-    // auto-disengage / auto-re-engage it. The tail edge (bottom by
-    // default, top in newest-first mode) is owned by
-    // `ApplyDisplayOrder`, so this wiring stays
-    // orientation-agnostic.
-    //
-    // Re-engage is gated on `IsLiveTailSession()` (not
-    // `mModel->IsStreamingActive()`): static sessions are
-    // streaming-active too while their backing file is parsed, but
-    // they have no continuously-arriving "newest" data the user could
-    // sensibly want to follow. Allowing a static-mode scroll to the
-    // bottom to silently re-arm Follow newest would then yank the
-    // viewport away on the next batch parsed from the same file.
+    // `actionFollowTail` is auto-disengaged when the user scrolls away
+    // and auto-re-engaged on tail-edge scroll. Re-engage is gated on
+    // live-tail sessions only; static sessions don't follow.
     connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
         if (ui->actionFollowTail->isChecked())
         {
@@ -249,10 +238,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
-    // Both signals route through the same mode-aware slot. The slot
-    // re-reads the per-mode `StreamingControl` accessor matching the
-    // current session, so a stream-mode toggle is a no-op when a
-    // static session is active and vice versa.
+    // Mode-aware slot reads the per-mode `StreamingControl` accessor;
+    // off-mode toggles are no-ops.
     connect(mPreferencesEditor, &PreferencesEditor::streamingDisplayOrderChanged, this, [this](bool) {
         ApplyDisplayOrder();
     });
@@ -267,19 +254,13 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
-        // One-shot column auto-resize on the first non-empty batch so
-        // initial widths fit the pre-fill rows; subsequent batches
-        // leave columns alone to avoid yanking them under the mouse.
+        // One-shot column auto-resize on the first non-empty batch.
         if (IsLiveTailSession() && !mFirstStreamingBatchSeen && count > 0)
         {
             mFirstStreamingBatchSeen = true;
             UpdateUi();
         }
-        // Auto-follow is a live-tail affordance only. Static sessions
-        // are streaming-active too while the backing file is parsed,
-        // but their "newest" row is just the next chunk of an
-        // already-finite payload the user is reading -- yanking the
-        // viewport on every batch fights the user's scroll.
+        // Auto-follow is live-tail only.
         if (IsLiveTailSession())
         {
             ScrollToNewestRowIfFollowing();
@@ -290,21 +271,12 @@ MainWindow::MainWindow(QWidget *parent)
         UpdateStreamingStatus();
     });
     connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
-        // Drop the `Source unavailable` latch so the post-session label
-        // doesn't inherit a stale "waiting" state. The next stream's
-        // first `Waiting` transition will re-set it.
+        // Clear the `Source unavailable` latch.
         mSourceWaiting = false;
 
-        // Multi-file static open: Success advances the queue;
-        // Cancelled / Failed drain it so the user can react.
-        //
-        // `mSessionMode` stays at its pre-finish value (`Static`) across
-        // the dispatch below so `StreamNextPendingFile` correctly treats
-        // the next file as a continuation -- `isFirstFileInSession`
-        // there reads `!IsSessionActive()`, so clearing the mode early
-        // would route every follow-up file through `BeginStreaming`
-        // (which resets the model) instead of `AppendStreaming`,
-        // silently discarding the previously-parsed rows.
+        // Multi-file static open: Success advances the queue. Keep
+        // `mSessionMode == Static` across `StreamNextPendingFile` so
+        // it routes follow-up files through `AppendStreaming`.
         if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
         {
             StreamNextPendingFile();
@@ -312,8 +284,7 @@ MainWindow::MainWindow(QWidget *parent)
             {
                 return;
             }
-            // Fallthrough: every remaining queued file failed to open.
-            // The session is truly over; drop to the cleanup below.
+            // Fallthrough: queue drained without a new active session.
         }
         else if (!mPendingOpenFiles.isEmpty())
         {
@@ -322,10 +293,7 @@ MainWindow::MainWindow(QWidget *parent)
 
         mSessionMode = SessionMode::Idle;
 
-        // Reset Pause / Follow-tail to their defaults so the next
-        // session starts unpaused with auto-scroll engaged. Neither
-        // toggle has a `toggled` slot wired beyond the value
-        // `ScrollToNewestRowIfFollowing` reads.
+        // Reset Pause / Follow-tail to defaults for the next session.
         if (ui->actionPauseStream->isChecked())
         {
             const QSignalBlocker blocker(ui->actionPauseStream);
@@ -360,15 +328,25 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
+    // Rebuild active enum filter rules so the fast-path bitset stays in
+    // sync after dictionary growth or promotion.
+    connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
+        const bool hasEnumFilter = std::ranges::any_of(mFilters, [](const auto &kv) {
+            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
+        });
+        if (hasEnumFilter)
+        {
+            UpdateFilters();
+        }
+    });
 
-    // Pull persisted streaming preferences into the model and proxy on
-    // startup so the first session honours the user's choices.
+    // Pull persisted streaming preferences on startup.
     StreamingControl::LoadConfiguration();
     ApplyStreamingRetention();
     ApplyDisplayOrder();
 
     QTimer::singleShot(0, [] {
-        // qCritical() instead of a modal dialog: offscreen Qt (CI / apptest) hangs on modals.
+        // qCritical instead of a modal: offscreen Qt hangs on modals.
         std::vector<std::filesystem::path> searched;
         const auto tzdata = FindTzdata(searched);
 
@@ -429,8 +407,7 @@ void MainWindow::dropEvent(QDropEvent *event)
         return;
     }
 
-    // Single-file drop preserves the "drop a config file to load it"
-    // affordance; multi-file drops always stream.
+    // Single-file drop may load as a configuration; multi-file always streams.
     if (urlList.size() == 1)
     {
         const QString singleFile = urlList.front().toLocalFile();
@@ -493,8 +470,7 @@ void MainWindow::OpenFiles()
         return;
     }
 
-    // Single-file open preserves the "drop a config file to load it"
-    // affordance; multi-file selections always stream.
+    // Single-file open may load as a configuration; multi-file always streams.
     if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
     {
         UpdateUi();
@@ -519,8 +495,7 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
 void MainWindow::StartStreamingOpenQueue(QStringList files)
 {
-    // Reset session state before starting so residual rows / filters /
-    // paused buffer cannot leak into the new session.
+    // Reset before starting so residual state cannot leak in.
     mModel->Reset();
     ClearAllFilters();
 
@@ -536,8 +511,8 @@ void MainWindow::StreamNextPendingFile()
     {
         const QString file = mPendingOpenFiles.takeFirst();
 
-        // Open on the GUI thread so errors are synchronous. Failures
-        // are accumulated; the queue continues with the next file.
+        // Open on the GUI thread so errors are synchronous; queue
+        // continues with the next file on failure.
         std::unique_ptr<loglib::LogFile> logFile;
         try
         {
@@ -552,8 +527,7 @@ void MainWindow::StreamNextPendingFile()
         // Snapshot the configuration so the worker reads it lock-free.
         auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
-        // First file in a session vs. follow-up: BeginStreaming starts
-        // a new session; AppendStreaming joins the existing one.
+        // BeginStreaming starts a session; AppendStreaming continues it.
         const bool isFirstFileInSession = !IsSessionActive();
 
         mStreamingFileName = QFileInfo(file).fileName();
@@ -565,8 +539,8 @@ void MainWindow::StreamNextPendingFile()
             mFirstStreamingBatchSeen = false;
             SetConfigurationUiEnabled(false);
             UpdateStreamToolbarVisibility();
-            // Re-apply the display-order so the proxy/view orientation
-            // matches the static-mode preference before any rows arrive.
+            // Re-apply display-order so view orientation matches the
+            // static-mode preference before any rows arrive.
             ApplyDisplayOrder();
         }
         UpdateStreamingStatus();
@@ -578,8 +552,9 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
-        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks): false positive; `parseCallable` is moved into the
-        // model and invoked; `cfg` is consumed by `options`.
+        // False positive: `parseCallable` is moved into the model and invoked;
+        // `cfg` is consumed by `options`.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
         auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken
                              ) mutable {
             options.stopToken = stopToken;
@@ -598,9 +573,8 @@ void MainWindow::StreamNextPendingFile()
         return;
     }
 
-    // Queue exhausted via fallthrough (every remaining file failed to
-    // open). Surface the accumulated errors now if no session was ever
-    // armed; otherwise the `streamingFinished` summary will fold them in.
+    // Queue drained without a session ever arming: surface errors now;
+    // otherwise the `streamingFinished` summary folds them in.
     if (!IsSessionActive() && !mPendingOpenErrors.empty())
     {
         ShowParseErrors("Error Opening File", mPendingOpenErrors);
@@ -616,8 +590,7 @@ void MainWindow::OpenLogStream()
         return;
     }
 
-    // Construct the source on the GUI thread so open errors are
-    // synchronous. Pre-fill back-reads at most `retention` lines.
+    // Construct on the GUI thread for synchronous open errors.
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
@@ -636,8 +609,7 @@ void MainWindow::OpenLogStream()
         return;
     }
 
-    // Mirror the static-open reset order so residual state (filters,
-    // Find match, paused buffer) cannot leak into the new session.
+    // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
     ClearAllFilters();
 
@@ -649,19 +621,15 @@ void MainWindow::OpenLogStream()
     SetConfigurationUiEnabled(false);
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
-    // Re-apply the display-order so the proxy/view orientation matches
-    // the stream-mode preference before any rows arrive.
     ApplyDisplayOrder();
 
-    // Snapshot the configuration so the worker reads it lock-free.
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
 
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
-    // Wrap the producer in a long-lived `StreamLineSource`: the model
-    // installs it in `LogTable` and the parser tags each `LogLine`
-    // with it so `LineSource::RawLine` resolves the bytes later.
+    // Wrap the producer in a `StreamLineSource` so each `LogLine` can
+    // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     mModel->BeginStreaming(std::move(streamSource), std::move(options));
 }
@@ -717,8 +685,7 @@ void MainWindow::OpenNetworkStream()
         return;
     }
 
-    // Mirror the `OpenLogStream` reset order so residual state cannot
-    // leak into the new session.
+    // Mirror the OpenLogStream reset.
     mModel->Reset();
     ClearAllFilters();
 
@@ -736,10 +703,8 @@ void MainWindow::OpenNetworkStream()
     loglib::ParserOptions options;
     options.configuration = std::move(config);
 
-    // The displayName doubles as the LineSource's "path" for
-    // `RawLine` lookups; for network streams there is no real
-    // filesystem path, so we use the producer's e.g. `tcp://...`
-    // string. `StreamLineSource` only treats it as opaque identity.
+    // Network streams have no real filesystem path; the producer's
+    // display string serves as the LineSource's opaque identity.
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
     mModel->BeginStreaming(std::move(streamSource), std::move(options));
@@ -768,9 +733,7 @@ void MainWindow::StopStream()
     {
         return;
     }
-    // `StopAndKeepRows()` runs the teardown sequence and emits a
-    // compensating `streamingFinished(Cancelled)`, but preserves the
-    // visible rows so the user can keep working on them.
+    // Tear down but keep visible rows so the user can keep working on them.
     mModel->StopAndKeepRows();
     mStreamingFileName.clear();
 }
@@ -778,7 +741,6 @@ void MainWindow::StopStream()
 void MainWindow::OnRotationDetected()
 {
     constexpr int ROTATION_STATUS_FLASH_MS = 3000;
-    // Brief 3 s `— rotated` flash on the status label.
     mRotationFlashActive = true;
     UpdateStreamingStatus();
     QTimer::singleShot(ROTATION_STATUS_FLASH_MS, this, [this]() {
@@ -789,15 +751,14 @@ void MainWindow::OnRotationDetected()
 
 void MainWindow::OnSourceStatusChanged(loglib::SourceStatus status)
 {
-    // Latch the `Waiting` state so the label keeps showing
-    // "Source unavailable …" between callbacks (which are edge-triggered).
+    // Latch `Waiting` so the label keeps showing "Source unavailable".
     mSourceWaiting = (status == loglib::SourceStatus::Waiting);
     UpdateStreamingStatus();
 }
 
 void MainWindow::SetConfigurationUiEnabled(bool enabled)
 {
-    // Parser holds an immutable snapshot; gate edits while streaming.
+    // Parser snapshot is immutable; gate config edits while streaming.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
@@ -822,8 +783,7 @@ void MainWindow::UpdateStreamingStatus()
     }
     else if (mSourceWaiting)
     {
-        // Source unavailable takes precedence over Paused: it surfaces
-        // an environmental problem the user should react to.
+        // Source unavailable takes precedence over Paused.
         text = QString("Source unavailable - last seen %1 - %2 lines, %3 errors")
                    .arg(mStreamingFileName)
                    .arg(mStreamingLineCount)
@@ -842,9 +802,8 @@ void MainWindow::UpdateStreamingStatus()
                    .arg(mStreamingErrorCount);
     }
 
-    // Paused-drop telemetry: stays non-zero until the stream is
-    // stopped so the user keeps seeing "lines were lost" after Resume.
-    // Static-streaming sessions do not pause in practice.
+    // Paused-drop telemetry stays non-zero across Resume so the user
+    // keeps seeing "lines were lost" until Stop.
     if (IsLiveTailSession() && mModel->Sink())
     {
         const auto dropped = static_cast<qsizetype>(mModel->Sink()->PausedDropCount());
@@ -865,19 +824,15 @@ void MainWindow::UpdateStreamingStatus()
 
 void MainWindow::UpdateStreamToolbarVisibility()
 {
-    // Use this window's `mSessionMode` rather than
-    // `mModel->IsStreamingActive()`: the model flag is only set
-    // inside `BeginStreaming`, which runs after this is called from
-    // open paths.
+    // Read `mSessionMode` (set on the open path) rather than the model
+    // flag (set later inside `BeginStreaming`).
     const bool visible = IsLiveTailSession();
     if (mStreamToolbar)
     {
         mStreamToolbar->setVisible(visible);
     }
-    // Gate the menu actions on toolbar visibility so a Stream-menu
-    // click while idle cannot pre-flip a checkable action's state into
-    // the next session. Per-session checked-state reset lives in the
-    // `streamingFinished` slot above.
+    // Gate menu actions so an idle click cannot pre-flip a checkable
+    // action's state into the next session.
     ui->actionPauseStream->setEnabled(visible);
     ui->actionFollowTail->setEnabled(visible);
     ui->actionStopStream->setEnabled(visible);
@@ -885,14 +840,9 @@ void MainWindow::UpdateStreamToolbarVisibility()
 
 void MainWindow::ScrollToNewestRowIfFollowing()
 {
-    // Auto-follow is meaningful only in live-tail sessions; static
-    // sessions parse a finite payload the user is reading, so any
-    // residual `actionFollowTail` checked state from the previous
-    // session (or the startup default) must not cause the viewport
-    // to chase batches as the file is parsed. The toolbar gate in
-    // `UpdateStreamToolbarVisibility` already disables the action
-    // outside live-tail, but the action's *value* is independent of
-    // its enabled flag so we need this defensive early-return too.
+    // Auto-follow is live-tail only; defensive against stale
+    // `actionFollowTail` value (the action's checked state is
+    // independent of its enabled flag).
     if (!IsLiveTailSession())
     {
         return;
@@ -906,10 +856,8 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     {
         return;
     }
-    // Scroll to the most-recently-appended source row even when sorted
-    // by a non-time column; mapping through both proxy layers makes
-    // the scroll land on the correct visual row under sort / filter /
-    // reverse-order.
+    // Map through both proxy layers so the scroll lands on the correct
+    // visual row under sort / filter / reverse-order.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
     const QModelIndex midIndex = mRowOrderProxyModel->mapFromSource(sourceIndex);
     const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
@@ -917,9 +865,8 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     {
         return;
     }
-    // In newest-first mode the latest row is at proxy row 0, so we
-    // must scroll to the top edge. The view's `TailEdge` is kept in
-    // sync by `ApplyDisplayOrder`.
+    // Newest-first puts the latest row at proxy row 0; tail edge is
+    // owned by `ApplyDisplayOrder`.
     const auto position =
         mRowOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
     mTableView->scrollTo(proxyIndex, position);
@@ -932,8 +879,6 @@ void MainWindow::ApplyStreamingRetention()
 
 QAction *MainWindow::FindUiAction(const QString &name) const
 {
-    // Exhaustive dispatch against `ui->` so tests can reach every
-    // UI-file-declared action without depending on the QObject tree.
     // Must stay in sync with `main_window.ui`.
     if (name == QStringLiteral("actionOpen"))
     {
@@ -994,6 +939,11 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     return nullptr;
 }
 
+QMenu *MainWindow::FiltersMenu() const
+{
+    return ui->menuFilters;
+}
+
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)
@@ -1012,14 +962,7 @@ void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 
 void MainWindow::ApplyDisplayOrder()
 {
-    // Mode dispatch:
-    //   - LiveTail session  -> stream-mode preference
-    //   - Static session    -> static-mode preference
-    //   - Idle              -> stream-mode preference (the *next*
-    //     session typically inherits this on open; whichever path
-    //     opens the file calls `ApplyDisplayOrder()` again with the
-    //     correct `mSessionMode` so this fallback only matters for
-    //     the empty viewer between sessions).
+    // Static -> static-mode preference; everything else -> stream-mode.
     const bool newestFirst = (mSessionMode == SessionMode::Static) ? StreamingControl::IsStaticNewestFirst()
                                                                    : StreamingControl::IsNewestFirst();
 
@@ -1027,15 +970,10 @@ void MainWindow::ApplyDisplayOrder()
 
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
-    // Disable alternating row colours in newest-first mode. Qt keys
-    // alternation off the visual row index, so top-insertion flips
-    // every visible row's parity on every batch and the rows flicker.
-    // A custom delegate could pin colours to source-row parity, but
-    // the CSS-based `alternate-background-color` bypasses it.
+    // Newest-first disables alternating colours: Qt keys alternation off
+    // the visual row index, so top-insertion would flicker every row.
     mTableView->setAlternatingRowColors(!newestFirst);
 
-    // Re-pin to the new tail edge if Follow tail is engaged so the
-    // user does not have to scroll manually after toggling the option.
     if (mModel->IsStreamingActive())
     {
         ScrollToNewestRowIfFollowing();
@@ -1140,28 +1078,120 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 }
 
-void MainWindow::AddFilter(const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter)
+void MainWindow::AddFilter(
+    const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter, bool openEditor
+)
 {
-    if (mModel->rowCount() > 0)
+    if (mModel->rowCount() == 0)
     {
-        auto *filterEditor = new FilterEditor(*mModel, filterId, this);
-        connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
-        connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
-        if (filter.has_value())
+        return;
+    }
+
+    // Drop saved filters whose type no longer matches the column type
+    // (e.g. string filter against a column that auto-promoted to enum).
+    std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
+    if (resolvedFilter.has_value())
+    {
+        const auto &columns = mModel->Configuration().columns;
+        const auto rowIndex = static_cast<size_t>(resolvedFilter->row);
+        // Saved empty enum selection: would hide every row.
+        if (rowIndex < columns.size() &&
+            resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+            resolvedFilter->filterValues.empty())
         {
-            if (filter->type == loglib::LogConfiguration::LogFilter::Type::time)
+            statusBar()->showMessage(
+                QString("Saved enumeration filter for '%1' had no values selected; ignoring")
+                    .arg(QString::fromStdString(columns[rowIndex].header)),
+                STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+            ClearFilter(filterId);
+            return;
+        }
+        if (rowIndex < columns.size())
+        {
+            const loglib::LogConfiguration::Type columnType = columns[rowIndex].type;
+            const loglib::LogConfiguration::LogFilter::Type filterType = resolvedFilter->type;
+
+            const bool typesMatch = (filterType == loglib::LogConfiguration::LogFilter::Type::Time &&
+                                     columnType == loglib::LogConfiguration::Type::Time) ||
+                                    (filterType == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                                     columnType == loglib::LogConfiguration::Type::Enumeration) ||
+                                    (filterType == loglib::LogConfiguration::LogFilter::Type::String &&
+                                     columnType != loglib::LogConfiguration::Type::Time &&
+                                     columnType != loglib::LogConfiguration::Type::Enumeration);
+            if (!typesMatch)
             {
-                filterEditor->Load(filter->row, *filter->filterBegin, *filter->filterEnd);
-            }
-            else
-            {
-                filterEditor->Load(
-                    filter->row, QString::fromStdString(*filter->filterString), static_cast<int>(*filter->matchType)
+                ClearFilter(filterId);
+                statusBar()->showMessage(
+                    QString("Filter '%1' was removed because the column type changed")
+                        .arg(QString::fromStdString(columns[rowIndex].header)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
+                resolvedFilter.reset();
+                if (!openEditor)
+                {
+                    return;
+                }
             }
         }
-        filterEditor->show();
     }
+
+    if (!openEditor)
+    {
+        // Configuration-load path: filter is already in `mFilters`.
+        return;
+    }
+
+    auto *filterEditor = new FilterEditor(*mModel, filterId, this);
+    connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
+    connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
+    connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
+    if (resolvedFilter.has_value())
+    {
+        if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
+        {
+            if (!resolvedFilter->filterBegin.has_value() || !resolvedFilter->filterEnd.has_value())
+            {
+                statusBar()->showMessage(
+                    QString("Filter '%1' was dropped because its time range is missing").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                delete filterEditor;
+                return;
+            }
+            filterEditor->Load(resolvedFilter->row, *resolvedFilter->filterBegin, *resolvedFilter->filterEnd);
+        }
+        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration)
+        {
+            QStringList values;
+            values.reserve(static_cast<qsizetype>(resolvedFilter->filterValues.size()));
+            for (const std::string &v : resolvedFilter->filterValues)
+            {
+                values.append(QString::fromStdString(v));
+            }
+            filterEditor->Load(resolvedFilter->row, values);
+        }
+        else
+        {
+            if (!resolvedFilter->filterString.has_value() || !resolvedFilter->matchType.has_value())
+            {
+                statusBar()->showMessage(
+                    QString("Filter '%1' was dropped because its string match is missing").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                delete filterEditor;
+                return;
+            }
+            filterEditor->Load(
+                resolvedFilter->row,
+                QString::fromStdString(*resolvedFilter->filterString),
+                static_cast<int>(*resolvedFilter->matchType)
+            );
+        }
+    }
+    filterEditor->show();
 }
 
 void MainWindow::ClearAllFilters()
@@ -1214,7 +1244,7 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::string;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::String;
     filter.row = row;
     filter.filterString = filterString.toStdString();
     filter.matchType = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
@@ -1227,10 +1257,26 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::time;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Time;
     filter.row = row;
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
+
+    AddLogFilter(filterID, filter);
+}
+
+void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues)
+{
+    ClearFilter(filterID);
+
+    loglib::LogConfiguration::LogFilter filter;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Enumeration;
+    filter.row = row;
+    filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
+    for (const QString &v : selectedValues)
+    {
+        filter.filterValues.push_back(v.toStdString());
+    }
 
     AddLogFilter(filterID, filter);
 }
@@ -1241,24 +1287,37 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     UpdateFilters();
 
     QString title;
-    if (filter.type == loglib::LogConfiguration::LogFilter::Type::time)
+    switch (filter.type)
     {
+    case loglib::LogConfiguration::LogFilter::Type::Time:
         title = QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
-    }
-    else
+        break;
+    case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
+        QStringList values;
+        values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
+        for (const std::string &v : filter.filterValues)
+        {
+            values.append(QString::fromStdString(v));
+        }
+        title = values.join(QStringLiteral(", "));
+        break;
+    }
+    case loglib::LogConfiguration::LogFilter::Type::String:
+    default:
         title = QString::fromStdString(*filter.filterString);
+        break;
     }
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
     menuItem->menuAction()->setData(QVariant(id));
 
     const QAction *editAction = menuItem->addAction("Edit");
-    // NOLINTNEXTLINE(bugprone-exception-escape): Qt slot; `AddFilter` uses normal exception-throwing STL; failures
-    // surface as usual.
+    // Qt slot; `AddFilter` uses normal exception-throwing STL; failures surface as usual.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id, filter]() { AddFilter(id, filter); });
 
     const QAction *clearAction = menuItem->addAction("Clear");
@@ -1291,17 +1350,43 @@ void MainWindow::UpdateFilters()
     std::vector<std::unique_ptr<FilterRule>> rules;
     for (const auto &filter : mFilters)
     {
-        if (filter.second.type == loglib::LogConfiguration::LogFilter::Type::time)
+        switch (filter.second.type)
         {
+        case loglib::LogConfiguration::LogFilter::Type::Time:
             rules.push_back(std::make_unique<TimeStampFilterRule>(
                 filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd
             ));
-        }
-        else
+            break;
+        case loglib::LogConfiguration::LogFilter::Type::Enumeration:
         {
+            QStringList values;
+            values.reserve(static_cast<qsizetype>(filter.second.filterValues.size()));
+            for (const std::string &v : filter.second.filterValues)
+            {
+                values.append(QString::fromStdString(v));
+            }
+            // Pre-resolve the canonical dictionary for the bitset path;
+            // the rule falls back to strings if the column isn't promoted.
+            const loglib::EnumDictionary *dictionary = nullptr;
+            const auto &columns = mModel->Configuration().columns;
+            const auto rowIndex = static_cast<size_t>(filter.second.row);
+            if (rowIndex < columns.size() && !columns[rowIndex].keys.empty())
+            {
+                const loglib::KeyId canonicalKeyId = mModel->Table().Keys().Find(columns[rowIndex].keys.front());
+                if (canonicalKeyId != loglib::INVALID_KEY_ID)
+                {
+                    dictionary = mModel->Table().EnumDictionaries().Find(canonicalKeyId);
+                }
+            }
+            rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values, dictionary));
+            break;
+        }
+        case loglib::LogConfiguration::LogFilter::Type::String:
+        default:
             rules.push_back(std::make_unique<TextFilterRule>(
                 filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
             ));
+            break;
         }
     }
     mSortFilterProxyModel->SetFilterRules(std::move(rules));

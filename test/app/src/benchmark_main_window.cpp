@@ -170,6 +170,7 @@ private slots:
         // up at suite teardown.
         QVERIFY(mTempDir.isValid());
         mLogPath = std::filesystem::path(mTempDir.path().toStdString()) / "bench.jsonl";
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
         mBytes = WriteJsonlFixture(mLogPath, LINE_COUNT);
         QVERIFY(mBytes > 0);
     }

@@ -39,8 +39,7 @@ LogModel::LogModel(QObject *parent, std::size_t pendingCapacity)
     : QAbstractTableModel{parent}
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
-    // `sourceStatusChanged` crosses the worker→GUI thread boundary via
-    // queued invocation; Qt refuses to queue unregistered types.
+    // Required for queued worker→GUI delivery.
     qRegisterMetaType<loglib::SourceStatus>("loglib::SourceStatus");
 
     mSink = new QtStreamingLogSink(this, this, pendingCapacity);
@@ -49,13 +48,8 @@ LogModel::LogModel(QObject *parent, std::size_t pendingCapacity)
 
 LogModel::~LogModel()
 {
-    // Mandatory teardown order:
-    //   1. Producer `Stop()` so any blocking Read/WaitForBytes returns.
-    //   2. Sink `RequestStop()` trips the parser's stop token.
-    //   3. Join the worker so the `LineSource` outlives every
-    //      in-flight parser call.
-    //   4. `DropPendingBatches()` bumps the generation so drain-phase
-    //      queued lambdas short-circuit.
+    // Teardown order: producer stop → sink stop → join worker →
+    // bump generation so any leftover queued lambdas short-circuit.
     if (loglib::BytesProducer *producer = ActiveProducer(); producer != nullptr)
     {
         producer->Stop();
@@ -66,8 +60,7 @@ LogModel::~LogModel()
     }
     if (mStreamingWatcher)
     {
-        // GUI-thread only; non-GUI callers would deadlock on a queued
-        // `OnFinished` that needs the event loop.
+        // GUI-thread only; queued `OnFinished` would deadlock otherwise.
         Q_ASSERT(QThread::currentThread() == thread());
         mStreamingWatcher->waitForFinished();
     }
@@ -89,52 +82,39 @@ void LogModel::StopAndKeepRows()
 
 void LogModel::TeardownStreamingSessionInternal(bool resetTable)
 {
-    // `mStreamingActive` is the GUI-thread source of truth for "still
-    // streaming"; the watcher's `isRunning()` flips off before the
-    // queued `OnFinished` reaches the GUI thread.
+    // GUI-thread source of truth: the watcher's `isRunning()` flips off
+    // before the queued `OnFinished` reaches the GUI thread.
     const bool wasStreaming = mStreamingActive;
     mStreamingActive = false;
 
-    // 1. Release I/O so a worker parked on Read/WaitForBytes returns.
     if (loglib::BytesProducer *producer = ActiveProducer(); producer != nullptr)
     {
         producer->Stop();
     }
-    // 2. Cooperative parser stop (separate from the I/O stop above).
     if (mSink)
     {
         mSink->RequestStop();
     }
-    // 3. Join the worker before tearing LogTable/LogFile down.
     if (mStreamingWatcher)
     {
         Q_ASSERT(QThread::currentThread() == thread());
         mStreamingWatcher->waitForFinished();
     }
 
-    // 3a. StopAndKeepRows only: drain queued sink events so drain-phase
-    // OnBatch/OnFinished lambdas land their rows under the still-valid
-    // generation. `Reset()` skips this -- the table is wiped below and
-    // a drain there would emit spurious signals against soon-to-be-
-    // reset state. After the drain, `mSink->IsActive()` flips to false
-    // iff `OnFinished` ran (which itself emits `streamingFinished`);
-    // use that to suppress the compensating emit below.
+    // StopAndKeepRows: drain queued sink events under the still-valid
+    // generation so straggler batches land. `Reset()` skips this --
+    // the table is wiped below. `IsActive()` flips false iff
+    // `OnFinished` ran (and already emitted `streamingFinished`).
     bool finishedAlreadyEmitted = false;
     if (!resetTable && mSink && mSink->IsActive())
     {
         QCoreApplication::sendPostedEvents(mSink, 0);
-        // Defensive backstop: if the worker enqueued batches into the
-        // bounded queue but exited before reaching the lazy
-        // `mDrainScheduled` post, `sendPostedEvents` finds nothing to
-        // run. Drain explicitly so those rows still land in the model.
+        // Backstop for batches enqueued before the worker exited.
         mSink->DrainNow();
         finishedAlreadyEmitted = !mSink->IsActive();
     }
 
-    // 3b. Flush already-parsed paused-buffer rows into the visible
-    // model so Stop never silently discards them. On the `Reset()` path
-    // these are wiped by the reset below; observers still see a final
-    // `lineCountChanged` before the reset-to-zero.
+    // Flush paused-buffer rows so Stop never silently discards them.
     if (mSink)
     {
         if (auto pending = mSink->TakePausedBuffer())
@@ -143,8 +123,6 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         }
     }
 
-    // 4. Bump generation after join so any leftover drain-phase
-    // lambdas short-circuit instead of running against the reset model.
     if (mSink)
     {
         mSink->DropPendingBatches();
@@ -165,10 +143,9 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         emit errorCountChanged(0);
     }
 
-    // The worker's queued `OnFinished(true)` is now generation-stale;
-    // emit a compensating `streamingFinished` so UI gating reopens.
-    // `finishedAlreadyEmitted` dedupes against the StopAndKeepRows
-    // drain so observers see exactly one terminal signal.
+    // Compensate for the worker's now generation-stale `OnFinished`
+    // so UI gating reopens. `finishedAlreadyEmitted` dedupes the
+    // StopAndKeepRows drain path.
     if (wasStreaming && !finishedAlreadyEmitted)
     {
         emit streamingFinished(StreamingResult::Cancelled);
@@ -179,9 +156,8 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
 {
     beginResetModel();
 
-    // FileLineSource fast path: pre-reserve per-line offsets so per-batch
-    // inserts stay amortised O(1). ~100 bytes/line matches the benchmark
-    // fixture. The hint is a no-op for stream sources.
+    // FileLineSource fast path: pre-reserve per-line offsets to keep
+    // per-batch inserts amortised O(1). No-op for stream sources.
     constexpr size_t BYTES_PER_LINE_RESERVE_HINT = 100;
     std::optional<size_t> reserveCount;
     if (auto *fileSource = dynamic_cast<loglib::FileLineSource *>(source.get()); fileSource != nullptr)
@@ -199,13 +175,8 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     mStreamingErrors.clear();
     mLastReportedShutdownDropCount = 0;
 
-    // Every new session starts unbounded. The live-tail entry point
-    // re-applies its retention cap after returning from here; static
-    // paths (`BeginStreaming(FileLineSource, ...)`, `AppendStreaming`)
-    // leave the cap at 0 so `AppendBatch`'s FIFO-evict logic stays
-    // dormant for finite parses. Without this reset a prior stream
-    // session's cap would leak into a subsequent static open and
-    // silently discard rows past the cap.
+    // Every new session starts unbounded. Live-tail re-applies its
+    // retention cap after returning; static paths leave it at 0.
     mRetentionCap = 0;
     if (mSink)
     {
@@ -297,15 +268,13 @@ loglib::StopToken LogModel::AppendStreaming(
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    // Reserve before splicing the source in. ~100 bytes/line matches
-    // the benchmark fixture and keeps per-batch offset inserts O(1).
+    // Reserve before splicing in to keep per-batch offset inserts O(1).
     const size_t reserveCount = source->File().Size() / 100;
     mLogTable.AppendStreaming(std::move(source));
     mLogTable.ReserveLineOffsets(reserveCount);
 
     // Re-arm the sink for the new worker without resetting counters or
-    // wiping rows. `Arm()` bumps the generation so straggler events
-    // from the previous file's parser short-circuit.
+    // wiping rows; `Arm()` bumps the generation.
     const loglib::StopToken stopToken = mSink->Arm();
     mStreamingActive = true;
 
@@ -336,19 +305,12 @@ loglib::StopToken LogModel::BeginStreaming(
     BeginStreamingShared(std::move(source));
 
     // Arm the sink + apply retention BEFORE wiring producer callbacks
-    // so a synchronous `SetStatusCallback` replay (TCP/UDP fire the
-    // current status in-line) lands on a fully-initialised model and
-    // sink. The GUI hop itself is queued so synchronous replay is
-    // already deferred, but keeping the ordering explicit makes the
-    // code resilient to future producers that might fire status from
-    // their worker thread before the model has set `mStreamingActive`.
+    // so a synchronous status replay lands on a fully-initialised model.
     const loglib::StopToken stopToken = mSink->Arm();
     options.stopToken = stopToken;
 
-    // The live-tail entry point is never unbounded. `BeginStreamingShared`
-    // just zeroed the cap (fresh-session baseline), so load the user's
-    // configured retention from `StreamingControl` here -- falling back
-    // to `DEFAULT_RETENTION_LINES` only when nothing sensible is on disk.
+    // Live-tail is never unbounded: load the user's retention from
+    // `StreamingControl` (fallback to `DEFAULT_RETENTION_LINES`).
     size_t cap = StreamingControl::RetentionLines();
     if (cap == 0)
     {
@@ -357,12 +319,9 @@ loglib::StopToken LogModel::BeginStreaming(
     mRetentionCap = cap;
     mSink->SetRetentionCap(mRetentionCap);
 
-    // Subscribe to the producer's rotation / status hooks now that the
-    // model state is live. The callbacks fire from the producer's
-    // worker thread (or, for the immediate `SetStatusCallback` replay,
-    // synchronously from this thread); re-emit via a queued connection
-    // so the GUI receives them on the model's thread. `QPointer` makes
-    // destruction mid-hop a graceful no-op.
+    // Subscribe to producer rotation/status hooks. Callbacks fire from
+    // the producer thread; re-emit queued so the GUI sees them on the
+    // model's thread. `QPointer` handles destruction mid-hop.
     const QPointer<LogModel> self(this);
     if (loglib::BytesProducer *producer = streamSourcePtr->Producer(); producer != nullptr)
     {
@@ -426,10 +385,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         batch.errors.clear();
     }
 
-    // Giant-batch collapse: when the batch alone exceeds the cap, drop
-    // its head before it lands in `LogTable` so per-batch eviction
-    // stays O(cap). Static-file sessions leave `mRetentionCap == 0`, so
-    // finite parses never trigger this branch.
+    // Giant-batch collapse: drop the head before it lands in `LogTable`
+    // so per-batch eviction stays O(cap). Skipped when cap == 0.
     if (mRetentionCap != 0 && batch.lines.size() > mRetentionCap)
     {
         const size_t toDrop = batch.lines.size() - mRetentionCap;
@@ -440,16 +397,15 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     const int oldRowCount = static_cast<int>(mLogTable.RowCount());
     const int oldColumnCount = static_cast<int>(mLogTable.ColumnCount());
 
-    // Qt's begin-before-mutate contract: predict the post-mutation
-    // counts, fire `beginInsert*`, then commit. Columns first so
-    // headers are live when inserted rows query `data()`.
+    // Qt's begin-before-mutate contract: predict counts, fire
+    // `beginInsert*`, then commit. Columns first so headers are live
+    // when inserted rows query `data()`.
     const auto preview = mLogTable.PreviewAppend(batch);
     const int newColumnCount = static_cast<int>(preview.newColumnCount);
     int newRowCount = static_cast<int>(preview.newRowCount);
 
-    // FIFO eviction: drop the oldest rows before inserting the new
-    // batch so the visible model stays within the cap. Order is
-    // remove → insert.
+    // FIFO eviction: drop oldest rows before inserting the new batch
+    // (remove → insert).
     int dropCount = 0;
     if (mRetentionCap != 0 && newRowCount > 0 && std::cmp_greater(newRowCount, mRetentionCap))
     {
@@ -478,7 +434,48 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
+    // Snapshot pre-batch dict sizes for active enum columns. If a batch
+    // grows any, emit `enumColumnsChanged` so `MainWindow` rebuilds the
+    // rules and `EnumFilterRule`'s bitset stays current.
+    std::vector<std::pair<loglib::KeyId, uint16_t>> enumDictSizesBefore;
+    {
+        const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+        const auto &keysBefore = mLogTable.Keys();
+        const auto &registryBefore = mLogTable.EnumDictionaries();
+        for (const auto &column : columnsBefore)
+        {
+            if (column.type != loglib::LogConfiguration::Type::Enumeration || column.keys.empty())
+            {
+                continue;
+            }
+            const loglib::KeyId kid = keysBefore.Find(column.keys.front());
+            if (kid == loglib::INVALID_KEY_ID)
+            {
+                continue;
+            }
+            if (const loglib::EnumDictionary *dict = registryBefore.Find(kid); dict != nullptr)
+            {
+                enumDictSizesBefore.emplace_back(kid, dict->Size());
+            }
+        }
+    }
+
     mLogTable.AppendBatch(std::move(batch));
+
+    bool enumDictionariesGrew = false;
+    if (!enumDictSizesBefore.empty())
+    {
+        const auto &registryAfter = mLogTable.EnumDictionaries();
+        for (const auto &[kid, sizeBefore] : enumDictSizesBefore)
+        {
+            const loglib::EnumDictionary *dict = registryAfter.Find(kid);
+            if (dict != nullptr && dict->Size() > sizeBefore)
+            {
+                enumDictionariesGrew = true;
+                break;
+            }
+        }
+    }
 
     if (rowsGrew)
     {
@@ -489,36 +486,59 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
+    bool emittedEnumColumnsChanged = false;
     if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
     {
         const int firstColumn = static_cast<int>(range->first);
         const int lastColumn = static_cast<int>(range->second);
+        // Include `EnumValueRole`: enum-promotion back-fill produces
+        // fresh `DictRef` slots even when the display string is unchanged.
         emit dataChanged(
             index(0, firstColumn),
             index(newRowCount - 1, lastColumn),
-            {Qt::DisplayRole, static_cast<int>(LogModelItemDataRole::SortRole)}
+            {Qt::DisplayRole,
+             static_cast<int>(LogModelItemDataRole::SortRole),
+             static_cast<int>(LogModelItemDataRole::EnumValueRole)}
         );
+
+        // Notify if any back-filled column is now an enumeration.
+        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        for (int columnIndex = firstColumn; columnIndex <= lastColumn; ++columnIndex)
+        {
+            if (columnIndex < 0 || std::cmp_greater_equal(columnIndex, columns.size()))
+            {
+                continue;
+            }
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Enumeration)
+            {
+                emit enumColumnsChanged();
+                emittedEnumColumnsChanged = true;
+                break;
+            }
+        }
     }
 
-    // Match the synchronous-parse path's `LogConfigurationManager::Update`
-    // semantics: bubble each freshly appended `Type::time` column to
-    // position 0 so the latest-discovered timestamp ends up first. The
-    // appends above already fired `beginInsertColumns`; the reorder is
-    // a separate `beginMoveColumns` step.
+    // Dictionaries that grew without a promotion still need a refresh
+    // so `EnumFilterRule`'s bitset covers any newly-interned id.
+    if (!emittedEnumColumnsChanged && enumDictionariesGrew)
+    {
+        emit enumColumnsChanged();
+    }
+
+    // Match `LogConfigurationManager::Update`: bubble each freshly
+    // appended `Type::Time` column to position 0.
     if (columnsGrew)
     {
         const auto &columns = mLogTable.Configuration().Configuration().columns;
         std::vector<int> newTimestampColumnIndices;
         for (int columnIndex = oldColumnCount; columnIndex < newColumnCount; ++columnIndex)
         {
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::time)
+            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Time)
             {
                 newTimestampColumnIndices.push_back(columnIndex);
             }
         }
-        // Process low-to-high: each move targets index 0, and because
-        // every source index is > 0 the unprocessed (higher) indices do
-        // not shift.
+        // Process low-to-high so unprocessed (higher) indices don't shift.
         for (const int srcIndex : newTimestampColumnIndices)
         {
             if (srcIndex == 0)
@@ -544,7 +564,20 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 void LogModel::EndStreaming(bool cancelled)
 {
     mStreamingActive = false;
-    // The sink's bool only distinguishes clean finish vs. stop_token;
+
+    // Graceful end-of-stream: run the permissive auto-detection sweep so
+    // small/short streams still get enum filter chips. Cancellation
+    // skips the sweep. Emit `enumColumnsChanged` only when something
+    // actually promoted, before `streamingFinished` so the picker has
+    // a stable dictionary by the time the UI re-enables editing.
+    if (!cancelled)
+    {
+        if (mLogTable.FinalizeAutoDetection())
+        {
+            emit enumColumnsChanged();
+        }
+    }
+
     // `StreamingResult::Failed` is wired up at the worker boundary.
     emit streamingFinished(cancelled ? StreamingResult::Cancelled : StreamingResult::Success);
 }
@@ -602,7 +635,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
                 else if constexpr (std::is_same_v<T, std::string_view>)
                 {
-                    // Materialise: the view aliases the mmap and may outlive it via QVariant.
+                    // Materialise: view aliases mmap and may outlive it.
                     return QVariant(ConvertToSingleLineCompactQString(std::string(arg)));
                 }
                 else if constexpr (std::is_same_v<T, int64_t>)
@@ -635,23 +668,28 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
     if (role == LogModelItemDataRole::InsertionOrderRole)
     {
-        // Bare source row index, column-independent (see the role's
-        // declaration). Historically `StreamOrderProxyModel` sorted by
-        // it for newest-first mode; the role is retained for tests that
-        // need the source-side row index, and for the `LogFilterModel`
-        // sort tie-break.
         return {index.row()};
     }
     if (role == LogModelItemDataRole::CopyLine)
     {
-        // The `LineSource *` on each `LogLine` disambiguates between
-        // the mmap arena (file path) and per-line owned bytes
-        // (live-tail path).
+        // `LineSource *` distinguishes mmap arena vs. owned bytes.
         const auto row = static_cast<size_t>(index.row());
         const auto &line = mLogTable.Data().Lines()[row];
         const loglib::LineSource *source = line.Source();
         const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
         return {QString::fromStdString(raw)};
+    }
+    if (role == LogModelItemDataRole::EnumValueRole)
+    {
+        // `qint32` for `DictRef` slots; invalid signals `EnumFilterRule`
+        // to use the string fallback path.
+        const auto enumId =
+            mLogTable.GetEnumValueId(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
+        if (!enumId.has_value())
+        {
+            return {};
+        }
+        return QVariant::fromValue<qint32>(static_cast<qint32>(*enumId));
     }
 
     return {};
@@ -727,14 +765,10 @@ QtStreamingLogSink *LogModel::Sink()
 
 const std::vector<std::string> &LogModel::StreamingErrors() const
 {
-    // The sink may have dropped batches when `RequestStop` woke a
-    // worker that was blocked on a full queue (back-pressure).
-    // Surface those as a synthetic error string so the post-session
-    // dialog tells the user the on-screen rows are not the complete
-    // parse output. We materialise lazily into `mStreamingErrors` on
-    // each call so the count keeps reflecting the latest sink state
-    // without polluting `mErrorCount` (which counts per-line parse
-    // errors, not transport-layer drops).
+    // Surface back-pressure shutdown drops as synthetic error strings
+    // so the post-session dialog reports incomplete output. Materialised
+    // lazily here so `mErrorCount` (per-line parse errors only) stays
+    // unaffected.
     if (mSink != nullptr)
     {
         const std::size_t dropped = mSink->BatchesDroppedDuringShutdown();
@@ -774,8 +808,8 @@ void LogModel::SetRetentionCap(size_t cap)
 
     if (!paused)
     {
-        // Running: trim visible rows down to the new cap. Raising has
-        // no immediate effect (already-evicted rows cannot be restored).
+        // Running: trim visible rows down to the new cap. Raising the
+        // cap has no immediate effect.
         if (visible > cap)
         {
             const size_t dropCount = visible - cap;
@@ -787,8 +821,8 @@ void LogModel::SetRetentionCap(size_t cap)
         return;
     }
 
-    // Paused: leave visible rows alone, trim the paused buffer instead
-    // so visible + buffered <= cap.
+    // Paused: leave visible rows alone; trim the paused buffer so
+    // visible + buffered <= cap.
     const size_t maxBuffered = (visible >= cap) ? 0 : (cap - visible);
     if (mSink)
     {

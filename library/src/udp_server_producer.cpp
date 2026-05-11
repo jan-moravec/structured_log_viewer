@@ -184,8 +184,9 @@ void UdpServerProducerImpl::WaitForBytes(std::chrono::milliseconds timeout)
     });
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape): `asio::io_context::stop()` may throw in rare error paths; `noexcept`
-// matches producer contract; catch block is the safety net.
+// `asio::io_context::stop()` may throw in rare error paths; `noexcept` matches
+// producer contract; the catch block below is the safety net.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 void UdpServerProducerImpl::Stop() noexcept
 {
     if (mStopRequested.exchange(true, std::memory_order_acq_rel))

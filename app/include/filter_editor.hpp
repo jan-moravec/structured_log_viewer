@@ -10,9 +10,14 @@
 #include <QDateTimeEdit>
 #include <QDialog>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QPushButton>
+#include <QSortFilterProxyModel>
 #include <QStackedWidget>
+#include <QStandardItemModel>
+#include <QStringList>
 #include <QTime>
 #include <QTimeEdit>
 #include <QVBoxLayout>
@@ -26,14 +31,45 @@ public:
 
     void Load(int row, const QString &filterString, int matchType);
     void Load(int row, qint64 begin, qint64 end);
+    /// Preselect @p selectedValues; values absent from the current
+    /// dictionary are skipped.
+    void Load(int row, const QStringList &selectedValues);
 
     int GetRowToFilter() const;
     QString GetStringToFilter() const;
     int GetMatchType() const;
+    QStringList GetSelectedEnumValues() const;
+
+    /// Test-only accessors for the enum-picker page widgets. Tests cannot
+    /// rely on `findChildren<...>()` to locate them: on the Linux runner
+    /// with Qt 6.8 + offscreen QPA, QObject-tree traversal returns empty
+    /// for QDialog descendants the same way it does for `QAction`s in the
+    /// `MainWindow` `.ui` (see `MainWindow::FindUiAction`).
+    [[nodiscard]] QListView *EnumPickerView() const
+    {
+        return mEnumValuesView;
+    }
+    [[nodiscard]] QSortFilterProxyModel *EnumPickerProxy() const
+    {
+        return mEnumValuesProxy;
+    }
+    [[nodiscard]] QLineEdit *EnumSearchEdit() const
+    {
+        return mEnumSearchEdit;
+    }
+    [[nodiscard]] QLabel *EnumEmptyPlaceholder() const
+    {
+        return mEnumEmptyPlaceholder;
+    }
+    [[nodiscard]] QPushButton *OkButton() const
+    {
+        return mOkButton;
+    }
 
 signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
+    void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
 
 private:
     const LogModel &mModel;
@@ -49,11 +85,29 @@ private:
     QDateEdit *mEndDateEdit;
     QTimeEdit *mEndTimeEdit;
 
+    /// Multi-select picker for `Type::Enumeration` columns. Items are
+    /// alphabetised; Select/Clear All operate on visible rows only.
+    QListView *mEnumValuesView;
+    QStandardItemModel *mEnumValuesModel;
+    QSortFilterProxyModel *mEnumValuesProxy;
+    QLineEdit *mEnumSearchEdit;
+    QPushButton *mEnumSelectAllButton;
+    QPushButton *mEnumClearAllButton;
+    QLabel *mEnumSelectionCount;
+    /// Shown when the dictionary is empty; OK stays disabled while visible.
+    QLabel *mEnumEmptyPlaceholder;
+
     QPushButton *mOkButton;
     QPushButton *mCancelButton;
 
     void SetupLayout();
     void SetBeginEnd(qint64 begin, qint64 end);
+    /// Repopulate the enum picker from the column's current dictionary.
+    void PopulateEnumValues(int columnIndex);
+    /// Refresh the "N of M selected" label and OK gating.
+    void UpdateEnumSelectionCount();
+    /// Drop the red warning border from the empty-submit guard.
+    void ClearWarningStyles();
     static QDateTime ConvertToQDateTime(qint64 timestamp);
     static qint64 ConvertToTimeStamp(const QDate &date, const QTime &time);
 

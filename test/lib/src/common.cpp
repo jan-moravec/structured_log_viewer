@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 

@@ -651,8 +651,8 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     // each ≈ 1 MB, large enough to split.
     std::vector<TestJsonLogFile::Line> logs;
     logs.reserve(5'000);
-    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp): deterministic fixture for stable
-    // assertions.
+    // Deterministic fixture for stable assertions.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937 rng(0xC0FFEE);
     std::uniform_int_distribution<int> levelDist(0, 4);
     std::uniform_int_distribution<int> intDist(-1'000, 1'000);
@@ -887,11 +887,11 @@ std::string FormatIsoTimestamp(std::chrono::system_clock::time_point tp)
 } // namespace
 
 TEST_CASE(
-    "Stage B promotes Type::time column values to TimeStamp inline when configuration is supplied",
+    "Stage B promotes Type::Time column values to TimeStamp inline when configuration is supplied",
     "[json_parser][stage_b_timestamps]"
 )
 {
-    // When `ParserOptions::configuration` describes a `Type::time` column,
+    // When `ParserOptions::configuration` describes a `Type::Time` column,
     // every parsed line whose value at the column's key is a parseable
     // ISO-8601 string must come out of `JsonParser::Parse` already promoted
     // to `TimeStamp`. The legacy whole-data `ParseTimestamps` pass is thus
@@ -929,7 +929,7 @@ TEST_CASE(
     LogConfiguration::Column timestampColumn;
     timestampColumn.header = "timestamp";
     timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.type = LogConfiguration::Type::Time;
     timestampColumn.parseFormats = {"%FT%T"};
     configuration->columns.push_back(std::move(timestampColumn));
 
@@ -988,7 +988,7 @@ TEST_CASE(
     LogConfiguration::Column timestampColumn;
     timestampColumn.header = "timestamp";
     timestampColumn.keys = {"timestamp"};
-    timestampColumn.type = LogConfiguration::Type::time;
+    timestampColumn.type = LogConfiguration::Type::Time;
     timestampColumn.parseFormats = {"%FT%T"};
     configuration->columns.push_back(std::move(timestampColumn));
 

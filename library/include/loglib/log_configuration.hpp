@@ -10,18 +10,34 @@
 namespace loglib
 {
 
-// Forward-declared to avoid pulling the full `log_data.hpp` chain
-// (`log_file.hpp` / `key_index.hpp` / `log_line.hpp` and their robin_map
-// instantiations) into every consumer of this header. TUs that use
-// `LogData` directly include `log_data.hpp` themselves.
+// Forward-declared so consumers don't pull in the full `log_data.hpp` chain.
 class LogData;
 
 struct LogConfiguration
 {
+    /// Per-column rendering / detection type. `Unknown` is the only
+    /// state the auto-detector scans; every other variant is terminal.
+    /// JSON wire format keeps the original lowerCamelCase keys
+    /// (`"unknown"`, `"any"`, ...); see
+    /// `internal/log_configuration_glaze_meta.hpp`.
+    ///   - `Unknown`     - new keys; auto-detector candidate.
+    ///   - `Any`         - mixed / unclassifiable.
+    ///   - `String`      - too varied to enumerate.
+    ///   - `Integer`     - only Int64/UInt64 observed.
+    ///   - `Floating`    - only Double observed.
+    ///   - `Number`      - mix of integer and floating.
+    ///   - `Time`        - timestamp column.
+    ///   - `Enumeration` - small fixed vocabulary stored as `DictRef`.
     enum class Type
     {
-        any,
-        time
+        Unknown,
+        Any,
+        String,
+        Integer,
+        Floating,
+        Number,
+        Time,
+        Enumeration
     };
 
     struct Column
@@ -29,14 +45,10 @@ struct LogConfiguration
         std::string header;
         std::vector<std::string> keys;
         std::string printFormat;
-        /// Per-cell rendering type. `Type::any` renders via `printFormat`;
-        /// `Type::time` pre-parses into a `TimeStamp` for numeric sort/filter.
-        ///
-        /// **`Type::time` promotion is destructive**: Stage B replaces the
-        /// per-line `LogValue` with the parsed `TimeStamp` in place, and the
-        /// streaming path auto-flips `Type::any` → `Type::time` for keys
-        /// matching the timestamp heuristic. Only `LogTable::Reset()` reverts.
-        Type type = Type::any;
+        /// New keys default to `Type::Unknown`. Time promotion is
+        /// destructive (only `Reset()` reverts); enum promotion is
+        /// reversible via demote-to-string on overflow.
+        Type type = Type::Unknown;
         std::vector<std::string> parseFormats;
     };
 
@@ -44,16 +56,19 @@ struct LogConfiguration
     {
         enum class Type
         {
-            string,
-            time
+            String,
+            Time,
+            /// Multi-select over an enum column. Persisted as strings,
+            /// resolved to an id bitset at rule construction.
+            Enumeration
         };
 
         enum class Match
         {
-            exactly,
-            contains,
-            regularExpression,
-            wildcard
+            Exactly,
+            Contains,
+            RegularExpression,
+            Wildcard
         };
 
         Type type;
@@ -62,43 +77,40 @@ struct LogConfiguration
         std::optional<Match> matchType;
         std::optional<int64_t> filterBegin;
         std::optional<int64_t> filterEnd;
+        /// Selected values for `Type::Enumeration`. Empty otherwise.
+        std::vector<std::string> filterValues;
     };
 
     std::vector<Column> columns;
     std::vector<LogFilter> filters;
 };
 
-/// Manages the log configuration: loading, saving, and updating from
-/// observed data.
+/// Loads, saves, and updates a `LogConfiguration` from observed data.
 class LogConfigurationManager
 {
 public:
     LogConfigurationManager() = default;
 
-    /// Throws `std::runtime_error` if the file cannot be opened.
+    /// Throws `std::runtime_error` on open failure.
     void Load(const std::filesystem::path &path);
     void Save(const std::filesystem::path &path) const;
 
-    /// Rebuilds the configuration from @p logData. Not safe to call mid-stream.
+    /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);
 
-    /// Append-only extension used by the streaming path: appends keys not
-    /// already configured, auto-promoting timestamp-named keys (`timestamp`,
-    /// `time`, `ts`, `@timestamp`, …) to `Type::time`. Existing column
-    /// indices stay put. \see `LogConfiguration::Column::type` for the
-    /// destructive-promotion contract.
+    /// Append-only: adds keys not already configured, auto-promoting
+    /// timestamp-named ones. Existing column indices stay put.
     void AppendKeys(const std::vector<std::string> &newKeys);
 
     /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
-    /// Used by `LogTable::PreviewAppend` for Qt's begin-before-mutate contract.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
-    /// Moves the column at @p srcIndex to @p destIndex, shifting the
-    /// intermediate columns by one slot. Used by the streaming path to
-    /// promote freshly-discovered timestamp columns to the front (matching
-    /// the `Update` synchronous-parse behaviour) once Qt has been informed
-    /// via `beginMoveColumns`. Indices must be in `[0, columns.size())`.
+    /// Move the column at @p srcIndex to @p destIndex.
     void MoveColumn(size_t srcIndex, size_t destIndex);
+
+    /// Flip the type of the column at @p columnIndex; caller back-fills
+    /// any row data. No-op out of range.
+    void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
     const LogConfiguration &Configuration() const;
 
@@ -108,7 +120,7 @@ private:
 
     LogConfiguration mConfiguration;
 
-    /// Cached "every key referenced by any column". Every mutator must flip
+    /// Cached "every key referenced by any column"; mutators flip
     /// `mCacheStale`.
     mutable std::unordered_set<std::string> mKeysInColumns;
     mutable bool mCacheStale = true;

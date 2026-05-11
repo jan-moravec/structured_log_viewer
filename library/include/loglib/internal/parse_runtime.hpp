@@ -46,7 +46,7 @@ struct WorkerScratchBase
         }
     }
 
-    /// Promote `Type::time` columns of @p line in place. @p ownedArena
+    /// Promote `Type::Time` columns of @p line in place. @p ownedArena
     /// is the buffer backing any `OwnedString` payloads on @p line:
     /// the TBB pipeline passes its per-batch staging buffer; the
     /// live-tail loop passes empty (resolution falls through to the

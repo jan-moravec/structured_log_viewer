@@ -1,5 +1,6 @@
 #include "loglib/internal/compact_log_value.hpp"
 
+#include "loglib/enum_dictionary.hpp"
 #include "loglib/line_source.hpp"
 #include "loglib/log_line.hpp"
 
@@ -36,6 +37,15 @@ CompactLogValue CompactLogValue::MakeOwnedString(uint64_t offset, uint32_t lengt
     v.payload = offset;
     v.aux = length;
     v.tag = CompactTag::OwnedString;
+    return v;
+}
+
+CompactLogValue CompactLogValue::MakeDictRef(EnumValueId id) noexcept
+{
+    CompactLogValue v;
+    v.payload = static_cast<uint64_t>(id);
+    v.aux = 0;
+    v.tag = CompactTag::DictRef;
     return v;
 }
 
@@ -79,7 +89,7 @@ CompactLogValue CompactLogValue::MakeTimestamp(TimeStamp value) noexcept
     return v;
 }
 
-LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) const
+LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId, KeyId keyId) const
 {
     switch (tag)
     {
@@ -105,10 +115,29 @@ LogValue CompactLogValue::Materialise(const LineSource *source, size_t lineId) c
             return LogValue{std::string{}};
         }
         const std::string_view bytes = source->ResolveOwnedBytes(payload, aux, lineId);
-        // Materialise as `std::string` so the caller owns the bytes — a
-        // stream source's per-line arena can be evicted later, but a
-        // returned `std::string` is independent of source lifetime.
+        // Copy into `std::string` so the caller owns the bytes (stream
+        // arenas may be evicted later).
         return LogValue{std::string(bytes)};
+    }
+    case CompactTag::DictRef:
+    {
+        if (source == nullptr || keyId == INVALID_KEY_ID)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const EnumDictionaryRegistry *registry = source->EnumDictionaries();
+        if (registry == nullptr)
+        {
+            return LogValue{std::monostate{}};
+        }
+        const EnumDictionary *dict = registry->Find(keyId);
+        if (dict == nullptr)
+        {
+            return LogValue{std::monostate{}};
+        }
+        // Dictionary bytes are stable for its lifetime.
+        const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(payload));
+        return LogValue{bytes};
     }
     case CompactTag::Int64:
         return LogValue{static_cast<int64_t>(payload)};
@@ -137,10 +166,8 @@ CompactLogValue ToCompactLogValue(
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
             {
-                // Prefer the mmap-slice fast path when the view points
-                // inside the supplied file's bytes; otherwise it would
-                // dangle as soon as the caller's source buffer goes away,
-                // so copy into the arena.
+                // MmapSlice when the view aliases the file; otherwise copy
+                // into the arena to avoid dangling.
                 if (fileBegin != nullptr && alt.data() >= fileBegin && alt.data() + alt.size() <= fileBegin + fileSize)
                 {
                     const auto offset = static_cast<uint64_t>(alt.data() - fileBegin);
@@ -204,33 +231,18 @@ void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t 
 namespace
 {
 
-/// Allocator used by `CompactLineFields`. The pair type is trivially
-/// copyable and trivially destructible (KeyId is `uint32_t`,
-/// CompactLogValue is a POD), so we can use raw `operator new`/`delete`
-/// to skip the per-element ctor/dtor that `std::vector` would run.
+/// `CompactLineFields` uses raw `::operator new` to avoid per-element
+/// ctor/dtor work; the pair must therefore be trivially destructible and
+/// trivially copy-constructible.
 constexpr size_t PAIR_BYTES = sizeof(std::pair<KeyId, CompactLogValue>);
 
-// `CompactLineFields` allocates with raw `::operator new` and frees
-// with raw `::operator delete`, so the value type must be trivially
-// destructible (no per-slot dtor pass). `std::pair`'s trivial-copyable
-// status differs across stdlibs — libstdc++ defaults its copy
-// assignment when both members are trivially copyable, libc++ does not
-// — so we deliberately do not assert that here. The typed
-// `std::uninitialized_copy_n` / `std::copy_n` / `std::copy_backward`
-// calls below are correct regardless and lower to the same memcpy /
-// memmove the previous direct-`memcpy` code emitted under -O2 (without
-// tripping -Wclass-memaccess on libstdc++).
 static_assert(
     std::is_trivially_destructible_v<std::pair<KeyId, CompactLogValue>>,
-    "CompactLineFields uses raw operator new/delete; slot pairs must have a trivial destructor"
+    "CompactLineFields slots must be trivially destructible"
 );
-// Trivial copy construction is what makes `std::construct_at` collapse
-// into a memcpy under optimisation. Without this, the `EmplaceBack` /
-// `Insert` paths below (which `construct_at` into raw bytes returned
-// by `::operator new`) would still be correct but unnecessarily costly.
 static_assert(
     std::is_trivially_copy_constructible_v<std::pair<KeyId, CompactLogValue>>,
-    "CompactLineFields::EmplaceBack constructs into raw memory; pair must be trivially copy-constructible"
+    "CompactLineFields slots must be trivially copy-constructible"
 );
 
 std::pair<KeyId, CompactLogValue> *AllocatePairs(uint32_t capacity)
@@ -253,8 +265,7 @@ void DeallocatePairs(std::pair<KeyId, CompactLogValue> *data) noexcept
 
 uint32_t GrowCapacity(uint32_t current, uint32_t needed) noexcept
 {
-    // Geometric growth (×1.5 rounded up). Matches `std::vector`'s
-    // amortised cost while keeping capacity tighter than ×2.
+    // ×1.5 geometric growth.
     uint32_t target = current == 0 ? 4U : current + (current / 2U) + 1U;
     target = std::max(target, needed);
     return target;
@@ -322,11 +333,7 @@ void CompactLineFields::AssignSorted(const value_type *values, uint32_t count)
     }
     if (count > 0)
     {
-        // When reusing the existing buffer the slots are previously-
-        // constructed (assigned by `EmplaceBack` / `Insert` / earlier
-        // `AssignSorted`); on a fresh allocation they are raw bytes.
-        // For trivially-copyable pairs the two operations collapse to
-        // the same memcpy under -O2.
+        // Reused buffer uses copy assignment; fresh uses uninitialized copy.
         if (reused)
         {
             std::copy_n(values, count, mData);
@@ -351,13 +358,7 @@ void CompactLineFields::EmplaceBack(KeyId key, CompactLogValue value)
     {
         Reserve(GrowCapacity(mCapacity, mSize + 1U));
     }
-    // Slot `mData[mSize]` is raw bytes (the buffer comes from
-    // `::operator new`, and `Reserve` only `uninitialized_copy_n`s the
-    // first `mSize` elements). Use `construct_at` so an object's
-    // lifetime is properly begun before we write to it -- assigning to
-    // a non-existent object would be UB even for trivially-copyable
-    // types. The static_assert above guarantees `construct_at` lowers
-    // to a memcpy under optimisation.
+    // Trailing slot is raw memory; `construct_at` begins object lifetime.
     std::construct_at(mData + mSize, key, value);
     ++mSize;
 }
@@ -370,12 +371,8 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
     }
     if (position < mSize)
     {
-        // Shift `[position, mSize)` one slot to the right. The slot at
-        // `mData + mSize` is raw memory, so first construct it from
-        // the last live element, then `copy_backward` the remainder
-        // (which is now an assignment into already-constructed slots,
-        // not a write to raw memory). The compiler lowers the whole
-        // sequence to memmove for trivially-copyable pairs.
+        // Shift `[position, mSize)` right by one; construct into the
+        // trailing raw slot first, then assign the rest.
         std::construct_at(mData + mSize, mData[mSize - 1]);
         if (position + 1 < mSize)
         {
@@ -385,7 +382,6 @@ void CompactLineFields::Insert(uint32_t position, KeyId key, CompactLogValue val
     }
     else
     {
-        // Append slot is raw memory; construct the new pair there.
         std::construct_at(mData + mSize, key, value);
     }
     ++mSize;

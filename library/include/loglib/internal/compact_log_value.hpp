@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loglib/enum_dictionary.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_value.hpp"
 
@@ -16,16 +17,14 @@ class LineSource;
 namespace loglib::internal
 {
 
-/// Discriminator for the 16-byte compact internal value representation.
-/// Mirrors today's `LogValue` `std::variant` alternatives, but stores
-/// strings as `(offset, length)` pairs resolved through the owning
-/// `LineSource` (file mmap, per-line stream arena, …) rather than as a
-/// 16-byte view or 32/40-byte `std::string`.
+/// Discriminator for `CompactLogValue`. Mirrors `LogValue`'s alternatives
+/// but stores strings as `(offset, length)` pairs.
 enum class CompactTag : uint8_t
 {
     Monostate = 0,
-    MmapSlice,   ///< payload = byte offset into `LineSource::ResolveMmapBytes`, aux = length
-    OwnedString, ///< payload = byte offset into `LineSource::ResolveOwnedBytes`, aux = length
+    MmapSlice,   ///< payload = offset into `ResolveMmapBytes`, aux = length
+    OwnedString, ///< payload = offset into `ResolveOwnedBytes`, aux = length
+    DictRef,     ///< payload = `EnumValueId` (`uint16_t`); resolved via `LineSource::EnumDictionaries`
     Int64,
     Uint64,
     Double,
@@ -33,12 +32,8 @@ enum class CompactTag : uint8_t
     Timestamp,
 };
 
-/// Internal-only 16-byte tagged union. Parsers and `LogLine` use it as the
-/// per-field storage type; the public `LogValue` variant is materialised
-/// only on `GetValue` / `IndexedValues` access.
-///
-/// Layout: 8-byte payload + 4-byte aux + 1-byte tag + 3 padding = 16 B.
-/// 64-bit `payload` keeps `>4 GB` files working (per-file byte offset).
+/// 16-byte tagged union (8 B payload + 4 B aux + 1 B tag + padding).
+/// Per-field storage; `LogValue` is materialised on demand.
 struct CompactLogValue
 {
     uint64_t payload = 0;
@@ -51,47 +46,37 @@ struct CompactLogValue
     static CompactLogValue MakeMonostate() noexcept;
     static CompactLogValue MakeMmapSlice(uint64_t offset, uint32_t length) noexcept;
     static CompactLogValue MakeOwnedString(uint64_t offset, uint32_t length) noexcept;
+    static CompactLogValue MakeDictRef(EnumValueId id) noexcept;
     static CompactLogValue MakeInt64(int64_t value) noexcept;
     static CompactLogValue MakeUint64(uint64_t value) noexcept;
     static CompactLogValue MakeDouble(double value) noexcept;
     static CompactLogValue MakeBool(bool value) noexcept;
     static CompactLogValue MakeTimestamp(TimeStamp value) noexcept;
 
-    /// Materialise into the public `LogValue` variant. @p source provides
-    /// the `MmapSlice` and `OwnedString` byte storage via
-    /// `LineSource::ResolveMmapBytes` / `ResolveOwnedBytes`; @p lineId
-    /// addresses the per-line arena for stream sources (file sources
-    /// ignore it). Passing `nullptr` source is safe and yields
-    /// `monostate` for the string tags.
-    LogValue Materialise(const LineSource *source, size_t lineId) const;
+    /// Materialise into a `LogValue`. For `DictRef`, pass `INVALID_KEY_ID`
+    /// to materialise as monostate. Null source is safe.
+    LogValue Materialise(const LineSource *source, size_t lineId, KeyId keyId = INVALID_KEY_ID) const;
 };
 
-static_assert(sizeof(CompactLogValue) == 16, "CompactLogValue must stay 16 bytes (Phase 1 RAM target)");
+/// Per-field storage size invariant. Growing `CompactLogValue` past this
+/// inflates every per-line allocation; the static_assert below is the
+/// enforcer.
+inline constexpr size_t COMPACT_LOG_VALUE_EXPECTED_BYTES = 16;
+static_assert(sizeof(CompactLogValue) == COMPACT_LOG_VALUE_EXPECTED_BYTES, "CompactLogValue must stay 16 bytes");
 
-/// Convert a public `LogValue` to a `CompactLogValue`. Owned strings
-/// (`std::string` alternative) are appended to @p ownedStringArena; the
-/// `OwnedString` payload is the offset of the just-appended bytes.
-/// `string_view` alternatives are stored as `MmapSlice` when @p fileBegin
-/// is non-null and the view points inside `[fileBegin, fileBegin + fileSize)`,
-/// otherwise they are copied into the arena (cold path; tests/SetValue).
+/// Convert a `LogValue` to a `CompactLogValue`. Strings inside
+/// `[fileBegin, fileBegin + fileSize)` become `MmapSlice`; others are
+/// copied into @p ownedStringArena.
 CompactLogValue ToCompactLogValue(
     const LogValue &value, std::string &ownedStringArena, const char *fileBegin = nullptr, size_t fileSize = 0
 );
 
-/// In-place add @p delta to every `OwnedString` payload in @p values.
-/// Used by `LogData::AppendBatch` and `BufferingSink::OnBatch` when they
-/// concatenate a per-batch owned-string arena into the canonical
-/// `LogFile::mOwnedStrings`.
+/// Add @p delta to every `OwnedString` payload in @p values.
 void RebaseOwnedStringOffsets(std::pair<KeyId, CompactLogValue> *values, size_t valueCount, uint64_t delta) noexcept;
 
-/// Per-line compact field storage: an exact-fit heap array of
-/// `(KeyId, CompactLogValue)` pairs sorted by `KeyId`. Used by `LogLine`
-/// in place of `std::vector` so that lines parsed from typical narrow
-/// rows (5–6 fields) don't carry the `reserve(16)` capacity waste.
-///
-/// Layout: pointer (8 B) + size (4 B) + capacity (4 B) = **16 B**, vs
-/// 24 B for `std::vector` on 64-bit MSVC. Capacity equals size after
-/// `Finalize`, so `OwnedMemoryBytes()` reports the exact heap byte cost.
+/// Per-line compact field storage: exact-fit heap array of `(KeyId,
+/// CompactLogValue)` pairs sorted by KeyId. Pointer+size+capacity = 16 B,
+/// avoiding `std::vector`'s reserve overhead on narrow rows.
 class CompactLineFields
 {
 public:
@@ -99,8 +84,7 @@ public:
 
     CompactLineFields() = default;
 
-    /// Allocates @p initialCapacity slots without constructing them; intended
-    /// for the parser hot path (`reserve`-style preallocation).
+    /// Allocates @p initialCapacity slots without constructing them.
     explicit CompactLineFields(uint32_t initialCapacity);
 
     CompactLineFields(const CompactLineFields &) = delete;
@@ -158,27 +142,23 @@ public:
     /// Grow capacity to at least @p capacity. No-op if already large enough.
     void Reserve(uint32_t capacity);
 
-    /// Replace contents with @p values. Reuses the existing buffer when
-    /// `mCapacity >= values.size()`, else reallocates exact-fit.
+    /// Replace contents with @p values; reuses the buffer when large
+    /// enough, else reallocates exact-fit.
     void AssignSorted(const value_type *values, uint32_t count);
     void AssignSorted(std::vector<value_type> &&values);
 
-    /// Append @p value at the end (caller-asserted to keep the array
-    /// sorted). Grows geometrically.
+    /// Append at the end; caller must keep the array sorted.
     void EmplaceBack(KeyId key, CompactLogValue value);
 
-    /// Insert @p value at @p position. Grows geometrically. O(N) shifts.
+    /// Insert at @p position; O(N) shifts.
     void Insert(uint32_t position, KeyId key, CompactLogValue value);
 
-    /// Replace the value at @p position with @p value. Caller must keep
-    /// the existing key id at that position.
+    /// Replace the value at @p position.
     void Set(uint32_t position, CompactLogValue value) noexcept;
 
-    /// Heap bytes owned by this storage (capacity, not size). Used by the
-    /// memory-footprint benchmark.
+    /// Heap bytes owned (benchmark-only).
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
-    /// Drop excess capacity. After call, `mCapacity == mSize`.
     void ShrinkToFit();
 
 private:
@@ -187,6 +167,10 @@ private:
     uint32_t mCapacity = 0;
 };
 
-static_assert(sizeof(CompactLineFields) == 16, "CompactLineFields must stay 16 bytes (Phase 2 RAM target)");
+/// `CompactLineFields` packs three pointer/size words; growing past this
+/// would inflate every per-line allocation and break the cache-friendly
+/// layout the parsers rely on. The static_assert below is the enforcer.
+inline constexpr size_t COMPACT_LINE_FIELDS_EXPECTED_BYTES = 16;
+static_assert(sizeof(CompactLineFields) == COMPACT_LINE_FIELDS_EXPECTED_BYTES, "CompactLineFields must stay 16 bytes");
 
 } // namespace loglib::internal

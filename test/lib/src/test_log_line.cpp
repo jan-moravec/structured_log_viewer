@@ -1,5 +1,7 @@
 #include "common.hpp"
 
+#include <loglib/enum_dictionary.hpp>
+#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_line.hpp>
 
@@ -162,9 +164,11 @@ TEST_CASE("AsStringView returns bytes for both string alternatives, nullopt for 
     const LogValue monoValue{std::monostate{}};
 
     REQUIRE(AsStringView(ownedValue).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(ownedValue) == owned);
 
     REQUIRE(AsStringView(viewValue).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(viewValue) == view);
 
     CHECK_FALSE(AsStringView(intValue).has_value());
@@ -261,12 +265,14 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     const LogValue slowView = line.GetValue(std::string("view-key"));
     REQUIRE(LogValueEquivalent(fastView, slowView));
     REQUIRE(AsStringView(fastView).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(fastView) == "view-bytes");
 
     const LogValue fastOwned = line.GetValue(ownedKey);
     const LogValue slowOwned = line.GetValue(std::string("owned-key"));
     REQUIRE(LogValueEquivalent(fastOwned, slowOwned));
     REQUIRE(AsStringView(fastOwned).has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(fastOwned) == "owned-bytes");
 
     const LogValue fastInt = line.GetValue(intKey);
@@ -275,4 +281,67 @@ TEST_CASE("LogLine fast and slow GetValue accessors agree under both string alte
     REQUIRE(std::holds_alternative<int64_t>(slowInt));
     CHECK(std::get<int64_t>(fastInt) == 99);
     CHECK(std::get<int64_t>(slowInt) == 99);
+}
+
+TEST_CASE("LogLine resolves DictRef slots through the source's EnumDictionaryRegistry", "[log_line][enum]")
+{
+    const TestLogFile testFile;
+    auto source = testFile.CreateFileLineSource();
+
+    EnumDictionaryRegistry registry;
+    KeyIndex keys;
+    const KeyId levelKey = keys.GetOrInsert("level");
+
+    EnumDictionary &dict = registry.GetOrInsert(levelKey);
+    const EnumValueId infoId = dict.Insert("info");
+    const EnumValueId warnId = dict.Insert("warn");
+    REQUIRE(infoId != INVALID_ENUM_VALUE_ID);
+    REQUIRE(warnId != INVALID_ENUM_VALUE_ID);
+
+    source->SetEnumDictionaries(&registry);
+
+    const KeyId messageKey = keys.GetOrInsert("message");
+    LogLine line({}, keys, *source, 1);
+    line.SetOrReplaceEnumDictRef(levelKey, warnId);
+    line.SetValue(messageKey, LogValue{std::string("hello")});
+
+    REQUIRE(line.IsDictRef(levelKey));
+    const LogValue resolved = line.GetValue(levelKey);
+    const auto sv = AsStringView(resolved);
+    REQUIRE(sv.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
+    CHECK(*sv == "warn");
+
+    CHECK(std::get<std::string>(line.GetValue(messageKey)) == "hello");
+
+    source->SetEnumDictionaries(nullptr);
+    CHECK(std::holds_alternative<std::monostate>(line.GetValue(levelKey)));
+
+    source->SetEnumDictionaries(&registry);
+    // SetEnumDictionaries(&registry) above restores the dict; the slot is a known DictRef.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*AsStringView(line.GetValue(levelKey)) == "warn");
+}
+
+TEST_CASE("LogLine::IsDictRef discriminates DictRef slots from MmapSlice / OwnedString", "[log_line][enum][helpers]")
+{
+    const TestLogFile testFile;
+    auto source = testFile.CreateFileLineSource();
+
+    EnumDictionaryRegistry registry;
+    KeyIndex keys;
+    const KeyId enumKey = keys.GetOrInsert("level");
+    const KeyId stringKey = keys.GetOrInsert("msg");
+    const EnumValueId vid = registry.GetOrInsert(enumKey).Insert("info");
+
+    source->SetEnumDictionaries(&registry);
+
+    LogLine line({}, keys, *source, 1);
+    line.SetOrReplaceEnumDictRef(enumKey, vid);
+    line.SetValue(stringKey, LogValue{std::string("hello")});
+
+    CHECK(line.IsDictRef(enumKey));
+    CHECK_FALSE(line.IsDictRef(stringKey));
+    CHECK_FALSE(line.IsOwnedString(enumKey));
+    CHECK(line.IsOwnedString(stringKey));
 }

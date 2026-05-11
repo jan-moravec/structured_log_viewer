@@ -614,7 +614,7 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     LogConfiguration::Column timeColumn;
     timeColumn.header = "Timestamp";
     timeColumn.keys = {"ts"};
-    timeColumn.type = LogConfiguration::Type::time;
+    timeColumn.type = LogConfiguration::Type::Time;
     timeColumn.parseFormats = {"%FT%TZ"};
     configuration->columns.push_back(timeColumn);
 
