@@ -105,9 +105,14 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
 }
 
 /// Compare two slots that may be string, string_view, or numeric.
-/// Numeric vs string is "numeric < string" so a mixed column still
-/// produces a deterministic order. Empty / monostate is handled by the
-/// caller (we return 0 here only when both are populated).
+/// When both sides materialise as strings the bytes are compared
+/// directly; otherwise both sides are formatted through the column's
+/// `printFormat` and the formatted bytes are compared. The fallback
+/// keeps mixed columns deterministic without taking a position on
+/// "numeric < string" or vice versa.
+///
+/// Empty / monostate is handled by the caller; this routine never
+/// observes a monostate slot.
 int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);

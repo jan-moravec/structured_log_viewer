@@ -3284,6 +3284,376 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression for B1 (PR review): after a demote tears down the
+    // dictionary, `MainWindow::enumColumnsChanged` must rebuild every
+    // active enum filter so the `EnumRowPredicate` falls back to its
+    // string-set path. Pre-fix the slot consulted a cached
+    // `mEnumFilterFullyResolved` snapshot, saw "true" (all values
+    // resolved at install time), skipped the rebuild, and the stale
+    // predicate (armed + fully-resolved) silently hid every row
+    // because `GetEnumValueId` returns nullopt after demote.
+    void TestEnumFilterRebuiltAfterDemote()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        // Mirror `TestEnumColumnsChangedFiresOnDemote`'s direct
+        // `AppendBatch` path: the streaming flush threshold collapses
+        // small fixtures into a single batch, but we need two so the
+        // 2nd one trips the cap.
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        constexpr uint16_t TEST_CAP = 2;
+        model->Table().SetEnumValueCap(TEST_CAP);
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: two "info" rows promote `level` to enum. Dict size
+        // becomes 1; the predicate built against this dictionary
+        // observes `mAllResolved == true`.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("info"));
+            model->AppendBatch(std::move(batch));
+        }
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after promotion");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Enumeration
+        );
+
+        // Install an enum filter selecting the one resolved value.
+        // `FilterEnumSubmitted` (used by FilterEditor) is the slot that
+        // builds the in-place enum filter; it takes a (filterId, row,
+        // QStringList values).
+        const QString filterId = QStringLiteral("post-demote-rebuild");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), 2); // both info rows visible
+
+        // Batch 2: "warn" fits, "error" overflows the cap and demotes
+        // the column to String. Post-batch `EnumDictionaries().Find`
+        // returns nullptr, so the live `EnumFilterFullyResolved`
+        // gate returns false and the slot rebuilds the predicate.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 3;
+            batch.lines.push_back(makeLine("warn"));
+            batch.lines.push_back(makeLine("error"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::String
+        );
+
+        // The rebuilt predicate has no dictionary (Find -> nullptr), so
+        // `mFastPathArmed == false` and the string-set fallback runs
+        // against the demoted column's string slots. Both "info" rows
+        // match; "warn" and "error" do not.
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        // Defensive: confirm the visible rows really are the "info" ones,
+        // not just "any two rows".
+        const int levelColInProxy = levelCol; // proxy preserves column layout
+        for (int i = 0; i < filterModel->rowCount(); ++i)
+        {
+            const QModelIndex idx = filterModel->index(i, levelColInProxy);
+            QCOMPARE(idx.data(Qt::DisplayRole).toString(), QStringLiteral("info"));
+        }
+
+        model->EndStreaming(false);
+    }
+
+    // Regression for B2 (PR review): the per-column `EnumDictRank`
+    // cache in `LogFilterModel` is keyed by column index, so a column
+    // reorder shifts the meaning of every key. Without the
+    // `columnsMoved` invalidation hook, the cached rank for "what
+    // used to be column N" stays attached to "whatever now lives at
+    // column N", silently producing the wrong sort order.
+    void TestEnumRankCacheInvalidatedOnColumnsMoved()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        // Build a two-column fixture where "level" promotes to enum.
+        // The streaming threshold is well below 200, so this lands in
+        // one batch.
+        const QStringList levels{
+            QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
+        };
+        QStringList lines;
+        lines.reserve(200);
+        for (int i = 0; i < 200; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Enumeration
+        );
+
+        LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+
+        // Warm the rank cache: sort by the enum column.
+        filterModel->sort(levelCol, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            filterModel->EnumRankCacheSizeForTest() >= std::size_t{1},
+            "sorting by an enum column must populate the rank cache"
+        );
+
+        // Trigger a column reorder on the underlying `LogModel` --
+        // the `beginMoveColumns`/`endMoveColumns` pair fires
+        // `columnsMoved` which `LogFilterModel::setSourceModel`
+        // hooked to drop the per-index cache. `QAbstractItemModel::
+        // moveColumns` returns false by default; the test-only
+        // `MoveColumnForTest` helper wraps the live `LogTable::MoveColumn`
+        // call in the standard begin/end signal pair.
+        QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
+        QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
+        QVERIFY(columnsMovedSpy.isValid());
+        const int src = (levelCol == 0) ? 1 : 0;
+        const int dest = (levelCol == 0) ? 0 : 1;
+        QVERIFY2(model->MoveColumnForTest(src, dest), "MoveColumnForTest must succeed");
+        QCoreApplication::processEvents();
+        QVERIFY2(columnsMovedSpy.count() >= 1, "MoveColumnForTest must emit columnsMoved");
+
+        // The invalidation hook on the source's `columnsMoved` should
+        // have dropped every cached entry; the next sort will rebuild
+        // against the new layout.
+        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{0});
+
+        model->EndStreaming(false);
+    }
+
+    // Regression for B3 (PR review): an invalid regex submitted via
+    // `FilterSubmitted` used to be quietly accepted; the downstream
+    // `QRegularExpression` compiled to a non-`isValid()` object that
+    // matched nothing, so every row vanished without a UI signal.
+    // The submission slot now probes `isValid()` up front, rejects
+    // the rule, surfaces an error in the status bar, and keeps the
+    // existing filter set intact.
+    void TestRegexFilterSubmissionRejectsInvalid()
+    {
+        // Fixture: a few rows so we can verify "no filter applied".
+        const TempJsonFile fixture(MakeParityFixture());
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        const int totalRows = model->rowCount();
+        QVERIFY2(totalRows > 0, "fixture must produce at least one row");
+
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+
+        mWindow->statusBar()->clearMessage();
+
+        // `*[invalid` is a syntactically-broken regex (quantifier with
+        // no operand, unbalanced bracket). `QRegularExpression(pattern).isValid()`
+        // returns false; pre-fix this was passed straight into the
+        // matcher.
+        const QString filterId = QStringLiteral("invalid-regex");
+        const int column = 0;
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, column),
+                Q_ARG(QString, QStringLiteral("*[invalid")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::RegularExpression))
+            ),
+            "FilterSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        // The rule must be rejected: every row stays visible.
+        QCOMPARE(filterModel->rowCount(), totalRows);
+
+        // The user-facing signal is the status bar message.
+        const QString msg = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            msg.contains(QStringLiteral("Invalid regular expression"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status bar must explain the rejection; got '%1'").arg(msg))
+        );
+
+        // No filter menu entry should have been created (or any prior
+        // one must have been left alone -- here we started with none).
+        const auto filterActions = mWindow->findChildren<QAction *>();
+        for (const QAction *action : filterActions)
+        {
+            QVERIFY2(
+                action->data().toString() != filterId,
+                qPrintable(
+                    QStringLiteral("filter '%1' must not appear in the menu after rejection").arg(filterId)
+                )
+            );
+        }
+
+        model->EndStreaming(false);
+    }
+
+    // Regression for D6 (PR review): `LogFilterModel::MatchRow` now
+    // formats `Qt::DisplayRole` cells via
+    // `LogTable::GetFormattedValue` + `ConvertToSingleLineCompactQString`,
+    // bypassing the per-cell `data()` -> `QVariant<QString>` round-
+    // trip. Functional behaviour must remain identical to the slow
+    // path so existing Find-bar callers see the same matches.
+    void TestFindUsesFormattedValueFastPath()
+    {
+        const QStringList levels{
+            QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
+        };
+        QStringList lines;
+        lines.reserve(40);
+        for (int i = 0; i < 40; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1", "msg": "row%2"})").arg(levels[i % levels.size()]).arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QCOMPARE(model->rowCount(), 40);
+
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+
+        // Compute the expected `info` rows by walking the table the
+        // same way the production caller does (Find searches every
+        // column with `MatchContains | MatchWrap`).
+        const int rowCount = filterModel->rowCount();
+        const int columnCount = filterModel->columnCount();
+        QVERIFY(rowCount > 0 && columnCount > 0);
+
+        QList<int> expectedRows;
+        for (int row = 0; row < rowCount; ++row)
+        {
+            for (int col = 0; col < columnCount; ++col)
+            {
+                const QString cell = filterModel->index(row, col).data(Qt::DisplayRole).toString();
+                if (cell.contains(QStringLiteral("info")))
+                {
+                    expectedRows.append(row);
+                    break;
+                }
+            }
+        }
+        QVERIFY2(!expectedRows.isEmpty(), "fixture must contain at least one 'info' match");
+
+        // Drive `MatchRow` directly with `Qt::DisplayRole`. The fast
+        // path takes the `mLogModel != nullptr && role == DisplayRole`
+        // branch; results must match the `data()`-walking baseline.
+        const QModelIndex start = filterModel->index(0, 0);
+        const QList<QModelIndex> hits = filterModel->MatchRow(
+            start,
+            Qt::DisplayRole,
+            QStringLiteral("info"),
+            -1, // unlimited
+            Qt::MatchContains | Qt::MatchWrap,
+            true,
+            0
+        );
+
+        QList<int> actualRows;
+        actualRows.reserve(hits.size());
+        for (const QModelIndex &idx : hits)
+        {
+            actualRows.append(idx.row());
+        }
+        std::sort(actualRows.begin(), actualRows.end());
+
+        QList<int> expectedSorted = expectedRows;
+        std::sort(expectedSorted.begin(), expectedSorted.end());
+        QCOMPARE(actualRows, expectedSorted);
+
+        model->EndStreaming(false);
+    }
+
     // An enum column with an empty dictionary must show the placeholder
     // and disable OK so a "hide everything" filter cannot be submitted.
     void TestFilterEditorEmptyEnumPickerDisablesOk()

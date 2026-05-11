@@ -853,3 +853,23 @@ QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)
     qString.replace("\r", " ");
     return qString.simplified();
 }
+
+bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
+{
+    if (srcIndex == destIndex)
+    {
+        return false;
+    }
+    const int cols = columnCount();
+    if (srcIndex < 0 || srcIndex >= cols || destIndex < 0 || destIndex > cols)
+    {
+        return false;
+    }
+    if (!beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), destIndex))
+    {
+        return false;
+    }
+    mLogTable.MoveColumn(static_cast<size_t>(srcIndex), static_cast<size_t>(destIndex));
+    endMoveColumns();
+    return true;
+}

@@ -9,6 +9,7 @@
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>
 #include <QModelIndex>
+#include <QObject>
 #include <QRegularExpression>
 #include <QString>
 #include <QVariant>
@@ -38,6 +39,26 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
     // already be attached). `SetLogModel` clears the same cache on the
     // other path that can re-bind us.
     mEnumRanks.clear();
+
+    // Reattach the `columnsMoved` invalidation hook so a column
+    // reorder (e.g., `LogModel::AppendBatch` bubbling a fresh `Time`
+    // column to position 0) drops the per-index rank cache. Without
+    // this the cached entry at index N stays attached to whatever
+    // column happens to land at N after the move.
+    if (mColumnsMovedConn)
+    {
+        QObject::disconnect(mColumnsMovedConn);
+        mColumnsMovedConn = {};
+    }
+    if (sourceModel != nullptr)
+    {
+        mColumnsMovedConn = QObject::connect(
+            sourceModel,
+            &QAbstractItemModel::columnsMoved,
+            this,
+            [this](const QModelIndex &, int, int, const QModelIndex &, int) { InvalidateEnumRanks(); }
+        );
+    }
 }
 
 void LogFilterModel::RefreshSourceProxyCache()
@@ -45,8 +66,15 @@ void LogFilterModel::RefreshSourceProxyCache()
     mImmediateProxy = qobject_cast<QAbstractProxyModel *>(sourceModel());
 }
 
-void LogFilterModel::SetFilterRules(std::vector<std::unique_ptr<loglib::RowPredicate>> &&filterRules)
+void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> &&filterRules)
 {
+    // No-op guard: clearing an already-empty rule list would otherwise
+    // tick `endFilterChange` / `invalidateFilter` for nothing, which
+    // forces the proxy to rebuild its row map.
+    if (mFilterRules.empty() && filterRules.empty())
+    {
+        return;
+    }
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     beginFilterChange();
     mFilterRules = std::move(filterRules);
@@ -83,7 +111,7 @@ bool LogFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourcePa
     const auto row = static_cast<size_t>(logRow);
     const loglib::LogTable &table = mLogModel->Table();
     return std::ranges::all_of(mFilterRules, [&table, row](const auto &rule) {
-        return rule->MatchesRow(table, row);
+        return loglib::MatchesRow(rule, table, row);
     });
 }
 
@@ -195,27 +223,16 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
         return nullptr;
     }
     auto it = mEnumRanks.find(columnIndex);
-    if (it != mEnumRanks.end() && it.value() && it.value()->DictSize() >= dictionary->Size())
+    if (it != mEnumRanks.end() && it->second && it->second->DictSize() >= dictionary->Size())
     {
-        return it.value().get();
+        return it->second.get();
     }
-    auto rank = std::make_shared<const loglib::EnumDictRank>(*dictionary);
+    auto rank = std::make_unique<const loglib::EnumDictRank>(*dictionary);
     const loglib::EnumDictRank *raw = rank.get();
-    mEnumRanks.insert(columnIndex, std::move(rank));
+    mEnumRanks.insert_or_assign(columnIndex, std::move(rank));
     return raw;
 }
 
-// TODO(perf, follow-up): the per-probe `data(role).toString()` path here
-// still pays the `QVariant<QString>` materialisation we avoided on the
-// sort/filter critical path by routing through `loglib::CompareRows` and
-// `loglib::EnumRowPredicate`. Find is one-shot (early-exit on first hit
-// with `hits=1`) so this isn't a freeze-level bottleneck, but the
-// honest minimal swap is `mLogModel->Table().GetFormattedValue(row, col)`
-// after mapping through the proxy chain, which saves the
-// `QString::fromStdString` round-trip per probe. The deeper refactor
-// (mirror `CallbackStringRowPredicate`, walk rows lib-side, map back
-// through the proxy to return proxy indices) needs a per-column
-// iteration story that respects `Qt::MatchFlags`. See PR review M5.
 QList<QModelIndex> LogFilterModel::MatchRow(
     const QModelIndex &start, int role, const QVariant &value, int hits, Qt::MatchFlags flags, bool forward, int skipFirstN
 ) const
@@ -228,6 +245,34 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     const int startRow = start.row();
     const int startColumn = start.column();
 
+    // Fast path: when matching `DisplayRole` against the production
+    // `LogModel`, materialise each cell via
+    // `LogTable::GetFormattedValue` + `ConvertToSingleLineCompactQString`
+    // and skip the `data(role).toString()` round-trip through
+    // `LogModel::data` / `QVariant<QString>`. Other roles fall back to
+    // the QVariant path (kept for defensiveness; no production caller
+    // uses a non-Display role here today).
+    const bool useFastPath = role == Qt::DisplayRole && mLogModel != nullptr;
+    const QString needle = useFastPath ? value.toString() : QString{};
+
+    auto probeCell = [&](const QModelIndex &index) -> bool {
+        if (useFastPath)
+        {
+            const int logRow = MapModelIndexToLogModelRow(index);
+            if (logRow < 0)
+            {
+                return false;
+            }
+            const std::string formatted = mLogModel->Table().GetFormattedValue(
+                static_cast<size_t>(logRow), static_cast<size_t>(index.column())
+            );
+            const QString text = LogModel::ConvertToSingleLineCompactQString(formatted);
+            return Matches(text, needle, flags);
+        }
+        const QVariant data = this->data(index, role);
+        return Matches(data, value, flags);
+    };
+
     if (forward)
     {
         for (int row = skipFirstN; row < rowCount; ++row)
@@ -238,9 +283,8 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             {
                 const int actualColumn = (startColumn + col) % columnCount;
                 const QModelIndex index = this->index(actualRow, actualColumn, start.parent());
-                const QVariant data = this->data(index, role);
 
-                if (Matches(data, value, flags))
+                if (probeCell(index))
                 {
                     result.append(index);
                     if (result.size() == hits)
@@ -271,9 +315,8 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             {
                 const int actualColumn = (startColumn + col) % columnCount;
                 const QModelIndex index = this->index(actualRow, actualColumn, start.parent());
-                const QVariant data = this->data(index, role);
 
-                if (Matches(data, value, flags))
+                if (probeCell(index))
                 {
                     result.append(index);
                     if (result.size() == hits)
@@ -300,27 +343,36 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
     {
         return data == value;
     }
+    return Matches(data.toString(), value.toString(), flags);
+}
+
+bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::MatchFlags flags)
+{
+    if (flags.testFlag(Qt::MatchExactly))
+    {
+        return text == needle;
+    }
     if (flags.testFlag(Qt::MatchStartsWith))
     {
-        return data.toString().startsWith(value.toString());
+        return text.startsWith(needle);
     }
     if (flags.testFlag(Qt::MatchEndsWith))
     {
-        return data.toString().endsWith(value.toString());
+        return text.endsWith(needle);
     }
     if (flags.testFlag(Qt::MatchContains))
     {
-        return data.toString().contains(value.toString());
+        return text.contains(needle);
     }
     if (flags.testFlag(Qt::MatchRegularExpression))
     {
-        const QRegularExpression regex(value.toString());
-        return regex.match(data.toString()).hasMatch();
+        const QRegularExpression regex(needle);
+        return regex.match(text).hasMatch();
     }
     if (flags.testFlag(Qt::MatchWildcard))
     {
-        const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(value.toString()));
-        return regex.match(data.toString()).hasMatch();
+        const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(needle));
+        return regex.match(text).hasMatch();
     }
     return false;
 }

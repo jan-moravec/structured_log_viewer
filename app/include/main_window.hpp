@@ -183,13 +183,6 @@ private:
     loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
-    /// Snapshot of "all selected ids were resolved at last rebuild"
-    /// per enum filter, keyed by filter id. Lets the
-    /// `enumColumnsChanged` connection skip the full re-filter when
-    /// dictionary growth only adds *unselected* values. Recomputed by
-    /// `UpdateFilters()`.
-    std::unordered_map<std::string, bool> mEnumFilterFullyResolved;
-
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
 

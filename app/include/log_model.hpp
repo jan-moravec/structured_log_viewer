@@ -133,6 +133,20 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
+    /// UTF-8 `std::string` -> single-line, simplified `QString` used
+    /// for `Qt::DisplayRole`. Public so `LogFilterModel::MatchRow`'s
+    /// fast path can format cells directly from `LogTable::GetFormattedValue`
+    /// without round-tripping through `QAbstractItemModel::data`.
+    static QString ConvertToSingleLineCompactQString(const std::string &string);
+
+    /// Test-only: move column `srcIndex` to `destIndex` wrapped in
+    /// the standard `beginMoveColumns`/`endMoveColumns` pair so
+    /// `columnsMoved` propagates through the proxy chain. Production
+    /// column moves go through `RunPostBatchActions`; this helper
+    /// lets `TestEnumRankCacheInvalidatedOnColumnsMoved` exercise the
+    /// invalidation hook in isolation. Returns `true` on success.
+    bool MoveColumnForTest(int srcIndex, int destIndex);
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);
@@ -188,8 +202,6 @@ private:
 
     /// Retention cap; `0` means unbounded.
     size_t mRetentionCap = 0;
-
-    static QString ConvertToSingleLineCompactQString(const std::string &string);
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

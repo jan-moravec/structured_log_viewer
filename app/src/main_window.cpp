@@ -331,23 +331,21 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
     // Rebuild active enum filter rules so the fast-path bitset stays in
-    // sync after dictionary growth or promotion. Only refilter when at
-    // least one enum filter still has unresolved selected values --
-    // dictionary growth that only mints unselected ids cannot change
-    // the row outcome of an already-armed bitset, so re-walking the
-    // whole row set on every batch would be pure waste during streaming.
+    // sync after dictionary growth, promotion, or demotion. The gate
+    // consults the *live* dictionary state for every active enum
+    // filter: a growth that only mints unselected ids leaves every
+    // filter fully resolved and the rebuild is skipped, but a demote
+    // (registry entry erased) or a newly-interned selected value flips
+    // the gate so the predicate is rebuilt against the current
+    // column type / dictionary.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
         // Always drop the proxy's cached `EnumDictRank` entries so any
         // pending column sort sees the latest dictionary ordering. The
         // ranks are rebuilt on demand by `LogFilterModel::lessThan`.
         mSortFilterProxyModel->InvalidateEnumRanks();
         const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
-            if (kv.second.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
-            {
-                return false;
-            }
-            const auto it = mEnumFilterFullyResolved.find(kv.first);
-            return it == mEnumFilterFullyResolved.end() || !it->second;
+            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                   !EnumFilterFullyResolved(kv.second);
         });
         if (anyUnresolved)
         {
@@ -1212,7 +1210,6 @@ void MainWindow::AddFilter(
 void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
-    mEnumFilterFullyResolved.clear();
     mSortFilterProxyModel->SetFilterRules({});
 
     for (QAction *action : ui->menuFilters->actions())
@@ -1257,13 +1254,34 @@ void MainWindow::ClearFilter(const QString &filterID)
 
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
+    const auto match = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
+
+    // Reject an invalid regex at submission time. The downstream
+    // `QRegularExpression` would compile to a non-`isValid()` object
+    // and silently match nothing, hiding every row with no UI signal.
+    // Wildcards never produce an invalid regex (`wildcardToRegularExpression`
+    // always succeeds), so they need no probe.
+    if (match == loglib::LogConfiguration::LogFilter::Match::RegularExpression)
+    {
+        const QRegularExpression probe(filterString);
+        if (!probe.isValid())
+        {
+            statusBar()->showMessage(
+                QString("Invalid regular expression: %1").arg(probe.errorString()),
+                STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+            ClearFilter(filterID);
+            return;
+        }
+    }
+
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
     filter.type = loglib::LogConfiguration::LogFilter::Type::String;
     filter.row = row;
     filter.filterString = filterString.toStdString();
-    filter.matchType = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
+    filter.matchType = match;
 
     AddLogFilter(filterID, filter);
 }
@@ -1401,12 +1419,27 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
 namespace
 {
 
-/// Build a Qt-flavoured string matcher for a `TextFilterRule`-equivalent
-/// `loglib::CallbackStringRowPredicate`. The lambda captures a compiled
-/// `QRegularExpression` once so the inner loop avoids re-compiling per
-/// row. Bytes arrive as UTF-8 `std::string_view`; converting to
-/// `QString` once per row is cheap compared to the prior data(SortRole)
-/// chain through `LogModel::data`.
+/// Prime a `QRegularExpression` so its JIT compile happens at builder
+/// time, not on the first row. The lambda below captures the regex by
+/// value; without this prime each new copy would re-JIT lazily on
+/// first `match()`, which is single-thread-safe today but a footgun
+/// for any future off-thread row walker that reuses the predicate.
+void PrimeRegex(QRegularExpression &regex)
+{
+    (void)regex.match(QStringLiteral(""));
+}
+
+/// Build a Qt-flavoured string matcher for a
+/// `loglib::CallbackStringRowPredicate`. The lambda captures the
+/// compiled `QRegularExpression` (or the UTF-8 needle) once so the
+/// inner loop avoids per-row recompiles.
+///
+/// `Exactly` and `Contains` use byte-wise UTF-8 comparison directly.
+/// Both `filterString` (from a `QString`) and the row bytes (from the
+/// parser's UTF-8 buffer) are valid UTF-8, and the user-visible Qt
+/// flag is `Qt::CaseSensitive`, so byte equality matches the
+/// `QString::contains(QString, Qt::CaseSensitive)` semantics without
+/// the per-row UTF-8 -> UTF-16 conversion.
 loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
 )
@@ -1421,20 +1454,21 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     }
     case Match::Contains:
     {
-        return [pattern](std::string_view bytes) {
-            return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size())).contains(pattern);
-        };
+        const std::string needle = pattern.toStdString();
+        return [needle](std::string_view bytes) { return bytes.find(needle) != std::string_view::npos; };
     }
     case Match::RegularExpression:
     {
-        const QRegularExpression regex(pattern);
+        QRegularExpression regex(pattern);
+        PrimeRegex(regex);
         return [regex](std::string_view bytes) {
             return regex.match(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()))).hasMatch();
         };
     }
     case Match::Wildcard:
     {
-        const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
+        QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
+        PrimeRegex(regex);
         return [regex](std::string_view bytes) {
             return regex.match(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()))).hasMatch();
         };
@@ -1447,17 +1481,20 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
 
 void MainWindow::UpdateFilters()
 {
-    std::vector<std::unique_ptr<loglib::RowPredicate>> rules;
-    mEnumFilterFullyResolved.clear();
+    std::vector<loglib::RowPredicate> rules;
+    rules.reserve(mFilters.size());
     for (const auto &filter : mFilters)
     {
         const auto column = static_cast<size_t>(filter.second.row);
         switch (filter.second.type)
         {
         case loglib::LogConfiguration::LogFilter::Type::Time:
-            rules.push_back(std::make_unique<loglib::TimeRangeRowPredicate>(
-                column, *filter.second.filterBegin, *filter.second.filterEnd
-            ));
+            rules.emplace_back(
+                std::in_place_type<loglib::TimeRangeRowPredicate>,
+                column,
+                *filter.second.filterBegin,
+                *filter.second.filterEnd
+            );
             break;
         case loglib::LogConfiguration::LogFilter::Type::Enumeration:
         {
@@ -1473,16 +1510,18 @@ void MainWindow::UpdateFilters()
                 selectedViews.emplace_back(v);
             }
             const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.second.row);
-            rules.push_back(std::make_unique<loglib::EnumRowPredicate>(column, selectedViews, dictionary));
-            mEnumFilterFullyResolved[filter.first] = EnumFilterFullyResolved(filter.second);
+            rules.emplace_back(
+                std::in_place_type<loglib::EnumRowPredicate>, column, std::span<const std::string_view>(selectedViews), dictionary
+            );
             break;
         }
         case loglib::LogConfiguration::LogFilter::Type::String:
         default:
-            rules.push_back(std::make_unique<loglib::CallbackStringRowPredicate>(
+            rules.emplace_back(
+                std::in_place_type<loglib::CallbackStringRowPredicate>,
                 column,
                 MakeStringMatcher(QString::fromStdString(*filter.second.filterString), *filter.second.matchType)
-            ));
+            );
             break;
         }
     }

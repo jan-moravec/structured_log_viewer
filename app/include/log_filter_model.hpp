@@ -5,10 +5,12 @@
 #include <loglib/log_compare.hpp>
 #include <loglib/log_filter.hpp>
 
-#include <QHash>
+#include <QMetaObject>
 #include <QSortFilterProxyModel>
 
+#include <cstddef>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class QAbstractProxyModel;
@@ -50,12 +52,21 @@ public:
 
     /// Replace the active predicate list and invalidate the proxy's
     /// row map. The vector takes ownership of the predicates.
-    void SetFilterRules(std::vector<std::unique_ptr<loglib::RowPredicate>> &&filterRules);
+    void SetFilterRules(std::vector<loglib::RowPredicate> &&filterRules);
 
     /// Drop cached `EnumDictRank` entries; the next sort comparison on
     /// an enum column will rebuild against the current dictionary.
     /// Invoked by `MainWindow` on `enumColumnsChanged`.
     void InvalidateEnumRanks();
+
+    /// Test-only: number of cached `EnumDictRank` entries. Used by
+    /// the `columnsMoved` invalidation regression test to verify the
+    /// cache was dropped. Production callers must not depend on the
+    /// cache shape.
+    [[nodiscard]] std::size_t EnumRankCacheSizeForTest() const
+    {
+        return mEnumRanks.size();
+    }
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override;
@@ -84,7 +95,7 @@ private:
     [[nodiscard]] const loglib::EnumDictRank *EnumRankFor(int columnIndex) const;
 
     LogModel *mLogModel = nullptr;
-    std::vector<std::unique_ptr<loglib::RowPredicate>> mFilterRules;
+    std::vector<loglib::RowPredicate> mFilterRules;
 
     /// Cached `qobject_cast<QAbstractProxyModel*>(sourceModel())`.
     /// Refreshed whenever the source model swaps.
@@ -92,13 +103,22 @@ private:
 
     /// Per-column rank cache; mutable so const `lessThan` can populate
     /// lazily without leaking ownership. Cleared on:
-    /// - `SetLogModel` (different `LogTable` swapped in), and
+    /// - `SetLogModel` (different `LogTable` swapped in),
     /// - `setSourceModel` (proxy chain re-wired -- the new chain may
     ///   already point at a different `LogModel`, and column indices
-    ///   can have changed shape).
+    ///   can have changed shape), and
+    /// - the source model's `columnsMoved` signal (column reorder
+    ///   shifts the per-index key, so the cached entry would attach
+    ///   to the wrong column otherwise).
     /// Also invalidated piecemeal via `InvalidateEnumRanks()` on
     /// `LogModel::enumColumnsChanged`.
-    mutable QHash<int, std::shared_ptr<const loglib::EnumDictRank>> mEnumRanks;
+    mutable std::unordered_map<int, std::unique_ptr<const loglib::EnumDictRank>> mEnumRanks;
+
+    /// Connection to the source model's `columnsMoved` signal; reset
+    /// on every `setSourceModel` swap so the cache invalidation
+    /// follows the active source.
+    QMetaObject::Connection mColumnsMovedConn;
 
     static bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags);
+    static bool Matches(const QString &text, const QString &needle, Qt::MatchFlags flags);
 };

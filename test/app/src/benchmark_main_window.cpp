@@ -238,10 +238,13 @@ private slots:
         {
             selectedViews.emplace_back(v);
         }
-        std::vector<std::unique_ptr<loglib::RowPredicate>> rules;
-        rules.push_back(std::make_unique<loglib::EnumRowPredicate>(
-            static_cast<size_t>(levelCol), selectedViews, dict
-        ));
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(
+            std::in_place_type<loglib::EnumRowPredicate>,
+            static_cast<size_t>(levelCol),
+            std::span<const std::string_view>(selectedViews),
+            dict
+        );
 
         // Two breakdown measurements:
         //   * predicate-only: walk every row in the same `LogTable`
@@ -254,12 +257,12 @@ private slots:
         //     dominates this number; the lib-level benchmark is the
         //     canonical regression gate.
         const loglib::LogTable &table = chain.model->Table();
-        const auto &predicate = *rules.front();
+        const auto &predicate = rules.front();
         size_t predicateHits = 0;
         const auto predicateStart = std::chrono::steady_clock::now();
         for (size_t row = 0, n = static_cast<size_t>(table.RowCount()); row < n; ++row)
         {
-            if (predicate.MatchesRow(table, row))
+            if (loglib::MatchesRow(predicate, table, row))
             {
                 ++predicateHits;
             }

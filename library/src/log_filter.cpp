@@ -20,8 +20,9 @@ EnumRowPredicate::EnumRowPredicate(
 {
     if (selectedValues.empty())
     {
-        // Empty selection short-circuits `MatchesRow` via the `mEmpty`
-        // sentinel below (see `mAllResolved`/`mSelectedStrings` use).
+        // Empty selection: every row is rejected by `MatchesRow` via
+        // the `mEmptySelection` sentinel.
+        mEmptySelection = true;
         return;
     }
 
@@ -58,7 +59,8 @@ EnumRowPredicate::EnumRowPredicate(
         if (idx >= mSelectedIds.size())
         {
             // Defensive: dictionary `Find` returned an id past the
-            // snapshot it handed us. Treat as unresolved.
+            // snapshot it handed us (concurrent growth between
+            // `Size()` and `Find`). Treat as unresolved.
             mSelectedStrings.emplace(value);
             continue;
         }
@@ -71,11 +73,9 @@ EnumRowPredicate::EnumRowPredicate(
 
 bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
-    // Empty selection hides every row (matches `EnumFilterRule`).
-    // `mSelectedStrings.empty() && mSelectedIds.empty()` is the unique
-    // shape produced by the empty-selection construction path.
-    if (mSelectedIds.empty() && mSelectedStrings.empty())
+    if (mEmptySelection)
     {
+        // Empty selection hides every row (matches `EnumFilterRule`).
         return false;
     }
 
@@ -129,6 +129,13 @@ TimeRangeRowPredicate::TimeRangeRowPredicate(size_t columnIndex, int64_t begin, 
 
 bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
+    if (mBegin > mEnd)
+    {
+        // Inverted range: the user picked an `end < begin` window.
+        // Reject every row rather than producing implementation-defined
+        // behaviour from the per-type compares below.
+        return false;
+    }
     const LogValue value = table.GetValue(row, mColumnIndex);
     return std::visit(
         [this](const auto &alt) -> bool {

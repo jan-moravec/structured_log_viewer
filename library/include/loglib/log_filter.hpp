@@ -10,32 +10,13 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace loglib
 {
 
 class LogTable;
-
-/// Abstract per-row predicate evaluated by the GUI proxy
-/// (`LogFilterModel::filterAcceptsRow`) and by future off-thread row
-/// walkers. Stateless apart from construction-time inputs so a single
-/// instance can serve many rows without locking.
-class RowPredicate
-{
-public:
-    virtual ~RowPredicate() = default;
-
-    RowPredicate(const RowPredicate &) = delete;
-    RowPredicate &operator=(const RowPredicate &) = delete;
-    RowPredicate(RowPredicate &&) = delete;
-    RowPredicate &operator=(RowPredicate &&) = delete;
-
-    [[nodiscard]] virtual bool MatchesRow(const LogTable &table, size_t row) const = 0;
-
-protected:
-    RowPredicate() = default;
-};
 
 /// Multi-select equality predicate for `LogConfiguration::Type::Enumeration`
 /// columns. Resolves selected strings against the column's dictionary at
@@ -52,7 +33,12 @@ protected:
 /// rejects directly. Otherwise the predicate falls through to the
 /// `mSelectedStrings` set so a stale predicate still produces correct
 /// matches against newly-interned selected values.
-class EnumRowPredicate : public RowPredicate
+///
+/// Construction is not synchronised against concurrent dictionary
+/// growth: if a worker thread mints new ids while the constructor
+/// runs, the defensive past-bitset branch routes such selected values
+/// to `mSelectedStrings` and `mAllResolved` is left false.
+class EnumRowPredicate
 {
 public:
     EnumRowPredicate(
@@ -61,7 +47,13 @@ public:
         const EnumDictionary *dictionary
     );
 
-    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const override;
+    EnumRowPredicate(const EnumRowPredicate &) = delete;
+    EnumRowPredicate &operator=(const EnumRowPredicate &) = delete;
+    EnumRowPredicate(EnumRowPredicate &&) noexcept = default;
+    EnumRowPredicate &operator=(EnumRowPredicate &&) noexcept = default;
+    ~EnumRowPredicate() = default;
+
+    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
     /// True iff the constructor managed to resolve at least one
     /// selected value to an id. Mirrors `EnumFilterRule::mFastPathArmed`.
@@ -90,16 +82,30 @@ private:
     /// Lets the past-bitset branch in `MatchesRow` short-circuit to
     /// `false` instead of paying for a string-set lookup.
     bool mAllResolved = false;
+    /// True iff the constructor was given an empty selection. In that
+    /// case every row is rejected by `MatchesRow` without consulting
+    /// the bitset / string set. Exposed as a named sentinel rather
+    /// than inferring it from `mSelectedIds.empty() && mSelectedStrings.empty()`
+    /// so a future field addition cannot accidentally invalidate the
+    /// inference.
+    bool mEmptySelection = false;
 };
 
 /// Inclusive time-range predicate. `mBegin`/`mEnd` are microseconds
 /// since the UNIX epoch (matching `loglib::TimeStamp::time_since_epoch()`).
-class TimeRangeRowPredicate : public RowPredicate
+/// An inverted range (`begin > end`) rejects every row.
+class TimeRangeRowPredicate
 {
 public:
     TimeRangeRowPredicate(size_t columnIndex, int64_t begin, int64_t end);
 
-    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const override;
+    TimeRangeRowPredicate(const TimeRangeRowPredicate &) = default;
+    TimeRangeRowPredicate &operator=(const TimeRangeRowPredicate &) = default;
+    TimeRangeRowPredicate(TimeRangeRowPredicate &&) noexcept = default;
+    TimeRangeRowPredicate &operator=(TimeRangeRowPredicate &&) noexcept = default;
+    ~TimeRangeRowPredicate() = default;
+
+    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
 private:
     size_t mColumnIndex = 0;
@@ -112,25 +118,44 @@ private:
 /// (e.g. capturing a `QRegularExpression` in the lambda) without lib
 /// taking a Qt dependency.
 ///
-/// Thread-safety: the callback runs on whatever thread the row walker
-/// uses, and a single predicate can be evaluated concurrently from
-/// multiple walkers. The callback itself is the caller's responsibility
-/// to make re-entrant. In particular, Qt's `QRegularExpression` JIT-
-/// compiles its pattern lazily on the first `match()` call and is only
-/// thread-safe *after* that first compile; callers wiring a regex
-/// across threads must pre-prime it (or wrap the call site in a mutex).
-class CallbackStringRowPredicate : public RowPredicate
+/// Thread-safety: evaluated on the GUI thread by
+/// `LogFilterModel::filterAcceptsRow`. The captured callback's
+/// reentrancy is the caller's responsibility if it is reused across
+/// threads in the future; `QRegularExpression` in particular JIT-
+/// compiles its pattern lazily on the first `match()` call, so cross-
+/// thread reuse requires pre-priming the regex (the GUI builder does
+/// this once at construction time).
+class CallbackStringRowPredicate
 {
 public:
     using MatchFn = std::function<bool(std::string_view)>;
 
     CallbackStringRowPredicate(size_t columnIndex, MatchFn match);
 
-    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const override;
+    CallbackStringRowPredicate(const CallbackStringRowPredicate &) = default;
+    CallbackStringRowPredicate &operator=(const CallbackStringRowPredicate &) = default;
+    CallbackStringRowPredicate(CallbackStringRowPredicate &&) noexcept = default;
+    CallbackStringRowPredicate &operator=(CallbackStringRowPredicate &&) noexcept = default;
+    ~CallbackStringRowPredicate() = default;
+
+    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
 private:
     size_t mColumnIndex = 0;
     MatchFn mMatch;
 };
+
+/// Closed-set union of every concrete row predicate. Lets the GUI
+/// proxy store a `std::vector<RowPredicate>` directly (no heap
+/// allocation per rule, no virtual dispatch on the per-row hot path)
+/// while keeping each predicate a regular value type.
+using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, CallbackStringRowPredicate>;
+
+/// Dispatch helper. Three predicates -> a `std::visit` resolves to a
+/// direct call to the concrete `MatchesRow` member at compile time.
+[[nodiscard]] inline bool MatchesRow(const RowPredicate &predicate, const LogTable &table, size_t row)
+{
+    return std::visit([&table, row](const auto &concrete) { return concrete.MatchesRow(table, row); }, predicate);
+}
 
 } // namespace loglib

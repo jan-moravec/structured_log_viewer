@@ -4,12 +4,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace loglib
 {
 
 class LogTable;
+
+// `EnumDictRank` stores per-id ranks as `uint16_t`. The dictionary cap
+// is guarded by `MAX_ENUM_VALUES`; this assertion locks the
+// representation in case anyone bumps that ceiling past `uint16_t`.
+static_assert(
+    MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumDictRank stores per-id ranks in uint16_t"
+);
 
 /// Precomputed alphabetic-rank table over an `EnumDictionary`. Built
 /// once when the GUI's `LogFilterModel` learns the column is an enum;
@@ -72,8 +80,12 @@ private:
 ///
 /// `std::monostate` slots sort after every populated slot in an
 /// ascending sort: monostate-vs-monostate is equal, monostate-vs-anything
-/// is strictly greater. Callers wanting "monostate first" can negate
-/// the return.
+/// is strictly greater. Slots that are populated but not representable
+/// in the column's logical type (e.g., NaN in an `Integer` column, or a
+/// stray string slot in a `Floating` column) share that tail -- they
+/// compare equal to monostate and to each other, and strictly greater
+/// than every representable value. Callers wanting "monostate first"
+/// can negate the return.
 [[nodiscard]] int CompareRows(
     const LogTable &table,
     size_t lhsRow,
