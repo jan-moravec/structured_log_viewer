@@ -2,14 +2,13 @@
 
 #include "log_model.hpp"
 
+#include <loglib/key_index.hpp>
 #include <loglib/log_compare.hpp>
 #include <loglib/log_filter.hpp>
 
-#include <QMetaObject>
 #include <QSortFilterProxyModel>
 
 #include <cstddef>
-#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -36,14 +35,15 @@ public:
 
     /// Install the underlying `LogModel`. Required before any filter
     /// rule walks rows -- predicates need direct table access.
-    /// Call this *before* `setSourceModel(...)` so the
-    /// `columnsMoved` invalidation hook set up there is wired against
-    /// the same source-model lifetime; the production `MainWindow`
-    /// wiring already follows this order. Calling `SetLogModel` after
-    /// `setSourceModel` is supported (it only clears the rank cache),
-    /// but the active `columnsMoved` connection remains attached to
-    /// whatever source model was current at the last `setSourceModel`
-    /// call -- swap source models too if the proxy chain changed.
+    /// Order relative to `setSourceModel(...)` does not matter: the
+    /// `columnsMoved` invalidation hook installed by `setSourceModel`
+    /// is independent of `mLogModel`. Both orders are exercised in
+    /// tests; the production `MainWindow` wiring calls `setSourceModel`
+    /// first and then `SetLogModel`. Calling `SetLogModel` again on
+    /// the same proxy is supported and just rebinds the table pointer
+    /// + clears the rank cache; the active `columnsMoved` connection
+    /// remains attached to whatever source model was current at the
+    /// last `setSourceModel` call.
     void SetLogModel(LogModel *logModel);
 
     void setSourceModel(QAbstractItemModel *sourceModel) override;
@@ -76,14 +76,17 @@ public:
     /// Invoked by `MainWindow` on `enumColumnsChanged`.
     void InvalidateEnumRanks();
 
-    /// Test-only: number of cached `EnumDictRank` entries. Used by
-    /// the `columnsMoved` invalidation regression test to verify the
-    /// cache was dropped. Production callers must not depend on the
-    /// cache shape.
+#ifdef LOGAPP_BUILD_TESTING
+    /// Number of cached `EnumDictRank` entries; used by regression
+    /// tests that pin cache lifecycle (e.g. self-heal on dictionary
+    /// pointer change). Only compiled with the `LOGAPP_BUILD_TESTING`
+    /// macro (set by `test/app/CMakeLists.txt`) so production callers
+    /// cannot grow a dependency on the shape.
     [[nodiscard]] std::size_t EnumRankCacheSizeForTest() const
     {
         return mEnumRanks.size();
     }
+#endif
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override;
@@ -106,9 +109,16 @@ private:
     /// and that cast dominates per-compare cost otherwise.
     void RefreshSourceProxyCache();
 
+    /// Resolve the canonical `KeyId` for @p columnIndex when the
+    /// column is `Type::Enumeration` and has at least one key, else
+    /// `INVALID_KEY_ID`. Used as the rank cache key.
+    [[nodiscard]] loglib::KeyId EnumKeyForColumn(int columnIndex) const;
+
     /// Get-or-build the `EnumDictRank` for @p columnIndex. Rebuilds
     /// when the cached rank's `DictSize()` is smaller than the live
-    /// dictionary (dictionary growth since the last access).
+    /// dictionary (dictionary growth since the last access), or when
+    /// the cached `EnumDictionary*` no longer matches the live one
+    /// (demote -> re-promote re-creates the registry entry).
     [[nodiscard]] const loglib::EnumDictRank *EnumRankFor(int columnIndex) const;
 
     LogModel *mLogModel = nullptr;
@@ -129,29 +139,26 @@ private:
     /// a stable address via `unique_ptr` (see `enum_dictionary.hpp`).
     struct EnumRankEntry
     {
-        std::unique_ptr<const loglib::EnumDictRank> rank;
+        loglib::EnumDictRank rank;
         const loglib::EnumDictionary *source = nullptr;
     };
 
-    /// Per-column rank cache; mutable so const `lessThan` can populate
-    /// lazily without leaking ownership. Cleared on:
-    /// - `SetLogModel` (different `LogTable` swapped in),
+    /// Per-column rank cache, keyed by the column's canonical
+    /// `KeyId`. Keying on the KeyId (rather than the column index)
+    /// means the cache survives column reorders without an explicit
+    /// `columnsMoved` invalidation tick. Mutable so const `lessThan`
+    /// can populate lazily. Cleared on:
+    /// - `SetLogModel` (different `LogTable` swapped in), and
     /// - `setSourceModel` (proxy chain re-wired -- the new chain may
-    ///   already point at a different `LogModel`, and column indices
-    ///   can have changed shape), and
-    /// - the source model's `columnsMoved` signal (column reorder
-    ///   shifts the per-index key, so the cached entry would attach
-    ///   to the wrong column otherwise).
+    ///   already point at a different `LogModel`).
     /// Also invalidated piecemeal via `InvalidateEnumRanks()` on
     /// `LogModel::enumColumnsChanged`, and self-healed inside
     /// `EnumRankFor` when the cached `EnumDictionary*` no longer
     /// matches the live one.
-    mutable std::unordered_map<int, EnumRankEntry> mEnumRanks;
-
-    /// Connection to the source model's `columnsMoved` signal; reset
-    /// on every `setSourceModel` swap so the cache invalidation
-    /// follows the active source.
-    QMetaObject::Connection mColumnsMovedConn;
+    /// Pointers to values in `std::unordered_map` are stable across
+    /// rehashes (only iterators are invalidated), so `EnumRankFor`
+    /// can return a raw pointer into the cached `EnumDictRank`.
+    mutable std::unordered_map<loglib::KeyId, EnumRankEntry> mEnumRanks;
 
     static bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags);
     static bool Matches(const QString &text, const QString &needle, Qt::MatchFlags flags);

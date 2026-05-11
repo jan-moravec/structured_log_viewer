@@ -144,7 +144,7 @@ TEST_CASE(
     "[log_compare][integer][regression]"
 )
 {
-    // Regression for M2 (PR review): `CompareInteger`'s `toInt` lambda
+    // Regression: `CompareInteger`'s `toInt` lambda
     // used `static_cast<int64_t>(double)`, which is UB on NaN / values
     // outside the signed range. Post-fix:
     //  - NaN -> `std::nullopt` (sorts after every integer slot).
@@ -215,7 +215,7 @@ TEST_CASE(
     "CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_compare][integer][regression]"
 )
 {
-    // Regression for PR review finding #1: pre-fix `CompareTyped` ran
+    // Regression: pre-fix `CompareTyped` ran
     // `CompareMonostateOrder` before `Extract`, so NaN-in-Int compared
     // strictly less than monostate (tail order was
     // `representable < NaN < monostate`). Post-fix the unrepresentable
@@ -347,6 +347,60 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     CHECK(SignOf(CompareRows(table, 3, 2, 0, &rank)) == -1);
     // Same value tie -> 0.
     CHECK(SignOf(CompareRows(table, 0, 4, 0, &rank)) == 0);
+}
+
+// Regression: when a `Type::Enumeration` column contains a row whose
+// slot is NOT a `DictRef` (e.g. `std::monostate` for a missing field,
+// or a slot value that hasn't been promoted yet), `CompareEnum` must
+// fall through to the monostate / bytewise compare path -- the
+// id-pair / rank-table path requires both ids resolvable.
+// `LogFilterModel::lessThan` calls `CompareRows` for every visible
+// pair when the user sorts by an unpromoted enum column. Without
+// this branch, the third clause in `CompareEnum` (the
+// "one-or-both-sides-not-DictRef" path) would never get exercised.
+TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket order", "[log_compare][enum][monostate]")
+{
+    const TestLogFile fixture("log_compare_enum_monostate.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    // Three rows: "info", monostate (missing field), "warn".
+    // Row 0 and row 2 promote to dict refs; row 1 is monostate so
+    // `GetEnumValueId(row=1)` is nullopt and we drop into the
+    // monostate-handling branch.
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("info")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {})); // missing field -> monostate
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("warn")}}));
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    // monostate ends up at the tail of ascending order, so it
+    // compares as "greater" than any concrete value.
+    CHECK(SignOf(CompareRows(table, 0, 1, 0, /*rankForEnumColumn=*/nullptr)) == -1); // info < monostate
+    CHECK(SignOf(CompareRows(table, 2, 1, 0, /*rankForEnumColumn=*/nullptr)) == -1); // warn < monostate
+    CHECK(SignOf(CompareRows(table, 1, 0, 0, /*rankForEnumColumn=*/nullptr)) == 1);  // monostate > info
+    CHECK(SignOf(CompareRows(table, 1, 1, 0, /*rankForEnumColumn=*/nullptr)) == 0);  // self -> equal
+    // The concrete pair still routes through CompareLogValuesBytewise
+    // (rank == nullptr), so info < warn.
+    CHECK(SignOf(CompareRows(table, 0, 2, 0, /*rankForEnumColumn=*/nullptr)) == -1);
 }
 
 TEST_CASE("CompareRows on enum column without rank falls back to string compare", "[log_compare][enum][fallback]")

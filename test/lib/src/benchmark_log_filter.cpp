@@ -117,6 +117,68 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount)
     return {std::move(table), nullptr};
 }
 
+/// Build a `Type::String` `LogTable` with @p rowCount rows over a
+/// pool of short message templates. Used by the
+/// `CallbackStringRowPredicate` benchmark below.
+LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
+{
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "msg",
+         .keys = {"msg"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::String,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    // Pool: a handful of canned messages so the matcher sees both
+    // hits and misses with a stable hit ratio. The benchmark needle
+    // is "user-id" -- present in three of the seven templates.
+    const std::vector<std::string> templates = {
+        "request handled for user-id=42",
+        "request handled for guest, no auth",
+        "cache miss on key=session-token",
+        "user-id=17 logged out cleanly",
+        "background sweep complete; 0 items dropped",
+        "auth/token refresh ok, user-id=99",
+        "shutdown signal received, draining queues",
+    };
+    KeyIndex &keys = table.Keys();
+
+    // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp)
+    std::mt19937 rng{0xABCDEF01U};
+    std::uniform_int_distribution<size_t> pick{0, templates.size() - 1};
+
+    constexpr size_t BATCH = 50'000;
+    for (size_t base = 0; base < rowCount; base += BATCH)
+    {
+        const size_t batchSize = std::min(BATCH, rowCount - base);
+        StreamedBatch batch;
+        batch.firstLineNumber = base + 1;
+        batch.lines.reserve(batchSize);
+        for (size_t i = 0; i < batchSize; ++i)
+        {
+            batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"msg", std::string(templates[pick(rng)])}}));
+        }
+        if (base == 0)
+        {
+            batch.newKeys.emplace_back("msg");
+        }
+        table.AppendBatch(std::move(batch));
+    }
+    return {std::move(table), nullptr};
+}
+
 template <typename Fn> std::chrono::nanoseconds TimeOnce(Fn fn)
 {
     const auto start = std::chrono::steady_clock::now();
@@ -192,6 +254,70 @@ TEST_CASE(
     // back to a per-row allocation, which is the regression we
     // explicitly designed against.
     CHECK(Ms(low).count() < 100.0);
+}
+
+TEST_CASE(
+    "CallbackStringRowPredicate substring scan over 1'000'000 rows stays under 200ms",
+    "[.][benchmark][log_filter][large]"
+)
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_filter_string.json");
+    fixture.Write("");
+    LargeTable owned = BuildLargeStringTable(fixture, ROW_COUNT);
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+
+    // Naive substring matcher; mirrors the cheapest callback the
+    // GUI ever installs (the `Contains` match type without
+    // case-folding). Captured by value so the predicate owns its
+    // own state.
+    const std::string needle = "user-id";
+    CallbackStringRowPredicate predicate(0, [needle](std::string_view slot) {
+        return slot.contains(needle);
+    });
+
+    constexpr int SAMPLES = 5;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    size_t accepted = 0;
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        size_t hits = 0;
+        elapsed.push_back(TimeOnce([&]() {
+            for (size_t row = 0; row < ROW_COUNT; ++row)
+            {
+                if (predicate.MatchesRow(table, row))
+                {
+                    ++hits;
+                }
+            }
+        }));
+        accepted = hits;
+    }
+    REQUIRE(accepted > 0);
+    REQUIRE(accepted < ROW_COUNT);
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean =
+        std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) / static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+
+    WARN(
+        "CallbackStringRowPredicate over " << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low="
+                                           << Ms(low).count() << ", high=" << Ms(high).count()
+                                           << "), accepted=" << accepted
+    );
+
+    // Generous ceiling. The callback itself is `std::string::find`
+    // on a short needle; the per-row cost is dominated by the table
+    // lookup, not the substring scan. Going above 200 ms here flags
+    // a regression in either the variant access or the table
+    // bookkeeping.
+    CHECK(Ms(low).count() < 200.0);
 }
 
 TEST_CASE(

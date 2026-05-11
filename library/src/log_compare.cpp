@@ -5,6 +5,7 @@
 #include "loglib/log_value.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +57,12 @@ uint16_t EnumDictRank::RankOf(EnumValueId id) const noexcept
 
 uint16_t EnumDictRank::DictSize() const noexcept
 {
+    // `mIdToRank` is sized at construction from `EnumDictionary::Size()`,
+    // which is itself bounded by `MAX_ENUM_VALUES <= UINT16_MAX`. The
+    // assertion catches a future regression where the rank is built
+    // from a source that violates that bound (e.g. a debugging hand-
+    // rolled dictionary) and would silently truncate here.
+    assert(mIdToRank.size() <= std::numeric_limits<uint16_t>::max() && "EnumDictRank exceeds uint16_t capacity");
     return static_cast<uint16_t>(mIdToRank.size());
 }
 
@@ -145,8 +152,28 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     // `std::string` retains its capacity from the previous assignment.
     // Sorts are GUI-thread-only today; the `thread_local` storage
     // generalises that without locking. The function is not reentrant
-    // (no nested `CompareLogValuesBytewise` calls), so two thread-local
-    // buffers suffice.
+    // (no nested `CompareLogValuesBytewise` calls). Re-entrancy would
+    // silently corrupt the buffers via the next-level assignment, so
+    // we trip an assertion in debug builds via the scoped guard below.
+    // Release builds pay nothing.
+#ifndef NDEBUG
+    struct ReentryGuard
+    {
+        ReentryGuard()
+        {
+            assert(sDepth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
+            ++sDepth;
+        }
+        ~ReentryGuard()
+        {
+            --sDepth;
+        }
+        // `inline static` keeps the counter local to this function; one
+        // counter per thread covers every call site.
+        static inline thread_local int sDepth = 0;
+    };
+    const ReentryGuard guard;
+#endif
     thread_local std::string lhsFormatted;
     thread_local std::string rhsFormatted;
     lhsFormatted = table.GetFormattedValue(lhsRow, column);

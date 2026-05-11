@@ -3185,9 +3185,9 @@ private slots:
         }
     }
 
-    // Regression for B1 (PR review): `LogModel` must emit
-    // `enumColumnsChanged` when an enum column is demoted back to
-    // string (registry entry erased), not only when a dictionary
+    // Regression: `LogModel` must emit `enumColumnsChanged` when an
+    // enum column is demoted back to string (registry entry erased),
+    // not only when a dictionary
     // grows. Pre-fix the registry-shape loop matched only
     // `Size() > before`; demotion sets the post-batch `Find()` to
     // `nullptr` and the back-fill loop sees `Type::String`, so the
@@ -3284,7 +3284,7 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression for B1 (PR review): after a demote tears down the
+    // Regression: after a demote tears down the
     // dictionary, `MainWindow::enumColumnsChanged` must rebuild every
     // active enum filter so the `EnumRowPredicate` falls back to its
     // string-set path. Pre-fix the slot consulted a cached
@@ -3394,13 +3394,14 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression for B2 (PR review): the per-column `EnumDictRank`
-    // cache in `LogFilterModel` is keyed by column index, so a column
-    // reorder shifts the meaning of every key. Without the
-    // `columnsMoved` invalidation hook, the cached rank for "what
-    // used to be column N" stays attached to "whatever now lives at
-    // column N", silently producing the wrong sort order.
-    void TestEnumRankCacheInvalidatedOnColumnsMoved()
+    // Regression: the per-column `EnumDictRank` cache in
+    // `LogFilterModel` used to be keyed by column index, so a column
+    // reorder shifted the meaning of every key and required a
+    // `columnsMoved` invalidation hook. The cache is now keyed by the
+    // canonical `KeyId`, which is stable across reorders -- the
+    // cached rank stays attached to the same logical column and the
+    // sort order remains correct without an invalidation tick.
+    void TestEnumRankCacheSurvivesColumnsMoved()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
@@ -3448,18 +3449,12 @@ private slots:
         // Warm the rank cache: sort by the enum column.
         filterModel->sort(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
-        QVERIFY2(
-            filterModel->EnumRankCacheSizeForTest() >= std::size_t{1},
-            "sorting by an enum column must populate the rank cache"
-        );
+        const std::size_t cacheSizeBefore = filterModel->EnumRankCacheSizeForTest();
+        QVERIFY2(cacheSizeBefore >= std::size_t{1}, "sorting by an enum column must populate the rank cache");
 
-        // Trigger a column reorder on the underlying `LogModel` --
-        // the `beginMoveColumns`/`endMoveColumns` pair fires
-        // `columnsMoved` which `LogFilterModel::setSourceModel`
-        // hooked to drop the per-index cache. `QAbstractItemModel::
-        // moveColumns` returns false by default; the test-only
-        // `MoveColumnForTest` helper wraps the live `LogTable::MoveColumn`
-        // call in the standard begin/end signal pair.
+        // Move the columns. Pre-fix this dropped the rank cache via
+        // a `columnsMoved` hook; post-fix the cache survives because
+        // it is keyed by `KeyId`, not by column index.
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
         QVERIFY(columnsMovedSpy.isValid());
@@ -3469,15 +3464,163 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(columnsMovedSpy.count() >= 1, "MoveColumnForTest must emit columnsMoved");
 
-        // The invalidation hook on the source's `columnsMoved` should
-        // have dropped every cached entry; the next sort will rebuild
-        // against the new layout.
-        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{0});
+        // The cache entry must still be there (KeyId-keyed survives
+        // column reorder). Pre-fix the `columnsMoved` invalidation
+        // hook dropped every entry.
+        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
+
+        // Re-sort by the level column in its new position and
+        // verify the ordering is still alphabetical against the
+        // cached rank. We must re-issue the `sort()` call because
+        // `QSortFilterProxyModel` tracks the sort column index in
+        // source-column coordinates -- after the source move the
+        // stored index points at the wrong column. This sort hits
+        // the cache (KeyId match) instead of rebuilding.
+        const int levelColAfter = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelColAfter >= 0, "level column must still exist after the move");
+        filterModel->sort(levelColAfter, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
+
+        QStringList sortedLevelsAfter;
+        sortedLevelsAfter.reserve(filterModel->rowCount());
+        for (int i = 0; i < filterModel->rowCount(); ++i)
+        {
+            sortedLevelsAfter.append(filterModel->index(i, levelColAfter).data(Qt::DisplayRole).toString());
+        }
+        // Ascending alphabetical: every "debug" row first, then "error",
+        // "info", "warn". The fixture has 50 of each.
+        QCOMPARE(sortedLevelsAfter.front(), QStringLiteral("debug"));
+        QCOMPARE(sortedLevelsAfter.back(), QStringLiteral("warn"));
+        // Monotonic non-decreasing in alphabetical order.
+        for (int i = 1; i < sortedLevelsAfter.size(); ++i)
+        {
+            QVERIFY2(
+                sortedLevelsAfter[i - 1] <= sortedLevelsAfter[i],
+                qPrintable(
+                    QStringLiteral("rows out of order: %1 > %2 at index %3")
+                        .arg(sortedLevelsAfter[i - 1])
+                        .arg(sortedLevelsAfter[i])
+                        .arg(i)
+                )
+            );
+        }
 
         model->EndStreaming(false);
     }
 
-    // Regression for B3 (PR review): an invalid regex submitted via
+    // Regression: the `EnumDictRank` cache in `LogFilterModel`
+    // self-heals when the live dictionary grew (or its `EnumDictionary*`
+    // changed) since the rank was built. Production relies on
+    // `MainWindow` eagerly invalidating the cache via
+    // `enumColumnsChanged -> InvalidateEnumRanks`, but the self-heal in
+    // `EnumRankFor` is the backstop for any path that misses that
+    // tick. This test wires `LogFilterModel` directly against a
+    // hand-built `LogModel` -- no `MainWindow` -- so nothing eagerly
+    // clears the cache, and growth in the dictionary must be picked
+    // up by the size/pointer check in `EnumRankFor` alone.
+    void TestEnumRankCacheSelfHealsOnDictionaryGrowth()
+    {
+        LogModel model;
+        LogFilterModel filterModel;
+        filterModel.setSourceModel(&model);
+        filterModel.SetLogModel(&model);
+
+        // Drive batches directly into `LogModel::AppendBatch`. Stream
+        // mode requires `BeginStreaming` first; an empty fixture
+        // satisfies that without queuing any work.
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model.BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::KeyIndex &keys = model.Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: two distinct values promote "level" to enum.
+        // Dict_v1 = {"info" -> 0, "warn" -> 1}.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            model.AppendBatch(std::move(batch));
+        }
+
+        const int levelCol = ColumnByHeader(model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after promotion");
+        QCOMPARE(
+            model.Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Enumeration
+        );
+
+        // Warm the cache: sort warms `EnumRankFor` for `levelCol`.
+        filterModel.sort(levelCol, Qt::AscendingOrder);
+        QVERIFY2(filterModel.EnumRankCacheSizeForTest() == std::size_t{1}, "first sort must populate the rank cache");
+
+        // Snapshot pre-growth order; after batch 2 the live dict is
+        // larger but the cached rank table still only knows the
+        // initial two values. Without the self-heal, `EnumRankFor`
+        // would keep returning the stale rank and rows whose new ids
+        // fall past the bitset would all collide at the same
+        // "past-the-end" rank value, breaking the sort order.
+        QStringList orderedBeforeGrowth;
+        orderedBeforeGrowth.reserve(filterModel.rowCount());
+        for (int i = 0; i < filterModel.rowCount(); ++i)
+        {
+            orderedBeforeGrowth.append(filterModel.index(i, levelCol).data(Qt::DisplayRole).toString());
+        }
+        QCOMPARE(orderedBeforeGrowth, (QStringList{QStringLiteral("info"), QStringLiteral("warn")}));
+
+        // Batch 2: add two more distinct values. The dictionary grows
+        // from 2 to 4 entries; cached `EnumDictRank` is now too small.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 3;
+            batch.lines.push_back(makeLine("error"));
+            batch.lines.push_back(makeLine("debug"));
+            model.AppendBatch(std::move(batch));
+        }
+        const loglib::KeyId levelKey = keys.Find("level");
+        QVERIFY(levelKey != loglib::INVALID_KEY_ID);
+        const loglib::EnumDictionary *dict = model.Table().EnumDictionaries().Find(levelKey);
+        QVERIFY2(dict != nullptr, "level dictionary must still exist after batch 2");
+        QCOMPARE(static_cast<int>(dict->Size()), 4);
+
+        // Re-sort. The cache size check (`rank.DictSize() < live.Size()`)
+        // must trip and `EnumRankFor` must rebuild against the grown
+        // dictionary; the rank entry stays at one row (same `KeyId`),
+        // but its `mIdToRank` now covers the 4 new ids.
+        filterModel.sort(levelCol, Qt::AscendingOrder);
+        QCOMPARE(filterModel.EnumRankCacheSizeForTest(), std::size_t{1});
+
+        QStringList orderedAfterGrowth;
+        orderedAfterGrowth.reserve(filterModel.rowCount());
+        for (int i = 0; i < filterModel.rowCount(); ++i)
+        {
+            orderedAfterGrowth.append(filterModel.index(i, levelCol).data(Qt::DisplayRole).toString());
+        }
+        // Alphabetical: debug < error < info < warn. Without the
+        // self-heal, "debug" and "error" (the two new ids past the
+        // original bitset) would have tied at the past-the-end rank
+        // and the test would observe both at the tail in source order.
+        QCOMPARE(
+            orderedAfterGrowth,
+            (QStringList{
+                QStringLiteral("debug"), QStringLiteral("error"), QStringLiteral("info"), QStringLiteral("warn")
+            })
+        );
+
+        model.EndStreaming(false);
+    }
+
+    // Regression: an invalid regex submitted via
     // `FilterSubmitted` used to be quietly accepted; the downstream
     // `QRegularExpression` compiled to a non-`isValid()` object that
     // matched nothing, so every row vanished without a UI signal.
@@ -3561,7 +3704,7 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression for D6 (PR review): `LogFilterModel::MatchRow` now
+    // Regression: `LogFilterModel::MatchRow` now
     // formats `Qt::DisplayRole` cells via
     // `LogTable::GetFormattedValue` + `ConvertToSingleLineCompactQString`,
     // bypassing the per-cell `data()` -> `QVariant<QString>` round-
@@ -3654,7 +3797,7 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression for PR review finding #2: `MainWindow::FindRecords`
+    // Regression: `MainWindow::FindRecords`
     // pre-fix wrapped the proxy `currentIndex()` through `mModel->index(...)`
     // before handing it to `LogFilterModel::MatchRow`, mixing proxy and
     // source coordinate systems. `MatchRow` happens to read only

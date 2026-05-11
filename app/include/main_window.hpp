@@ -9,10 +9,10 @@
 
 #include <loglib/log_configuration.hpp>
 
-namespace loglib
-{
-class EnumDictionary;
-}
+// `loglib::EnumDictionary` is referenced by `ResolveEnumDictionary`'s
+// return type below. The full class definition arrives transitively
+// via `log_filter_model.hpp` -> `log_filter.hpp` -> `enum_dictionary.hpp`,
+// so no forward declaration is needed here.
 
 #include <QAction>
 #include <QDragEnterEvent>
@@ -75,9 +75,12 @@ public:
     }
     [[nodiscard]] QMenu *FiltersMenu() const;
 
+#ifdef LOGAPP_BUILD_TESTING
     /// Test-only override of the internal session mode so display-order
     /// tests can exercise the `Static` branch without driving a real
-    /// open flow.
+    /// open flow. Only compiled with the `LOGAPP_BUILD_TESTING` macro
+    /// (set by `test/app/CMakeLists.txt`) so it does not leak into
+    /// shipped binaries.
     enum class TestSessionMode
     {
         Idle,
@@ -85,6 +88,7 @@ public:
         LiveTail,
     };
     void SetSessionModeForTest(TestSessionMode mode);
+#endif
 
 protected:
     bool event(QEvent *event) override;

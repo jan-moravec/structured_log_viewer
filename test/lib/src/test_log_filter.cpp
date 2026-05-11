@@ -320,7 +320,7 @@ TEST_CASE(
     "[log_filter][enum][post_dict_growth]"
 )
 {
-    // Regression for B2 (PR review): when a *selected* value is
+    // Regression: when a *selected* value is
     // unresolved at construction time and is later interned past the
     // bitset, a stale predicate evaluated against the new id must NOT
     // reject -- it must fall through to the string-set fallback so the
@@ -371,6 +371,65 @@ TEST_CASE(
     for (size_t row = 0; row < 2; ++row)
     {
         CHECK(predicate.MatchesRow(table, row));
+    }
+}
+
+// Lifetime trip-wire: the `EnumRowPredicate` constructor takes a
+// `std::span<const std::string_view>`. The `string_view`s themselves
+// point at caller-owned bytes. The predicate must NOT retain the
+// `string_view`s past construction -- it either records the bytes
+// (copied into `mSelectedStrings`) or marks an `EnumValueId` in the
+// bitset. `MainWindow::UpdateFilters` relies on this: the span is
+// built from short-lived `std::string`s on the stack frame of
+// `UpdateFilters`, and the predicate lives much longer (until the
+// next `SetFilterRules` call). If a future refactor accidentally
+// caches the view instead of copying the bytes, this test will catch
+// it under ASan / use-after-free.
+TEST_CASE("EnumRowPredicate does not retain references into the selection span", "[log_filter][enum][lifetime]")
+{
+    const TestLogFile fixture("log_filter_enum_lifetime.json");
+    fixture.Write("");
+    // Two-value dictionary so one selected value is resolved at
+    // construction (id path) and one falls through to the string-set
+    // fallback. That covers both storage strategies.
+    LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
+    const EnumDictionary *dict = FindDictionary(table, "level");
+    REQUIRE(dict != nullptr);
+
+    // Build the predicate from views over strings that we deliberately
+    // overwrite right after construction. If the predicate kept the
+    // `string_view`s, every subsequent `MatchesRow` call would walk
+    // garbage bytes and trip ASan (or sometimes silently match the
+    // wrong rows).
+    auto buildPredicate = [&]() {
+        std::vector<std::string> scratch = {"info", "completely_unrelated_label_that_does_not_exist"};
+        const std::vector<std::string_view> views = ToViews(scratch);
+        EnumRowPredicate built(0, views, dict);
+        // Overwrite the backing bytes in place so any retained
+        // `string_view` would now read different content. The scratch
+        // vector + views are destructed at the end of the lambda's
+        // scope; we return the predicate by value.
+        for (std::string &s : scratch)
+        {
+            std::fill(s.begin(), s.end(), 'X');
+        }
+        return built;
+    };
+    const EnumRowPredicate predicate = buildPredicate();
+    REQUIRE(predicate.IsFastPathArmed());
+
+    // The fixture cycles [info, warn, info, warn]. With "info"
+    // selected only the even rows should match. If the predicate
+    // had retained the now-mangled view, the bitset would still
+    // hold the resolved id (id-path is byte-stable), but the
+    // unresolved value's string-set entry would either be "XXXX..."
+    // or freed memory.
+    REQUIRE(table.RowCount() == 4);
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const bool expected = (row % 2 == 0);
+        INFO("row=" << row);
+        CHECK(predicate.MatchesRow(table, row) == expected);
     }
 }
 

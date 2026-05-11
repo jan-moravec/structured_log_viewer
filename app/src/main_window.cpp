@@ -957,6 +957,7 @@ QMenu *MainWindow::FiltersMenu() const
     return ui->menuFilters;
 }
 
+#ifdef LOGAPP_BUILD_TESTING
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)
@@ -972,6 +973,7 @@ void MainWindow::SetSessionModeForTest(TestSessionMode mode)
         break;
     }
 }
+#endif
 
 void MainWindow::ApplyDisplayOrder()
 {
@@ -1304,6 +1306,23 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
 
 void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp)
 {
+    // Reject an inverted range at submission time. The downstream
+    // `TimeRangeRowPredicate` treats `begin > end` as "reject every
+    // row" (matching its documented contract), which would silently
+    // hide every row with no UI signal. Mirrors the
+    // `RegularExpression` probe in `FilterSubmitted`.
+    if (beginTimeStamp > endTimeStamp)
+    {
+        statusBar()->showMessage(
+            QString("Time-range filter rejected: begin (%1) is after end (%2)")
+                .arg(beginTimeStamp)
+                .arg(endTimeStamp),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
@@ -1497,46 +1516,90 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
 
 void MainWindow::UpdateFilters()
 {
-    std::vector<loglib::RowPredicate> rules;
-    rules.reserve(mFilters.size());
+    // `mFilters` is `std::unordered_map`, so iteration order is
+    // hash-dependent and not deterministic across runs. Snapshot the
+    // entries into a vector and re-sort by predicate cost so the
+    // cheapest tests short-circuit `std::ranges::all_of` first. Order
+    // bands (cheapest to most expensive):
+    //   1. EnumRowPredicate    - one `GetEnumValueId` + bitset test
+    //   2. TimeRangeRowPredicate - one `GetValue` + int compare
+    //   3. CallbackStringRowPredicate - per-row Qt regex / UTF-8 walk
+    // Within a band we sort by column index so the order is stable
+    // across runs (handy for tests and for reading the rule vector).
+    using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
+    auto costOf = [](LogFilterType t) -> int {
+        switch (t)
+        {
+        case LogFilterType::Enumeration:
+            return 0;
+        case LogFilterType::Time:
+            return 1;
+        case LogFilterType::String:
+        default:
+            return 2;
+        }
+    };
+    std::vector<const loglib::LogConfiguration::LogFilter *> ordered;
+    ordered.reserve(mFilters.size());
     for (const auto &filter : mFilters)
     {
-        const auto column = static_cast<size_t>(filter.second.row);
-        switch (filter.second.type)
+        ordered.push_back(&filter.second);
+    }
+    std::ranges::sort(ordered, [&costOf](const auto *a, const auto *b) {
+        const int costA = costOf(a->type);
+        const int costB = costOf(b->type);
+        if (costA != costB)
         {
-        case loglib::LogConfiguration::LogFilter::Type::Time:
+            return costA < costB;
+        }
+        return a->row < b->row;
+    });
+
+    std::vector<loglib::RowPredicate> rules;
+    rules.reserve(ordered.size());
+    for (const loglib::LogConfiguration::LogFilter *filterPtr : ordered)
+    {
+        const loglib::LogConfiguration::LogFilter &filter = *filterPtr;
+        const auto column = static_cast<size_t>(filter.row);
+        switch (filter.type)
+        {
+        case LogFilterType::Time:
             rules.emplace_back(
                 std::in_place_type<loglib::TimeRangeRowPredicate>,
                 column,
-                *filter.second.filterBegin,
-                *filter.second.filterEnd
+                *filter.filterBegin,
+                *filter.filterEnd
             );
             break;
-        case loglib::LogConfiguration::LogFilter::Type::Enumeration:
+        case LogFilterType::Enumeration:
         {
-            // `filter` is a reference into `mFilters` -- the std::string
-            // values live there for the lifetime of this call, so the
-            // predicate can borrow views directly without an intermediate
-            // copy. The constructor consumes the span at construction
-            // time and does not retain the views.
+            // `filter` aliases an entry in `mFilters`, whose
+            // `filterValues` strings live for the lifetime of this
+            // call. The `std::string_view`s built here only have to
+            // outlive the constructor of `EnumRowPredicate`, which
+            // consumes the span and either records the bytes in
+            // `mSelectedStrings` (by copy) or marks `mSelectedIds`
+            // (by index), keeping no reference back into the span.
+            // The lifetime trip-wire test in `test_log_filter.cpp`
+            // pins this invariant.
             std::vector<std::string_view> selectedViews;
-            selectedViews.reserve(filter.second.filterValues.size());
-            for (const std::string &v : filter.second.filterValues)
+            selectedViews.reserve(filter.filterValues.size());
+            for (const std::string &v : filter.filterValues)
             {
                 selectedViews.emplace_back(v);
             }
-            const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.second.row);
+            const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
             rules.emplace_back(
                 std::in_place_type<loglib::EnumRowPredicate>, column, std::span<const std::string_view>(selectedViews), dictionary
             );
             break;
         }
-        case loglib::LogConfiguration::LogFilter::Type::String:
+        case LogFilterType::String:
         default:
             rules.emplace_back(
                 std::in_place_type<loglib::CallbackStringRowPredicate>,
                 column,
-                MakeStringMatcher(QString::fromStdString(*filter.second.filterString), *filter.second.matchType)
+                MakeStringMatcher(QString::fromStdString(*filter.filterString), *filter.matchType)
             );
             break;
         }

@@ -25,6 +25,16 @@ target_link_libraries(apptest PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp test_co
 
 target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
+# Expose the test-only accessors on `logapp` classes (cache-size
+# probes, column-move helpers, session-mode shims) while we're
+# building tests. The macro is set as a PUBLIC compile definition on
+# `logapp` so both the library TU and every test TU see the same
+# decls. Gated by `BUILD_TESTING` at the top level via the
+# `add_subdirectory(test/...)` block, so `-DBUILD_TESTING=OFF` strips
+# the helpers from shipped binaries. Mirrors the existing
+# `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
+target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
+
 # WORKING_DIRECTORY pinned to the binary directory so MainWindow's deferred
 # tzdata loader resolves `current_path() / "tzdata"` against the staged
 # folder. Otherwise ctest launches apptest from build/test/app/ where no

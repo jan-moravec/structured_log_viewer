@@ -139,13 +139,16 @@ public:
     /// without round-tripping through `QAbstractItemModel::data`.
     static QString ConvertToSingleLineCompactQString(const std::string &string);
 
+#ifdef LOGAPP_BUILD_TESTING
     /// Test-only: move column `srcIndex` to `destIndex` wrapped in
     /// the standard `beginMoveColumns`/`endMoveColumns` pair so
     /// `columnsMoved` propagates through the proxy chain. Production
-    /// column moves go through `RunPostBatchActions`; this helper
-    /// lets `TestEnumRankCacheInvalidatedOnColumnsMoved` exercise the
-    /// invalidation hook in isolation. Returns `true` on success.
+    /// column moves go through `RunPostBatchActions`. Only compiled
+    /// with the `LOGAPP_BUILD_TESTING` macro (set by
+    /// `test/app/CMakeLists.txt`) so this helper does not leak into
+    /// shipped binaries. Returns `true` on success.
     bool MoveColumnForTest(int srcIndex, int destIndex);
+#endif
 
 signals:
     /// Cumulative error count, emitted when a batch carries errors.

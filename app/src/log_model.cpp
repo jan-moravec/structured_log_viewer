@@ -484,6 +484,21 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
+    // Order note: `endInsertRows` / `endInsertColumns` fire BEFORE
+    // `enumColumnsChanged` (further down). That means a proxy
+    // connected to `rowsInserted` will walk the new rows against a
+    // still-stale predicate when this batch also flipped a column's
+    // enum state. The corresponding `enumColumnsChanged` emission
+    // below causes `MainWindow` to rebuild the rules and the proxy
+    // to `invalidateFilter`, which re-walks every row, so the
+    // observed steady state is correct (regression-pinned by
+    // `TestEnumFilterRebuiltAfterDemote`). A truly atomic fix would
+    // need a pre-batch prediction of demote/promote so the proxy
+    // could rebuild before the row inserts. That requires extending
+    // `LogTable::PreviewAppend` with enum-shape forecasting and
+    // hasn't pulled its weight: the transient is purely intra-call,
+    // never crosses an event-loop boundary, and Qt's repaint events
+    // are queued so no view ever observes it.
     if (rowsGrew)
     {
         endInsertRows();
@@ -854,6 +869,7 @@ QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)
     return qString.simplified();
 }
 
+#ifdef LOGAPP_BUILD_TESTING
 bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
 {
     if (srcIndex == destIndex)
@@ -873,3 +889,4 @@ bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
     endMoveColumns();
     return true;
 }
+#endif
