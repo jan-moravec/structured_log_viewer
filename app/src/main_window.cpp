@@ -158,6 +158,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
+    mSortFilterProxyModel->SetLogModel(mModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
@@ -336,6 +337,10 @@ MainWindow::MainWindow(QWidget *parent)
     // the row outcome of an already-armed bitset, so re-walking the
     // whole row set on every batch would be pure waste during streaming.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
+        // Always drop the proxy's cached `EnumDictRank` entries so any
+        // pending column sort sees the latest dictionary ordering. The
+        // ranks are rebuilt on demand by `LogFilterModel::lessThan`.
+        mSortFilterProxyModel->InvalidateEnumRanks();
         const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
             if (kv.second.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
             {
@@ -1393,38 +1398,95 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
     });
 }
 
+namespace
+{
+
+/// Build a Qt-flavoured string matcher for a `TextFilterRule`-equivalent
+/// `loglib::CallbackStringRowPredicate`. The lambda captures a compiled
+/// `QRegularExpression` once so the inner loop avoids re-compiling per
+/// row. Bytes arrive as UTF-8 `std::string_view`; converting to
+/// `QString` once per row is cheap compared to the prior data(SortRole)
+/// chain through `LogModel::data`.
+loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
+    const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
+)
+{
+    using Match = loglib::LogConfiguration::LogFilter::Match;
+    switch (match)
+    {
+    case Match::Exactly:
+    {
+        const std::string needle = pattern.toStdString();
+        return [needle](std::string_view bytes) { return bytes == needle; };
+    }
+    case Match::Contains:
+    {
+        return [pattern](std::string_view bytes) {
+            return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size())).contains(pattern);
+        };
+    }
+    case Match::RegularExpression:
+    {
+        const QRegularExpression regex(pattern);
+        return [regex](std::string_view bytes) {
+            return regex.match(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()))).hasMatch();
+        };
+    }
+    case Match::Wildcard:
+    {
+        const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
+        return [regex](std::string_view bytes) {
+            return regex.match(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()))).hasMatch();
+        };
+    }
+    }
+    return [](std::string_view) { return false; };
+}
+
+} // namespace
+
 void MainWindow::UpdateFilters()
 {
-    std::vector<std::unique_ptr<FilterRule>> rules;
+    std::vector<std::unique_ptr<loglib::RowPredicate>> rules;
     mEnumFilterFullyResolved.clear();
     for (const auto &filter : mFilters)
     {
+        const auto column = static_cast<size_t>(filter.second.row);
         switch (filter.second.type)
         {
         case loglib::LogConfiguration::LogFilter::Type::Time:
-            rules.push_back(std::make_unique<TimeStampFilterRule>(
-                filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd
+            rules.push_back(std::make_unique<loglib::TimeRangeRowPredicate>(
+                column, *filter.second.filterBegin, *filter.second.filterEnd
             ));
             break;
         case loglib::LogConfiguration::LogFilter::Type::Enumeration:
         {
-            QStringList values;
-            values.reserve(static_cast<qsizetype>(filter.second.filterValues.size()));
+            // Hold the UTF-8 byte buffers alive in `selectedHolders`
+            // while the predicate constructor reads them as views;
+            // they're consumed at construction time and need no further
+            // lifetime guarantees.
+            std::vector<std::string> selectedHolders;
+            selectedHolders.reserve(filter.second.filterValues.size());
             for (const std::string &v : filter.second.filterValues)
             {
-                values.append(QString::fromStdString(v));
+                selectedHolders.push_back(v);
             }
-            // Pre-resolve the canonical dictionary for the bitset path;
-            // the rule falls back to strings if the column isn't promoted.
+            std::vector<std::string_view> selectedViews;
+            selectedViews.reserve(selectedHolders.size());
+            for (const auto &v : selectedHolders)
+            {
+                selectedViews.emplace_back(v);
+            }
             const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.second.row);
-            rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values, dictionary));
+            rules.push_back(std::make_unique<loglib::EnumRowPredicate>(column, selectedViews, dictionary));
             mEnumFilterFullyResolved[filter.first] = EnumFilterFullyResolved(filter.second);
             break;
         }
         case loglib::LogConfiguration::LogFilter::Type::String:
         default:
-            rules.push_back(std::make_unique<TextFilterRule>(
-                filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
+            rules.push_back(std::make_unique<loglib::CallbackStringRowPredicate>(
+                column,
+                MakeStringMatcher(QString::fromStdString(*filter.second.filterString), *filter.second.matchType)
             ));
             break;
         }

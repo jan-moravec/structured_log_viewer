@@ -1,5 +1,4 @@
 #include "filter_editor.hpp"
-#include "filter_rule.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
@@ -15,6 +14,7 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_filter.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_value.hpp>
@@ -3138,31 +3138,32 @@ private slots:
         dictionary = run.model->Table().EnumDictionaries().Find(canonicalKeyId);
         QVERIFY2(dictionary != nullptr, "the enum-encoded column must have a dictionary");
 
-        const QStringList selected{QStringLiteral("info"), QStringLiteral("warn")};
-        const EnumFilterRule fastRule(levelCol, selected, dictionary);
-        const EnumFilterRule fallbackRule(levelCol, selected, /*dictionary=*/nullptr);
+        const std::vector<std::string> selectedHolders = {"info", "warn"};
+        std::vector<std::string_view> selectedViews;
+        selectedViews.reserve(selectedHolders.size());
+        for (const auto &v : selectedHolders)
+        {
+            selectedViews.emplace_back(v);
+        }
+        const loglib::EnumRowPredicate fastRule(static_cast<size_t>(levelCol), selectedViews, dictionary);
+        const loglib::EnumRowPredicate fallbackRule(
+            static_cast<size_t>(levelCol), selectedViews, /*dictionary=*/nullptr
+        );
 
         const int rows = run.model->rowCount();
         QCOMPARE(rows, FIXTURE_LINES);
 
         int matchedRows = 0;
+        const loglib::LogTable &table = run.model->Table();
         for (int row = 0; row < rows; ++row)
         {
-            const QModelIndex idx = run.model->index(row, levelCol);
-            const QVariant displayOrSort = run.model->data(idx, LogModelItemDataRole::SortRole);
-            const QVariant enumId = run.model->data(idx, LogModelItemDataRole::EnumValueRole);
-
-            const bool fast = fastRule.Matches(displayOrSort, enumId);
-            const bool fallback = fallbackRule.Matches(displayOrSort, QVariant{});
+            const auto r = static_cast<size_t>(row);
+            const bool fast = fastRule.MatchesRow(table, r);
+            const bool fallback = fallbackRule.MatchesRow(table, r);
 
             QVERIFY2(
                 fast == fallback,
-                qPrintable(QStringLiteral("row %1: fast=%2 vs fallback=%3 (display='%4', enumId valid=%5)")
-                               .arg(row)
-                               .arg(fast)
-                               .arg(fallback)
-                               .arg(displayOrSort.toString())
-                               .arg(enumId.isValid()))
+                qPrintable(QStringLiteral("row %1: fast=%2 vs fallback=%3").arg(row).arg(fast).arg(fallback))
             );
             if (fast)
             {

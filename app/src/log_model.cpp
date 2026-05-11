@@ -436,7 +436,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     // Snapshot pre-batch dict sizes for active enum columns. If a batch
     // grows any, emit `enumColumnsChanged` so `MainWindow` rebuilds the
-    // rules and `EnumFilterRule`'s bitset stays current.
+    // rules and `loglib::EnumRowPredicate`'s bitset stays current.
     std::vector<std::pair<loglib::KeyId, uint16_t>> enumDictSizesBefore;
     {
         const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
@@ -519,7 +519,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     // Dictionaries that grew without a promotion still need a refresh
-    // so `EnumFilterRule`'s bitset covers any newly-interned id.
+    // so `loglib::EnumRowPredicate`'s bitset covers any newly-interned id.
     if (!emittedEnumColumnsChanged && enumDictionariesGrew)
     {
         emit enumColumnsChanged();
@@ -681,8 +681,10 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
     if (role == LogModelItemDataRole::EnumValueRole)
     {
-        // `qint32` for `DictRef` slots; invalid signals `EnumFilterRule`
-        // to use the string fallback path.
+        // `qint32` for `DictRef` slots; invalid means the slot is
+        // monostate or unpromoted. Still exposed via the data() role
+        // for external consumers (tests, future widgets); the active
+        // filter predicate path now reads `LogTable` directly.
         const auto enumId =
             mLogTable.GetEnumValueId(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
         if (!enumId.has_value())

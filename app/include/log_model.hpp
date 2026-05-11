@@ -29,7 +29,8 @@ enum LogModelItemDataRole
     /// Source-model row index, used as a stable sort tie-break.
     InsertionOrderRole,
     /// `loglib::EnumValueId` as `qint32` for `DictRef` slots; invalid
-    /// otherwise. `EnumFilterRule` uses it for the bitset fast path.
+    /// otherwise. Retained for external readers; the filter proxy now
+    /// drives `loglib::EnumRowPredicate` directly off the table.
     EnumValueRole,
 };
 

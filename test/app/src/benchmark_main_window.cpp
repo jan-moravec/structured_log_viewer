@@ -19,9 +19,14 @@
 #include "qt_streaming_log_sink.hpp"
 #include "row_order_proxy_model.hpp"
 
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/key_index.hpp>
+#include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_filter.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
@@ -40,7 +45,10 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -105,6 +113,7 @@ RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
     rowProxy->SetReversed(reversed);
     auto filterProxy = std::make_unique<LogFilterModel>();
     filterProxy->setSourceModel(rowProxy.get());
+    filterProxy->SetLogModel(model.get());
     filterProxy->setSortRole(LogModelItemDataRole::SortRole);
 
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
@@ -190,6 +199,144 @@ private slots:
         RunConfig(QStringLiteral("Qt path, newest-first ON (static mode)"), true);
     }
 
+    // Enum filter wall-clock under the production proxy chain. Mirrors
+    // the lib-level `[log_filter][large]` benchmark but lands the rows
+    // through the full `LogModel -> RowOrderProxyModel -> LogFilterModel`
+    // path so any regression in the proxy's `filterAcceptsRow` shows up
+    // here even if the lib path stays fast.
+    void BenchEnumFilterApply()
+    {
+        ProxyChain chain = BuildLoadedChain();
+        const auto &columns = chain.model->Configuration().columns;
+        int levelCol = -1;
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            if (std::find(columns[i].keys.begin(), columns[i].keys.end(), std::string("level")) !=
+                columns[i].keys.end())
+            {
+                levelCol = static_cast<int>(i);
+                break;
+            }
+        }
+        QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+
+        const loglib::EnumDictionary *dict = nullptr;
+        const loglib::KeyId keyId =
+            chain.model->Table().Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
+        QVERIFY(keyId != loglib::INVALID_KEY_ID);
+        dict = chain.model->Table().EnumDictionaries().Find(keyId);
+        QVERIFY(dict != nullptr);
+
+        const std::vector<std::string> selectedHolders = {"info", "warning"};
+        std::vector<std::string_view> selectedViews;
+        selectedViews.reserve(selectedHolders.size());
+        for (const auto &v : selectedHolders)
+        {
+            selectedViews.emplace_back(v);
+        }
+        std::vector<std::unique_ptr<loglib::RowPredicate>> rules;
+        rules.push_back(std::make_unique<loglib::EnumRowPredicate>(
+            static_cast<size_t>(levelCol), selectedViews, dict
+        ));
+
+        // Two breakdown measurements:
+        //   * predicate-only: walk every row in the same `LogTable`
+        //     through `EnumRowPredicate::MatchesRow`. Mirrors the
+        //     lib-level `[log_filter][large]` numbers and proves the
+        //     non-Qt cost stays small.
+        //   * proxy-roundtrip: also include `QSortFilterProxyModel`'s
+        //     `invalidateFilter` + lazy row-map rebuild on `rowCount()`.
+        //     The proxy's internal bookkeeping with ~500 k survivors
+        //     dominates this number; the lib-level benchmark is the
+        //     canonical regression gate.
+        const loglib::LogTable &table = chain.model->Table();
+        const auto &predicate = *rules.front();
+        size_t predicateHits = 0;
+        const auto predicateStart = std::chrono::steady_clock::now();
+        for (size_t row = 0, n = static_cast<size_t>(table.RowCount()); row < n; ++row)
+        {
+            if (predicate.MatchesRow(table, row))
+            {
+                ++predicateHits;
+            }
+        }
+        const auto predicateElapsed = std::chrono::steady_clock::now() - predicateStart;
+
+        const auto t0 = std::chrono::steady_clock::now();
+        chain.filterProxy->SetFilterRules(std::move(rules));
+        // Force the proxy to materialise its row map (the invalidation
+        // is lazy; `rowCount()` triggers the walk).
+        const int filteredRows = chain.filterProxy->rowCount();
+        const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+        using Ms = std::chrono::duration<double, std::milli>;
+        qDebug().noquote()
+            << QStringLiteral("EnumRowPredicate over %1 rows: %2 ms (%3 hits)")
+                   .arg(static_cast<std::size_t>(table.RowCount()))
+                   .arg(Ms(predicateElapsed).count(), 0, 'f', 2)
+                   .arg(predicateHits);
+        qDebug().noquote()
+            << QStringLiteral("Apply enum filter (Qt proxy roundtrip) over %1 rows: %2 ms (%3 rows survived)")
+                   .arg(static_cast<std::size_t>(chain.model->rowCount()))
+                   .arg(Ms(elapsed).count(), 0, 'f', 2)
+                   .arg(filteredRows);
+
+        QVERIFY2(filteredRows > 0 && filteredRows < chain.model->rowCount(), "filter selectivity sanity check");
+        QCOMPARE(static_cast<int>(predicateHits), filteredRows);
+        // Predicate-only path is the canonical gate: previously the
+        // same walk via `data(SortRole) -> QVariant<QString>` chain
+        // took ~10x longer per row and the GUI freeze was many seconds.
+        QVERIFY2(
+            Ms(predicateElapsed).count() < 200.0,
+            qPrintable(QStringLiteral("predicate walk regressed: %1 ms").arg(Ms(predicateElapsed).count()))
+        );
+    }
+
+    // Enum-column sort wall-clock under the production proxy chain.
+    void BenchEnumColumnSort()
+    {
+        ProxyChain chain = BuildLoadedChain();
+        const auto &columns = chain.model->Configuration().columns;
+        int levelCol = -1;
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            if (std::find(columns[i].keys.begin(), columns[i].keys.end(), std::string("level")) !=
+                columns[i].keys.end())
+            {
+                levelCol = static_cast<int>(i);
+                break;
+            }
+        }
+        QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+
+        // Drop any cached ranks so the very first `lessThan` triggers a
+        // rebuild and the time below covers the cold-cache cost too.
+        chain.filterProxy->InvalidateEnumRanks();
+        chain.filterProxy->sort(-1);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        chain.filterProxy->sort(levelCol, Qt::AscendingOrder);
+        // Force the row map to materialise.
+        const int rowCount = chain.filterProxy->rowCount();
+        const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+        using Ms = std::chrono::duration<double, std::milli>;
+        qDebug().noquote() << QStringLiteral("Sort by enum column over %1 rows: %2 ms")
+                                  .arg(static_cast<std::size_t>(rowCount))
+                                  .arg(Ms(elapsed).count(), 0, 'f', 2);
+
+        QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
+        // 1 M-row enum sort previously took several seconds via the
+        // `data(SortRole)` -> `QVariant<QString>` path. 4 s ceiling
+        // here is the regression gate; lib-level we measure ~60 ms.
+        QVERIFY2(
+            Ms(elapsed).count() < 4000.0,
+            qPrintable(QStringLiteral("enum sort regressed: %1 ms").arg(Ms(elapsed).count()))
+        );
+    }
+
 private:
     static constexpr std::size_t LINE_COUNT = 1'000'000;
 
@@ -199,6 +346,45 @@ private:
         QVERIFY2(run.finished, "streamingFinished must fire within the 180 s timeout");
         QCOMPARE(static_cast<std::size_t>(run.rowCount), LINE_COUNT);
         qDebug().noquote() << FormatThroughput(label, run.elapsed, mBytes, LINE_COUNT);
+    }
+
+    struct ProxyChain
+    {
+        std::unique_ptr<LogModel> model;
+        std::unique_ptr<RowOrderProxyModel> rowProxy;
+        std::unique_ptr<LogFilterModel> filterProxy;
+    };
+
+    /// Build a fresh proxy chain and drive a streaming parse of
+    /// `mLogPath` to completion. Used by the filter / sort benchmarks
+    /// so each measurement starts from a clean Qt-side state.
+    ProxyChain BuildLoadedChain()
+    {
+        ProxyChain chain;
+        chain.model = std::make_unique<LogModel>();
+        chain.rowProxy = std::make_unique<RowOrderProxyModel>();
+        chain.rowProxy->setSourceModel(chain.model.get());
+        chain.filterProxy = std::make_unique<LogFilterModel>();
+        chain.filterProxy->setSourceModel(chain.rowProxy.get());
+        chain.filterProxy->SetLogModel(chain.model.get());
+        chain.filterProxy->setSortRole(LogModelItemDataRole::SortRole);
+
+        QSignalSpy finishedSpy(chain.model.get(), &LogModel::streamingFinished);
+        auto file = std::make_unique<loglib::LogFile>(mLogPath.string());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        chain.model->BeginStreaming(
+            std::move(fileSource),
+            [fileSourcePtr, sink = chain.model->Sink()](loglib::StopToken token) {
+                loglib::ParserOptions options;
+                options.stopToken = std::move(token);
+                const loglib::JsonParser parser;
+                parser.ParseStreaming(*fileSourcePtr, *sink, options);
+            }
+        );
+        const bool finished = finishedSpy.wait(180'000);
+        Q_UNUSED(finished);
+        return chain;
     }
 
     QTemporaryDir mTempDir;
