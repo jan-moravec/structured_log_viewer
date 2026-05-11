@@ -1495,9 +1495,8 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
         // call chain doesn't promise noexcept either, so silence the
         // check here.
         // NOLINTNEXTLINE(bugprone-exception-escape)
-        return [pattern](std::string_view bytes) {
-            return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern;
-        };
+        return
+            [pattern](std::string_view bytes) { return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern; };
     }
     case Match::Contains:
     {

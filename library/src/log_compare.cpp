@@ -165,7 +165,8 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     {
         int &depth;
 
-        explicit ReentryGuard(int &d) : depth(d)
+        explicit ReentryGuard(int &d)
+            : depth(d)
         {
             assert(depth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
             ++depth;

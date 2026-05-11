@@ -3944,8 +3944,7 @@ private slots:
         // already passes through `ConvertToSingleLineCompactQString`,
         // so we round-trip the underlying bytes via `LogTable::GetValue`
         // here instead).
-        const loglib::LogValue raw =
-            model->Table().GetValue(0, static_cast<size_t>(msgCol));
+        const loglib::LogValue raw = model->Table().GetValue(0, static_cast<size_t>(msgCol));
         QVERIFY2(
             std::holds_alternative<std::string_view>(raw) || std::holds_alternative<std::string>(raw),
             "fixture row must store the msg as a string slot so the matcher hits the string branch"
@@ -3953,10 +3952,7 @@ private slots:
         const std::string_view rawView = std::holds_alternative<std::string_view>(raw)
                                              ? std::get<std::string_view>(raw)
                                              : std::string_view(std::get<std::string>(raw));
-        QVERIFY2(
-            rawView.find('\n') != std::string_view::npos,
-            "fixture must keep the embedded newline so the bug's precondition holds"
-        );
+        QVERIFY2(rawView.contains('\n'), "fixture must keep the embedded newline so the bug's precondition holds");
 
         // And the displayed text is the simplified one-line form,
         // matching what the user sees in the table view.
@@ -3985,9 +3981,7 @@ private slots:
 
         const auto clearFilter = [&](const QString &filterId) {
             QVERIFY2(
-                QMetaObject::invokeMethod(
-                    mWindow, "ClearFilter", Qt::DirectConnection, Q_ARG(QString, filterId)
-                ),
+                QMetaObject::invokeMethod(mWindow, "ClearFilter", Qt::DirectConnection, Q_ARG(QString, filterId)),
                 "ClearFilter slot must be invocable via meta-object"
             );
             QCoreApplication::processEvents();
