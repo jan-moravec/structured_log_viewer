@@ -3216,6 +3216,9 @@ private slots:
         // unreliable on the Linux runner with Qt 6.8 + offscreen QPA.
         const QPushButton *okButton = editor.OkButton();
         QVERIFY2(okButton != nullptr, "FilterEditor must expose an OK button");
+        // clang-analyzer does not model `QVERIFY2`'s test-aborting behaviour,
+        // so it still considers `okButton` potentially null on the next line.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY2(!okButton->isEnabled(), "OK must be disabled when the picker dictionary is empty");
 
         const QLabel *placeholder = editor.EnumEmptyPlaceholder();

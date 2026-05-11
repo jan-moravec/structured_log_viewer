@@ -564,13 +564,20 @@ TEST_CASE(
     using Match = LogConfiguration::LogFilter::Match;
     REQUIRE(loaded.filters.size() == 6);
     CHECK(loaded.filters[0].type == FilterType::String);
+    // The `REQUIRE(has_value())` guards above are not modelled by
+    // `bugprone-unchecked-optional-access` (only `if`/`DCHECK`/`ASSERT_TRUE`
+    // are), so the `operator*` accesses below are false positives.
     REQUIRE(loaded.filters[0].matchType.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].matchType == Match::Exactly);
     REQUIRE(loaded.filters[1].matchType.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[1].matchType == Match::Contains);
     REQUIRE(loaded.filters[2].matchType.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[2].matchType == Match::RegularExpression);
     REQUIRE(loaded.filters[3].matchType.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[3].matchType == Match::Wildcard);
     CHECK(loaded.filters[4].type == FilterType::Time);
     CHECK(loaded.filters[5].type == FilterType::Enumeration);
