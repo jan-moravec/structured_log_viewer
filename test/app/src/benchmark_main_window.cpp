@@ -209,7 +209,7 @@ private slots:
     // here even if the lib path stays fast.
     void BenchEnumFilterApply()
     {
-        ProxyChain chain = BuildLoadedChain();
+        const ProxyChain chain = BuildLoadedChain();
         const auto &columns = chain.model->Configuration().columns;
         int levelCol = -1;
         for (size_t i = 0; i < columns.size(); ++i)
@@ -301,7 +301,7 @@ private slots:
     // Enum-column sort wall-clock under the production proxy chain.
     void BenchEnumColumnSort()
     {
-        ProxyChain chain = BuildLoadedChain();
+        const ProxyChain chain = BuildLoadedChain();
         const auto &columns = chain.model->Configuration().columns;
         int levelCol = -1;
         for (size_t i = 0; i < columns.size(); ++i)
@@ -329,7 +329,7 @@ private slots:
             const size_t rowCount = table.RowCount();
             QCOMPARE(static_cast<std::size_t>(rowCount), LINE_COUNT);
             std::vector<size_t> indices(rowCount);
-            std::iota(indices.begin(), indices.end(), size_t{0});
+            std::ranges::iota(indices, size_t{0});
 
             const loglib::KeyId levelKey = table.Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
             QVERIFY2(levelKey != loglib::INVALID_KEY_ID, "level key must resolve in the table");

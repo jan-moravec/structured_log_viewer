@@ -102,7 +102,7 @@ TEST_CASE("EnumDictRank orders ids alphabetically by their resolved bytes", "[lo
     const EnumValueId errorId = dict.Insert("error");
     const EnumValueId debugId = dict.Insert("debug");
 
-    EnumDictRank rank{dict};
+    const EnumDictRank rank{dict};
     REQUIRE(rank.DictSize() == 4);
 
     // Alphabetic order: debug < error < info < warn.
@@ -128,7 +128,7 @@ TEST_CASE("CompareRows handles Integer columns with monostate-tail order", "[log
     const TestLogFile fixture("log_compare_integer.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{3}, int64_t{1}, std::monostate{}, int64_t{2}};
-    LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
 
     // 1 < 2 < 3 < monostate
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == 1);  // 3 vs 1
@@ -166,7 +166,7 @@ TEST_CASE(
         nhuge,      // 5: clamps to INT64_MIN (== row 3 numerically)
         int64_t{42} // 6: a plain int sandwich
     };
-    LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
 
     // Ordering invariants. We don't pin a total order across NaN/int
     // (the "numeric < non-numeric" rule already promises NaN > any int);
@@ -221,7 +221,7 @@ TEST_CASE("CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {int64_t{0}, nan, std::monostate{}, int64_t{42}};
-    LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
 
     // Tail-bucket equality: NaN <=> monostate is 0.
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0); // NaN == monostate
@@ -251,7 +251,7 @@ TEST_CASE(
         std::monostate{},    // 2: monostate -> tail bucket
         -3.25,               // 3: representable double
     };
-    LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
 
     // Tail-bucket equality.
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0); // stray-string == monostate
@@ -270,7 +270,7 @@ TEST_CASE("CompareRows handles Floating columns with NaN at the tail", "[log_com
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {1.5, -2.0, nan, 4.25};
-    LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
 
     CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // -2 < 1.5
     CHECK(SignOf(CompareRows(table, 0, 3, 0)) == -1); // 1.5 < 4.25
@@ -286,7 +286,7 @@ TEST_CASE("CompareRows handles Time columns by microseconds-since-epoch", "[log_
     const TimeStamp t300{std::chrono::microseconds{300}};
     const TimeStamp t200{std::chrono::microseconds{200}};
     const std::vector<LogValue> values = {t100, t300, t200, std::monostate{}};
-    LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 100 < 300
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 1);  // 300 > 200
@@ -309,7 +309,7 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
     const TimeStamp t100{std::chrono::microseconds{100}};
     const TimeStamp t300{std::chrono::microseconds{300}};
     const std::vector<LogValue> values = {t100, uint64_t{200}, t300};
-    LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 100 < 200(u)
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == -1); // 200(u) < 300
@@ -322,7 +322,8 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
     fixtureBig.Write("");
     const uint64_t huge = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 100;
     const std::vector<LogValue> bigValues = {t100, huge};
-    LogTable bigTable = BuildSingleColumnTable(fixtureBig, "ts", LogConfiguration::Type::Time, bigValues, "{:%FT%T}");
+    const LogTable bigTable =
+        BuildSingleColumnTable(fixtureBig, "ts", LogConfiguration::Type::Time, bigValues, "{:%FT%T}");
     CHECK(SignOf(CompareRows(bigTable, 0, 1, 0)) == -1); // t100 < clamped uint
     CHECK(SignOf(CompareRows(bigTable, 1, 0, 0)) == 1);
 }
@@ -368,7 +369,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
     REQUIRE(dict != nullptr);
 
-    EnumDictRank rank{*dict};
+    const EnumDictRank rank{*dict};
 
     // Row 0 = warn, row 1 = info; alphabetic: info < warn so (0 vs 1) > 0.
     CHECK(SignOf(CompareRows(table, 0, 1, 0, &rank)) == 1);
@@ -479,7 +480,7 @@ TEST_CASE("CompareRows on String/Any columns compares byte-wise", "[log_compare]
         std::string("charlie"),
         std::monostate{},
     };
-    LogTable table = BuildSingleColumnTable(fixture, "label", LogConfiguration::Type::Any, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "label", LogConfiguration::Type::Any, values);
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == 1);  // delta > alpha
     CHECK(SignOf(CompareRows(table, 2, 0, 0)) == -1); // charlie < delta
@@ -492,7 +493,7 @@ TEST_CASE("CompareRows is total: a<b iff b>a, and a=a", "[log_compare][propertie
     const TestLogFile fixture("log_compare_total_order.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{42}, int64_t{-7}, std::monostate{}, int64_t{42}};
-    LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
 
     for (size_t a = 0; a < table.RowCount(); ++a)
     {

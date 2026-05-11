@@ -224,7 +224,7 @@ TEST_CASE("EnumRowPredicate rejects every row on an empty selection", "[log_filt
 {
     const TestLogFile fixture("log_filter_enum_empty.json");
     fixture.Write("");
-    LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 6);
+    const LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 6);
     const EnumDictionary *dict = FindDictionary(table, "level");
     REQUIRE(dict != nullptr);
 
@@ -387,7 +387,7 @@ TEST_CASE("EnumRowPredicate does not retain references into the selection span",
     // Two-value dictionary so one selected value is resolved at
     // construction (id path) and one falls through to the string-set
     // fallback. That covers both storage strategies.
-    LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
+    const LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
     const EnumDictionary *dict = FindDictionary(table, "level");
     REQUIRE(dict != nullptr);
 
@@ -406,7 +406,7 @@ TEST_CASE("EnumRowPredicate does not retain references into the selection span",
         // scope; we return the predicate by value.
         for (std::string &s : scratch)
         {
-            std::fill(s.begin(), s.end(), 'X');
+            std::ranges::fill(s, 'X');
         }
         return built;
     };
@@ -520,7 +520,7 @@ TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside
     const TestLogFile fixture("log_filter_time.json");
     fixture.Write("");
     const std::vector<int64_t> times = {100, 200, 300, 400, 500};
-    LogTable table = BuildTimeTable(fixture, "ts", times);
+    const LogTable table = BuildTimeTable(fixture, "ts", times);
 
     const TimeRangeRowPredicate predicate(0, /*begin=*/200, /*end=*/400);
     const std::array<bool, 5> expected = {false, true, true, true, false};
@@ -535,7 +535,7 @@ TEST_CASE("TimeRangeRowPredicate rejects non-time columns", "[log_filter][time]"
 {
     const TestLogFile fixture("log_filter_time_wrong_column.json");
     fixture.Write("");
-    LogTable table = BuildStringTable(fixture, "label", {"alpha", "beta"});
+    const LogTable table = BuildStringTable(fixture, "label", {"alpha", "beta"});
 
     const TimeRangeRowPredicate predicate(0, /*begin=*/0, /*end=*/1'000'000);
     CHECK_FALSE(predicate.MatchesRow(table, 0));
@@ -547,7 +547,7 @@ TEST_CASE("CallbackStringRowPredicate forwards string slots to the callback", "[
     const TestLogFile fixture("log_filter_callback_string.json");
     fixture.Write("");
     const std::vector<std::string> values = {"GET /a", "POST /b", "GET /c"};
-    LogTable table = BuildStringTable(fixture, "path", values);
+    const LogTable table = BuildStringTable(fixture, "path", values);
 
     int callCount = 0;
     const CallbackStringRowPredicate predicate(0, [&callCount](std::string_view bytes) {
@@ -565,7 +565,7 @@ TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column pr
     InitializeTimezoneData();
     const TestLogFile fixture("log_filter_callback_time.json");
     fixture.Write("");
-    LogTable table = BuildTimeTable(fixture, "ts", {1'700'000'000'000'000});
+    const LogTable table = BuildTimeTable(fixture, "ts", {1'700'000'000'000'000});
 
     std::string captured;
     const CallbackStringRowPredicate predicate(0, [&captured](std::string_view bytes) {

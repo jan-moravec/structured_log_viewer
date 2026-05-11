@@ -812,7 +812,7 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
     // yet promoted, or demoted back to string). Callers downstream
     // (the GUI's rank cache, the predicate builder) want to know
     // both facts independently.
-    return {canonicalKey, mEnumDictionaries.Find(canonicalKey)};
+    return {.canonicalKey = canonicalKey, .dictionary = mEnumDictionaries.Find(canonicalKey)};
 }
 
 void LogTable::RunEnumPassForAppendBatch(

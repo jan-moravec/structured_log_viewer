@@ -34,7 +34,7 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
     // inverse pass `rank[order[k]] = k` gives the per-id rank in O(N)
     // once `order` is sorted.
     std::vector<uint16_t> order(size);
-    std::iota(order.begin(), order.end(), uint16_t{0});
+    std::ranges::iota(order, uint16_t{0});
     std::ranges::sort(order, [&values](uint16_t a, uint16_t b) {
         return std::string_view(values[a]) < std::string_view(values[b]);
     });
@@ -254,7 +254,7 @@ int CompareInteger(const LogValue &lhs, const LogValue &rhs)
             // Clamp to int64_t range: oversized values sort to the top
             // of the signed range, which is the closest order-preserving
             // mapping.
-            constexpr uint64_t MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+            constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
             return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
         }
         if (const auto *d = std::get_if<double>(&v); d != nullptr)
@@ -323,7 +323,7 @@ int CompareTime(const LogValue &lhs, const LogValue &rhs)
             // slots. Clamp to `int64_t::max` so the order is
             // preserved (oversized values sort to the top of the
             // signed range rather than wrapping).
-            constexpr uint64_t MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+            constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
             return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
         }
         return std::nullopt;

@@ -1880,10 +1880,12 @@ private slots:
         // Idle at startup: no stream has been opened yet, the toolbar is
         // hidden, and the Stream menu actions must be disabled so a
         // user click on the menu cannot flip the checked state.
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         QVERIFY(!pauseAction->isEnabled());
         QVERIFY(!followAction->isEnabled());
         QVERIFY(!stopAction->isEnabled());
         QVERIFY(!pauseAction->isChecked());
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
 
         // `trigger()` ignores disabled actions (Qt won't deliver the
         // `triggered` / `toggled` signals on a disabled action), so even
@@ -3452,7 +3454,7 @@ private slots:
         // a `columnsMoved` hook; post-fix the cache survives because
         // it is keyed by `KeyId`, not by column index.
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
-        QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
+        const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
         QVERIFY(columnsMovedSpy.isValid());
         const int src = (levelCol == 0) ? 1 : 0;
         const int dest = (levelCol == 0) ? 0 : 1;
@@ -3968,10 +3970,10 @@ private slots:
         {
             actualRows.append(idx.row());
         }
-        std::sort(actualRows.begin(), actualRows.end());
+        std::ranges::sort(actualRows);
 
         QList<int> expectedSorted = expectedRows;
-        std::sort(expectedSorted.begin(), expectedSorted.end());
+        std::ranges::sort(expectedSorted);
         QCOMPARE(actualRows, expectedSorted);
 
         model->EndStreaming(false);

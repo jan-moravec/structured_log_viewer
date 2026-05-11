@@ -120,7 +120,7 @@ bool LogFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourcePa
     });
 }
 
-bool LogFilterModel::lessThan(const QModelIndex &source_left, const QModelIndex &source_right) const
+bool LogFilterModel::lessThan(const QModelIndex &sourceLeft, const QModelIndex &sourceRight) const
 {
     // Production sort paths always have a LogModel attached (set by
     // `MainWindow::SetLogModel` before any sort is issued). The
@@ -135,19 +135,19 @@ bool LogFilterModel::lessThan(const QModelIndex &source_left, const QModelIndex 
     );
     if (mLogModel == nullptr)
     {
-        return QSortFilterProxyModel::lessThan(source_left, source_right);
+        return QSortFilterProxyModel::lessThan(sourceLeft, sourceRight);
     }
-    const int leftRow = MapModelIndexToLogModelRow(source_left);
-    const int rightRow = MapModelIndexToLogModelRow(source_right);
+    const int leftRow = MapModelIndexToLogModelRow(sourceLeft);
+    const int rightRow = MapModelIndexToLogModelRow(sourceRight);
     if (leftRow < 0 || rightRow < 0)
     {
-        return QSortFilterProxyModel::lessThan(source_left, source_right);
+        return QSortFilterProxyModel::lessThan(sourceLeft, sourceRight);
     }
-    const int columnIndex = source_left.column();
+    const int columnIndex = sourceLeft.column();
     const auto &columns = mLogModel->Configuration().columns;
     if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= columns.size())
     {
-        return QSortFilterProxyModel::lessThan(source_left, source_right);
+        return QSortFilterProxyModel::lessThan(sourceLeft, sourceRight);
     }
     const loglib::EnumDictRank *rank = nullptr;
     if (columns[columnIndex].type == loglib::LogConfiguration::Type::Enumeration)
@@ -166,7 +166,7 @@ bool LogFilterModel::lessThan(const QModelIndex &source_left, const QModelIndex 
 
 int LogFilterModel::MapToLogModelRow(int sourceRow, const QModelIndex &sourceParent) const
 {
-    QAbstractItemModel *src = sourceModel();
+    const QAbstractItemModel *src = sourceModel();
     if (src == nullptr)
     {
         return -1;
@@ -186,7 +186,7 @@ int LogFilterModel::MapModelIndexToLogModelRow(QModelIndex idx) const
     // pay O(N log N) times.
     if (mImmediateProxy != nullptr && idx.model() == mImmediateProxy)
     {
-        QModelIndex mapped = mImmediateProxy->mapToSource(idx);
+        const QModelIndex mapped = mImmediateProxy->mapToSource(idx);
         if (mapped.model() == mLogModel)
         {
             return mapped.row();
@@ -198,7 +198,7 @@ int LogFilterModel::MapModelIndexToLogModelRow(QModelIndex idx) const
     // happened before the cache caught up.
     while (const auto *proxy = qobject_cast<const QAbstractProxyModel *>(idx.model()))
     {
-        QModelIndex mapped = proxy->mapToSource(idx);
+        const QModelIndex mapped = proxy->mapToSource(idx);
         if (!mapped.isValid())
         {
             return -1;
@@ -249,7 +249,8 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     // stored values stable; the returned reference here is therefore
     // safe to alias as a raw pointer for the call's lifetime.
     const auto [it, inserted] = mEnumRanks.insert_or_assign(
-        lookup.canonicalKey, EnumRankEntry{loglib::EnumDictRank{*lookup.dictionary}, lookup.dictionary}
+        lookup.canonicalKey,
+        EnumRankEntry{.rank = loglib::EnumDictRank{*lookup.dictionary}, .source = lookup.dictionary}
     );
     return &it->second.rank;
 }

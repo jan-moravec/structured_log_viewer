@@ -121,8 +121,14 @@ internal::CompactLogValue MakeCompactFromVariant(LineSource &source, size_t line
 
 } // namespace
 
+// By-value `sortedValues` lets the parser cheaply move its scratch vector into the line; the body
+// only reads it, but a const-ref signature would force the hot parser path to keep ownership of an
+// already-spent buffer.
 LogLine::LogLine(
-    std::vector<std::pair<KeyId, LogValue>> sortedValues, const KeyIndex &keys, LineSource &source, size_t lineId
+    std::vector<std::pair<KeyId, LogValue>> sortedValues, // NOLINT(performance-unnecessary-value-param)
+    const KeyIndex &keys,
+    LineSource &source,
+    size_t lineId
 )
     : mValues(static_cast<uint32_t>(sortedValues.size())), mKeys(&keys), mSource(&source), mLineId(lineId)
 {

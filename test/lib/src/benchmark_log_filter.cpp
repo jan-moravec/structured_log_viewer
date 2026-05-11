@@ -93,7 +93,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount)
 
     // Use a deterministic PRNG so successive runs have identical
     // layout. Reproducibility, not unpredictability, is the goal.
-    // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp)
+    // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp, bugprone-random-generator-seed)
     std::mt19937 rng{0xC0FFEEU};
     std::uniform_int_distribution<size_t> pick{0, values.size() - 1};
 
@@ -114,7 +114,7 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount)
         }
         table.AppendBatch(std::move(batch));
     }
-    return {std::move(table), nullptr};
+    return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
 /// Build a `Type::String` `LogTable` with @p rowCount rows over a
@@ -155,7 +155,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
     };
     KeyIndex &keys = table.Keys();
 
-    // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp)
+    // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp, bugprone-random-generator-seed)
     std::mt19937 rng{0xABCDEF01U};
     std::uniform_int_distribution<size_t> pick{0, templates.size() - 1};
 
@@ -176,7 +176,7 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
         }
         table.AppendBatch(std::move(batch));
     }
-    return {std::move(table), nullptr};
+    return {.table = std::move(table), .sourceOwner = nullptr};
 }
 
 template <typename Fn> std::chrono::nanoseconds TimeOnce(Fn fn)
@@ -272,7 +272,14 @@ TEST_CASE(
     // case-folding). Captured by value so the predicate owns its
     // own state.
     const std::string needle = "user-id";
-    CallbackStringRowPredicate predicate(0, [needle](std::string_view slot) { return slot.contains(needle); });
+    // clang-tidy mistakes the lambda's implicit copy constructor (which allocates when duplicating
+    // the captured `std::string`) for an exception escaping the call operator; the operator only
+    // does a `string_view::contains`.
+    CallbackStringRowPredicate predicate(
+        0,
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        [needle](std::string_view slot) { return slot.contains(needle); }
+    );
 
     constexpr int SAMPLES = 5;
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -336,7 +343,7 @@ TEST_CASE(
     const EnumDictRank rank{*dict};
 
     std::vector<size_t> indices(ROW_COUNT);
-    std::iota(indices.begin(), indices.end(), size_t{0});
+    std::ranges::iota(indices, size_t{0});
 
     constexpr int SAMPLES = 3;
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -344,7 +351,7 @@ TEST_CASE(
     for (int s = 0; s < SAMPLES; ++s)
     {
         // Reset the permutation before each timed sort.
-        std::iota(indices.begin(), indices.end(), size_t{0});
+        std::ranges::iota(indices, size_t{0});
         elapsed.push_back(TimeOnce([&]() {
             std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, &rank) < 0; });
         }));

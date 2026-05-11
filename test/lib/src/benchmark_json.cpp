@@ -516,6 +516,10 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 
     auto logs = GenerateWideJsonLogs(200'000);
     const TestJsonLogFile testFile(logs);
+    // False positive inside MSVC's `<filesystem>`; the `_BITMASK_OPS` `operator|` casts an OR of
+    // bitmask members to the same enum type and tripped the analyzer on MSVC STL headers (out of
+    // our control).
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     InitializeTimezoneData();

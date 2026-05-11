@@ -1471,12 +1471,18 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     case Match::Exactly:
     {
         const std::string needle = pattern.toStdString();
+        // clang-tidy mistakes the lambda's implicit copy constructor (which copies the captured
+        // `std::string` and may allocate) for an exception escaping the call operator. The call
+        // operator itself just compares bytes.
+        // NOLINTNEXTLINE(bugprone-exception-escape)
         return [needle](std::string_view bytes) { return bytes == needle; };
     }
     case Match::Contains:
     {
         const std::string needle = pattern.toStdString();
-        return [needle](std::string_view bytes) { return bytes.find(needle) != std::string_view::npos; };
+        // See Match::Exactly above for the false-positive explanation.
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        return [needle](std::string_view bytes) { return bytes.contains(needle); };
     }
     case Match::RegularExpression:
     {

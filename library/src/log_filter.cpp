@@ -34,9 +34,8 @@ EnumRowPredicate::EnumRowPredicate(
     //   2. The string-set fallback and the bitset are already
     //      idempotent under duplicate insert / set, so the dedupe also
     //      keeps the work bounded.
-    std::unordered_set<std::string_view, internal::TransparentStringHash, internal::TransparentStringEqual> distinct(
-        selectedValues.begin(), selectedValues.end()
-    );
+    const std::unordered_set<std::string_view, internal::TransparentStringHash, internal::TransparentStringEqual>
+        distinct(selectedValues.begin(), selectedValues.end());
 
     if (dictionary == nullptr)
     {
