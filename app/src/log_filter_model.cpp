@@ -239,9 +239,9 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     // registry entry at the same `Size()` -- without it the cache
     // would hand out a stale rank whose internal `EnumValueId` indices
     // mean different bytes.
-    if (auto it = mEnumRanks.find(lookup.canonicalKey);
-        it != mEnumRanks.end() && it->second.source == lookup.dictionary &&
-        it->second.rank.DictSize() >= lookup.dictionary->Size())
+    if (auto it = mEnumRanks.find(lookup.canonicalKey); it != mEnumRanks.end() &&
+                                                        it->second.source == lookup.dictionary &&
+                                                        it->second.rank.DictSize() >= lookup.dictionary->Size())
     {
         return &it->second.rank;
     }
@@ -255,7 +255,13 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
 }
 
 QList<QModelIndex> LogFilterModel::MatchRow(
-    const QModelIndex &start, int role, const QVariant &value, int hits, Qt::MatchFlags flags, bool forward, int skipFirstN
+    const QModelIndex &start,
+    int role,
+    const QVariant &value,
+    int hits,
+    Qt::MatchFlags flags,
+    bool forward,
+    int skipFirstN
 ) const
 {
     QList<QModelIndex> result;

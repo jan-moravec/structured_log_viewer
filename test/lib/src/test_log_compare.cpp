@@ -199,8 +199,7 @@ TEST_CASE(
     CHECK(SignOf(CompareRows(table, 1, 3, 0)) == 1); // NaN > -inf clamp
 
     // Antisymmetry on every pair we asserted (sanity for `CompareRows is total`).
-    constexpr std::array<std::pair<size_t, size_t>, 7> PAIRS = {
-        {{0, 6}, {1, 0}, {1, 6}, {2, 0}, {2, 4}, {3, 5}, {1, 3}}
+    constexpr std::array<std::pair<size_t, size_t>, 7> PAIRS = {{{0, 6}, {1, 0}, {1, 6}, {2, 0}, {2, 4}, {3, 5}, {1, 3}}
     };
     for (const auto &[a, b] : PAIRS)
     {
@@ -211,9 +210,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE(
-    "CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_compare][integer][regression]"
-)
+TEST_CASE("CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_compare][integer][regression]")
 {
     // Regression: pre-fix `CompareTyped` ran
     // `CompareMonostateOrder` before `Extract`, so NaN-in-Int compared
@@ -227,10 +224,10 @@ TEST_CASE(
     LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
 
     // Tail-bucket equality: NaN <=> monostate is 0.
-    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0);  // NaN == monostate
-    CHECK(SignOf(CompareRows(table, 2, 1, 0)) == 0);  // antisymmetric: still equal swapped
-    CHECK(SignOf(CompareRows(table, 1, 1, 0)) == 0);  // NaN == NaN
-    CHECK(SignOf(CompareRows(table, 2, 2, 0)) == 0);  // monostate == monostate
+    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0); // NaN == monostate
+    CHECK(SignOf(CompareRows(table, 2, 1, 0)) == 0); // antisymmetric: still equal swapped
+    CHECK(SignOf(CompareRows(table, 1, 1, 0)) == 0); // NaN == NaN
+    CHECK(SignOf(CompareRows(table, 2, 2, 0)) == 0); // monostate == monostate
 
     // Representable < tail-bucket.
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 0 < NaN
@@ -240,8 +237,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "CompareRows: stray-string-in-Floating sorts equal to monostate at the tail",
-    "[log_compare][floating][regression]"
+    "CompareRows: stray-string-in-Floating sorts equal to monostate at the tail", "[log_compare][floating][regression]"
 )
 {
     // Parallel of the Integer regression above: a string slot in a
@@ -258,8 +254,8 @@ TEST_CASE(
     LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
 
     // Tail-bucket equality.
-    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0);  // stray-string == monostate
-    CHECK(SignOf(CompareRows(table, 2, 1, 0)) == 0);  // antisymmetric
+    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0); // stray-string == monostate
+    CHECK(SignOf(CompareRows(table, 2, 1, 0)) == 0); // antisymmetric
 
     // Representable < tail-bucket.
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 1.5 < stray-string
@@ -326,8 +322,7 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
     fixtureBig.Write("");
     const uint64_t huge = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 100;
     const std::vector<LogValue> bigValues = {t100, huge};
-    LogTable bigTable =
-        BuildSingleColumnTable(fixtureBig, "ts", LogConfiguration::Type::Time, bigValues, "{:%FT%T}");
+    LogTable bigTable = BuildSingleColumnTable(fixtureBig, "ts", LogConfiguration::Type::Time, bigValues, "{:%FT%T}");
     CHECK(SignOf(CompareRows(bigTable, 0, 1, 0)) == -1); // t100 < clamped uint
     CHECK(SignOf(CompareRows(bigTable, 1, 0, 0)) == 1);
 }

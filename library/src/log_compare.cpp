@@ -331,9 +331,7 @@ int CompareTime(const LogValue &lhs, const LogValue &rhs)
     return CompareTyped(lhs, rhs, toMicros, [](int64_t a, int64_t b) { return ThreeWay(a, b); });
 }
 
-int CompareEnum(
-    const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column, const EnumDictRank *rank
-)
+int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column, const EnumDictRank *rank)
 {
     const auto lhsId = table.GetEnumValueId(lhsRow, column);
     const auto rhsId = table.GetEnumValueId(rhsRow, column);

@@ -1285,8 +1285,7 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
         if (!probe.isValid())
         {
             statusBar()->showMessage(
-                QString("Invalid regular expression: %1").arg(probe.errorString()),
-                STATUS_BAR_MESSAGE_TIMEOUT_MS
+                QString("Invalid regular expression: %1").arg(probe.errorString()), STATUS_BAR_MESSAGE_TIMEOUT_MS
             );
             ClearFilter(filterID);
             return;
@@ -1314,9 +1313,7 @@ void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint
     if (beginTimeStamp > endTimeStamp)
     {
         statusBar()->showMessage(
-            QString("Time-range filter rejected: begin (%1) is after end (%2)")
-                .arg(beginTimeStamp)
-                .arg(endTimeStamp),
+            QString("Time-range filter rejected: begin (%1) is after end (%2)").arg(beginTimeStamp).arg(endTimeStamp),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         ClearFilter(filterID);
@@ -1554,10 +1551,7 @@ void MainWindow::UpdateFilters()
         {
         case LogFilterType::Time:
             rules.emplace_back(
-                std::in_place_type<loglib::TimeRangeRowPredicate>,
-                column,
-                *filter.filterBegin,
-                *filter.filterEnd
+                std::in_place_type<loglib::TimeRangeRowPredicate>, column, *filter.filterBegin, *filter.filterEnd
             );
             break;
         case LogFilterType::Enumeration:
@@ -1579,7 +1573,10 @@ void MainWindow::UpdateFilters()
             }
             const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
             rules.emplace_back(
-                std::in_place_type<loglib::EnumRowPredicate>, column, std::span<const std::string_view>(selectedViews), dictionary
+                std::in_place_type<loglib::EnumRowPredicate>,
+                column,
+                std::span<const std::string_view>(selectedViews),
+                dictionary
             );
             break;
         }

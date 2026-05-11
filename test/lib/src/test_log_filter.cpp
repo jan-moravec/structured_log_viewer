@@ -77,9 +77,9 @@ LogTable BuildEnumTable(
     batch.lines.reserve(rowCount);
     for (size_t i = 0; i < rowCount; ++i)
     {
-        batch.lines.push_back(MakeLine(
-            keys, *sourcePtr, {{columnKey, std::string(distinctValues[i % distinctValues.size()])}}
-        ));
+        batch.lines.push_back(
+            MakeLine(keys, *sourcePtr, {{columnKey, std::string(distinctValues[i % distinctValues.size()])}})
+        );
     }
     if (keys.Size() > 0)
     {
@@ -92,9 +92,7 @@ LogTable BuildEnumTable(
 /// Build a single-column string `LogTable` for fallback tests. Column
 /// type stays `Any` so values land as strings without promotion.
 LogTable BuildStringTable(
-    const TestLogFile &testFile,
-    const std::string &columnKey,
-    const std::vector<std::string> &perRowValues
+    const TestLogFile &testFile, const std::string &columnKey, const std::vector<std::string> &perRowValues
 )
 {
     auto source = testFile.CreateFileLineSource();
@@ -263,10 +261,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE(
-    "EnumRowPredicate rejects out-of-range ids when the bitset is armed",
-    "[log_filter][enum][post_dict_growth]"
-)
+TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", "[log_filter][enum][post_dict_growth]")
 {
     // The GUI gate rebuilds the predicate when a selected value gains a
     // new id, so any id past `mSelectedIds.size()` we see at match time
@@ -434,8 +429,7 @@ TEST_CASE("EnumRowPredicate does not retain references into the selection span",
 }
 
 TEST_CASE(
-    "EnumRowPredicate dedupes duplicate selected values when accounting `mAllResolved`",
-    "[log_filter][enum][dedupe]"
+    "EnumRowPredicate dedupes duplicate selected values when accounting `mAllResolved`", "[log_filter][enum][dedupe]"
 )
 {
     // Regression: pre-fix `mAllResolved` was computed against

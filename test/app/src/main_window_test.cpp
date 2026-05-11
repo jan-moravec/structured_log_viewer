@@ -3266,20 +3266,16 @@ private slots:
         }
 
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::String
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
         );
         QVERIFY2(
-            model->Table().EnumDictionaries().Find(levelKey) == nullptr,
-            "demotion must erase the dictionary entry"
+            model->Table().EnumDictionaries().Find(levelKey) == nullptr, "demotion must erase the dictionary entry"
         );
 
         QVERIFY2(
             enumChangedSpy.count() >= 1,
-            qPrintable(
-                QStringLiteral("expected enumColumnsChanged on demote (registry erase); got %1")
-                    .arg(enumChangedSpy.count())
-            )
+            qPrintable(QStringLiteral("expected enumColumnsChanged on demote (registry erase); got %1")
+                           .arg(enumChangedSpy.count()))
         );
 
         model->EndStreaming(false);
@@ -3373,8 +3369,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::String
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
         );
 
         // The rebuilt predicate has no dictionary (Find -> nullptr), so
@@ -3498,12 +3493,10 @@ private slots:
         {
             QVERIFY2(
                 sortedLevelsAfter[i - 1] <= sortedLevelsAfter[i],
-                qPrintable(
-                    QStringLiteral("rows out of order: %1 > %2 at index %3")
-                        .arg(sortedLevelsAfter[i - 1])
-                        .arg(sortedLevelsAfter[i])
-                        .arg(i)
-                )
+                qPrintable(QStringLiteral("rows out of order: %1 > %2 at index %3")
+                               .arg(sortedLevelsAfter[i - 1])
+                               .arg(sortedLevelsAfter[i])
+                               .arg(i))
             );
         }
 
@@ -3676,9 +3669,8 @@ private slots:
 
         const int levelColA = ColumnByHeader(modelA, QStringLiteral("level"));
         QVERIFY(levelColA >= 0);
-        const loglib::KeyId keyA = modelA.Table().Keys().Find(
-            modelA.Configuration().columns[static_cast<size_t>(levelColA)].keys.front()
-        );
+        const loglib::KeyId keyA =
+            modelA.Table().Keys().Find(modelA.Configuration().columns[static_cast<size_t>(levelColA)].keys.front());
         const loglib::EnumDictionary *dictA = modelA.Table().EnumDictionaries().Find(keyA);
         QVERIFY(dictA != nullptr);
 
@@ -3719,9 +3711,8 @@ private slots:
         proxy.SetLogModel(&modelB);
         const int levelColB = ColumnByHeader(modelB, QStringLiteral("level"));
         QVERIFY(levelColB >= 0);
-        const loglib::KeyId keyB = modelB.Table().Keys().Find(
-            modelB.Configuration().columns[static_cast<size_t>(levelColB)].keys.front()
-        );
+        const loglib::KeyId keyB =
+            modelB.Table().Keys().Find(modelB.Configuration().columns[static_cast<size_t>(levelColB)].keys.front());
         const loglib::EnumDictionary *dictB = modelB.Table().EnumDictionaries().Find(keyB);
         QVERIFY(dictB != nullptr);
         QVERIFY2(dictB != dictA, "fixtures must have distinct dictionary instances");
@@ -3886,9 +3877,7 @@ private slots:
         {
             QVERIFY2(
                 action->data().toString() != filterId,
-                qPrintable(
-                    QStringLiteral("filter '%1' must not appear in the menu after rejection").arg(filterId)
-                )
+                qPrintable(QStringLiteral("filter '%1' must not appear in the menu after rejection").arg(filterId))
             );
         }
 
@@ -4104,21 +4093,18 @@ private slots:
                            .arg(filterModel->rowCount()))
         );
         QVERIFY2(
-            selected.row() != startProxyRow,
-            "next-match must advance past the selected start row when `skipFirstN==1`"
+            selected.row() != startProxyRow, "next-match must advance past the selected start row when `skipFirstN==1`"
         );
 
         // The selected cell's `DisplayRole` must contain the needle.
-        const QString cellText =
-            filterModel->index(selected.row(), levelCol).data(Qt::DisplayRole).toString();
+        const QString cellText = filterModel->index(selected.row(), levelCol).data(Qt::DisplayRole).toString();
         QCOMPARE(cellText, QStringLiteral("info"));
 
         // Cross-check: every visible (post-filter) row contains "info";
         // the filter is doing its job and Find lands inside that set.
         for (int r = 0; r < filterModel->rowCount(); ++r)
         {
-            const QString v =
-                filterModel->index(r, levelCol).data(Qt::DisplayRole).toString();
+            const QString v = filterModel->index(r, levelCol).data(Qt::DisplayRole).toString();
             QCOMPARE(v, QStringLiteral("info"));
         }
 

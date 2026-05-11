@@ -277,16 +277,15 @@ private slots:
         const auto elapsed = std::chrono::steady_clock::now() - t0;
 
         using Ms = std::chrono::duration<double, std::milli>;
-        qDebug().noquote()
-            << QStringLiteral("EnumRowPredicate over %1 rows: %2 ms (%3 hits)")
-                   .arg(static_cast<std::size_t>(table.RowCount()))
-                   .arg(Ms(predicateElapsed).count(), 0, 'f', 2)
-                   .arg(predicateHits);
-        qDebug().noquote()
-            << QStringLiteral("Apply enum filter (Qt proxy roundtrip) over %1 rows: %2 ms (%3 rows survived)")
-                   .arg(static_cast<std::size_t>(chain.model->rowCount()))
-                   .arg(Ms(elapsed).count(), 0, 'f', 2)
-                   .arg(filteredRows);
+        qDebug().noquote() << QStringLiteral("EnumRowPredicate over %1 rows: %2 ms (%3 hits)")
+                                  .arg(static_cast<std::size_t>(table.RowCount()))
+                                  .arg(Ms(predicateElapsed).count(), 0, 'f', 2)
+                                  .arg(predicateHits);
+        qDebug().noquote(
+        ) << QStringLiteral("Apply enum filter (Qt proxy roundtrip) over %1 rows: %2 ms (%3 rows survived)")
+                 .arg(static_cast<std::size_t>(chain.model->rowCount()))
+                 .arg(Ms(elapsed).count(), 0, 'f', 2)
+                 .arg(filteredRows);
 
         QVERIFY2(filteredRows > 0 && filteredRows < chain.model->rowCount(), "filter selectivity sanity check");
         QCOMPARE(static_cast<int>(predicateHits), filteredRows);
@@ -349,9 +348,7 @@ private slots:
                                       .arg(Ms(libElapsed).count(), 0, 'f', 2);
             QVERIFY2(
                 Ms(libElapsed).count() < 200.0,
-                qPrintable(
-                    QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms")
-                        .arg(Ms(libElapsed).count())
+                qPrintable(QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms").arg(Ms(libElapsed).count())
                 )
             );
         }

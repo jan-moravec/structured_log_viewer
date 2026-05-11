@@ -188,10 +188,7 @@ template <typename Fn> std::chrono::nanoseconds TimeOnce(Fn fn)
 
 } // namespace
 
-TEST_CASE(
-    "RowPredicate enum filter walks 1'000'000 rows under 100ms",
-    "[.][benchmark][log_filter][large]"
-)
+TEST_CASE("RowPredicate enum filter walks 1'000'000 rows under 100ms", "[.][benchmark][log_filter][large]")
 {
     RequireReleaseBuildForBenchmarks();
 
@@ -239,8 +236,8 @@ TEST_CASE(
     REQUIRE(accepted < ROW_COUNT);
 
     using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean =
-        std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) / static_cast<long long>(SAMPLES);
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
     const auto low = *std::ranges::min_element(elapsed);
     const auto high = *std::ranges::max_element(elapsed);
 
@@ -275,9 +272,7 @@ TEST_CASE(
     // case-folding). Captured by value so the predicate owns its
     // own state.
     const std::string needle = "user-id";
-    CallbackStringRowPredicate predicate(0, [needle](std::string_view slot) {
-        return slot.contains(needle);
-    });
+    CallbackStringRowPredicate predicate(0, [needle](std::string_view slot) { return slot.contains(needle); });
 
     constexpr int SAMPLES = 5;
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -301,14 +296,14 @@ TEST_CASE(
     REQUIRE(accepted < ROW_COUNT);
 
     using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean =
-        std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) / static_cast<long long>(SAMPLES);
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
     const auto low = *std::ranges::min_element(elapsed);
     const auto high = *std::ranges::max_element(elapsed);
 
     WARN(
-        "CallbackStringRowPredicate over " << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low="
-                                           << Ms(low).count() << ", high=" << Ms(high).count()
+        "CallbackStringRowPredicate over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                           << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
                                            << "), accepted=" << accepted
     );
 
@@ -351,20 +346,18 @@ TEST_CASE(
         // Reset the permutation before each timed sort.
         std::iota(indices.begin(), indices.end(), size_t{0});
         elapsed.push_back(TimeOnce([&]() {
-            std::ranges::sort(indices, [&](size_t a, size_t b) {
-                return CompareRows(table, a, b, 0, &rank) < 0;
-            });
+            std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, &rank) < 0; });
         }));
     }
 
     using Ms = std::chrono::duration<double, std::milli>;
-    const auto mean =
-        std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) / static_cast<long long>(SAMPLES);
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
     const auto low = *std::ranges::min_element(elapsed);
     const auto high = *std::ranges::max_element(elapsed);
     WARN(
-        "CompareRows enum sort over " << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
-                                      << ", high=" << Ms(high).count() << ")"
+        "CompareRows enum sort over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                      << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count() << ")"
     );
 
     // O(N log N) compares of a uint16_t rank should be well under a

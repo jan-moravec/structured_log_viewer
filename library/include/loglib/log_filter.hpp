@@ -47,9 +47,7 @@ class EnumRowPredicate
 {
 public:
     EnumRowPredicate(
-        size_t columnIndex,
-        std::span<const std::string_view> selectedValues,
-        const EnumDictionary *dictionary
+        size_t columnIndex, std::span<const std::string_view> selectedValues, const EnumDictionary *dictionary
     );
 
     EnumRowPredicate(const EnumRowPredicate &) = delete;

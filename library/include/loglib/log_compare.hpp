@@ -15,9 +15,7 @@ class LogTable;
 // `EnumDictRank` stores per-id ranks as `uint16_t`. The dictionary cap
 // is guarded by `MAX_ENUM_VALUES`; this assertion locks the
 // representation in case anyone bumps that ceiling past `uint16_t`.
-static_assert(
-    MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumDictRank stores per-id ranks in uint16_t"
-);
+static_assert(MAX_ENUM_VALUES <= std::numeric_limits<uint16_t>::max(), "EnumDictRank stores per-id ranks in uint16_t");
 
 /// Precomputed alphabetic-rank table over an `EnumDictionary`. Built
 /// once when the GUI's `LogFilterModel` learns the column is an enum;
