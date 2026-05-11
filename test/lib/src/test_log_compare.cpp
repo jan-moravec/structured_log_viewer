@@ -13,9 +13,11 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -135,6 +137,78 @@ TEST_CASE("CompareRows handles Integer columns with monostate-tail order", "[log
     CHECK(SignOf(CompareRows(table, 2, 0, 0)) == 1);  // monostate > 3
     CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // 3 < monostate
     CHECK(SignOf(CompareRows(table, 2, 2, 0)) == 0);  // monostate == monostate
+}
+
+TEST_CASE(
+    "CompareRows on an Integer column clamps out-of-range doubles and tails NaN as non-numeric",
+    "[log_compare][integer][regression]"
+)
+{
+    // Regression for M2 (PR review): `CompareInteger`'s `toInt` lambda
+    // used `static_cast<int64_t>(double)`, which is UB on NaN / values
+    // outside the signed range. Post-fix:
+    //  - NaN -> `std::nullopt` (sorts after every integer slot).
+    //  - +inf / large positive -> clamped to `INT64_MAX`.
+    //  - -inf / large negative -> clamped to `INT64_MIN`.
+    const TestLogFile fixture("log_compare_integer_double_slot.json");
+    fixture.Write("");
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double posInf = std::numeric_limits<double>::infinity();
+    const double negInf = -posInf;
+    const double huge = 1e30;
+    const double nhuge = -1e30;
+    const std::vector<LogValue> values = {
+        int64_t{0}, // 0: a plain int (sorts between negative and positive doubles)
+        nan,        // 1: NaN -> sorts after every integer-shaped slot
+        posInf,     // 2: clamps to INT64_MAX
+        negInf,     // 3: clamps to INT64_MIN
+        huge,       // 4: clamps to INT64_MAX (== row 2 numerically)
+        nhuge,      // 5: clamps to INT64_MIN (== row 3 numerically)
+        int64_t{42} // 6: a plain int sandwich
+    };
+    LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+
+    // Ordering invariants. We don't pin a total order across NaN/int
+    // (the "numeric < non-numeric" rule already promises NaN > any int);
+    // we just pin the three things M2 fixes: no UB, clamping is
+    // order-preserving, NaN tails after every integer.
+
+    // Plain ints compare normally.
+    CHECK(SignOf(CompareRows(table, 0, 6, 0)) == -1); // 0 < 42
+
+    // NaN routes to the non-numeric tail: tails after every int slot.
+    CHECK(SignOf(CompareRows(table, 1, 0, 0)) == 1); // NaN > 0
+    CHECK(SignOf(CompareRows(table, 1, 6, 0)) == 1); // NaN > 42
+    CHECK(SignOf(CompareRows(table, 1, 1, 0)) == 0); // NaN == NaN
+
+    // +inf / huge both clamp to INT64_MAX -> tied numerically, and both
+    // are >= the plain ints 0 / 42.
+    CHECK(SignOf(CompareRows(table, 2, 0, 0)) == 1); // +inf > 0
+    CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1); // 1e30 > 0
+    CHECK(SignOf(CompareRows(table, 2, 4, 0)) == 0); // +inf == 1e30 (both clamped)
+    CHECK(SignOf(CompareRows(table, 2, 6, 0)) == 1); // +inf > 42
+
+    // -inf / -huge both clamp to INT64_MIN -> tied, and both < 0.
+    CHECK(SignOf(CompareRows(table, 3, 0, 0)) == -1); // -inf < 0
+    CHECK(SignOf(CompareRows(table, 5, 0, 0)) == -1); // -1e30 < 0
+    CHECK(SignOf(CompareRows(table, 3, 5, 0)) == 0);  // -inf == -1e30
+    CHECK(SignOf(CompareRows(table, 5, 6, 0)) == -1); // -1e30 < 42
+
+    // NaN tails after both clamped-extreme rows too.
+    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 1); // NaN > +inf clamp
+    CHECK(SignOf(CompareRows(table, 1, 3, 0)) == 1); // NaN > -inf clamp
+
+    // Antisymmetry on every pair we asserted (sanity for `CompareRows is total`).
+    constexpr std::array<std::pair<size_t, size_t>, 7> PAIRS = {
+        {{0, 6}, {1, 0}, {1, 6}, {2, 0}, {2, 4}, {3, 5}, {1, 3}}
+    };
+    for (const auto &[a, b] : PAIRS)
+    {
+        const int forward = SignOf(CompareRows(table, a, b, 0));
+        const int reverse = SignOf(CompareRows(table, b, a, 0));
+        INFO("a=" << a << " b=" << b);
+        CHECK(forward == -reverse);
+    }
 }
 
 TEST_CASE("CompareRows handles Floating columns with NaN at the tail", "[log_compare][floating]")

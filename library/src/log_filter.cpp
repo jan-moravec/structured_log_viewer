@@ -18,44 +18,64 @@ EnumRowPredicate::EnumRowPredicate(
 )
     : mColumnIndex(columnIndex)
 {
-    mSelectedStrings.reserve(selectedValues.size());
-    for (const std::string_view value : selectedValues)
+    if (selectedValues.empty())
     {
-        mSelectedStrings.emplace(value);
+        // Empty selection short-circuits `MatchesRow` via the `mEmpty`
+        // sentinel below (see `mAllResolved`/`mSelectedStrings` use).
+        return;
     }
 
     if (dictionary == nullptr)
     {
+        // No dictionary: nothing to resolve against, so every selected
+        // value goes into the string-set fallback.
+        mSelectedStrings.reserve(selectedValues.size());
+        for (const std::string_view value : selectedValues)
+        {
+            mSelectedStrings.emplace(value);
+        }
         return;
     }
-    // Indexed by id; values interned past `Size()` later are handled by
-    // the out-of-range branch in `MatchesRow` (which rejects -- the
-    // GUI's `enumColumnsChanged` gate rebuilds the predicate whenever
-    // a *selected* value gains a new id, so out-of-range here can only
-    // be an unselected value).
+
+    // Indexed by id; values interned past `Size()` later route through
+    // the past-bitset branch in `MatchesRow`. When `mAllResolved` is
+    // true that branch rejects directly; otherwise we fall back to the
+    // string set so a stale predicate still matches newly-interned
+    // selected values.
     mSelectedIds.assign(static_cast<size_t>(dictionary->Size()), false);
+    size_t resolvedCount = 0;
     for (const std::string_view value : selectedValues)
     {
         const EnumValueId id = dictionary->Find(value);
         if (id == INVALID_ENUM_VALUE_ID)
         {
+            // Unresolved at construction: keep the string so a future
+            // (post-rebuild or stale-predicate) eval still matches it.
+            mSelectedStrings.emplace(value);
             continue;
         }
         const auto idx = static_cast<size_t>(id);
         if (idx >= mSelectedIds.size())
         {
+            // Defensive: dictionary `Find` returned an id past the
+            // snapshot it handed us. Treat as unresolved.
+            mSelectedStrings.emplace(value);
             continue;
         }
         mSelectedIds[idx] = true;
         mFastPathArmed = true;
+        ++resolvedCount;
     }
+    mAllResolved = resolvedCount == selectedValues.size();
 }
 
 bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
-    if (mSelectedStrings.empty())
+    // Empty selection hides every row (matches `EnumFilterRule`).
+    // `mSelectedStrings.empty() && mSelectedIds.empty()` is the unique
+    // shape produced by the empty-selection construction path.
+    if (mSelectedIds.empty() && mSelectedStrings.empty())
     {
-        // Empty selection hides every row (matches `EnumFilterRule`).
         return false;
     }
 
@@ -68,11 +88,26 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             {
                 return mSelectedIds[idx];
             }
-            // Past the bitset: provably unselected (see header).
-            return false;
+            if (mAllResolved)
+            {
+                // Past the bitset and every selected value resolved at
+                // construction: provably unselected.
+                return false;
+            }
+            // Past the bitset but some selected values were unresolved
+            // at construction (stale predicate / newly-interned value):
+            // fall through to the string-set check below.
         }
         // Slot isn't a `DictRef` (column not yet promoted, or the slot
         // is monostate/numeric). Fall through to the string-set path.
+    }
+
+    if (mSelectedStrings.empty())
+    {
+        // Armed + fully resolved + slot non-`DictRef`: nothing else to
+        // try. Rejecting matches the strings-side-of-the-fence shape
+        // (a non-string slot is never in a string set).
+        return false;
     }
 
     const LogValue value = table.GetValue(row, mColumnIndex);

@@ -3185,6 +3185,105 @@ private slots:
         }
     }
 
+    // Regression for B1 (PR review): `LogModel` must emit
+    // `enumColumnsChanged` when an enum column is demoted back to
+    // string (registry entry erased), not only when a dictionary
+    // grows. Pre-fix the registry-shape loop matched only
+    // `Size() > before`; demotion sets the post-batch `Find()` to
+    // `nullptr` and the back-fill loop sees `Type::String`, so the
+    // signal was silently dropped.
+    void TestEnumColumnsChangedFiresOnDemote()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        // Drive batches directly into `LogModel::AppendBatch`: the
+        // streaming-flush threshold (250 lines / 100 ms) collapses
+        // small fixtures into a single batch, but the demote-after-
+        // promote sequence we need is fundamentally two batches --
+        // batch 1 promotes, batch 2 overflows the cap.
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        // Tiny cap so the 3rd distinct value tips the column to
+        // `Type::String`. Set after `BeginStreamingForSyncTest`
+        // because the table is reset there.
+        constexpr uint16_t TEST_CAP = 2;
+        model->Table().SetEnumValueCap(TEST_CAP);
+
+        QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumChangedSpy.isValid());
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: 2x "info" promotes `level` (well-known key + streaming
+        // mode threshold = 2 rows). Dict goes from non-existent to 1.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("info"));
+            model->AppendBatch(std::move(batch));
+        }
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after promoting batch");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Enumeration
+        );
+        const loglib::KeyId levelKey = keys.Find("level");
+        QVERIFY(levelKey != loglib::INVALID_KEY_ID);
+        const loglib::EnumDictionary *dict = model->Table().EnumDictionaries().Find(levelKey);
+        QVERIFY2(dict != nullptr, "promotion must create a dictionary entry");
+        QCOMPARE(static_cast<int>(dict->Size()), 1);
+
+        // Promotion drives `enumColumnsChanged` via the back-fill loop.
+        QVERIFY2(enumChangedSpy.count() >= 1, "enumColumnsChanged must fire on promotion");
+        enumChangedSpy.clear();
+
+        // Batch 2: "warn" fits (dict grows to 2 == cap); "error" is the
+        // cap+1th distinct value, demoting the column to `Type::String`
+        // and erasing the dictionary entry. Post-batch column type is
+        // String, so the back-fill loop's enum-type check is false --
+        // the registry-shape path is the only emit site.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 3;
+            batch.lines.push_back(makeLine("warn"));
+            batch.lines.push_back(makeLine("error"));
+            model->AppendBatch(std::move(batch));
+        }
+
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::String
+        );
+        QVERIFY2(
+            model->Table().EnumDictionaries().Find(levelKey) == nullptr,
+            "demotion must erase the dictionary entry"
+        );
+
+        QVERIFY2(
+            enumChangedSpy.count() >= 1,
+            qPrintable(
+                QStringLiteral("expected enumColumnsChanged on demote (registry erase); got %1")
+                    .arg(enumChangedSpy.count())
+            )
+        );
+
+        model->EndStreaming(false);
+    }
+
     // An enum column with an empty dictionary must show the placeholder
     // and disable OK so a "hide everything" filter cannot be submitted.
     void TestFilterEditorEmptyEnumPickerDisablesOk()

@@ -1461,19 +1461,14 @@ void MainWindow::UpdateFilters()
             break;
         case loglib::LogConfiguration::LogFilter::Type::Enumeration:
         {
-            // Hold the UTF-8 byte buffers alive in `selectedHolders`
-            // while the predicate constructor reads them as views;
-            // they're consumed at construction time and need no further
-            // lifetime guarantees.
-            std::vector<std::string> selectedHolders;
-            selectedHolders.reserve(filter.second.filterValues.size());
-            for (const std::string &v : filter.second.filterValues)
-            {
-                selectedHolders.push_back(v);
-            }
+            // `filter` is a reference into `mFilters` -- the std::string
+            // values live there for the lifetime of this call, so the
+            // predicate can borrow views directly without an intermediate
+            // copy. The constructor consumes the span at construction
+            // time and does not retain the views.
             std::vector<std::string_view> selectedViews;
-            selectedViews.reserve(selectedHolders.size());
-            for (const auto &v : selectedHolders)
+            selectedViews.reserve(filter.second.filterValues.size());
+            for (const std::string &v : filter.second.filterValues)
             {
                 selectedViews.emplace_back(v);
             }

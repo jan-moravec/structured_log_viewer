@@ -462,16 +462,23 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    bool enumDictionariesGrew = false;
+    // Registry shape change: an entry grew (dict gained a value) or was
+    // erased (column demoted from enum back to string). Both invalidate
+    // the proxy's `EnumDictRank` cache and any predicate that depends on
+    // the per-id bitset; demotion in particular has no `LastBackfillRange`
+    // detection above because the post-batch column type is `String`.
+    bool enumRegistryChanged = false;
     if (!enumDictSizesBefore.empty())
     {
         const auto &registryAfter = mLogTable.EnumDictionaries();
         for (const auto &[kid, sizeBefore] : enumDictSizesBefore)
         {
             const loglib::EnumDictionary *dict = registryAfter.Find(kid);
-            if (dict != nullptr && dict->Size() > sizeBefore)
+            // Demotion: dict erased. Growth: Size() > sizeBefore.
+            // Shrink shouldn't happen, but `!=` guards against it.
+            if (dict == nullptr || dict->Size() != sizeBefore)
             {
-                enumDictionariesGrew = true;
+                enumRegistryChanged = true;
                 break;
             }
         }
@@ -518,9 +525,11 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    // Dictionaries that grew without a promotion still need a refresh
-    // so `loglib::EnumRowPredicate`'s bitset covers any newly-interned id.
-    if (!emittedEnumColumnsChanged && enumDictionariesGrew)
+    // Registry shape changed without a back-fill: either an existing
+    // dictionary grew (covers a newly-interned id) or one was erased
+    // (column demoted back to string). Both need the proxy + GUI to
+    // refresh; the back-fill branch above only catches *promotion*.
+    if (!emittedEnumColumnsChanged && enumRegistryChanged)
     {
         emit enumColumnsChanged();
     }

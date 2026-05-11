@@ -22,6 +22,7 @@
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/key_index.hpp>
+#include <loglib/log_compare.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_filter.hpp>
@@ -40,11 +41,13 @@
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -311,6 +314,45 @@ private slots:
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
 
+        using Ms = std::chrono::duration<double, std::milli>;
+
+        // Lib-level gate: time a pure `loglib::CompareRows`-driven
+        // `std::ranges::sort` over an `indices` vector so a regression
+        // in the lib's compare path can't hide behind Qt proxy overhead.
+        // Pattern mirrors `library/benchmark/benchmark_log_filter.cpp`.
+        // 200 ms gate matches the lib-side predicate-walk ceiling --
+        // 1 M-row enum sort lib-side measures ~60 ms steady-state.
+        {
+            const loglib::LogTable &table = chain.model->Table();
+            const size_t rowCount = table.RowCount();
+            QCOMPARE(static_cast<std::size_t>(rowCount), LINE_COUNT);
+            std::vector<size_t> indices(rowCount);
+            std::iota(indices.begin(), indices.end(), size_t{0});
+
+            const loglib::KeyId levelKey = table.Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
+            QVERIFY2(levelKey != loglib::INVALID_KEY_ID, "level key must resolve in the table");
+            const loglib::EnumDictionary *dictionary = table.EnumDictionaries().Find(levelKey);
+            QVERIFY2(dictionary != nullptr, "level column must have a dictionary");
+            const loglib::EnumDictRank rank{*dictionary};
+
+            const auto libT0 = std::chrono::steady_clock::now();
+            std::ranges::sort(indices, [&](size_t a, size_t b) {
+                return loglib::CompareRows(table, a, b, static_cast<size_t>(levelCol), &rank) < 0;
+            });
+            const auto libElapsed = std::chrono::steady_clock::now() - libT0;
+
+            qDebug().noquote() << QStringLiteral("Lib-only sort by enum column over %1 rows: %2 ms")
+                                      .arg(static_cast<std::size_t>(indices.size()))
+                                      .arg(Ms(libElapsed).count(), 0, 'f', 2);
+            QVERIFY2(
+                Ms(libElapsed).count() < 200.0,
+                qPrintable(
+                    QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms")
+                        .arg(Ms(libElapsed).count())
+                )
+            );
+        }
+
         // Drop any cached ranks so the very first `lessThan` triggers a
         // rebuild and the time below covers the cold-cache cost too.
         chain.filterProxy->InvalidateEnumRanks();
@@ -322,7 +364,6 @@ private slots:
         const int rowCount = chain.filterProxy->rowCount();
         const auto elapsed = std::chrono::steady_clock::now() - t0;
 
-        using Ms = std::chrono::duration<double, std::milli>;
         qDebug().noquote() << QStringLiteral("Sort by enum column over %1 rows: %2 ms")
                                   .arg(static_cast<std::size_t>(rowCount))
                                   .arg(Ms(elapsed).count(), 0, 'f', 2);

@@ -33,6 +33,11 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
 {
     QSortFilterProxyModel::setSourceModel(sourceModel);
     RefreshSourceProxyCache();
+    // Source-model swap invalidates every cached rank table; the new
+    // tree has its own dictionaries (and a different `LogModel` may
+    // already be attached). `SetLogModel` clears the same cache on the
+    // other path that can re-bind us.
+    mEnumRanks.clear();
 }
 
 void LogFilterModel::RefreshSourceProxyCache()
@@ -200,6 +205,17 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     return raw;
 }
 
+// TODO(perf, follow-up): the per-probe `data(role).toString()` path here
+// still pays the `QVariant<QString>` materialisation we avoided on the
+// sort/filter critical path by routing through `loglib::CompareRows` and
+// `loglib::EnumRowPredicate`. Find is one-shot (early-exit on first hit
+// with `hits=1`) so this isn't a freeze-level bottleneck, but the
+// honest minimal swap is `mLogModel->Table().GetFormattedValue(row, col)`
+// after mapping through the proxy chain, which saves the
+// `QString::fromStdString` round-trip per probe. The deeper refactor
+// (mirror `CallbackStringRowPredicate`, walk rows lib-side, map back
+// through the proxy to return proxy indices) needs a per-column
+// iteration story that respects `Qt::MatchFlags`. See PR review M5.
 QList<QModelIndex> LogFilterModel::MatchRow(
     const QModelIndex &start, int role, const QVariant &value, int hits, Qt::MatchFlags flags, bool forward, int skipFirstN
 ) const

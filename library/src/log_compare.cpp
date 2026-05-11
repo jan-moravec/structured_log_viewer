@@ -9,7 +9,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -22,11 +24,14 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
 {
     const auto &values = dictionary.Values();
     const size_t size = values.size();
-    mIdToRank.assign(size, 0);
-    // Sort `[0, size)` by the bytes of `values[i]` using a stable
-    // byte-wise compare. `order[k]` ends up holding the EnumValueId
-    // of the k-th-smallest value, so the inverse `rank[order[k]] = k`
-    // gives the per-id rank in O(N) once `order` is sorted.
+    // Single trivially-zeroed allocation: `resize` value-initialises
+    // `uint16_t` slots (the standard library's loop), and the inverse
+    // pass below writes every index, so the zero-fill cost is recouped.
+    mIdToRank.resize(size);
+    // Sort `[0, size)` by the bytes of `values[i]`. `order[k]` ends up
+    // holding the EnumValueId of the k-th-smallest value, so the
+    // inverse pass `rank[order[k]] = k` gives the per-id rank in O(N)
+    // once `order` is sorted.
     std::vector<uint16_t> order(size);
     std::iota(order.begin(), order.end(), uint16_t{0});
     std::ranges::sort(order, [&values](uint16_t a, uint16_t b) {
@@ -156,13 +161,39 @@ std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rh
     return std::nullopt;
 }
 
-int CompareInteger(const LogValue &lhs, const LogValue &rhs)
+/// Shared shape for "monostate first, extract to T, three-way the
+/// extracted values, mixed extracted/unextracted route extracted <
+/// unextracted". `Extract` returns `std::optional<T>` and `Compare` is
+/// a three-way comparator on `T`. The per-comparator definitions below
+/// reduce to one-liners.
+template <class Extract, class Compare>
+int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Compare cmp)
 {
     if (const auto order = CompareMonostateOrder(lhs, rhs); order.has_value())
     {
         return *order;
     }
+    const auto lhsX = extract(lhs);
+    const auto rhsX = extract(rhs);
+    if (lhsX.has_value() && rhsX.has_value())
+    {
+        return cmp(*lhsX, *rhsX);
+    }
+    if (lhsX.has_value())
+    {
+        // Extracted value sorts before "non-extractable" (e.g. a number
+        // column with a stray string slot keeps the numeric rows together).
+        return -1;
+    }
+    if (rhsX.has_value())
+    {
+        return 1;
+    }
+    return 0;
+}
 
+int CompareInteger(const LogValue &lhs, const LogValue &rhs)
+{
     auto toInt = [](const LogValue &v) -> std::optional<int64_t> {
         if (const auto *i = std::get_if<int64_t>(&v); i != nullptr)
         {
@@ -178,35 +209,33 @@ int CompareInteger(const LogValue &lhs, const LogValue &rhs)
         }
         if (const auto *d = std::get_if<double>(&v); d != nullptr)
         {
+            // NaN has no integer image; route it to the non-numeric tail
+            // (`nullopt`) so it sorts after every integer-shaped slot.
+            // `static_cast<int64_t>(NaN)` is UB; same for values outside
+            // the signed range. Clamp finite out-of-range doubles to the
+            // signed limits (order-preserving) and treat NaN as missing.
+            if (std::isnan(*d))
+            {
+                return std::nullopt;
+            }
+            if (*d >= static_cast<double>(std::numeric_limits<int64_t>::max()))
+            {
+                return std::numeric_limits<int64_t>::max();
+            }
+            if (*d <= static_cast<double>(std::numeric_limits<int64_t>::min()))
+            {
+                return std::numeric_limits<int64_t>::min();
+            }
             return static_cast<int64_t>(*d);
         }
         return std::nullopt;
     };
 
-    const auto lhsInt = toInt(lhs);
-    const auto rhsInt = toInt(rhs);
-    if (lhsInt.has_value() && rhsInt.has_value())
-    {
-        return ThreeWay(*lhsInt, *rhsInt);
-    }
-    if (lhsInt.has_value())
-    {
-        return -1; // numeric < non-numeric
-    }
-    if (rhsInt.has_value())
-    {
-        return 1;
-    }
-    return 0;
+    return CompareTyped(lhs, rhs, toInt, [](int64_t a, int64_t b) { return ThreeWay(a, b); });
 }
 
 int CompareFloating(const LogValue &lhs, const LogValue &rhs)
 {
-    if (const auto order = CompareMonostateOrder(lhs, rhs); order.has_value())
-    {
-        return *order;
-    }
-
     auto toDouble = [](const LogValue &v) -> std::optional<double> {
         if (const auto *d = std::get_if<double>(&v); d != nullptr)
         {
@@ -223,29 +252,11 @@ int CompareFloating(const LogValue &lhs, const LogValue &rhs)
         return std::nullopt;
     };
 
-    const auto lhsD = toDouble(lhs);
-    const auto rhsD = toDouble(rhs);
-    if (lhsD.has_value() && rhsD.has_value())
-    {
-        return ThreeWayDouble(*lhsD, *rhsD);
-    }
-    if (lhsD.has_value())
-    {
-        return -1;
-    }
-    if (rhsD.has_value())
-    {
-        return 1;
-    }
-    return 0;
+    return CompareTyped(lhs, rhs, toDouble, [](double a, double b) { return ThreeWayDouble(a, b); });
 }
 
 int CompareTime(const LogValue &lhs, const LogValue &rhs)
 {
-    if (const auto order = CompareMonostateOrder(lhs, rhs); order.has_value())
-    {
-        return *order;
-    }
     auto toMicros = [](const LogValue &v) -> std::optional<int64_t> {
         if (const auto *t = std::get_if<TimeStamp>(&v); t != nullptr)
         {
@@ -257,21 +268,7 @@ int CompareTime(const LogValue &lhs, const LogValue &rhs)
         }
         return std::nullopt;
     };
-    const auto lhsT = toMicros(lhs);
-    const auto rhsT = toMicros(rhs);
-    if (lhsT.has_value() && rhsT.has_value())
-    {
-        return ThreeWay(*lhsT, *rhsT);
-    }
-    if (lhsT.has_value())
-    {
-        return -1;
-    }
-    if (rhsT.has_value())
-    {
-        return 1;
-    }
-    return 0;
+    return CompareTyped(lhs, rhs, toMicros, [](int64_t a, int64_t b) { return ThreeWay(a, b); });
 }
 
 int CompareEnum(

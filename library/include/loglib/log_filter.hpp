@@ -44,11 +44,14 @@ protected:
 /// (column not yet promoted) fall back to a transparent-hash string set.
 ///
 /// The bitset reflects the dictionary state at construction. Callers
-/// must rebuild the predicate when a *selected* value gains a new id
-/// (typically signalled by `LogTable::EnumDictionaries()` growth and
-/// the GUI's `enumColumnsChanged` connection). Out-of-range ids reach
-/// the bitset miss branch and reject: by invariant, any id past the
-/// bitset is for an unselected value.
+/// *should* rebuild the predicate when a selected value gains a new id
+/// (typically signalled by `LogTable::EnumDictionaries()` growth via
+/// the GUI's `enumColumnsChanged` connection). When every selected
+/// value resolved at construction time (`mAllResolved`), an id past the
+/// bitset is provably for an unselected value and the predicate
+/// rejects directly. Otherwise the predicate falls through to the
+/// `mSelectedStrings` set so a stale predicate still produces correct
+/// matches against newly-interned selected values.
 class EnumRowPredicate : public RowPredicate
 {
 public:
@@ -72,12 +75,21 @@ private:
     /// Indexed by `EnumValueId`; size matches the dictionary at
     /// construction time. Empty when no dictionary was supplied.
     std::vector<bool> mSelectedIds;
-    /// String-side fallback used when the column isn't yet promoted
-    /// to enum (no `DictRef` slot to query). Transparent hashing lets
-    /// the predicate look up a `std::string_view` without materialising
-    /// a `std::string`.
+    /// String-side fallback. Populated only for selected values that
+    /// did *not* resolve to an id at construction (or when no
+    /// dictionary was supplied) so the common "armed and fully
+    /// resolved" path skips the `unordered_set` allocation + K hash
+    /// inserts. The fallback covers two cases at match time:
+    /// (a) the column isn't yet promoted (slot is not a `DictRef`),
+    /// and (b) the predicate is stale and the id falls past the
+    /// bitset for a value that *is* selected but wasn't resolved at
+    /// construction (`mAllResolved == false`).
     std::unordered_set<std::string, internal::TransparentStringHash, internal::TransparentStringEqual> mSelectedStrings;
     bool mFastPathArmed = false;
+    /// True iff every selected value resolved to an id at construction.
+    /// Lets the past-bitset branch in `MatchesRow` short-circuit to
+    /// `false` instead of paying for a string-set lookup.
+    bool mAllResolved = false;
 };
 
 /// Inclusive time-range predicate. `mBegin`/`mEnd` are microseconds
@@ -98,8 +110,15 @@ private:
 /// String predicate that defers the actual match to a caller-supplied
 /// callback. Lets the GUI keep Qt-flavoured regex / wildcard semantics
 /// (e.g. capturing a `QRegularExpression` in the lambda) without lib
-/// taking a Qt dependency. The callback runs on whatever thread the
-/// row walker uses.
+/// taking a Qt dependency.
+///
+/// Thread-safety: the callback runs on whatever thread the row walker
+/// uses, and a single predicate can be evaluated concurrently from
+/// multiple walkers. The callback itself is the caller's responsibility
+/// to make re-entrant. In particular, Qt's `QRegularExpression` JIT-
+/// compiles its pattern lazily on the first `match()` call and is only
+/// thread-safe *after* that first compile; callers wiring a regex
+/// across threads must pre-prime it (or wrap the call site in a mutex).
 class CallbackStringRowPredicate : public RowPredicate
 {
 public:

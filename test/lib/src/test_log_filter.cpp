@@ -315,6 +315,65 @@ TEST_CASE(
     }
 }
 
+TEST_CASE(
+    "EnumRowPredicate falls through to the string set for a stale predicate's unresolved selected value",
+    "[log_filter][enum][post_dict_growth]"
+)
+{
+    // Regression for B2 (PR review): when a *selected* value is
+    // unresolved at construction time and is later interned past the
+    // bitset, a stale predicate evaluated against the new id must NOT
+    // reject -- it must fall through to the string-set fallback so the
+    // newly-interned row still matches. The GUI's `enumColumnsChanged`
+    // gate keeps this from happening in practice, but the predicate
+    // owes correctness regardless of that gate.
+    const TestLogFile fixture("log_filter_enum_stale.json");
+    fixture.Write("");
+    LogTable table = BuildEnumTable(fixture, "level", {"info"}, 2);
+    const EnumDictionary *dict = FindDictionary(table, "level");
+    REQUIRE(dict != nullptr);
+    REQUIRE(dict->Size() == 1);
+
+    // Select "info" (resolves) and "debug" (unresolved at construction).
+    // `mAllResolved == false`, so the past-bitset branch should fall
+    // through to `mSelectedStrings`.
+    const std::vector<std::string> selected = {"info", "debug"};
+    const std::vector<std::string_view> selectedViews = ToViews(selected);
+    const EnumRowPredicate predicate(0, selectedViews, dict);
+    REQUIRE(predicate.IsFastPathArmed());
+
+    // Append a batch interning "debug" past the bitset, then verify the
+    // stale predicate accepts the new row via the string fallback.
+    KeyIndex &keys = table.Keys();
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+    table.AppendStreaming(std::move(source));
+    StreamedBatch batch;
+    batch.firstLineNumber = table.RowCount() + 1;
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
+    table.AppendBatch(std::move(batch));
+
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    REQUIRE(table.EnumDictionaries().Find(levelKey)->Size() == 2);
+
+    const size_t debugRow = table.RowCount() - 1;
+    const auto debugId = table.GetEnumValueId(debugRow, 0);
+    REQUIRE(debugId.has_value());
+    REQUIRE(static_cast<size_t>(*debugId) >= 1); // past the original bitset
+
+    // Pre-fix: returned `false` because the past-bitset branch
+    // unconditionally rejected. Post-fix: falls through to the string
+    // set, which contains "debug" -> `true`.
+    CHECK(predicate.MatchesRow(table, debugRow));
+
+    // The pre-existing "info" rows continue to match through the bitset.
+    for (size_t row = 0; row < 2; ++row)
+    {
+        CHECK(predicate.MatchesRow(table, row));
+    }
+}
+
 TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside", "[log_filter][time]")
 {
     const TestLogFile fixture("log_filter_time.json");

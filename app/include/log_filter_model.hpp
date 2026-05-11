@@ -91,7 +91,13 @@ private:
     QAbstractProxyModel *mImmediateProxy = nullptr;
 
     /// Per-column rank cache; mutable so const `lessThan` can populate
-    /// lazily without leaking ownership.
+    /// lazily without leaking ownership. Cleared on:
+    /// - `SetLogModel` (different `LogTable` swapped in), and
+    /// - `setSourceModel` (proxy chain re-wired -- the new chain may
+    ///   already point at a different `LogModel`, and column indices
+    ///   can have changed shape).
+    /// Also invalidated piecemeal via `InvalidateEnumRanks()` on
+    /// `LogModel::enumColumnsChanged`.
     mutable QHash<int, std::shared_ptr<const loglib::EnumDictRank>> mEnumRanks;
 
     static bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags);
