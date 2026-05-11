@@ -3190,32 +3190,26 @@ private slots:
         }
     }
 
-    // Regression: `LogModel` must emit `enumColumnsChanged` when an
-    // enum column is demoted back to string (registry entry erased),
-    // not only when a dictionary
-    // grows. Pre-fix the registry-shape loop matched only
-    // `Size() > before`; demotion sets the post-batch `Find()` to
-    // `nullptr` and the back-fill loop sees `Type::String`, so the
-    // signal was silently dropped.
+    // Regression: `LogModel` must emit `enumColumnsChanged` on
+    // demote (registry entry erased), not only on dict growth. The
+    // post-batch column type is `String`, so the back-fill branch
+    // can't detect it -- only the registry-shape loop can.
     void TestEnumColumnsChangedFiresOnDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        // Drive batches directly into `LogModel::AppendBatch`: the
-        // streaming-flush threshold (250 lines / 100 ms) collapses
-        // small fixtures into a single batch, but the demote-after-
-        // promote sequence we need is fundamentally two batches --
-        // batch 1 promotes, batch 2 overflows the cap.
+        // Two batches needed: batch 1 promotes, batch 2 overflows the
+        // cap. The streaming flush would collapse small fixtures, so
+        // we feed `AppendBatch` directly.
         const TempJsonFile emptyFixture(QStringList{});
         auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
-        // Tiny cap so the 3rd distinct value tips the column to
-        // `Type::String`. Set after `BeginStreamingForSyncTest`
-        // because the table is reset there.
+        // Tiny cap so the 3rd distinct value demotes to `Type::String`.
+        // Set after `BeginStreamingForSyncTest` (which resets the table).
         constexpr uint16_t TEST_CAP = 2;
         model->Table().SetEnumValueCap(TEST_CAP);
 
@@ -3229,8 +3223,8 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: 2x "info" promotes `level` (well-known key + streaming
-        // mode threshold = 2 rows). Dict goes from non-existent to 1.
+        // Batch 1: 2x "info" promotes `level` (well-known key, stream
+        // threshold = 2). Dict size 0 -> 1.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -3256,11 +3250,10 @@ private slots:
         QVERIFY2(enumChangedSpy.count() >= 1, "enumColumnsChanged must fire on promotion");
         enumChangedSpy.clear();
 
-        // Batch 2: "warn" fits (dict grows to 2 == cap); "error" is the
-        // cap+1th distinct value, demoting the column to `Type::String`
-        // and erasing the dictionary entry. Post-batch column type is
-        // String, so the back-fill loop's enum-type check is false --
-        // the registry-shape path is the only emit site.
+        // Batch 2: "warn" fits the cap; "error" is the cap+1th value,
+        // demoting to `String` and erasing the registry entry. The
+        // back-fill enum-type check sees `String` post-batch, so the
+        // registry-shape path is the only signal site.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;
@@ -3285,23 +3278,18 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: after a demote tears down the
-    // dictionary, `MainWindow::enumColumnsChanged` must rebuild every
-    // active enum filter so the `EnumRowPredicate` falls back to its
-    // string-set path. Pre-fix the slot consulted a cached
-    // `mEnumFilterFullyResolved` snapshot, saw "true" (all values
-    // resolved at install time), skipped the rebuild, and the stale
-    // predicate (armed + fully-resolved) silently hid every row
-    // because `GetEnumValueId` returns nullopt after demote.
+    // Regression: after a demote, `MainWindow::enumColumnsChanged`
+    // must rebuild every active enum filter so the predicate
+    // falls back to its string-set path. A cached
+    // "fully-resolved" snapshot would let a stale armed predicate
+    // hide every row (post-demote `GetEnumValueId` returns nullopt).
     void TestEnumFilterRebuiltAfterDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        // Mirror `TestEnumColumnsChangedFiresOnDemote`'s direct
-        // `AppendBatch` path: the streaming flush threshold collapses
-        // small fixtures into a single batch, but we need two so the
-        // 2nd one trips the cap.
+        // Two-batch path (mirrors `TestEnumColumnsChangedFiresOnDemote`):
+        // batch 2 must trip the cap, so we feed `AppendBatch` directly.
         const TempJsonFile emptyFixture(QStringList{});
         auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
@@ -3318,9 +3306,8 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: two "info" rows promote `level` to enum. Dict size
-        // becomes 1; the predicate built against this dictionary
-        // observes `mAllResolved == true`.
+        // Batch 1: two "info" rows promote `level`. Dict size 1;
+        // predicate built against it observes `mAllResolved == true`.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -3337,10 +3324,8 @@ private slots:
             loglib::LogConfiguration::Type::Enumeration
         );
 
-        // Install an enum filter selecting the one resolved value.
-        // `FilterEnumSubmitted` (used by FilterEditor) is the slot that
-        // builds the in-place enum filter; it takes a (filterId, row,
-        // QStringList values).
+        // Install an enum filter selecting the one resolved value via
+        // `FilterEnumSubmitted` (the FilterEditor slot).
         const QString filterId = QStringLiteral("post-demote-rebuild");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -3359,10 +3344,9 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         QCOMPARE(filterModel->rowCount(), 2); // both info rows visible
 
-        // Batch 2: "warn" fits, "error" overflows the cap and demotes
-        // the column to String. Post-batch `EnumDictionaries().Find`
-        // returns nullptr, so the live `EnumFilterFullyResolved`
-        // gate returns false and the slot rebuilds the predicate.
+        // Batch 2: "warn" fits, "error" overflows -> demote to String.
+        // `Find` returns nullptr, `EnumFilterFullyResolved` is false,
+        // and the slot rebuilds the predicate.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;
@@ -3376,14 +3360,12 @@ private slots:
             model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
         );
 
-        // The rebuilt predicate has no dictionary (Find -> nullptr), so
-        // `mFastPathArmed == false` and the string-set fallback runs
-        // against the demoted column's string slots. Both "info" rows
-        // match; "warn" and "error" do not.
+        // Rebuilt predicate has no dictionary, so the string-set
+        // fallback runs against the demoted column's string slots:
+        // both "info" rows match; "warn" / "error" do not.
         QCOMPARE(filterModel->rowCount(), 2);
 
-        // Defensive: confirm the visible rows really are the "info" ones,
-        // not just "any two rows".
+        // Confirm the visible rows are the "info" ones.
         const int levelColInProxy = levelCol; // proxy preserves column layout
         for (int i = 0; i < filterModel->rowCount(); ++i)
         {
@@ -3394,21 +3376,17 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the per-column `EnumDictRank` cache in
-    // `LogFilterModel` used to be keyed by column index, so a column
-    // reorder shifted the meaning of every key and required a
-    // `columnsMoved` invalidation hook. The cache is now keyed by the
-    // canonical `KeyId`, which is stable across reorders -- the
-    // cached rank stays attached to the same logical column and the
-    // sort order remains correct without an invalidation tick.
+    // Regression: the `EnumDictRank` cache is keyed by canonical
+    // `KeyId`, not column index, so a column reorder no longer
+    // requires a `columnsMoved` invalidation hook -- the cached rank
+    // stays attached to the same logical column.
     void TestEnumRankCacheSurvivesColumnsMoved()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        // Build a two-column fixture where "level" promotes to enum.
-        // The streaming threshold is well below 200, so this lands in
-        // one batch.
+        // Two-column fixture where "level" promotes to enum (one
+        // batch -- 200 lines is below the streaming threshold).
         const QStringList levels{
             QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
         };
@@ -3452,9 +3430,8 @@ private slots:
         const std::size_t cacheSizeBefore = filterModel->EnumRankCacheSizeForTest();
         QVERIFY2(cacheSizeBefore >= std::size_t{1}, "sorting by an enum column must populate the rank cache");
 
-        // Move the columns. Pre-fix this dropped the rank cache via
-        // a `columnsMoved` hook; post-fix the cache survives because
-        // it is keyed by `KeyId`, not by column index.
+        // Reorder columns. Pre-fix a `columnsMoved` hook dropped the
+        // cache; post-fix it survives (KeyId-keyed).
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
         QVERIFY(columnsMovedSpy.isValid());
@@ -3464,18 +3441,13 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(columnsMovedSpy.count() >= 1, "MoveColumnForTest must emit columnsMoved");
 
-        // The cache entry must still be there (KeyId-keyed survives
-        // column reorder). Pre-fix the `columnsMoved` invalidation
-        // hook dropped every entry.
+        // Cache entry survives the reorder (KeyId-keyed).
         QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);
 
-        // Re-sort by the level column in its new position and
-        // verify the ordering is still alphabetical against the
-        // cached rank. We must re-issue the `sort()` call because
-        // `QSortFilterProxyModel` tracks the sort column index in
-        // source-column coordinates -- after the source move the
-        // stored index points at the wrong column. This sort hits
-        // the cache (KeyId match) instead of rebuilding.
+        // Re-sort against the column's new position. The proxy
+        // tracks the sort column in source-coords, so a reorder
+        // shifts what that index points at -- we re-issue `sort()`.
+        // The lookup hits the cache (KeyId match), no rebuild.
         const int levelColAfter = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelColAfter >= 0, "level column must still exist after the move");
         filterModel->sort(levelColAfter, Qt::AscendingOrder);
@@ -3488,11 +3460,9 @@ private slots:
         {
             sortedLevelsAfter.append(filterModel->index(i, levelColAfter).data(Qt::DisplayRole).toString());
         }
-        // Ascending alphabetical: every "debug" row first, then "error",
-        // "info", "warn". The fixture has 50 of each.
+        // Ascending alphabetical: debug < error < info < warn (50 of each).
         QCOMPARE(sortedLevelsAfter.front(), QStringLiteral("debug"));
         QCOMPARE(sortedLevelsAfter.back(), QStringLiteral("warn"));
-        // Monotonic non-decreasing in alphabetical order.
         for (int i = 1; i < sortedLevelsAfter.size(); ++i)
         {
             QVERIFY2(
@@ -3507,16 +3477,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the `EnumDictRank` cache in `LogFilterModel`
-    // self-heals when the live dictionary grew (or its `EnumDictionary*`
-    // changed) since the rank was built. Production relies on
-    // `MainWindow` eagerly invalidating the cache via
-    // `enumColumnsChanged -> InvalidateEnumRanks`, but the self-heal in
-    // `EnumRankFor` is the backstop for any path that misses that
-    // tick. This test wires `LogFilterModel` directly against a
-    // hand-built `LogModel` -- no `MainWindow` -- so nothing eagerly
-    // clears the cache, and growth in the dictionary must be picked
-    // up by the size/pointer check in `EnumRankFor` alone.
+    // Regression: `EnumRankFor` self-heals when the live dictionary
+    // has grown or its address changed since the cached rank was
+    // built. Production also has a `MainWindow` invalidation tick;
+    // this test wires the proxy directly (no `MainWindow`) so the
+    // self-heal is the only defence.
     void TestEnumRankCacheSelfHealsOnDictionaryGrowth()
     {
         LogModel model;
@@ -3524,9 +3489,8 @@ private slots:
         filterModel.setSourceModel(&model);
         filterModel.SetLogModel(&model);
 
-        // Drive batches directly into `LogModel::AppendBatch`. Stream
-        // mode requires `BeginStreaming` first; an empty fixture
-        // satisfies that without queuing any work.
+        // Direct `AppendBatch` driving. Stream mode needs
+        // `BeginStreaming` first; an empty fixture satisfies it.
         const TempJsonFile emptyFixture(QStringList{});
         auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
@@ -3540,8 +3504,7 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: two distinct values promote "level" to enum.
-        // Dict_v1 = {"info" -> 0, "warn" -> 1}.
+        // Batch 1: dict_v1 = {"info" -> 0, "warn" -> 1}.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -3558,16 +3521,12 @@ private slots:
             loglib::LogConfiguration::Type::Enumeration
         );
 
-        // Warm the cache: sort warms `EnumRankFor` for `levelCol`.
+        // Warm the cache.
         filterModel.sort(levelCol, Qt::AscendingOrder);
         QVERIFY2(filterModel.EnumRankCacheSizeForTest() == std::size_t{1}, "first sort must populate the rank cache");
 
-        // Snapshot pre-growth order; after batch 2 the live dict is
-        // larger but the cached rank table still only knows the
-        // initial two values. Without the self-heal, `EnumRankFor`
-        // would keep returning the stale rank and rows whose new ids
-        // fall past the bitset would all collide at the same
-        // "past-the-end" rank value, breaking the sort order.
+        // Snapshot pre-growth order. Without the self-heal, ids past
+        // the cached bitset all collide at the past-the-end rank.
         QStringList orderedBeforeGrowth;
         orderedBeforeGrowth.reserve(filterModel.rowCount());
         for (int i = 0; i < filterModel.rowCount(); ++i)
@@ -3576,8 +3535,8 @@ private slots:
         }
         QCOMPARE(orderedBeforeGrowth, (QStringList{QStringLiteral("info"), QStringLiteral("warn")}));
 
-        // Batch 2: add two more distinct values. The dictionary grows
-        // from 2 to 4 entries; cached `EnumDictRank` is now too small.
+        // Batch 2: dictionary grows from 2 to 4 entries; cached rank
+        // is now too small.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;
@@ -3591,10 +3550,9 @@ private slots:
         QVERIFY2(dict != nullptr, "level dictionary must still exist after batch 2");
         QCOMPARE(static_cast<int>(dict->Size()), 4);
 
-        // Re-sort. The cache size check (`rank.DictSize() < live.Size()`)
-        // must trip and `EnumRankFor` must rebuild against the grown
-        // dictionary; the rank entry stays at one row (same `KeyId`),
-        // but its `mIdToRank` now covers the 4 new ids.
+        // Re-sort. `rank.DictSize() < live.Size()` trips and
+        // `EnumRankFor` rebuilds; the cache stays at one row (same
+        // `KeyId`) but its `mIdToRank` now covers all 4 ids.
         filterModel.sort(levelCol, Qt::AscendingOrder);
         QCOMPARE(filterModel.EnumRankCacheSizeForTest(), std::size_t{1});
 
@@ -3605,9 +3563,8 @@ private slots:
             orderedAfterGrowth.append(filterModel.index(i, levelCol).data(Qt::DisplayRole).toString());
         }
         // Alphabetical: debug < error < info < warn. Without the
-        // self-heal, "debug" and "error" (the two new ids past the
-        // original bitset) would have tied at the past-the-end rank
-        // and the test would observe both at the tail in source order.
+        // self-heal, "debug" / "error" would tie at past-the-end and
+        // appear at the tail in source order.
         QCOMPARE(
             orderedAfterGrowth,
             (QStringList{
@@ -3618,25 +3575,16 @@ private slots:
         model.EndStreaming(false);
     }
 
-    // Regression: `LogFilterModel::setSourceModel` must wipe filter
-    // state before the base class re-filter so a predicate baked
-    // against the previous chain's dictionary (its `EnumValueId`
-    // bitset aliases different bytes after the swap) cannot poison
-    // the new chain. Pre-fix the proxy kept `mFilterRules` and
-    // `mLogModel` after the swap, and `filterAcceptsRow` walked the
-    // new rows via the stale `mLogModel` -> `MapToLogModelRow`
-    // returned `-1` for every row -> every row silently hidden.
+    // Regression: `setSourceModel` must wipe filter state before the
+    // base re-filter, otherwise a predicate baked against the old
+    // chain's dictionary aliases unrelated bytes in the new chain
+    // (and the stale `mLogModel` rejects every row).
     void TestSetSourceModelClearsFilterState()
     {
-        // Two independent enum-encoded fixtures. Each has its own
-        // dictionary; predicates resolved against `A`'s bitset would
-        // alias unrelated `EnumValueId`s in `B`.
+        // Two independent fixtures with distinct dictionaries.
         LogModel modelA;
         LogModel modelB;
         const auto installSession = [&](LogModel &model, const std::string &fixtureName) {
-            // Empty fixture armed via `BeginStreamingForSyncTest`
-            // satisfies the streaming pre-condition without queuing
-            // worker batches.
             const TempJsonFile emptyFixture(QStringList{});
             auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
             auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
@@ -3653,8 +3601,7 @@ private slots:
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
             batch.newKeys.emplace_back("level");
-            // Same shape on both sides: two distinct values promote the
-            // column to enum. The dictionary instances differ.
+            // Same shape on both sides; dictionary instances differ.
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("warn"));
             batch.lines.push_back(makeLine("info"));
@@ -3678,7 +3625,7 @@ private slots:
         const loglib::EnumDictionary *dictA = modelA.Table().EnumDictionaries().Find(keyA);
         QVERIFY(dictA != nullptr);
 
-        // Filter on `A`: keep only "info" rows (selectivity 1/2).
+        // Filter on `A`: keep only "info" rows.
         {
             const std::vector<std::string> selected = {"info"};
             std::vector<std::string_view> selectedViews;
@@ -3697,21 +3644,18 @@ private slots:
             proxy.SetFilterRules(std::move(rules));
         }
         QCOMPARE(proxy.rowCount(), 2);
-        // Warm the rank cache so we can assert it's cleared on swap.
+        // Warm the cache so we can assert it's cleared on swap.
         proxy.sort(levelColA, Qt::AscendingOrder);
         QCOMPARE(proxy.EnumRankCacheSizeForTest(), std::size_t{1});
 
-        // Swap to chain over `modelB` *without* re-issuing SetLogModel.
-        // Filter state must be wiped: no rules, no rank cache, no
-        // dangling `mLogModel`. The empty rule list means every row
-        // from `B` is accepted -- the safe default for "caller hasn't
-        // re-wired the proxy yet".
+        // Swap to `modelB` without re-issuing `SetLogModel`. Filter
+        // state must be wiped; the empty rule list defaults to
+        // accepting every `B` row (safe "not yet rewired" default).
         proxy.setSourceModel(&modelB);
         QCOMPARE(proxy.EnumRankCacheSizeForTest(), std::size_t{0});
         QCOMPARE(proxy.rowCount(), modelB.rowCount());
 
-        // Re-wire for `B`. Survivors must come from `B`'s rows (4
-        // total, 2 "info") rather than `A`'s.
+        // Re-wire for `B`. Survivors come from `B`'s rows (2 "info").
         proxy.SetLogModel(&modelB);
         const int levelColB = ColumnByHeader(modelB, QStringLiteral("level"));
         QVERIFY(levelColB >= 0);
@@ -3743,14 +3687,10 @@ private slots:
     }
 
 #ifdef QT_NO_DEBUG
-    // Regression: in release, `filterAcceptsRow` rejects every row
-    // when filter rules are present but `mLogModel` is null (the
-    // documented misuse window: caller installed rules without first
-    // wiring a `LogModel`). Pre-fix the proxy returned `true` for
-    // every row, silently turning the filter into a no-op and
-    // showing rows the user thought they had hidden. Debug builds
-    // trip a `Q_ASSERT_X` instead and never reach this code path,
-    // so the test is release-only.
+    // Regression (release-only): with rules installed but
+    // `mLogModel` null, `filterAcceptsRow` rejects every row instead
+    // of silently accepting all. Debug builds trip `Q_ASSERT_X` and
+    // never reach this branch.
     void TestFilterAcceptsRowRejectsAllWithoutLogModel()
     {
         LogModel model;
@@ -3778,9 +3718,8 @@ private slots:
 
         LogFilterModel proxy;
         proxy.setSourceModel(&model);
-        // Intentionally skip `SetLogModel(&model)`. Any rule
-        // installation in this state must be rejected at evaluation
-        // time so the misuse is visible.
+        // Skip `SetLogModel` on purpose: rule installation in this
+        // state must be rejected at evaluation time.
         const int levelCol = ColumnByHeader(model, QStringLiteral("level"));
         QVERIFY(levelCol >= 0);
         const std::vector<std::string> selected = {"info"};
@@ -3799,20 +3738,15 @@ private slots:
         );
         proxy.SetFilterRules(std::move(rules));
 
-        // Release fallback: every row hidden.
         QCOMPARE(proxy.rowCount(), 0);
 
         model.EndStreaming(false);
     }
 #endif
 
-    // Regression: an invalid regex submitted via
-    // `FilterSubmitted` used to be quietly accepted; the downstream
-    // `QRegularExpression` compiled to a non-`isValid()` object that
-    // matched nothing, so every row vanished without a UI signal.
-    // The submission slot now probes `isValid()` up front, rejects
-    // the rule, surfaces an error in the status bar, and keeps the
-    // existing filter set intact.
+    // Regression: invalid regex submitted via `FilterSubmitted` is
+    // rejected up front (status-bar error, existing filters kept)
+    // instead of silently hiding every row.
     void TestRegexFilterSubmissionRejectsInvalid()
     {
         // Fixture: a few rows so we can verify "no filter applied".
@@ -3867,15 +3801,13 @@ private slots:
         // The rule must be rejected: every row stays visible.
         QCOMPARE(filterModel->rowCount(), totalRows);
 
-        // The user-facing signal is the status bar message.
         const QString msg = mWindow->statusBar()->currentMessage();
         QVERIFY2(
             msg.contains(QStringLiteral("Invalid regular expression"), Qt::CaseInsensitive),
             qPrintable(QStringLiteral("status bar must explain the rejection; got '%1'").arg(msg))
         );
 
-        // No filter menu entry should have been created (or any prior
-        // one must have been left alone -- here we started with none).
+        // No filter menu entry should have been created.
         const auto filterActions = mWindow->findChildren<QAction *>();
         for (const QAction *action : filterActions)
         {
@@ -3888,28 +3820,15 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: pre-fix `CallbackStringRowPredicate::MatchesRow`
-    // fed raw bytes from `LogTable::GetValue` into the matcher built
-    // by `MakeStringMatcher`, while the user sees text normalised by
-    // `LogModel::ConvertToSingleLineCompactQString` (which replaces
-    // `\n` / `\r` with spaces and collapses runs of whitespace via
-    // `QString::simplified()`). For a row whose stored value is
-    // `"line1\nline2"`, the table displays `"line1 line2"`, the Find
-    // bar's `MatchRow` fast path matches `"line1 line2"`, but a
-    // `Contains` filter typed as `"line1 line2"` silently failed
-    // because the matcher compared against the raw bytes containing
-    // `\n`. Pre-fix `assertFilteredRowCount(1)` returns 0 for this
-    // fixture; post-fix the matcher normalises the haystack the same
-    // way the display path does, restoring end-to-end (display, Find,
-    // filter) consistency. We exercise `Exactly`, `Contains`,
-    // `RegularExpression`, and `Wildcard` because all four flowed
-    // through the same broken path.
+    // Regression: string filters now match the user-visible (one-line,
+    // simplified) text. Pre-fix the matcher saw raw bytes with
+    // embedded `\n`, so a `Contains` typed as the displayed text
+    // ("line1 line2") silently rejected the row. All four match
+    // modes flowed through the same broken path.
     void TestStringFilterMatchesDisplayedTextForMultilineValues()
     {
-        // Two rows: one whose displayed text matches every variant of
-        // the filter, and one that doesn't (so a passing test
-        // actually proves the filter is doing work, not accepting
-        // every row).
+        // Two rows: one matches, one doesn't, so we know the filter
+        // is doing work (not just accepting everything).
         const QStringList lines{
             QStringLiteral(R"({"msg": "line1\nline2"})"),
             QStringLiteral(R"({"msg": "other"})"),
@@ -3939,11 +3858,9 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist");
 
-        // Pin the fixture contract: the parsed value still contains a
-        // real newline (raw `Qt::EditRole`-ish view via `SortRole`
-        // already passes through `ConvertToSingleLineCompactQString`,
-        // so we round-trip the underlying bytes via `LogTable::GetValue`
-        // here instead).
+        // Pin the bug's precondition: stored value still has the
+        // real newline. `SortRole` would already simplify it, so we
+        // pull raw bytes via `LogTable::GetValue`.
         const loglib::LogValue raw = model->Table().GetValue(0, static_cast<size_t>(msgCol));
         QVERIFY2(
             std::holds_alternative<std::string_view>(raw) || std::holds_alternative<std::string>(raw),
@@ -3954,8 +3871,7 @@ private slots:
                                              : std::string_view(std::get<std::string>(raw));
         QVERIFY2(rawView.contains('\n'), "fixture must keep the embedded newline so the bug's precondition holds");
 
-        // And the displayed text is the simplified one-line form,
-        // matching what the user sees in the table view.
+        // Displayed text is the simplified one-line form.
         const QString displayed = model->index(0, msgCol).data(Qt::DisplayRole).toString();
         QCOMPARE(displayed, QStringLiteral("line1 line2"));
 
@@ -3988,7 +3904,7 @@ private slots:
             QCOMPARE(filterModel->rowCount(), 2);
         };
 
-        // Contains: needle matches the *displayed* (simplified) text.
+        // Contains: needle matches the displayed (simplified) text.
         submitFilter(
             QStringLiteral("contains-displayed"),
             QStringLiteral("line1 line2"),
@@ -3997,7 +3913,7 @@ private slots:
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("contains-displayed"));
 
-        // Exactly: same idea, with the entire simplified value.
+        // Exactly: full simplified value.
         submitFilter(
             QStringLiteral("exact-displayed"),
             QStringLiteral("line1 line2"),
@@ -4006,10 +3922,8 @@ private slots:
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("exact-displayed"));
 
-        // RegularExpression: the regex `^line1 line2$` is anchored on
-        // the simplified text. Pre-fix the haystack contained `\n`,
-        // which `^...$` (without `Qt::MultilineOption`) would not
-        // span, so the match failed.
+        // RegularExpression: `^line1 line2$` only spans the simplified
+        // form -- `^...$` without `MultilineOption` won't span a `\n`.
         submitFilter(
             QStringLiteral("regex-displayed"),
             QStringLiteral("^line1 line2$"),
@@ -4018,8 +3932,8 @@ private slots:
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("regex-displayed"));
 
-        // Wildcard: `line1 *2` (Qt-flavoured wildcard) only matches
-        // the simplified single-line form.
+        // Wildcard: Qt-flavoured `line1 *2` only matches the
+        // simplified single-line form.
         submitFilter(
             QStringLiteral("wildcard-displayed"),
             QStringLiteral("line1 *2"),
@@ -4031,12 +3945,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: `LogFilterModel::MatchRow` now
-    // formats `Qt::DisplayRole` cells via
+    // Regression: `LogFilterModel::MatchRow` formats cells via
     // `LogTable::GetFormattedValue` + `ConvertToSingleLineCompactQString`,
-    // bypassing the per-cell `data()` -> `QVariant<QString>` round-
-    // trip. Functional behaviour must remain identical to the slow
-    // path so existing Find-bar callers see the same matches.
+    // skipping the `data()` -> `QVariant<QString>` round-trip.
+    // Match results must stay identical to the slow path.
     void TestFindUsesFormattedValueFastPath()
     {
         const QStringList levels{
@@ -4073,9 +3985,8 @@ private slots:
         const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
 
-        // Compute the expected `info` rows by walking the table the
-        // same way the production caller does (Find searches every
-        // column with `MatchContains | MatchWrap`).
+        // Walk the table the same way Find does (every column,
+        // `MatchContains | MatchWrap`) to compute expected `info` rows.
         const int rowCount = filterModel->rowCount();
         const int columnCount = filterModel->columnCount();
         QVERIFY(rowCount > 0 && columnCount > 0);
@@ -4095,9 +4006,8 @@ private slots:
         }
         QVERIFY2(!expectedRows.isEmpty(), "fixture must contain at least one 'info' match");
 
-        // Drive `MatchRow` directly with `Qt::DisplayRole`. The fast
-        // path takes the `mLogModel != nullptr && role == DisplayRole`
-        // branch; results must match the `data()`-walking baseline.
+        // Drive `MatchRow` with `Qt::DisplayRole` (fast-path branch).
+        // Results must match the `data()`-walking baseline.
         const QModelIndex start = filterModel->index(0, 0);
         const QList<QModelIndex> hits = filterModel->MatchRow(
             start,
@@ -4124,14 +4034,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: `MainWindow::FindRecords`
-    // pre-fix wrapped the proxy `currentIndex()` through `mModel->index(...)`
-    // before handing it to `LogFilterModel::MatchRow`, mixing proxy and
-    // source coordinate systems. `MatchRow` happens to read only
-    // `.row()` / `.parent()` from the start index today, so the bug was
-    // latent; the regression test exercises the production wiring with
-    // an active filter so any future change that consults `start.model()`
-    // (e.g. to short-circuit the proxy walk) will catch the coord mix.
+    // Regression: `FindRecords` previously routed the proxy
+    // `currentIndex()` through `mModel->index(...)`, mixing proxy
+    // and source coords. The bug was latent (MatchRow only reads
+    // `.row()` / `.parent()`), so this test pins the production
+    // wiring under an active filter.
     void TestFindRespectsActiveFilter()
     {
         // 12 rows alternating info/warn -> filtered to 6 visible info rows.
@@ -4187,15 +4094,14 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         QCOMPARE(filterModel->rowCount(), FIXTURE_LINES / 2);
 
-        // Reach the table view through the same QObject tree the live
-        // window does. The view's selection model is what `Find` reads
+        // The table view's selection model is what `Find` reads
         // to pick the start index.
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
         QCOMPARE(tableView->model(), filterModel);
 
-        // Place the proxy current index at proxy row 1 so the first
-        // forward hit (skipping the selected row) lands at proxy row 2.
+        // Current index at proxy row 1 -> first forward hit
+        // (skipping the selected row) lands at proxy row 2.
         const int startProxyRow = 1;
         const QModelIndex startProxyIdx = filterModel->index(startProxyRow, 0);
         QVERIFY(startProxyIdx.isValid());
@@ -4204,17 +4110,12 @@ private slots:
         );
         QVERIFY(tableView->selectionModel()->isRowSelected(startProxyRow));
 
-        // Capture the row count of the underlying source model so we
-        // can assert below that `Find` returned a *proxy* index, not a
-        // source-model index. Pre-fix code that handed `mModel->index(N, 0)`
-        // to `MatchRow` would have returned an index whose `.model() ==
-        // mSortFilterProxyModel` regardless (MatchRow always re-builds
-        // through `this->index(...)`), so the strongest invariant we
-        // can pin here is "result row < proxy rowCount and the cell
-        // really matches the needle".
+        // `MatchRow` always rebuilds through `this->index(...)`, so the
+        // strongest invariant we can pin is "result row < proxy
+        // rowCount and the cell matches the needle".
         QVERIFY(model->rowCount() > filterModel->rowCount());
 
-        // Drive `FindRecords`. `next=true`, no wildcard / regex flags.
+        // Drive `FindRecords` (next=true, no wildcard / regex).
         QVERIFY2(
             QMetaObject::invokeMethod(
                 mWindow,
@@ -4229,7 +4130,7 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        // The selection should have moved to the next visible info row.
+        // Selection moved to the next visible info row.
         const QModelIndex selected = tableView->selectionModel()->currentIndex();
         QVERIFY2(selected.isValid(), "FindRecords must move the current index to a match");
         QCOMPARE(selected.model(), filterModel);
@@ -4243,12 +4144,10 @@ private slots:
             selected.row() != startProxyRow, "next-match must advance past the selected start row when `skipFirstN==1`"
         );
 
-        // The selected cell's `DisplayRole` must contain the needle.
         const QString cellText = filterModel->index(selected.row(), levelCol).data(Qt::DisplayRole).toString();
         QCOMPARE(cellText, QStringLiteral("info"));
 
-        // Cross-check: every visible (post-filter) row contains "info";
-        // the filter is doing its job and Find lands inside that set.
+        // Cross-check: filter is active and Find stayed inside it.
         for (int r = 0; r < filterModel->rowCount(); ++r)
         {
             const QString v = filterModel->index(r, levelCol).data(Qt::DisplayRole).toString();

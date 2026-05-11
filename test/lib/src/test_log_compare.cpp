@@ -41,8 +41,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
     return {std::move(sorted), keys, source, 0};
 }
 
-/// Build a single-column table of @p type with rows seeded from @p values
-/// (each entry is `(key, LogValue)` for that row).
+/// Single-column `LogTable` of @p type seeded with one slot per row.
 LogTable BuildSingleColumnTable(
     const TestLogFile &testFile,
     const std::string &columnKey,
@@ -144,10 +143,8 @@ TEST_CASE(
     "[log_compare][integer][regression]"
 )
 {
-    // Regression: `CompareInteger`'s `toInt` lambda
-    // used `static_cast<int64_t>(double)`, which is UB on NaN / values
-    // outside the signed range. Post-fix:
-    //  - NaN -> `std::nullopt` (sorts after every integer slot).
+    // Regression for `CompareInteger`:
+    //  - NaN -> tail (was UB via `static_cast<int64_t>`).
     //  - +inf / large positive -> clamped to `INT64_MAX`.
     //  - -inf / large negative -> clamped to `INT64_MIN`.
     const TestLogFile fixture("log_compare_integer_double_slot.json");
@@ -168,10 +165,8 @@ TEST_CASE(
     };
     const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
 
-    // Ordering invariants. We don't pin a total order across NaN/int
-    // (the "numeric < non-numeric" rule already promises NaN > any int);
-    // we just pin the three things M2 fixes: no UB, clamping is
-    // order-preserving, NaN tails after every integer.
+    // We pin: no UB, clamping is order-preserving, NaN tails after
+    // every integer.
 
     // Plain ints compare normally.
     CHECK(SignOf(CompareRows(table, 0, 6, 0)) == -1); // 0 < 42
@@ -212,11 +207,9 @@ TEST_CASE(
 
 TEST_CASE("CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_compare][integer][regression]")
 {
-    // Regression: pre-fix `CompareTyped` ran
-    // `CompareMonostateOrder` before `Extract`, so NaN-in-Int compared
-    // strictly less than monostate (tail order was
-    // `representable < NaN < monostate`). Post-fix the unrepresentable
-    // tail bucket compares equal to monostate (header doc invariant).
+    // Tail-bucket invariant: NaN-in-Int and monostate tie. Pre-fix
+    // `CompareMonostateOrder` ran before `Extract` so the order was
+    // `representable < NaN < monostate`.
     const TestLogFile fixture("log_compare_int_nan_vs_monostate.json");
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -240,9 +233,8 @@ TEST_CASE(
     "CompareRows: stray-string-in-Floating sorts equal to monostate at the tail", "[log_compare][floating][regression]"
 )
 {
-    // Parallel of the Integer regression above: a string slot in a
-    // `Floating` column is unrepresentable, so it must tie with
-    // monostate rather than sort strictly below it.
+    // Tail-bucket invariant for `Floating`: a stray string slot ties
+    // with monostate rather than sorting below it.
     const TestLogFile fixture("log_compare_float_string_vs_monostate.json");
     fixture.Write("");
     const std::vector<LogValue> values = {
@@ -294,18 +286,13 @@ TEST_CASE("CompareRows handles Time columns by microseconds-since-epoch", "[log_
     CHECK(SignOf(CompareRows(table, 3, 0, 0)) == 1);  // monostate > populated
 }
 
-// Regression: `CompareTime` originally only accepted
-// `TimeStamp` / `int64_t` slots; a stray `uint64_t` micros-since-epoch
-// slot in a `Type::Time` column would route to the tail bucket
-// instead of being compared numerically. `TimeRangeRowPredicate`
-// already accepts `uint64_t`, so the comparator was the asymmetry.
+// Regression: `CompareTime` accepted only `TimeStamp`/`int64_t`, so a
+// `uint64_t` micros slot routed to the tail. `TimeRangeRowPredicate`
+// already accepted `uint64_t`; this restores parity.
 TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[log_compare][time][regression]")
 {
     const TestLogFile fixture("log_compare_time_uint.json");
     fixture.Write("");
-    // Three rows: a `TimeStamp`, a `uint64_t` micros-since-epoch
-    // sandwiched between two `TimeStamp`s, and another `TimeStamp`.
-    // The uint slot must compare numerically against its neighbours.
     const TimeStamp t100{std::chrono::microseconds{100}};
     const TimeStamp t300{std::chrono::microseconds{300}};
     const std::vector<LogValue> values = {t100, uint64_t{200}, t300};
@@ -379,15 +366,9 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     CHECK(SignOf(CompareRows(table, 0, 4, 0, &rank)) == 0);
 }
 
-// Regression: when a `Type::Enumeration` column contains a row whose
-// slot is NOT a `DictRef` (e.g. `std::monostate` for a missing field,
-// or a slot value that hasn't been promoted yet), `CompareEnum` must
-// fall through to the monostate / bytewise compare path -- the
-// id-pair / rank-table path requires both ids resolvable.
-// `LogFilterModel::lessThan` calls `CompareRows` for every visible
-// pair when the user sorts by an unpromoted enum column. Without
-// this branch, the third clause in `CompareEnum` (the
-// "one-or-both-sides-not-DictRef" path) would never get exercised.
+// `CompareEnum` must handle non-`DictRef` slots (monostate / unpromoted)
+// via the bytewise/monostate fallback, since the rank-table path needs
+// both ids resolved. Triggered by sort over an unpromoted enum column.
 TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket order", "[log_compare][enum][monostate]")
 {
     const TestLogFile fixture("log_compare_enum_monostate.json");
@@ -412,24 +393,19 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     KeyIndex &keys = table.Keys();
     StreamedBatch batch;
     batch.firstLineNumber = 1;
-    // Three rows: "info", monostate (missing field), "warn".
-    // Row 0 and row 2 promote to dict refs; row 1 is monostate so
-    // `GetEnumValueId(row=1)` is nullopt and we drop into the
-    // monostate-handling branch.
+    // Row 1 has no field -> monostate -> takes the fallback branch.
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("info")}}));
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {})); // missing field -> monostate
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {}));
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("warn")}}));
     batch.newKeys.emplace_back("level");
     table.AppendBatch(std::move(batch));
 
-    // monostate ends up at the tail of ascending order, so it
-    // compares as "greater" than any concrete value.
+    // monostate sits at the tail of ascending order.
     CHECK(SignOf(CompareRows(table, 0, 1, 0, /*rankForEnumColumn=*/nullptr)) == -1); // info < monostate
     CHECK(SignOf(CompareRows(table, 2, 1, 0, /*rankForEnumColumn=*/nullptr)) == -1); // warn < monostate
     CHECK(SignOf(CompareRows(table, 1, 0, 0, /*rankForEnumColumn=*/nullptr)) == 1);  // monostate > info
     CHECK(SignOf(CompareRows(table, 1, 1, 0, /*rankForEnumColumn=*/nullptr)) == 0);  // self -> equal
-    // The concrete pair still routes through CompareLogValuesBytewise
-    // (rank == nullptr), so info < warn.
+    // No rank table -> bytewise fallback: info < warn.
     CHECK(SignOf(CompareRows(table, 0, 2, 0, /*rankForEnumColumn=*/nullptr)) == -1);
 }
 

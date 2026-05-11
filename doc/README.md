@@ -247,7 +247,7 @@ Because `Open…` auto-detects configurations, double-clicking a saved configura
 
 ## Preferences
 
-Open **Settings → Preferences…** to change application-wide settings. The dialog is split into two groups:
+Open **Settings → Preferences…** to change application-wide settings. The dialog is split into three groups:
 
 **Appearance** — previewed live; reverted on Cancel.
 
@@ -259,6 +259,10 @@ Open **Settings → Preferences…** to change application-wide settings. The di
 
 - **Stream retention (lines)** — the cap on how many lines [Stream Mode](#retention-cap) keeps in memory (range 1 000 .. 1 000 000, default 10 000).
 - **Show newest lines first** — orient new stream lines at the top of the table instead of the bottom (see [Newest lines first](#newest-lines-first)).
+
+**Static (file mode)** — applied transactionally on **Ok**.
+
+- **Show newest lines first** — display files opened in static mode (`File → Open…`, drag & drop) with the last line at the top and the first line at the bottom. The flag is independent of the Streaming group's setting, so you can keep static files oldest-first while streaming sessions are newest-first (or the other way around). Alternating row colours are disabled while this is enabled, for the same reason as in Stream Mode.
 
 Click **Ok** to persist (stored via `QSettings` under the organization `jan-moravec` / application `StructuredLogViewer`), or **Cancel** to revert to the last saved values. The previous configuration is automatically restored the next time you launch the application.
 

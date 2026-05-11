@@ -20,27 +20,18 @@ EnumRowPredicate::EnumRowPredicate(
 {
     if (selectedValues.empty())
     {
-        // Empty selection: every row is rejected by `MatchesRow` via
-        // the `mEmptySelection` sentinel.
         mEmptySelection = true;
         return;
     }
 
-    // Dedupe the input span before resolving. Two reasons:
-    //   1. `mAllResolved` is keyed on *distinct* selected values, so a
-    //      caller passing duplicates (e.g. a UI that doesn't dedupe its
-    //      multi-select model) can't skew the counter relative to a
-    //      caller that does pre-dedupe.
-    //   2. The string-set fallback and the bitset are already
-    //      idempotent under duplicate insert / set, so the dedupe also
-    //      keeps the work bounded.
+    // Dedupe so `mAllResolved` is keyed on distinct values regardless
+    // of caller-side dedup, and so the bitset/string-set work stays
+    // bounded.
     const std::unordered_set<std::string_view, internal::TransparentStringHash, internal::TransparentStringEqual>
         distinct(selectedValues.begin(), selectedValues.end());
 
     if (dictionary == nullptr)
     {
-        // No dictionary: nothing to resolve against, so every distinct
-        // selected value goes into the string-set fallback.
         mSelectedStrings.reserve(distinct.size());
         for (const std::string_view value : distinct)
         {
@@ -49,11 +40,8 @@ EnumRowPredicate::EnumRowPredicate(
         return;
     }
 
-    // Indexed by id; values interned past `Size()` later route through
-    // the past-bitset branch in `MatchesRow`. When `mAllResolved` is
-    // true that branch rejects directly; otherwise we fall back to the
-    // string set so a stale predicate still matches newly-interned
-    // selected values.
+    // Indexed by id; ids past `Size()` later route through the
+    // past-bitset branch in `MatchesRow`.
     mSelectedIds.assign(static_cast<size_t>(dictionary->Size()), false);
     size_t resolvedCount = 0;
     for (const std::string_view value : distinct)
@@ -61,17 +49,16 @@ EnumRowPredicate::EnumRowPredicate(
         const EnumValueId id = dictionary->Find(value);
         if (id == INVALID_ENUM_VALUE_ID)
         {
-            // Unresolved at construction: keep the string so a future
-            // (post-rebuild or stale-predicate) eval still matches it.
+            // Unresolved -> string-set fallback so post-rebuild evals
+            // still match.
             mSelectedStrings.emplace(value);
             continue;
         }
         const auto idx = static_cast<size_t>(id);
         if (idx >= mSelectedIds.size())
         {
-            // Defensive: dictionary `Find` returned an id past the
-            // snapshot it handed us (concurrent growth between
-            // `Size()` and `Find`). Treat as unresolved.
+            // Defensive: id past the snapshot we sized against (concurrent
+            // dict growth between `Size()` and `Find`). Treat as unresolved.
             mSelectedStrings.emplace(value);
             continue;
         }
@@ -86,7 +73,6 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
     if (mEmptySelection)
     {
-        // Empty selection hides every row (matches `EnumFilterRule`).
         return false;
     }
 
@@ -101,23 +87,17 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             }
             if (mAllResolved)
             {
-                // Past the bitset and every selected value resolved at
-                // construction: provably unselected.
+                // Past the bitset, fully resolved -> provably unselected.
                 return false;
             }
-            // Past the bitset but some selected values were unresolved
-            // at construction (stale predicate / newly-interned value):
-            // fall through to the string-set check below.
+            // Past the bitset with stale predicate; fall through to
+            // the string set.
         }
-        // Slot isn't a `DictRef` (column not yet promoted, or the slot
-        // is monostate/numeric). Fall through to the string-set path.
+        // Slot isn't a `DictRef`; fall through to the string set.
     }
 
     if (mSelectedStrings.empty())
     {
-        // Armed + fully resolved + slot non-`DictRef`: nothing else to
-        // try. Rejecting matches the strings-side-of-the-fence shape
-        // (a non-string slot is never in a string set).
         return false;
     }
 
@@ -142,9 +122,6 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
 {
     if (mBegin > mEnd)
     {
-        // Inverted range: the user picked an `end < begin` window.
-        // Reject every row rather than producing implementation-defined
-        // behaviour from the per-type compares below.
         return false;
     }
     const LogValue value = table.GetValue(row, mColumnIndex);
@@ -162,8 +139,8 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             }
             else if constexpr (std::is_same_v<T, uint64_t>)
             {
-                // Comparing across signed/unsigned: clamp `mBegin`/`mEnd`
-                // negatives to 0 so e.g. `[-1, 100]` keeps positive values.
+                // Clamp negative bounds to 0 so e.g. `[-1, 100]` still
+                // matches positive values.
                 const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
                 const uint64_t hi = mEnd < 0 ? 0U : static_cast<uint64_t>(mEnd);
                 return alt >= lo && alt <= hi;
@@ -188,9 +165,8 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     {
         return false;
     }
-    // Try the cheap string-view fast path; fall back to a formatted
-    // string copy when the slot is non-string (integer / float / time
-    // formatted via the column's `printFormat`).
+    // Try the cheap string-view path; fall back to formatted bytes
+    // (numeric/time slots formatted via the column's `printFormat`).
     const LogValue value = table.GetValue(row, mColumnIndex);
     if (const auto *sv = std::get_if<std::string_view>(&value); sv != nullptr)
     {

@@ -463,11 +463,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    // Registry shape change: an entry grew (dict gained a value) or was
-    // erased (column demoted from enum back to string). Both invalidate
-    // the proxy's `EnumDictRank` cache and any predicate that depends on
-    // the per-id bitset; demotion in particular has no `LastBackfillRange`
-    // detection above because the post-batch column type is `String`.
+    // Registry shape changed: dict grew (new value) or was erased
+    // (column demoted to string). Both invalidate the proxy's
+    // `EnumDictRank` cache and the per-id bitset.
     bool enumRegistryChanged = false;
     if (!enumDictSizesBefore.empty())
     {
@@ -475,8 +473,6 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         for (const auto &[kid, sizeBefore] : enumDictSizesBefore)
         {
             const loglib::EnumDictionary *dict = registryAfter.Find(kid);
-            // Demotion: dict erased. Growth: Size() > sizeBefore.
-            // Shrink shouldn't happen, but `!=` guards against it.
             if (dict == nullptr || dict->Size() != sizeBefore)
             {
                 enumRegistryChanged = true;
@@ -485,21 +481,11 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    // Order note: `endInsertRows` / `endInsertColumns` fire BEFORE
-    // `enumColumnsChanged` (further down). That means a proxy
-    // connected to `rowsInserted` will walk the new rows against a
-    // still-stale predicate when this batch also flipped a column's
-    // enum state. The corresponding `enumColumnsChanged` emission
-    // below causes `MainWindow` to rebuild the rules and the proxy
-    // to `invalidateFilter`, which re-walks every row, so the
-    // observed steady state is correct (regression-pinned by
-    // `TestEnumFilterRebuiltAfterDemote`). A truly atomic fix would
-    // need a pre-batch prediction of demote/promote so the proxy
-    // could rebuild before the row inserts. That requires extending
-    // `LogTable::PreviewAppend` with enum-shape forecasting and
-    // hasn't pulled its weight: the transient is purely intra-call,
-    // never crosses an event-loop boundary, and Qt's repaint events
-    // are queued so no view ever observes it.
+    // `endInsertRows` fires before `enumColumnsChanged` below, so a
+    // proxy connected to `rowsInserted` walks new rows against a stale
+    // predicate on a flip-batch. The follow-up `enumColumnsChanged`
+    // triggers an `invalidateFilter` re-walk, so steady state is
+    // correct. Regression: `TestEnumFilterRebuiltAfterDemote`.
     if (rowsGrew)
     {
         endInsertRows();
@@ -541,10 +527,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    // Registry shape changed without a back-fill: either an existing
-    // dictionary grew (covers a newly-interned id) or one was erased
-    // (column demoted back to string). Both need the proxy + GUI to
-    // refresh; the back-fill branch above only catches *promotion*.
+    // The back-fill branch above only fires on *promotion*. Cover dict
+    // growth (newly-interned id) and demotion (registry erase) here.
     if (!emittedEnumColumnsChanged && enumRegistryChanged)
     {
         emit enumColumnsChanged();
@@ -706,10 +690,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     }
     if (role == LogModelItemDataRole::EnumValueRole)
     {
-        // `qint32` for `DictRef` slots; invalid means the slot is
-        // monostate or unpromoted. Still exposed via the data() role
-        // for external consumers (tests, future widgets); the active
-        // filter predicate path now reads `LogTable` directly.
+        // `qint32` for `DictRef` slots; invalid for monostate /
+        // unpromoted slots. Exposed for tests / external readers; the
+        // filter predicate path queries `LogTable` directly.
         const auto enumId =
             mLogTable.GetEnumValueId(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
         if (!enumId.has_value())
@@ -878,11 +861,21 @@ bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
         return false;
     }
     const int cols = columnCount();
-    if (srcIndex < 0 || srcIndex >= cols || destIndex < 0 || destIndex > cols)
+    // `destIndex` is an absolute final-position index (matching
+    // `LogTable::MoveColumn`), so it must be a valid column index.
+    if (srcIndex < 0 || srcIndex >= cols || destIndex < 0 || destIndex >= cols)
     {
         return false;
     }
-    if (!beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), destIndex))
+    // `beginMoveColumns` uses "insert before" semantics for its
+    // `destinationChild`, while `LogTable::MoveColumn` treats
+    // `destIndex` as the column's final absolute position. The two
+    // conventions agree for leftward moves (srcIndex > destIndex) but
+    // differ by one for rightward moves: Qt would land the column at
+    // `destIndex - 1`. Translate so both APIs end up describing the
+    // same post-move layout.
+    const int qtDestinationChild = (srcIndex < destIndex) ? destIndex + 1 : destIndex;
+    if (!beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), qtDestinationChild))
     {
         return false;
     }

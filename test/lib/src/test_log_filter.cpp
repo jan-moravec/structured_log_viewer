@@ -28,8 +28,7 @@ using namespace loglib;
 namespace
 {
 
-/// Build a `LogLine` bound to @p keys, inserting each `(key, value)`
-/// pair via `GetOrInsert` so the caller can skip explicit KeyIds.
+/// `LogLine` from `(key, value)` pairs; resolves keys via `GetOrInsert`.
 LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair<std::string, LogValue>> &fields)
 {
     std::vector<std::pair<KeyId, LogValue>> sorted;
@@ -42,9 +41,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
     return {std::move(sorted), keys, source, 0};
 }
 
-/// Build a single-column `Type::Enumeration` `LogTable` seeded with the
-/// rows in @p values. Each row gets one field on `columnKey` with the
-/// next value (cycling).
+/// Single-column `Type::Enumeration` `LogTable`; rows cycle @p distinctValues.
 LogTable BuildEnumTable(
     const TestLogFile &testFile,
     const std::string &columnKey,
@@ -89,8 +86,8 @@ LogTable BuildEnumTable(
     return table;
 }
 
-/// Build a single-column string `LogTable` for fallback tests. Column
-/// type stays `Any` so values land as strings without promotion.
+/// Single-column `Type::Any` `LogTable`; values land as strings (no
+/// auto-promotion) so the string-fallback path can be exercised.
 LogTable BuildStringTable(
     const TestLogFile &testFile, const std::string &columnKey, const std::vector<std::string> &perRowValues
 )
@@ -130,8 +127,7 @@ LogTable BuildStringTable(
     return table;
 }
 
-/// Build a `Type::Time` `LogTable`. Times are passed in as
-/// `loglib::TimeStamp` (microseconds since epoch).
+/// Single-column `Type::Time` `LogTable` from microseconds since epoch.
 LogTable BuildTimeTable(
     const TestLogFile &testFile, const std::string &columnKey, const std::vector<int64_t> &microsSinceEpoch
 )
@@ -263,10 +259,9 @@ TEST_CASE(
 
 TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", "[log_filter][enum][post_dict_growth]")
 {
-    // The GUI gate rebuilds the predicate when a selected value gains a
-    // new id, so any id past `mSelectedIds.size()` we see at match time
-    // is by invariant for an *unselected* value. Confirm the predicate
-    // rejects rather than falling through to the string set.
+    // Fully-resolved predicate: an id past the bitset is provably for
+    // an unselected value, so the predicate must reject (not fall
+    // through to the string set).
     const TestLogFile fixture("log_filter_enum_oob.json");
     fixture.Write("");
     LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
@@ -315,13 +310,10 @@ TEST_CASE(
     "[log_filter][enum][post_dict_growth]"
 )
 {
-    // Regression: when a *selected* value is
-    // unresolved at construction time and is later interned past the
-    // bitset, a stale predicate evaluated against the new id must NOT
-    // reject -- it must fall through to the string-set fallback so the
-    // newly-interned row still matches. The GUI's `enumColumnsChanged`
-    // gate keeps this from happening in practice, but the predicate
-    // owes correctness regardless of that gate.
+    // Regression: a selected value that was unresolved at construction
+    // and is later interned past the bitset must still match via the
+    // string-set fallback. Predicate correctness must not rely on the
+    // GUI's `enumColumnsChanged` rebuild gate.
     const TestLogFile fixture("log_filter_enum_stale.json");
     fixture.Write("");
     LogTable table = BuildEnumTable(fixture, "level", {"info"}, 2);
@@ -357,9 +349,7 @@ TEST_CASE(
     REQUIRE(debugId.has_value());
     REQUIRE(static_cast<size_t>(*debugId) >= 1); // past the original bitset
 
-    // Pre-fix: returned `false` because the past-bitset branch
-    // unconditionally rejected. Post-fix: falls through to the string
-    // set, which contains "debug" -> `true`.
+    // String-set fallback contains "debug" -> match.
     CHECK(predicate.MatchesRow(table, debugRow));
 
     // The pre-existing "info" rows continue to match through the bitset.
@@ -369,41 +359,26 @@ TEST_CASE(
     }
 }
 
-// Lifetime trip-wire: the `EnumRowPredicate` constructor takes a
-// `std::span<const std::string_view>`. The `string_view`s themselves
-// point at caller-owned bytes. The predicate must NOT retain the
-// `string_view`s past construction -- it either records the bytes
-// (copied into `mSelectedStrings`) or marks an `EnumValueId` in the
-// bitset. `MainWindow::UpdateFilters` relies on this: the span is
-// built from short-lived `std::string`s on the stack frame of
-// `UpdateFilters`, and the predicate lives much longer (until the
-// next `SetFilterRules` call). If a future refactor accidentally
-// caches the view instead of copying the bytes, this test will catch
-// it under ASan / use-after-free.
+// Lifetime trip-wire: the predicate must copy/index the selected
+// values, not retain `string_view`s into caller-owned bytes.
+// `MainWindow::UpdateFilters` builds the span on the stack and lets
+// the predicate outlive it; ASan would catch a regression here.
 TEST_CASE("EnumRowPredicate does not retain references into the selection span", "[log_filter][enum][lifetime]")
 {
     const TestLogFile fixture("log_filter_enum_lifetime.json");
     fixture.Write("");
-    // Two-value dictionary so one selected value is resolved at
-    // construction (id path) and one falls through to the string-set
-    // fallback. That covers both storage strategies.
+    // Two values so one selected value resolves (bitset) and one
+    // doesn't (string-set fallback) -- exercises both storage paths.
     const LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
     const EnumDictionary *dict = FindDictionary(table, "level");
     REQUIRE(dict != nullptr);
 
-    // Build the predicate from views over strings that we deliberately
-    // overwrite right after construction. If the predicate kept the
-    // `string_view`s, every subsequent `MatchesRow` call would walk
-    // garbage bytes and trip ASan (or sometimes silently match the
-    // wrong rows).
+    // Build from views over strings that we then overwrite in place.
+    // A retained view would read the mangled bytes on subsequent calls.
     auto buildPredicate = [&]() {
         std::vector<std::string> scratch = {"info", "completely_unrelated_label_that_does_not_exist"};
         const std::vector<std::string_view> views = ToViews(scratch);
         EnumRowPredicate built(0, views, dict);
-        // Overwrite the backing bytes in place so any retained
-        // `string_view` would now read different content. The scratch
-        // vector + views are destructed at the end of the lambda's
-        // scope; we return the predicate by value.
         for (std::string &s : scratch)
         {
             std::ranges::fill(s, 'X');
@@ -413,12 +388,8 @@ TEST_CASE("EnumRowPredicate does not retain references into the selection span",
     const EnumRowPredicate predicate = buildPredicate();
     REQUIRE(predicate.IsFastPathArmed());
 
-    // The fixture cycles [info, warn, info, warn]. With "info"
-    // selected only the even rows should match. If the predicate
-    // had retained the now-mangled view, the bitset would still
-    // hold the resolved id (id-path is byte-stable), but the
-    // unresolved value's string-set entry would either be "XXXX..."
-    // or freed memory.
+    // Fixture cycles [info, warn, info, warn]. "info" selected -> even
+    // rows match.
     REQUIRE(table.RowCount() == 4);
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
@@ -432,17 +403,10 @@ TEST_CASE(
     "EnumRowPredicate dedupes duplicate selected values when accounting `mAllResolved`", "[log_filter][enum][dedupe]"
 )
 {
-    // Regression: pre-fix `mAllResolved` was computed against
-    // `selectedValues.size()`, so a caller passing duplicates would
-    // bump the resolved counter once per duplicate. With ["info",
-    // "info"] both resolving, `resolvedCount == 2 == size`, fine. But
-    // with ["info", "info", "debug"] where "debug" is unresolved,
-    // `resolvedCount == 2`, `size == 3`, `mAllResolved == false` --
-    // also fine. The bug surfaces when a future call site dedupes
-    // upstream and the predicate's counter starts disagreeing with
-    // the externally-visible "distinct selected" semantics. Post-fix
-    // the predicate dedupes its input first, so the accounting is
-    // identical for both shapes.
+    // `mAllResolved` is keyed on *distinct* selected values, not raw
+    // input length. Duplicate input must not flip the resolved-vs-
+    // unresolved accounting (otherwise stale-predicate behaviour
+    // diverges from caller-deduped vs caller-not-deduped paths).
     const TestLogFile fixture("log_filter_enum_dedupe.json");
     fixture.Write("");
     LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
@@ -452,11 +416,9 @@ TEST_CASE(
 
     SECTION("duplicates of an unresolved value still trigger the string-set fallback")
     {
-        // ["info", "info", "debug"]: only "info" resolves. The
-        // predicate must remain *not* fully resolved so a future
-        // "debug" id (past the bitset) falls through to the string
-        // set instead of being rejected by the `mAllResolved == true`
-        // short-circuit.
+        // ["info", "info", "debug"]: only "info" resolves; the
+        // predicate must NOT report fully-resolved or "debug"'s
+        // future id would be rejected past the bitset.
         const std::vector<std::string> selected = {"info", "info", "debug"};
         const std::vector<std::string_view> selectedViews = ToViews(selected);
         const EnumRowPredicate predicate(0, selectedViews, dict);
@@ -483,13 +445,9 @@ TEST_CASE(
 
     SECTION("duplicates of resolved values still register as fully resolved")
     {
-        // ["info", "info"]: only "info" selected, twice. The
-        // predicate must short-circuit out-of-range ids via
-        // `mAllResolved == true` instead of falling through to the
-        // string-set fallback (`mSelectedStrings` is empty in this
-        // case anyway, so the visible behaviour is identical; we
-        // exercise the path through a stale-bitset id to confirm
-        // the short-circuit.)
+        // ["info", "info"]: only one distinct selected value, fully
+        // resolved. Past-bitset ids must short-circuit to reject
+        // (rather than fall through an empty string-set).
         const std::vector<std::string> selected = {"info", "info"};
         const std::vector<std::string_view> selectedViews = ToViews(selected);
         const EnumRowPredicate predicate(0, selectedViews, dict);

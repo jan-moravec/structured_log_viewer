@@ -330,18 +330,11 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
-    // Rebuild active enum filter rules so the fast-path bitset stays in
-    // sync after dictionary growth, promotion, or demotion. The gate
-    // consults the *live* dictionary state for every active enum
-    // filter: a growth that only mints unselected ids leaves every
-    // filter fully resolved and the rebuild is skipped, but a demote
-    // (registry entry erased) or a newly-interned selected value flips
-    // the gate so the predicate is rebuilt against the current
-    // column type / dictionary.
+    // Keep enum filter bitsets and sort ranks in sync with the live
+    // dictionary. Always drop cached ranks; rebuild predicates only
+    // when an active enum filter has unresolved selected values
+    // (skips growth that only minted unselected ids).
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
-        // Always drop the proxy's cached `EnumDictRank` entries so any
-        // pending column sort sees the latest dictionary ordering. The
-        // ranks are rebuilt on demand by `LogFilterModel::lessThan`.
         mSortFilterProxyModel->InvalidateEnumRanks();
         const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
             return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
@@ -1080,15 +1073,9 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 
     const QVariant value = QVariant::fromValue(text);
-    // `searchStartIndex` lives in the proxy's coord system (it comes
-    // from `mTableView->currentIndex()`, whose model is the proxy).
-    // Pre-fix we wrapped its `.row()` through `mModel->index(...)` and
-    // passed a source-model index; `MatchRow` happens to only read
-    // `.row()` / `.column()` / `.parent()` so the wrap was a no-op
-    // today, but it left a coordinate-mix footgun for any future
-    // `MatchRow` change that consults `start.model()` or
-    // `mapToSource(start)`. Pass the proxy index in directly so every
-    // coord inside `MatchRow` is in proxy space by construction.
+    // `searchStartIndex` is already in proxy coords (it came from
+    // `mTableView->currentIndex()`). Pass it through directly so
+    // `MatchRow` never sees a mixed coordinate space.
     QModelIndexList matches =
         mSortFilterProxyModel->MatchRow(searchStartIndex, Qt::DisplayRole, value, 1, flags, next, skipFirstN);
 
@@ -1156,13 +1143,9 @@ void MainWindow::AddFilter(
                     return;
                 }
                 // Intentional fallthrough: the saved filter was dropped
-                // above because the column type changed, so a fresh
-                // editor is opened (further down) to let the user
-                // re-pick values for the new column type. The dropped
-                // rule has already been removed from `mFilters`; the
-                // editor starts empty by virtue of `resolvedFilter`
-                // being reset. Regression coverage:
-                // `TestSavedStringFilterDroppedOnNowEnumColumn`.
+                // because the column type changed; open a fresh editor
+                // so the user can re-pick values for the new type.
+                // Regression: `TestSavedStringFilterDroppedOnNowEnumColumn`.
             }
         }
     }
@@ -1274,11 +1257,9 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
 {
     const auto match = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
 
-    // Reject an invalid regex at submission time. The downstream
-    // `QRegularExpression` would compile to a non-`isValid()` object
-    // and silently match nothing, hiding every row with no UI signal.
-    // Wildcards never produce an invalid regex (`wildcardToRegularExpression`
-    // always succeeds), so they need no probe.
+    // Reject an invalid regex up front; the downstream
+    // `QRegularExpression` would otherwise compile to an invalid
+    // object and silently hide every row. Wildcards always compile.
     if (match == loglib::LogConfiguration::LogFilter::Match::RegularExpression)
     {
         const QRegularExpression probe(filterString);
@@ -1305,11 +1286,9 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
 
 void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp)
 {
-    // Reject an inverted range at submission time. The downstream
-    // `TimeRangeRowPredicate` treats `begin > end` as "reject every
-    // row" (matching its documented contract), which would silently
-    // hide every row with no UI signal. Mirrors the
-    // `RegularExpression` probe in `FilterSubmitted`.
+    // Reject an inverted range up front; the predicate would
+    // otherwise hide every row silently. Mirrors the regex probe
+    // in `FilterSubmitted`.
     if (beginTimeStamp > endTimeStamp)
     {
         statusBar()->showMessage(
@@ -1440,39 +1419,23 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
 namespace
 {
 
-/// Prime a `QRegularExpression` so its JIT compile happens at builder
-/// time, not on the first row. The lambda below captures the regex by
-/// value; without this prime each new copy would re-JIT lazily on
-/// first `match()`, which is single-thread-safe today but a footgun
-/// for any future off-thread row walker that reuses the predicate.
+/// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
+/// on first `match()` (would be a thread-safety footgun off the GUI).
 void PrimeRegex(QRegularExpression &regex)
 {
     (void)regex.match(QStringLiteral(""));
 }
 
-/// Build a Qt-flavoured string matcher for a
-/// `loglib::CallbackStringRowPredicate`. The lambda captures the
-/// compiled `QRegularExpression` (or the QString needle) once so the
-/// inner loop avoids per-row recompiles.
+/// Build a Qt-flavoured matcher for `CallbackStringRowPredicate`.
+/// Captures the compiled regex / needle once so the inner loop avoids
+/// per-row recompiles.
 ///
-/// Every lambda normalises the row bytes through
-/// `LogModel::ConvertToSingleLineCompactQString` before matching --
-/// the same transform that produces `Qt::DisplayRole` and that the
-/// Find bar's `MatchRow` fast path applies. Without this, a row whose
-/// stored value is `"line1\nline2"` would display (and Find as)
-/// `"line1 line2"` but a Contains/Exactly/regex/wildcard filter would
-/// match against the raw bytes -- so a filter typed to match what the
-/// user sees on screen silently failed on every value containing
-/// embedded `\n` / `\r` / excess whitespace. The pre-`RowPredicate`
-/// code consulted `SortRole`, which already returned the simplified
-/// text; we restore that semantic here so the displayed-text contract
-/// holds end-to-end (display, Find, filter).
-///
-/// The needle is left as-typed: the old `SortRole` path likewise
-/// compared the simplified haystack against the user's exact input,
-/// so e.g. a needle with two consecutive spaces continues to not
-/// match a row whose simplified display has a single space. Keeping
-/// that asymmetry preserves muscle memory from the prior release.
+/// The haystack is normalised via
+/// `LogModel::ConvertToSingleLineCompactQString` so filters match the
+/// same single-line text the user sees (and that Find applies). The
+/// needle is left as-typed -- mirrors the pre-`RowPredicate`
+/// `SortRole` semantics so a needle with consecutive spaces stays a
+/// non-match against a simplified haystack.
 loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
 )
@@ -1482,26 +1445,17 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     {
     case Match::Exactly:
     {
-        // Capture `pattern` by value: the parameter is `const QString &`,
-        // so the reference would dangle once `MakeStringMatcher`
-        // returns. `QString` uses implicit sharing, so this is a
-        // refcount bump, not a deep copy.
-        //
-        // clang-tidy flags the lambda call operator as a potential exception
-        // escape because `ConvertToSingleLineCompactQString` allocates a
-        // `QString` and `QString::operator==` is not noexcept. Both are
-        // benign in practice (OOM aborts via `qBadAlloc`/`std::terminate`
-        // anyway under Qt's default handler) and the existing predicate
-        // call chain doesn't promise noexcept either, so silence the
-        // check here.
+        // Capture by value: the parameter reference would dangle
+        // after return. `QString`'s implicit sharing keeps this a
+        // refcount bump.
+        // clang-tidy flags `QString::operator==` and the QString
+        // allocation as exception-escape; both are benign here.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         return
             [pattern](std::string_view bytes) { return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern; };
     }
     case Match::Contains:
     {
-        // See `Match::Exactly` above for the by-value capture +
-        // exception-escape rationale.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         return [pattern](std::string_view bytes) {
             return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
@@ -1531,16 +1485,12 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
 
 void MainWindow::UpdateFilters()
 {
-    // `mFilters` is `std::unordered_map`, so iteration order is
-    // hash-dependent and not deterministic across runs. Snapshot the
-    // entries into a vector and re-sort by predicate cost so the
-    // cheapest tests short-circuit `std::ranges::all_of` first. Order
-    // bands (cheapest to most expensive):
-    //   1. EnumRowPredicate    - one `GetEnumValueId` + bitset test
-    //   2. TimeRangeRowPredicate - one `GetValue` + int compare
-    //   3. CallbackStringRowPredicate - per-row Qt regex / UTF-8 walk
-    // Within a band we sort by column index so the order is stable
-    // across runs (handy for tests and for reading the rule vector).
+    // Sort filters cheapest-first so `std::ranges::all_of` short-
+    // circuits on the cheapest rejecting test:
+    //   1. EnumRowPredicate          - GetEnumValueId + bitset test
+    //   2. TimeRangeRowPredicate     - GetValue + int compare
+    //   3. CallbackStringRowPredicate - regex / UTF-8 walk
+    // Tie-break on column index for deterministic, test-friendly order.
     using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
     auto costOf = [](LogFilterType t) -> int {
         switch (t)
@@ -1585,15 +1535,10 @@ void MainWindow::UpdateFilters()
             break;
         case LogFilterType::Enumeration:
         {
-            // `filter` aliases an entry in `mFilters`, whose
-            // `filterValues` strings live for the lifetime of this
-            // call. The `std::string_view`s built here only have to
-            // outlive the constructor of `EnumRowPredicate`, which
-            // consumes the span and either records the bytes in
-            // `mSelectedStrings` (by copy) or marks `mSelectedIds`
-            // (by index), keeping no reference back into the span.
-            // The lifetime trip-wire test in `test_log_filter.cpp`
-            // pins this invariant.
+            // `filter` aliases `mFilters`, so the underlying strings
+            // outlive the views. `EnumRowPredicate`'s constructor
+            // copies/indexes them and keeps no reference back into the
+            // span (pinned by the lifetime test in `test_log_filter.cpp`).
             std::vector<std::string_view> selectedViews;
             selectedViews.reserve(filter.filterValues.size());
             for (const std::string &v : filter.filterValues)

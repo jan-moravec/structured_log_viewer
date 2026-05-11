@@ -30,8 +30,8 @@ enum LogModelItemDataRole
     /// Source-model row index, used as a stable sort tie-break.
     InsertionOrderRole,
     /// `loglib::EnumValueId` as `qint32` for `DictRef` slots; invalid
-    /// otherwise. Retained for external readers; the filter proxy now
-    /// drives `loglib::EnumRowPredicate` directly off the table.
+    /// otherwise. Kept for external readers; the filter proxy bypasses
+    /// it and queries `LogTable` directly.
     EnumValueRole,
 };
 
@@ -134,26 +134,16 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
-    /// UTF-8 byte span -> single-line, simplified `QString` used for
-    /// `Qt::DisplayRole`. Public so `LogFilterModel::MatchRow`'s fast
-    /// path can format cells directly from `LogTable::GetFormattedValue`
-    /// without round-tripping through `QAbstractItemModel::data`, and
-    /// so `MainWindow::MakeStringMatcher` can apply the same
-    /// normalisation to row bytes before `Contains`/`Exactly`/regex/
-    /// wildcard filter matching (mirrors what the user sees on
-    /// screen). Accepts `std::string_view` so callers may pass either
-    /// an owning `std::string` or a non-owning span from
-    /// `LogTable::GetValue` without an intermediate copy.
+    /// UTF-8 bytes -> single-line, simplified `QString` (the
+    /// `Qt::DisplayRole` representation). Public so the filter proxy's
+    /// `MatchRow` and `MainWindow::MakeStringMatcher` can apply the
+    /// same normalisation the user sees on screen.
     static QString ConvertToSingleLineCompactQString(std::string_view bytes);
 
 #ifdef LOGAPP_BUILD_TESTING
-    /// Test-only: move column `srcIndex` to `destIndex` wrapped in
-    /// the standard `beginMoveColumns`/`endMoveColumns` pair so
-    /// `columnsMoved` propagates through the proxy chain. Production
-    /// column moves go through `RunPostBatchActions`. Only compiled
-    /// with the `LOGAPP_BUILD_TESTING` macro (set by
-    /// `test/app/CMakeLists.txt`) so this helper does not leak into
-    /// shipped binaries. Returns `true` on success.
+    /// Test-only: move a column with `beginMoveColumns`/`endMoveColumns`
+    /// so `columnsMoved` propagates through the proxy chain.
+    /// Returns `true` on success.
     bool MoveColumnForTest(int srcIndex, int destIndex);
 #endif
 

@@ -33,15 +33,9 @@ void LogFilterModel::SetLogModel(LogModel *logModel)
 
 void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
 {
-    // Defensively wipe filter state before the base class re-filter so
-    // a synchronous walk under the new chain cannot evaluate
-    // predicates baked against the old `LogTable` (their
-    // `EnumValueId` bitsets and column indices alias the previous
-    // dictionary). The new chain's `LogModel` must be re-wired via
-    // `SetLogModel`; documented contract on that method's header
-    // comment. The rank cache is cleared on the same beat; it's keyed
-    // by `KeyId` (stable across column reorders), so there's no
-    // separate `columnsMoved` hook to maintain here.
+    // Wipe filter state before the base re-filter so predicates baked
+    // against the old `LogTable` (whose dictionary the bitsets alias)
+    // can't poison the new chain. Caller must re-wire via `SetLogModel`.
     mFilterRules.clear();
     mLogModel = nullptr;
     mEnumRanks.clear();
@@ -57,13 +51,8 @@ void LogFilterModel::RefreshSourceProxyCache()
 
 void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> &&filterRules)
 {
-    // No-op guard: when both the current and the incoming rule lists
-    // are empty, the proxy's filter decision is already "accept every
-    // row" and rerunning `endFilterChange` / `invalidateFilter` would
-    // just force a redundant row-map rebuild. The guard only triggers
-    // when nothing actually changes; once non-empty rules have been
-    // applied, transitioning back to empty goes through the
-    // invalidation path below.
+    // Skip the row-map rebuild when neither the current nor the incoming
+    // rule list has anything to filter.
     if (mFilterRules.empty() && filterRules.empty())
     {
         return;
@@ -89,12 +78,9 @@ bool LogFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourcePa
     {
         return true;
     }
-    // Predicates can't run without the table. We get here only when
-    // `SetFilterRules` was called without first wiring a `LogModel` --
-    // always a bug; debug builds trip the assertion below. Release
-    // builds emit one diagnostic and reject every row so the misuse is
-    // loud (the filter visibly hides everything) instead of silent
-    // (every row accepted as if no rule were installed).
+    // Predicates can't run without the table. Reaching here means rules
+    // were installed without `SetLogModel` -- a bug; assert in debug,
+    // reject loudly in release rather than silently accepting every row.
     Q_ASSERT_X(
         mLogModel != nullptr,
         "LogFilterModel::filterAcceptsRow",
@@ -122,20 +108,10 @@ bool LogFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourcePa
 
 bool LogFilterModel::lessThan(const QModelIndex &sourceLeft, const QModelIndex &sourceRight) const
 {
-    // Production sort paths always have a LogModel attached (set by
-    // `MainWindow::SetLogModel` before any sort is issued). The
-    // fallback to the base class lets isolated unit tests build a
-    // bare `LogFilterModel` and still sort via the default
-    // `QVariant`-mediated path; it also covers the transient state
-    // between `setSourceModel` (which clears `mLogModel`) and the
-    // follow-up `SetLogModel` re-wire, when a previously-installed
-    // sort column triggers a re-sort under Qt's `dynamicSortFilter`.
-    // The fallback produces correct chronological / lexicographic
-    // order when `SortRole` returns a `QVariant`-comparable scalar,
-    // and degrades to string compare otherwise. In production this
-    // path is unreachable once the wiring settles, so emit a
-    // one-shot warning to flag a stuck misconfiguration without
-    // tripping the test harness.
+    // Production paths always wire a LogModel before sorting. The base
+    // `QVariant` fallback exists for bare-proxy unit tests and the
+    // transient between `setSourceModel` and the follow-up
+    // `SetLogModel`. Warn once if production hits this state.
     if (mLogModel == nullptr)
     {
         static std::once_flag warnedNoLogModelFlag;
@@ -187,10 +163,8 @@ int LogFilterModel::MapModelIndexToLogModelRow(QModelIndex idx) const
     {
         return -1;
     }
-    // Fast path: cached immediate proxy is the single hop between this
-    // filter and the underlying `LogModel`. Avoids the per-call
-    // `qobject_cast` that QSortFilterProxyModel::sort would otherwise
-    // pay O(N log N) times.
+    // Fast path: skip the per-call `qobject_cast` via the cached
+    // immediate proxy. Sorts call this O(N log N) times.
     if (mImmediateProxy != nullptr && idx.model() == mImmediateProxy)
     {
         const QModelIndex mapped = mImmediateProxy->mapToSource(idx);
@@ -200,9 +174,7 @@ int LogFilterModel::MapModelIndexToLogModelRow(QModelIndex idx) const
         }
         idx = mapped;
     }
-    // Generic fall-through: walk proxy layers down to the underlying
-    // `LogModel`. Covers deeper chains and `setSourceModel` calls that
-    // happened before the cache caught up.
+    // Generic fall-through: walk deeper proxy chains.
     while (const auto *proxy = qobject_cast<const QAbstractProxyModel *>(idx.model()))
     {
         const QModelIndex mapped = proxy->mapToSource(idx);
@@ -240,21 +212,17 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
         return nullptr;
     }
     // Rebuild when the cached rank is missing, smaller than the live
-    // dictionary (growth since the last access), or attached to a
-    // *different* `EnumDictionary` instance than the live one. The
-    // pointer check covers demote -> re-promote that re-creates the
-    // registry entry at the same `Size()` -- without it the cache
-    // would hand out a stale rank whose internal `EnumValueId` indices
-    // mean different bytes.
+    // dictionary, or attached to a different `EnumDictionary` instance
+    // (covers demote -> re-promote that re-creates the entry at the
+    // same `Size()`).
     if (auto it = mEnumRanks.find(lookup.canonicalKey); it != mEnumRanks.end() &&
                                                         it->second.source == lookup.dictionary &&
                                                         it->second.rank.DictSize() >= lookup.dictionary->Size())
     {
         return &it->second.rank;
     }
-    // `unordered_map::insert_or_assign` keeps references to other
-    // stored values stable; the returned reference here is therefore
-    // safe to alias as a raw pointer for the call's lifetime.
+    // `unordered_map` value addresses are stable across rehashes; the
+    // returned pointer is safe for the call's lifetime.
     const auto [it, inserted] = mEnumRanks.insert_or_assign(
         lookup.canonicalKey,
         EnumRankEntry{.rank = loglib::EnumDictRank{*lookup.dictionary}, .source = lookup.dictionary}
@@ -280,23 +248,14 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     const int startRow = start.row();
     const int startColumn = start.column();
 
-    // Fast path: when matching `DisplayRole` against the production
-    // `LogModel`, materialise each cell via
-    // `LogTable::GetFormattedValue` + `ConvertToSingleLineCompactQString`
-    // and skip the `data(role).toString()` round-trip through
-    // `LogModel::data` / `QVariant<QString>`. Other roles fall back to
-    // the QVariant path (kept for defensiveness; no production caller
-    // uses a non-Display role here today).
+    // Fast path for `DisplayRole`: format from `LogTable` directly and
+    // skip the `data().toString()` round-trip. Other roles use the
+    // QVariant path (defensive; no production caller hits it today).
     const bool useFastPath = role == Qt::DisplayRole && mLogModel != nullptr;
     const QString needle = useFastPath ? value.toString() : QString{};
 
-    // `logRowCached` is the underlying `LogTable` row for the current
-    // outer-loop row, resolved lazily on the first fast-path probe and
-    // reused across every column scan for that row. Pre-fix every
-    // column paid a fresh `MapModelIndexToLogModelRow` walk (which
-    // descends each proxy layer); the mapping is constant per row, so
-    // hoisting it cuts the proxy-walk cost from O(rowCount*colCount)
-    // to O(rowCount) on the no-match worst case.
+    // `logRowCached` is resolved once per outer-loop row and reused
+    // across the column scan; the proxy mapping is row-constant.
     auto probeCell = [&](const QModelIndex &index, int logRowCached) -> bool {
         if (useFastPath)
         {
@@ -314,10 +273,8 @@ QList<QModelIndex> LogFilterModel::MatchRow(
         return Matches(data, value, flags);
     };
 
-    // Sentinel: -2 means "not yet resolved this row", -1 means "tried
-    // and failed (row outside the LogModel)". Both short-circuit the
-    // fast path identically inside `probeCell`, but the distinction
-    // lets us avoid re-running the failing map for every column.
+    // -2 means "not yet resolved this row", -1 means "tried and failed".
+    // Distinguishing them avoids re-running a failing map per column.
     constexpr int LOG_ROW_UNRESOLVED = -2;
 
     auto resolveLogRow = [&](const QModelIndex &probeIndex, int &cache) {
@@ -327,10 +284,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
         }
     };
 
-    // Outer loop step. `row` is the offset from `startRow` in the
-    // forward (or backward) direction; `actualRow` is the resolved
-    // row index after at most one wrap. Returns true when @p hits
-    // has been reached and the caller should return immediately.
+    // Scan one row's columns. Returns true when @p hits is reached.
     auto scanRow = [&](int actualRow) -> bool {
         int logRowCached = LOG_ROW_UNRESOLVED;
         for (int col = 0; col < columnCount; ++col)
@@ -358,12 +312,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             int actualRow = startRow + row;
             if (actualRow >= rowCount)
             {
-                // Out-of-range without wrap means we'd reuse rows
-                // already past the natural boundary. Pre-fix the loop
-                // implicitly wrapped via the `% rowCount` projection
-                // even for `wrap=false`, so a forward search starting
-                // near the tail with `skipFirstN > 0` would silently
-                // visit rows below `startRow`.
+                // Without `wrap`, stop at the tail instead of cycling.
                 if (!wrap)
                 {
                     break;
@@ -383,11 +332,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             int actualRow = startRow - row;
             if (actualRow < 0)
             {
-                // Mirror of the forward branch: with `wrap=false`,
-                // stop as soon as we'd cross below 0 instead of
-                // wrapping to the tail. Pre-fix `skipFirstN >
-                // startRow` immediately wrapped and produced matches
-                // from the tail of the model.
+                // Without `wrap`, stop at the head instead of cycling.
                 if (!wrap)
                 {
                     break;

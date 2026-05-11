@@ -9,10 +9,8 @@
 
 #include <loglib/log_configuration.hpp>
 
-// `loglib::EnumDictionary` is referenced by `ResolveEnumDictionary`'s
-// return type below. The full class definition arrives transitively
-// via `log_filter_model.hpp` -> `log_filter.hpp` -> `enum_dictionary.hpp`,
-// so no forward declaration is needed here.
+// `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
+// the full type comes in transitively through `log_filter_model.hpp`.
 
 #include <QAction>
 #include <QDragEnterEvent>
@@ -76,11 +74,8 @@ public:
     [[nodiscard]] QMenu *FiltersMenu() const;
 
 #ifdef LOGAPP_BUILD_TESTING
-    /// Test-only override of the internal session mode so display-order
-    /// tests can exercise the `Static` branch without driving a real
-    /// open flow. Only compiled with the `LOGAPP_BUILD_TESTING` macro
-    /// (set by `test/app/CMakeLists.txt`) so it does not leak into
-    /// shipped binaries.
+    /// Test-only session-mode override so display-order tests can
+    /// exercise the `Static` branch without a real open flow.
     enum class TestSessionMode
     {
         Idle,
@@ -152,14 +147,13 @@ private:
     void UpdateFilters();
     void ApplyTableStyleSheet();
 
-    /// Resolve the canonical `EnumDictionary` for column @p columnIndex,
-    /// or nullptr when the column is not yet promoted / has no keys.
+    /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
+    /// column is not promoted or has no keys.
     [[nodiscard]] const loglib::EnumDictionary *ResolveEnumDictionary(int columnIndex) const;
 
-    /// True iff every selected string in @p filter currently resolves
-    /// to an id in the canonical dictionary for its column. Used to
-    /// decide whether an `enumColumnsChanged` tick warrants a rebuild
-    /// of the proxy's filter rules.
+    /// True iff every selected string in @p filter resolves to an id
+    /// in the canonical dictionary. Gates whether an
+    /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
     [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
 
     void SetConfigurationUiEnabled(bool enabled);

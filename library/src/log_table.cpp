@@ -798,20 +798,15 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
     {
         return {};
     }
-    // The canonical key is the first listed key; aliases share its
-    // dictionary entry. `Keys().Find` may return `INVALID_KEY_ID` for
-    // a key that hasn't yet been interned (configuration loaded ahead
-    // of any data); short-circuit instead of probing the registry.
+    // First listed key is canonical; aliases share its dictionary entry.
     const KeyId canonicalKey = Keys().Find(column.keys.front());
     if (canonicalKey == INVALID_KEY_ID)
     {
         return {};
     }
-    // `dictionary` is nullable: a resolved key without a dictionary
-    // means the column is not currently a `Type::Enumeration` (not
-    // yet promoted, or demoted back to string). Callers downstream
-    // (the GUI's rank cache, the predicate builder) want to know
-    // both facts independently.
+    // `dictionary` is null when the column is not currently
+    // `Type::Enumeration` -- still useful to the caller alongside the
+    // resolved key.
     return {.canonicalKey = canonicalKey, .dictionary = mEnumDictionaries.Find(canonicalKey)};
 }
 

@@ -25,14 +25,8 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
 {
     const auto &values = dictionary.Values();
     const size_t size = values.size();
-    // Single trivially-zeroed allocation: `resize` value-initialises
-    // `uint16_t` slots (the standard library's loop), and the inverse
-    // pass below writes every index, so the zero-fill cost is recouped.
     mIdToRank.resize(size);
-    // Sort `[0, size)` by the bytes of `values[i]`. `order[k]` ends up
-    // holding the EnumValueId of the k-th-smallest value, so the
-    // inverse pass `rank[order[k]] = k` gives the per-id rank in O(N)
-    // once `order` is sorted.
+    // Sort indices by their value bytes, then invert: `rank[order[k]] = k`.
     std::vector<uint16_t> order(size);
     std::ranges::iota(order, uint16_t{0});
     std::ranges::sort(order, [&values](uint16_t a, uint16_t b) {
@@ -49,7 +43,7 @@ uint16_t EnumDictRank::RankOf(EnumValueId id) const noexcept
     const auto idx = static_cast<size_t>(id);
     if (idx >= mIdToRank.size())
     {
-        // Newly-minted id past the last rebuild: sort after known values.
+        // Id minted after the last rebuild sorts after every known value.
         return static_cast<uint16_t>(mIdToRank.size());
     }
     return mIdToRank[idx];
@@ -57,11 +51,6 @@ uint16_t EnumDictRank::RankOf(EnumValueId id) const noexcept
 
 uint16_t EnumDictRank::DictSize() const noexcept
 {
-    // `mIdToRank` is sized at construction from `EnumDictionary::Size()`,
-    // which is itself bounded by `MAX_ENUM_VALUES <= UINT16_MAX`. The
-    // assertion catches a future regression where the rank is built
-    // from a source that violates that bound (e.g. a debugging hand-
-    // rolled dictionary) and would silently truncate here.
     assert(mIdToRank.size() <= std::numeric_limits<uint16_t>::max() && "EnumDictRank exceeds uint16_t capacity");
     return static_cast<uint16_t>(mIdToRank.size());
 }
@@ -83,8 +72,7 @@ template <class T> int ThreeWay(T lhs, T rhs) noexcept
     return 0;
 }
 
-/// `double` three-way that pushes NaN to the high end so it sorts at
-/// the bottom of ascending. NaN-vs-NaN is equal.
+/// Three-way `double` compare; NaN sinks to the tail (NaN==NaN).
 int ThreeWayDouble(double lhs, double rhs) noexcept
 {
     const bool lhsNan = std::isnan(lhs);
@@ -104,22 +92,14 @@ int ThreeWayDouble(double lhs, double rhs) noexcept
     return ThreeWay(lhs, rhs);
 }
 
-/// Materialise the row's slot as a `LogValue`. Convenience over the
-/// dispatch loop below.
 LogValue LoadValue(const LogTable &table, size_t row, size_t column)
 {
     return table.GetValue(row, column);
 }
 
-/// Compare two slots that may be string, string_view, or numeric.
-/// When both sides materialise as strings the bytes are compared
-/// directly; otherwise both sides are formatted through the column's
-/// `printFormat` and the formatted bytes are compared. The fallback
-/// keeps mixed columns deterministic without taking a position on
-/// "numeric < string" or vice versa.
-///
-/// Empty / monostate is handled by the caller; this routine never
-/// observes a monostate slot.
+/// Byte-wise compare. Both string slots compare directly; mixed
+/// types fall back to formatted bytes (deterministic order without
+/// taking a position on `numeric < string`). Caller handles monostate.
 int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);
@@ -144,22 +124,13 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
         return ThreeWay(*lhsSv, *rhsSv);
     }
 
-    // Fall back: format both sides through the column's `printFormat`
-    // so e.g. an integer column sorts numerically below mixed strings.
-    //
-    // The buffers are `thread_local` so the steady-state allocation
-    // cost across millions of compare calls drops to zero: each
-    // `std::string` retains its capacity from the previous assignment.
-    // Sorts are GUI-thread-only today; the `thread_local` storage
-    // generalises that without locking. The function is not reentrant
-    // (no nested `CompareLogValuesBytewise` calls). Re-entrancy would
-    // silently corrupt the buffers via the next-level assignment, so
-    // we trip an assertion in debug builds via the scoped guard below.
-    // Release builds pay nothing.
+    // Format both sides through the column's `printFormat`. Buffers
+    // are `thread_local` so steady-state allocation is zero. Not
+    // reentrant -- the debug guard below catches accidental nesting.
 #ifndef NDEBUG
-    // One counter per thread covers every call site. MSVC rejects static
-    // data members in locally defined classes, so the counter lives at
-    // function scope and the RAII guard takes it by reference.
+    // MSVC rejects `static` variables inside local classes, so the
+    // counter lives at function scope and the RAII guard takes it by
+    // reference.
     thread_local int sDepth = 0;
     struct ReentryGuard
     {
@@ -189,9 +160,8 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     return ThreeWay(std::string_view(lhsFormatted), std::string_view(rhsFormatted));
 }
 
-/// `monostate` order: monostate-vs-monostate equal; monostate-vs-other
-/// returns +1 (monostate is greater = sorts later in ascending).
-/// Returns `nullopt` when neither side is monostate.
+/// monostate-vs-monostate -> 0; monostate-vs-other -> +1 (monostate
+/// sorts to the tail). nullopt when neither side is monostate.
 std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rhs)
 {
     const bool lhsEmpty = std::holds_alternative<std::monostate>(lhs);
@@ -211,19 +181,11 @@ std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rh
     return std::nullopt;
 }
 
-/// Shared shape for "extract to T, three-way the extracted values, mixed
-/// extracted/unextracted route extracted < unextracted". `Extract` returns
-/// `std::optional<T>` and `Compare` is a three-way comparator on `T`.
-/// The per-comparator definitions below reduce to one-liners.
-///
-/// Monostate is handled as the canonical "unextractable" slot: an explicit
-/// `std::monostate` short-circuits `extract` to `std::nullopt`, so the
-/// tail bucket -- monostate, NaN-in-Int, stray-string-in-Floating, etc. --
-/// all compare equal pairwise. This is the invariant the header doc
-/// promises (representable < tail-bucket; tail-bucket members tie). Running
-/// `extract` first (instead of routing monostate through a parallel
-/// short-circuit) is what lets unrepresentable values join the tie bucket
-/// instead of sorting strictly below monostate.
+/// Shared "extract to T, three-way on extracted, unextracted joins
+/// the tail bucket" shape. Routing monostate through `extract` (rather
+/// than a parallel short-circuit) is what makes monostate, NaN-in-Int,
+/// stray-string-in-Floating, etc. all compare equal pairwise -- the
+/// tail-bucket invariant the header promises.
 template <class Extract, class Compare>
 int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Compare cmp)
 {
@@ -237,16 +199,12 @@ int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Comp
     }
     if (lhsX.has_value())
     {
-        // Extracted value sorts before "non-extractable" (e.g. a number
-        // column with a stray string slot keeps the numeric rows together).
         return -1;
     }
     if (rhsX.has_value())
     {
         return 1;
     }
-    // Tail vs tail: monostate vs monostate, monostate vs NaN, NaN vs NaN,
-    // stray-string vs monostate, etc. all compare equal.
     return 0;
 }
 
@@ -259,19 +217,14 @@ int CompareInteger(const LogValue &lhs, const LogValue &rhs)
         }
         if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
         {
-            // Clamp to int64_t range: oversized values sort to the top
-            // of the signed range, which is the closest order-preserving
-            // mapping.
+            // Order-preserving clamp: oversized uints sort at INT64_MAX.
             constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
             return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
         }
         if (const auto *d = std::get_if<double>(&v); d != nullptr)
         {
-            // NaN has no integer image; route it to the non-numeric tail
-            // (`nullopt`) so it sorts after every integer-shaped slot.
-            // `static_cast<int64_t>(NaN)` is UB; same for values outside
-            // the signed range. Clamp finite out-of-range doubles to the
-            // signed limits (order-preserving) and treat NaN as missing.
+            // NaN -> tail. `static_cast<int64_t>(NaN)` is UB, as is
+            // out-of-range cast; clamp finite extremes to INT64 limits.
             if (std::isnan(*d))
             {
                 return std::nullopt;
@@ -326,11 +279,8 @@ int CompareTime(const LogValue &lhs, const LogValue &rhs)
         }
         if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
         {
-            // Parity with `CompareInteger` and `TimeRangeRowPredicate`,
-            // both of which accept `uint64_t` micros-since-epoch
-            // slots. Clamp to `int64_t::max` so the order is
-            // preserved (oversized values sort to the top of the
-            // signed range rather than wrapping).
+            // Parity with `CompareInteger`/`TimeRangeRowPredicate`:
+            // order-preserving clamp instead of wraparound.
             constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
             return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
         }
@@ -350,15 +300,13 @@ int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t colu
     }
     if (lhsId.has_value() && rhsId.has_value() && rank == nullptr)
     {
-        // No rank table: fall back to byte-wise compare of resolved
-        // strings via `GetValue`. Slow path, only hit in transitional
-        // states (between promotion and the first rank rebuild).
+        // No rank table: byte-wise fallback. Hit only in the
+        // promote -> first-rebuild transition.
         return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
     }
 
-    // One or both sides aren't DictRef. Could be monostate or an
-    // unpromoted slot (string / numeric). Defer to the generic
-    // string compare so the result still respects monostate order.
+    // One or both sides not `DictRef` (monostate or unpromoted slot).
+    // Defer to the generic compare so monostate order is respected.
     const LogValue lhs = LoadValue(table, lhsRow, column);
     const LogValue rhs = LoadValue(table, rhsRow, column);
     if (const auto order = CompareMonostateOrder(lhs, rhs); order.has_value())
