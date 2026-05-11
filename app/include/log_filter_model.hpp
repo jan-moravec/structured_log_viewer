@@ -35,15 +35,26 @@ public:
 
     /// Install the underlying `LogModel`. Required before any filter
     /// rule walks rows -- predicates need direct table access.
-    /// Order relative to `setSourceModel(...)` does not matter: the
-    /// `columnsMoved` invalidation hook installed by `setSourceModel`
-    /// is independent of `mLogModel`. Both orders are exercised in
-    /// tests; the production `MainWindow` wiring calls `setSourceModel`
-    /// first and then `SetLogModel`. Calling `SetLogModel` again on
-    /// the same proxy is supported and just rebinds the table pointer
-    /// + clears the rank cache; the active `columnsMoved` connection
-    /// remains attached to whatever source model was current at the
-    /// last `setSourceModel` call.
+    ///
+    /// Required call order after every `setSourceModel`:
+    ///
+    ///   1. `setSourceModel(newChain)`   defensively clears `mFilterRules`
+    ///                                   and resets `mLogModel` to null
+    ///                                   so a predicate baked against the
+    ///                                   previous `LogTable`'s dictionary
+    ///                                   (its `EnumValueId` bitset would
+    ///                                   alias different bytes) cannot
+    ///                                   poison the new chain.
+    ///   2. `SetLogModel(newLogModel)`   rebinds the table pointer + clears
+    ///                                   the rank cache.
+    ///   3. `SetFilterRules(newRules)`   (optional) reinstalls predicates
+    ///                                   against the new `LogTable`.
+    ///
+    /// `setSourceModel` without a subsequent `SetLogModel` leaves the
+    /// proxy in a defensive "no LogModel" state where the empty rule
+    /// list accepts every row. Installing rules in that state is a
+    /// misuse: `filterAcceptsRow` rejects every row in release and
+    /// trips a `Q_ASSERT_X` in debug.
     void SetLogModel(LogModel *logModel);
 
     void setSourceModel(QAbstractItemModel *sourceModel) override;

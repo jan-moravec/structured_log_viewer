@@ -62,6 +62,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
@@ -3619,6 +3620,196 @@ private slots:
 
         model.EndStreaming(false);
     }
+
+    // Regression: `LogFilterModel::setSourceModel` must wipe filter
+    // state before the base class re-filter so a predicate baked
+    // against the previous chain's dictionary (its `EnumValueId`
+    // bitset aliases different bytes after the swap) cannot poison
+    // the new chain. Pre-fix the proxy kept `mFilterRules` and
+    // `mLogModel` after the swap, and `filterAcceptsRow` walked the
+    // new rows via the stale `mLogModel` -> `MapToLogModelRow`
+    // returned `-1` for every row -> every row silently hidden.
+    void TestSetSourceModelClearsFilterState()
+    {
+        // Two independent enum-encoded fixtures. Each has its own
+        // dictionary; predicates resolved against `A`'s bitset would
+        // alias unrelated `EnumValueId`s in `B`.
+        LogModel modelA;
+        LogModel modelB;
+        const auto installSession = [&](LogModel &model, const std::string &fixtureName) {
+            // Empty fixture armed via `BeginStreamingForSyncTest`
+            // satisfies the streaming pre-condition without queuing
+            // worker batches.
+            const TempJsonFile emptyFixture(QStringList{});
+            auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+            auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+            loglib::FileLineSource *sourcePtr = fileSource.get();
+            (void)model.BeginStreamingForSyncTest(std::move(fileSource));
+
+            loglib::KeyIndex &keys = model.Table().Keys();
+            const auto makeLine = [&](const std::string &value) {
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+                return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            };
+
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            // Same shape on both sides: two distinct values promote the
+            // column to enum. The dictionary instances differ.
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            model.AppendBatch(std::move(batch));
+            Q_UNUSED(fixtureName);
+        };
+        installSession(modelA, "A");
+        installSession(modelB, "B");
+        QCOMPARE(modelA.rowCount(), 4);
+        QCOMPARE(modelB.rowCount(), 4);
+
+        LogFilterModel proxy;
+        proxy.setSourceModel(&modelA);
+        proxy.SetLogModel(&modelA);
+
+        const int levelColA = ColumnByHeader(modelA, QStringLiteral("level"));
+        QVERIFY(levelColA >= 0);
+        const loglib::KeyId keyA = modelA.Table().Keys().Find(
+            modelA.Configuration().columns[static_cast<size_t>(levelColA)].keys.front()
+        );
+        const loglib::EnumDictionary *dictA = modelA.Table().EnumDictionaries().Find(keyA);
+        QVERIFY(dictA != nullptr);
+
+        // Filter on `A`: keep only "info" rows (selectivity 1/2).
+        {
+            const std::vector<std::string> selected = {"info"};
+            std::vector<std::string_view> selectedViews;
+            selectedViews.reserve(selected.size());
+            for (const auto &v : selected)
+            {
+                selectedViews.emplace_back(v);
+            }
+            std::vector<loglib::RowPredicate> rules;
+            rules.emplace_back(
+                std::in_place_type<loglib::EnumRowPredicate>,
+                static_cast<size_t>(levelColA),
+                std::span<const std::string_view>(selectedViews),
+                dictA
+            );
+            proxy.SetFilterRules(std::move(rules));
+        }
+        QCOMPARE(proxy.rowCount(), 2);
+        // Warm the rank cache so we can assert it's cleared on swap.
+        proxy.sort(levelColA, Qt::AscendingOrder);
+        QCOMPARE(proxy.EnumRankCacheSizeForTest(), std::size_t{1});
+
+        // Swap to chain over `modelB` *without* re-issuing SetLogModel.
+        // Filter state must be wiped: no rules, no rank cache, no
+        // dangling `mLogModel`. The empty rule list means every row
+        // from `B` is accepted -- the safe default for "caller hasn't
+        // re-wired the proxy yet".
+        proxy.setSourceModel(&modelB);
+        QCOMPARE(proxy.EnumRankCacheSizeForTest(), std::size_t{0});
+        QCOMPARE(proxy.rowCount(), modelB.rowCount());
+
+        // Re-wire for `B`. Survivors must come from `B`'s rows (4
+        // total, 2 "info") rather than `A`'s.
+        proxy.SetLogModel(&modelB);
+        const int levelColB = ColumnByHeader(modelB, QStringLiteral("level"));
+        QVERIFY(levelColB >= 0);
+        const loglib::KeyId keyB = modelB.Table().Keys().Find(
+            modelB.Configuration().columns[static_cast<size_t>(levelColB)].keys.front()
+        );
+        const loglib::EnumDictionary *dictB = modelB.Table().EnumDictionaries().Find(keyB);
+        QVERIFY(dictB != nullptr);
+        QVERIFY2(dictB != dictA, "fixtures must have distinct dictionary instances");
+
+        const std::vector<std::string> selected = {"info"};
+        std::vector<std::string_view> selectedViews;
+        selectedViews.reserve(selected.size());
+        for (const auto &v : selected)
+        {
+            selectedViews.emplace_back(v);
+        }
+        std::vector<loglib::RowPredicate> rulesB;
+        rulesB.emplace_back(
+            std::in_place_type<loglib::EnumRowPredicate>,
+            static_cast<size_t>(levelColB),
+            std::span<const std::string_view>(selectedViews),
+            dictB
+        );
+        proxy.SetFilterRules(std::move(rulesB));
+        QCOMPARE(proxy.rowCount(), 2);
+
+        modelA.EndStreaming(false);
+        modelB.EndStreaming(false);
+    }
+
+#ifdef QT_NO_DEBUG
+    // Regression: in release, `filterAcceptsRow` rejects every row
+    // when filter rules are present but `mLogModel` is null (the
+    // documented misuse window: caller installed rules without first
+    // wiring a `LogModel`). Pre-fix the proxy returned `true` for
+    // every row, silently turning the filter into a no-op and
+    // showing rows the user thought they had hidden. Debug builds
+    // trip a `Q_ASSERT_X` instead and never reach this code path,
+    // so the test is release-only.
+    void TestFilterAcceptsRowRejectsAllWithoutLogModel()
+    {
+        LogModel model;
+        {
+            const TempJsonFile emptyFixture(QStringList{});
+            auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+            auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+            loglib::FileLineSource *sourcePtr = fileSource.get();
+            (void)model.BeginStreamingForSyncTest(std::move(fileSource));
+
+            loglib::KeyIndex &keys = model.Table().Keys();
+            const auto makeLine = [&](const std::string &value) {
+                std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+                values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+                return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+            };
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            model.AppendBatch(std::move(batch));
+        }
+        QCOMPARE(model.rowCount(), 2);
+
+        LogFilterModel proxy;
+        proxy.setSourceModel(&model);
+        // Intentionally skip `SetLogModel(&model)`. Any rule
+        // installation in this state must be rejected at evaluation
+        // time so the misuse is visible.
+        const int levelCol = ColumnByHeader(model, QStringLiteral("level"));
+        QVERIFY(levelCol >= 0);
+        const std::vector<std::string> selected = {"info"};
+        std::vector<std::string_view> selectedViews;
+        selectedViews.reserve(selected.size());
+        for (const auto &v : selected)
+        {
+            selectedViews.emplace_back(v);
+        }
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(
+            std::in_place_type<loglib::EnumRowPredicate>,
+            static_cast<size_t>(levelCol),
+            std::span<const std::string_view>(selectedViews),
+            /*dictionary=*/nullptr
+        );
+        proxy.SetFilterRules(std::move(rules));
+
+        // Release fallback: every row hidden.
+        QCOMPARE(proxy.rowCount(), 0);
+
+        model.EndStreaming(false);
+    }
+#endif
 
     // Regression: an invalid regex submitted via
     // `FilterSubmitted` used to be quietly accepted; the downstream

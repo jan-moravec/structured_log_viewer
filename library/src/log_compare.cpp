@@ -316,6 +316,16 @@ int CompareTime(const LogValue &lhs, const LogValue &rhs)
         {
             return *i;
         }
+        if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
+        {
+            // Parity with `CompareInteger` and `TimeRangeRowPredicate`,
+            // both of which accept `uint64_t` micros-since-epoch
+            // slots. Clamp to `int64_t::max` so the order is
+            // preserved (oversized values sort to the top of the
+            // signed range rather than wrapping).
+            constexpr uint64_t MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+            return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
+        }
         return std::nullopt;
     };
     return CompareTyped(lhs, rhs, toMicros, [](int64_t a, int64_t b) { return ThreeWay(a, b); });

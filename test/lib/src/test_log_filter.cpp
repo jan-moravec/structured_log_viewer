@@ -433,6 +433,94 @@ TEST_CASE("EnumRowPredicate does not retain references into the selection span",
     }
 }
 
+TEST_CASE(
+    "EnumRowPredicate dedupes duplicate selected values when accounting `mAllResolved`",
+    "[log_filter][enum][dedupe]"
+)
+{
+    // Regression: pre-fix `mAllResolved` was computed against
+    // `selectedValues.size()`, so a caller passing duplicates would
+    // bump the resolved counter once per duplicate. With ["info",
+    // "info"] both resolving, `resolvedCount == 2 == size`, fine. But
+    // with ["info", "info", "debug"] where "debug" is unresolved,
+    // `resolvedCount == 2`, `size == 3`, `mAllResolved == false` --
+    // also fine. The bug surfaces when a future call site dedupes
+    // upstream and the predicate's counter starts disagreeing with
+    // the externally-visible "distinct selected" semantics. Post-fix
+    // the predicate dedupes its input first, so the accounting is
+    // identical for both shapes.
+    const TestLogFile fixture("log_filter_enum_dedupe.json");
+    fixture.Write("");
+    LogTable table = BuildEnumTable(fixture, "level", {"info", "warn"}, 4);
+    const EnumDictionary *dict = FindDictionary(table, "level");
+    REQUIRE(dict != nullptr);
+    REQUIRE(dict->Size() == 2);
+
+    SECTION("duplicates of an unresolved value still trigger the string-set fallback")
+    {
+        // ["info", "info", "debug"]: only "info" resolves. The
+        // predicate must remain *not* fully resolved so a future
+        // "debug" id (past the bitset) falls through to the string
+        // set instead of being rejected by the `mAllResolved == true`
+        // short-circuit.
+        const std::vector<std::string> selected = {"info", "info", "debug"};
+        const std::vector<std::string_view> selectedViews = ToViews(selected);
+        const EnumRowPredicate predicate(0, selectedViews, dict);
+        REQUIRE(predicate.IsFastPathArmed());
+
+        KeyIndex &keys = table.Keys();
+        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+        FileLineSource *sourcePtr = source.get();
+        table.AppendStreaming(std::move(source));
+        StreamedBatch batch;
+        batch.firstLineNumber = table.RowCount() + 1;
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
+        table.AppendBatch(std::move(batch));
+
+        const size_t debugRow = table.RowCount() - 1;
+        const auto debugId = table.GetEnumValueId(debugRow, 0);
+        REQUIRE(debugId.has_value());
+        REQUIRE(static_cast<size_t>(*debugId) >= 2); // past the bitset
+
+        // `mAllResolved == false`, so the past-bitset branch must
+        // fall through to `mSelectedStrings` and match "debug".
+        CHECK(predicate.MatchesRow(table, debugRow));
+    }
+
+    SECTION("duplicates of resolved values still register as fully resolved")
+    {
+        // ["info", "info"]: only "info" selected, twice. The
+        // predicate must short-circuit out-of-range ids via
+        // `mAllResolved == true` instead of falling through to the
+        // string-set fallback (`mSelectedStrings` is empty in this
+        // case anyway, so the visible behaviour is identical; we
+        // exercise the path through a stale-bitset id to confirm
+        // the short-circuit.)
+        const std::vector<std::string> selected = {"info", "info"};
+        const std::vector<std::string_view> selectedViews = ToViews(selected);
+        const EnumRowPredicate predicate(0, selectedViews, dict);
+        REQUIRE(predicate.IsFastPathArmed());
+
+        KeyIndex &keys = table.Keys();
+        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+        FileLineSource *sourcePtr = source.get();
+        table.AppendStreaming(std::move(source));
+        StreamedBatch batch;
+        batch.firstLineNumber = table.RowCount() + 1;
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("debug")}}));
+        table.AppendBatch(std::move(batch));
+
+        const size_t debugRow = table.RowCount() - 1;
+        const auto debugId = table.GetEnumValueId(debugRow, 0);
+        REQUIRE(debugId.has_value());
+        REQUIRE(static_cast<size_t>(*debugId) >= 2);
+
+        // `mAllResolved == true` (the only distinct value "info"
+        // resolved), so the past-bitset id is provably unselected.
+        CHECK_FALSE(predicate.MatchesRow(table, debugRow));
+    }
+}
+
 TEST_CASE("TimeRangeRowPredicate accepts the inclusive range and rejects outside", "[log_filter][time]")
 {
     const TestLogFile fixture("log_filter_time.json");

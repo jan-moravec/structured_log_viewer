@@ -298,6 +298,40 @@ TEST_CASE("CompareRows handles Time columns by microseconds-since-epoch", "[log_
     CHECK(SignOf(CompareRows(table, 3, 0, 0)) == 1);  // monostate > populated
 }
 
+// Regression: `CompareTime` originally only accepted
+// `TimeStamp` / `int64_t` slots; a stray `uint64_t` micros-since-epoch
+// slot in a `Type::Time` column would route to the tail bucket
+// instead of being compared numerically. `TimeRangeRowPredicate`
+// already accepts `uint64_t`, so the comparator was the asymmetry.
+TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[log_compare][time][regression]")
+{
+    const TestLogFile fixture("log_compare_time_uint.json");
+    fixture.Write("");
+    // Three rows: a `TimeStamp`, a `uint64_t` micros-since-epoch
+    // sandwiched between two `TimeStamp`s, and another `TimeStamp`.
+    // The uint slot must compare numerically against its neighbours.
+    const TimeStamp t100{std::chrono::microseconds{100}};
+    const TimeStamp t300{std::chrono::microseconds{300}};
+    const std::vector<LogValue> values = {t100, uint64_t{200}, t300};
+    LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
+
+    CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 100 < 200(u)
+    CHECK(SignOf(CompareRows(table, 1, 2, 0)) == -1); // 200(u) < 300
+    CHECK(SignOf(CompareRows(table, 1, 0, 0)) == 1);  // 200(u) > 100
+    CHECK(SignOf(CompareRows(table, 1, 1, 0)) == 0);  // same row
+
+    // Oversized `uint64_t` (past `int64_t::max`) clamps so it
+    // sorts strictly above every representable `TimeStamp`.
+    const TestLogFile fixtureBig("log_compare_time_uint_big.json");
+    fixtureBig.Write("");
+    const uint64_t huge = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 100;
+    const std::vector<LogValue> bigValues = {t100, huge};
+    LogTable bigTable =
+        BuildSingleColumnTable(fixtureBig, "ts", LogConfiguration::Type::Time, bigValues, "{:%FT%T}");
+    CHECK(SignOf(CompareRows(bigTable, 0, 1, 0)) == -1); // t100 < clamped uint
+    CHECK(SignOf(CompareRows(bigTable, 1, 0, 0)) == 1);
+}
+
 TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_compare][enum]")
 {
     const TestLogFile fixture("log_compare_enum.json");

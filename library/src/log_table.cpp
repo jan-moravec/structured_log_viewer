@@ -786,6 +786,35 @@ std::optional<EnumValueId> LogTable::GetEnumValueId(size_t row, size_t column) c
     return std::nullopt;
 }
 
+LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const noexcept
+{
+    const auto &columns = mConfiguration.Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return {};
+    }
+    const auto &column = columns[columnIndex];
+    if (column.keys.empty())
+    {
+        return {};
+    }
+    // The canonical key is the first listed key; aliases share its
+    // dictionary entry. `Keys().Find` may return `INVALID_KEY_ID` for
+    // a key that hasn't yet been interned (configuration loaded ahead
+    // of any data); short-circuit instead of probing the registry.
+    const KeyId canonicalKey = Keys().Find(column.keys.front());
+    if (canonicalKey == INVALID_KEY_ID)
+    {
+        return {};
+    }
+    // `dictionary` is nullable: a resolved key without a dictionary
+    // means the column is not currently a `Type::Enumeration` (not
+    // yet promoted, or demoted back to string). Callers downstream
+    // (the GUI's rank cache, the predicate builder) want to know
+    // both facts independently.
+    return {canonicalKey, mEnumDictionaries.Find(canonicalKey)};
+}
+
 void LogTable::RunEnumPassForAppendBatch(
     size_t oldLineCount, std::optional<size_t> &firstBackfilled, std::optional<size_t> &lastBackfilled
 )

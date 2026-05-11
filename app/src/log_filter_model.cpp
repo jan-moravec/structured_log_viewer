@@ -33,15 +33,21 @@ void LogFilterModel::SetLogModel(LogModel *logModel)
 
 void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
 {
+    // Defensively wipe filter state before the base class re-filter so
+    // a synchronous walk under the new chain cannot evaluate
+    // predicates baked against the old `LogTable` (their
+    // `EnumValueId` bitsets and column indices alias the previous
+    // dictionary). The new chain's `LogModel` must be re-wired via
+    // `SetLogModel`; documented contract on that method's header
+    // comment. The rank cache is cleared on the same beat; it's keyed
+    // by `KeyId` (stable across column reorders), so there's no
+    // separate `columnsMoved` hook to maintain here.
+    mFilterRules.clear();
+    mLogModel = nullptr;
+    mEnumRanks.clear();
+
     QSortFilterProxyModel::setSourceModel(sourceModel);
     RefreshSourceProxyCache();
-    // Source-model swap invalidates every cached rank table; the new
-    // tree has its own dictionaries (and a different `LogModel` may
-    // already be attached). `SetLogModel` clears the same cache on the
-    // other path that can re-bind us. (The cache is keyed by `KeyId`,
-    // which is stable across column reorders, so there is no separate
-    // `columnsMoved` hook to maintain here.)
-    mEnumRanks.clear();
 }
 
 void LogFilterModel::RefreshSourceProxyCache()
@@ -83,24 +89,24 @@ bool LogFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourcePa
     {
         return true;
     }
+    // Predicates can't run without the table. We get here only when
+    // `SetFilterRules` was called without first wiring a `LogModel` --
+    // always a bug; debug builds trip the assertion below. Release
+    // builds emit one diagnostic and reject every row so the misuse is
+    // loud (the filter visibly hides everything) instead of silent
+    // (every row accepted as if no rule were installed).
+    Q_ASSERT_X(
+        mLogModel != nullptr,
+        "LogFilterModel::filterAcceptsRow",
+        "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
+    );
     if (mLogModel == nullptr)
     {
-        // Predicates can't run without the table; treat as no-filter
-        // rather than rejecting every row, matching the empty-rules
-        // semantics above. We get here only when the caller installed
-        // rules without first wiring a LogModel -- always a bug, so
-        // debug builds trip the assertion below. Release builds emit
-        // one diagnostic and otherwise carry on with accept-all.
-        Q_ASSERT_X(
-            false,
-            "LogFilterModel::filterAcceptsRow",
-            "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
-        );
         static std::once_flag warnedNoLogModelFlag;
         std::call_once(warnedNoLogModelFlag, [] {
-            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rules ignored";
+            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rejecting every row";
         });
-        return true;
+        return false;
     }
     const int logRow = MapToLogModelRow(sourceRow, sourceParent);
     if (logRow < 0)
@@ -212,28 +218,17 @@ loglib::KeyId LogFilterModel::EnumKeyForColumn(int columnIndex) const
     {
         return loglib::INVALID_KEY_ID;
     }
-    const auto &columns = mLogModel->Configuration().columns;
-    if (static_cast<size_t>(columnIndex) >= columns.size())
-    {
-        return loglib::INVALID_KEY_ID;
-    }
-    const auto &column = columns[columnIndex];
-    if (column.keys.empty())
-    {
-        return loglib::INVALID_KEY_ID;
-    }
-    return mLogModel->Table().Keys().Find(column.keys.front());
+    return mLogModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex)).canonicalKey;
 }
 
 const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
 {
-    const loglib::KeyId canonicalKeyId = EnumKeyForColumn(columnIndex);
-    if (canonicalKeyId == loglib::INVALID_KEY_ID)
+    if (mLogModel == nullptr || columnIndex < 0)
     {
         return nullptr;
     }
-    const loglib::EnumDictionary *dictionary = mLogModel->Table().EnumDictionaries().Find(canonicalKeyId);
-    if (dictionary == nullptr)
+    const auto lookup = mLogModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex));
+    if (lookup.canonicalKey == loglib::INVALID_KEY_ID || lookup.dictionary == nullptr)
     {
         return nullptr;
     }
@@ -244,17 +239,18 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     // registry entry at the same `Size()` -- without it the cache
     // would hand out a stale rank whose internal `EnumValueId` indices
     // mean different bytes.
-    if (auto it = mEnumRanks.find(canonicalKeyId);
-        it != mEnumRanks.end() && it->second.source == dictionary &&
-        it->second.rank.DictSize() >= dictionary->Size())
+    if (auto it = mEnumRanks.find(lookup.canonicalKey);
+        it != mEnumRanks.end() && it->second.source == lookup.dictionary &&
+        it->second.rank.DictSize() >= lookup.dictionary->Size())
     {
         return &it->second.rank;
     }
     // `unordered_map::insert_or_assign` keeps references to other
     // stored values stable; the returned reference here is therefore
     // safe to alias as a raw pointer for the call's lifetime.
-    const auto [it, inserted] =
-        mEnumRanks.insert_or_assign(canonicalKeyId, EnumRankEntry{loglib::EnumDictRank{*dictionary}, dictionary});
+    const auto [it, inserted] = mEnumRanks.insert_or_assign(
+        lookup.canonicalKey, EnumRankEntry{loglib::EnumDictRank{*lookup.dictionary}, lookup.dictionary}
+    );
     return &it->second.rank;
 }
 

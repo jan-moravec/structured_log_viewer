@@ -26,12 +26,24 @@ EnumRowPredicate::EnumRowPredicate(
         return;
     }
 
+    // Dedupe the input span before resolving. Two reasons:
+    //   1. `mAllResolved` is keyed on *distinct* selected values, so a
+    //      caller passing duplicates (e.g. a UI that doesn't dedupe its
+    //      multi-select model) can't skew the counter relative to a
+    //      caller that does pre-dedupe.
+    //   2. The string-set fallback and the bitset are already
+    //      idempotent under duplicate insert / set, so the dedupe also
+    //      keeps the work bounded.
+    std::unordered_set<std::string_view, internal::TransparentStringHash, internal::TransparentStringEqual> distinct(
+        selectedValues.begin(), selectedValues.end()
+    );
+
     if (dictionary == nullptr)
     {
-        // No dictionary: nothing to resolve against, so every selected
-        // value goes into the string-set fallback.
-        mSelectedStrings.reserve(selectedValues.size());
-        for (const std::string_view value : selectedValues)
+        // No dictionary: nothing to resolve against, so every distinct
+        // selected value goes into the string-set fallback.
+        mSelectedStrings.reserve(distinct.size());
+        for (const std::string_view value : distinct)
         {
             mSelectedStrings.emplace(value);
         }
@@ -45,7 +57,7 @@ EnumRowPredicate::EnumRowPredicate(
     // selected values.
     mSelectedIds.assign(static_cast<size_t>(dictionary->Size()), false);
     size_t resolvedCount = 0;
-    for (const std::string_view value : selectedValues)
+    for (const std::string_view value : distinct)
     {
         const EnumValueId id = dictionary->Find(value);
         if (id == INVALID_ENUM_VALUE_ID)
@@ -68,7 +80,7 @@ EnumRowPredicate::EnumRowPredicate(
         mFastPathArmed = true;
         ++resolvedCount;
     }
-    mAllResolved = resolvedCount == selectedValues.size();
+    mAllResolved = resolvedCount == distinct.size();
 }
 
 bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const

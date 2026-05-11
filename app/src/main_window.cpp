@@ -1416,22 +1416,11 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
 
 const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex) const
 {
-    const auto &columns = mModel->Configuration().columns;
     if (columnIndex < 0)
     {
         return nullptr;
     }
-    const auto idx = static_cast<size_t>(columnIndex);
-    if (idx >= columns.size() || columns[idx].keys.empty())
-    {
-        return nullptr;
-    }
-    const loglib::KeyId canonicalKeyId = mModel->Table().Keys().Find(columns[idx].keys.front());
-    if (canonicalKeyId == loglib::INVALID_KEY_ID)
-    {
-        return nullptr;
-    }
-    return mModel->Table().EnumDictionaries().Find(canonicalKeyId);
+    return mModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex)).dictionary;
 }
 
 bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const
