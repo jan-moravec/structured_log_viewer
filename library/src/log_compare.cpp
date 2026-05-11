@@ -157,22 +157,29 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     // we trip an assertion in debug builds via the scoped guard below.
     // Release builds pay nothing.
 #ifndef NDEBUG
+    // One counter per thread covers every call site. MSVC rejects static
+    // data members in locally defined classes, so the counter lives at
+    // function scope and the RAII guard takes it by reference.
+    thread_local int sDepth = 0;
     struct ReentryGuard
     {
-        ReentryGuard()
+        int &depth;
+
+        explicit ReentryGuard(int &d) : depth(d)
         {
-            assert(sDepth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
-            ++sDepth;
+            assert(depth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
+            ++depth;
         }
         ~ReentryGuard()
         {
-            --sDepth;
+            --depth;
         }
-        // `inline static` keeps the counter local to this function; one
-        // counter per thread covers every call site.
-        static inline thread_local int sDepth = 0;
+        ReentryGuard(const ReentryGuard &) = delete;
+        ReentryGuard(ReentryGuard &&) = delete;
+        ReentryGuard &operator=(const ReentryGuard &) = delete;
+        ReentryGuard &operator=(ReentryGuard &&) = delete;
     };
-    const ReentryGuard guard;
+    const ReentryGuard guard(sDepth);
 #endif
     thread_local std::string lhsFormatted;
     thread_local std::string rhsFormatted;

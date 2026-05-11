@@ -64,8 +64,10 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -3882,6 +3884,155 @@ private slots:
                 qPrintable(QStringLiteral("filter '%1' must not appear in the menu after rejection").arg(filterId))
             );
         }
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: pre-fix `CallbackStringRowPredicate::MatchesRow`
+    // fed raw bytes from `LogTable::GetValue` into the matcher built
+    // by `MakeStringMatcher`, while the user sees text normalised by
+    // `LogModel::ConvertToSingleLineCompactQString` (which replaces
+    // `\n` / `\r` with spaces and collapses runs of whitespace via
+    // `QString::simplified()`). For a row whose stored value is
+    // `"line1\nline2"`, the table displays `"line1 line2"`, the Find
+    // bar's `MatchRow` fast path matches `"line1 line2"`, but a
+    // `Contains` filter typed as `"line1 line2"` silently failed
+    // because the matcher compared against the raw bytes containing
+    // `\n`. Pre-fix `assertFilteredRowCount(1)` returns 0 for this
+    // fixture; post-fix the matcher normalises the haystack the same
+    // way the display path does, restoring end-to-end (display, Find,
+    // filter) consistency. We exercise `Exactly`, `Contains`,
+    // `RegularExpression`, and `Wildcard` because all four flowed
+    // through the same broken path.
+    void TestStringFilterMatchesDisplayedTextForMultilineValues()
+    {
+        // Two rows: one whose displayed text matches every variant of
+        // the filter, and one that doesn't (so a passing test
+        // actually proves the filter is doing work, not accepting
+        // every row).
+        const QStringList lines{
+            QStringLiteral(R"({"msg": "line1\nline2"})"),
+            QStringLiteral(R"({"msg": "other"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QCOMPARE(model->rowCount(), 2);
+
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist");
+
+        // Pin the fixture contract: the parsed value still contains a
+        // real newline (raw `Qt::EditRole`-ish view via `SortRole`
+        // already passes through `ConvertToSingleLineCompactQString`,
+        // so we round-trip the underlying bytes via `LogTable::GetValue`
+        // here instead).
+        const loglib::LogValue raw =
+            model->Table().GetValue(0, static_cast<size_t>(msgCol));
+        QVERIFY2(
+            std::holds_alternative<std::string_view>(raw) || std::holds_alternative<std::string>(raw),
+            "fixture row must store the msg as a string slot so the matcher hits the string branch"
+        );
+        const std::string_view rawView = std::holds_alternative<std::string_view>(raw)
+                                             ? std::get<std::string_view>(raw)
+                                             : std::string_view(std::get<std::string>(raw));
+        QVERIFY2(
+            rawView.find('\n') != std::string_view::npos,
+            "fixture must keep the embedded newline so the bug's precondition holds"
+        );
+
+        // And the displayed text is the simplified one-line form,
+        // matching what the user sees in the table view.
+        const QString displayed = model->index(0, msgCol).data(Qt::DisplayRole).toString();
+        QCOMPARE(displayed, QStringLiteral("line1 line2"));
+
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+
+        const auto submitFilter =
+            [&](const QString &filterId, const QString &pattern, loglib::LogConfiguration::LogFilter::Match match) {
+                QVERIFY2(
+                    QMetaObject::invokeMethod(
+                        mWindow,
+                        "FilterSubmitted",
+                        Qt::DirectConnection,
+                        Q_ARG(QString, filterId),
+                        Q_ARG(int, msgCol),
+                        Q_ARG(QString, pattern),
+                        Q_ARG(int, static_cast<int>(match))
+                    ),
+                    "FilterSubmitted slot must be invocable via meta-object"
+                );
+                QCoreApplication::processEvents();
+            };
+
+        const auto clearFilter = [&](const QString &filterId) {
+            QVERIFY2(
+                QMetaObject::invokeMethod(
+                    mWindow, "ClearFilter", Qt::DirectConnection, Q_ARG(QString, filterId)
+                ),
+                "ClearFilter slot must be invocable via meta-object"
+            );
+            QCoreApplication::processEvents();
+            QCOMPARE(filterModel->rowCount(), 2);
+        };
+
+        // Contains: needle matches the *displayed* (simplified) text.
+        submitFilter(
+            QStringLiteral("contains-displayed"),
+            QStringLiteral("line1 line2"),
+            loglib::LogConfiguration::LogFilter::Match::Contains
+        );
+        QCOMPARE(filterModel->rowCount(), 1);
+        clearFilter(QStringLiteral("contains-displayed"));
+
+        // Exactly: same idea, with the entire simplified value.
+        submitFilter(
+            QStringLiteral("exact-displayed"),
+            QStringLiteral("line1 line2"),
+            loglib::LogConfiguration::LogFilter::Match::Exactly
+        );
+        QCOMPARE(filterModel->rowCount(), 1);
+        clearFilter(QStringLiteral("exact-displayed"));
+
+        // RegularExpression: the regex `^line1 line2$` is anchored on
+        // the simplified text. Pre-fix the haystack contained `\n`,
+        // which `^...$` (without `Qt::MultilineOption`) would not
+        // span, so the match failed.
+        submitFilter(
+            QStringLiteral("regex-displayed"),
+            QStringLiteral("^line1 line2$"),
+            loglib::LogConfiguration::LogFilter::Match::RegularExpression
+        );
+        QCOMPARE(filterModel->rowCount(), 1);
+        clearFilter(QStringLiteral("regex-displayed"));
+
+        // Wildcard: `line1 *2` (Qt-flavoured wildcard) only matches
+        // the simplified single-line form.
+        submitFilter(
+            QStringLiteral("wildcard-displayed"),
+            QStringLiteral("line1 *2"),
+            loglib::LogConfiguration::LogFilter::Match::Wildcard
+        );
+        QCOMPARE(filterModel->rowCount(), 1);
+        clearFilter(QStringLiteral("wildcard-displayed"));
 
         model->EndStreaming(false);
     }

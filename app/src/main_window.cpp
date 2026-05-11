@@ -1452,15 +1452,27 @@ void PrimeRegex(QRegularExpression &regex)
 
 /// Build a Qt-flavoured string matcher for a
 /// `loglib::CallbackStringRowPredicate`. The lambda captures the
-/// compiled `QRegularExpression` (or the UTF-8 needle) once so the
+/// compiled `QRegularExpression` (or the QString needle) once so the
 /// inner loop avoids per-row recompiles.
 ///
-/// `Exactly` and `Contains` use byte-wise UTF-8 comparison directly.
-/// Both `filterString` (from a `QString`) and the row bytes (from the
-/// parser's UTF-8 buffer) are valid UTF-8, and the user-visible Qt
-/// flag is `Qt::CaseSensitive`, so byte equality matches the
-/// `QString::contains(QString, Qt::CaseSensitive)` semantics without
-/// the per-row UTF-8 -> UTF-16 conversion.
+/// Every lambda normalises the row bytes through
+/// `LogModel::ConvertToSingleLineCompactQString` before matching --
+/// the same transform that produces `Qt::DisplayRole` and that the
+/// Find bar's `MatchRow` fast path applies. Without this, a row whose
+/// stored value is `"line1\nline2"` would display (and Find as)
+/// `"line1 line2"` but a Contains/Exactly/regex/wildcard filter would
+/// match against the raw bytes -- so a filter typed to match what the
+/// user sees on screen silently failed on every value containing
+/// embedded `\n` / `\r` / excess whitespace. The pre-`RowPredicate`
+/// code consulted `SortRole`, which already returned the simplified
+/// text; we restore that semantic here so the displayed-text contract
+/// holds end-to-end (display, Find, filter).
+///
+/// The needle is left as-typed: the old `SortRole` path likewise
+/// compared the simplified haystack against the user's exact input,
+/// so e.g. a needle with two consecutive spaces continues to not
+/// match a row whose simplified display has a single space. Keeping
+/// that asymmetry preserves muscle memory from the prior release.
 loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
 )
@@ -1470,26 +1482,38 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     {
     case Match::Exactly:
     {
-        const std::string needle = pattern.toStdString();
-        // clang-tidy mistakes the lambda's implicit copy constructor (which copies the captured
-        // `std::string` and may allocate) for an exception escaping the call operator. The call
-        // operator itself just compares bytes.
+        // Capture `pattern` by value: the parameter is `const QString &`,
+        // so the reference would dangle once `MakeStringMatcher`
+        // returns. `QString` uses implicit sharing, so this is a
+        // refcount bump, not a deep copy.
+        //
+        // clang-tidy flags the lambda call operator as a potential exception
+        // escape because `ConvertToSingleLineCompactQString` allocates a
+        // `QString` and `QString::operator==` is not noexcept. Both are
+        // benign in practice (OOM aborts via `qBadAlloc`/`std::terminate`
+        // anyway under Qt's default handler) and the existing predicate
+        // call chain doesn't promise noexcept either, so silence the
+        // check here.
         // NOLINTNEXTLINE(bugprone-exception-escape)
-        return [needle](std::string_view bytes) { return bytes == needle; };
+        return [pattern](std::string_view bytes) {
+            return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern;
+        };
     }
     case Match::Contains:
     {
-        const std::string needle = pattern.toStdString();
-        // See Match::Exactly above for the false-positive explanation.
+        // See `Match::Exactly` above for the by-value capture +
+        // exception-escape rationale.
         // NOLINTNEXTLINE(bugprone-exception-escape)
-        return [needle](std::string_view bytes) { return bytes.contains(needle); };
+        return [pattern](std::string_view bytes) {
+            return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
+        };
     }
     case Match::RegularExpression:
     {
         QRegularExpression regex(pattern);
         PrimeRegex(regex);
         return [regex](std::string_view bytes) {
-            return regex.match(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()))).hasMatch();
+            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
         };
     }
     case Match::Wildcard:
@@ -1497,7 +1521,7 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
         QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
         PrimeRegex(regex);
         return [regex](std::string_view bytes) {
-            return regex.match(QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()))).hasMatch();
+            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
         };
     }
     }

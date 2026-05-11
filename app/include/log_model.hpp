@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 template <typename T> class QFutureWatcher;
@@ -133,11 +134,17 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
-    /// UTF-8 `std::string` -> single-line, simplified `QString` used
-    /// for `Qt::DisplayRole`. Public so `LogFilterModel::MatchRow`'s
-    /// fast path can format cells directly from `LogTable::GetFormattedValue`
-    /// without round-tripping through `QAbstractItemModel::data`.
-    static QString ConvertToSingleLineCompactQString(const std::string &string);
+    /// UTF-8 byte span -> single-line, simplified `QString` used for
+    /// `Qt::DisplayRole`. Public so `LogFilterModel::MatchRow`'s fast
+    /// path can format cells directly from `LogTable::GetFormattedValue`
+    /// without round-tripping through `QAbstractItemModel::data`, and
+    /// so `MainWindow::MakeStringMatcher` can apply the same
+    /// normalisation to row bytes before `Contains`/`Exactly`/regex/
+    /// wildcard filter matching (mirrors what the user sees on
+    /// screen). Accepts `std::string_view` so callers may pass either
+    /// an owning `std::string` or a non-owning span from
+    /// `LogTable::GetValue` without an intermediate copy.
+    static QString ConvertToSingleLineCompactQString(std::string_view bytes);
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only: move column `srcIndex` to `destIndex` wrapped in

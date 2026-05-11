@@ -126,15 +126,22 @@ bool LogFilterModel::lessThan(const QModelIndex &sourceLeft, const QModelIndex &
     // `MainWindow::SetLogModel` before any sort is issued). The
     // fallback to the base class lets isolated unit tests build a
     // bare `LogFilterModel` and still sort via the default
-    // `QVariant`-mediated path, but it should never trigger in the
-    // GUI -- assert so a future wiring bug shows up loudly in debug.
-    Q_ASSERT_X(
-        mLogModel != nullptr,
-        "LogFilterModel::lessThan",
-        "lessThan called without a LogModel; sort will fall back to QVariant compare"
-    );
+    // `QVariant`-mediated path; it also covers the transient state
+    // between `setSourceModel` (which clears `mLogModel`) and the
+    // follow-up `SetLogModel` re-wire, when a previously-installed
+    // sort column triggers a re-sort under Qt's `dynamicSortFilter`.
+    // The fallback produces correct chronological / lexicographic
+    // order when `SortRole` returns a `QVariant`-comparable scalar,
+    // and degrades to string compare otherwise. In production this
+    // path is unreachable once the wiring settles, so emit a
+    // one-shot warning to flag a stuck misconfiguration without
+    // tripping the test harness.
     if (mLogModel == nullptr)
     {
+        static std::once_flag warnedNoLogModelFlag;
+        std::call_once(warnedNoLogModelFlag, [] {
+            qWarning() << "LogFilterModel::lessThan: called without a LogModel; falling back to QVariant compare";
+        });
         return QSortFilterProxyModel::lessThan(sourceLeft, sourceRight);
     }
     const int leftRow = MapModelIndexToLogModelRow(sourceLeft);

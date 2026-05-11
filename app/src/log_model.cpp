@@ -27,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -861,11 +862,11 @@ size_t LogModel::RetentionCap() const noexcept
     return mRetentionCap;
 }
 
-QString LogModel::ConvertToSingleLineCompactQString(const std::string &string)
+QString LogModel::ConvertToSingleLineCompactQString(std::string_view bytes)
 {
-    QString qString = QString::fromStdString(string);
-    qString.replace("\n", " ");
-    qString.replace("\r", " ");
+    QString qString = QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
+    qString.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    qString.replace(QLatin1Char('\r'), QLatin1Char(' '));
     return qString.simplified();
 }
 
