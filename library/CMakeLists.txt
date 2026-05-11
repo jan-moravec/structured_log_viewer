@@ -19,6 +19,7 @@ add_library(
     src/udp_server_producer.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
+    src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/log_data.cpp
     src/log_factory.cpp
     src/log_file.cpp
