@@ -125,6 +125,14 @@ private:
     /// filter / sort changes.
     void RebuildAcceptedRows();
 
+    /// Recompute `mAcceptedSourceRows` from the current source +
+    /// rules without any layout-change emit / persistent-index work.
+    /// Shared by `RebuildAcceptedRows`, `OnSourceModelReset`, and
+    /// `OnSourceLayoutChanged` so all three pick up
+    /// `loglib::FilterAcceptedRows`'s parallel pass instead of the
+    /// per-row sequential walk that used to live inline.
+    void RecomputeAcceptedRows();
+
     /// Re-permute `mAcceptedSourceRows` for the current sort column /
     /// order. No structural emit; the caller wraps with layout signals.
     void ApplySortPermutation();
@@ -180,12 +188,26 @@ private:
     int mSortColumn = -1;
     Qt::SortOrder mSortOrder = Qt::AscendingOrder;
 
+    /// Tracks a successful `beginMoveColumns` from
+    /// `OnSourceColumnsAboutToBeMoved` so the matching
+    /// `OnSourceColumnsMoved` only calls `endMoveColumns` when the
+    /// begin actually opened a pair. Qt asserts in debug if `end` is
+    /// called without a matching successful `begin`.
+    bool mInSourceColumnMove = false;
+
     /// Snapshot taken between `layoutAboutToBeChanged` and
-    /// `layoutChanged` so `RemapPersistentIndicesForRebuild` can pair
-    /// the old QPersistentModelIndex list with its source rows.
+    /// `layoutChanged`. The proxy-side persistent index pins what the
+    /// view holds; the parallel source-side persistent index pins the
+    /// underlying logical entity. Storing the source side as a
+    /// `QPersistentModelIndex` (rather than a bare row number) lets
+    /// the source's own layout-change bookkeeping follow the entity
+    /// through reorders -- e.g. `RowOrderProxyModel::SetReversed`
+    /// remaps source indices via `changePersistentIndexList`, so the
+    /// post-rebuild lookup naturally lands on the same entity rather
+    /// than on whichever entity now sits at the pre-flip row number.
+    /// Pinned by `TestNewestFirstReversalPreservesFilterModelSelection`.
     QList<QPersistentModelIndex> mPersistentIndexSnapshot;
-    std::vector<int> mPersistentSourceRowSnapshot;
-    std::vector<int> mPersistentColumnSnapshot;
+    QList<QPersistentModelIndex> mPersistentSourceIndexSnapshot;
 
     /// Cached rank plus the dictionary pointer it was built from.
     /// `EnumRankFor` rebuilds when the pointer changes -- covers
@@ -226,7 +248,10 @@ private:
     void OnSourceLayoutChanged();
     void OnSourceColumnsInserted(const QModelIndex &parent, int first, int last);
     void OnSourceColumnsRemoved(const QModelIndex &parent, int first, int last);
-    void OnSourceColumnsMoved(const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destRow);
+    void OnSourceColumnsAboutToBeMoved(
+        const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destColumn
+    );
+    void OnSourceColumnsMoved(const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destColumn);
     void OnSourceHeaderDataChanged(Qt::Orientation orientation, int first, int last);
 
     static bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags);

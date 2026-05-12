@@ -67,7 +67,14 @@ private:
 ///                              doubles clamp instead of joining.
 ///   - `Floating` / `Number`  - monostate, non-numeric slots.
 ///   - `Time`                 - monostate, non-microsecond slots.
-///   - `Enumeration` / string types - just monostate.
+///   - `Enumeration`          - every slot that is not a `DictRef`
+///                              (monostate, unpromoted-string,
+///                              wrong-type, over-cap-length). Matches
+///                              `SortPermutationByColumn`'s rank-
+///                              sentinel collapse so the bulk re-sort
+///                              and the per-row streaming comparator
+///                              agree on placement.
+///   - String types           - just monostate.
 /// Tail members compare equal pairwise. Callers wanting monostate at
 /// the head can negate the return.
 [[nodiscard]] int CompareRows(

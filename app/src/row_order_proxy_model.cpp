@@ -89,14 +89,14 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
                 }
                 if (mReversed)
                 {
-                    // Capture the pre-removal source row count: the
-                    // proxy-side range we need to report depends on
-                    // it, and the source's `rowCount()` will already
-                    // have been updated by the time `rowsRemoved`
+                    // The proxy-side range we need to report depends
+                    // on the source row count *before* the removal,
+                    // since the source's `rowCount()` will already
+                    // reflect the removal by the time `rowsRemoved`
                     // fires. FIFO eviction at source [0, last] maps
                     // to proxy [srcCount-1-last, srcCount-1].
-                    mPreRemovalSourceRows = QAbstractProxyModel::sourceModel()->rowCount(QModelIndex());
-                    beginRemoveRows(QModelIndex(), mPreRemovalSourceRows - 1 - last, mPreRemovalSourceRows - 1 - first);
+                    const int preRemovalSourceRows = QAbstractProxyModel::sourceModel()->rowCount(QModelIndex());
+                    beginRemoveRows(QModelIndex(), preRemovalSourceRows - 1 - last, preRemovalSourceRows - 1 - first);
                 }
                 else
                 {

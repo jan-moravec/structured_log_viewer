@@ -2285,6 +2285,78 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression for `LogFilterModel`'s persistent-index handling
+    // across a *source-side* layout change. Toggling
+    // `RowOrderProxyModel::SetReversed` is the production trigger:
+    // the `RowOrderProxyModel` flips its mapping (so source row K
+    // now points to a different LogModel entity), emits
+    // `layoutChanged`, and the `LogFilterModel` above it must remap
+    // its own persistent indices to follow the entity, not the bare
+    // row number.
+    //
+    // Pre-fix the snapshot stored an integer source row, which under
+    // a no-filter pass-through stayed numerically the same after the
+    // flip and so the `LogFilterModel` persistent index ended up
+    // pointing at the entity that *moved into* the row -- a silent
+    // selection swap from the user's perspective. The fix anchors
+    // each snapshot on a `QPersistentModelIndex` of the source-mapped
+    // index instead, which the source's own `changePersistentIndexList`
+    // pass remaps to the entity's new row.
+    void TestNewestFirstReversalPreservesFilterModelSelection()
+    {
+        auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        auto *filterModel = mWindow->FilterModel();
+        QVERIFY(rowOrderProxy != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(filterModel != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        constexpr int K_ROWS = 16;
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, K_ROWS, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->rowCount(), K_ROWS);
+
+        const int valueColumn = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+
+        // Pin a persistent index on the *filter model* (not on the
+        // RowOrderProxyModel) at proxy row 5. In default (oldest-first)
+        // mode that's lineId 6.
+        constexpr int K_PINNED_PROXY_ROW = 5;
+        const QPersistentModelIndex pinned(filterModel->index(K_PINNED_PROXY_ROW, valueColumn));
+        QVERIFY(pinned.isValid());
+        const qint64 originalLineId = filterModel->data(pinned, LogModelItemDataRole::SortRole).toLongLong();
+        QCOMPARE(originalLineId, qint64(K_PINNED_PROXY_ROW + 1));
+
+        // Flip the source layout via SetReversed. The persistent
+        // index on `LogFilterModel` must follow the *entity* (lineId
+        // K_PINNED_PROXY_ROW + 1), which after reversal lives at
+        // proxy row `K_ROWS - 1 - K_PINNED_PROXY_ROW`.
+        rowOrderProxy->SetReversed(true);
+        QCoreApplication::processEvents();
+        QVERIFY(rowOrderProxy->IsReversed());
+
+        QVERIFY(pinned.isValid());
+        const qint64 lineIdAfterFlip = filterModel->data(pinned, LogModelItemDataRole::SortRole).toLongLong();
+        QCOMPARE(lineIdAfterFlip, originalLineId);
+        QCOMPARE(pinned.row(), K_ROWS - 1 - K_PINNED_PROXY_ROW);
+
+        // Flip back; the persistent index returns to its original row.
+        rowOrderProxy->SetReversed(false);
+        QCoreApplication::processEvents();
+        QVERIFY(pinned.isValid());
+        QCOMPARE(pinned.row(), K_PINNED_PROXY_ROW);
+        QCOMPARE(filterModel->data(pinned, LogModelItemDataRole::SortRole).toLongLong(), originalLineId);
+
+        model->EndStreaming(false);
+    }
+
     // Companion to `testNewestFirstReversesProxyOrder`: the user-input
     // gate on the `LogTableView` must follow the configured tail edge
     // when **Show newest lines first** is enabled. Specifically:
@@ -3452,6 +3524,83 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression: a column that is auto-promoted into `Type::Enumeration`
+    // and immediately demoted back to `Type::String` *within the same
+    // batch* (because the encode pass overflows the dictionary cap)
+    // must still emit a `Demoted` `enumColumnsChanged` so consumers
+    // can rebuild any rank-cache entry / filter rule that aliased the
+    // transient dictionary. Pre-fix the `enumDictSizesBefore`
+    // detector only saw columns that were already enum at snapshot
+    // time, so this transition slipped through silently.
+    void TestEnumDemotedSignalFiresOnSameBatchPromoteThenDemote()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        // Tiny dictionary cap: the promotion encode pass will trip it
+        // as soon as it sees a third distinct value.
+        model->Table().SetEnumValueCap(2);
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumChangedSpy.isValid());
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // One batch, five rows: the candidate scan early-bails after
+        // reading the first two rows ("info", "info") so the well-
+        // known-key promotion fires. The PromoteColumnToEnum encode
+        // pass then walks all five rows and trips the cap on the
+        // third distinct value, demoting the column straight back to
+        // `Type::String` -- all inside this single AppendBatch.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            batch.lines.push_back(makeLine("error"));
+            batch.lines.push_back(makeLine("fatal"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist post-batch");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
+        );
+        const loglib::KeyId levelKey = model->Table().Keys().Find("level");
+        QVERIFY2(
+            model->Table().EnumDictionaries().Find(levelKey) == nullptr,
+            "transient dictionary must have been erased by the in-batch demote"
+        );
+
+        bool sawDemote = false;
+        for (const auto &args : enumChangedSpy)
+        {
+            if (args.at(0).value<EnumColumnsChangeReason>() == EnumColumnsChangeReason::Demoted)
+            {
+                sawDemote = true;
+                break;
+            }
+        }
+        QVERIFY2(sawDemote, "same-batch promote+demote must still emit a Demoted enumColumnsChanged");
+
+        model->EndStreaming(false);
+    }
+
     // Regression: after a demote, `MainWindow::enumColumnsChanged`
     // must rebuild every active enum filter so the predicate
     // falls back to its string-set path. A cached
@@ -3608,12 +3757,27 @@ private slots:
         // cache; post-fix it survives (KeyId-keyed).
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
+        // Also pin the proxy-level forwarding contract: pre-fix
+        // `LogFilterModel` swallowed the `columnsMoved` pair (only
+        // re-emitted `headerDataChanged`), which left downstream
+        // views with stale column metadata when a streaming session
+        // late-promoted a `Type::Time` column. Post-fix the proxy
+        // forwards begin/endMoveColumns through to the view.
+        const QSignalSpy filterColumnsAboutToBeMovedSpy(filterModel, &QAbstractItemModel::columnsAboutToBeMoved);
+        const QSignalSpy filterColumnsMovedSpy(filterModel, &QAbstractItemModel::columnsMoved);
         QVERIFY(columnsMovedSpy.isValid());
+        QVERIFY(filterColumnsAboutToBeMovedSpy.isValid());
+        QVERIFY(filterColumnsMovedSpy.isValid());
         const int src = (levelCol == 0) ? 1 : 0;
         const int dest = (levelCol == 0) ? 0 : 1;
         QVERIFY2(model->MoveColumnForTest(src, dest), "MoveColumnForTest must succeed");
         QCoreApplication::processEvents();
         QVERIFY2(columnsMovedSpy.count() >= 1, "MoveColumnForTest must emit columnsMoved");
+        QVERIFY2(
+            filterColumnsAboutToBeMovedSpy.count() >= 1,
+            "LogFilterModel must forward columnsAboutToBeMoved from its source"
+        );
+        QVERIFY2(filterColumnsMovedSpy.count() >= 1, "LogFilterModel must forward columnsMoved from its source");
 
         // Cache entry survives the reorder (KeyId-keyed).
         QCOMPARE(filterModel->EnumRankCacheSizeForTest(), cacheSizeBefore);

@@ -117,6 +117,9 @@ void LogFilterModel::RewireSourceConnections()
         connect(src, &QAbstractItemModel::columnsRemoved, this, &LogFilterModel::OnSourceColumnsRemoved)
     );
     mSourceConnections.push_back(
+        connect(src, &QAbstractItemModel::columnsAboutToBeMoved, this, &LogFilterModel::OnSourceColumnsAboutToBeMoved)
+    );
+    mSourceConnections.push_back(
         connect(src, &QAbstractItemModel::columnsMoved, this, &LogFilterModel::OnSourceColumnsMoved)
     );
     mSourceConnections.push_back(
@@ -280,12 +283,19 @@ void LogFilterModel::ApplySortPermutation()
     for (const int srcRow : mAcceptedSourceRows)
     {
         const int logRow = SourceRowToLogRow(srcRow);
-        // `mAcceptedSourceRows` provenance is `RebuildAcceptedRows` or
-        // `OnSourceRowsInserted`, both of which only push rows whose
-        // log mapping resolved. Fall back to row 0 defensively rather
-        // than truncating the vector and desynchronising the parallel
-        // arrays; `loglib`'s tail-bucket invariant keeps the result
-        // benign even if the defensive fallback triggers.
+        // `mAcceptedSourceRows` provenance is `RebuildAcceptedRows`
+        // or `OnSourceRowsInserted`, both of which only push rows
+        // whose log mapping resolved. Assert that invariant in debug
+        // -- a stray `-1` here means the proxy chain emitted a
+        // structural change between accept-list rebuild and sort,
+        // which we want a loud failure on. The release-mode fallback
+        // collapses the offender onto log row 0; combined with the
+        // tail-bucket invariant in `loglib::CompareRows` the row
+        // still lands in a defined position rather than corrupting
+        // the parallel arrays. Pinned by `TestApplySortPermutation*`.
+        Q_ASSERT_X(
+            logRow >= 0, "LogFilterModel::ApplySortPermutation", "source row failed to resolve to a log row mid-sort"
+        );
         logRows.push_back(logRow >= 0 ? static_cast<size_t>(logRow) : size_t{0});
     }
 
@@ -460,6 +470,69 @@ bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
     });
 }
 
+void LogFilterModel::RecomputeAcceptedRows()
+{
+    QAbstractItemModel *src = sourceModel();
+    mAcceptedSourceRows.clear();
+    if (src == nullptr)
+    {
+        return;
+    }
+
+    const int n = src->rowCount();
+    mAcceptedSourceRows.reserve(static_cast<size_t>(n));
+    if (mFilterRules.empty())
+    {
+        // Empty rule list: every source row passes regardless of
+        // LogModel binding (no predicate has to evaluate).
+        for (int i = 0; i < n; ++i)
+        {
+            mAcceptedSourceRows.push_back(i);
+        }
+        return;
+    }
+    if (mLogModel == nullptr)
+    {
+        // Rules without a `LogModel`: predicates can't evaluate. Assert
+        // in debug, reject every row in release (loud failure mode is
+        // preferable to silently accepting everything). Pinned by
+        // `TestFilterAcceptsRowRejectsAllWithoutLogModel`.
+        Q_ASSERT_X(
+            false,
+            "LogFilterModel::RecomputeAcceptedRows",
+            "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
+        );
+        static std::once_flag warnedNoLogModelFlag;
+        std::call_once(warnedNoLogModelFlag, [] {
+            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rejecting every row";
+        });
+        return;
+    }
+
+    // Hot path: hand the predicate evaluation off to
+    // `loglib::FilterAcceptedRows`, which runs `tbb::parallel_for`
+    // over `LogTable` rows directly. The lib doesn't see the proxy
+    // chain (no Qt dependency, no per-row `mapToSource` walk), so
+    // we map each surviving log row back to source coords here.
+    const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), std::span{mFilterRules});
+    mAcceptedSourceRows.reserve(acceptedLogRows.size());
+    for (const size_t logRow : acceptedLogRows)
+    {
+        const int srcRow = LogRowToSourceRow(static_cast<int>(logRow));
+        if (srcRow >= 0)
+        {
+            mAcceptedSourceRows.push_back(srcRow);
+        }
+    }
+    // Lib returns log rows in ascending order; the proxy chain
+    // may permute them (e.g. `RowOrderProxyModel` reverses when
+    // active). Restore ascending source-row order so
+    // `mapFromSource`'s reverse index and later streaming inserts
+    // can rely on it. For order-preserving chains this is an
+    // already-sorted pass (~free).
+    std::ranges::sort(mAcceptedSourceRows);
+}
+
 void LogFilterModel::RebuildAcceptedRows()
 {
     QAbstractItemModel *src = sourceModel();
@@ -471,60 +544,7 @@ void LogFilterModel::RebuildAcceptedRows()
     emit layoutAboutToBeChanged({}, QAbstractItemModel::VerticalSortHint);
     SnapshotPersistentIndices();
 
-    const int n = src->rowCount();
-    mAcceptedSourceRows.clear();
-    mAcceptedSourceRows.reserve(static_cast<size_t>(n));
-    if (mFilterRules.empty())
-    {
-        // Empty rule list: every source row passes regardless of
-        // LogModel binding (no predicate has to evaluate).
-        for (int i = 0; i < n; ++i)
-        {
-            mAcceptedSourceRows.push_back(i);
-        }
-    }
-    else if (mLogModel == nullptr)
-    {
-        // Rules without a `LogModel`: predicates can't evaluate. Assert
-        // in debug, reject every row in release (loud failure mode is
-        // preferable to silently accepting everything). Pinned by
-        // `TestFilterAcceptsRowRejectsAllWithoutLogModel`.
-        Q_ASSERT_X(
-            false,
-            "LogFilterModel::RebuildAcceptedRows",
-            "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
-        );
-        static std::once_flag warnedNoLogModelFlag;
-        std::call_once(warnedNoLogModelFlag, [] {
-            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rejecting every row";
-        });
-        // Leave `mAcceptedSourceRows` empty.
-    }
-    else
-    {
-        // Hot path: hand the predicate evaluation off to
-        // `loglib::FilterAcceptedRows`, which runs `tbb::parallel_for`
-        // over `LogTable` rows directly. The lib doesn't see the proxy
-        // chain (no Qt dependency, no per-row `mapToSource` walk), so
-        // we map each surviving log row back to source coords here.
-        const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), std::span{mFilterRules});
-        mAcceptedSourceRows.reserve(acceptedLogRows.size());
-        for (const size_t logRow : acceptedLogRows)
-        {
-            const int srcRow = LogRowToSourceRow(static_cast<int>(logRow));
-            if (srcRow >= 0)
-            {
-                mAcceptedSourceRows.push_back(srcRow);
-            }
-        }
-        // Lib returns log rows in ascending order; the proxy chain
-        // may permute them (e.g. `RowOrderProxyModel` reverses when
-        // active). Restore ascending source-row order so
-        // `mapFromSource`'s reverse index and later streaming inserts
-        // can rely on it. For order-preserving chains this is an
-        // already-sorted pass (~free).
-        std::ranges::sort(mAcceptedSourceRows);
-    }
+    RecomputeAcceptedRows();
     if (mSortColumn >= 0)
     {
         ApplySortPermutation();
@@ -540,22 +560,33 @@ void LogFilterModel::SnapshotPersistentIndices()
     const QModelIndexList raw = persistentIndexList();
     mPersistentIndexSnapshot.clear();
     mPersistentIndexSnapshot.reserve(raw.size());
-    mPersistentSourceRowSnapshot.clear();
-    mPersistentColumnSnapshot.clear();
-    mPersistentSourceRowSnapshot.reserve(static_cast<size_t>(raw.size()));
-    mPersistentColumnSnapshot.reserve(static_cast<size_t>(raw.size()));
+    mPersistentSourceIndexSnapshot.clear();
+    mPersistentSourceIndexSnapshot.reserve(raw.size());
+    QAbstractItemModel *src = sourceModel();
     for (const QModelIndex &idx : raw)
     {
         mPersistentIndexSnapshot.append(QPersistentModelIndex{idx});
-        if (idx.isValid() && static_cast<size_t>(idx.row()) < mAcceptedSourceRows.size())
+        if (src != nullptr && idx.isValid() && static_cast<size_t>(idx.row()) < mAcceptedSourceRows.size())
         {
-            mPersistentSourceRowSnapshot.push_back(mAcceptedSourceRows[static_cast<size_t>(idx.row())]);
-            mPersistentColumnSnapshot.push_back(idx.column());
+            const int srcRow = mAcceptedSourceRows[static_cast<size_t>(idx.row())];
+            // Anchor on a source-side `QPersistentModelIndex` rather
+            // than on the bare row number: when the source model
+            // reshuffles its own rows (e.g. `RowOrderProxyModel`'s
+            // `SetReversed` toggle) it remaps every persistent index
+            // it owns via `changePersistentIndexList`, so this anchor
+            // keeps pointing at the same logical entity even though
+            // the row number underneath it has changed. The follow-up
+            // `RemapPersistentIndicesForRebuild` then reads the new
+            // row out of the anchor and looks it up in the rebuilt
+            // reverse index. For sort / filter rebuilds the source
+            // layout doesn't change, so the anchor's row is unchanged
+            // and the behaviour collapses to the previous "store the
+            // source row number" path.
+            mPersistentSourceIndexSnapshot.append(QPersistentModelIndex{src->index(srcRow, idx.column())});
         }
         else
         {
-            mPersistentSourceRowSnapshot.push_back(-1);
-            mPersistentColumnSnapshot.push_back(-1);
+            mPersistentSourceIndexSnapshot.append(QPersistentModelIndex{});
         }
     }
 }
@@ -578,22 +609,28 @@ void LogFilterModel::RemapPersistentIndicesForRebuild()
 {
     if (mPersistentIndexSnapshot.isEmpty())
     {
-        mPersistentSourceRowSnapshot.clear();
-        mPersistentColumnSnapshot.clear();
+        mPersistentSourceIndexSnapshot.clear();
         return;
     }
     QModelIndexList replacements;
     replacements.reserve(mPersistentIndexSnapshot.size());
     for (qsizetype i = 0; i < mPersistentIndexSnapshot.size(); ++i)
     {
-        const int srcRow = mPersistentSourceRowSnapshot[static_cast<size_t>(i)];
-        const int col = mPersistentColumnSnapshot[static_cast<size_t>(i)];
-        if (srcRow < 0 || col < 0)
+        const QPersistentModelIndex &srcAnchor = mPersistentSourceIndexSnapshot[i];
+        if (!srcAnchor.isValid())
         {
             replacements.append(QModelIndex{});
             continue;
         }
-        if (static_cast<size_t>(srcRow) >= mSourceRowToProxyRow.size())
+        // Read the post-rebuild row / column out of the source anchor.
+        // For a sort or filter rebuild the source layout didn't move,
+        // so this matches the original snapshot. For a source-side
+        // layout change (`OnSourceLayoutChanged`) the anchor has been
+        // updated by the source's own `changePersistentIndexList`
+        // pass and now points at where the entity moved to.
+        const int srcRow = srcAnchor.row();
+        const int col = srcAnchor.column();
+        if (srcRow < 0 || col < 0 || static_cast<size_t>(srcRow) >= mSourceRowToProxyRow.size())
         {
             replacements.append(QModelIndex{});
             continue;
@@ -614,8 +651,7 @@ void LogFilterModel::RemapPersistentIndicesForRebuild()
     }
     changePersistentIndexList(oldList, replacements);
     mPersistentIndexSnapshot.clear();
-    mPersistentSourceRowSnapshot.clear();
-    mPersistentColumnSnapshot.clear();
+    mPersistentSourceIndexSnapshot.clear();
 }
 
 void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, int last)
@@ -666,7 +702,6 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
             mAcceptedSourceRows.insert(it, r);
             endInsertRows();
         }
-        RebuildReverseIndex();
     }
     else if (!newlyAccepted.empty())
     {
@@ -683,18 +718,12 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
             mAcceptedSourceRows.insert(it, r);
             endInsertRows();
         }
-        RebuildReverseIndex();
     }
-    else if (!mAcceptedSourceRows.empty() || sourceModel()->rowCount() > 0)
-    {
-        // Source grew but no row passed the filter; still keep the
-        // reverse index sized to the new source row count.
-        RebuildReverseIndex();
-    }
-    else
-    {
-        RebuildReverseIndex();
-    }
+    // The reverse index is sized off the source row count, so it
+    // needs a refresh whenever the source grew -- whether or not any
+    // new row passed the filter and whether or not the in-place
+    // shift moved any existing entries.
+    RebuildReverseIndex();
 }
 
 void LogFilterModel::OnSourceRowsAboutToBeRemoved(
@@ -859,26 +888,11 @@ void LogFilterModel::OnSourceModelReset()
     mEnumRanks.clear();
     if (sourceModel() != nullptr)
     {
-        const int n = sourceModel()->rowCount();
-        mAcceptedSourceRows.reserve(static_cast<size_t>(n));
-        if (mFilterRules.empty())
-        {
-            for (int i = 0; i < n; ++i)
-            {
-                mAcceptedSourceRows.push_back(i);
-            }
-        }
-        else if (mLogModel != nullptr)
-        {
-            for (int i = 0; i < n; ++i)
-            {
-                if (MatchesRulesAtSourceRow(i))
-                {
-                    mAcceptedSourceRows.push_back(i);
-                }
-            }
-        }
-        // else: rules but no LogModel -> leave empty (reject all).
+        // Route through the same parallel-filter helper as
+        // `RebuildAcceptedRows` instead of walking rows sequentially:
+        // a 1 M-row reload otherwise pays per-row proxy-chain walks
+        // here that the rest of the proxy already escaped.
+        RecomputeAcceptedRows();
         if (mSortColumn >= 0)
         {
             ApplySortPermutation();
@@ -911,27 +925,12 @@ void LogFilterModel::OnSourceLayoutChanged()
         emit layoutChanged({}, QAbstractItemModel::VerticalSortHint);
         return;
     }
-    const int n = src->rowCount();
-    mAcceptedSourceRows.clear();
-    mAcceptedSourceRows.reserve(static_cast<size_t>(n));
-    if (mFilterRules.empty())
-    {
-        for (int i = 0; i < n; ++i)
-        {
-            mAcceptedSourceRows.push_back(i);
-        }
-    }
-    else if (mLogModel != nullptr)
-    {
-        for (int i = 0; i < n; ++i)
-        {
-            if (MatchesRulesAtSourceRow(i))
-            {
-                mAcceptedSourceRows.push_back(i);
-            }
-        }
-    }
-    // else: rules but no LogModel -> leave empty (reject all).
+    // Same parallel-filter path as `RebuildAcceptedRows`. The
+    // alternative was a sequential per-source-row predicate walk
+    // here, which gave a perf regression vs. the steady-state proxy
+    // any time an upstream proxy emitted layoutChanged (e.g. the
+    // newest-first toggle on large logs).
+    RecomputeAcceptedRows();
     if (mSortColumn >= 0)
     {
         ApplySortPermutation();
@@ -973,8 +972,26 @@ void LogFilterModel::OnSourceColumnsRemoved(const QModelIndex &parent, int first
     endRemoveColumns();
 }
 
+void LogFilterModel::OnSourceColumnsAboutToBeMoved(
+    const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destColumn
+)
+{
+    // Forward the begin/end column-move pair so views downstream
+    // (header, persistent indices on column 0, custom delegate state)
+    // see a properly bracketed structural change. Pre-fix this slot
+    // wasn't connected and the post-move slot only emitted
+    // `headerDataChanged` -- the view's column metadata then drifted
+    // out of sync with the actual cell content (Time-column promotion
+    // during a streaming session was the production trigger).
+    if (parent.isValid() || dest.isValid())
+    {
+        return;
+    }
+    mInSourceColumnMove = beginMoveColumns(QModelIndex{}, from, toLast, QModelIndex{}, destColumn);
+}
+
 void LogFilterModel::OnSourceColumnsMoved(
-    const QModelIndex & /*parent*/, int from, int toLast, const QModelIndex & /*dest*/, int destRow
+    const QModelIndex & /*parent*/, int from, int toLast, const QModelIndex & /*dest*/, int destColumn
 )
 {
     // Track the sort column through the move. We deliberately don't
@@ -985,27 +1002,26 @@ void LogFilterModel::OnSourceColumnsMoved(
     {
         if (mSortColumn >= from && mSortColumn <= toLast)
         {
-            mSortColumn = destRow + (mSortColumn - from);
-            if (destRow > toLast)
+            mSortColumn = destColumn + (mSortColumn - from);
+            if (destColumn > toLast)
             {
                 mSortColumn -= span;
             }
         }
-        else if (mSortColumn > toLast && mSortColumn < destRow)
+        else if (mSortColumn > toLast && mSortColumn < destColumn)
         {
             mSortColumn -= span;
         }
-        else if (mSortColumn >= destRow && mSortColumn < from)
+        else if (mSortColumn >= destColumn && mSortColumn < from)
         {
             mSortColumn += span;
         }
     }
-    // Forward the layout-style move by relaying as a full reset of
-    // column headers; persistent indices stay valid because we don't
-    // touch row state. `headerDataChanged` is the simplest way to
-    // refresh the column header text in the view without juggling
-    // begin/end pairs whose semantics differ from QAbstractItemModel's.
-    emit headerDataChanged(Qt::Horizontal, 0, columnCount() - 1);
+    if (mInSourceColumnMove)
+    {
+        endMoveColumns();
+        mInSourceColumnMove = false;
+    }
 }
 
 void LogFilterModel::OnSourceHeaderDataChanged(Qt::Orientation orientation, int first, int last)

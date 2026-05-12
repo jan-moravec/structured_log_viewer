@@ -28,9 +28,14 @@ class LogTable;
 /// Stale predicates still work: an id past the bitset rejects when
 /// `mAllResolved`, otherwise falls through to the string set.
 ///
-/// Threading: today every caller runs on the GUI thread. The
-/// past-bitset branch keeps the predicate correct even if a future
-/// caller races dictionary growth.
+/// Threading: `MatchesRow` is read-only and stateless on `*this` -
+/// `mSelectedIds` / `mSelectedStrings` are written only by the
+/// constructor and never mutated afterwards. `FilterAcceptedRows`
+/// invokes it concurrently from a `tbb::parallel_for` over rows; the
+/// past-bitset branch keeps results correct even if a separate writer
+/// thread grows the dictionary mid-evaluation, because growth only
+/// pushes new ids past the bitset's `size()` and the string-set
+/// fallback handles them.
 class EnumRowPredicate
 {
 public:

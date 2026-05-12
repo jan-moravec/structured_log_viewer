@@ -486,6 +486,17 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             }
         }
     }
+    // Also pick up the silent "promoted then immediately demoted in
+    // the same batch" case (`Unknown -> Enumeration -> String` with
+    // no dict surviving on either side of the batch). The
+    // `enumDictSizesBefore` snapshot doesn't see it because the
+    // column wasn't `Type::Enumeration` at the snapshot point;
+    // `LogTable::LastBatchDemotedKeys()` records it from inside
+    // `DemoteColumnFromEnum`.
+    if (!mLogTable.LastBatchDemotedKeys().empty())
+    {
+        enumColumnDemoted = true;
+    }
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
     // proxy connected to `rowsInserted` walks new rows against a stale

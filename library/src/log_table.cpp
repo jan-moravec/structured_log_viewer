@@ -175,6 +175,7 @@ void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
 LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     : mData(std::move(data)), mConfiguration(std::move(configuration))
 {
+    mLastBatchDemotedKeys.clear();
     RewireSourceRegistries();
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
@@ -237,6 +238,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
 
 void LogTable::Update(LogData &&data)
 {
+    mLastBatchDemotedKeys.clear();
     const size_t oldLineCount = mData.Lines().size();
     mConfiguration.Update(data);
     if (!data.TimestampsAlreadyParsed())
@@ -273,6 +275,7 @@ void LogTable::Reset()
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mLastBackfillRange.reset();
+    mLastBatchDemotedKeys.clear();
     // Eager promotion + no cardinality bail until `FinalizeAutoDetection`.
     mIsStreaming = true;
 
@@ -320,6 +323,7 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
 void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
+    mLastBatchDemotedKeys.clear();
 
     if (!batch.newKeys.empty())
     {
@@ -435,6 +439,11 @@ LogTable::AppendBatchPreview LogTable::PreviewAppend(const StreamedBatch &batch)
 const std::optional<std::pair<size_t, size_t>> &LogTable::LastBackfillRange() const noexcept
 {
     return mLastBackfillRange;
+}
+
+const std::vector<KeyId> &LogTable::LastBatchDemotedKeys() const noexcept
+{
+    return mLastBatchDemotedKeys;
 }
 
 void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
@@ -1294,6 +1303,16 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
         {
             keyIds.push_back(id);
         }
+    }
+
+    // Record the canonical KeyId before the registry erase below so
+    // `LogModel`'s post-batch detector can scope its `Demoted` emit
+    // even for the silent `Unknown -> Enumeration -> String`
+    // transition where the registry shows no dict before or after
+    // the batch.
+    if (!keyIds.empty())
+    {
+        mLastBatchDemotedKeys.push_back(keyIds.front());
     }
 
     auto &lines = mData.Lines();

@@ -70,6 +70,17 @@ public:
     /// `AppendBatch`, or nullopt.
     [[nodiscard]] const std::optional<std::pair<size_t, size_t>> &LastBackfillRange() const noexcept;
 
+    /// Canonical `KeyId`s of columns that were demoted away from
+    /// `Type::Enumeration` during the most recent `AppendBatch` /
+    /// `Update` / `BeginStreaming` call. Includes the silent
+    /// "promoted-and-demoted-in-the-same-batch" case where the
+    /// column went `Unknown -> Enumeration -> String` end-to-end --
+    /// the registry shows no dict before or after, so the
+    /// `LogModel`-side `enumDictSizesBefore` snapshot wouldn't catch
+    /// it. Reset at the start of every batch-style call. Empty when
+    /// the batch produced no demote.
+    [[nodiscard]] const std::vector<KeyId> &LastBatchDemotedKeys() const noexcept;
+
     /// Reorder column @p srcIndex to @p destIndex. Callers must wrap with
     /// `beginMoveColumns`/`endMoveColumns`.
     void MoveColumn(size_t srcIndex, size_t destIndex);
@@ -283,6 +294,13 @@ private:
     bool mIsStreaming = false;
 
     std::optional<std::pair<size_t, size_t>> mLastBackfillRange;
+
+    /// Canonical KeyIds demoted away from `Type::Enumeration` during
+    /// the in-progress (or most recent) batch. Populated by
+    /// `DemoteColumnFromEnum` *before* it erases the registry entry
+    /// so the id is stable; consumed by `LogModel` to scope its
+    /// `enumColumnsChanged(Demoted)` emit.
+    std::vector<KeyId> mLastBatchDemotedKeys;
 };
 
 } // namespace loglib

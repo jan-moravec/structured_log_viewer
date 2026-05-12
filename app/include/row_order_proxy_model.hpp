@@ -73,13 +73,6 @@ private:
 
     bool mReversed = false;
 
-    /// Captured by `rowsAboutToBeRemoved` so the matching
-    /// `rowsRemoved` call has the pre-removal source row count needed
-    /// to compute the proxy-side range we already reported in
-    /// `beginRemoveRows`. The value is meaningless outside the
-    /// remove-rows window.
-    int mPreRemovalSourceRows = 0;
-
     /// Connections to the source model. Tracked so `setSourceModel`
     /// can disconnect them without touching the base class' wires.
     QMetaObject::Connection mRowsAboutToBeInsertedConn;

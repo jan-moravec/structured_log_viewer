@@ -324,15 +324,24 @@ int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t colu
         return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
     }
 
-    // One or both sides not `DictRef` (monostate or unpromoted slot).
-    // Defer to the generic compare so monostate order is respected.
-    const LogValue lhs = LoadValue(table, lhsRow, column);
-    const LogValue rhs = LoadValue(table, rhsRow, column);
-    if (const auto order = CompareMonostateOrder(lhs, rhs); order.has_value())
+    // One or both sides not `DictRef` (monostate, unpromoted-string,
+    // wrong-type, or over-cap-length slot). Tail-bucket invariant:
+    // every non-`DictRef` slot sorts strictly after every
+    // `DictRef`-resolved slot and equal to every other non-`DictRef`
+    // slot. Mirrors `SortPermutationByColumn`'s fast path -- which
+    // collapses every non-`DictRef` row to the rank-table sentinel
+    // -- so the streaming-insert comparator and the bulk re-sort
+    // never disagree on where an unencoded enum slot lands. Pinned
+    // by `TestCompareEnumNonDictRefSlotsAllTailEqual`.
+    if (!lhsId.has_value() && !rhsId.has_value())
     {
-        return *order;
+        return 0;
     }
-    return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
+    if (!lhsId.has_value())
+    {
+        return 1;
+    }
+    return -1;
 }
 
 int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
