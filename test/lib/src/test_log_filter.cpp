@@ -291,6 +291,7 @@ TEST_CASE("EnumRowPredicate rejects out-of-range ids when the bitset is armed", 
     const size_t newRow = table.RowCount() - 1;
     const auto newId = table.GetEnumValueId(newRow, 0);
     REQUIRE(newId.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     REQUIRE(static_cast<size_t>(*newId) >= 2); // past the predicate's bitset
 
     // Stale predicate must still reject the new id (it's "debug", not
@@ -347,6 +348,7 @@ TEST_CASE(
     const size_t debugRow = table.RowCount() - 1;
     const auto debugId = table.GetEnumValueId(debugRow, 0);
     REQUIRE(debugId.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     REQUIRE(static_cast<size_t>(*debugId) >= 1); // past the original bitset
 
     // String-set fallback contains "debug" -> match.
@@ -436,6 +438,7 @@ TEST_CASE(
         const size_t debugRow = table.RowCount() - 1;
         const auto debugId = table.GetEnumValueId(debugRow, 0);
         REQUIRE(debugId.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         REQUIRE(static_cast<size_t>(*debugId) >= 2); // past the bitset
 
         // `mAllResolved == false`, so the past-bitset branch must
@@ -465,6 +468,7 @@ TEST_CASE(
         const size_t debugRow = table.RowCount() - 1;
         const auto debugId = table.GetEnumValueId(debugRow, 0);
         REQUIRE(debugId.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         REQUIRE(static_cast<size_t>(*debugId) >= 2);
 
         // `mAllResolved == true` (the only distinct value "info"

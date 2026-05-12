@@ -1529,8 +1529,14 @@ void MainWindow::UpdateFilters()
         switch (filter.type)
         {
         case LogFilterType::Time:
+            // `FilterTimeStampSubmitted` populates both bounds before the
+            // filter ever reaches `mFilters`, and the switch case pins
+            // `type == Time`, so the optionals are engaged here.
             rules.emplace_back(
-                std::in_place_type<loglib::TimeRangeRowPredicate>, column, *filter.filterBegin, *filter.filterEnd
+                std::in_place_type<loglib::TimeRangeRowPredicate>,
+                column,
+                *filter.filterBegin, // NOLINT(bugprone-unchecked-optional-access)
+                *filter.filterEnd    // NOLINT(bugprone-unchecked-optional-access)
             );
             break;
         case LogFilterType::Enumeration:
@@ -1556,9 +1562,13 @@ void MainWindow::UpdateFilters()
         }
         case LogFilterType::String:
         default:
+            // `FilterSubmitted` populates both fields before the filter
+            // ever reaches `mFilters`, and the switch case pins
+            // `type == String`, so the optionals are engaged here.
             rules.emplace_back(
                 std::in_place_type<loglib::CallbackStringRowPredicate>,
                 column,
+                // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
                 MakeStringMatcher(QString::fromStdString(*filter.filterString), *filter.matchType)
             );
             break;
