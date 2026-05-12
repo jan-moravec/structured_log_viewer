@@ -295,6 +295,18 @@ private slots:
             Ms(predicateElapsed).count() < 200.0,
             qPrintable(QStringLiteral("predicate walk regressed: %1 ms").arg(Ms(predicateElapsed).count()))
         );
+        // Proxy-roundtrip gate: now that the filter pass hands the
+        // per-row predicate loop to `loglib::FilterAcceptedRows`
+        // (TBB-parallel) and the log->source remap is one cached
+        // `mapFromSource` hop per survivor, the full filter cycle on
+        // 1 M rows lands well under 100 ms locally. 500 ms is a
+        // generous CI ceiling -- breaking it means either the lib's
+        // parallel pass collapsed to sequential or the proxy went
+        // back to per-row chain walks.
+        QVERIFY2(
+            Ms(elapsed).count() < 500.0,
+            qPrintable(QStringLiteral("filter proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
+        );
     }
 
     // Enum-column sort wall-clock under the production proxy chain.
@@ -377,18 +389,20 @@ private slots:
                                   .arg(Ms(elapsed).count(), 0, 'f', 2);
 
         QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
-        // The proxy-roundtrip sort time is informational only -- 1 M-row
-        // sort calls `lessThan` ~20 M times and each call goes through
-        // `QSortFilterProxyModel`'s internal mapping + row-map rebuild,
-        // both of which dominate the wall-clock and live well outside
-        // the code we own. `BenchEnumFilterApply` follows the same
-        // policy for its proxy-roundtrip *filter* number above (no
-        // assertion -- that one measured 108 s on Linux CI). The
-        // canonical regression gate for `loglib::CompareRows` is the
-        // lib-only block above; what we report here is purely a watch
-        // value for the GUI experience and CI variance is wide:
-        // observed ~1.5 s on a fast Apple Silicon laptop, ~16 s on the
-        // Windows GitHub Actions runner.
+        // Proxy-roundtrip sort gate. After the Phase 1 rewrite the
+        // sort runs through `loglib::SortPermutationByColumn`: log
+        // rows are resolved once (no per-compare proxy walk), a
+        // `uint16_t` rank is pre-materialised in parallel for enum
+        // columns, and `tbb::parallel_sort` permutes them. On the dev
+        // box the full proxy cycle lands ~68 ms; 1 s is the generous
+        // CI ceiling and also the user-visible target from the
+        // performance plan. A regression past this threshold means
+        // either the comparator stopped being branch-free or the
+        // log-row pre-resolution disappeared.
+        QVERIFY2(
+            Ms(elapsed).count() < 1000.0,
+            qPrintable(QStringLiteral("sort proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
+        );
     }
 
 private:
