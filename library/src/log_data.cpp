@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -90,9 +91,9 @@ const FileLineSource *LogData::FrontFileSource() const noexcept
 
 FileLineSource *LogData::BackFileSource() noexcept
 {
-    for (auto it = mSources.rbegin(); it != mSources.rend(); ++it)
+    for (auto &source : std::views::reverse(mSources))
     {
-        if (auto *fs = dynamic_cast<FileLineSource *>(it->get()); fs != nullptr)
+        if (auto *fs = dynamic_cast<FileLineSource *>(source.get()); fs != nullptr)
         {
             return fs;
         }
@@ -102,9 +103,9 @@ FileLineSource *LogData::BackFileSource() noexcept
 
 const FileLineSource *LogData::BackFileSource() const noexcept
 {
-    for (auto it = mSources.rbegin(); it != mSources.rend(); ++it)
+    for (const auto &source : std::views::reverse(mSources))
     {
-        if (const auto *fs = dynamic_cast<const FileLineSource *>(it->get()); fs != nullptr)
+        if (const auto *fs = dynamic_cast<const FileLineSource *>(source.get()); fs != nullptr)
         {
             return fs;
         }

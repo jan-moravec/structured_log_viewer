@@ -83,5 +83,6 @@ CMakeUserPresets.json
 
 # Third-party AI dev tasks helper (cloned alongside, not part of the project)
 /ai-dev-tasks-main/
-.bench-results/
-.bench-results-prefix/
+# Benchmark scratch dirs (one per investigation, freely named).
+# Pattern keeps `.bench-results/`, `.bench-results-prefix/`, etc. out.
+.bench-results*/

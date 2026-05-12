@@ -8,6 +8,7 @@
 #include "streaming_control.hpp"
 
 #include <loglib/bytes_producer.hpp>
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -157,6 +158,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
+    mSortFilterProxyModel->SetLogModel(mModel);
     mSortFilterProxyModel->setSortRole(SortRole);
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
@@ -328,13 +330,17 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
-    // Rebuild active enum filter rules so the fast-path bitset stays in
-    // sync after dictionary growth or promotion.
+    // Keep enum filter bitsets and sort ranks in sync with the live
+    // dictionary. Always drop cached ranks; rebuild predicates only
+    // when an active enum filter has unresolved selected values
+    // (skips growth that only minted unselected ids).
     connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
-        const bool hasEnumFilter = std::ranges::any_of(mFilters, [](const auto &kv) {
-            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
+        mSortFilterProxyModel->InvalidateEnumRanks();
+        const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
+            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                   !EnumFilterFullyResolved(kv.second);
         });
-        if (hasEnumFilter)
+        if (anyUnresolved)
         {
             UpdateFilters();
         }
@@ -944,6 +950,7 @@ QMenu *MainWindow::FiltersMenu() const
     return ui->menuFilters;
 }
 
+#ifdef LOGAPP_BUILD_TESTING
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)
@@ -959,6 +966,7 @@ void MainWindow::SetSessionModeForTest(TestSessionMode mode)
         break;
     }
 }
+#endif
 
 void MainWindow::ApplyDisplayOrder()
 {
@@ -1065,9 +1073,11 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 
     const QVariant value = QVariant::fromValue(text);
-    QModelIndexList matches = mSortFilterProxyModel->MatchRow(
-        mModel->index(searchStartIndex.row(), 0), Qt::DisplayRole, value, 1, flags, next, skipFirstN
-    );
+    // `searchStartIndex` is already in proxy coords (it came from
+    // `mTableView->currentIndex()`). Pass it through directly so
+    // `MatchRow` never sees a mixed coordinate space.
+    QModelIndexList matches =
+        mSortFilterProxyModel->MatchRow(searchStartIndex, Qt::DisplayRole, value, 1, flags, next, skipFirstN);
 
     if (!matches.isEmpty())
     {
@@ -1132,6 +1142,10 @@ void MainWindow::AddFilter(
                 {
                     return;
                 }
+                // Intentional fallthrough: the saved filter was dropped
+                // because the column type changed; open a fresh editor
+                // so the user can re-pick values for the new type.
+                // Regression: `TestSavedStringFilterDroppedOnNowEnumColumn`.
             }
         }
     }
@@ -1241,19 +1255,50 @@ void MainWindow::ClearFilter(const QString &filterID)
 
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
+    const auto match = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
+
+    // Reject an invalid regex up front; the downstream
+    // `QRegularExpression` would otherwise compile to an invalid
+    // object and silently hide every row. Wildcards always compile.
+    if (match == loglib::LogConfiguration::LogFilter::Match::RegularExpression)
+    {
+        const QRegularExpression probe(filterString);
+        if (!probe.isValid())
+        {
+            statusBar()->showMessage(
+                QString("Invalid regular expression: %1").arg(probe.errorString()), STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+            ClearFilter(filterID);
+            return;
+        }
+    }
+
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
     filter.type = loglib::LogConfiguration::LogFilter::Type::String;
     filter.row = row;
     filter.filterString = filterString.toStdString();
-    filter.matchType = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
+    filter.matchType = match;
 
     AddLogFilter(filterID, filter);
 }
 
 void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp)
 {
+    // Reject an inverted range up front; the predicate would
+    // otherwise hide every row silently. Mirrors the regex probe
+    // in `FilterSubmitted`.
+    if (beginTimeStamp > endTimeStamp)
+    {
+        statusBar()->showMessage(
+            QString("Time-range filter rejected: begin (%1) is after end (%2)").arg(beginTimeStamp).arg(endTimeStamp),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+
     ClearFilter(filterID);
 
     loglib::LogConfiguration::LogFilter filter;
@@ -1345,47 +1390,187 @@ QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
     }
 }
 
+const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex) const
+{
+    if (columnIndex < 0)
+    {
+        return nullptr;
+    }
+    return mModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex)).dictionary;
+}
+
+bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const
+{
+    if (filter.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+    {
+        return true;
+    }
+    const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+    if (dictionary == nullptr)
+    {
+        // Column not yet promoted: defer resolution until first growth.
+        return false;
+    }
+    return std::ranges::all_of(filter.filterValues, [dictionary](const std::string &value) {
+        return dictionary->Find(value) != loglib::INVALID_ENUM_VALUE_ID;
+    });
+}
+
+namespace
+{
+
+/// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
+/// on first `match()` (would be a thread-safety footgun off the GUI).
+void PrimeRegex(QRegularExpression &regex)
+{
+    (void)regex.match(QStringLiteral(""));
+}
+
+/// Build a Qt-flavoured matcher for `CallbackStringRowPredicate`.
+/// Captures the compiled regex / needle once so the inner loop avoids
+/// per-row recompiles.
+///
+/// The haystack is normalised via
+/// `LogModel::ConvertToSingleLineCompactQString` so filters match the
+/// same single-line text the user sees (and that Find applies). The
+/// needle is left as-typed -- mirrors the pre-`RowPredicate`
+/// `SortRole` semantics so a needle with consecutive spaces stays a
+/// non-match against a simplified haystack.
+loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
+    const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
+)
+{
+    using Match = loglib::LogConfiguration::LogFilter::Match;
+    switch (match)
+    {
+    case Match::Exactly:
+    {
+        // Capture by value: the parameter reference would dangle
+        // after return. `QString`'s implicit sharing keeps this a
+        // refcount bump.
+        // clang-tidy flags `QString::operator==` and the QString
+        // allocation as exception-escape; both are benign here.
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        return
+            [pattern](std::string_view bytes) { return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern; };
+    }
+    case Match::Contains:
+    {
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        return [pattern](std::string_view bytes) {
+            return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
+        };
+    }
+    case Match::RegularExpression:
+    {
+        QRegularExpression regex(pattern);
+        PrimeRegex(regex);
+        return [regex](std::string_view bytes) {
+            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
+        };
+    }
+    case Match::Wildcard:
+    {
+        QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
+        PrimeRegex(regex);
+        return [regex](std::string_view bytes) {
+            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
+        };
+    }
+    }
+    return [](std::string_view) { return false; };
+}
+
+} // namespace
+
 void MainWindow::UpdateFilters()
 {
-    std::vector<std::unique_ptr<FilterRule>> rules;
+    // Sort filters cheapest-first so `std::ranges::all_of` short-
+    // circuits on the cheapest rejecting test:
+    //   1. EnumRowPredicate          - GetEnumValueId + bitset test
+    //   2. TimeRangeRowPredicate     - GetValue + int compare
+    //   3. CallbackStringRowPredicate - regex / UTF-8 walk
+    // Tie-break on column index for deterministic, test-friendly order.
+    using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
+    auto costOf = [](LogFilterType t) -> int {
+        switch (t)
+        {
+        case LogFilterType::Enumeration:
+            return 0;
+        case LogFilterType::Time:
+            return 1;
+        case LogFilterType::String:
+        default:
+            return 2;
+        }
+    };
+    std::vector<const loglib::LogConfiguration::LogFilter *> ordered;
+    ordered.reserve(mFilters.size());
     for (const auto &filter : mFilters)
     {
-        switch (filter.second.type)
+        ordered.push_back(&filter.second);
+    }
+    std::ranges::sort(ordered, [&costOf](const auto *a, const auto *b) {
+        const int costA = costOf(a->type);
+        const int costB = costOf(b->type);
+        if (costA != costB)
         {
-        case loglib::LogConfiguration::LogFilter::Type::Time:
-            rules.push_back(std::make_unique<TimeStampFilterRule>(
-                filter.second.row, *filter.second.filterBegin, *filter.second.filterEnd
-            ));
+            return costA < costB;
+        }
+        return a->row < b->row;
+    });
+
+    std::vector<loglib::RowPredicate> rules;
+    rules.reserve(ordered.size());
+    for (const loglib::LogConfiguration::LogFilter *filterPtr : ordered)
+    {
+        const loglib::LogConfiguration::LogFilter &filter = *filterPtr;
+        const auto column = static_cast<size_t>(filter.row);
+        switch (filter.type)
+        {
+        case LogFilterType::Time:
+            // `FilterTimeStampSubmitted` populates both bounds before the
+            // filter ever reaches `mFilters`, and the switch case pins
+            // `type == Time`, so the optionals are engaged here.
+            rules.emplace_back(
+                std::in_place_type<loglib::TimeRangeRowPredicate>,
+                column,
+                *filter.filterBegin, // NOLINT(bugprone-unchecked-optional-access)
+                *filter.filterEnd    // NOLINT(bugprone-unchecked-optional-access)
+            );
             break;
-        case loglib::LogConfiguration::LogFilter::Type::Enumeration:
+        case LogFilterType::Enumeration:
         {
-            QStringList values;
-            values.reserve(static_cast<qsizetype>(filter.second.filterValues.size()));
-            for (const std::string &v : filter.second.filterValues)
+            // `filter` aliases `mFilters`, so the underlying strings
+            // outlive the views. `EnumRowPredicate`'s constructor
+            // copies/indexes them and keeps no reference back into the
+            // span (pinned by the lifetime test in `test_log_filter.cpp`).
+            std::vector<std::string_view> selectedViews;
+            selectedViews.reserve(filter.filterValues.size());
+            for (const std::string &v : filter.filterValues)
             {
-                values.append(QString::fromStdString(v));
+                selectedViews.emplace_back(v);
             }
-            // Pre-resolve the canonical dictionary for the bitset path;
-            // the rule falls back to strings if the column isn't promoted.
-            const loglib::EnumDictionary *dictionary = nullptr;
-            const auto &columns = mModel->Configuration().columns;
-            const auto rowIndex = static_cast<size_t>(filter.second.row);
-            if (rowIndex < columns.size() && !columns[rowIndex].keys.empty())
-            {
-                const loglib::KeyId canonicalKeyId = mModel->Table().Keys().Find(columns[rowIndex].keys.front());
-                if (canonicalKeyId != loglib::INVALID_KEY_ID)
-                {
-                    dictionary = mModel->Table().EnumDictionaries().Find(canonicalKeyId);
-                }
-            }
-            rules.push_back(std::make_unique<EnumFilterRule>(filter.second.row, values, dictionary));
+            const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+            rules.emplace_back(
+                std::in_place_type<loglib::EnumRowPredicate>,
+                column,
+                std::span<const std::string_view>(selectedViews),
+                dictionary
+            );
             break;
         }
-        case loglib::LogConfiguration::LogFilter::Type::String:
+        case LogFilterType::String:
         default:
-            rules.push_back(std::make_unique<TextFilterRule>(
-                filter.second.row, QString::fromStdString(*filter.second.filterString), *filter.second.matchType
-            ));
+            // `FilterSubmitted` populates both fields before the filter
+            // ever reaches `mFilters`, and the switch case pins
+            // `type == String`, so the optionals are engaged here.
+            rules.emplace_back(
+                std::in_place_type<loglib::CallbackStringRowPredicate>,
+                column,
+                // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+                MakeStringMatcher(QString::fromStdString(*filter.filterString), *filter.matchType)
+            );
             break;
         }
     }

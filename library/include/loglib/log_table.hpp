@@ -113,6 +113,24 @@ public:
     /// else nullopt. Powers the `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(size_t row, size_t column) const noexcept;
 
+    /// Outcome of `ResolveEnumColumn`. Field combinations:
+    ///   - `canonicalKey == INVALID_KEY_ID`: column out of range, no
+    ///     keys, or first key not interned. Skip enum logic entirely.
+    ///   - `canonicalKey` valid, `dictionary == nullptr`: column has a
+    ///     canonical key but is not currently `Type::Enumeration`.
+    ///     Predicates fall back to the string-set path.
+    ///   - Both populated: column is promoted; caller can use the
+    ///     dictionary directly.
+    struct EnumColumnLookup
+    {
+        KeyId canonicalKey = INVALID_KEY_ID;
+        const EnumDictionary *dictionary = nullptr;
+    };
+
+    /// Resolve `column index -> canonical KeyId -> EnumDictionary*`.
+    /// Returns a default-constructed lookup on any miss.
+    [[nodiscard]] EnumColumnLookup ResolveEnumColumn(size_t columnIndex) const noexcept;
+
     /// End-of-parse/end-of-stream auto-detection sweep: promote permissive
     /// candidates and transition leftover `Type::Unknown` columns to a
     /// terminal type. Idempotent. Returns true if at least one column was

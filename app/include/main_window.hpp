@@ -9,6 +9,9 @@
 
 #include <loglib/log_configuration.hpp>
 
+// `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
+// the full type comes in transitively through `log_filter_model.hpp`.
+
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -70,9 +73,9 @@ public:
     }
     [[nodiscard]] QMenu *FiltersMenu() const;
 
-    /// Test-only override of the internal session mode so display-order
-    /// tests can exercise the `Static` branch without driving a real
-    /// open flow.
+#ifdef LOGAPP_BUILD_TESTING
+    /// Test-only session-mode override so display-order tests can
+    /// exercise the `Static` branch without a real open flow.
     enum class TestSessionMode
     {
         Idle,
@@ -80,6 +83,7 @@ public:
         LiveTail,
     };
     void SetSessionModeForTest(TestSessionMode mode);
+#endif
 
 protected:
     bool event(QEvent *event) override;
@@ -142,6 +146,15 @@ private:
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
     void UpdateFilters();
     void ApplyTableStyleSheet();
+
+    /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
+    /// column is not promoted or has no keys.
+    [[nodiscard]] const loglib::EnumDictionary *ResolveEnumDictionary(int columnIndex) const;
+
+    /// True iff every selected string in @p filter resolves to an id
+    /// in the canonical dictionary. Gates whether an
+    /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
+    [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
 
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();

@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(
     tests
     "src/benchmark_json.cpp"
+    "src/benchmark_log_filter.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_enum_dictionary.cpp"
@@ -12,9 +13,11 @@ add_executable(
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
     "src/test_log_configuration.cpp"
+    "src/test_log_compare.cpp"
     "src/test_log_data.cpp"
     "src/test_log_factory.cpp"
     "src/test_log_file.cpp"
+    "src/test_log_filter.cpp"
     "src/test_log_line.cpp"
     "src/test_log_processing.cpp"
     "src/test_log_table.cpp"

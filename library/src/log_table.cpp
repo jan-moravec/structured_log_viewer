@@ -786,6 +786,30 @@ std::optional<EnumValueId> LogTable::GetEnumValueId(size_t row, size_t column) c
     return std::nullopt;
 }
 
+LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const noexcept
+{
+    const auto &columns = mConfiguration.Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return {};
+    }
+    const auto &column = columns[columnIndex];
+    if (column.keys.empty())
+    {
+        return {};
+    }
+    // First listed key is canonical; aliases share its dictionary entry.
+    const KeyId canonicalKey = Keys().Find(column.keys.front());
+    if (canonicalKey == INVALID_KEY_ID)
+    {
+        return {};
+    }
+    // `dictionary` is null when the column is not currently
+    // `Type::Enumeration` -- still useful to the caller alongside the
+    // resolved key.
+    return {.canonicalKey = canonicalKey, .dictionary = mEnumDictionaries.Find(canonicalKey)};
+}
+
 void LogTable::RunEnumPassForAppendBatch(
     size_t oldLineCount, std::optional<size_t> &firstBackfilled, std::optional<size_t> &lastBackfilled
 )

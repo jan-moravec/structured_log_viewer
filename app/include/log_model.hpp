@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 template <typename T> class QFutureWatcher;
@@ -29,7 +30,8 @@ enum LogModelItemDataRole
     /// Source-model row index, used as a stable sort tie-break.
     InsertionOrderRole,
     /// `loglib::EnumValueId` as `qint32` for `DictRef` slots; invalid
-    /// otherwise. `EnumFilterRule` uses it for the bitset fast path.
+    /// otherwise. Kept for external readers; the filter proxy bypasses
+    /// it and queries `LogTable` directly.
     EnumValueRole,
 };
 
@@ -132,6 +134,19 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
+    /// UTF-8 bytes -> single-line, simplified `QString` (the
+    /// `Qt::DisplayRole` representation). Public so the filter proxy's
+    /// `MatchRow` and `MainWindow::MakeStringMatcher` can apply the
+    /// same normalisation the user sees on screen.
+    static QString ConvertToSingleLineCompactQString(std::string_view bytes);
+
+#ifdef LOGAPP_BUILD_TESTING
+    /// Test-only: move a column with `beginMoveColumns`/`endMoveColumns`
+    /// so `columnsMoved` propagates through the proxy chain.
+    /// Returns `true` on success.
+    bool MoveColumnForTest(int srcIndex, int destIndex);
+#endif
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);
@@ -187,8 +202,6 @@ private:
 
     /// Retention cap; `0` means unbounded.
     size_t mRetentionCap = 0;
-
-    static QString ConvertToSingleLineCompactQString(const std::string &string);
 };
 
 Q_DECLARE_METATYPE(StreamingResult)
