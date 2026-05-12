@@ -159,7 +159,11 @@ MainWindow::MainWindow(QWidget *parent)
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
     mSortFilterProxyModel->SetLogModel(mModel);
-    mSortFilterProxyModel->setSortRole(SortRole);
+    // `setSortRole` is intentionally not called: `LogFilterModel`
+    // sorts via `loglib::CompareRows` straight against `LogTable`
+    // (no `data(role)` round-trip), so a sort role no longer drives
+    // behaviour. The deprecated no-op stays on the class for one
+    // release to ease test/benchmark migration.
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);

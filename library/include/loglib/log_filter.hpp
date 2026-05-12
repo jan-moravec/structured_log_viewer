@@ -46,6 +46,12 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
+    /// Column index this predicate targets, in `LogTable` coords.
+    [[nodiscard]] size_t ColumnIndex() const noexcept
+    {
+        return mColumnIndex;
+    }
+
     /// True iff the bitset has at least one armed bit.
     [[nodiscard]] bool IsFastPathArmed() const noexcept
     {
@@ -85,6 +91,12 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
+    /// Column index this predicate targets, in `LogTable` coords.
+    [[nodiscard]] size_t ColumnIndex() const noexcept
+    {
+        return mColumnIndex;
+    }
+
 private:
     size_t mColumnIndex = 0;
     int64_t mBegin = 0;
@@ -111,6 +123,12 @@ public:
 
     [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
 
+    /// Column index this predicate targets, in `LogTable` coords.
+    [[nodiscard]] size_t ColumnIndex() const noexcept
+    {
+        return mColumnIndex;
+    }
+
 private:
     size_t mColumnIndex = 0;
     MatchFn mMatch;
@@ -126,6 +144,13 @@ using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, Callb
 [[nodiscard]] inline bool MatchesRow(const RowPredicate &predicate, const LogTable &table, size_t row)
 {
     return std::visit([&table, row](const auto &concrete) { return concrete.MatchesRow(table, row); }, predicate);
+}
+
+/// Column index targeted by @p predicate. Used by the GUI proxy to
+/// decide whether a source `dataChanged` requires a filter rebuild.
+[[nodiscard]] inline size_t RowPredicateColumn(const RowPredicate &predicate) noexcept
+{
+    return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
 
 } // namespace loglib

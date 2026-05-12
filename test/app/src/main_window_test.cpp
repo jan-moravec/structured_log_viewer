@@ -715,8 +715,11 @@ private slots:
         // qint64 microseconds, so the proxy's chronological order must be
         // line3 < line1 < line2 ascending and the mirror descending.
         LogFilterModel proxy;
-        proxy.setSortRole(LogModelItemDataRole::SortRole);
+        // `LogFilterModel` sorts via `loglib::CompareRows` directly off
+        // the `LogTable`; bind the model so `CompareRows` can resolve
+        // slot types. The SortRole round-trip is no longer wired.
         proxy.setSourceModel(run.model.get());
+        proxy.SetLogModel(run.model.get());
 
         proxy.sort(tsCol, Qt::AscendingOrder);
         QCOMPARE(proxy.mapToSource(proxy.index(0, 0)).row(), 2); // line3 (07:30 UTC)

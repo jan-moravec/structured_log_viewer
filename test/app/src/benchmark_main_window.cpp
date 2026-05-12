@@ -117,7 +117,6 @@ RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
     auto filterProxy = std::make_unique<LogFilterModel>();
     filterProxy->setSourceModel(rowProxy.get());
     filterProxy->SetLogModel(model.get());
-    filterProxy->setSortRole(LogModelItemDataRole::SortRole);
 
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
 
@@ -422,7 +421,6 @@ private:
         chain.filterProxy = std::make_unique<LogFilterModel>();
         chain.filterProxy->setSourceModel(chain.rowProxy.get());
         chain.filterProxy->SetLogModel(chain.model.get());
-        chain.filterProxy->setSortRole(LogModelItemDataRole::SortRole);
 
         QSignalSpy finishedSpy(chain.model.get(), &LogModel::streamingFinished);
         auto file = std::make_unique<loglib::LogFile>(mLogPath.string());
