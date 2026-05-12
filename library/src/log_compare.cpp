@@ -1,8 +1,15 @@
+// `loglib` has no Qt header in its chain, so the TBB / Qt `emit`
+// collision that bites `app/` doesn't apply here -- normal include
+// order is fine.
 #include "loglib/log_compare.hpp"
 
 #include "loglib/log_configuration.hpp"
 #include "loglib/log_table.hpp"
 #include "loglib/log_value.hpp"
+
+#include <oneapi/tbb/blocked_range.h>
+#include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/parallel_sort.h>
 
 #include <algorithm>
 #include <cassert>
@@ -13,6 +20,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -372,6 +380,123 @@ int CompareRows(
     default:
         return CompareString(table, lhsRow, rhsRow, columnIndex);
     }
+}
+
+std::vector<size_t> SortPermutationByColumn(
+    const LogTable &table,
+    std::span<const size_t> logRows,
+    size_t columnIndex,
+    bool ascending,
+    const EnumDictRank *rankForEnumColumn
+)
+{
+    const size_t n = logRows.size();
+    std::vector<size_t> permutation(n);
+    // `std::iota` rather than `std::ranges::iota`: the latter is C++23
+    // and AppleClang 17's libc++ still lacks it.
+    // NOLINTNEXTLINE(modernize-use-ranges)
+    std::iota(permutation.begin(), permutation.end(), size_t{0});
+    if (n <= 1)
+    {
+        return permutation;
+    }
+
+    const auto &columns = table.Configuration().Configuration().columns;
+    const bool columnInRange = columnIndex < columns.size();
+    const bool isEnum = columnInRange && columns[columnIndex].type == LogConfiguration::Type::Enumeration;
+
+    // Fast path: enum column with a precomputed rank table. We
+    // pre-materialise a `uint16_t` rank per row in parallel, then the
+    // sort comparator is a branch-free integer compare with input-
+    // index tie-break. Eliminates the per-compare `GetEnumValueId`
+    // walk that dominates `CompareRows` on the enum path.
+    if (isEnum && rankForEnumColumn != nullptr)
+    {
+        // Sentinel: a slot that doesn't resolve to a `DictRef` (or an id
+        // past the rank table) sorts after every ranked id. Matches the
+        // tail-bucket invariant documented on `CompareRows`.
+        const uint16_t sentinel = rankForEnumColumn->DictSize();
+        std::vector<uint16_t> rankForRow(n);
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, n),
+            [&table, columnIndex, rankForEnumColumn, sentinel, &logRows, &rankForRow](
+                const tbb::blocked_range<size_t> &range
+            ) {
+                for (size_t i = range.begin(); i != range.end(); ++i)
+                {
+                    const auto id = table.GetEnumValueId(logRows[i], columnIndex);
+                    rankForRow[i] = id.has_value() ? rankForEnumColumn->RankOf(*id) : sentinel;
+                }
+            }
+        );
+
+        // `tbb::parallel_sort` is not stable, but a tie-break on the
+        // input index gives a strict total order -- the result matches
+        // `std::stable_sort` semantics for callers that rely on
+        // insertion-order tie-break.
+        if (ascending)
+        {
+            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
+                if (rankForRow[a] != rankForRow[b])
+                {
+                    return rankForRow[a] < rankForRow[b];
+                }
+                return a < b;
+            });
+        }
+        else
+        {
+            // Descending: invert primary order, keep secondary (input
+            // index) ascending. Matches the legacy semantics where
+            // ties always resolved to source-row ascending regardless
+            // of the user-selected order.
+            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
+                if (rankForRow[a] != rankForRow[b])
+                {
+                    return rankForRow[a] > rankForRow[b];
+                }
+                return a < b;
+            });
+        }
+        return permutation;
+    }
+
+    // Generic path: dispatch through `CompareRows` per comparison. Pays
+    // the slot-resolution cost on every call but is correct for the
+    // non-enum types (`Time`, `Integer`, `Floating`, string) where no
+    // cheap pre-materialisation is available. Still benefits from
+    // parallel sort.
+    if (ascending)
+    {
+        tbb::parallel_sort(
+            permutation.begin(),
+            permutation.end(),
+            [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
+                const int cmp = CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
+                if (cmp != 0)
+                {
+                    return cmp < 0;
+                }
+                return a < b;
+            }
+        );
+    }
+    else
+    {
+        tbb::parallel_sort(
+            permutation.begin(),
+            permutation.end(),
+            [&table, &logRows, columnIndex, rankForEnumColumn](size_t a, size_t b) {
+                const int cmp = CompareRows(table, logRows[a], logRows[b], columnIndex, rankForEnumColumn);
+                if (cmp != 0)
+                {
+                    return cmp > 0;
+                }
+                return a < b;
+            }
+        );
+    }
+    return permutation;
 }
 
 } // namespace loglib

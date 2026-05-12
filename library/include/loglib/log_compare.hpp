@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <vector>
 
 namespace loglib
@@ -74,6 +75,33 @@ private:
     size_t lhsRow,
     size_t rhsRow,
     size_t columnIndex,
+    const EnumDictRank *rankForEnumColumn = nullptr
+);
+
+/// Sort permutation for @p logRows by their slot in @p columnIndex.
+/// Returns a vector `P` of size `logRows.size()` such that
+/// `logRows[P[k]]` is the row at rank `k`. Stable: ties resolve to
+/// input-index order, so callers carrying a parallel array (source
+/// rows, view ranges, ...) can reapply the permutation and keep
+/// insertion-order tie-break semantics.
+///
+/// Pass @p rankForEnumColumn when @p columnIndex is an `Enumeration`
+/// column; the lib then pre-materialises a per-row `uint16_t` rank
+/// in parallel and the comparator collapses to a branch-free integer
+/// compare. Without a rank, the comparator dispatches through
+/// `CompareRows`, paying the per-call slot resolution cost on every
+/// comparison -- noticeably slower on enum columns but correct for
+/// the non-enum types (`Time`, `Integer`, `Floating`, string).
+///
+/// Threading: pre-materialisation runs under `tbb::parallel_for`, the
+/// permutation sort under `tbb::parallel_sort`. Both are read-only
+/// against @p table; `LogTable::GetEnumValueId` and `CompareRows`
+/// must be safe to call concurrently (today's implementations are).
+[[nodiscard]] std::vector<size_t> SortPermutationByColumn(
+    const LogTable &table,
+    std::span<const size_t> logRows,
+    size_t columnIndex,
+    bool ascending,
     const EnumDictRank *rankForEnumColumn = nullptr
 );
 

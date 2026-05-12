@@ -259,13 +259,57 @@ void LogFilterModel::sort(int column, Qt::SortOrder order)
 
 void LogFilterModel::ApplySortPermutation()
 {
-    if (mSortColumn < 0 || mLogModel == nullptr)
+    if (mSortColumn < 0 || mLogModel == nullptr || mAcceptedSourceRows.size() <= 1)
     {
         return;
     }
-    // Stable sort: ties resolve by source-row index, mirroring the
-    // historical `setSortRole(SortRole)` + insertion-order tie-break.
-    std::ranges::stable_sort(mAcceptedSourceRows, [this](int lhs, int rhs) { return LessThanSourceRows(lhs, rhs); });
+    const auto &columns = mLogModel->Configuration().columns;
+    if (static_cast<size_t>(mSortColumn) >= columns.size())
+    {
+        return;
+    }
+
+    // Resolve source rows to log rows once, up front. The previous
+    // comparator-driven path called `SourceRowToLogRow` twice per
+    // `lessThan` call -- on a 1 M-row enum sort that's ~40 M proxy
+    // chain walks, which dominated wall-clock. With pre-resolution
+    // here the sort comparator stays inside `loglib` and never
+    // touches a `QModelIndex`.
+    std::vector<size_t> logRows;
+    logRows.reserve(mAcceptedSourceRows.size());
+    for (const int srcRow : mAcceptedSourceRows)
+    {
+        const int logRow = SourceRowToLogRow(srcRow);
+        // `mAcceptedSourceRows` provenance is `RebuildAcceptedRows` or
+        // `OnSourceRowsInserted`, both of which only push rows whose
+        // log mapping resolved. Fall back to row 0 defensively rather
+        // than truncating the vector and desynchronising the parallel
+        // arrays; `loglib`'s tail-bucket invariant keeps the result
+        // benign even if the defensive fallback triggers.
+        logRows.push_back(logRow >= 0 ? static_cast<size_t>(logRow) : size_t{0});
+    }
+
+    const loglib::EnumDictRank *rank = nullptr;
+    if (columns[static_cast<size_t>(mSortColumn)].type == loglib::LogConfiguration::Type::Enumeration)
+    {
+        rank = EnumRankFor(mSortColumn);
+    }
+
+    const std::vector<size_t> permutation = loglib::SortPermutationByColumn(
+        mLogModel->Table(),
+        std::span<const size_t>{logRows},
+        static_cast<size_t>(mSortColumn),
+        mSortOrder == Qt::AscendingOrder,
+        rank
+    );
+
+    std::vector<int> sorted;
+    sorted.reserve(mAcceptedSourceRows.size());
+    for (const size_t idx : permutation)
+    {
+        sorted.push_back(mAcceptedSourceRows[idx]);
+    }
+    mAcceptedSourceRows = std::move(sorted);
 }
 
 bool LogFilterModel::LessThanSourceRows(int leftSource, int rightSource) const
