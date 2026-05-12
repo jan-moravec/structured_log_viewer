@@ -3246,8 +3246,20 @@ private slots:
         QVERIFY2(dict != nullptr, "promotion must create a dictionary entry");
         QCOMPARE(static_cast<int>(dict->Size()), 1);
 
-        // Promotion drives `enumColumnsChanged` via the back-fill loop.
+        // Promotion drives `enumColumnsChanged` via the back-fill loop;
+        // the emitted reason must be `Promoted` so receivers can skip
+        // the rank-cache flush (the cache had no entry for this key yet).
         QVERIFY2(enumChangedSpy.count() >= 1, "enumColumnsChanged must fire on promotion");
+        bool sawPromotion = false;
+        for (const auto &args : enumChangedSpy)
+        {
+            if (args.at(0).value<EnumColumnsChangeReason>() == EnumColumnsChangeReason::Promoted)
+            {
+                sawPromotion = true;
+                break;
+            }
+        }
+        QVERIFY2(sawPromotion, "promotion batch must emit at least one `Promoted` reason");
         enumChangedSpy.clear();
 
         // Batch 2: "warn" fits the cap; "error" is the cap+1th value,
@@ -3274,6 +3286,75 @@ private slots:
             qPrintable(QStringLiteral("expected enumColumnsChanged on demote (registry erase); got %1")
                            .arg(enumChangedSpy.count()))
         );
+        bool sawDemote = false;
+        for (const auto &args : enumChangedSpy)
+        {
+            if (args.at(0).value<EnumColumnsChangeReason>() == EnumColumnsChangeReason::Demoted)
+            {
+                sawDemote = true;
+                break;
+            }
+        }
+        QVERIFY2(sawDemote, "demote batch must emit at least one `Demoted` reason");
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: a `Grew` `enumColumnsChanged` must NOT flush the
+    // `EnumDictRank` cache through `MainWindow`'s slot. `EnumRankFor`
+    // self-heals on the next sort via its `DictSize()` check, so the
+    // cache stays valid; flushing it on every batch in a busy stream
+    // would re-rebuild ranks per batch and dominate the wall-clock.
+    void TestEnumRankCacheSurvivesGrowthSignalThroughMainWindow()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        auto *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1 promotes "level" (well-known key; stream threshold = 2).
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            model->AppendBatch(std::move(batch));
+        }
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after promotion");
+
+        // Warm the rank cache by sorting on the enum column.
+        filterModel->sort(levelCol, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
+
+        // Batch 2 grows the dictionary (new value "error"). Pre-fix the
+        // slot would call `InvalidateEnumRanks()` on every emit and the
+        // cache would drop to 0 entries; post-fix `Grew` is a no-op for
+        // the cache so the entry stays.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 3;
+            batch.lines.push_back(makeLine("error"));
+            batch.lines.push_back(makeLine("info"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
 
         model->EndStreaming(false);
     }

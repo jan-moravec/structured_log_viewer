@@ -40,6 +40,7 @@ LogModel::LogModel(QObject *parent, std::size_t pendingCapacity)
     : QAbstractTableModel{parent}
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
+    qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
     // Required for queued worker→GUI delivery.
     qRegisterMetaType<loglib::SourceStatus>("loglib::SourceStatus");
 
@@ -463,20 +464,25 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    // Registry shape changed: dict grew (new value) or was erased
-    // (column demoted to string). Both invalidate the proxy's
-    // `EnumDictRank` cache and the per-id bitset.
-    bool enumRegistryChanged = false;
+    // Registry shape change for pre-batch-enum columns: dict erased
+    // (column demoted to string) or grew (new value interned). Track
+    // both separately so the follow-up emits can scope reactions --
+    // demote forces a rank-cache flush, growth doesn't (self-heals).
+    bool enumColumnDemoted = false;
+    bool enumDictGrew = false;
     if (!enumDictSizesBefore.empty())
     {
         const auto &registryAfter = mLogTable.EnumDictionaries();
         for (const auto &[kid, sizeBefore] : enumDictSizesBefore)
         {
             const loglib::EnumDictionary *dict = registryAfter.Find(kid);
-            if (dict == nullptr || dict->Size() != sizeBefore)
+            if (dict == nullptr)
             {
-                enumRegistryChanged = true;
-                break;
+                enumColumnDemoted = true;
+            }
+            else if (dict->Size() != sizeBefore)
+            {
+                enumDictGrew = true;
             }
         }
     }
@@ -495,7 +501,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
-    bool emittedEnumColumnsChanged = false;
+    bool emittedPromotedFromBackfill = false;
     if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
     {
         const int firstColumn = static_cast<int>(range->first);
@@ -520,8 +526,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             }
             if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Enumeration)
             {
-                emit enumColumnsChanged();
-                emittedEnumColumnsChanged = true;
+                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted);
+                emittedPromotedFromBackfill = true;
                 break;
             }
         }
@@ -529,9 +535,15 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     // The back-fill branch above only fires on *promotion*. Cover dict
     // growth (newly-interned id) and demotion (registry erase) here.
-    if (!emittedEnumColumnsChanged && enumRegistryChanged)
+    // Emit each reason independently so a batch that both grows one
+    // column and demotes another delivers two scoped signals.
+    if (!emittedPromotedFromBackfill && enumDictGrew)
     {
-        emit enumColumnsChanged();
+        emit enumColumnsChanged(EnumColumnsChangeReason::Grew);
+    }
+    if (enumColumnDemoted)
+    {
+        emit enumColumnsChanged(EnumColumnsChangeReason::Demoted);
     }
 
     // Match `LogConfigurationManager::Update`: bubble each freshly
@@ -583,7 +595,7 @@ void LogModel::EndStreaming(bool cancelled)
     {
         if (mLogTable.FinalizeAutoDetection())
         {
-            emit enumColumnsChanged();
+            emit enumColumnsChanged(EnumColumnsChangeReason::Promoted);
         }
     }
 

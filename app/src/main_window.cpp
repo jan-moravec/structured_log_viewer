@@ -331,16 +331,26 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
     // Keep enum filter bitsets and sort ranks in sync with the live
-    // dictionary. Always drop cached ranks; rebuild predicates only
-    // when an active enum filter has unresolved selected values
-    // (skips growth that only minted unselected ids).
-    connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
-        mSortFilterProxyModel->InvalidateEnumRanks();
+    // dictionary, scoping the work to the reason that fired:
+    //   - `Demoted`: the cached `EnumDictionary*` is now dangling --
+    //     flush the rank cache and rebuild the predicates onto the
+    //     string-set fallback.
+    //   - `Promoted` / `Grew`: `EnumRankFor` self-heals on the next
+    //     sort via its `DictSize()` check, so no flush is needed.
+    //     Rebuild predicates only when an active enum filter still
+    //     has unresolved selected values (skips growth that only
+    //     minted ids the user didn't select).
+    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason) {
+        if (reason == EnumColumnsChangeReason::Demoted)
+        {
+            mSortFilterProxyModel->InvalidateEnumRanks();
+        }
+        const bool rebuildAll = reason == EnumColumnsChangeReason::Demoted;
         const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
             return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
                    !EnumFilterFullyResolved(kv.second);
         });
-        if (anyUnresolved)
+        if (rebuildAll || anyUnresolved)
         {
             UpdateFilters();
         }

@@ -43,6 +43,28 @@ enum class StreamingResult : int
     Failed = 2,
 };
 
+/// Shape change reported by `LogModel::enumColumnsChanged`. Receivers
+/// can scope their reaction:
+///   - `Promoted` — at least one column flipped into `Type::Enumeration`
+///     this batch. The proxy's `EnumDictRank` cache has no entry for
+///     the new key, so no invalidation is needed; filter rules built
+///     against the pre-promotion string-set path want to be rebuilt
+///     onto the bitset fast path.
+///   - `Grew` — an already-enum column's dictionary gained at least
+///     one id. `EnumRankFor` self-heals via its `DictSize()` check,
+///     so the rank cache stays valid; filter rules only need rebuild
+///     if a previously-unresolved selected value just got interned.
+///   - `Demoted` — an enum column lost its dictionary (registry
+///     erase). The cached `EnumDictionary*` for that key is now
+///     dangling; the rank cache entry must be dropped and filter
+///     rules rebuilt onto the string-set fallback.
+enum class EnumColumnsChangeReason : int
+{
+    Promoted = 0,
+    Grew = 1,
+    Demoted = 2,
+};
+
 class LogModel : public QAbstractTableModel
 {
     Q_OBJECT
@@ -168,8 +190,11 @@ signals:
     /// their dictionaries changes shape (auto-promotion, dict growth,
     /// or end-of-stream finalisation). `MainWindow` rebuilds active
     /// enum filter rules on every emit so newly-interned ids stay on
-    /// the bitset fast path.
-    void enumColumnsChanged();
+    /// the bitset fast path. The @p reason argument lets the receiver
+    /// scope cheaper reactions to growth events vs. demote events --
+    /// see `EnumColumnsChangeReason`. Multiple reasons may be emitted
+    /// from a single batch (e.g. one column promoted, another demoted).
+    void enumColumnsChanged(EnumColumnsChangeReason reason);
 
 private:
     /// Shared `BeginStreaming` setup: install @p source, reset the
@@ -205,4 +230,5 @@ private:
 };
 
 Q_DECLARE_METATYPE(StreamingResult)
+Q_DECLARE_METATYPE(EnumColumnsChangeReason)
 Q_DECLARE_METATYPE(loglib::SourceStatus)
