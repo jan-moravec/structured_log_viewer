@@ -321,9 +321,15 @@ private slots:
         // Lib-level gate: time a pure `loglib::CompareRows`-driven
         // `std::ranges::sort` over an `indices` vector so a regression
         // in the lib's compare path can't hide behind Qt proxy overhead.
-        // Pattern mirrors `library/benchmark/benchmark_log_filter.cpp`.
-        // 200 ms gate matches the lib-side predicate-walk ceiling --
-        // 1 M-row enum sort lib-side measures ~60 ms steady-state.
+        // Pattern mirrors `test/lib/src/benchmark_log_filter.cpp`'s
+        // `[log_filter][log_compare][large]` case, which ships with a
+        // 1500 ms ceiling. We give ourselves an extra ~30% margin here
+        // because the app-side fixture (`GenerateRandomJsonLogs` --
+        // `timestamp/level/message/component`) is wider than the lean
+        // `level`-only lib fixture, so per-row `FindCompact` does a
+        // touch more work per compare. On the GitHub Actions Linux
+        // runner the lib case measures ~750 ms and this case ~880 ms;
+        // a fast Apple Silicon laptop sees ~60 ms / ~80 ms respectively.
         {
             const loglib::LogTable &table = chain.model->Table();
             const size_t rowCount = table.RowCount();
@@ -350,7 +356,7 @@ private slots:
                                       .arg(static_cast<std::size_t>(indices.size()))
                                       .arg(Ms(libElapsed).count(), 0, 'f', 2);
             QVERIFY2(
-                Ms(libElapsed).count() < 200.0,
+                Ms(libElapsed).count() < 2000.0,
                 qPrintable(QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms").arg(Ms(libElapsed).count())
                 )
             );
@@ -374,7 +380,10 @@ private slots:
         QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
         // 1 M-row enum sort previously took several seconds via the
         // `data(SortRole)` -> `QVariant<QString>` path. 4 s ceiling
-        // here is the regression gate; lib-level we measure ~60 ms.
+        // here is the regression gate; lib-only this same operation
+        // measures ~880 ms on Linux CI / ~80 ms on a fast laptop (see
+        // the inner block above), so the proxy-roundtrip overhead has
+        // its own ~3 s of headroom before the gate trips.
         QVERIFY2(
             Ms(elapsed).count() < 4000.0,
             qPrintable(QStringLiteral("enum sort regressed: %1 ms").arg(Ms(elapsed).count()))
