@@ -151,7 +151,7 @@ using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, Callb
 
 /// Column index targeted by @p predicate. The GUI proxy uses this to
 /// decide whether a source `dataChanged` requires a filter rebuild.
-[[nodiscard]] inline size_t RowPredicateColumn(const RowPredicate &predicate) noexcept
+[[nodiscard]] inline size_t RowPredicateColumn(const RowPredicate &predicate)
 {
     return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
