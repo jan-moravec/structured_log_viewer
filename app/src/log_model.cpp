@@ -875,9 +875,9 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
     // through any of those four passes, we must reject and let the
     // caller take the QString path. Everything else is byte-equal to
     // the conversion result, so callers can byte-compare safely.
-    constexpr unsigned char ASCII_FIRST_NON_CONTROL = 0x20;  // space; lower bytes are control.
-    constexpr unsigned char ASCII_HIGH_BIT = 0x80;           // first non-ASCII byte.
-    constexpr unsigned char ASCII_DEL = 0x7F;                // DEL is a control byte despite living at 0x7F.
+    constexpr unsigned char ASCII_FIRST_NON_CONTROL = 0x20; // space; lower bytes are control.
+    constexpr unsigned char ASCII_HIGH_BIT = 0x80;          // first non-ASCII byte.
+    constexpr unsigned char ASCII_DEL = 0x7F;               // DEL is a control byte despite living at 0x7F.
 
     if (bytes.empty())
     {

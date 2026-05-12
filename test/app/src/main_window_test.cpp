@@ -471,9 +471,9 @@ private slots:
         QVERIFY(L::IsSingleLineAsciiTrim("!@#$%^&*()_+-=[]{}|;:,.<>/?~`"));
 
         // Non-ASCII bytes reject (any byte >= 0x80).
-        QVERIFY(!L::IsSingleLineAsciiTrim("h\xc3\xa9llo"));   // 'é' UTF-8
-        QVERIFY(!L::IsSingleLineAsciiTrim("\xe2\x98\x83"));   // '☃' UTF-8
-        QVERIFY(!L::IsSingleLineAsciiTrim("\xff"));           // raw high byte
+        QVERIFY(!L::IsSingleLineAsciiTrim("h\xc3\xa9llo")); // 'é' UTF-8
+        QVERIFY(!L::IsSingleLineAsciiTrim("\xe2\x98\x83")); // '☃' UTF-8
+        QVERIFY(!L::IsSingleLineAsciiTrim("\xff"));         // raw high byte
 
         // Leading / trailing whitespace and control bytes reject; the
         // QString pipeline would trim or replace them and a byte
@@ -492,7 +492,8 @@ private slots:
         QVERIFY(!L::IsSingleLineAsciiTrim("hello\rworld"));
         QVERIFY(!L::IsSingleLineAsciiTrim("hello\vworld"));
         QVERIFY(!L::IsSingleLineAsciiTrim("hello\fworld"));
-        QVERIFY(!L::IsSingleLineAsciiTrim("a\x7f""b")); // DEL
+        QVERIFY(!L::IsSingleLineAsciiTrim("a\x7f"
+                                          "b")); // DEL
 
         // Contract: when accepted, byte-equal to
         // `ConvertToSingleLineCompactQString(bytes).toUtf8()`. Pin a
@@ -508,8 +509,9 @@ private slots:
             QVERIFY(L::IsSingleLineAsciiTrim(sample));
             const QString converted = L::ConvertToSingleLineCompactQString(sample);
             const QByteArray convertedBytes = converted.toUtf8();
-            const std::string_view convertedView{convertedBytes.constData(),
-                                                 static_cast<size_t>(convertedBytes.size())};
+            const std::string_view convertedView{
+                convertedBytes.constData(), static_cast<size_t>(convertedBytes.size())
+            };
             QCOMPARE(convertedView, sample);
         }
 
@@ -528,12 +530,16 @@ private slots:
             QVERIFY(!L::IsSingleLineAsciiTrim(sample));
             const QString converted = L::ConvertToSingleLineCompactQString(sample);
             const QByteArray convertedBytes = converted.toUtf8();
-            const std::string_view convertedView{convertedBytes.constData(),
-                                                 static_cast<size_t>(convertedBytes.size())};
-            QVERIFY2(convertedView != sample, qPrintable(QStringLiteral("rejected sample '%1' must differ after "
-                                                                         "conversion to '%2'")
-                                                              .arg(QString::fromUtf8(sample))
-                                                              .arg(converted)));
+            const std::string_view convertedView{
+                convertedBytes.constData(), static_cast<size_t>(convertedBytes.size())
+            };
+            QVERIFY2(
+                convertedView != sample,
+                qPrintable(QStringLiteral("rejected sample '%1' must differ after "
+                                          "conversion to '%2'")
+                               .arg(QString::fromUtf8(sample))
+                               .arg(converted))
+            );
         }
     }
 

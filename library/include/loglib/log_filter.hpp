@@ -168,7 +168,6 @@ using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, Callb
 /// `TimeRangeRowPredicate` is stateless). The function intentionally
 /// lives in `loglib` rather than the GUI proxy so callers do not need
 /// a TBB include in their translation unit.
-[[nodiscard]] std::vector<size_t>
-FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
+[[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
 
 } // namespace loglib

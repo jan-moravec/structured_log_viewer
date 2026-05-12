@@ -388,10 +388,7 @@ TEST_CASE(
     }
 }
 
-TEST_CASE(
-    "loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms",
-    "[.][benchmark][log_filter][large]"
-)
+TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms", "[.][benchmark][log_filter][large]")
 {
     RequireReleaseBuildForBenchmarks();
 
@@ -415,7 +412,9 @@ TEST_CASE(
         selected.emplace_back(v);
     }
     std::vector<RowPredicate> predicates;
-    predicates.emplace_back(std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict);
+    predicates.emplace_back(
+        std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict
+    );
 
     constexpr int SAMPLES = 5;
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -483,9 +482,8 @@ TEST_CASE(
     for (int s = 0; s < SAMPLES; ++s)
     {
         elapsed.push_back(TimeOnce([&]() {
-            permutation = SortPermutationByColumn(
-                table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, &rank
-            );
+            permutation =
+                SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, &rank);
         }));
     }
     REQUIRE(permutation.size() == ROW_COUNT);
@@ -497,8 +495,7 @@ TEST_CASE(
     const auto high = *std::ranges::max_element(elapsed);
 
     WARN(
-        "SortPermutationByColumn (parallel + pre-mat rank) over " << ROW_COUNT
-                                                                  << " rows: mean=" << Ms(mean).count()
+        "SortPermutationByColumn (parallel + pre-mat rank) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
                                                                   << " ms (low=" << Ms(low).count()
                                                                   << ", high=" << Ms(high).count() << ")"
     );
