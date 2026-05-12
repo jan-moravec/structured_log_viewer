@@ -1421,6 +1421,13 @@ namespace
 
 /// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
 /// on first `match()` (would be a thread-safety footgun off the GUI).
+///
+/// `QRegularExpression` is implicitly shared (CoW). Captured-by-value
+/// copies in the matcher lambdas alias the same `QRegularExpressionPrivate`
+/// after this prime. `QRegularExpression::match()` is documented as
+/// thread-safe once primed, but all matcher callers run on the GUI
+/// thread today; any future worker-thread caller should compile a
+/// per-thread copy instead of relying on the CoW alias.
 void PrimeRegex(QRegularExpression &regex)
 {
     (void)regex.match(QStringLiteral(""));

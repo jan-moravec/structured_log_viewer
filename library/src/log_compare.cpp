@@ -103,6 +103,14 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
 /// Byte-wise compare. Both string slots compare directly; mixed
 /// types fall back to formatted bytes (deterministic order without
 /// taking a position on `numeric < string`). Caller handles monostate.
+///
+/// The mixed-type fallback is effectively dead code on the production
+/// hot path: `LogConfiguration::Type` pins which slot variants a column
+/// can hold, and the typed `Compare*` helpers consume them before this
+/// function is reached. It exists so unit / corruption tests still see
+/// deterministic output, and so a future type whose `CompareRows`
+/// dispatch falls through to `CompareString` keeps working without a
+/// per-call special case.
 int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);

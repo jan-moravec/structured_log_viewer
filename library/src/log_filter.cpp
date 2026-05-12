@@ -88,10 +88,19 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             if (mAllResolved)
             {
                 // Past the bitset, fully resolved -> provably unselected.
+                // Soundness: an id past the bitset can only exist because
+                // the dictionary grew after we sized against it. Growth
+                // only mints ids for values that were not yet in the
+                // dictionary, so the new value was never observed when
+                // the predicate was built. `mAllResolved` means every
+                // selected string did resolve at construction; therefore
+                // the just-minted value cannot have been in our selection.
                 return false;
             }
             // Past the bitset with stale predicate; fall through to
-            // the string set.
+            // the string set. (Some selected values were unresolved at
+            // construction, so an unseen id might correspond to one of
+            // them once we compare the bytes.)
         }
         // Slot isn't a `DictRef`; fall through to the string set.
     }
