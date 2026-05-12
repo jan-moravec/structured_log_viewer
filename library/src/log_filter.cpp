@@ -174,19 +174,20 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     {
         return false;
     }
-    // Try the cheap string-view path; fall back to formatted bytes
-    // (numeric/time slots formatted via the column's `printFormat`).
-    const LogValue value = table.GetValue(row, mColumnIndex);
-    if (const auto *sv = std::get_if<std::string_view>(&value); sv != nullptr)
-    {
-        return mMatch(*sv);
-    }
-    if (const auto *s = std::get_if<std::string>(&value); s != nullptr)
-    {
-        return mMatch(std::string_view(*s));
-    }
-    const std::string formatted = table.GetFormattedValue(row, mColumnIndex);
-    return mMatch(std::string_view(formatted));
+    // One-walk path: `GetValueOrFormatted` resolves the slot once and
+    // either returns its bytes directly (mmap-aliased / dict-resolved
+    // string slots) or formats numeric/time slots into the
+    // `thread_local` buffer. The previous two-call shape walked the
+    // line twice (`GetValue` + `GetFormattedValue`) for every
+    // non-string column hit.
+    //
+    // `thread_local` is safe under `tbb::parallel_for`: each TBB
+    // worker thread keeps its own buffer instance. Re-entrancy within
+    // a thread is fine because `mMatch` doesn't call back into
+    // `MatchesRow`.
+    thread_local std::string buffer;
+    const std::string_view bytes = table.GetValueOrFormatted(row, mColumnIndex, buffer);
+    return mMatch(bytes);
 }
 
 } // namespace loglib

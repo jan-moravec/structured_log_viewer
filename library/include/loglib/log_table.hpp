@@ -81,6 +81,25 @@ public:
     [[nodiscard]] size_t ColumnCount() const;
     [[nodiscard]] LogValue GetValue(size_t row, size_t column) const;
     [[nodiscard]] std::string GetFormattedValue(size_t row, size_t column) const;
+
+    /// One-walk variant for string-predicate consumers. Resolves the
+    /// slot at (@p row, @p column) once and returns its bytes as a
+    /// `string_view`:
+    ///   - `string_view` slots (mmap-aliased, dictionary-resolved)
+    ///     are returned directly with no copy. The view is valid for
+    ///     as long as the underlying line/source/dictionary lives.
+    ///   - `std::string` slots and non-string slots (numeric, time,
+    ///     bool) are written into @p buffer (via the column's
+    ///     `printFormat` for numeric/time) and the view aliases
+    ///     @p buffer.
+    ///   - Absent slots return an empty `string_view`.
+    ///
+    /// Callers keep ownership of @p buffer for the lifetime of the
+    /// returned view. The pre-existing `GetValue` + `GetFormattedValue`
+    /// pair walks the line twice for every non-string column hit;
+    /// this collapses the predicate hot path to a single walk.
+    [[nodiscard]] std::string_view GetValueOrFormatted(size_t row, size_t column, std::string &buffer) const;
+
     [[nodiscard]] size_t RowCount() const;
 
     [[nodiscard]] const LogData &Data() const noexcept;

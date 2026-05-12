@@ -531,6 +531,44 @@ std::string LogTable::GetFormattedValue(size_t row, size_t column) const
     return std::string{};
 }
 
+std::string_view LogTable::GetValueOrFormatted(size_t row, size_t column, std::string &buffer) const
+{
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
+    {
+        return {};
+    }
+    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &line = mData.Lines()[row];
+    for (const KeyId id : mColumnKeyIds[column])
+    {
+        if (id == INVALID_KEY_ID)
+        {
+            continue;
+        }
+        LogValue value = line.GetValue(id);
+        if (std::holds_alternative<std::monostate>(value))
+        {
+            continue;
+        }
+        if (const auto *sv = std::get_if<std::string_view>(&value); sv != nullptr)
+        {
+            return *sv;
+        }
+        if (const auto *s = std::get_if<std::string>(&value); s != nullptr)
+        {
+            // `std::string` alternative is rare (escape-decoded JSON
+            // strings); copy into the caller's buffer so the returned
+            // view has a stable lifetime regardless of the `value`
+            // local going out of scope.
+            buffer.assign(*s);
+            return buffer;
+        }
+        buffer = FormatLogValue(columns[column].printFormat, value);
+        return buffer;
+    }
+    return {};
+}
+
 size_t LogTable::RowCount() const
 {
     return mData.Lines().size();
