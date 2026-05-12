@@ -772,15 +772,19 @@ std::optional<EnumValueId> LogTable::GetEnumValueId(size_t row, size_t column) c
         return std::nullopt;
     }
     const auto &line = mData.Lines()[row];
+    // `LogLine::GetEnumValueId` already does one `FindCompact` walk
+    // and returns nullopt when the slot is absent or non-`DictRef`,
+    // so the previous "IsDictRef + GetEnumValueId" pair was walking
+    // the line twice for every `DictRef` hit. One call collapses both.
     for (const KeyId id : mColumnKeyIds[column])
     {
         if (id == INVALID_KEY_ID)
         {
             continue;
         }
-        if (line.IsDictRef(id))
+        if (auto vid = line.GetEnumValueId(id); vid.has_value())
         {
-            return line.GetEnumValueId(id);
+            return vid;
         }
     }
     return std::nullopt;
