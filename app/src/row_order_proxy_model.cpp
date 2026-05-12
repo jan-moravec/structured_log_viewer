@@ -36,15 +36,17 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
 
     beginResetModel();
     DisconnectSourceConnections();
+    // Clear any in-flight column-move bookkeeping: an outstanding
+    // `begin` from the previous source would never see its `end`.
+    mInSourceColumnMove = false;
     QAbstractProxyModel::setSourceModel(sourceModel);
 
     if (sourceModel != nullptr)
     {
-        // Structural-change forwarding: rows and columns. The append-
-        // and-FIFO-evict shape of `LogModel` is the only structural
-        // change that lands here in production, but we forward every
-        // structural signal so the proxy stays correct under any
-        // future source-model evolution.
+        // Forward all structural changes. `LogModel`'s append + FIFO
+        // evict is the only shape that hits production today, but
+        // forwarding everything keeps the proxy correct under future
+        // source-model evolution.
         mRowsAboutToBeInsertedConn = connect(
             sourceModel,
             &QAbstractItemModel::rowsAboutToBeInserted,
@@ -56,10 +58,10 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
                 }
                 if (mReversed)
                 {
-                    // Append at source [first, last] lands at proxy
-                    // [0, last - first]. Existing proxy rows shift
-                    // down by (last - first + 1); Qt remaps stored
-                    // persistent indices accordingly via beginInsertRows.
+                    // Source append at [first, last] maps to proxy
+                    // [0, last - first]; existing proxy rows shift
+                    // down by (last - first + 1). Qt remaps stored
+                    // persistent indices via `beginInsertRows`.
                     beginInsertRows(QModelIndex(), 0, last - first);
                 }
                 else
@@ -89,14 +91,12 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
                 }
                 if (mReversed)
                 {
-                    // Capture the pre-removal source row count: the
-                    // proxy-side range we need to report depends on
-                    // it, and the source's `rowCount()` will already
-                    // have been updated by the time `rowsRemoved`
-                    // fires. FIFO eviction at source [0, last] maps
-                    // to proxy [srcCount-1-last, srcCount-1].
-                    mPreRemovalSourceRows = QAbstractProxyModel::sourceModel()->rowCount(QModelIndex());
-                    beginRemoveRows(QModelIndex(), mPreRemovalSourceRows - 1 - last, mPreRemovalSourceRows - 1 - first);
+                    // Use the pre-removal source count: by the time
+                    // `rowsRemoved` fires the source's own `rowCount()`
+                    // has already shrunk. FIFO eviction at source
+                    // [0, last] maps to proxy [srcCount-1-last, srcCount-1].
+                    const int preRemovalSourceRows = QAbstractProxyModel::sourceModel()->rowCount(QModelIndex());
+                    beginRemoveRows(QModelIndex(), preRemovalSourceRows - 1 - last, preRemovalSourceRows - 1 - first);
                 }
                 else
                 {
@@ -175,22 +175,35 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
                 const QModelIndex &destinationParent,
                 int destinationColumn
             ) {
+                // Skip hierarchical moves -- we don't model child
+                // columns. Capture `beginMoveColumns`'s result so the
+                // post-event slot only pairs with `endMoveColumns`
+                // when Qt actually accepted the begin (an unpaired
+                // end is a debug assertion).
                 if (sourceParent.isValid() || destinationParent.isValid())
                 {
+                    mInSourceColumnMove = false;
                     return;
                 }
-                beginMoveColumns(QModelIndex(), sourceStart, sourceEnd, QModelIndex(), destinationColumn);
+                mInSourceColumnMove =
+                    beginMoveColumns(QModelIndex(), sourceStart, sourceEnd, QModelIndex(), destinationColumn);
             }
         );
         mColumnsMovedConn = connect(
             sourceModel,
             &QAbstractItemModel::columnsMoved,
             this,
-            [this](const QModelIndex &, int, int, const QModelIndex &, int) { endMoveColumns(); }
+            [this](const QModelIndex &, int, int, const QModelIndex &, int) {
+                if (mInSourceColumnMove)
+                {
+                    endMoveColumns();
+                    mInSourceColumnMove = false;
+                }
+            }
         );
 
         // dataChanged + headerDataChanged: the row range is mirrored
-        // in reversed mode; columns are unchanged in both modes.
+        // in reversed mode; columns are untouched in both modes.
         mDataChangedConn =
             connect(sourceModel, &QAbstractItemModel::dataChanged, this, &RowOrderProxyModel::HandleSourceDataChanged);
         mHeaderDataChangedConn = connect(
@@ -202,11 +215,9 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
 
-        // Reset / layoutChanged forwarding. `layoutChanged` may
-        // invalidate the row mapping (the proxy's persistent indices
-        // need re-mapping), but `LogModel` does not emit it
-        // mid-stream so we forward it as-is and Qt's bookkeeping
-        // takes care of the persistents.
+        // Reset / layoutChanged forwarding. `LogModel` doesn't emit
+        // `layoutChanged` mid-stream, so we forward it as-is and let
+        // Qt's bookkeeping remap the persistent indices.
         mModelAboutToBeResetConn =
             connect(sourceModel, &QAbstractItemModel::modelAboutToBeReset, this, [this]() { beginResetModel(); });
         mModelResetConn = connect(sourceModel, &QAbstractItemModel::modelReset, this, [this]() { endResetModel(); });
@@ -317,11 +328,10 @@ void RowOrderProxyModel::HandleSourceDataChanged(
         emit dataChanged(mapFromSource(topLeft), mapFromSource(bottomRight), roles);
         return;
     }
-    // In reversed mode the source rectangle [tlRow..brRow] x
-    // [tlCol..brCol] maps to proxy rectangle
-    // [rows-1-brRow..rows-1-tlRow] x [tlCol..brCol]. Build the proxy
-    // top-left and bottom-right manually so the row range is
-    // re-anchored on the smaller-index corner along both axes.
+    // Reversed mode: source rect [tlRow..brRow] x [tlCol..brCol]
+    // maps to proxy rect [rows-1-brRow..rows-1-tlRow] x [tlCol..brCol].
+    // Build the proxy corners manually so the row range stays
+    // anchored on the smaller-index corner.
     const int rows = sourceModel() == nullptr ? 0 : sourceModel()->rowCount(QModelIndex());
     if (rows == 0)
     {
@@ -341,9 +351,8 @@ void RowOrderProxyModel::SetReversed(bool reversed)
 
     // O(persistent-indices) toggle: mirror each stored persistent
     // index around the row-count midpoint in lockstep with the
-    // mapping flip. The empty-source case is a degenerate flip;
-    // emit the layout-change pair anyway so observers re-bind, then
-    // skip the remap (no rows means no persistent indices to move).
+    // mapping flip. Even the empty-source case emits the layout pair
+    // so observers re-bind; with no rows the remap is a no-op.
     emit layoutAboutToBeChanged();
 
     const QModelIndexList persistents = persistentIndexList();

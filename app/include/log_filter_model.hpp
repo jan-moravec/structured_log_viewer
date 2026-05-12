@@ -6,44 +6,51 @@
 #include <loglib/log_compare.hpp>
 #include <loglib/log_filter.hpp>
 
-#include <QSortFilterProxyModel>
+#include <QAbstractProxyModel>
+#include <QList>
+#include <QMetaObject>
+#include <QPersistentModelIndex>
+#include <QString>
+#include <QVariant>
 
 #include <cstddef>
 #include <unordered_map>
 #include <vector>
 
-class QAbstractProxyModel;
-
-/// Sort/filter proxy that bypasses the per-row `QVariant` round-trip.
-/// `filterAcceptsRow` runs `loglib::RowPredicate`s straight against the
-/// `LogTable`; `lessThan` dispatches to `loglib::CompareRows`. Reaches the
-/// table through `QAbstractProxyModel::mapToSource`, so adding more proxy
-/// layers stays correct.
-class LogFilterModel : public QSortFilterProxyModel
+/// Row-projection proxy. Holds a `vector<int>` mapping proxy rows to
+/// source rows and rebuilds it from scratch on filter / sort changes.
+/// Replaces `QSortFilterProxyModel` to skip the per-row `QModelIndex`
+/// / `QVariant` round-trip: `RebuildAcceptedRows` evaluates
+/// `loglib::RowPredicate`s straight against `loglib::LogTable`, and
+/// `sort()` permutes the map via `loglib::CompareRows` with an
+/// `EnumDictRank` cache.
+class LogFilterModel : public QAbstractProxyModel
 {
+    Q_OBJECT
+
 public:
     explicit LogFilterModel(QObject *parent = nullptr);
+    ~LogFilterModel() override;
 
-    /// Bind the underlying `LogModel`. Required before installing any
-    /// filter rule -- predicates need direct table access.
+    /// Bind the `LogModel` whose `LogTable` predicates evaluate against.
+    /// Required before installing any filter rule.
     ///
-    /// Call order after every `setSourceModel`:
-    ///   1. `setSourceModel(newChain)` -- clears rules + LogModel + rank
-    ///      cache so stale predicates can't alias the new chain.
+    /// Call order after `setSourceModel`:
+    ///   1. `setSourceModel(newChain)` -- clears rules, model, rank cache.
     ///   2. `SetLogModel(newLogModel)` -- rebind table pointer.
     ///   3. `SetFilterRules(newRules)` -- (optional) reinstall predicates.
     ///
-    /// Installing rules without a `LogModel` rejects every row in release
-    /// and asserts in debug.
+    /// Installing rules without a `LogModel` asserts in debug and rejects
+    /// every row in release.
     void SetLogModel(LogModel *logModel);
 
     void setSourceModel(QAbstractItemModel *sourceModel) override;
 
-    /// Sentinel for `MatchRow`'s @p hits: return every match.
+    /// Sentinel `hits` value meaning "return every match".
     static constexpr int UNLIMITED_HITS = -1;
 
-    /// Look up rows in proxy-coords matching @p value against @p role.
-    /// Returns up to @p hits matches (all when @p hits is `UNLIMITED_HITS`).
+    /// Find proxy-coord rows whose cell matches @p value under @p role.
+    /// Returns up to @p hits matches (all when `UNLIMITED_HITS`).
     QList<QModelIndex> MatchRow(
         const QModelIndex &start,
         int role,
@@ -54,68 +61,179 @@ public:
         int skipFirstN = 0
     ) const;
 
-    /// Replace the active predicate list and invalidate the row map.
+    /// Replace the active predicate list and rebuild the row map.
     void SetFilterRules(std::vector<loglib::RowPredicate> &&filterRules);
 
-    /// Drop cached `EnumDictRank` entries; rebuilt lazily on next sort.
-    /// `MainWindow` calls this on `enumColumnsChanged`.
+    /// Drop cached `EnumDictRank` entries; lazily rebuilt on next sort.
+    /// `MainWindow` calls this on `enumColumnsChanged(Demoted)`.
     void InvalidateEnumRanks();
 
+    /// Deprecated no-op. The proxy reads slot types directly via
+    /// `loglib::CompareRows`, so the sort role is ignored. Kept so
+    /// existing tests / benchmarks compile.
+    [[deprecated("LogFilterModel sorts via loglib::CompareRows; sort role is ignored")]] void setSortRole(int /*role*/)
+    {
+    }
+
 #ifdef LOGAPP_BUILD_TESTING
-    /// Cached `EnumDictRank` count for cache-lifecycle regression tests.
+    /// Cached `EnumDictRank` entry count. Used by cache-lifecycle tests.
     [[nodiscard]] std::size_t EnumRankCacheSizeForTest() const
     {
         return mEnumRanks.size();
     }
 #endif
 
-protected:
-    bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override;
-    bool lessThan(const QModelIndex &sourceLeft, const QModelIndex &sourceRight) const override;
+    // QAbstractProxyModel / QAbstractItemModel overrides.
+    [[nodiscard]] QModelIndex index(int row, int column, const QModelIndex &parent = QModelIndex()) const override;
+    [[nodiscard]] QModelIndex parent(const QModelIndex &child) const override;
+    [[nodiscard]] int rowCount(const QModelIndex &parent = QModelIndex()) const override;
+    [[nodiscard]] int columnCount(const QModelIndex &parent = QModelIndex()) const override;
+    [[nodiscard]] QModelIndex mapToSource(const QModelIndex &proxyIndex) const override;
+    [[nodiscard]] QModelIndex mapFromSource(const QModelIndex &sourceIndex) const override;
+    void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
 
 private:
-    /// Resolve the `LogTable` row for @p sourceRow / @p sourceParent.
-    /// Returns `-1` when no source model is wired.
-    [[nodiscard]] int MapToLogModelRow(int sourceRow, const QModelIndex &sourceParent) const;
+    /// Walk the proxy chain from a `sourceModel()`-coords index down to
+    /// the underlying `LogTable` row. `-1` if no `LogModel` is bound
+    /// or the chain doesn't terminate at it.
+    [[nodiscard]] int SourceIndexToLogRow(QModelIndex sourceIdx) const;
 
-    /// As `MapToLogModelRow` but from an existing index in `sourceModel()`
-    /// coords. Skips the `index()` call on the `lessThan` hot path.
-    [[nodiscard]] int MapModelIndexToLogModelRow(QModelIndex idx) const;
+    /// Row-overload of `SourceIndexToLogRow`. `-1` on failure.
+    [[nodiscard]] int SourceRowToLogRow(int sourceRow) const;
 
-    /// Refresh `mImmediateProxy` after `setSourceModel`; avoids a
-    /// per-`lessThan` `qobject_cast` on the O(N log N) sort path.
-    void RefreshSourceProxyCache();
+    /// Inverse of `SourceRowToLogRow`: lift a `LogTable` row up to
+    /// `sourceModel()` coords by walking `mProxyChainAbove` via
+    /// `mapFromSource`. Used to map `FilterAcceptedRows`'s log-coord
+    /// output back to source coords. `-1` if any proxy hides the row.
+    [[nodiscard]] int LogRowToSourceRow(int logRow) const;
+
+    /// Predicate evaluation for one source-coords row.
+    [[nodiscard]] bool MatchesRulesAtSourceRow(int sourceRow) const;
+
+    /// Compare two source-coords rows under the active sort column /
+    /// order. Ties fall back to source-row index for determinism.
+    [[nodiscard]] bool LessThanSourceRows(int leftSource, int rightSource) const;
+
+    /// Refresh `mAcceptedSourceRows` from the current source + rules,
+    /// re-apply any active sort, and emit `layoutAboutToBeChanged` /
+    /// `layoutChanged` with a persistent-index remap so views keep
+    /// their selection.
+    void RebuildAcceptedRows();
+
+    /// Refresh `mAcceptedSourceRows` only -- no layout emit, no
+    /// persistent-index work. Shared by `RebuildAcceptedRows`,
+    /// `OnSourceModelReset`, and `OnSourceLayoutChanged` so all three
+    /// go through `loglib::FilterAcceptedRows`'s parallel pass.
+    void RecomputeAcceptedRows();
+
+    /// Re-permute `mAcceptedSourceRows` for the active sort column /
+    /// order. No structural emit; caller brackets with layout signals.
+    void ApplySortPermutation();
+
+    /// Rebuild `mSourceRowToProxyRow` so `mapFromSource` is O(1).
+    void RebuildReverseIndex();
+
+    /// Disconnect from the previous source and connect to the current one.
+    void RewireSourceConnections();
+
+    /// Rebuild `mProxyChainAbove` by walking downward from `sourceModel()`
+    /// through `QAbstractProxyModel::sourceModel` until a non-proxy
+    /// (the `LogModel`). Empty when `sourceModel() == mLogModel`.
+    void RebuildProxyChainCache();
+
+    /// Capture `persistentIndexList()` and the source row/column each
+    /// entry maps to so a follow-up rebuild can remap them via
+    /// `RemapPersistentIndicesForRebuild`. Caller must have emitted
+    /// `layoutAboutToBeChanged` first.
+    void SnapshotPersistentIndices();
+
+    /// Replace the snapshotted persistent indices with their
+    /// post-rebuild equivalents. Pairs with `SnapshotPersistentIndices`.
+    void RemapPersistentIndicesForRebuild();
 
     /// Canonical `KeyId` for an enum column, or `INVALID_KEY_ID`.
     [[nodiscard]] loglib::KeyId EnumKeyForColumn(int columnIndex) const;
 
-    /// Get-or-build the `EnumDictRank` for @p columnIndex. Rebuilds when
-    /// the cached rank is smaller than the live dictionary or the cached
-    /// `EnumDictionary*` differs (covers demote -> re-promote).
+    /// Get-or-build the `EnumDictRank` for @p columnIndex. Rebuilds
+    /// when the cached rank is smaller than the live dictionary or
+    /// its `EnumDictionary*` differs (covers demote -> re-promote).
     [[nodiscard]] const loglib::EnumDictRank *EnumRankFor(int columnIndex) const;
 
     LogModel *mLogModel = nullptr;
     std::vector<loglib::RowPredicate> mFilterRules;
 
-    /// Cached `qobject_cast<QAbstractProxyModel*>(sourceModel())`.
-    QAbstractProxyModel *mImmediateProxy = nullptr;
+    /// Source-coord row indices in proxy-display order. Ascending
+    /// without an active sort; holds the sort permutation otherwise.
+    /// `mapToSource(P)` returns `sourceModel()->index(mAcceptedSourceRows[P], ...)`.
+    std::vector<int> mAcceptedSourceRows;
 
-    /// Cached rank plus the dictionary pointer it was built from.
-    /// `EnumRankFor` rebuilds when the pointer changes -- covers
-    /// demote -> re-promote that re-creates the registry entry.
+    /// Reverse index: `mSourceRowToProxyRow[srcRow] == proxyRow` for
+    /// visible rows, `INVISIBLE_SOURCE_ROW` otherwise. Resized whenever
+    /// the source row count changes.
+    static constexpr int INVISIBLE_SOURCE_ROW = -1;
+    std::vector<int> mSourceRowToProxyRow;
+
+    /// Active sort column in source coords. `-1` means "no user sort";
+    /// `mAcceptedSourceRows` then stays in ascending source-row order.
+    int mSortColumn = -1;
+    Qt::SortOrder mSortOrder = Qt::AscendingOrder;
+
+    /// Tracks whether `OnSourceColumnsAboutToBeMoved` successfully
+    /// opened a `beginMoveColumns` pair, so `OnSourceColumnsMoved`
+    /// only calls `endMoveColumns` when there's a matching `begin`.
+    bool mInSourceColumnMove = false;
+
+    /// Snapshots taken between `layoutAboutToBeChanged` and
+    /// `layoutChanged`. The proxy-side index pins what the view holds;
+    /// the source-side `QPersistentModelIndex` pins the underlying
+    /// entity. Storing the source side persistently (not as a bare row
+    /// number) lets it follow the entity through source-layout
+    /// reorders -- e.g. `RowOrderProxyModel::SetReversed`. Pinned by
+    /// `TestNewestFirstReversalPreservesFilterModelSelection`.
+    QList<QPersistentModelIndex> mPersistentIndexSnapshot;
+    QList<QPersistentModelIndex> mPersistentSourceIndexSnapshot;
+
+    /// Cached rank + the dictionary pointer it was built from.
+    /// `EnumRankFor` rebuilds when the pointer changes, which covers
+    /// demote -> re-promote re-creating the registry entry.
     struct EnumRankEntry
     {
         loglib::EnumDictRank rank;
         const loglib::EnumDictionary *source = nullptr;
     };
 
-    /// Per-column rank cache keyed by canonical `KeyId` so it survives
-    /// column reorders without a `columnsMoved` hook. Cleared by
-    /// `SetLogModel`, `setSourceModel`, and `InvalidateEnumRanks`;
-    /// self-healed inside `EnumRankFor` when the cached
-    /// `EnumDictionary*` no longer matches the live one.
-    /// Mutable so const `lessThan` can populate lazily.
+    /// Per-column rank cache, keyed on canonical `KeyId` so it survives
+    /// column reorders. Cleared by `SetLogModel`, `setSourceModel`, and
+    /// `InvalidateEnumRanks`; self-heals inside `EnumRankFor` when the
+    /// cached `EnumDictionary*` differs from the live one. Mutable so
+    /// const sort-time helpers can populate it lazily.
     mutable std::unordered_map<loglib::KeyId, EnumRankEntry> mEnumRanks;
+
+    /// Signal connections to the current source. Refreshed by `setSourceModel`.
+    std::vector<QMetaObject::Connection> mSourceConnections;
+
+    /// Proxy chain above `LogModel`, ordered LogModel -> sourceModel.
+    /// `LogRowToSourceRow` walks this via `mapFromSource`. Empty when
+    /// `sourceModel() == mLogModel` (test wiring). Cached so we don't
+    /// repeat the downward walk per call.
+    std::vector<QAbstractProxyModel *> mProxyChainAbove;
+
+    // Source-signal handlers.
+    void OnSourceRowsInserted(const QModelIndex &parent, int first, int last);
+    void OnSourceRowsAboutToBeRemoved(const QModelIndex &parent, int first, int last);
+    void OnSourceRowsRemoved(const QModelIndex &parent, int first, int last);
+    void OnSourceDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> &roles);
+    void OnSourceModelAboutToBeReset();
+    void OnSourceModelReset();
+    void OnSourceLayoutAboutToBeChanged();
+    void OnSourceLayoutChanged();
+    void OnSourceColumnsInserted(const QModelIndex &parent, int first, int last);
+    void OnSourceColumnsRemoved(const QModelIndex &parent, int first, int last);
+    void OnSourceColumnsAboutToBeMoved(
+        const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destColumn
+    );
+    void OnSourceColumnsMoved(const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destColumn);
+    void OnSourceHeaderDataChanged(Qt::Orientation orientation, int first, int last);
 
     static bool Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags);
     static bool Matches(const QString &text, const QString &needle, Qt::MatchFlags flags);

@@ -175,6 +175,7 @@ void LogTable::EnumCandidateTracker::Observe(std::string_view bytes)
 LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     : mData(std::move(data)), mConfiguration(std::move(configuration))
 {
+    mLastBatchDemotedKeys.clear();
     RewireSourceRegistries();
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
@@ -204,9 +205,11 @@ LogTable::LogTable(LogTable &&other) noexcept
       mEnumTrackers(std::move(other.mEnumTrackers)),
       mEnumColumnHealth(std::move(other.mEnumColumnHealth)),
       mIsStreaming(other.mIsStreaming),
-      mLastBackfillRange(std::move(other.mLastBackfillRange))
+      mLastBackfillRange(std::move(other.mLastBackfillRange)),
+      mLastBatchDemotedKeys(std::move(other.mLastBatchDemotedKeys))
 {
     other.mIsStreaming = false;
+    other.mLastBatchDemotedKeys.clear();
     // Rebind sources' cached pointers to `other.mEnumDictionaries`.
     RewireSourceRegistries();
 }
@@ -230,6 +233,8 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mIsStreaming = other.mIsStreaming;
     other.mIsStreaming = false;
     mLastBackfillRange = std::move(other.mLastBackfillRange);
+    mLastBatchDemotedKeys = std::move(other.mLastBatchDemotedKeys);
+    other.mLastBatchDemotedKeys.clear();
     // Rebind sources' cached pointers to `other.mEnumDictionaries`.
     RewireSourceRegistries();
     return *this;
@@ -237,6 +242,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
 
 void LogTable::Update(LogData &&data)
 {
+    mLastBatchDemotedKeys.clear();
     const size_t oldLineCount = mData.Lines().size();
     mConfiguration.Update(data);
     if (!data.TimestampsAlreadyParsed())
@@ -246,9 +252,9 @@ void LogTable::Update(LogData &&data)
     mData.Merge(std::move(data));
     RewireSourceRegistries();
     // Snapshot enum keys first so `GetOrInsert` registers them into
-    // `mData.Keys()`, then resolve column keys against the now-complete
-    // `KeyIndex`. Resolving first would leave column keys for not-yet-seen
-    // enums as `INVALID_KEY_ID`.
+    // `mData.Keys()`, then resolve column keys against the
+    // now-complete `KeyIndex`. Resolving first would leave column
+    // keys for not-yet-seen enums as `INVALID_KEY_ID`.
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
     std::optional<size_t> firstBackfilled;
@@ -273,6 +279,7 @@ void LogTable::Reset()
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mLastBackfillRange.reset();
+    mLastBatchDemotedKeys.clear();
     // Eager promotion + no cardinality bail until `FinalizeAutoDetection`.
     mIsStreaming = true;
 
@@ -320,6 +327,7 @@ void LogTable::AppendStreaming(std::unique_ptr<LineSource> source)
 void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
+    mLastBatchDemotedKeys.clear();
 
     if (!batch.newKeys.empty())
     {
@@ -437,6 +445,11 @@ const std::optional<std::pair<size_t, size_t>> &LogTable::LastBackfillRange() co
     return mLastBackfillRange;
 }
 
+const std::vector<KeyId> &LogTable::LastBatchDemotedKeys() const noexcept
+{
+    return mLastBatchDemotedKeys;
+}
+
 void LogTable::MoveColumn(size_t srcIndex, size_t destIndex)
 {
     if (srcIndex == destIndex || srcIndex >= mColumnKeyIds.size() || destIndex >= mColumnKeyIds.size())
@@ -529,6 +542,44 @@ std::string LogTable::GetFormattedValue(size_t row, size_t column) const
         }
     }
     return std::string{};
+}
+
+std::string_view LogTable::GetValueOrFormatted(size_t row, size_t column, std::string &buffer) const
+{
+    if (column >= mColumnKeyIds.size() || row >= mData.Lines().size())
+    {
+        return {};
+    }
+    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &line = mData.Lines()[row];
+    for (const KeyId id : mColumnKeyIds[column])
+    {
+        if (id == INVALID_KEY_ID)
+        {
+            continue;
+        }
+        LogValue value = line.GetValue(id);
+        if (std::holds_alternative<std::monostate>(value))
+        {
+            continue;
+        }
+        if (const auto *sv = std::get_if<std::string_view>(&value); sv != nullptr)
+        {
+            return *sv;
+        }
+        if (const auto *s = std::get_if<std::string>(&value); s != nullptr)
+        {
+            // `std::string` alternative is rare (escape-decoded JSON
+            // strings); copy into the caller's buffer so the returned
+            // view has a stable lifetime regardless of the `value`
+            // local going out of scope.
+            buffer.assign(*s);
+            return buffer;
+        }
+        buffer = FormatLogValue(columns[column].printFormat, value);
+        return buffer;
+    }
+    return {};
 }
 
 size_t LogTable::RowCount() const
@@ -772,15 +823,19 @@ std::optional<EnumValueId> LogTable::GetEnumValueId(size_t row, size_t column) c
         return std::nullopt;
     }
     const auto &line = mData.Lines()[row];
+    // `LogLine::GetEnumValueId` does one `FindCompact` walk and
+    // returns nullopt for absent or non-`DictRef` slots, so a single
+    // call covers what the old `IsDictRef + GetEnumValueId` pair
+    // walked the line twice for.
     for (const KeyId id : mColumnKeyIds[column])
     {
         if (id == INVALID_KEY_ID)
         {
             continue;
         }
-        if (line.IsDictRef(id))
+        if (auto vid = line.GetEnumValueId(id); vid.has_value())
         {
-            return line.GetEnumValueId(id);
+            return vid;
         }
     }
     return std::nullopt;
@@ -798,14 +853,14 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
     {
         return {};
     }
-    // First listed key is canonical; aliases share its dictionary entry.
+    // The first key is canonical; aliases share its dictionary entry.
     const KeyId canonicalKey = Keys().Find(column.keys.front());
     if (canonicalKey == INVALID_KEY_ID)
     {
         return {};
     }
     // `dictionary` is null when the column is not currently
-    // `Type::Enumeration` -- still useful to the caller alongside the
+    // `Type::Enumeration`; still useful to the caller alongside the
     // resolved key.
     return {.canonicalKey = canonicalKey, .dictionary = mEnumDictionaries.Find(canonicalKey)};
 }
@@ -892,17 +947,16 @@ void LogTable::RunEnumPassForAppendBatch(
         }
 
         // Candidate scan. Tracker keyed on `column.header` so an
-        // alias-list reorder cannot orphan the running counters. On
-        // bail / kill the column type is flipped to a terminal
-        // (`string` / `integer` / `floating` / `number` / `any`), which
-        // removes it from `IsEnumPassEligible` for the next batch --
-        // the type itself enforces kill-once-stay-killed.
+        // alias-list reorder can't orphan the running counters. On
+        // bail / kill the column type flips to a terminal
+        // (`string` / `integer` / `floating` / `number` / `any`),
+        // which removes it from `IsEnumPassEligible` for the next
+        // batch -- the type itself enforces kill-once-stay-killed.
         const std::string &trackerKey = column.header;
-        // Well-known threshold consults every JSON field name in
-        // the alias list (not just the first), so that reordering
+        // Check every alias, not just the first, so reordering
         // `column.keys` to put a vendor-specific synonym first
-        // (`["log_level", "level"]`) does not drop the column out
-        // of the well-known fast path.
+        // (e.g. `["log_level", "level"]`) doesn't drop the column
+        // out of the well-known fast path.
         const bool wellKnown =
             std::ranges::any_of(column.keys, [](const std::string &key) { return IsWellKnownEnumKey(key); });
         const size_t staticPromotionMinRows = wellKnown ? ENUM_PROMOTION_MIN_ROWS_WELL_KNOWN : ENUM_PROMOTION_MIN_ROWS;
@@ -921,9 +975,10 @@ void LogTable::RunEnumPassForAppendBatch(
         }
         EnumCandidateTracker &tracker = trackerIt->second;
 
-        // Sampled scan: bail once we have enough evidence (or hit `scanCap`).
-        // `presenceCount` (slot present, any tag) is decoupled from
-        // `rowsObserved` so leading sparse rows don't trigger no-string bail.
+        // Sampled scan: bail once we have enough evidence (or hit
+        // `scanCap`). `presenceCount` (slot present, any tag) is
+        // decoupled from `rowsObserved` so leading sparse rows don't
+        // trigger the no-string bail prematurely.
         const size_t scanCap = 2 * promotionMinRows;
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
@@ -989,12 +1044,12 @@ void LogTable::RunEnumPassForAppendBatch(
             continue;
         }
 
-        // Bail on candidates unlikely to stabilise. Static-mode only applies
-        // the cardinality bail; stream-mode skips it.
+        // Bail on candidates unlikely to stabilise. Static mode
+        // applies the cardinality bail; stream mode skips it.
         if (tracker.rowsObserved >= scanCap)
         {
-            // Sparse column not yet seen: refresh the scanCap budget
-            // and try again next batch instead of bailing.
+            // Sparse column not yet seen: reset the scanCap budget
+            // and try again on the next batch.
             if (tracker.presenceCount == 0)
             {
                 tracker.rowsObserved = 0;
@@ -1254,6 +1309,15 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
         }
     }
 
+    // Record the canonical KeyId before the registry erase below so
+    // `LogModel`'s post-batch detector can scope its `Demoted` emit
+    // even on the silent `Unknown -> Enumeration -> String`
+    // transition (no dict survives on either side of the batch).
+    if (!keyIds.empty())
+    {
+        mLastBatchDemotedKeys.push_back(keyIds.front());
+    }
+
     auto &lines = mData.Lines();
 
     const auto demoteStart = std::chrono::steady_clock::now();
@@ -1296,8 +1360,9 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
         mEnumDictionaries.Erase(keyIds.front());
     }
 
-    // Route to `Type::String` (terminal): a dictionary or health-budget
-    // breach is a string-cardinality conclusion, not "we don't know".
+    // Route to `Type::String` (terminal): a dictionary or
+    // health-budget breach is a string-cardinality conclusion, not
+    // "we don't know".
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
 
     mEnumColumnHealth.erase(column.header);

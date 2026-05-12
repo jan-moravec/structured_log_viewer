@@ -117,7 +117,6 @@ RunResult RunOnce(const std::filesystem::path &logPath, bool reversed)
     auto filterProxy = std::make_unique<LogFilterModel>();
     filterProxy->setSourceModel(rowProxy.get());
     filterProxy->SetLogModel(model.get());
-    filterProxy->setSortRole(LogModelItemDataRole::SortRole);
 
     QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
 
@@ -296,6 +295,17 @@ private slots:
             Ms(predicateElapsed).count() < 200.0,
             qPrintable(QStringLiteral("predicate walk regressed: %1 ms").arg(Ms(predicateElapsed).count()))
         );
+        // Proxy-roundtrip gate. With the predicate loop handed to
+        // `loglib::FilterAcceptedRows` (TBB-parallel) and a single
+        // cached `mapFromSource` hop per survivor, the full filter
+        // cycle on 1 M rows lands well under 100 ms locally. 500 ms
+        // is the CI ceiling: breaking it means the lib's parallel
+        // pass collapsed to sequential, or the proxy went back to
+        // per-row chain walks.
+        QVERIFY2(
+            Ms(elapsed).count() < 500.0,
+            qPrintable(QStringLiteral("filter proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
+        );
     }
 
     // Enum-column sort wall-clock under the production proxy chain.
@@ -337,7 +347,6 @@ private slots:
             std::vector<size_t> indices(rowCount);
             // `std::iota` rather than `std::ranges::iota`: the latter is
             // C++23 and AppleClang 17's libc++ still lacks it.
-            // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17
             std::iota(indices.begin(), indices.end(), size_t{0});
 
             const loglib::KeyId levelKey = table.Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
@@ -378,18 +387,18 @@ private slots:
                                   .arg(Ms(elapsed).count(), 0, 'f', 2);
 
         QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
-        // The proxy-roundtrip sort time is informational only -- 1 M-row
-        // sort calls `lessThan` ~20 M times and each call goes through
-        // `QSortFilterProxyModel`'s internal mapping + row-map rebuild,
-        // both of which dominate the wall-clock and live well outside
-        // the code we own. `BenchEnumFilterApply` follows the same
-        // policy for its proxy-roundtrip *filter* number above (no
-        // assertion -- that one measured 108 s on Linux CI). The
-        // canonical regression gate for `loglib::CompareRows` is the
-        // lib-only block above; what we report here is purely a watch
-        // value for the GUI experience and CI variance is wide:
-        // observed ~1.5 s on a fast Apple Silicon laptop, ~16 s on the
-        // Windows GitHub Actions runner.
+        // Proxy-roundtrip sort gate. After the Phase 1 rewrite the
+        // sort runs through `loglib::SortPermutationByColumn`: log
+        // rows resolve once (no per-compare proxy walk), a uint16_t
+        // rank is pre-materialised in parallel for enum columns, and
+        // `tbb::parallel_sort` permutes them. Dev-box wall-clock is
+        // ~68 ms; 1 s is the CI ceiling and the user-visible target
+        // from the perf plan. Breaking it means the comparator stopped
+        // being branch-free or the log-row pre-resolution disappeared.
+        QVERIFY2(
+            Ms(elapsed).count() < 1000.0,
+            qPrintable(QStringLiteral("sort proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
+        );
     }
 
 private:
@@ -422,7 +431,6 @@ private:
         chain.filterProxy = std::make_unique<LogFilterModel>();
         chain.filterProxy->setSourceModel(chain.rowProxy.get());
         chain.filterProxy->SetLogModel(chain.model.get());
-        chain.filterProxy->setSortRole(LogModelItemDataRole::SortRole);
 
         QSignalSpy finishedSpy(chain.model.get(), &LogModel::streamingFinished);
         auto file = std::make_unique<loglib::LogFile>(mLogPath.string());

@@ -409,6 +409,92 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     CHECK(SignOf(CompareRows(table, 0, 2, 0, /*rankForEnumColumn=*/nullptr)) == -1);
 }
 
+// Regression: with a rank table in hand, every non-`DictRef` slot
+// (monostate, unpromoted-string, wrong-type, over-cap-length) must
+// collapse to the tail bucket and compare equal pairwise, matching
+// `SortPermutationByColumn`'s rank-sentinel behaviour. Pre-fix the
+// slow-path comparator went through `CompareLogValuesBytewise` for
+// two unpromoted sides, so a streaming `lower_bound` insert
+// disagreed with a bulk re-sort on where wrong-type slots landed.
+TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table", "[log_compare][enum][regression]")
+{
+    const TestLogFile fixture("log_compare_enum_tail_bucket.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    // Row 0: dict-resolved "info".
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("info")}}));
+    // Row 1: dict-resolved "warn".
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("warn")}}));
+    // Row 2: monostate (no field) -> non-DictRef.
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {}));
+    // Row 3: wrong-type slot (int instead of string) -> encode pass
+    // refuses to dict-encode it, leaving the slot as Int64 -> non-DictRef.
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", LogValue(int64_t{42})}}));
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    const KeyId levelKey = keys.Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    const EnumDictRank rank{*dict};
+
+    // Sanity: rows 0 + 1 are DictRef.
+    REQUIRE(table.GetEnumValueId(0, 0).has_value());
+    REQUIRE(table.GetEnumValueId(1, 0).has_value());
+    // Rows 2 + 3 are non-DictRef.
+    REQUIRE(!table.GetEnumValueId(2, 0).has_value());
+    REQUIRE(!table.GetEnumValueId(3, 0).has_value());
+
+    // DictRef vs non-DictRef -> DictRef sorts before tail.
+    CHECK(SignOf(CompareRows(table, 0, 2, 0, &rank)) == -1); // info < monostate
+    CHECK(SignOf(CompareRows(table, 0, 3, 0, &rank)) == -1); // info < int-tail
+    CHECK(SignOf(CompareRows(table, 1, 2, 0, &rank)) == -1); // warn < monostate
+    CHECK(SignOf(CompareRows(table, 1, 3, 0, &rank)) == -1); // warn < int-tail
+    CHECK(SignOf(CompareRows(table, 2, 0, 0, &rank)) == 1);  // monostate > info
+    CHECK(SignOf(CompareRows(table, 3, 1, 0, &rank)) == 1);  // int-tail > warn
+
+    // Two non-DictRef rows (monostate vs wrong-type) MUST compare
+    // equal -- this is the alignment with the fast path's sentinel
+    // collapse. Pre-fix this returned -1 / +1 via byte-wise compare.
+    CHECK(SignOf(CompareRows(table, 2, 3, 0, &rank)) == 0);
+    CHECK(SignOf(CompareRows(table, 3, 2, 0, &rank)) == 0);
+
+    // Cross-check vs `SortPermutationByColumn`'s fast path: the two
+    // non-DictRef rows must end up adjacent at the tail, in
+    // input-index order (stable tie-break).
+    const std::vector<size_t> logRows = {0, 1, 2, 3};
+    const std::vector<size_t> perm =
+        SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, &rank);
+    REQUIRE(perm.size() == 4);
+    // Front two: dict-resolved (info < warn alphabetically).
+    CHECK(perm[0] == 0); // info
+    CHECK(perm[1] == 1); // warn
+    // Tail two: non-DictRef rows in input-index order.
+    CHECK(perm[2] == 2);
+    CHECK(perm[3] == 3);
+}
+
 TEST_CASE("CompareRows on enum column without rank falls back to string compare", "[log_compare][enum][fallback]")
 {
     const TestLogFile fixture("log_compare_enum_no_rank.json");

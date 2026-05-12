@@ -30,6 +30,10 @@
 #   -readability-implicit-bool-conversion: Noisy on Qt pointer `if (mWidget)` idioms.
 #   -misc-include-cleaner: With MissingIncludes/UnusedIncludes off it only prints
 #        a no-op banner per TU; disabling avoids noise until include-cleaner is adopted.
+#   -modernize-use-ranges: Most usable suggestions are `std::ranges::iota`, which is
+#        C++23 and unavailable on AppleClang 17 libc++ (macOS CI build). Other
+#        sites flagged are intentionally non-rangified (e.g. `std::lower_bound`
+#        with an asymmetric comparator that `std::ranges::lower_bound` rejects).
 Checks: >
   -*,
   bugprone-*,
@@ -61,7 +65,8 @@ Checks: >
   -cppcoreguidelines-narrowing-conversions,
   -readability-uppercase-literal-suffix,
   -readability-implicit-bool-conversion,
-  -misc-include-cleaner
+  -misc-include-cleaner,
+  -modernize-use-ranges
 
 WarningsAsErrors: ""
 FormatStyle: "file"

@@ -345,7 +345,6 @@ TEST_CASE(
     std::vector<size_t> indices(ROW_COUNT);
     // `std::iota` rather than `std::ranges::iota`: the latter is C++23
     // and AppleClang 17's libc++ still lacks it (macOS CI build).
-    // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
     std::iota(indices.begin(), indices.end(), size_t{0});
 
     constexpr int SAMPLES = 3;
@@ -354,7 +353,6 @@ TEST_CASE(
     for (int s = 0; s < SAMPLES; ++s)
     {
         // Reset the permutation before each timed sort.
-        // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
         std::iota(indices.begin(), indices.end(), size_t{0});
         elapsed.push_back(TimeOnce([&]() {
             std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, &rank) < 0; });
@@ -384,6 +382,143 @@ TEST_CASE(
         if (lhs.has_value() && rhs.has_value())
         {
             REQUIRE(rank.RankOf(*lhs) <= rank.RankOf(*rhs));
+        }
+    }
+}
+
+TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms", "[.][benchmark][log_filter][large]")
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_filter_parallel.json");
+    fixture.Write("");
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT);
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+
+    const std::vector<std::string> selectedOwned = {"warn", "error"};
+    std::vector<std::string_view> selected;
+    selected.reserve(selectedOwned.size());
+    for (const auto &v : selectedOwned)
+    {
+        selected.emplace_back(v);
+    }
+    std::vector<RowPredicate> predicates;
+    predicates.emplace_back(
+        std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict
+    );
+
+    constexpr int SAMPLES = 5;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    size_t accepted = 0;
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        std::vector<size_t> result;
+        elapsed.push_back(TimeOnce([&]() {
+            result = FilterAcceptedRows(table, std::span<const RowPredicate>{predicates});
+        }));
+        accepted = result.size();
+    }
+    REQUIRE(accepted > 0);
+    REQUIRE(accepted < ROW_COUNT);
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+
+    WARN(
+        "FilterAcceptedRows (parallel) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                              << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
+                                              << "), accepted=" << accepted
+    );
+
+    // Sequential reference lands ~16 ms on the dev box; the parallel
+    // pass should stay within ~6x that even on a single-core CI
+    // runner (TBB falls back to sequential without worker threads).
+    // 100 ms tolerates CI variance while catching order-of-magnitude
+    // regressions.
+    CHECK(Ms(low).count() < 100.0);
+}
+
+TEST_CASE(
+    "loglib::SortPermutationByColumn over 1'000'000 enum rows with rank stays under 500ms",
+    "[.][benchmark][log_filter][log_compare][large]"
+)
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_sort_parallel.json");
+    fixture.Write("");
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT);
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    REQUIRE(dict != nullptr);
+    const EnumDictRank rank{*dict};
+
+    std::vector<size_t> logRows(ROW_COUNT);
+    std::iota(logRows.begin(), logRows.end(), size_t{0});
+
+    constexpr int SAMPLES = 3;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    std::vector<size_t> permutation;
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        elapsed.push_back(TimeOnce([&]() {
+            permutation =
+                SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, &rank);
+        }));
+    }
+    REQUIRE(permutation.size() == ROW_COUNT);
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+
+    WARN(
+        "SortPermutationByColumn (parallel + pre-mat rank) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                                                  << " ms (low=" << Ms(low).count()
+                                                                  << ", high=" << Ms(high).count() << ")"
+    );
+
+    // Sequential `std::ranges::sort + CompareRows` reference lands
+    // ~148 ms on the dev box; parallel + pre-materialised rank is
+    // ~68 ms. 500 ms is the CI ceiling: a regression past it means
+    // either rank pre-materialisation broke or `tbb::parallel_sort`
+    // collapsed back to sequential.
+    CHECK(Ms(low).count() < 500.0);
+
+    // Sanity: ascending rank order with input-index tie-break
+    // (`SortPermutationByColumn` documents this stability).
+    for (size_t i = 1; i < permutation.size(); ++i)
+    {
+        const auto lhsId = table.GetEnumValueId(logRows[permutation[i - 1]], 0);
+        const auto rhsId = table.GetEnumValueId(logRows[permutation[i]], 0);
+        if (lhsId.has_value() && rhsId.has_value())
+        {
+            const auto lhsRank = rank.RankOf(*lhsId);
+            const auto rhsRank = rank.RankOf(*rhsId);
+            REQUIRE(lhsRank <= rhsRank);
+            if (lhsRank == rhsRank)
+            {
+                REQUIRE(permutation[i - 1] < permutation[i]);
+            }
         }
     }
 }

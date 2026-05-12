@@ -2429,3 +2429,99 @@ TEST_CASE(
     REQUIRE(table.RowCount() == 100);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 }
+
+// Regression: the explicit `LogTable` move ctor / assignment used
+// to drop `mLastBatchDemotedKeys`, so a table moved between an
+// `AppendBatch` that demoted a column and the `LogModel` consumer
+// silently lost the "demoted-this-batch" trail. `LogModel` relies
+// on the trail to emit `enumColumnsChanged(Demoted)` for the
+// `Unknown -> Enumeration -> String` in-batch case where no
+// dictionary survives on either side.
+TEST_CASE(
+    "LogTable -- move ctor and assignment carry mLastBatchDemotedKeys forward",
+    "[log_table][move][last_batch_demoted_keys][regression]"
+)
+{
+    constexpr uint16_t TINY_CAP = 2;
+
+    auto driveInBatchPromoteThenDemote = [&](LogTable &table) {
+        const TestLogFile fixture("log_table_move_demoted_keys.json");
+        fixture.Write("");
+        auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+        FileLineSource *sourcePtr = source.get();
+
+        // Streaming entry point is what triggers
+        // `DemoteColumnFromEnum` to populate `LastBatchDemotedKeys`
+        // from `RunEnumPassForAppendBatch`.
+        table.BeginStreaming(std::move(source));
+        table.SetEnumValueCap(TINY_CAP);
+
+        // Well-known key "level" with the 2-row streaming threshold:
+        // `info`/`info` promotes, then the encode pass trips the
+        // 2-cap on `warn`/`error`/`fatal` and demotes to
+        // `Type::String` -- all in one `AppendBatch`.
+        KeyIndex &keys = table.Keys();
+        StreamedBatch batch;
+        batch.firstLineNumber = 1;
+        batch.newKeys.emplace_back("level");
+        for (const std::string_view value : {"info", "info", "warn", "error", "fatal"})
+        {
+            batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(value)}}));
+        }
+        table.AppendBatch(std::move(batch));
+    };
+
+    SECTION("Move ctor preserves the demoted-keys trail")
+    {
+        LogConfiguration cfg;
+        cfg.columns.push_back(
+            {.header = "level",
+             .keys = {"level"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::Unknown,
+             .parseFormats = {}}
+        );
+        const TestLogConfiguration cfgFile;
+        cfgFile.Write(cfg);
+        LogConfigurationManager mgr;
+        mgr.Load(cfgFile.GetFilePath());
+
+        LogTable source({}, std::move(mgr));
+        driveInBatchPromoteThenDemote(source);
+        REQUIRE_FALSE(source.LastBatchDemotedKeys().empty());
+        const KeyId demotedKey = source.LastBatchDemotedKeys().front();
+
+        const LogTable moved(std::move(source));
+        REQUIRE(moved.LastBatchDemotedKeys().size() == 1);
+        CHECK(moved.LastBatchDemotedKeys().front() == demotedKey);
+        // Moved-from is emptied: safe to read, but no trail.
+        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+    }
+
+    SECTION("Move assignment preserves the demoted-keys trail")
+    {
+        LogConfiguration cfg;
+        cfg.columns.push_back(
+            {.header = "level",
+             .keys = {"level"},
+             .printFormat = "{}",
+             .type = LogConfiguration::Type::Unknown,
+             .parseFormats = {}}
+        );
+        const TestLogConfiguration cfgFile;
+        cfgFile.Write(cfg);
+        LogConfigurationManager mgr;
+        mgr.Load(cfgFile.GetFilePath());
+
+        LogTable source({}, std::move(mgr));
+        driveInBatchPromoteThenDemote(source);
+        REQUIRE_FALSE(source.LastBatchDemotedKeys().empty());
+        const KeyId demotedKey = source.LastBatchDemotedKeys().front();
+
+        LogTable target;
+        target = std::move(source);
+        REQUIRE(target.LastBatchDemotedKeys().size() == 1);
+        CHECK(target.LastBatchDemotedKeys().front() == demotedKey);
+        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+    }
+}

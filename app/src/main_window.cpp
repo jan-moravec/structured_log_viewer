@@ -159,7 +159,11 @@ MainWindow::MainWindow(QWidget *parent)
     mSortFilterProxyModel = new LogFilterModel(this);
     mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
     mSortFilterProxyModel->SetLogModel(mModel);
-    mSortFilterProxyModel->setSortRole(SortRole);
+    // `setSortRole` is intentionally not called: `LogFilterModel`
+    // sorts via `loglib::CompareRows` straight against `LogTable`
+    // (no `data(role)` round-trip), so the sort role no longer
+    // drives behaviour. The deprecated no-op stays on the class for
+    // one release to ease test / benchmark migration.
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
@@ -331,16 +335,46 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
     // Keep enum filter bitsets and sort ranks in sync with the live
-    // dictionary. Always drop cached ranks; rebuild predicates only
-    // when an active enum filter has unresolved selected values
-    // (skips growth that only minted unselected ids).
-    connect(mModel, &LogModel::enumColumnsChanged, this, [this]() {
-        mSortFilterProxyModel->InvalidateEnumRanks();
-        const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
-            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                   !EnumFilterFullyResolved(kv.second);
-        });
-        if (anyUnresolved)
+    // dictionary; scope the work to the reason that fired:
+    //   - `Demoted`: the cached `EnumDictionary*` is now dangling.
+    //     Flush the rank cache and rebuild predicates onto the
+    //     string-set fallback.
+    //   - `Promoted`: a column just gained a dictionary. Any
+    //     `EnumRowPredicate` built earlier for that column was
+    //     constructed with `dictionary = nullptr` and otherwise sits
+    //     on the slow string-set fallback forever; rebuild so it
+    //     picks up the bitset hot path. The signal doesn't say which
+    //     column promoted, so any active enum filter triggers a
+    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
+    //     cache flush is needed.
+    //   - `Grew`: existing predicates still work (bitset for resolved
+    //     ids, string-set fallback for unresolved). Rebuild only when
+    //     a filter has unresolved values that may have just been
+    //     interned -- the only case where rebuilding upgrades anything.
+    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason) {
+        if (reason == EnumColumnsChangeReason::Demoted)
+        {
+            mSortFilterProxyModel->InvalidateEnumRanks();
+        }
+        bool rebuild = false;
+        switch (reason)
+        {
+        case EnumColumnsChangeReason::Demoted:
+            rebuild = true;
+            break;
+        case EnumColumnsChangeReason::Promoted:
+            rebuild = std::ranges::any_of(mFilters, [](const auto &kv) {
+                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
+            });
+            break;
+        case EnumColumnsChangeReason::Grew:
+            rebuild = std::ranges::any_of(mFilters, [this](const auto &kv) {
+                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                       !EnumFilterFullyResolved(kv.second);
+            });
+            break;
+        }
+        if (rebuild)
         {
             UpdateFilters();
         }
@@ -1420,22 +1454,54 @@ namespace
 {
 
 /// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
-/// on first `match()` (would be a thread-safety footgun off the GUI).
+/// lazily on its first `match()`. The lazy compile is the real
+/// thread-safety footgun: a `QRegularExpressionPrivate` shared via
+/// implicit copy across threads would race on the first match.
+///
+/// `QRegularExpression` is implicitly shared (CoW), so
+/// captured-by-value copies in the matcher lambdas alias the primed
+/// private. `loglib::FilterAcceptedRows` runs the predicate from
+/// `tbb::parallel_for` workers, so these matchers do cross threads.
+/// `QRegularExpression::match()` is documented as thread-safe once
+/// compiled (which this prime guarantees), so the CoW alias is safe.
 void PrimeRegex(QRegularExpression &regex)
 {
     (void)regex.match(QStringLiteral(""));
 }
 
+/// Materialise the haystack as `QString`, skipping the
+/// `replace` + `simplified()` walks when the bytes are already
+/// canonical. The QString allocation is unavoidable on the regex path
+/// (Qt's regex engine is UTF-16), but `QString::fromUtf8` alone is
+/// roughly a third the cost of the full conversion.
+QString HaystackQStringFast(std::string_view bytes)
+{
+    if (LogModel::IsSingleLineAsciiTrim(bytes))
+    {
+        return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
+    }
+    return LogModel::ConvertToSingleLineCompactQString(bytes);
+}
+
 /// Build a Qt-flavoured matcher for `CallbackStringRowPredicate`.
 /// Captures the compiled regex / needle once so the inner loop avoids
-/// per-row recompiles.
+/// per-row recompilation.
 ///
 /// The haystack is normalised via
 /// `LogModel::ConvertToSingleLineCompactQString` so filters match the
 /// same single-line text the user sees (and that Find applies). The
-/// needle is left as-typed -- mirrors the pre-`RowPredicate`
-/// `SortRole` semantics so a needle with consecutive spaces stays a
-/// non-match against a simplified haystack.
+/// needle is left as-typed -- matches pre-`RowPredicate` `SortRole`
+/// semantics so a needle with consecutive spaces stays a non-match
+/// against a simplified haystack.
+///
+/// `Exactly` / `Contains` get an ASCII fast path: when both pattern
+/// and haystack pass `LogModel::IsSingleLineAsciiTrim` (most log
+/// lines), the matcher byte-compares / byte-searches directly and
+/// skips the `QString::fromUtf8` + `simplified` round-trip. The
+/// pattern is checked once at matcher construction so the per-row
+/// cost is one early-exit walk plus the compare. Regex / wildcard
+/// still need a QString (Qt's engine is UTF-16) but skip the
+/// `replace` + `simplified` passes when the haystack is canonical.
 loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
 )
@@ -1448,6 +1514,19 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
         // Capture by value: the parameter reference would dangle
         // after return. `QString`'s implicit sharing keeps this a
         // refcount bump.
+        const QByteArray patternUtf8 = pattern.toUtf8();
+        std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
+        if (LogModel::IsSingleLineAsciiTrim(patternBytes))
+        {
+            // NOLINTNEXTLINE(bugprone-exception-escape)
+            return [patternBytes = std::move(patternBytes), pattern](std::string_view bytes) {
+                if (LogModel::IsSingleLineAsciiTrim(bytes))
+                {
+                    return bytes == std::string_view{patternBytes};
+                }
+                return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern;
+            };
+        }
         // clang-tidy flags `QString::operator==` and the QString
         // allocation as exception-escape; both are benign here.
         // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -1456,6 +1535,19 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     }
     case Match::Contains:
     {
+        const QByteArray patternUtf8 = pattern.toUtf8();
+        std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
+        if (LogModel::IsSingleLineAsciiTrim(patternBytes))
+        {
+            // NOLINTNEXTLINE(bugprone-exception-escape)
+            return [patternBytes = std::move(patternBytes), pattern](std::string_view bytes) {
+                if (LogModel::IsSingleLineAsciiTrim(bytes))
+                {
+                    return bytes.contains(patternBytes);
+                }
+                return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
+            };
+        }
         // NOLINTNEXTLINE(bugprone-exception-escape)
         return [pattern](std::string_view bytes) {
             return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
@@ -1465,17 +1557,13 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     {
         QRegularExpression regex(pattern);
         PrimeRegex(regex);
-        return [regex](std::string_view bytes) {
-            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
-        };
+        return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     case Match::Wildcard:
     {
         QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
         PrimeRegex(regex);
-        return [regex](std::string_view bytes) {
-            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
-        };
+        return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     }
     return [](std::string_view) { return false; };
