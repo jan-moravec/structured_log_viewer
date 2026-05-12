@@ -162,6 +162,18 @@ public:
     /// same normalisation the user sees on screen.
     static QString ConvertToSingleLineCompactQString(std::string_view bytes);
 
+    /// True iff @p bytes already matches the byte form of
+    /// `ConvertToSingleLineCompactQString(bytes)` -- i.e. pure 7-bit
+    /// ASCII, no leading / trailing space, no run of two spaces, no
+    /// `\n` / `\r` / `\t` / `\v` / `\f` / control byte. When both the
+    /// pattern and the haystack pass, `MakeStringMatcher`'s
+    /// `Exactly` / `Contains` paths can byte-compare directly and
+    /// skip the `QString::fromUtf8` + `simplified()` walk. Designed
+    /// to early-exit on the first violating byte so the typical
+    /// ASCII log line (overwhelmingly the case) costs essentially a
+    /// single linear scan.
+    [[nodiscard]] static bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept;
+
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only: move a column with `beginMoveColumns`/`endMoveColumns`
     /// so `columnsMoved` propagates through the proxy chain.

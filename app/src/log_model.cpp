@@ -865,6 +865,70 @@ QString LogModel::ConvertToSingleLineCompactQString(std::string_view bytes)
     return qString.simplified();
 }
 
+bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
+{
+    // Canonicalisation contract this function pairs with:
+    // `ConvertToSingleLineCompactQString` (1) decodes UTF-8, (2)
+    // replaces `\n` / `\r` with space, (3) collapses internal
+    // whitespace runs to a single space, (4) trims leading + trailing
+    // whitespace. For ASCII input that the conversion would touch
+    // through any of those four passes, we must reject and let the
+    // caller take the QString path. Everything else is byte-equal to
+    // the conversion result, so callers can byte-compare safely.
+    constexpr unsigned char ASCII_FIRST_NON_CONTROL = 0x20;  // space; lower bytes are control.
+    constexpr unsigned char ASCII_HIGH_BIT = 0x80;           // first non-ASCII byte.
+    constexpr unsigned char ASCII_DEL = 0x7F;                // DEL is a control byte despite living at 0x7F.
+
+    if (bytes.empty())
+    {
+        return true;
+    }
+    const auto first = static_cast<unsigned char>(bytes.front());
+    if (first <= ASCII_FIRST_NON_CONTROL)
+    {
+        // Leading whitespace / control byte -- conversion would trim
+        // or replace it.
+        return false;
+    }
+    const auto last = static_cast<unsigned char>(bytes.back());
+    if (last <= ASCII_FIRST_NON_CONTROL)
+    {
+        return false;
+    }
+    bool prevSpace = false;
+    for (const char ch : bytes)
+    {
+        const auto c = static_cast<unsigned char>(ch);
+        if (c >= ASCII_HIGH_BIT)
+        {
+            // Non-ASCII: `QString::fromUtf8` may decode to a different
+            // code-unit count; byte compare against a Latin1 pattern
+            // would be wrong.
+            return false;
+        }
+        if (c == ' ')
+        {
+            if (prevSpace)
+            {
+                // Run of two-or-more spaces -- `simplified()` would
+                // collapse them.
+                return false;
+            }
+            prevSpace = true;
+            continue;
+        }
+        if (c < ASCII_FIRST_NON_CONTROL || c == ASCII_DEL)
+        {
+            // ASCII control byte (`\n`, `\r`, `\t`, `\v`, `\f`, DEL, ...).
+            // `simplified()` treats them as whitespace; byte compare
+            // would not.
+            return false;
+        }
+        prevSpace = false;
+    }
+    return true;
+}
+
 #ifdef LOGAPP_BUILD_TESTING
 bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
 {

@@ -453,6 +453,90 @@ private slots:
         QVERIFY(!mWindow->windowIcon().isNull());
     }
 
+    // Pins the `LogModel::IsSingleLineAsciiTrim` contract that
+    // `MainWindow::MakeStringMatcher` relies on. The fast path skips
+    // the `ConvertToSingleLineCompactQString` round-trip only when
+    // this returns true; getting the discrimination wrong on either
+    // side would silently change filter results.
+    void TestIsSingleLineAsciiTrim()
+    {
+        using L = LogModel;
+        // Canonical accepts.
+        QVERIFY(L::IsSingleLineAsciiTrim(""));
+        QVERIFY(L::IsSingleLineAsciiTrim("hello"));
+        QVERIFY(L::IsSingleLineAsciiTrim("hello world"));
+        QVERIFY(L::IsSingleLineAsciiTrim("a b c d e f g"));
+        QVERIFY(L::IsSingleLineAsciiTrim("INFO"));
+        QVERIFY(L::IsSingleLineAsciiTrim("level=info component=auth user=42"));
+        QVERIFY(L::IsSingleLineAsciiTrim("!@#$%^&*()_+-=[]{}|;:,.<>/?~`"));
+
+        // Non-ASCII bytes reject (any byte >= 0x80).
+        QVERIFY(!L::IsSingleLineAsciiTrim("h\xc3\xa9llo"));   // 'é' UTF-8
+        QVERIFY(!L::IsSingleLineAsciiTrim("\xe2\x98\x83"));   // '☃' UTF-8
+        QVERIFY(!L::IsSingleLineAsciiTrim("\xff"));           // raw high byte
+
+        // Leading / trailing whitespace and control bytes reject; the
+        // QString pipeline would trim or replace them and a byte
+        // compare would diverge.
+        QVERIFY(!L::IsSingleLineAsciiTrim(" hello"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello "));
+        QVERIFY(!L::IsSingleLineAsciiTrim("\thello"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\n"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\r"));
+
+        // Internal whitespace shenanigans reject (`simplified()` would
+        // collapse them to a single space).
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello  world"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\tworld"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\nworld"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\rworld"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\vworld"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("hello\fworld"));
+        QVERIFY(!L::IsSingleLineAsciiTrim("a\x7f""b")); // DEL
+
+        // Contract: when accepted, byte-equal to
+        // `ConvertToSingleLineCompactQString(bytes).toUtf8()`. Pin a
+        // few cases so future contract drift in either function fails
+        // here.
+        for (const std::string_view sample : {
+                 std::string_view{""},
+                 std::string_view{"hello"},
+                 std::string_view{"hello world"},
+                 std::string_view{"level=info user=42"},
+             })
+        {
+            QVERIFY(L::IsSingleLineAsciiTrim(sample));
+            const QString converted = L::ConvertToSingleLineCompactQString(sample);
+            const QByteArray convertedBytes = converted.toUtf8();
+            const std::string_view convertedView{convertedBytes.constData(),
+                                                 static_cast<size_t>(convertedBytes.size())};
+            QCOMPARE(convertedView, sample);
+        }
+
+        // And: when rejected, the conversion would actually change
+        // the bytes -- pinning the discrimination is conservative
+        // (false negatives are acceptable; false positives break the
+        // matcher).
+        for (const std::string_view sample : {
+                 std::string_view{" hello"},
+                 std::string_view{"hello "},
+                 std::string_view{"hello  world"},
+                 std::string_view{"hello\nworld"},
+                 std::string_view{"hello\tworld"},
+             })
+        {
+            QVERIFY(!L::IsSingleLineAsciiTrim(sample));
+            const QString converted = L::ConvertToSingleLineCompactQString(sample);
+            const QByteArray convertedBytes = converted.toUtf8();
+            const std::string_view convertedView{convertedBytes.constData(),
+                                                 static_cast<size_t>(convertedBytes.size())};
+            QVERIFY2(convertedView != sample, qPrintable(QStringLiteral("rejected sample '%1' must differ after "
+                                                                         "conversion to '%2'")
+                                                              .arg(QString::fromUtf8(sample))
+                                                              .arg(converted)));
+        }
+    }
+
     static void TestFixtureEmpty()
     {
         const FixtureFile fixture(":/fixtures/empty.jsonl");

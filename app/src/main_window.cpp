@@ -1447,6 +1447,20 @@ void PrimeRegex(QRegularExpression &regex)
     (void)regex.match(QStringLiteral(""));
 }
 
+/// Materialise haystack as `QString` while skipping the
+/// `replace` + `simplified()` walks when the bytes are already in
+/// canonical form. The QString allocation is unavoidable on the regex
+/// path (Qt's regex engine wants UTF-16), but `QString::fromUtf8`
+/// alone is roughly a third the cost of the full conversion.
+QString HaystackQStringFast(std::string_view bytes)
+{
+    if (LogModel::IsSingleLineAsciiTrim(bytes))
+    {
+        return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
+    }
+    return LogModel::ConvertToSingleLineCompactQString(bytes);
+}
+
 /// Build a Qt-flavoured matcher for `CallbackStringRowPredicate`.
 /// Captures the compiled regex / needle once so the inner loop avoids
 /// per-row recompiles.
@@ -1457,6 +1471,16 @@ void PrimeRegex(QRegularExpression &regex)
 /// needle is left as-typed -- mirrors the pre-`RowPredicate`
 /// `SortRole` semantics so a needle with consecutive spaces stays a
 /// non-match against a simplified haystack.
+///
+/// `Exactly` / `Contains` get an ASCII fast path: when both pattern
+/// and haystack pass `LogModel::IsSingleLineAsciiTrim` (the vast
+/// majority of log lines), the matcher byte-compares / byte-searches
+/// directly and skips the `QString::fromUtf8` + `simplified` round-
+/// trip. Eligibility of the pattern is checked once at matcher
+/// construction so the per-row cost is one early-exit walk plus the
+/// compare. Regex / wildcard still need a QString (Qt's engine is
+/// UTF-16) but the conversion drops the `replace` + `simplified`
+/// passes when the haystack is canonical.
 loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
 )
@@ -1469,6 +1493,19 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
         // Capture by value: the parameter reference would dangle
         // after return. `QString`'s implicit sharing keeps this a
         // refcount bump.
+        const QByteArray patternUtf8 = pattern.toUtf8();
+        std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
+        if (LogModel::IsSingleLineAsciiTrim(patternBytes))
+        {
+            // NOLINTNEXTLINE(bugprone-exception-escape)
+            return [patternBytes = std::move(patternBytes), pattern](std::string_view bytes) {
+                if (LogModel::IsSingleLineAsciiTrim(bytes))
+                {
+                    return bytes == std::string_view{patternBytes};
+                }
+                return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern;
+            };
+        }
         // clang-tidy flags `QString::operator==` and the QString
         // allocation as exception-escape; both are benign here.
         // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -1477,6 +1514,19 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     }
     case Match::Contains:
     {
+        const QByteArray patternUtf8 = pattern.toUtf8();
+        std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
+        if (LogModel::IsSingleLineAsciiTrim(patternBytes))
+        {
+            // NOLINTNEXTLINE(bugprone-exception-escape)
+            return [patternBytes = std::move(patternBytes), pattern](std::string_view bytes) {
+                if (LogModel::IsSingleLineAsciiTrim(bytes))
+                {
+                    return bytes.find(patternBytes) != std::string_view::npos;
+                }
+                return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
+            };
+        }
         // NOLINTNEXTLINE(bugprone-exception-escape)
         return [pattern](std::string_view bytes) {
             return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
@@ -1486,17 +1536,13 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     {
         QRegularExpression regex(pattern);
         PrimeRegex(regex);
-        return [regex](std::string_view bytes) {
-            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
-        };
+        return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     case Match::Wildcard:
     {
         QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
         PrimeRegex(regex);
-        return [regex](std::string_view bytes) {
-            return regex.match(LogModel::ConvertToSingleLineCompactQString(bytes)).hasMatch();
-        };
+        return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     }
     return [](std::string_view) { return false; };
