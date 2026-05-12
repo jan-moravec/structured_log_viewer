@@ -36,6 +36,10 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
 
     beginResetModel();
     DisconnectSourceConnections();
+    // Clear any in-flight column-move bookkeeping; the new source has
+    // its own pairing and an outstanding `begin` from a previous
+    // source would never see its matching `end`.
+    mInSourceColumnMove = false;
     QAbstractProxyModel::setSourceModel(sourceModel);
 
     if (sourceModel != nullptr)
@@ -175,18 +179,32 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
                 const QModelIndex &destinationParent,
                 int destinationColumn
             ) {
+                // Skip hierarchical moves -- we don't model child
+                // columns. Capture the return value of
+                // `beginMoveColumns` so the post-event slot only
+                // pairs with a matching `endMoveColumns` when Qt
+                // actually accepted the begin; an unpaired end is a
+                // debug assertion.
                 if (sourceParent.isValid() || destinationParent.isValid())
                 {
+                    mInSourceColumnMove = false;
                     return;
                 }
-                beginMoveColumns(QModelIndex(), sourceStart, sourceEnd, QModelIndex(), destinationColumn);
+                mInSourceColumnMove =
+                    beginMoveColumns(QModelIndex(), sourceStart, sourceEnd, QModelIndex(), destinationColumn);
             }
         );
         mColumnsMovedConn = connect(
             sourceModel,
             &QAbstractItemModel::columnsMoved,
             this,
-            [this](const QModelIndex &, int, int, const QModelIndex &, int) { endMoveColumns(); }
+            [this](const QModelIndex &, int, int, const QModelIndex &, int) {
+                if (mInSourceColumnMove)
+                {
+                    endMoveColumns();
+                    mInSourceColumnMove = false;
+                }
+            }
         );
 
         // dataChanged + headerDataChanged: the row range is mirrored

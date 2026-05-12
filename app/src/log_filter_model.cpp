@@ -668,7 +668,11 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
 
     // Shift existing accepted entries whose source row was >= first up
     // by `insertedCount`. With no active sort, `mAcceptedSourceRows` is
-    // ascending: shift the tail in-place.
+    // ascending: shift the tail in-place. With a sort, the comparator
+    // uses `SourceRowToLogRow(srcRow)` -- the source's row->log
+    // mapping shifts in lockstep with the entity (the same log row
+    // is now reachable at `srcRow + insertedCount`), so post-shift
+    // entries still describe the same entity in the same sort order.
     for (int &row : mAcceptedSourceRows)
     {
         if (row >= first)
@@ -691,23 +695,53 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
 
     if (mSortColumn < 0)
     {
-        // No user sort: keep ascending order. Insert each new row at
-        // its lower_bound position; for tail appends (`r >= max
-        // existing source row`) this degenerates to a back-insert.
-        for (const int r : newlyAccepted)
+        // No user sort: ascending source-row order. The shift above
+        // left a contiguous "gap" -- no existing entry has a source
+        // row in `[first, first+insertedCount-1]`, so every newly
+        // accepted row lands between the entries `< first` and the
+        // (now shifted-up) entries `>= first+insertedCount`. One
+        // `beginInsertRows`/`endInsertRows` bracket covers the
+        // whole group, instead of one bracket per row.
+        //
+        // This matters during streaming: a 50 k-row batch with no
+        // filter and no sort previously emitted 50 k bracketed signal
+        // pairs and 50 k `vector::insert` shifts; the bulk path is
+        // O(1) brackets + one tail append. Pinned by
+        // `TestStreamingAppendsEmitSingleBracketedInsert`.
+        if (!newlyAccepted.empty())
         {
-            const auto it = std::ranges::lower_bound(mAcceptedSourceRows, r);
-            const int proxyRow = static_cast<int>(std::distance(mAcceptedSourceRows.begin(), it));
-            beginInsertRows(QModelIndex{}, proxyRow, proxyRow);
-            mAcceptedSourceRows.insert(it, r);
+            const auto insertIt = std::ranges::lower_bound(mAcceptedSourceRows, first);
+            const int proxyFirst = static_cast<int>(std::distance(mAcceptedSourceRows.begin(), insertIt));
+            const int proxyLast = proxyFirst + static_cast<int>(newlyAccepted.size()) - 1;
+            beginInsertRows(QModelIndex{}, proxyFirst, proxyLast);
+            mAcceptedSourceRows.insert(insertIt, newlyAccepted.begin(), newlyAccepted.end());
+            // Refresh the reverse index before closing the bracket so
+            // observers calling `mapFromSource` from a `rowsInserted`
+            // slot see a consistent post-insert model. (Per-row inserts
+            // below pay the rebuild cost outside the bracket because
+            // the intermediate states would be momentarily stale
+            // anyway.)
+            RebuildReverseIndex();
             endInsertRows();
+            return;
         }
+        // Source grew without contributing any accepted row: still
+        // need to resize the reverse index so out-of-range
+        // `mapFromSource` queries don't read past the old size.
+        RebuildReverseIndex();
+        return;
     }
-    else if (!newlyAccepted.empty())
+
+    if (!newlyAccepted.empty())
     {
         // Active sort: lower_bound on the comparator gives the correct
         // insertion point per row. Emit per-row inserts so views keep
-        // their selection / scroll position.
+        // their selection / scroll position. Coalescing would require
+        // sorting newly accepted by the comparator and resolving
+        // each predicted position against the running insertion
+        // offset -- not worth the complexity for the rare
+        // "streaming-while-sorted" case (users typically sort after
+        // streaming completes).
         for (const int r : newlyAccepted)
         {
             const auto it = std::ranges::lower_bound(mAcceptedSourceRows, r, [this](int lhs, int rhs) {
@@ -983,8 +1017,15 @@ void LogFilterModel::OnSourceColumnsAboutToBeMoved(
     // `headerDataChanged` -- the view's column metadata then drifted
     // out of sync with the actual cell content (Time-column promotion
     // during a streaming session was the production trigger).
+    //
+    // Hierarchical moves (parent/dest valid) and Qt-refused begin
+    // both leave `mInSourceColumnMove == false`; the post-move slot
+    // then skips both the `endMoveColumns` and the `mSortColumn`
+    // adjustment so we never speak about a move that didn't happen
+    // at our level.
     if (parent.isValid() || dest.isValid())
     {
+        mInSourceColumnMove = false;
         return;
     }
     mInSourceColumnMove = beginMoveColumns(QModelIndex{}, from, toLast, QModelIndex{}, destColumn);
@@ -997,28 +1038,34 @@ void LogFilterModel::OnSourceColumnsMoved(
     // Track the sort column through the move. We deliberately don't
     // re-permute `mAcceptedSourceRows` because the row map is
     // row-indexed; only the active sort column index needs adjusting.
-    const int span = toLast - from + 1;
-    if (mSortColumn >= 0)
+    //
+    // Gate the adjustment on the matching `beginMoveColumns` having
+    // fired (`mInSourceColumnMove`): a hierarchical move at the
+    // source layer carries its own from/toLast/destColumn coords
+    // that aren't meaningful to our top-level column list, so
+    // adjusting against them would silently corrupt the sort index.
+    if (mInSourceColumnMove)
     {
-        if (mSortColumn >= from && mSortColumn <= toLast)
+        const int span = toLast - from + 1;
+        if (mSortColumn >= 0)
         {
-            mSortColumn = destColumn + (mSortColumn - from);
-            if (destColumn > toLast)
+            if (mSortColumn >= from && mSortColumn <= toLast)
+            {
+                mSortColumn = destColumn + (mSortColumn - from);
+                if (destColumn > toLast)
+                {
+                    mSortColumn -= span;
+                }
+            }
+            else if (mSortColumn > toLast && mSortColumn < destColumn)
             {
                 mSortColumn -= span;
             }
+            else if (mSortColumn >= destColumn && mSortColumn < from)
+            {
+                mSortColumn += span;
+            }
         }
-        else if (mSortColumn > toLast && mSortColumn < destColumn)
-        {
-            mSortColumn -= span;
-        }
-        else if (mSortColumn >= destColumn && mSortColumn < from)
-        {
-            mSortColumn += span;
-        }
-    }
-    if (mInSourceColumnMove)
-    {
         endMoveColumns();
         mInSourceColumnMove = false;
     }

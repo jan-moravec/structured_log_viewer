@@ -35,7 +35,11 @@ public:
     LogTable &operator=(const LogTable &) = delete;
 
     /// Move re-runs `RewireSourceRegistries()` since each `LineSource`
-    /// caches a pointer to `mEnumDictionaries`.
+    /// caches a pointer to `mEnumDictionaries`. All bookkeeping that
+    /// the `LogModel`-side post-batch detector consumes (notably
+    /// `mLastBatchDemotedKeys`) follows the move so a table moved
+    /// between `AppendBatch` and the consumer keeps a faithful
+    /// `Demoted`-reason trail.
     LogTable(LogTable &&) noexcept;
     LogTable &operator=(LogTable &&) noexcept;
 

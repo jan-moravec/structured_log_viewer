@@ -205,9 +205,11 @@ LogTable::LogTable(LogTable &&other) noexcept
       mEnumTrackers(std::move(other.mEnumTrackers)),
       mEnumColumnHealth(std::move(other.mEnumColumnHealth)),
       mIsStreaming(other.mIsStreaming),
-      mLastBackfillRange(std::move(other.mLastBackfillRange))
+      mLastBackfillRange(std::move(other.mLastBackfillRange)),
+      mLastBatchDemotedKeys(std::move(other.mLastBatchDemotedKeys))
 {
     other.mIsStreaming = false;
+    other.mLastBatchDemotedKeys.clear();
     // Rebind sources' cached pointers to `other.mEnumDictionaries`.
     RewireSourceRegistries();
 }
@@ -231,6 +233,8 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mIsStreaming = other.mIsStreaming;
     other.mIsStreaming = false;
     mLastBackfillRange = std::move(other.mLastBackfillRange);
+    mLastBatchDemotedKeys = std::move(other.mLastBatchDemotedKeys);
+    other.mLastBatchDemotedKeys.clear();
     // Rebind sources' cached pointers to `other.mEnumDictionaries`.
     RewireSourceRegistries();
     return *this;

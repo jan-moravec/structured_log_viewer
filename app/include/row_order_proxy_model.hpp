@@ -73,6 +73,14 @@ private:
 
     bool mReversed = false;
 
+    /// Tracks a successful `beginMoveColumns` from the source's
+    /// `columnsAboutToBeMoved` so the matching `columnsMoved` slot
+    /// only calls `endMoveColumns` when the begin actually opened
+    /// a pair. Pairs with Qt's contract: an unpaired `endMoveColumns`
+    /// asserts in debug. Reset to false on every move pair and on
+    /// `setSourceModel`.
+    bool mInSourceColumnMove = false;
+
     /// Connections to the source model. Tracked so `setSourceModel`
     /// can disconnect them without touching the base class' wires.
     QMetaObject::Connection mRowsAboutToBeInsertedConn;

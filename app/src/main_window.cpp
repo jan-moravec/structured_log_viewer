@@ -339,22 +339,44 @@ MainWindow::MainWindow(QWidget *parent)
     //   - `Demoted`: the cached `EnumDictionary*` is now dangling --
     //     flush the rank cache and rebuild the predicates onto the
     //     string-set fallback.
-    //   - `Promoted` / `Grew`: `EnumRankFor` self-heals on the next
-    //     sort via its `DictSize()` check, so no flush is needed.
-    //     Rebuild predicates only when an active enum filter still
-    //     has unresolved selected values (skips growth that only
-    //     minted ids the user didn't select).
+    //   - `Promoted`: a column just gained a dictionary. Any
+    //     `EnumRowPredicate` built earlier for that column was
+    //     constructed with `dictionary = nullptr` and lives in the
+    //     slow string-set fallback path forever otherwise; rebuild
+    //     so it picks up the bitset hot path. We don't know which
+    //     column was promoted from the signal alone, so any active
+    //     enum filter triggers the rebuild. `EnumRankFor` self-heals
+    //     on next sort via its `DictSize()` check, so no cache flush.
+    //   - `Grew`: existing predicates still work (bitset hits for
+    //     resolved ids, string-set fallback for unresolved ones --
+    //     correct, just slower). Rebuild only when a filter still
+    //     has unresolved selected values that may have just been
+    //     minted, which is the only case where rebuilding upgrades
+    //     anything.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason) {
         if (reason == EnumColumnsChangeReason::Demoted)
         {
             mSortFilterProxyModel->InvalidateEnumRanks();
         }
-        const bool rebuildAll = reason == EnumColumnsChangeReason::Demoted;
-        const bool anyUnresolved = std::ranges::any_of(mFilters, [this](const auto &kv) {
-            return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                   !EnumFilterFullyResolved(kv.second);
-        });
-        if (rebuildAll || anyUnresolved)
+        bool rebuild = false;
+        switch (reason)
+        {
+        case EnumColumnsChangeReason::Demoted:
+            rebuild = true;
+            break;
+        case EnumColumnsChangeReason::Promoted:
+            rebuild = std::ranges::any_of(mFilters, [](const auto &kv) {
+                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
+            });
+            break;
+        case EnumColumnsChangeReason::Grew:
+            rebuild = std::ranges::any_of(mFilters, [this](const auto &kv) {
+                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                       !EnumFilterFullyResolved(kv.second);
+            });
+            break;
+        }
+        if (rebuild)
         {
             UpdateFilters();
         }
@@ -1434,14 +1456,17 @@ namespace
 {
 
 /// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
-/// on first `match()` (would be a thread-safety footgun off the GUI).
+/// lazily on first `match()`. The lazy compile is the actual
+/// thread-safety footgun: a `QRegularExpressionPrivate` shared via
+/// implicit copy across threads would race on the first match.
 ///
-/// `QRegularExpression` is implicitly shared (CoW). Captured-by-value
-/// copies in the matcher lambdas alias the same `QRegularExpressionPrivate`
-/// after this prime. `QRegularExpression::match()` is documented as
-/// thread-safe once primed, but all matcher callers run on the GUI
-/// thread today; any future worker-thread caller should compile a
-/// per-thread copy instead of relying on the CoW alias.
+/// `QRegularExpression` is implicitly shared (CoW); captured-by-value
+/// copies in the matcher lambdas alias the same primed private.
+/// `loglib::FilterAcceptedRows` runs the predicate from `tbb::parallel_for`
+/// workers, so these matchers DO cross thread boundaries today --
+/// `QRegularExpression::match()` is documented as thread-safe once
+/// the regex has been compiled (which is what this prime guarantees),
+/// so the CoW alias is safe.
 void PrimeRegex(QRegularExpression &regex)
 {
     (void)regex.match(QStringLiteral(""));
