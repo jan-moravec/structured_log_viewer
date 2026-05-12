@@ -343,7 +343,10 @@ TEST_CASE(
     const EnumDictRank rank{*dict};
 
     std::vector<size_t> indices(ROW_COUNT);
-    std::ranges::iota(indices, size_t{0});
+    // `std::iota` rather than `std::ranges::iota`: the latter is C++23
+    // and AppleClang 17's libc++ still lacks it (macOS CI build).
+    // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
+    std::iota(indices.begin(), indices.end(), size_t{0});
 
     constexpr int SAMPLES = 3;
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -351,7 +354,8 @@ TEST_CASE(
     for (int s = 0; s < SAMPLES; ++s)
     {
         // Reset the permutation before each timed sort.
-        std::ranges::iota(indices, size_t{0});
+        // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
+        std::iota(indices.begin(), indices.end(), size_t{0});
         elapsed.push_back(TimeOnce([&]() {
             std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, &rank) < 0; });
         }));

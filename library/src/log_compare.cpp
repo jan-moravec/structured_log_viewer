@@ -27,8 +27,11 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
     const size_t size = values.size();
     mIdToRank.resize(size);
     // Sort indices by their value bytes, then invert: `rank[order[k]] = k`.
+    // Use `std::iota` (header `<numeric>`) rather than `std::ranges::iota`;
+    // the latter is C++23 and AppleClang 17's libc++ still lacks it.
     std::vector<uint16_t> order(size);
-    std::ranges::iota(order, uint16_t{0});
+    // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
+    std::iota(order.begin(), order.end(), uint16_t{0});
     std::ranges::sort(order, [&values](uint16_t a, uint16_t b) {
         return std::string_view(values[a]) < std::string_view(values[b]);
     });

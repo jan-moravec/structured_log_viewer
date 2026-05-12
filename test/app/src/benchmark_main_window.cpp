@@ -329,7 +329,10 @@ private slots:
             const size_t rowCount = table.RowCount();
             QCOMPARE(static_cast<std::size_t>(rowCount), LINE_COUNT);
             std::vector<size_t> indices(rowCount);
-            std::ranges::iota(indices, size_t{0});
+            // `std::iota` rather than `std::ranges::iota`: the latter is
+            // C++23 and AppleClang 17's libc++ still lacks it.
+            // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17
+            std::iota(indices.begin(), indices.end(), size_t{0});
 
             const loglib::KeyId levelKey = table.Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
             QVERIFY2(levelKey != loglib::INVALID_KEY_ID, "level key must resolve in the table");
