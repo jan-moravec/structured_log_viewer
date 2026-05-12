@@ -163,18 +163,29 @@ int LogFilterModel::MapModelIndexToLogModelRow(QModelIndex idx) const
     {
         return -1;
     }
-    // Fast path: skip the per-call `qobject_cast` via the cached
-    // immediate proxy. Sorts call this O(N log N) times.
+    // Peel our own layer via a direct virtual call. GCC 13 + Qt 6.8 +
+    // LTO failed to dispatch `mapToSource` through a
+    // `QAbstractProxyModel*` and stalled the chain walk, so probe via
+    // the typed `this`.
+    if (idx.model() == this)
+    {
+        idx = mapToSource(idx);
+        if (!idx.isValid())
+        {
+            return -1;
+        }
+    }
+    // Cached immediate source proxy; skips the per-call `qobject_cast`
+    // on the O(N log N) sort path.
     if (mImmediateProxy != nullptr && idx.model() == mImmediateProxy)
     {
-        const QModelIndex mapped = mImmediateProxy->mapToSource(idx);
-        if (mapped.model() == mLogModel)
+        idx = mImmediateProxy->mapToSource(idx);
+        if (!idx.isValid())
         {
-            return mapped.row();
+            return -1;
         }
-        idx = mapped;
     }
-    // Generic fall-through: walk deeper proxy chains.
+    // Defensive fall-through for deeper proxy chains.
     while (const auto *proxy = qobject_cast<const QAbstractProxyModel *>(idx.model()))
     {
         const QModelIndex mapped = proxy->mapToSource(idx);
@@ -257,18 +268,15 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     // `logRowCached` is resolved once per outer-loop row and reused
     // across the column scan; the proxy mapping is row-constant.
     auto probeCell = [&](const QModelIndex &index, int logRowCached) -> bool {
-        if (useFastPath)
+        if (useFastPath && logRowCached >= 0)
         {
-            if (logRowCached < 0)
-            {
-                return false;
-            }
             const std::string formatted = mLogModel->Table().GetFormattedValue(
                 static_cast<size_t>(logRowCached), static_cast<size_t>(index.column())
             );
             const QString text = LogModel::ConvertToSingleLineCompactQString(formatted);
             return Matches(text, needle, flags);
         }
+        // Slow path: non-Display roles, or fast-path row map failed.
         const QVariant data = this->data(index, role);
         return Matches(data, value, flags);
     };

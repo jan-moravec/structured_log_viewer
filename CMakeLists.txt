@@ -2,14 +2,24 @@ cmake_minimum_required(VERSION 3.28)
 
 project(structured_log_viewer VERSION 0.7.0 LANGUAGES CXX)
 
-# IPO/LTO for Release / RelWithDebInfo so the linker can inline across TUs.
-# Debug stays off for iteration speed.
+# IPO/LTO on for Release / RelWithDebInfo, off for Debug. `NOT DEFINED` gates
+# let sanitizer presets override via the cache; a plain `set(... ON)` would
+# shadow that and re-enable thin-LTO, which breaks ASan+UBSan+PIE links
+# (PC-relative relocs into libstdc++ from `log_compare.cpp` thread_local dtors).
 include(CheckIPOSupported)
 check_ipo_supported(RESULT loglib_ipo_supported OUTPUT loglib_ipo_error LANGUAGES CXX)
 if(loglib_ipo_supported)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
-    message(STATUS "IPO/LTO enabled for Release and RelWithDebInfo")
+    if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
+    if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    endif()
+    message(
+        STATUS
+        "IPO/LTO Release=${CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE} "
+        "RelWithDebInfo=${CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO}"
+    )
 else()
     message(STATUS "IPO/LTO not supported: ${loglib_ipo_error}")
 endif()
