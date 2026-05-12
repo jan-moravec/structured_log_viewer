@@ -153,4 +153,22 @@ using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, Callb
     return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
 
+/// Evaluate @p predicates against every row in @p table in parallel and
+/// return the row indices that pass every predicate, in ascending order.
+/// Empty @p predicates returns `[0, table.RowCount())` (degenerate
+/// identity case; the GUI proxy short-circuits before calling).
+///
+/// Threading: each worker accumulates surviving rows into a
+/// thread-local bucket via `tbb::parallel_for`; buckets are coalesced
+/// and sorted on the calling thread before return. Predicate
+/// `MatchesRow` implementations must be thread-safe read-only against
+/// @p table -- the three predicates in this file qualify
+/// (`CallbackStringRowPredicate` formats into a `thread_local` buffer,
+/// `EnumRowPredicate` reads an immutable bitset snapshot,
+/// `TimeRangeRowPredicate` is stateless). The function intentionally
+/// lives in `loglib` rather than the GUI proxy so callers do not need
+/// a TBB include in their translation unit.
+[[nodiscard]] std::vector<size_t>
+FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
+
 } // namespace loglib

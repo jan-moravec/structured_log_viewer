@@ -104,6 +104,13 @@ private:
     /// the underlying `LogTable` row. `-1` on failure.
     [[nodiscard]] int SourceRowToLogRow(int sourceRow) const;
 
+    /// Inverse of `SourceRowToLogRow`: walk the cached proxy chain via
+    /// `mapFromSource` to lift a `LogTable` row up to `sourceModel()`
+    /// coords. Used to map the lib-side `FilterAcceptedRows` output
+    /// (log-coords indices) back into the proxy's source coords. `-1`
+    /// on failure (e.g. an intermediate proxy hides the row).
+    [[nodiscard]] int LogRowToSourceRow(int logRow) const;
+
     /// Predicate evaluation for a single source-coords row.
     [[nodiscard]] bool MatchesRulesAtSourceRow(int sourceRow) const;
 
@@ -127,6 +134,13 @@ private:
 
     /// Disconnect from the previous source and connect to the current one.
     void RewireSourceConnections();
+
+    /// Rebuild `mProxyChainAbove` from the current `sourceModel()`.
+    /// Walks the chain downward through `QAbstractProxyModel::sourceModel`
+    /// until it hits a non-proxy, capturing each proxy pointer in
+    /// LogModel-to-sourceModel order. Empty when `sourceModel()` is
+    /// the `LogModel` itself (1:1 identity, no hops needed).
+    void RebuildProxyChainCache();
 
     /// Capture the current `persistentIndexList()` plus the source row
     /// (and column) each entry maps to, so a follow-up rebuild can
@@ -193,6 +207,13 @@ private:
     /// Signal connections to the current source. Cleared and rebuilt
     /// in `setSourceModel`.
     std::vector<QMetaObject::Connection> mSourceConnections;
+
+    /// Proxy chain above `LogModel`, ordered LogModel -> sourceModel.
+    /// `LogRowToSourceRow` walks this via `mapFromSource` once per
+    /// accepted row to lift log-coords indices to source coords.
+    /// Empty when `sourceModel() == mLogModel` (test wiring). Cached
+    /// so we don't repeat the downward walk per call.
+    std::vector<QAbstractProxyModel *> mProxyChainAbove;
 
     // Source-signal handlers.
     void OnSourceRowsInserted(const QModelIndex &parent, int first, int last);

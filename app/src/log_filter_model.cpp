@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <iterator>
 #include <mutex>
+#include <span>
 #include <utility>
 
 LogFilterModel::LogFilterModel(QObject *parent)
@@ -50,6 +51,7 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
     mEnumRanks.clear();
     mAcceptedSourceRows.clear();
     mSourceRowToProxyRow.clear();
+    mProxyChainAbove.clear();
     mSortColumn = -1;
     mSortOrder = Qt::AscendingOrder;
 
@@ -64,6 +66,7 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
     if (sourceModel != nullptr)
     {
         RewireSourceConnections();
+        RebuildProxyChainCache();
         const int n = sourceModel->rowCount();
         mAcceptedSourceRows.resize(static_cast<size_t>(n));
         for (int i = 0; i < n; ++i)
@@ -335,6 +338,50 @@ int LogFilterModel::SourceIndexToLogRow(QModelIndex sourceIdx) const
     return sourceIdx.row();
 }
 
+int LogFilterModel::LogRowToSourceRow(int logRow) const
+{
+    if (mLogModel == nullptr || sourceModel() == nullptr || logRow < 0)
+    {
+        return -1;
+    }
+    // Empty chain: `sourceModel() == mLogModel`. The "log row" is
+    // already the "source row" -- no proxy hop required.
+    if (mProxyChainAbove.empty())
+    {
+        return logRow;
+    }
+    QModelIndex idx = mLogModel->index(logRow, 0);
+    if (!idx.isValid())
+    {
+        return -1;
+    }
+    for (QAbstractProxyModel *proxy : mProxyChainAbove)
+    {
+        idx = proxy->mapFromSource(idx);
+        if (!idx.isValid())
+        {
+            return -1;
+        }
+    }
+    return idx.row();
+}
+
+void LogFilterModel::RebuildProxyChainCache()
+{
+    mProxyChainAbove.clear();
+    // Walk downward: `sourceModel()` is closest to `this`, its own
+    // source is further down, ... until a non-proxy (the `LogModel`).
+    // We capture each proxy on the way and reverse so the cache reads
+    // bottom-up (LogModel -> sourceModel) for `mapFromSource` walks.
+    QAbstractItemModel *cursor = sourceModel();
+    while (auto *proxy = qobject_cast<QAbstractProxyModel *>(cursor))
+    {
+        mProxyChainAbove.push_back(proxy);
+        cursor = proxy->sourceModel();
+    }
+    std::ranges::reverse(mProxyChainAbove);
+}
+
 bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
 {
     if (mFilterRules.empty())
@@ -411,13 +458,28 @@ void LogFilterModel::RebuildAcceptedRows()
     }
     else
     {
-        for (int i = 0; i < n; ++i)
+        // Hot path: hand the predicate evaluation off to
+        // `loglib::FilterAcceptedRows`, which runs `tbb::parallel_for`
+        // over `LogTable` rows directly. The lib doesn't see the proxy
+        // chain (no Qt dependency, no per-row `mapToSource` walk), so
+        // we map each surviving log row back to source coords here.
+        const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), std::span{mFilterRules});
+        mAcceptedSourceRows.reserve(acceptedLogRows.size());
+        for (const size_t logRow : acceptedLogRows)
         {
-            if (MatchesRulesAtSourceRow(i))
+            const int srcRow = LogRowToSourceRow(static_cast<int>(logRow));
+            if (srcRow >= 0)
             {
-                mAcceptedSourceRows.push_back(i);
+                mAcceptedSourceRows.push_back(srcRow);
             }
         }
+        // Lib returns log rows in ascending order; the proxy chain
+        // may permute them (e.g. `RowOrderProxyModel` reverses when
+        // active). Restore ascending source-row order so
+        // `mapFromSource`'s reverse index and later streaming inserts
+        // can rely on it. For order-preserving chains this is an
+        // already-sorted pass (~free).
+        std::ranges::sort(mAcceptedSourceRows);
     }
     if (mSortColumn >= 0)
     {

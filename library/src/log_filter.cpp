@@ -1,14 +1,25 @@
+// TBB headers must precede any Qt-aware translation units in the same
+// build, but this is a pure `loglib` source file with no Qt include
+// anywhere in the chain -- safe to include in normal order.
 #include "loglib/log_filter.hpp"
 
 #include "loglib/log_table.hpp"
 #include "loglib/log_value.hpp"
 
+#include <oneapi/tbb/blocked_range.h>
+#include <oneapi/tbb/enumerable_thread_specific.h>
+#include <oneapi/tbb/parallel_for.h>
+
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace loglib
 {
@@ -188,6 +199,64 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     thread_local std::string buffer;
     const std::string_view bytes = table.GetValueOrFormatted(row, mColumnIndex, buffer);
     return mMatch(bytes);
+}
+
+std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates)
+{
+    const size_t rowCount = table.RowCount();
+    std::vector<size_t> accepted;
+
+    if (predicates.empty())
+    {
+        // Identity case: hand back `[0, rowCount)` so callers can share
+        // a single code path with the filtered case. Cheap enough to
+        // do sequentially; the bottleneck path is filter+predicate.
+        accepted.resize(rowCount);
+        std::iota(accepted.begin(), accepted.end(), size_t{0});
+        return accepted;
+    }
+
+    if (rowCount == 0)
+    {
+        return accepted;
+    }
+
+    // Parallel filter pass: each TBB worker drains a `blocked_range`
+    // into its thread-local bucket, then we coalesce the buckets and
+    // sort the result so callers get rows in ascending order. Buckets
+    // grow proportional to `rowCount / num_threads`, so the final
+    // single-threaded sort is cheap relative to the parallel pass.
+    tbb::enumerable_thread_specific<std::vector<size_t>> buckets;
+    tbb::parallel_for(
+        tbb::blocked_range<size_t>(0, rowCount),
+        [&table, predicates, &buckets](const tbb::blocked_range<size_t> &range) {
+            auto &local = buckets.local();
+            local.reserve(local.size() + range.size());
+            for (size_t row = range.begin(); row != range.end(); ++row)
+            {
+                const bool keep = std::ranges::all_of(predicates, [&table, row](const RowPredicate &predicate) {
+                    return MatchesRow(predicate, table, row);
+                });
+                if (keep)
+                {
+                    local.push_back(row);
+                }
+            }
+        }
+    );
+
+    size_t total = 0;
+    for (const auto &bucket : buckets)
+    {
+        total += bucket.size();
+    }
+    accepted.reserve(total);
+    for (const auto &bucket : buckets)
+    {
+        accepted.insert(accepted.end(), bucket.begin(), bucket.end());
+    }
+    std::ranges::sort(accepted);
+    return accepted;
 }
 
 } // namespace loglib
