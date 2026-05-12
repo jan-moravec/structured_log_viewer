@@ -295,14 +295,13 @@ private slots:
             Ms(predicateElapsed).count() < 200.0,
             qPrintable(QStringLiteral("predicate walk regressed: %1 ms").arg(Ms(predicateElapsed).count()))
         );
-        // Proxy-roundtrip gate: now that the filter pass hands the
-        // per-row predicate loop to `loglib::FilterAcceptedRows`
-        // (TBB-parallel) and the log->source remap is one cached
-        // `mapFromSource` hop per survivor, the full filter cycle on
-        // 1 M rows lands well under 100 ms locally. 500 ms is a
-        // generous CI ceiling -- breaking it means either the lib's
-        // parallel pass collapsed to sequential or the proxy went
-        // back to per-row chain walks.
+        // Proxy-roundtrip gate. With the predicate loop handed to
+        // `loglib::FilterAcceptedRows` (TBB-parallel) and a single
+        // cached `mapFromSource` hop per survivor, the full filter
+        // cycle on 1 M rows lands well under 100 ms locally. 500 ms
+        // is the CI ceiling: breaking it means the lib's parallel
+        // pass collapsed to sequential, or the proxy went back to
+        // per-row chain walks.
         QVERIFY2(
             Ms(elapsed).count() < 500.0,
             qPrintable(QStringLiteral("filter proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
@@ -348,7 +347,6 @@ private slots:
             std::vector<size_t> indices(rowCount);
             // `std::iota` rather than `std::ranges::iota`: the latter is
             // C++23 and AppleClang 17's libc++ still lacks it.
-            // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17
             std::iota(indices.begin(), indices.end(), size_t{0});
 
             const loglib::KeyId levelKey = table.Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
@@ -391,14 +389,12 @@ private slots:
         QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
         // Proxy-roundtrip sort gate. After the Phase 1 rewrite the
         // sort runs through `loglib::SortPermutationByColumn`: log
-        // rows are resolved once (no per-compare proxy walk), a
-        // `uint16_t` rank is pre-materialised in parallel for enum
-        // columns, and `tbb::parallel_sort` permutes them. On the dev
-        // box the full proxy cycle lands ~68 ms; 1 s is the generous
-        // CI ceiling and also the user-visible target from the
-        // performance plan. A regression past this threshold means
-        // either the comparator stopped being branch-free or the
-        // log-row pre-resolution disappeared.
+        // rows resolve once (no per-compare proxy walk), a uint16_t
+        // rank is pre-materialised in parallel for enum columns, and
+        // `tbb::parallel_sort` permutes them. Dev-box wall-clock is
+        // ~68 ms; 1 s is the CI ceiling and the user-visible target
+        // from the perf plan. Breaking it means the comparator stopped
+        // being branch-free or the log-row pre-resolution disappeared.
         QVERIFY2(
             Ms(elapsed).count() < 1000.0,
             qPrintable(QStringLiteral("sort proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))

@@ -1,6 +1,6 @@
-// `loglib` has no Qt header in its chain, so the TBB / Qt `emit`
-// collision that bites `app/` doesn't apply here -- normal include
-// order is fine.
+// `loglib` has no Qt in its include chain, so the TBB / Qt `emit`
+// collision that bites `app/` doesn't apply -- normal include order
+// is fine.
 #include "loglib/log_compare.hpp"
 
 #include "loglib/log_configuration.hpp"
@@ -34,11 +34,10 @@ EnumDictRank::EnumDictRank(const EnumDictionary &dictionary)
     const auto &values = dictionary.Values();
     const size_t size = values.size();
     mIdToRank.resize(size);
-    // Sort indices by their value bytes, then invert: `rank[order[k]] = k`.
-    // Use `std::iota` (header `<numeric>`) rather than `std::ranges::iota`;
-    // the latter is C++23 and AppleClang 17's libc++ still lacks it.
+    // Sort indices by value bytes, then invert: `rank[order[k]] = k`.
+    // `std::iota`, not `std::ranges::iota` (C++23, missing on
+    // AppleClang 17 libc++).
     std::vector<uint16_t> order(size);
-    // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
     std::iota(order.begin(), order.end(), uint16_t{0});
     std::ranges::sort(order, [&values](uint16_t a, uint16_t b) {
         return std::string_view(values[a]) < std::string_view(values[b]);
@@ -108,17 +107,17 @@ LogValue LoadValue(const LogTable &table, size_t row, size_t column)
     return table.GetValue(row, column);
 }
 
-/// Byte-wise compare. Both string slots compare directly; mixed
-/// types fall back to formatted bytes (deterministic order without
-/// taking a position on `numeric < string`). Caller handles monostate.
+/// Byte-wise compare. Two string slots compare directly; mixed types
+/// fall back to formatted bytes (deterministic order without taking a
+/// position on `numeric < string`). Caller handles monostate.
 ///
-/// The mixed-type fallback is effectively dead code on the production
-/// hot path: `LogConfiguration::Type` pins which slot variants a column
-/// can hold, and the typed `Compare*` helpers consume them before this
-/// function is reached. It exists so unit / corruption tests still see
-/// deterministic output, and so a future type whose `CompareRows`
-/// dispatch falls through to `CompareString` keeps working without a
-/// per-call special case.
+/// The mixed-type fallback is dead code on the production hot path:
+/// `LogConfiguration::Type` pins which slot variants a column holds,
+/// and the typed `Compare*` helpers consume them before we get here.
+/// It exists so unit / corruption tests still see deterministic
+/// output, and so a future type whose `CompareRows` dispatch falls
+/// through to `CompareString` keeps working without a per-call
+/// special case.
 int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     const LogValue lhs = LoadValue(table, lhsRow, column);
@@ -145,11 +144,10 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
 
     // Format both sides through the column's `printFormat`. Buffers
     // are `thread_local` so steady-state allocation is zero. Not
-    // reentrant -- the debug guard below catches accidental nesting.
+    // re-entrant -- the debug guard below catches accidental nesting.
 #ifndef NDEBUG
-    // MSVC rejects `static` variables inside local classes, so the
-    // counter lives at function scope and the RAII guard takes it by
-    // reference.
+    // MSVC rejects `static` inside local classes, so the counter
+    // lives at function scope and the RAII guard takes it by reference.
     thread_local int sDepth = 0;
     struct ReentryGuard
     {
@@ -179,8 +177,8 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     return ThreeWay(std::string_view(lhsFormatted), std::string_view(rhsFormatted));
 }
 
-/// monostate-vs-monostate -> 0; monostate-vs-other -> +1 (monostate
-/// sorts to the tail). nullopt when neither side is monostate.
+/// monostate vs monostate -> 0; monostate vs other -> +1 (monostate
+/// sorts to the tail). `nullopt` when neither side is monostate.
 std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rhs)
 {
     const bool lhsEmpty = std::holds_alternative<std::monostate>(lhs);
@@ -201,8 +199,8 @@ std::optional<int> CompareMonostateOrder(const LogValue &lhs, const LogValue &rh
 }
 
 /// Shared "extract to T, three-way on extracted, unextracted joins
-/// the tail bucket" shape. Routing monostate through `extract` (rather
-/// than a parallel short-circuit) is what makes monostate, NaN-in-Int,
+/// the tail bucket" shape. Routing monostate through `extract`
+/// (rather than a parallel short-circuit) makes monostate, NaN-in-Int,
 /// stray-string-in-Floating, etc. all compare equal pairwise -- the
 /// tail-bucket invariant the header promises.
 template <class Extract, class Compare>
@@ -242,8 +240,8 @@ int CompareInteger(const LogValue &lhs, const LogValue &rhs)
         }
         if (const auto *d = std::get_if<double>(&v); d != nullptr)
         {
-            // NaN -> tail. `static_cast<int64_t>(NaN)` is UB, as is
-            // out-of-range cast; clamp finite extremes to INT64 limits.
+            // NaN -> tail. `static_cast<int64_t>(NaN)` is UB; clamp
+            // finite extremes to INT64 limits instead of casting them.
             if (std::isnan(*d))
             {
                 return std::nullopt;
@@ -298,8 +296,8 @@ int CompareTime(const LogValue &lhs, const LogValue &rhs)
         }
         if (const auto *u = std::get_if<uint64_t>(&v); u != nullptr)
         {
-            // Parity with `CompareInteger`/`TimeRangeRowPredicate`:
-            // order-preserving clamp instead of wraparound.
+            // Match `CompareInteger` / `TimeRangeRowPredicate`:
+            // order-preserving clamp, not wraparound.
             constexpr auto MAX = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
             return *u > MAX ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(*u);
         }
@@ -324,15 +322,13 @@ int CompareEnum(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t colu
         return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
     }
 
-    // One or both sides not `DictRef` (monostate, unpromoted-string,
-    // wrong-type, or over-cap-length slot). Tail-bucket invariant:
+    // One or both sides are non-`DictRef` (monostate, unpromoted
+    // string, wrong-type, over-cap-length). Tail-bucket invariant:
     // every non-`DictRef` slot sorts strictly after every
     // `DictRef`-resolved slot and equal to every other non-`DictRef`
-    // slot. Mirrors `SortPermutationByColumn`'s fast path -- which
-    // collapses every non-`DictRef` row to the rank-table sentinel
-    // -- so the streaming-insert comparator and the bulk re-sort
-    // never disagree on where an unencoded enum slot lands. Pinned
-    // by `TestCompareEnumNonDictRefSlotsAllTailEqual`.
+    // slot. Mirrors `SortPermutationByColumn`'s sentinel collapse so
+    // the streaming-insert comparator and the bulk re-sort agree on
+    // placement. Pinned by `TestCompareEnumNonDictRefSlotsAllTailEqual`.
     if (!lhsId.has_value() && !rhsId.has_value())
     {
         return 0;
@@ -401,9 +397,8 @@ std::vector<size_t> SortPermutationByColumn(
 {
     const size_t n = logRows.size();
     std::vector<size_t> permutation(n);
-    // `std::iota` rather than `std::ranges::iota`: the latter is C++23
-    // and AppleClang 17's libc++ still lacks it.
-    // NOLINTNEXTLINE(modernize-use-ranges)
+    // `std::iota`, not `std::ranges::iota` (C++23, missing on
+    // AppleClang 17 libc++).
     std::iota(permutation.begin(), permutation.end(), size_t{0});
     if (n <= 1)
     {
@@ -414,16 +409,16 @@ std::vector<size_t> SortPermutationByColumn(
     const bool columnInRange = columnIndex < columns.size();
     const bool isEnum = columnInRange && columns[columnIndex].type == LogConfiguration::Type::Enumeration;
 
-    // Fast path: enum column with a precomputed rank table. We
-    // pre-materialise a `uint16_t` rank per row in parallel, then the
-    // sort comparator is a branch-free integer compare with input-
+    // Fast path: enum column with a precomputed rank table. Pre-
+    // materialise a `uint16_t` rank per row in parallel; the sort
+    // comparator is then a branch-free integer compare with input-
     // index tie-break. Eliminates the per-compare `GetEnumValueId`
     // walk that dominates `CompareRows` on the enum path.
     if (isEnum && rankForEnumColumn != nullptr)
     {
-        // Sentinel: a slot that doesn't resolve to a `DictRef` (or an id
-        // past the rank table) sorts after every ranked id. Matches the
-        // tail-bucket invariant documented on `CompareRows`.
+        // Sentinel: a slot that doesn't resolve to a `DictRef` (or an
+        // id past the rank table) sorts after every ranked id. Matches
+        // the tail-bucket invariant on `CompareRows`.
         const uint16_t sentinel = rankForEnumColumn->DictSize();
         std::vector<uint16_t> rankForRow(n);
         tbb::parallel_for(
@@ -439,10 +434,10 @@ std::vector<size_t> SortPermutationByColumn(
             }
         );
 
-        // `tbb::parallel_sort` is not stable, but a tie-break on the
-        // input index gives a strict total order -- the result matches
+        // `tbb::parallel_sort` is not stable, but the input-index
+        // tie-break gives a strict total order -- effectively
         // `std::stable_sort` semantics for callers that rely on
-        // insertion-order tie-break.
+        // insertion-order ties.
         if (ascending)
         {
             tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
@@ -455,10 +450,10 @@ std::vector<size_t> SortPermutationByColumn(
         }
         else
         {
-            // Descending: invert primary order, keep secondary (input
-            // index) ascending. Matches the legacy semantics where
-            // ties always resolved to source-row ascending regardless
-            // of the user-selected order.
+            // Descending: invert the primary order, keep the
+            // secondary (input index) ascending. Matches legacy
+            // semantics where ties always resolved to source-row
+            // ascending regardless of the user's chosen direction.
             tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
                 if (rankForRow[a] != rankForRow[b])
                 {
@@ -470,11 +465,11 @@ std::vector<size_t> SortPermutationByColumn(
         return permutation;
     }
 
-    // Generic path: dispatch through `CompareRows` per comparison. Pays
-    // the slot-resolution cost on every call but is correct for the
-    // non-enum types (`Time`, `Integer`, `Floating`, string) where no
-    // cheap pre-materialisation is available. Still benefits from
-    // parallel sort.
+    // Generic path: dispatch through `CompareRows` per comparison.
+    // Pays the slot-resolution cost on every call but is correct for
+    // the non-enum types (`Time`, `Integer`, `Floating`, string),
+    // where no cheap pre-materialisation is available. Still benefits
+    // from parallel sort.
     if (ascending)
     {
         tbb::parallel_sort(

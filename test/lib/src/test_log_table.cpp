@@ -2430,14 +2430,13 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 }
 
-// Regression: pre-fix the explicit `LogTable` move ctor + move
-// assignment forgot the `mLastBatchDemotedKeys` field, so a table
-// moved between an `AppendBatch` that demoted a column and the
-// `LogModel` consumer that reads the keys silently lost the
-// "demoted-this-batch" trail. `LogModel::AppendBatch` relies on the
-// trail to emit `enumColumnsChanged(Demoted)` even when the column
-// went `Unknown -> Enumeration -> String` inside a single batch
-// (no surviving dictionary on either side).
+// Regression: the explicit `LogTable` move ctor / assignment used
+// to drop `mLastBatchDemotedKeys`, so a table moved between an
+// `AppendBatch` that demoted a column and the `LogModel` consumer
+// silently lost the "demoted-this-batch" trail. `LogModel` relies
+// on the trail to emit `enumColumnsChanged(Demoted)` for the
+// `Unknown -> Enumeration -> String` in-batch case where no
+// dictionary survives on either side.
 TEST_CASE(
     "LogTable -- move ctor and assignment carry mLastBatchDemotedKeys forward",
     "[log_table][move][last_batch_demoted_keys][regression]"
@@ -2451,15 +2450,16 @@ TEST_CASE(
         auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
         FileLineSource *sourcePtr = source.get();
 
-        // Streaming entry point pairs with `LastBatchDemotedKeys` being
-        // populated by `DemoteColumnFromEnum` inside `RunEnumPassForAppendBatch`.
+        // Streaming entry point is what triggers
+        // `DemoteColumnFromEnum` to populate `LastBatchDemotedKeys`
+        // from `RunEnumPassForAppendBatch`.
         table.BeginStreaming(std::move(source));
         table.SetEnumValueCap(TINY_CAP);
 
-        // Well-known key "level"; the streaming threshold is 2, so the
-        // candidate scan promotes after `info`/`info`, then the encode
-        // pass for the full slice trips the 2-cap on `warn`/`error`/`fatal`
-        // and demotes back to `Type::String` -- all in one AppendBatch.
+        // Well-known key "level" with the 2-row streaming threshold:
+        // `info`/`info` promotes, then the encode pass trips the
+        // 2-cap on `warn`/`error`/`fatal` and demotes to
+        // `Type::String` -- all in one `AppendBatch`.
         KeyIndex &keys = table.Keys();
         StreamedBatch batch;
         batch.firstLineNumber = 1;
@@ -2491,12 +2491,11 @@ TEST_CASE(
         REQUIRE_FALSE(source.LastBatchDemotedKeys().empty());
         const KeyId demotedKey = source.LastBatchDemotedKeys().front();
 
-        LogTable moved(std::move(source));
-        // Trail follows the entity.
+        const LogTable moved(std::move(source));
         REQUIRE(moved.LastBatchDemotedKeys().size() == 1);
         CHECK(moved.LastBatchDemotedKeys().front() == demotedKey);
-        // Moved-from is emptied; reading is safe but should observe no trail.
-        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move)
+        // Moved-from is emptied: safe to read, but no trail.
+        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     }
 
     SECTION("Move assignment preserves the demoted-keys trail")
@@ -2523,6 +2522,6 @@ TEST_CASE(
         target = std::move(source);
         REQUIRE(target.LastBatchDemotedKeys().size() == 1);
         CHECK(target.LastBatchDemotedKeys().front() == demotedKey);
-        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move)
+        CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     }
 }

@@ -456,8 +456,8 @@ private slots:
     // Pins the `LogModel::IsSingleLineAsciiTrim` contract that
     // `MainWindow::MakeStringMatcher` relies on. The fast path skips
     // the `ConvertToSingleLineCompactQString` round-trip only when
-    // this returns true; getting the discrimination wrong on either
-    // side would silently change filter results.
+    // this returns true; misclassifying on either side would
+    // silently change filter results.
     void TestIsSingleLineAsciiTrim()
     {
         using L = LogModel;
@@ -495,10 +495,10 @@ private slots:
         QVERIFY(!L::IsSingleLineAsciiTrim("a\x7f"
                                           "b")); // DEL
 
-        // Contract: when accepted, byte-equal to
+        // Contract: accepted input is byte-equal to
         // `ConvertToSingleLineCompactQString(bytes).toUtf8()`. Pin a
-        // few cases so future contract drift in either function fails
-        // here.
+        // few cases so future contract drift in either function
+        // fails here.
         for (const std::string_view sample : {
                  std::string_view{""},
                  std::string_view{"hello"},
@@ -515,10 +515,9 @@ private slots:
             QCOMPARE(convertedView, sample);
         }
 
-        // And: when rejected, the conversion would actually change
-        // the bytes -- pinning the discrimination is conservative
-        // (false negatives are acceptable; false positives break the
-        // matcher).
+        // Rejected input must actually change after conversion. The
+        // discrimination is conservative: false negatives are
+        // acceptable, false positives break the matcher.
         for (const std::string_view sample : {
                  std::string_view{" hello"},
                  std::string_view{"hello "},
@@ -805,9 +804,10 @@ private slots:
         // qint64 microseconds, so the proxy's chronological order must be
         // line3 < line1 < line2 ascending and the mirror descending.
         LogFilterModel proxy;
-        // `LogFilterModel` sorts via `loglib::CompareRows` directly off
-        // the `LogTable`; bind the model so `CompareRows` can resolve
-        // slot types. The SortRole round-trip is no longer wired.
+        // `LogFilterModel` sorts via `loglib::CompareRows` straight
+        // off the `LogTable`; bind the model so `CompareRows` can
+        // resolve slot types. The SortRole round-trip is no longer
+        // wired.
         proxy.setSourceModel(run.model.get());
         proxy.SetLogModel(run.model.get());
 
@@ -2288,20 +2288,18 @@ private slots:
     // Regression for `LogFilterModel`'s persistent-index handling
     // across a *source-side* layout change. Toggling
     // `RowOrderProxyModel::SetReversed` is the production trigger:
-    // the `RowOrderProxyModel` flips its mapping (so source row K
-    // now points to a different LogModel entity), emits
-    // `layoutChanged`, and the `LogFilterModel` above it must remap
-    // its own persistent indices to follow the entity, not the bare
-    // row number.
+    // it flips its mapping (source row K now points at a different
+    // entity), emits `layoutChanged`, and the `LogFilterModel` above
+    // must remap its own persistent indices to follow the entity,
+    // not the bare row number.
     //
     // Pre-fix the snapshot stored an integer source row, which under
     // a no-filter pass-through stayed numerically the same after the
-    // flip and so the `LogFilterModel` persistent index ended up
-    // pointing at the entity that *moved into* the row -- a silent
-    // selection swap from the user's perspective. The fix anchors
-    // each snapshot on a `QPersistentModelIndex` of the source-mapped
-    // index instead, which the source's own `changePersistentIndexList`
-    // pass remaps to the entity's new row.
+    // flip; the filter's persistent index ended up pointing at the
+    // entity that moved into the row -- a silent selection swap. The
+    // fix anchors each snapshot on a `QPersistentModelIndex` of the
+    // source-mapped index, which the source's own
+    // `changePersistentIndexList` remaps to the entity's new row.
     void TestNewestFirstReversalPreservesFilterModelSelection()
     {
         auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
@@ -2325,9 +2323,9 @@ private slots:
         const int valueColumn = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY(valueColumn >= 0);
 
-        // Pin a persistent index on the *filter model* (not on the
-        // RowOrderProxyModel) at proxy row 5. In default (oldest-first)
-        // mode that's lineId 6.
+        // Pin a persistent index on the filter model (not the
+        // RowOrderProxyModel) at proxy row 5. In default
+        // (oldest-first) mode that's lineId 6.
         constexpr int K_PINNED_PROXY_ROW = 5;
         const QPersistentModelIndex pinned(filterModel->index(K_PINNED_PROXY_ROW, valueColumn));
         QVERIFY(pinned.isValid());
@@ -2335,9 +2333,9 @@ private slots:
         QCOMPARE(originalLineId, qint64(K_PINNED_PROXY_ROW + 1));
 
         // Flip the source layout via SetReversed. The persistent
-        // index on `LogFilterModel` must follow the *entity* (lineId
-        // K_PINNED_PROXY_ROW + 1), which after reversal lives at
-        // proxy row `K_ROWS - 1 - K_PINNED_PROXY_ROW`.
+        // index must follow the entity (lineId K_PINNED_PROXY_ROW + 1),
+        // which after reversal lives at proxy row
+        // `K_ROWS - 1 - K_PINNED_PROXY_ROW`.
         rowOrderProxy->SetReversed(true);
         QCoreApplication::processEvents();
         QVERIFY(rowOrderProxy->IsReversed());
@@ -3411,9 +3409,9 @@ private slots:
         QVERIFY2(dict != nullptr, "promotion must create a dictionary entry");
         QCOMPARE(static_cast<int>(dict->Size()), 1);
 
-        // Promotion drives `enumColumnsChanged` via the back-fill loop;
-        // the emitted reason must be `Promoted` so receivers can skip
-        // the rank-cache flush (the cache had no entry for this key yet).
+        // Promotion drives `enumColumnsChanged` via the back-fill
+        // loop. The reason must be `Promoted` so receivers skip the
+        // rank-cache flush (the cache has no entry for this key yet).
         QVERIFY2(enumChangedSpy.count() >= 1, "enumColumnsChanged must fire on promotion");
         bool sawPromotion = false;
         for (const auto &args : enumChangedSpy)
@@ -3467,9 +3465,9 @@ private slots:
 
     // Regression: a `Grew` `enumColumnsChanged` must NOT flush the
     // `EnumDictRank` cache through `MainWindow`'s slot. `EnumRankFor`
-    // self-heals on the next sort via its `DictSize()` check, so the
-    // cache stays valid; flushing it on every batch in a busy stream
-    // would re-rebuild ranks per batch and dominate the wall-clock.
+    // self-heals on the next sort via its `DictSize()` check, so
+    // flushing on every batch would re-rebuild ranks per batch and
+    // dominate the wall-clock of a busy stream.
     void TestEnumRankCacheSurvivesGrowthSignalThroughMainWindow()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -3507,10 +3505,10 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
 
-        // Batch 2 grows the dictionary (new value "error"). Pre-fix the
-        // slot would call `InvalidateEnumRanks()` on every emit and the
-        // cache would drop to 0 entries; post-fix `Grew` is a no-op for
-        // the cache so the entry stays.
+        // Batch 2 grows the dictionary (new value "error"). Pre-fix
+        // the slot called `InvalidateEnumRanks()` on every emit and
+        // the cache dropped to 0 entries; post-fix `Grew` is a no-op
+        // for the cache so the entry stays.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;
@@ -3524,14 +3522,13 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: a column that is auto-promoted into `Type::Enumeration`
-    // and immediately demoted back to `Type::String` *within the same
-    // batch* (because the encode pass overflows the dictionary cap)
-    // must still emit a `Demoted` `enumColumnsChanged` so consumers
-    // can rebuild any rank-cache entry / filter rule that aliased the
-    // transient dictionary. Pre-fix the `enumDictSizesBefore`
-    // detector only saw columns that were already enum at snapshot
-    // time, so this transition slipped through silently.
+    // Regression: a column auto-promoted to `Type::Enumeration` and
+    // demoted back to `Type::String` inside the same batch (encode
+    // overflows the dict cap) must still emit `Demoted` so consumers
+    // can rebuild any rank-cache entry or filter rule that aliased
+    // the transient dictionary. Pre-fix the `enumDictSizesBefore`
+    // detector only saw columns already enum at snapshot time and
+    // missed this transition.
     void TestEnumDemotedSignalFiresOnSameBatchPromoteThenDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -3547,7 +3544,7 @@ private slots:
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
-        QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
+        const QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
         QVERIFY(enumChangedSpy.isValid());
 
         loglib::KeyIndex &keys = model->Table().Keys();
@@ -3558,11 +3555,10 @@ private slots:
         };
 
         // One batch, five rows: the candidate scan early-bails after
-        // reading the first two rows ("info", "info") so the well-
-        // known-key promotion fires. The PromoteColumnToEnum encode
-        // pass then walks all five rows and trips the cap on the
-        // third distinct value, demoting the column straight back to
-        // `Type::String` -- all inside this single AppendBatch.
+        // two "info" rows so well-known-key promotion fires. The
+        // `PromoteColumnToEnum` encode pass then trips the cap on the
+        // third distinct value, demoting back to `Type::String` --
+        // all inside a single `AppendBatch`.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -4694,15 +4690,14 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: a streaming batch arriving through `LogFilterModel`
-    // with no active sort and no filter must emit a single bracketed
+    // Regression: a streaming batch through `LogFilterModel` with no
+    // active sort and no filter must emit a single bracketed
     // `rowsInserted` pair covering the whole accepted range, not one
-    // pair per source row. Pre-fix `OnSourceRowsInserted` called
-    // `beginInsertRows`/`endInsertRows` per row and rebuilt the
-    // reverse index outside the bracket -- O(n) signal pairs per
-    // batch and an O(n)-staleness window on `mSourceRowToProxyRow`.
-    // Post-fix the no-sort path coalesces into one bracket and
-    // rebuilds the reverse index inside it.
+    // pair per source row. Pre-fix `OnSourceRowsInserted` bracketed
+    // each row individually and rebuilt the reverse index outside
+    // the bracket (O(n) signal pairs + O(n)-staleness window on
+    // `mSourceRowToProxyRow`). Post-fix coalesces into one bracket
+    // and rebuilds the reverse index inside it.
     void TestStreamingBatchEmitsSingleRowsInsertedBracket()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -4710,16 +4705,16 @@ private slots:
         auto *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
-        // Empty fixture: we'll drive `AppendBatch` directly so the
+        // Empty fixture, driven by direct `AppendBatch` calls so the
         // batch boundary is well-defined and the only `rowsInserted`
-        // emission on the proxy comes from this test.
+        // emission on the proxy is the one under test.
         const TempJsonFile emptyFixture(QStringList{});
         auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
-        QSignalSpy aboutToInsertSpy(filterModel, &QAbstractItemModel::rowsAboutToBeInserted);
+        const QSignalSpy aboutToInsertSpy(filterModel, &QAbstractItemModel::rowsAboutToBeInserted);
         QSignalSpy insertedSpy(filterModel, &QAbstractItemModel::rowsInserted);
         QVERIFY(aboutToInsertSpy.isValid());
         QVERIFY(insertedSpy.isValid());
@@ -4751,9 +4746,8 @@ private slots:
         QCOMPARE(args.at(1).toInt(), 0);
         QCOMPARE(args.at(2).toInt(), BATCH_SIZE - 1);
 
-        // Reverse index must be consistent post-bracket: every newly
-        // inserted source row maps back through `mapFromSource`. A
-        // round-trip via `mapToSource` -> `mapFromSource` pins both
+        // Reverse index must be consistent post-bracket: a
+        // `mapToSource` -> `mapFromSource` round-trip pins both
         // directions of the proxy after the bulk insert.
         for (int proxyRow = 0; proxyRow < BATCH_SIZE; ++proxyRow)
         {
@@ -4775,17 +4769,16 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: an enum filter installed against a column that's
-    // still `Type::Unknown` is built with `dictionary = nullptr` and
-    // lives in the slow string-set fallback path. When the column
-    // auto-promotes, `MainWindow::enumColumnsChanged(Promoted)` must
-    // rebuild the predicate so it picks up the bitset hot path.
-    // Pre-fix the slot gated the rebuild on `!EnumFilterFullyResolved`
-    // -- which returns true the instant the new dictionary contains
-    // every selected value -- so no rebuild ever fired and the slow
-    // path stayed armed forever. The observable is a
-    // `LogFilterModel::layoutChanged` from the slot-driven
-    // `UpdateFilters` rebuild after `Promoted`.
+    // Regression: an enum filter installed while the column is still
+    // `Type::Unknown` builds with `dictionary = nullptr` and runs the
+    // slow string-set fallback. On auto-promote,
+    // `MainWindow::enumColumnsChanged(Promoted)` must rebuild the
+    // predicate so it picks up the bitset hot path. Pre-fix the slot
+    // gated the rebuild on `!EnumFilterFullyResolved` -- which goes
+    // true the instant the new dictionary contains every selected
+    // value -- so no rebuild ever fired. The observable is a
+    // `LogFilterModel::layoutChanged` from `UpdateFilters` after the
+    // `Promoted` signal.
     void TestEnumFilterUpgradesToFastPathOnColumnPromotion()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -4806,10 +4799,10 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: one row keeps `mycol` below the streaming
-        // promotion threshold (STREAM_PROMOTION_MIN_ROWS == 2), so the
-        // column stays `Type::Unknown` and `ResolveEnumDictionary`
-        // returns nullptr when the filter installs.
+        // Batch 1: one row keeps `mycol` below
+        // STREAM_PROMOTION_MIN_ROWS (== 2), so the column stays
+        // `Type::Unknown` and `ResolveEnumDictionary` returns nullptr
+        // at filter-install time.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -4825,9 +4818,9 @@ private slots:
             model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Unknown
         );
 
-        // Install an enum filter while the column is still Unknown.
-        // The predicate is built with `dictionary = nullptr` -- the
-        // slow string-set fallback path is the only one available.
+        // Install an enum filter while the column is still Unknown:
+        // predicate built with `dictionary = nullptr`, only the slow
+        // string-set fallback path is available.
         const QString filterId = QStringLiteral("upgrade-on-promote");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -4843,19 +4836,19 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->rowCount(), 1); // matched via the string-set fallback.
 
-        // Spy after the install so only post-install rebuilds count.
-        // The only `layoutChanged` path on `LogFilterModel` is
-        // `RebuildAcceptedRows` (driven by `SetRules` / `SetFilterRules`
-        // / sort), so a non-zero count after the promote means
-        // `UpdateFilters` re-armed the predicate.
-        QSignalSpy layoutChangedSpy(filterModel, &QAbstractItemModel::layoutChanged);
+        // Spy after install so only post-install rebuilds count. The
+        // only `layoutChanged` path on `LogFilterModel` is
+        // `RebuildAcceptedRows` (via `SetFilterRules` / sort), so
+        // any post-promote emission means `UpdateFilters` re-armed
+        // the predicate.
+        const QSignalSpy layoutChangedSpy(filterModel, &QAbstractItemModel::layoutChanged);
         QVERIFY(layoutChangedSpy.isValid());
-        QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
+        const QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
         QVERIFY(enumChangedSpy.isValid());
 
-        // Batch 2: a second row pushes `presenceCount` to 2, which
+        // Batch 2: a second row pushes `presenceCount` to 2 and
         // trips streaming promotion. The slot must rebuild the
-        // predicate so it upgrades to the bitset path.
+        // predicate to upgrade it to the bitset path.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 2;

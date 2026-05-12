@@ -436,9 +436,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
-    // Snapshot pre-batch dict sizes for active enum columns. If a batch
-    // grows any, emit `enumColumnsChanged` so `MainWindow` rebuilds the
-    // rules and `loglib::EnumRowPredicate`'s bitset stays current.
+    // Snapshot pre-batch dict sizes for active enum columns. If the
+    // batch grows any, emit `enumColumnsChanged` so `MainWindow`
+    // rebuilds rules and the `loglib::EnumRowPredicate` bitset stays
+    // current.
     std::vector<std::pair<loglib::KeyId, uint16_t>> enumDictSizesBefore;
     {
         const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
@@ -464,7 +465,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    // Registry shape change for pre-batch-enum columns: dict erased
+    // Registry shape change for pre-batch enum columns: dict erased
     // (column demoted to string) or grew (new value interned). Track
     // both separately so the follow-up emits can scope reactions --
     // demote forces a rank-cache flush, growth doesn't (self-heals).
@@ -487,21 +488,20 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
     // Also pick up the silent "promoted then immediately demoted in
-    // the same batch" case (`Unknown -> Enumeration -> String` with
-    // no dict surviving on either side of the batch). The
-    // `enumDictSizesBefore` snapshot doesn't see it because the
-    // column wasn't `Type::Enumeration` at the snapshot point;
-    // `LogTable::LastBatchDemotedKeys()` records it from inside
-    // `DemoteColumnFromEnum`.
+    // the same batch" case (`Unknown -> Enumeration -> String`, no
+    // dict surviving on either side). The `enumDictSizesBefore`
+    // snapshot doesn't see it because the column wasn't yet
+    // `Type::Enumeration`; `LogTable::LastBatchDemotedKeys()` records
+    // it from inside `DemoteColumnFromEnum`.
     if (!mLogTable.LastBatchDemotedKeys().empty())
     {
         enumColumnDemoted = true;
     }
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
-    // proxy connected to `rowsInserted` walks new rows against a stale
-    // predicate on a flip-batch. The follow-up `enumColumnsChanged`
-    // triggers an `invalidateFilter` re-walk, so steady state is
+    // proxy connected to `rowsInserted` walks new rows against a
+    // stale predicate on a flip-batch. The follow-up
+    // `enumColumnsChanged` triggers a re-walk, so steady state is
     // correct. Regression: `TestEnumFilterRebuiltAfterDemote`.
     if (rowsGrew)
     {
@@ -544,10 +544,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    // The back-fill branch above only fires on *promotion*. Cover dict
-    // growth (newly-interned id) and demotion (registry erase) here.
-    // Emit each reason independently so a batch that both grows one
-    // column and demotes another delivers two scoped signals.
+    // The back-fill branch above only fires on *promotion*. Cover
+    // dict growth and demotion here. Emit each reason independently
+    // so a batch that grows one column and demotes another delivers
+    // two scoped signals.
     if (!emittedPromotedFromBackfill && enumDictGrew)
     {
         emit enumColumnsChanged(EnumColumnsChangeReason::Grew);
@@ -878,14 +878,11 @@ QString LogModel::ConvertToSingleLineCompactQString(std::string_view bytes)
 
 bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 {
-    // Canonicalisation contract this function pairs with:
-    // `ConvertToSingleLineCompactQString` (1) decodes UTF-8, (2)
-    // replaces `\n` / `\r` with space, (3) collapses internal
-    // whitespace runs to a single space, (4) trims leading + trailing
-    // whitespace. For ASCII input that the conversion would touch
-    // through any of those four passes, we must reject and let the
-    // caller take the QString path. Everything else is byte-equal to
-    // the conversion result, so callers can byte-compare safely.
+    // `ConvertToSingleLineCompactQString` (1) decodes UTF-8,
+    // (2) replaces `\n` / `\r` with space, (3) collapses internal
+    // whitespace runs, (4) trims leading + trailing whitespace. We
+    // must reject any input the conversion would actually touch;
+    // everything else is byte-equal to the conversion result.
     constexpr unsigned char ASCII_FIRST_NON_CONTROL = 0x20; // space; lower bytes are control.
     constexpr unsigned char ASCII_HIGH_BIT = 0x80;          // first non-ASCII byte.
     constexpr unsigned char ASCII_DEL = 0x7F;               // DEL is a control byte despite living at 0x7F.
@@ -912,17 +909,15 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
         const auto c = static_cast<unsigned char>(ch);
         if (c >= ASCII_HIGH_BIT)
         {
-            // Non-ASCII: `QString::fromUtf8` may decode to a different
-            // code-unit count; byte compare against a Latin1 pattern
-            // would be wrong.
+            // Non-ASCII byte: `QString::fromUtf8` may decode to a
+            // different code-unit count, so byte compare would diverge.
             return false;
         }
         if (c == ' ')
         {
             if (prevSpace)
             {
-                // Run of two-or-more spaces -- `simplified()` would
-                // collapse them.
+                // Two-or-more-space run; `simplified()` collapses it.
                 return false;
             }
             prevSpace = true;
@@ -949,18 +944,17 @@ bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
     }
     const int cols = columnCount();
     // `destIndex` is an absolute final-position index (matching
-    // `LogTable::MoveColumn`), so it must be a valid column index.
+    // `LogTable::MoveColumn`).
     if (srcIndex < 0 || srcIndex >= cols || destIndex < 0 || destIndex >= cols)
     {
         return false;
     }
-    // `beginMoveColumns` uses "insert before" semantics for its
-    // `destinationChild`, while `LogTable::MoveColumn` treats
-    // `destIndex` as the column's final absolute position. The two
-    // conventions agree for leftward moves (srcIndex > destIndex) but
-    // differ by one for rightward moves: Qt would land the column at
-    // `destIndex - 1`. Translate so both APIs end up describing the
-    // same post-move layout.
+    // `beginMoveColumns`'s `destinationChild` uses "insert before"
+    // semantics, while `LogTable::MoveColumn`'s `destIndex` is the
+    // column's final absolute position. The two agree for leftward
+    // moves (srcIndex > destIndex) but differ by one for rightward
+    // moves -- Qt would land the column at `destIndex - 1`. Translate
+    // so both APIs describe the same post-move layout.
     const int qtDestinationChild = (srcIndex < destIndex) ? destIndex + 1 : destIndex;
     if (!beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), qtDestinationChild))
     {

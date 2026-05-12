@@ -19,23 +19,22 @@ namespace loglib
 class LogTable;
 
 /// Multi-select equality predicate for `Type::Enumeration` columns.
-/// Hot path: one `GetEnumValueId` + `vector<bool>` test. Rows whose
-/// slot is non-`DictRef` (column not yet promoted) fall back to a
+/// Hot path: one `GetEnumValueId` + `vector<bool>` test. Rows with a
+/// non-`DictRef` slot (column not yet promoted) fall back to a
 /// transparent-hash string set.
 ///
-/// The bitset is a snapshot of the dictionary at construction.
-/// Callers should rebuild the predicate on `enumColumnsChanged`.
-/// Stale predicates still work: an id past the bitset rejects when
+/// The bitset is a dictionary snapshot taken at construction. Callers
+/// should rebuild the predicate on `enumColumnsChanged`. Stale
+/// predicates still work: an id past the bitset rejects when
 /// `mAllResolved`, otherwise falls through to the string set.
 ///
-/// Threading: `MatchesRow` is read-only and stateless on `*this` -
-/// `mSelectedIds` / `mSelectedStrings` are written only by the
-/// constructor and never mutated afterwards. `FilterAcceptedRows`
-/// invokes it concurrently from a `tbb::parallel_for` over rows; the
-/// past-bitset branch keeps results correct even if a separate writer
-/// thread grows the dictionary mid-evaluation, because growth only
-/// pushes new ids past the bitset's `size()` and the string-set
-/// fallback handles them.
+/// Threading: `MatchesRow` is read-only and stateless on `*this`
+/// (the constructor writes `mSelectedIds` / `mSelectedStrings` and
+/// nobody mutates them afterwards). `FilterAcceptedRows` invokes it
+/// concurrently from `tbb::parallel_for`. The past-bitset branch
+/// keeps results correct even if a writer grows the dictionary
+/// mid-evaluation: growth only pushes new ids past the bitset's
+/// `size()`, and the string-set fallback handles them.
 class EnumRowPredicate
 {
 public:
@@ -69,15 +68,15 @@ private:
     std::vector<bool> mSelectedIds;
     /// Selected values that did not resolve at construction (or all
     /// of them when no dictionary was given). Skipped on the fully-
-    /// resolved fast path; covers unpromoted slots and stale-predicate
-    /// past-bitset hits.
+    /// resolved fast path; covers unpromoted slots and past-bitset
+    /// hits from stale predicates.
     std::unordered_set<std::string, internal::TransparentStringHash, internal::TransparentStringEqual> mSelectedStrings;
     bool mFastPathArmed = false;
-    /// Every selected value resolved to an id at construction.
+    /// True iff every selected value resolved to an id at construction.
     bool mAllResolved = false;
-    /// Constructor was given an empty selection; `MatchesRow` rejects
-    /// every row. Named sentinel guards against future field additions
-    /// breaking the obvious inference.
+    /// True iff the constructor was given an empty selection.
+    /// `MatchesRow` then rejects every row. Named sentinel so future
+    /// field additions don't accidentally break the inference.
     bool mEmptySelection = false;
 };
 
@@ -109,8 +108,8 @@ private:
 };
 
 /// String predicate that defers matching to a caller-supplied
-/// callback. Lets the GUI keep Qt-flavoured regex / wildcard semantics
-/// without lib pulling in a Qt dependency. The caller owns callback
+/// callback. Keeps Qt-flavoured regex / wildcard semantics in the GUI
+/// without pulling Qt into the lib. The caller owns callback
 /// thread-safety; the GUI builder pre-JITs its `QRegularExpression`
 /// so captured copies don't re-compile lazily.
 class CallbackStringRowPredicate
@@ -139,40 +138,37 @@ private:
     MatchFn mMatch;
 };
 
-/// Closed-set union of concrete row predicates. The GUI proxy stores
-/// these by value -- no heap allocation per rule, no virtual dispatch
-/// on the per-row hot path.
+/// Closed-set union of concrete row predicates. Stored by value, so
+/// the per-row hot path pays no heap allocation and no virtual dispatch.
 using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, CallbackStringRowPredicate>;
 
-/// Visit-dispatch helper; resolves to the concrete `MatchesRow` at
+/// Visit-dispatch helper. Resolves to the concrete `MatchesRow` at
 /// compile time.
 [[nodiscard]] inline bool MatchesRow(const RowPredicate &predicate, const LogTable &table, size_t row)
 {
     return std::visit([&table, row](const auto &concrete) { return concrete.MatchesRow(table, row); }, predicate);
 }
 
-/// Column index targeted by @p predicate. Used by the GUI proxy to
+/// Column index targeted by @p predicate. The GUI proxy uses this to
 /// decide whether a source `dataChanged` requires a filter rebuild.
 [[nodiscard]] inline size_t RowPredicateColumn(const RowPredicate &predicate) noexcept
 {
     return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
 
-/// Evaluate @p predicates against every row in @p table in parallel and
-/// return the row indices that pass every predicate, in ascending order.
-/// Empty @p predicates returns `[0, table.RowCount())` (degenerate
-/// identity case; the GUI proxy short-circuits before calling).
+/// Evaluate @p predicates against every row of @p table in parallel
+/// and return the rows that pass all predicates, in ascending order.
+/// Empty @p predicates returns `[0, table.RowCount())`.
 ///
 /// Threading: each worker accumulates surviving rows into a
 /// thread-local bucket via `tbb::parallel_for`; buckets are coalesced
-/// and sorted on the calling thread before return. Predicate
+/// and sorted on the caller thread before return. Predicate
 /// `MatchesRow` implementations must be thread-safe read-only against
 /// @p table -- the three predicates in this file qualify
-/// (`CallbackStringRowPredicate` formats into a `thread_local` buffer,
+/// (`CallbackStringRowPredicate` uses a `thread_local` buffer,
 /// `EnumRowPredicate` reads an immutable bitset snapshot,
-/// `TimeRangeRowPredicate` is stateless). The function intentionally
-/// lives in `loglib` rather than the GUI proxy so callers do not need
-/// a TBB include in their translation unit.
+/// `TimeRangeRowPredicate` is stateless). Lives in `loglib` so
+/// callers don't need a TBB include.
 [[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
 
 } // namespace loglib

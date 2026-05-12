@@ -345,7 +345,6 @@ TEST_CASE(
     std::vector<size_t> indices(ROW_COUNT);
     // `std::iota` rather than `std::ranges::iota`: the latter is C++23
     // and AppleClang 17's libc++ still lacks it (macOS CI build).
-    // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
     std::iota(indices.begin(), indices.end(), size_t{0});
 
     constexpr int SAMPLES = 3;
@@ -354,7 +353,6 @@ TEST_CASE(
     for (int s = 0; s < SAMPLES; ++s)
     {
         // Reset the permutation before each timed sort.
-        // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
         std::iota(indices.begin(), indices.end(), size_t{0});
         elapsed.push_back(TimeOnce([&]() {
             std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, &rank) < 0; });
@@ -443,11 +441,11 @@ TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms
                                               << "), accepted=" << accepted
     );
 
-    // The sequential `EnumRowPredicate` walk above already lands around
-    // 16 ms on the dev box; the parallel pass should be no slower than
-    // ~6x that even on a single-core CI runner (TBB falls back to
-    // sequential when no worker threads are available). 100 ms keeps
-    // CI variance happy while flagging an order-of-magnitude regression.
+    // Sequential reference lands ~16 ms on the dev box; the parallel
+    // pass should stay within ~6x that even on a single-core CI
+    // runner (TBB falls back to sequential without worker threads).
+    // 100 ms tolerates CI variance while catching order-of-magnitude
+    // regressions.
     CHECK(Ms(low).count() < 100.0);
 }
 
@@ -472,7 +470,6 @@ TEST_CASE(
     const EnumDictRank rank{*dict};
 
     std::vector<size_t> logRows(ROW_COUNT);
-    // NOLINTNEXTLINE(modernize-use-ranges): `std::ranges::iota` is C++23 and unavailable on AppleClang 17 libc++.
     std::iota(logRows.begin(), logRows.end(), size_t{0});
 
     constexpr int SAMPLES = 3;
@@ -500,17 +497,15 @@ TEST_CASE(
                                                                   << ", high=" << Ms(high).count() << ")"
     );
 
-    // The sequential `std::ranges::sort + CompareRows` reference above
-    // lands ~148 ms on the dev box; the parallel + pre-materialised
-    // rank path measured ~68 ms there. 500 ms is a generous CI ceiling
-    // -- a regression past this threshold means either the rank
-    // pre-materialisation broke or `tbb::parallel_sort` collapsed back
-    // to sequential.
+    // Sequential `std::ranges::sort + CompareRows` reference lands
+    // ~148 ms on the dev box; parallel + pre-materialised rank is
+    // ~68 ms. 500 ms is the CI ceiling: a regression past it means
+    // either rank pre-materialisation broke or `tbb::parallel_sort`
+    // collapsed back to sequential.
     CHECK(Ms(low).count() < 500.0);
 
-    // Sanity: the permutation produces an ascending rank order with
-    // input-index tie-break (`SortPermutationByColumn` is documented
-    // as stable through the tie-break).
+    // Sanity: ascending rank order with input-index tie-break
+    // (`SortPermutationByColumn` documents this stability).
     for (size_t i = 1; i < permutation.size(); ++i)
     {
         const auto lhsId = table.GetEnumValueId(logRows[permutation[i - 1]], 0);

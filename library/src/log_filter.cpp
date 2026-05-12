@@ -1,6 +1,5 @@
-// TBB headers must precede any Qt-aware translation units in the same
-// build, but this is a pure `loglib` source file with no Qt include
-// anywhere in the chain -- safe to include in normal order.
+// `loglib` has no Qt in its include chain, so the TBB-before-Qt
+// ordering that `app/` needs doesn't apply here.
 #include "loglib/log_filter.hpp"
 
 #include "loglib/log_table.hpp"
@@ -36,7 +35,7 @@ EnumRowPredicate::EnumRowPredicate(
     }
 
     // Dedupe so `mAllResolved` is keyed on distinct values regardless
-    // of caller-side dedup, and so the bitset/string-set work stays
+    // of caller-side dedup, and so the bitset / string-set work stays
     // bounded.
     const std::unordered_set<std::string_view, internal::TransparentStringHash, internal::TransparentStringEqual>
         distinct(selectedValues.begin(), selectedValues.end());
@@ -51,7 +50,7 @@ EnumRowPredicate::EnumRowPredicate(
         return;
     }
 
-    // Indexed by id; ids past `Size()` later route through the
+    // Indexed by id; ids past `Size()` later go through the
     // past-bitset branch in `MatchesRow`.
     mSelectedIds.assign(static_cast<size_t>(dictionary->Size()), false);
     size_t resolvedCount = 0;
@@ -60,16 +59,17 @@ EnumRowPredicate::EnumRowPredicate(
         const EnumValueId id = dictionary->Find(value);
         if (id == INVALID_ENUM_VALUE_ID)
         {
-            // Unresolved -> string-set fallback so post-rebuild evals
-            // still match.
+            // Unresolved -> string-set fallback so the post-rebuild
+            // path still matches.
             mSelectedStrings.emplace(value);
             continue;
         }
         const auto idx = static_cast<size_t>(id);
         if (idx >= mSelectedIds.size())
         {
-            // Defensive: id past the snapshot we sized against (concurrent
-            // dict growth between `Size()` and `Find`). Treat as unresolved.
+            // Defensive: id past the snapshot we sized against
+            // (concurrent dict growth between `Size()` and `Find`).
+            // Treat as unresolved.
             mSelectedStrings.emplace(value);
             continue;
         }
@@ -99,19 +99,17 @@ bool EnumRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             if (mAllResolved)
             {
                 // Past the bitset, fully resolved -> provably unselected.
-                // Soundness: an id past the bitset can only exist because
-                // the dictionary grew after we sized against it. Growth
-                // only mints ids for values that were not yet in the
-                // dictionary, so the new value was never observed when
-                // the predicate was built. `mAllResolved` means every
-                // selected string did resolve at construction; therefore
-                // the just-minted value cannot have been in our selection.
+                // An id past the bitset can only exist because the
+                // dictionary grew after we sized against it. Growth
+                // mints ids only for new values, and `mAllResolved`
+                // says every selected string already resolved at
+                // construction, so the new value cannot be selected.
                 return false;
             }
-            // Past the bitset with stale predicate; fall through to
-            // the string set. (Some selected values were unresolved at
-            // construction, so an unseen id might correspond to one of
-            // them once we compare the bytes.)
+            // Past the bitset with a stale predicate: fall through
+            // to the string set. Some selected values were unresolved
+            // at construction, so this id may still correspond to one
+            // of them once the bytes are compared.
         }
         // Slot isn't a `DictRef`; fall through to the string set.
     }
@@ -159,8 +157,8 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             }
             else if constexpr (std::is_same_v<T, uint64_t>)
             {
-                // Clamp negative bounds to 0 so e.g. `[-1, 100]` still
-                // matches positive values.
+                // Clamp negative bounds to 0 so e.g. `[-1, 100]`
+                // still matches positive values.
                 const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
                 const uint64_t hi = mEnd < 0 ? 0U : static_cast<uint64_t>(mEnd);
                 return alt >= lo && alt <= hi;
@@ -188,14 +186,13 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     // One-walk path: `GetValueOrFormatted` resolves the slot once and
     // either returns its bytes directly (mmap-aliased / dict-resolved
     // string slots) or formats numeric/time slots into the
-    // `thread_local` buffer. The previous two-call shape walked the
-    // line twice (`GetValue` + `GetFormattedValue`) for every
-    // non-string column hit.
+    // `thread_local` buffer. The old two-call shape walked the line
+    // twice (`GetValue` + `GetFormattedValue`) for every non-string
+    // column hit.
     //
     // `thread_local` is safe under `tbb::parallel_for`: each TBB
-    // worker thread keeps its own buffer instance. Re-entrancy within
-    // a thread is fine because `mMatch` doesn't call back into
-    // `MatchesRow`.
+    // worker has its own buffer. Re-entrancy within a thread is fine
+    // because `mMatch` doesn't call back into `MatchesRow`.
     thread_local std::string buffer;
     const std::string_view bytes = table.GetValueOrFormatted(row, mColumnIndex, buffer);
     return mMatch(bytes);
@@ -208,9 +205,9 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const Ro
 
     if (predicates.empty())
     {
-        // Identity case: hand back `[0, rowCount)` so callers can share
-        // a single code path with the filtered case. Cheap enough to
-        // do sequentially; the bottleneck path is filter+predicate.
+        // Identity case: hand back `[0, rowCount)` so callers can
+        // share one code path with the filtered case. The bottleneck
+        // is filter + predicate, so the sequential fill is cheap.
         accepted.resize(rowCount);
         std::iota(accepted.begin(), accepted.end(), size_t{0});
         return accepted;
@@ -222,10 +219,10 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const Ro
     }
 
     // Parallel filter pass: each TBB worker drains a `blocked_range`
-    // into its thread-local bucket, then we coalesce the buckets and
-    // sort the result so callers get rows in ascending order. Buckets
-    // grow proportional to `rowCount / num_threads`, so the final
-    // single-threaded sort is cheap relative to the parallel pass.
+    // into its thread-local bucket. We coalesce the buckets and sort
+    // the result so callers get rows in ascending order. Buckets grow
+    // proportional to `rowCount / num_threads`, so the final
+    // single-threaded sort is cheap.
     tbb::enumerable_thread_specific<std::vector<size_t>> buckets;
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, rowCount),

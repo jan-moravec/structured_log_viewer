@@ -43,21 +43,20 @@ enum class StreamingResult : int
     Failed = 2,
 };
 
-/// Shape change reported by `LogModel::enumColumnsChanged`. Receivers
+/// Shape change reported by `LogModel::enumColumnsChanged`, so receivers
 /// can scope their reaction:
-///   - `Promoted` — at least one column flipped into `Type::Enumeration`
-///     this batch. The proxy's `EnumDictRank` cache has no entry for
-///     the new key, so no invalidation is needed; filter rules built
-///     against the pre-promotion string-set path want to be rebuilt
-///     onto the bitset fast path.
-///   - `Grew` — an already-enum column's dictionary gained at least
+///   - `Promoted` -- a column flipped into `Type::Enumeration`. The
+///     proxy's `EnumDictRank` cache has no entry yet, so no
+///     invalidation is needed; filter rules built before the promotion
+///     want a rebuild onto the bitset fast path.
+///   - `Grew` -- an existing enum column's dictionary gained at least
 ///     one id. `EnumRankFor` self-heals via its `DictSize()` check,
-///     so the rank cache stays valid; filter rules only need rebuild
+///     so the rank cache stays valid; filter rules only need a rebuild
 ///     if a previously-unresolved selected value just got interned.
-///   - `Demoted` — an enum column lost its dictionary (registry
-///     erase). The cached `EnumDictionary*` for that key is now
-///     dangling; the rank cache entry must be dropped and filter
-///     rules rebuilt onto the string-set fallback.
+///   - `Demoted` -- an enum column lost its dictionary (registry
+///     erase). The cached `EnumDictionary*` is now dangling, so the
+///     rank cache entry must be dropped and rules rebuilt onto the
+///     string-set fallback.
 enum class EnumColumnsChangeReason : int
 {
     Promoted = 0,
@@ -157,20 +156,19 @@ public:
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
     /// UTF-8 bytes -> single-line, simplified `QString` (the
-    /// `Qt::DisplayRole` representation). Public so the filter proxy's
-    /// `MatchRow` and `MainWindow::MakeStringMatcher` can apply the
-    /// same normalisation the user sees on screen.
+    /// `Qt::DisplayRole` representation). Public so `MatchRow` and
+    /// `MainWindow::MakeStringMatcher` apply the same normalisation
+    /// the user sees on screen.
     static QString ConvertToSingleLineCompactQString(std::string_view bytes);
 
-    /// True iff @p bytes already matches the byte form of
-    /// `ConvertToSingleLineCompactQString(bytes)` -- i.e. pure 7-bit
-    /// ASCII, no leading / trailing space, no run of two spaces, no
-    /// `\n` / `\r` / `\t` / `\v` / `\f` / control byte. When both the
-    /// pattern and the haystack pass, `MakeStringMatcher`'s
-    /// `Exactly` / `Contains` paths can byte-compare directly and
-    /// skip the `QString::fromUtf8` + `simplified()` walk. Designed
-    /// to early-exit on the first violating byte so the typical
-    /// ASCII log line (overwhelmingly the case) costs essentially a
+    /// True iff @p bytes is already byte-equal to
+    /// `ConvertToSingleLineCompactQString(bytes).toUtf8()`: pure 7-bit
+    /// ASCII, no leading/trailing space, no double-space, no
+    /// `\n`/`\r`/`\t`/`\v`/`\f`/control byte. When both pattern and
+    /// haystack pass, `MakeStringMatcher`'s `Exactly` / `Contains`
+    /// paths byte-compare directly and skip the
+    /// `QString::fromUtf8` + `simplified()` walk. Early-exits on the
+    /// first violating byte so the common ASCII log line costs a
     /// single linear scan.
     [[nodiscard]] static bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept;
 
@@ -200,12 +198,10 @@ signals:
 
     /// Emitted when the set of `Type::Enumeration` columns or any of
     /// their dictionaries changes shape (auto-promotion, dict growth,
-    /// or end-of-stream finalisation). `MainWindow` rebuilds active
-    /// enum filter rules on every emit so newly-interned ids stay on
-    /// the bitset fast path. The @p reason argument lets the receiver
-    /// scope cheaper reactions to growth events vs. demote events --
-    /// see `EnumColumnsChangeReason`. Multiple reasons may be emitted
-    /// from a single batch (e.g. one column promoted, another demoted).
+    /// end-of-stream finalisation). `MainWindow` rebuilds enum filter
+    /// rules when the @p reason warrants it; see
+    /// `EnumColumnsChangeReason`. A single batch may emit multiple
+    /// reasons (e.g. one column promoted, another demoted).
     void enumColumnsChanged(EnumColumnsChangeReason reason);
 
 private:

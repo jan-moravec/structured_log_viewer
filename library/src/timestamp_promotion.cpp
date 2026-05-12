@@ -41,7 +41,6 @@ std::optional<std::string_view> ExtractStringBytes(
     }
     const auto compact = line.CompactValues();
     // Asymmetric comparator: std::ranges::lower_bound rejects it.
-    // NOLINTNEXTLINE(modernize-use-ranges)
     auto it = std::lower_bound(compact.begin(), compact.end(), keyId, [](const auto &entry, KeyId target) {
         return entry.first < target;
     });

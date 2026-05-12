@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <iterator>
 #include <mutex>
+#include <ranges>
 #include <span>
 #include <utility>
 
@@ -43,9 +44,9 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
 {
     beginResetModel();
 
-    // Wipe filter state before re-wiring so predicates baked against the
-    // old table's dictionary can't poison the new chain. Caller must
-    // re-bind via `SetLogModel` before installing rules.
+    // Wipe filter state before rewiring: predicates baked against the
+    // old table's dictionary must not leak into the new chain. Caller
+    // re-binds via `SetLogModel` before installing rules.
     mFilterRules.clear();
     mLogModel = nullptr;
     mEnumRanks.clear();
@@ -81,7 +82,7 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
 
 void LogFilterModel::RewireSourceConnections()
 {
-    QAbstractItemModel *src = sourceModel();
+    const QAbstractItemModel *src = sourceModel();
     if (src == nullptr)
     {
         return;
@@ -227,8 +228,8 @@ void LogFilterModel::sort(int column, Qt::SortOrder order)
         mSortOrder = order;
         return;
     }
-    // `column == -1` clears any user sort and returns to ascending
-    // source-row order; mirrors `QSortFilterProxyModel::sort(-1)`.
+    // `column == -1` clears the user sort and reverts to ascending
+    // source-row order, matching `QSortFilterProxyModel::sort(-1)`.
     if (column < 0)
     {
         if (mSortColumn < 0)
@@ -272,26 +273,23 @@ void LogFilterModel::ApplySortPermutation()
         return;
     }
 
-    // Resolve source rows to log rows once, up front. The previous
-    // comparator-driven path called `SourceRowToLogRow` twice per
-    // `lessThan` call -- on a 1 M-row enum sort that's ~40 M proxy
-    // chain walks, which dominated wall-clock. With pre-resolution
-    // here the sort comparator stays inside `loglib` and never
-    // touches a `QModelIndex`.
+    // Resolve every source row to its log row once. The old
+    // comparator-driven path walked the proxy chain twice per
+    // `lessThan` call (~40 M walks on a 1 M-row enum sort, dominating
+    // wall-clock). With pre-resolution the sort comparator stays
+    // inside `loglib` and never touches a `QModelIndex`.
     std::vector<size_t> logRows;
     logRows.reserve(mAcceptedSourceRows.size());
     for (const int srcRow : mAcceptedSourceRows)
     {
         const int logRow = SourceRowToLogRow(srcRow);
-        // `mAcceptedSourceRows` provenance is `RebuildAcceptedRows`
-        // or `OnSourceRowsInserted`, both of which only push rows
-        // whose log mapping resolved. Assert that invariant in debug
-        // -- a stray `-1` here means the proxy chain emitted a
-        // structural change between accept-list rebuild and sort,
-        // which we want a loud failure on. The release-mode fallback
-        // collapses the offender onto log row 0; combined with the
-        // tail-bucket invariant in `loglib::CompareRows` the row
-        // still lands in a defined position rather than corrupting
+        // Every entry in `mAcceptedSourceRows` was pushed by a path
+        // that already resolved the log mapping. A stray `-1` here
+        // means the proxy chain emitted a structural change between
+        // the accept-list rebuild and this sort -- assert loudly. In
+        // release we collapse the offender onto log row 0; combined
+        // with the `loglib::CompareRows` tail-bucket invariant that
+        // still produces a defined position rather than corrupting
         // the parallel arrays. Pinned by `TestApplySortPermutation*`.
         Q_ASSERT_X(
             logRow >= 0, "LogFilterModel::ApplySortPermutation", "source row failed to resolve to a log row mid-sort"
@@ -360,7 +358,7 @@ bool LogFilterModel::LessThanSourceRows(int leftSource, int rightSource) const
 
 int LogFilterModel::SourceRowToLogRow(int sourceRow) const
 {
-    QAbstractItemModel *src = sourceModel();
+    const QAbstractItemModel *src = sourceModel();
     if (src == nullptr || sourceRow < 0)
     {
         return -1;
@@ -374,8 +372,8 @@ int LogFilterModel::SourceIndexToLogRow(QModelIndex sourceIdx) const
     {
         return -1;
     }
-    // Walk the proxy chain. Mirrors the prior `MapModelIndexToLogModelRow`
-    // shape but enters at a source-coords index, not a proxy-coords one.
+    // Walk the proxy chain. Same shape as the prior
+    // `MapModelIndexToLogModelRow`, but entered at a source-coords index.
     while (const auto *proxy = qobject_cast<const QAbstractProxyModel *>(sourceIdx.model()))
     {
         const QModelIndex mapped = proxy->mapToSource(sourceIdx);
@@ -400,6 +398,8 @@ int LogFilterModel::LogRowToSourceRow(int logRow) const
     }
     // Empty chain: `sourceModel() == mLogModel`. The "log row" is
     // already the "source row" -- no proxy hop required.
+    // Empty chain (`sourceModel() == mLogModel`): the log row is the
+    // source row.
     if (mProxyChainAbove.empty())
     {
         return logRow;
@@ -409,7 +409,7 @@ int LogFilterModel::LogRowToSourceRow(int logRow) const
     {
         return -1;
     }
-    for (QAbstractProxyModel *proxy : mProxyChainAbove)
+    for (const QAbstractProxyModel *proxy : mProxyChainAbove)
     {
         idx = proxy->mapFromSource(idx);
         if (!idx.isValid())
@@ -423,10 +423,9 @@ int LogFilterModel::LogRowToSourceRow(int logRow) const
 void LogFilterModel::RebuildProxyChainCache()
 {
     mProxyChainAbove.clear();
-    // Walk downward: `sourceModel()` is closest to `this`, its own
-    // source is further down, ... until a non-proxy (the `LogModel`).
-    // We capture each proxy on the way and reverse so the cache reads
-    // bottom-up (LogModel -> sourceModel) for `mapFromSource` walks.
+    // Walk downward through `sourceModel()` until we hit a non-proxy
+    // (the `LogModel`). Reverse so the cache reads bottom-up
+    // (LogModel -> sourceModel), the order `mapFromSource` walks need.
     QAbstractItemModel *cursor = sourceModel();
     while (auto *proxy = qobject_cast<QAbstractProxyModel *>(cursor))
     {
@@ -444,9 +443,8 @@ bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
     }
     if (mLogModel == nullptr)
     {
-        // Predicates can't run without the table. Reaching here means
-        // rules were installed without `SetLogModel`; assert in debug,
-        // reject loudly in release rather than silently accepting.
+        // Rules were installed without `SetLogModel`. Assert in debug;
+        // in release reject every row (loud failure beats silent accept).
         Q_ASSERT_X(
             mLogModel != nullptr,
             "LogFilterModel::MatchesRulesAtSourceRow",
@@ -472,7 +470,7 @@ bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
 
 void LogFilterModel::RecomputeAcceptedRows()
 {
-    QAbstractItemModel *src = sourceModel();
+    const QAbstractItemModel *src = sourceModel();
     mAcceptedSourceRows.clear();
     if (src == nullptr)
     {
@@ -483,8 +481,7 @@ void LogFilterModel::RecomputeAcceptedRows()
     mAcceptedSourceRows.reserve(static_cast<size_t>(n));
     if (mFilterRules.empty())
     {
-        // Empty rule list: every source row passes regardless of
-        // LogModel binding (no predicate has to evaluate).
+        // No rules: every row passes, even without a `LogModel`.
         for (int i = 0; i < n; ++i)
         {
             mAcceptedSourceRows.push_back(i);
@@ -494,9 +491,8 @@ void LogFilterModel::RecomputeAcceptedRows()
     if (mLogModel == nullptr)
     {
         // Rules without a `LogModel`: predicates can't evaluate. Assert
-        // in debug, reject every row in release (loud failure mode is
-        // preferable to silently accepting everything). Pinned by
-        // `TestFilterAcceptsRowRejectsAllWithoutLogModel`.
+        // in debug, reject every row in release (loud failure beats
+        // silent accept). Pinned by `TestFilterAcceptsRowRejectsAllWithoutLogModel`.
         Q_ASSERT_X(
             false,
             "LogFilterModel::RecomputeAcceptedRows",
@@ -509,11 +505,11 @@ void LogFilterModel::RecomputeAcceptedRows()
         return;
     }
 
-    // Hot path: hand the predicate evaluation off to
-    // `loglib::FilterAcceptedRows`, which runs `tbb::parallel_for`
-    // over `LogTable` rows directly. The lib doesn't see the proxy
-    // chain (no Qt dependency, no per-row `mapToSource` walk), so
-    // we map each surviving log row back to source coords here.
+    // Hot path: hand predicate evaluation off to
+    // `loglib::FilterAcceptedRows`, which runs `tbb::parallel_for` over
+    // `LogTable` rows directly. The lib has no Qt dependency and no
+    // proxy-chain awareness, so we map each surviving log row back to
+    // source coords here.
     const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), std::span{mFilterRules});
     mAcceptedSourceRows.reserve(acceptedLogRows.size());
     for (const size_t logRow : acceptedLogRows)
@@ -524,18 +520,17 @@ void LogFilterModel::RecomputeAcceptedRows()
             mAcceptedSourceRows.push_back(srcRow);
         }
     }
-    // Lib returns log rows in ascending order; the proxy chain
-    // may permute them (e.g. `RowOrderProxyModel` reverses when
-    // active). Restore ascending source-row order so
-    // `mapFromSource`'s reverse index and later streaming inserts
-    // can rely on it. For order-preserving chains this is an
-    // already-sorted pass (~free).
+    // The lib returns log rows in ascending order, but the proxy chain
+    // may permute them (e.g. `RowOrderProxyModel` reverses). Restore
+    // ascending source-row order so the reverse index and later
+    // streaming inserts can rely on it. Order-preserving chains pay
+    // an already-sorted pass.
     std::ranges::sort(mAcceptedSourceRows);
 }
 
 void LogFilterModel::RebuildAcceptedRows()
 {
-    QAbstractItemModel *src = sourceModel();
+    const QAbstractItemModel *src = sourceModel();
     if (src == nullptr)
     {
         return;
@@ -562,26 +557,21 @@ void LogFilterModel::SnapshotPersistentIndices()
     mPersistentIndexSnapshot.reserve(raw.size());
     mPersistentSourceIndexSnapshot.clear();
     mPersistentSourceIndexSnapshot.reserve(raw.size());
-    QAbstractItemModel *src = sourceModel();
+    const QAbstractItemModel *src = sourceModel();
     for (const QModelIndex &idx : raw)
     {
         mPersistentIndexSnapshot.append(QPersistentModelIndex{idx});
         if (src != nullptr && idx.isValid() && static_cast<size_t>(idx.row()) < mAcceptedSourceRows.size())
         {
             const int srcRow = mAcceptedSourceRows[static_cast<size_t>(idx.row())];
-            // Anchor on a source-side `QPersistentModelIndex` rather
-            // than on the bare row number: when the source model
-            // reshuffles its own rows (e.g. `RowOrderProxyModel`'s
-            // `SetReversed` toggle) it remaps every persistent index
-            // it owns via `changePersistentIndexList`, so this anchor
-            // keeps pointing at the same logical entity even though
-            // the row number underneath it has changed. The follow-up
-            // `RemapPersistentIndicesForRebuild` then reads the new
-            // row out of the anchor and looks it up in the rebuilt
-            // reverse index. For sort / filter rebuilds the source
-            // layout doesn't change, so the anchor's row is unchanged
-            // and the behaviour collapses to the previous "store the
-            // source row number" path.
+            // Anchor on a source-side persistent index (not a bare row
+            // number). When the source reshuffles its own rows
+            // (e.g. `RowOrderProxyModel::SetReversed`) it remaps every
+            // persistent index via `changePersistentIndexList`, so
+            // this anchor keeps pointing at the same entity. For sort
+            // / filter rebuilds the source layout doesn't move, so
+            // the anchor's row is unchanged and the behaviour collapses
+            // to the previous "stored source row number" path.
             mPersistentSourceIndexSnapshot.append(QPersistentModelIndex{src->index(srcRow, idx.column())});
         }
         else
@@ -623,11 +613,11 @@ void LogFilterModel::RemapPersistentIndicesForRebuild()
             continue;
         }
         // Read the post-rebuild row / column out of the source anchor.
-        // For a sort or filter rebuild the source layout didn't move,
-        // so this matches the original snapshot. For a source-side
-        // layout change (`OnSourceLayoutChanged`) the anchor has been
-        // updated by the source's own `changePersistentIndexList`
-        // pass and now points at where the entity moved to.
+        // After a sort / filter rebuild the source layout didn't move
+        // and this matches the original snapshot; after a source-side
+        // layout change the anchor was updated by the source's own
+        // `changePersistentIndexList` pass and now points where the
+        // entity moved to.
         const int srcRow = srcAnchor.row();
         const int col = srcAnchor.column();
         if (srcRow < 0 || col < 0 || static_cast<size_t>(srcRow) >= mSourceRowToProxyRow.size())
@@ -666,13 +656,12 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
         return;
     }
 
-    // Shift existing accepted entries whose source row was >= first up
-    // by `insertedCount`. With no active sort, `mAcceptedSourceRows` is
-    // ascending: shift the tail in-place. With a sort, the comparator
-    // uses `SourceRowToLogRow(srcRow)` -- the source's row->log
-    // mapping shifts in lockstep with the entity (the same log row
-    // is now reachable at `srcRow + insertedCount`), so post-shift
-    // entries still describe the same entity in the same sort order.
+    // Shift accepted entries whose source row was >= first up by
+    // `insertedCount`. Under no sort, `mAcceptedSourceRows` is
+    // ascending so this is an in-place tail shift. Under a sort, the
+    // comparator reads `SourceRowToLogRow(srcRow)`; the source's
+    // row->log mapping shifts in lockstep with the entity, so each
+    // shifted entry still describes the same entity in the same order.
     for (int &row : mAcceptedSourceRows)
     {
         if (row >= first)
@@ -681,8 +670,8 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
         }
     }
 
-    // Append-test the new source rows. In streaming mode `first` equals
-    // the old row count, so most predicate work happens here.
+    // Probe the new source rows. In streaming mode `first` is the old
+    // row count, so most predicate work happens here.
     std::vector<int> newlyAccepted;
     newlyAccepted.reserve(static_cast<size_t>(insertedCount));
     for (int r = first; r <= last; ++r)
@@ -695,18 +684,17 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
 
     if (mSortColumn < 0)
     {
-        // No user sort: ascending source-row order. The shift above
-        // left a contiguous "gap" -- no existing entry has a source
-        // row in `[first, first+insertedCount-1]`, so every newly
-        // accepted row lands between the entries `< first` and the
-        // (now shifted-up) entries `>= first+insertedCount`. One
-        // `beginInsertRows`/`endInsertRows` bracket covers the
-        // whole group, instead of one bracket per row.
+        // No sort: `mAcceptedSourceRows` stays ascending. The shift
+        // above left a contiguous "gap" at `[first, first+insertedCount-1]`,
+        // so every newly accepted row lands between the entries `<first`
+        // and the shifted entries `>= first+insertedCount`. One
+        // `beginInsertRows`/`endInsertRows` bracket covers the whole
+        // group.
         //
-        // This matters during streaming: a 50 k-row batch with no
-        // filter and no sort previously emitted 50 k bracketed signal
-        // pairs and 50 k `vector::insert` shifts; the bulk path is
-        // O(1) brackets + one tail append. Pinned by
+        // Matters during streaming: a 50 k-row batch with no filter
+        // and no sort used to emit 50 k bracketed signal pairs and
+        // 50 k `vector::insert` shifts. The bulk path is O(1) brackets
+        // and one tail append. Pinned by
         // `TestStreamingAppendsEmitSingleBracketedInsert`.
         if (!newlyAccepted.empty())
         {
@@ -715,33 +703,29 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
             const int proxyLast = proxyFirst + static_cast<int>(newlyAccepted.size()) - 1;
             beginInsertRows(QModelIndex{}, proxyFirst, proxyLast);
             mAcceptedSourceRows.insert(insertIt, newlyAccepted.begin(), newlyAccepted.end());
-            // Refresh the reverse index before closing the bracket so
-            // observers calling `mapFromSource` from a `rowsInserted`
-            // slot see a consistent post-insert model. (Per-row inserts
-            // below pay the rebuild cost outside the bracket because
-            // the intermediate states would be momentarily stale
-            // anyway.)
+            // Refresh the reverse index inside the bracket so observers
+            // calling `mapFromSource` from a `rowsInserted` slot see a
+            // consistent model. (The per-row branch below rebuilds
+            // outside the bracket -- intermediate states would be
+            // momentarily stale either way.)
             RebuildReverseIndex();
             endInsertRows();
             return;
         }
-        // Source grew without contributing any accepted row: still
-        // need to resize the reverse index so out-of-range
-        // `mapFromSource` queries don't read past the old size.
+        // Source grew without contributing an accepted row: still
+        // resize the reverse index so out-of-range `mapFromSource`
+        // queries don't read past the old size.
         RebuildReverseIndex();
         return;
     }
 
     if (!newlyAccepted.empty())
     {
-        // Active sort: lower_bound on the comparator gives the correct
-        // insertion point per row. Emit per-row inserts so views keep
-        // their selection / scroll position. Coalescing would require
-        // sorting newly accepted by the comparator and resolving
-        // each predicted position against the running insertion
-        // offset -- not worth the complexity for the rare
-        // "streaming-while-sorted" case (users typically sort after
-        // streaming completes).
+        // Active sort: `lower_bound` on the comparator picks each
+        // insertion point. We emit per-row inserts so views keep their
+        // selection / scroll position. Coalescing the inserts is not
+        // worth the complexity for "streaming-while-sorted" (users
+        // typically sort after streaming completes).
         for (const int r : newlyAccepted)
         {
             const auto it = std::ranges::lower_bound(mAcceptedSourceRows, r, [this](int lhs, int rhs) {
@@ -753,10 +737,8 @@ void LogFilterModel::OnSourceRowsInserted(const QModelIndex &parent, int first, 
             endInsertRows();
         }
     }
-    // The reverse index is sized off the source row count, so it
-    // needs a refresh whenever the source grew -- whether or not any
-    // new row passed the filter and whether or not the in-place
-    // shift moved any existing entries.
+    // The reverse index is sized off the source row count: refresh
+    // whenever the source grew, even if no row passed the filter.
     RebuildReverseIndex();
 }
 
@@ -764,11 +746,11 @@ void LogFilterModel::OnSourceRowsAboutToBeRemoved(
     const QModelIndex & /*parent*/, int /*first*/, int /*last*/
 )
 {
-    // Removal is handled in `OnSourceRowsRemoved` (the post-event
-    // slot) so we can run begin/endRemoveRows synchronously per
-    // contiguous proxy-row strike. The pre-event slot stays connected
-    // so the signal pair is symmetric and so future work can snapshot
-    // persistent indices here without re-wiring.
+    // Removal is handled in the post-event `OnSourceRowsRemoved` so
+    // we can run begin/endRemoveRows synchronously per contiguous
+    // proxy-row strike. Keep this slot connected so the signal pair
+    // stays symmetric and so future work can snapshot persistent
+    // indices here without rewiring.
 }
 
 void LogFilterModel::OnSourceRowsRemoved(const QModelIndex &parent, int first, int last)
@@ -783,9 +765,9 @@ void LogFilterModel::OnSourceRowsRemoved(const QModelIndex &parent, int first, i
         return;
     }
 
-    // Two-pass: first emit `beginRemoveRows` for each contiguous proxy
-    // range that maps into [first, last]; then rebuild the row map
-    // with surviving entries shifted down by the source eviction.
+    // Two-pass: emit `beginRemoveRows` for each contiguous proxy range
+    // that maps into [first, last], then shift surviving entries down
+    // by the source eviction.
     std::vector<int> proxyRowsToDrop;
     proxyRowsToDrop.reserve(static_cast<size_t>(removedCount));
     for (size_t i = 0; i < mAcceptedSourceRows.size(); ++i)
@@ -798,7 +780,7 @@ void LogFilterModel::OnSourceRowsRemoved(const QModelIndex &parent, int first, i
     }
 
     // Coalesce into contiguous proxy-row ranges and emit removes in
-    // descending order so each `beginRemoveRows` argument is valid
+    // descending order, so each `beginRemoveRows` argument is valid
     // against the row count that exists when it fires.
     auto coalesceRanges = [&proxyRowsToDrop]() {
         std::vector<std::pair<int, int>> ranges;
@@ -827,9 +809,8 @@ void LogFilterModel::OnSourceRowsRemoved(const QModelIndex &parent, int first, i
     };
     std::vector<std::pair<int, int>> ranges = coalesceRanges();
 
-    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it)
+    for (const auto [proxyFirst, proxyLast] : std::views::reverse(ranges))
     {
-        const auto [proxyFirst, proxyLast] = *it;
         beginRemoveRows(QModelIndex{}, proxyFirst, proxyLast);
         mAcceptedSourceRows.erase(
             mAcceptedSourceRows.begin() + proxyFirst, mAcceptedSourceRows.begin() + proxyLast + 1
@@ -837,8 +818,8 @@ void LogFilterModel::OnSourceRowsRemoved(const QModelIndex &parent, int first, i
         endRemoveRows();
     }
 
-    // Shift remaining source-row entries down by `removedCount` if
-    // they were past `last`.
+    // Shift surviving entries whose source row was past `last` down
+    // by `removedCount`.
     for (int &sr : mAcceptedSourceRows)
     {
         if (sr > last)
@@ -862,10 +843,10 @@ void LogFilterModel::OnSourceDataChanged(
         return;
     }
 
-    // Forward as a proxy `dataChanged` over the proxy rows that map
-    // into the affected source range. Conservative: if any active
-    // filter rule targets a column in the changed range, rebuild the
-    // row map so newly-accepted / newly-rejected rows reflect.
+    // Forward as a proxy `dataChanged` over the proxy rows in the
+    // affected source range. Conservative: if any active rule targets
+    // a column in the changed range, rebuild the row map so newly
+    // accepted / rejected rows take effect.
     const int srcColFirst = topLeft.column();
     const int srcColLast = bottomRight.column();
     bool filterTargetsChangedColumn = false;
@@ -884,8 +865,8 @@ void LogFilterModel::OnSourceDataChanged(
         return;
     }
 
-    // Emit a proxy `dataChanged` covering only the rows in the
-    // affected source range that are currently visible.
+    // Emit a proxy `dataChanged` covering only the currently visible
+    // proxy rows that fall in the affected source range.
     const int srcFirst = topLeft.row();
     const int srcLast = bottomRight.row();
     int proxyFirst = -1;
@@ -922,10 +903,9 @@ void LogFilterModel::OnSourceModelReset()
     mEnumRanks.clear();
     if (sourceModel() != nullptr)
     {
-        // Route through the same parallel-filter helper as
-        // `RebuildAcceptedRows` instead of walking rows sequentially:
-        // a 1 M-row reload otherwise pays per-row proxy-chain walks
-        // here that the rest of the proxy already escaped.
+        // Route through the parallel-filter helper. A sequential
+        // per-row walk here would pay proxy-chain costs the rest of
+        // the proxy has already escaped (felt on 1 M-row reloads).
         RecomputeAcceptedRows();
         if (mSortColumn >= 0)
         {
@@ -938,32 +918,29 @@ void LogFilterModel::OnSourceModelReset()
 
 void LogFilterModel::OnSourceLayoutAboutToBeChanged()
 {
-    // Capture persistent index snapshot so the post-layout-change
-    // rebuild can remap. RowOrderProxyModel's reversal toggle is the
-    // common source-layout event we handle here.
+    // Snapshot persistent indices so the matching `layoutChanged`
+    // slot can remap them. `RowOrderProxyModel::SetReversed` is the
+    // common production trigger.
     emit layoutAboutToBeChanged({}, QAbstractItemModel::VerticalSortHint);
     SnapshotPersistentIndices();
 }
 
 void LogFilterModel::OnSourceLayoutChanged()
 {
-    // After a source layoutChanged the source-row meaning may have
-    // shifted (RowOrderProxyModel reversal toggle remaps every row).
-    // Rebuild without a fresh layoutAboutToBeChanged emit; the
-    // OnSourceLayoutAboutToBeChanged slot already paired one.
-    QAbstractItemModel *src = sourceModel();
+    // The source may have reshuffled rows (e.g. `RowOrderProxyModel`
+    // reversal). Rebuild without re-emitting `layoutAboutToBeChanged`;
+    // `OnSourceLayoutAboutToBeChanged` already paired one.
+    const QAbstractItemModel *src = sourceModel();
     if (src == nullptr)
     {
-        // No-op: just complete the layoutChanged bracket.
+        // No-op: just close the layoutChanged bracket.
         RemapPersistentIndicesForRebuild();
         emit layoutChanged({}, QAbstractItemModel::VerticalSortHint);
         return;
     }
-    // Same parallel-filter path as `RebuildAcceptedRows`. The
-    // alternative was a sequential per-source-row predicate walk
-    // here, which gave a perf regression vs. the steady-state proxy
-    // any time an upstream proxy emitted layoutChanged (e.g. the
-    // newest-first toggle on large logs).
+    // Reuse the parallel-filter path. A sequential per-row walk here
+    // gave a perf regression any time an upstream proxy emitted
+    // `layoutChanged` (e.g. the newest-first toggle on large logs).
     RecomputeAcceptedRows();
     if (mSortColumn >= 0)
     {
@@ -1010,19 +987,17 @@ void LogFilterModel::OnSourceColumnsAboutToBeMoved(
     const QModelIndex &parent, int from, int toLast, const QModelIndex &dest, int destColumn
 )
 {
-    // Forward the begin/end column-move pair so views downstream
-    // (header, persistent indices on column 0, custom delegate state)
-    // see a properly bracketed structural change. Pre-fix this slot
-    // wasn't connected and the post-move slot only emitted
-    // `headerDataChanged` -- the view's column metadata then drifted
-    // out of sync with the actual cell content (Time-column promotion
+    // Forward the begin/end column-move pair so downstream views
+    // (header, persistent indices, delegates) see a properly bracketed
+    // structural change. Pre-fix this slot was unconnected and the
+    // post-move slot only emitted `headerDataChanged`, leaving column
+    // metadata out of sync with cell content (Time-column promotion
     // during a streaming session was the production trigger).
     //
-    // Hierarchical moves (parent/dest valid) and Qt-refused begin
-    // both leave `mInSourceColumnMove == false`; the post-move slot
-    // then skips both the `endMoveColumns` and the `mSortColumn`
-    // adjustment so we never speak about a move that didn't happen
-    // at our level.
+    // Hierarchical moves and Qt-refused begins leave
+    // `mInSourceColumnMove == false`; the post-move slot then skips
+    // both `endMoveColumns` and the `mSortColumn` adjustment so we
+    // never speak about a move that didn't happen at our level.
     if (parent.isValid() || dest.isValid())
     {
         mInSourceColumnMove = false;
@@ -1035,15 +1010,14 @@ void LogFilterModel::OnSourceColumnsMoved(
     const QModelIndex & /*parent*/, int from, int toLast, const QModelIndex & /*dest*/, int destColumn
 )
 {
-    // Track the sort column through the move. We deliberately don't
-    // re-permute `mAcceptedSourceRows` because the row map is
-    // row-indexed; only the active sort column index needs adjusting.
+    // Track the sort column through the move. We don't re-permute
+    // `mAcceptedSourceRows` -- the row map is row-indexed; only the
+    // sort column index needs adjusting.
     //
-    // Gate the adjustment on the matching `beginMoveColumns` having
-    // fired (`mInSourceColumnMove`): a hierarchical move at the
-    // source layer carries its own from/toLast/destColumn coords
-    // that aren't meaningful to our top-level column list, so
-    // adjusting against them would silently corrupt the sort index.
+    // Gate on `mInSourceColumnMove`: hierarchical moves at the source
+    // layer carry their own from/toLast/destColumn coords that aren't
+    // meaningful to our top-level column list, and adjusting against
+    // them would silently corrupt the sort index.
     if (mInSourceColumnMove)
     {
         const int span = toLast - from + 1;
@@ -1098,8 +1072,8 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     }
     // Rebuild when the cached rank is missing, smaller than the live
     // dictionary, or attached to a different `EnumDictionary` instance
-    // (covers demote -> re-promote that re-creates the entry at the
-    // same `Size()`).
+    // (the last case covers demote -> re-promote that re-creates the
+    // registry entry at the same `Size()`).
     if (auto it = mEnumRanks.find(lookup.canonicalKey); it != mEnumRanks.end() &&
                                                         it->second.source == lookup.dictionary &&
                                                         it->second.rank.DictSize() >= lookup.dictionary->Size())
@@ -1132,13 +1106,13 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     const int startColumn = start.column();
 
     // Fast path for `DisplayRole`: format from `LogTable` directly and
-    // skip the `data().toString()` round-trip. Other roles use the
-    // QVariant path (defensive; no production caller hits it today).
+    // skip the `data().toString()` round-trip. Other roles fall through
+    // to the QVariant path (defensive; no production caller hits it today).
     const bool useFastPath = role == Qt::DisplayRole && mLogModel != nullptr;
     const QString needle = useFastPath ? value.toString() : QString{};
 
-    // `logRowCached` is resolved once per outer-loop row and reused
-    // across the column scan; the proxy mapping is row-constant.
+    // `logRowCached` is resolved once per row and reused across the
+    // column scan (the proxy mapping is row-constant).
     auto probeCell = [&](const QModelIndex &proxyIndex, int logRowCached) -> bool {
         if (useFastPath && logRowCached >= 0)
         {
