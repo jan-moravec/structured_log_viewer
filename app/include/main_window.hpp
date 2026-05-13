@@ -84,6 +84,14 @@ public:
     /// Idempotent; invoked after column structural changes (load, reorder).
     void ApplyColumnVisibility();
 
+    /// Force the horizontal header's visual-to-logical mapping back to
+    /// identity (`visual == logical` for every section). Brackets the
+    /// reordering with a `QSignalBlocker` so the no-op `sectionMoved`
+    /// volley does not re-enter `OnHeaderSectionMoved`. Exposed so the
+    /// out-of-band recovery path can call it without duplicating the
+    /// loop. Idempotent.
+    void ResetHeaderToIdentity();
+
     /// Build the right-click header context menu for the column at
     /// @p logicalColumn. Exposed publicly because the offscreen-QPA
     /// `findChild<QMenu*>` traversal bug (see `FiltersMenu()`) blocks
@@ -188,6 +196,17 @@ private slots:
     void RebuildViewMenu();
 
 private:
+    /// Locate the column whose persisted `keys` exactly equals @p keys
+    /// and return its current logical index, or `-1` if no such column
+    /// exists. `keys` is the column's set of JSON keys (per
+    /// `LogConfiguration::Column::keys`), which is the only identifier
+    /// that survives a column reorder (logical indices shift; headers
+    /// are user-visible and could legitimately duplicate). Used by the
+    /// header / `View` menus so their lambdas resolve the right column
+    /// even when a streaming-induced column move (e.g. timestamp
+    /// bubbling) shifts indices between menu construction and trigger.
+    [[nodiscard]] int FindColumnIndexByKeys(const std::vector<std::string> &keys) const;
+
     /// Try to load @p file as a `LogConfiguration`; returns true on
     /// success.
     bool TryLoadAsConfiguration(const QString &file);
@@ -237,7 +256,6 @@ private:
     LogModel *mModel;
     FindRecordWidget *mFindRecord;
     PreferencesEditor *mPreferencesEditor;
-    loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
     /// Status-bar label shown while a streaming session is active.

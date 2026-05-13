@@ -3818,7 +3818,10 @@ private slots:
     // Stream a small two-column fixture into `mWindow` so column-
     // visibility tests have a real source model to point at. Returns
     // the column index of the first non-timestamp column ("level"),
-    // which the tests use as their hide / move target.
+    // which the tests use as their hide / move target. Lives inside
+    // `private slots:` for `mWindow` access; QTest filters non-void
+    // slots out of the test-method scan, so moc registers it but
+    // `QTEST_MAIN` does not invoke it.
     int StreamFixtureForColumnTests()
     {
         auto *model = mWindow->Model();
@@ -4229,6 +4232,133 @@ private slots:
             "second toggle must restore Column::visible"
         );
         QVERIFY2(!header->isSectionHidden(levelCol), "second toggle must un-hide the header section");
+    }
+
+    // Regression: clicking `Edit` on a filter menu after the filter's
+    // column was reordered must open the editor against the column's
+    // *current* index, not the index it had when the menu was built.
+    //
+    // Before the fix the `Edit` lambda captured the
+    // `LogConfiguration::LogFilter` value by copy, so `filter.row`
+    // froze at the index the column had at menu construction. After a
+    // drag-to-reorder (or any path that runs `OnHeaderSectionMoved`),
+    // `mFilters[id].row` was remapped to the new index but the
+    // captured copy was not. Triggering Edit then ran
+    // `AddFilter(id, staleFilter)` against `columns[staleRow]` --
+    // a different column with a (likely) different type -- and the
+    // type-match guard silently `ClearFilter`'d the filter.
+    void TestEditFilterAfterColumnReorderUsesCurrentRow()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto *model = mWindow->Model();
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        // Install an enum filter on the `level` column via the
+        // production `FilterEnumSubmitted` slot (mirrors what
+        // `FilterEditor` emits on OK).
+        const QString filterId = QStringLiteral("edit-after-move");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const std::string filterKey = filterId.toStdString();
+        QVERIFY2(mWindow->Filters().contains(filterKey), "filter must land in mFilters after submit");
+        QCOMPARE(mWindow->Filters().at(filterKey).row, levelCol);
+
+        // Reorder the `level` column via `OnHeaderSectionMoved` (the
+        // production header-drag entry point). This both moves the
+        // source column and remaps `mFilters[*].row`.
+        const int src = levelCol;
+        const int dest = (src == 0) ? columnCount - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "OnHeaderSectionMoved",
+                Qt::DirectConnection,
+                Q_ARG(int, src),
+                Q_ARG(int, src),
+                Q_ARG(int, dest)
+            ),
+            "OnHeaderSectionMoved slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const int levelColAfter = ColumnByHeader(*model, QStringLiteral("level"));
+        QCOMPARE(levelColAfter, dest);
+        QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the reorder");
+        QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
+
+        // Find the per-filter sub-menu and its `Edit` action via the
+        // public `FiltersMenu()` accessor (the offscreen-QPA
+        // `findChild<QMenu*>` bug strands the direct path).
+        QMenu *filtersMenu = mWindow->FiltersMenu();
+        QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
+        QAction *filterMenuAction = nullptr;
+        for (QAction *action : filtersMenu->actions())
+        {
+            if (action->data().toString() == filterId)
+            {
+                filterMenuAction = action;
+                break;
+            }
+        }
+        QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
+        QMenu *filterSubMenu = filterMenuAction->menu();
+        QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Clear sub-menu");
+        QAction *editAction = nullptr;
+        for (QAction *action : filterSubMenu->actions())
+        {
+            if (action->text() == QStringLiteral("Edit"))
+            {
+                editAction = action;
+                break;
+            }
+        }
+        QVERIFY2(editAction != nullptr, "filter sub-menu must contain an Edit action");
+
+        // Triggering Edit opens a `FilterEditor`; in the buggy build
+        // the lambda would have called `AddFilter(id, staleFilter)`,
+        // type-mismatched against `columns[src]` (now a different
+        // column), and silently dropped the filter from `mFilters`.
+        editAction->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            mWindow->Filters().contains(filterKey),
+            "Edit must not drop the filter; the lambda must look up the live mFilters[id]"
+        );
+        QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
+
+        // Confirm the opened `FilterEditor` is pointing at the
+        // post-move column (`dest`), not the stale `src`.
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "Edit must open a FilterEditor");
+        QCOMPARE(editor->GetRowToFilter(), dest);
+
+        editor->close();
+        editor->deleteLater();
+        QCoreApplication::processEvents();
     }
 
     // Regression: `EnumRankFor` self-heals when the live dictionary

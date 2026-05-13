@@ -1628,9 +1628,28 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     menuItem->menuAction()->setData(QVariant(id));
 
     const QAction *editAction = menuItem->addAction("Edit");
+    // Capture only the (stable) filter id, then look up the live
+    // filter from `mFilters` at trigger time. Capturing the
+    // `LogConfiguration::LogFilter` value here would freeze
+    // `filter.row` at the column index it had when the menu was
+    // built, so a subsequent column reorder (drag-to-reorder)
+    // would leave the Edit action pointing at the wrong column --
+    // and `AddFilter`'s type-match guard would then silently drop
+    // the filter blaming a "column type change". The live lookup
+    // keeps Edit in lockstep with the remap done by
+    // `OnHeaderSectionMoved`. Regression:
+    // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     // Qt slot; `AddFilter` uses normal exception-throwing STL; failures surface as usual.
     // NOLINTNEXTLINE(bugprone-exception-escape)
-    connect(editAction, &QAction::triggered, this, [this, id, filter]() { AddFilter(id, filter); });
+    connect(editAction, &QAction::triggered, this, [this, id]() {
+        const auto it = mFilters.find(id.toStdString());
+        if (it == mFilters.end())
+        {
+            AddFilter(id);
+            return;
+        }
+        AddFilter(id, it->second);
+    });
 
     const QAction *clearAction = menuItem->addAction("Clear");
     connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
@@ -1934,20 +1953,32 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
         // Re-entered by the visual-reset loop below; swallow.
         return;
     }
+    QHeaderView *header = mTableView->horizontalHeader();
+    if (header == nullptr)
+    {
+        return;
+    }
     // The slot only knows how to translate a single user drag against
     // an identity-mapped header (visual == logical). Anything else
     // would fold the pre-existing visual permutation into the move
     // and silently rotate the wrong source column. We restore the
     // identity invariant at the end of every move; assert it on the
-    // way in so a violation surfaces in debug builds.
+    // way in so a violation surfaces in debug builds, and bail
+    // safely in release so a stale permutation cannot scramble the
+    // source layout.
     Q_ASSERT_X(
         oldVisualIndex == logicalIndex,
         "MainWindow::OnHeaderSectionMoved",
         "header expected to be visual==logical before each drag"
     );
-    QHeaderView *header = mTableView->horizontalHeader();
-    if (header == nullptr)
+    if (oldVisualIndex != logicalIndex)
     {
+        // Out-of-band header state -- force the visual mapping back
+        // to identity so the next drag starts from a known baseline,
+        // and reassert visibility flags (`setSectionHidden` is keyed
+        // by logical index and may have followed the visual shuffle).
+        ResetHeaderToIdentity();
+        ApplyColumnVisibility();
         return;
     }
     const auto &columns = mModel->Configuration().columns;
@@ -1990,27 +2021,38 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     }
 
     // After the model commits the move, the view's header has
-    // visual == logical for the moved column. But for the leftward
-    // case, Qt also reshuffles the visual indices of the shifted
-    // columns. Reset the visual order to identity (visual == logical)
-    // so future drags start from a known baseline. We swallow the
-    // re-entrancy via `mApplyingSectionMove`.
-    {
-        const QSignalBlocker blocker(header);
-        for (int visual = 0; visual < header->count(); ++visual)
-        {
-            const int currentLogical = header->logicalIndex(visual);
-            if (currentLogical != visual)
-            {
-                header->moveSection(header->visualIndex(visual), visual);
-            }
-        }
-    }
+    // visual == logical for the moved column. Empirically Qt also
+    // reshuffles the visual indices of the shifted columns on the
+    // leftward case (`columnsMoved` permutes `QHeaderView`'s
+    // `visualIndices` array to preserve user-visible order), so the
+    // identity invariant is *usually* restored automatically.
+    // Defensive: reapply identity anyway so future drags start from
+    // a known baseline regardless of Qt-version drift. Re-entrancy
+    // through `sectionMoved` is swallowed by `mApplyingSectionMove`.
+    ResetHeaderToIdentity();
 
     // Section hidden flags are keyed by logical index in Qt; the
     // source-side rotation reorders the logical indices, so reapply
     // each column's persisted `visible` flag.
     ApplyColumnVisibility();
+}
+
+void MainWindow::ResetHeaderToIdentity()
+{
+    QHeaderView *header = mTableView->horizontalHeader();
+    if (header == nullptr)
+    {
+        return;
+    }
+    const QSignalBlocker blocker(header);
+    for (int visual = 0; visual < header->count(); ++visual)
+    {
+        const int currentLogical = header->logicalIndex(visual);
+        if (currentLogical != visual)
+        {
+            header->moveSection(header->visualIndex(visual), visual);
+        }
+    }
 }
 
 void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
@@ -2043,9 +2085,21 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
     }
     auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
 
+    // Capture each entry's stable `keys` snapshot rather than its
+    // logical index. The menu can outlive a column move (e.g. a
+    // streaming-induced timestamp bubble shifts indices while the
+    // popup is open); the index would then point at the wrong
+    // column. `FindColumnIndexByKeys` re-resolves at trigger time.
+    const std::vector<std::string> &thisKeys = columns[static_cast<size_t>(logicalColumn)].keys;
     const QString thisHeader = QString::fromStdString(columns[static_cast<size_t>(logicalColumn)].header);
     QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(thisHeader));
-    connect(hideAction, &QAction::triggered, this, [this, logicalColumn]() { SetColumnVisible(logicalColumn, false); });
+    connect(hideAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+        const int idx = FindColumnIndexByKeys(keys);
+        if (idx >= 0)
+        {
+            SetColumnVisible(idx, false);
+        }
+    });
 
     // Gather every hidden column for the `Show column` submenu. The
     // clicked column is normally visible (right-click only fires on
@@ -2065,10 +2119,15 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
         QMenu *showMenu = menu->addMenu(tr("Show column"));
         for (int hiddenLogical : hiddenColumns)
         {
+            const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;
             const QString hiddenHeader = QString::fromStdString(columns[static_cast<size_t>(hiddenLogical)].header);
             QAction *showAction = showMenu->addAction(hiddenHeader);
-            connect(showAction, &QAction::triggered, this, [this, hiddenLogical]() {
-                SetColumnVisible(hiddenLogical, true);
+            connect(showAction, &QAction::triggered, this, [this, keys = hiddenKeys]() {
+                const int idx = FindColumnIndexByKeys(keys);
+                if (idx >= 0)
+                {
+                    SetColumnVisible(idx, true);
+                }
             });
         }
     }
@@ -2123,11 +2182,39 @@ void MainWindow::RebuildViewMenu()
     }
     for (size_t i = 0; i < columns.size(); ++i)
     {
-        const int logical = static_cast<int>(i);
         const QString header = QString::fromStdString(columns[i].header);
         QAction *action = viewMenu->addAction(header);
         action->setCheckable(true);
         action->setChecked(columns[i].visible);
-        connect(action, &QAction::toggled, this, [this, logical](bool on) { SetColumnVisible(logical, on); });
+        // Capture the column's stable `keys`, not its index: the menu
+        // is rebuilt on every `aboutToShow`, but a streaming-induced
+        // column move (e.g. timestamp bubble) between show and trigger
+        // would invalidate a captured index. `FindColumnIndexByKeys`
+        // re-resolves at trigger time so the toggle always lands on
+        // the right column.
+        connect(action, &QAction::toggled, this, [this, keys = columns[i].keys](bool on) {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx >= 0)
+            {
+                SetColumnVisible(idx, on);
+            }
+        });
     }
+}
+
+int MainWindow::FindColumnIndexByKeys(const std::vector<std::string> &keys) const
+{
+    if (keys.empty())
+    {
+        return -1;
+    }
+    const auto &columns = mModel->Configuration().columns;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].keys == keys)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
 }
