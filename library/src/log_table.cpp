@@ -57,6 +57,15 @@ constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
 /// widget covers that shape (preserves the "saw something
 /// unclassifiable" semantic of `Any`). Empty observation -> `Type::Any`
 /// (the historical bail).
+///
+/// Caveat: a column that promotes to `Type::Enumeration` but later
+/// sees a wave of `Bool` slots accrues them as `wrongTypeSlots` in
+/// `EncodeColumnRange` and demotes to `Type::String`, not
+/// `Type::Boolean`. The terminal-type-stays-terminal rule prevents a
+/// second auto-detection pass. If real-world data starts hitting that
+/// case (enum → mixed-bool demotion), revisit by routing the demote
+/// decision through this helper using `EnumColumnHealth`'s per-tag
+/// counters rather than the lumped `wrongTypeSlots` total.
 LogConfiguration::Type RouteNoStringBail(
     size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
 ) noexcept

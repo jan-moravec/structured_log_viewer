@@ -41,6 +41,7 @@
 #include <exception>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <system_error>
 #include <vector>
@@ -109,6 +110,59 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
 // How long transient status-bar messages (filter rejection / drop notices)
 // linger before the bar reverts to default state.
 constexpr int STATUS_BAR_MESSAGE_TIMEOUT_MS = 5000;
+
+/// Case-insensitive ASCII equality. Mirrors the helper of the same
+/// shape in `library/src/log_table.cpp`; duplicated here because that
+/// one lives in an anonymous namespace and the GUI side has no
+/// equivalent header to pull from.
+bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        const auto ca = static_cast<unsigned char>(a[i]);
+        const auto cb = static_cast<unsigned char>(b[i]);
+        const unsigned char la = (ca >= 'A' && ca <= 'Z') ? static_cast<unsigned char>(ca + ('a' - 'A')) : ca;
+        const unsigned char lb = (cb >= 'A' && cb <= 'Z') ? static_cast<unsigned char>(cb + ('a' - 'A')) : cb;
+        if (la != lb)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Decode `LogConfiguration::LogFilter::filterValues` (a subset of
+/// `{"true", "false"}`, the on-disk shape for a `Type::Boolean`
+/// filter) into the two-toggle pair `BoolRowPredicate` consumes.
+/// Case-insensitive so a hand-edited config with `"True"` / `"FALSE"`
+/// still loads (the canonical writer uses lowercase, but the on-disk
+/// format is human-readable JSON).
+struct BooleanFilterSides
+{
+    bool includeTrue = false;
+    bool includeFalse = false;
+};
+
+BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filterValues) noexcept
+{
+    BooleanFilterSides sides;
+    for (const std::string &v : filterValues)
+    {
+        if (EqualsIgnoreCaseAscii(v, "true"))
+        {
+            sides.includeTrue = true;
+        }
+        else if (EqualsIgnoreCaseAscii(v, "false"))
+        {
+            sides.includeFalse = true;
+        }
+    }
+    return sides;
+}
 
 // Diagnostic for "no tzdata found" matching common.cpp's shape.
 QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &searched)
@@ -1248,20 +1302,8 @@ void MainWindow::AddFilter(
         }
         else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Boolean)
         {
-            bool includeTrue = false;
-            bool includeFalse = false;
-            for (const std::string &v : resolvedFilter->filterValues)
-            {
-                if (v == "true")
-                {
-                    includeTrue = true;
-                }
-                else if (v == "false")
-                {
-                    includeFalse = true;
-                }
-            }
-            if (!includeTrue && !includeFalse)
+            const BooleanFilterSides sides = DecodeBooleanFilterSides(resolvedFilter->filterValues);
+            if (!sides.includeTrue && !sides.includeFalse)
             {
                 statusBar()->showMessage(
                     QString("Filter '%1' was dropped because no boolean side was selected").arg(filterId),
@@ -1271,7 +1313,7 @@ void MainWindow::AddFilter(
                 delete filterEditor;
                 return;
             }
-            filterEditor->Load(resolvedFilter->row, includeTrue, includeFalse);
+            filterEditor->Load(resolvedFilter->row, sides.includeTrue, sides.includeFalse);
         }
         else
         {
@@ -1504,10 +1546,17 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     }
     case loglib::LogConfiguration::LogFilter::Type::Number:
     {
-        const QString minStr =
-            filter.filterMinValue.has_value() ? QString::number(*filter.filterMinValue) : QStringLiteral("-inf");
-        const QString maxStr =
-            filter.filterMaxValue.has_value() ? QString::number(*filter.filterMaxValue) : QStringLiteral("+inf");
+        // Match `FilterEditor::Load`'s C-locale, max-digits10 formatting
+        // so the menu title and the editor's reopened bounds agree
+        // byte-for-byte. Default `QString::number(double)` uses
+        // precision 6 which silently truncates e.g. `12345.6789`.
+        const QLocale cLocale = QLocale::c();
+        const QString minStr = filter.filterMinValue.has_value()
+                                   ? cLocale.toString(*filter.filterMinValue, 'g', std::numeric_limits<double>::max_digits10)
+                                   : QStringLiteral("-inf");
+        const QString maxStr = filter.filterMaxValue.has_value()
+                                   ? cLocale.toString(*filter.filterMaxValue, 'g', std::numeric_limits<double>::max_digits10)
+                                   : QStringLiteral("+inf");
         title = QStringLiteral("[%1, %2]").arg(minStr, maxStr);
         break;
     }
@@ -1717,6 +1766,10 @@ void MainWindow::UpdateFilters()
     //   3. TimeRangeRowPredicate     - GetValue + int compare
     //   4. NumericRangeRowPredicate  - GetValue + double compare
     //   5. CallbackStringRowPredicate - regex / UTF-8 walk
+    // `Boolean` and `Enumeration` are effectively tied (both do one
+    // line walk plus a tiny lookup); `Boolean` wins the tie on the
+    // assumption that bool columns reject more aggressively in
+    // practice (most logs have many more enum levels than bool sides).
     // Tie-break on column index for deterministic, test-friendly order.
     using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
     auto costOf = [](LogFilterType t) -> int {
@@ -1807,21 +1860,11 @@ void MainWindow::UpdateFilters()
             // `filter.filterValues` is a subset of {"true", "false"};
             // empty rejects every row (the predicate handles that),
             // but `FilterBooleanSubmitted` rejects it up front.
-            bool includeTrue = false;
-            bool includeFalse = false;
-            for (const std::string &v : filter.filterValues)
-            {
-                if (v == "true")
-                {
-                    includeTrue = true;
-                }
-                else if (v == "false")
-                {
-                    includeFalse = true;
-                }
-            }
+            // Case-insensitive decode tolerates hand-edited configs
+            // with e.g. `"True"` / `"FALSE"`.
+            const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
             rules.emplace_back(
-                std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse
+                std::in_place_type<loglib::BoolRowPredicate>, column, sides.includeTrue, sides.includeFalse
             );
             break;
         }

@@ -112,11 +112,16 @@ private:
 /// `double` slots. Either bound may be `std::nullopt` to leave that
 /// side unbounded; non-numeric slots reject.
 ///
-/// Compare type is `double` for unification. Above 2^53 the cast from
-/// 64-bit integers loses precision, which is acceptable for the
-/// range filter (callers wanting bit-exact integer boundaries can use
+/// Compare type is `double` for unification. Outside `[-2^53, 2^53]`
+/// the cast from 64-bit integers loses precision symmetrically on
+/// both ends, which is acceptable for the range filter (callers
+/// wanting bit-exact integer boundaries can use
 /// `TimeRangeRowPredicate`, which is int64-native).
-/// `NaN` slots reject; a `NaN` bound is treated as unbounded.
+/// `NaN` slots reject; a `NaN` bound is treated as unbounded; `±inf`
+/// bounds are honoured literally (`+inf` upper bound matches every
+/// finite slot; `-inf` lower bound likewise). The GUI's
+/// `FilterEditor` blocks `NaN` / `±inf` user input upstream so those
+/// degenerate predicates are not user-reachable.
 class NumericRangeRowPredicate
 {
 public:
@@ -214,6 +219,12 @@ private:
 
 /// Closed-set union of concrete row predicates. Stored by value, so
 /// the per-row hot path pays no heap allocation and no virtual dispatch.
+///
+/// Alternative ordering is **stable**: nothing in `loglib` persists a
+/// `variant::index()` today, but the GUI test machinery and any
+/// future on-disk predicate serialiser will. Append new alternatives
+/// at the end of the list -- never insert -- so existing indices keep
+/// pointing at the same type.
 using RowPredicate = std::variant<
     EnumRowPredicate,
     TimeRangeRowPredicate,

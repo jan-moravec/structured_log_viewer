@@ -607,6 +607,27 @@ TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_fil
     CHECK_FALSE(predicate.MatchesRow(table, 5)); // monostate rejects
 }
 
+TEST_CASE(
+    "NumericRangeRowPredicate accepts a single-point range when min equals max",
+    "[log_filter][numeric_range]"
+)
+{
+    // A `min == max` range is a valid single-point filter: only slots
+    // equal to the shared bound pass. Inverted ranges (`min > max`)
+    // are caught by the GUI submission path; the predicate itself
+    // doesn't enforce ordering.
+    const TestLogFile fixture("log_filter_numeric_single_point.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {int64_t{4}, int64_t{5}, int64_t{6}, 5.0};
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Number, values);
+
+    const NumericRangeRowPredicate predicate(0, 5.0, 5.0);
+    CHECK_FALSE(predicate.MatchesRow(table, 0)); // 4 != 5
+    CHECK(predicate.MatchesRow(table, 1));       // int 5
+    CHECK_FALSE(predicate.MatchesRow(table, 2)); // 6 != 5
+    CHECK(predicate.MatchesRow(table, 3));       // double 5.0
+}
+
 TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][numeric_range]")
 {
     const TestLogFile fixture("log_filter_numeric_unbounded.json");

@@ -25,7 +25,9 @@ struct LogConfiguration
     ///                     also the auto-detector bail when no strings,
     ///                     no numerics, and no bools were observed (or
     ///                     bools were observed alongside numerics).
-    ///                     Sorts/filters as a string.
+    ///                     Sorts and filters via the string code path
+    ///                     (`CallbackStringRowPredicate` / byte-wise
+    ///                     compare).
     ///   - `String`      - inferred string column (too varied to
     ///                     enumerate).
     ///   - `Boolean`     - JSON `true`/`false` slots; false < true.

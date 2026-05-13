@@ -19,7 +19,17 @@ using namespace loglib;
 namespace
 {
 constexpr int ENUM_PICKER_MAX_HEIGHT_PX = 320;
-}
+
+/// Page indices in `mStackedWidget`. Order mirrors the `addWidget`
+/// sequence in `FilterEditor::SetupLayout`; bumped together if a new
+/// page is inserted so `UpdateSelectedColumn` and
+/// `UpdateEnumSelectionCount` stay in lockstep.
+constexpr int PAGE_STRING = 0;
+constexpr int PAGE_TIME = 1;
+constexpr int PAGE_ENUM = 2;
+constexpr int PAGE_NUMERIC = 3;
+constexpr int PAGE_BOOLEAN = 4;
+} // namespace
 
 FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
@@ -38,13 +48,14 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mStackedWidget = new QStackedWidget(this);
 
     // Picker model + proxy. `setUniformItemSizes(true)` keeps layout
-    // tractable up to `MAX_ENUM_VALUES`.
+    // tractable up to `MAX_ENUM_VALUES`. The proxy filters by the
+    // user's search text but does *not* re-sort: `PopulateEnumValues`
+    // already inserts items in locale-aware order so the view matches
+    // the table-column display ordering.
     mEnumValuesModel = new QStandardItemModel(this);
     mEnumValuesProxy = new QSortFilterProxyModel(this);
     mEnumValuesProxy->setSourceModel(mEnumValuesModel);
     mEnumValuesProxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
-    mEnumValuesProxy->setSortCaseSensitivity(Qt::CaseInsensitive);
-    mEnumValuesProxy->sort(0, Qt::AscendingOrder);
     mEnumValuesView = new QListView(this);
     mEnumValuesView->setModel(mEnumValuesProxy);
     mEnumValuesView->setSelectionMode(QAbstractItemView::NoSelection);
@@ -409,11 +420,13 @@ void FilterEditor::SetupLayout()
     fifthPageLayout->addStretch(1);
     fifthPage->setLayout(fifthPageLayout);
 
-    mStackedWidget->addWidget(firstPage);
-    mStackedWidget->addWidget(secondPage);
-    mStackedWidget->addWidget(thirdPage);
-    mStackedWidget->addWidget(fourthPage);
-    mStackedWidget->addWidget(fifthPage);
+    // Insertion order must match the `PAGE_*` constants; an inserted
+    // page would shift every later index.
+    mStackedWidget->insertWidget(PAGE_STRING, firstPage);
+    mStackedWidget->insertWidget(PAGE_TIME, secondPage);
+    mStackedWidget->insertWidget(PAGE_ENUM, thirdPage);
+    mStackedWidget->insertWidget(PAGE_NUMERIC, fourthPage);
+    mStackedWidget->insertWidget(PAGE_BOOLEAN, fifthPage);
     mainLayout->addWidget(mStackedWidget);
 
     auto *buttonLayout = new QHBoxLayout();
@@ -493,17 +506,36 @@ void FilterEditor::OnOkClicked()
         const bool maxBounded = !mNumericMaxUnbounded->isChecked();
         if (!minBounded && !maxBounded)
         {
-            mNumericMinEdit->setStyleSheet("border: 1px solid red");
-            mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+            // Style the Unbounded checkboxes, not the disabled line
+            // edits: the platform style overrides a border on a
+            // disabled `QLineEdit`, so the user wouldn't see the
+            // warning otherwise.
+            mNumericMinUnbounded->setStyleSheet("QCheckBox { color: red; }");
+            mNumericMaxUnbounded->setStyleSheet("QCheckBox { color: red; }");
             return;
         }
-        bool minOk = true;
-        bool maxOk = true;
+        // `QLocale::toDouble` accepts "nan" / "inf" / "+inf" / "-inf"
+        // (and the validator lets them through). Either bound as
+        // `NaN` would silently degenerate to "unbounded on that side"
+        // via `NumericRangeRowPredicate`'s NaN-collapse, and `±inf`
+        // would collapse the predicate to "reject everything"; reject
+        // both at submit time so the user sees the dialog block.
         const QLocale cLocale = QLocale::c();
+        auto parseFinite = [&cLocale](const QString &text) -> std::optional<double> {
+            bool ok = false;
+            const double value = cLocale.toDouble(text, &ok);
+            if (!ok || std::isnan(value) || std::isinf(value))
+            {
+                return std::nullopt;
+            }
+            return value;
+        };
+        std::optional<double> minValue;
+        std::optional<double> maxValue;
         if (minBounded)
         {
-            cLocale.toDouble(mNumericMinEdit->text(), &minOk);
-            if (!minOk || mNumericMinEdit->text().isEmpty())
+            minValue = parseFinite(mNumericMinEdit->text());
+            if (!minValue.has_value())
             {
                 mNumericMinEdit->setStyleSheet("border: 1px solid red");
                 return;
@@ -511,17 +543,17 @@ void FilterEditor::OnOkClicked()
         }
         if (maxBounded)
         {
-            cLocale.toDouble(mNumericMaxEdit->text(), &maxOk);
-            if (!maxOk || mNumericMaxEdit->text().isEmpty())
+            maxValue = parseFinite(mNumericMaxEdit->text());
+            if (!maxValue.has_value())
             {
                 mNumericMaxEdit->setStyleSheet("border: 1px solid red");
                 return;
             }
         }
-        const auto minValue = GetNumericRangeMin();
-        const auto maxValue = GetNumericRangeMax();
         if (minValue.has_value() && maxValue.has_value() && *minValue > *maxValue)
         {
+            // Inverted range: `min == max` is allowed (single-point
+            // filter), strict `>` is the rejection.
             mNumericMinEdit->setStyleSheet("border: 1px solid red");
             mNumericMaxEdit->setStyleSheet("border: 1px solid red");
             return;
@@ -564,7 +596,7 @@ void FilterEditor::UpdateSelectedColumn(int index)
     {
     case LogConfiguration::Type::Time:
     {
-        mStackedWidget->setCurrentIndex(1);
+        mStackedWidget->setCurrentIndex(PAGE_TIME);
         const auto minMax = mModel.GetMinMaxValues<qint64>(index);
         if (minMax.has_value())
         {
@@ -573,24 +605,27 @@ void FilterEditor::UpdateSelectedColumn(int index)
         break;
     }
     case LogConfiguration::Type::Enumeration:
-        mStackedWidget->setCurrentIndex(2);
+        mStackedWidget->setCurrentIndex(PAGE_ENUM);
         PopulateEnumValues(index);
         break;
     case LogConfiguration::Type::Integer:
     case LogConfiguration::Type::Floating:
     case LogConfiguration::Type::Number:
-        mStackedWidget->setCurrentIndex(3);
+        mStackedWidget->setCurrentIndex(PAGE_NUMERIC);
         break;
     case LogConfiguration::Type::Boolean:
-        mStackedWidget->setCurrentIndex(4);
+        mStackedWidget->setCurrentIndex(PAGE_BOOLEAN);
         break;
     case LogConfiguration::Type::Unknown:
     case LogConfiguration::Type::Any:
     case LogConfiguration::Type::String:
     default:
-        mStackedWidget->setCurrentIndex(0);
+        mStackedWidget->setCurrentIndex(PAGE_STRING);
         break;
     }
+    // Page change can leave a stale warning border on a hidden page; a
+    // single reset keeps the next OK click against a clean slate.
+    ClearWarningStyles();
     // Refresh OK-enabled gating so leaving an empty enum page re-enables OK.
     UpdateEnumSelectionCount();
 }
@@ -667,7 +702,7 @@ void FilterEditor::UpdateEnumSelectionCount()
 
     // Enum page: show placeholder and disable OK when empty/no checks.
     // Other pages defer validation to `OnOkClicked`.
-    const bool onEnumPage = mStackedWidget->currentIndex() == 2;
+    const bool onEnumPage = mStackedWidget->currentIndex() == PAGE_ENUM;
     if (onEnumPage)
     {
         const bool empty = total == 0;
@@ -695,6 +730,8 @@ void FilterEditor::ClearWarningStyles()
     mStringLineEdit->setStyleSheet(QString());
     mNumericMinEdit->setStyleSheet(QString());
     mNumericMaxEdit->setStyleSheet(QString());
+    mNumericMinUnbounded->setStyleSheet(QString());
+    mNumericMaxUnbounded->setStyleSheet(QString());
     mBoolIncludeTrue->setStyleSheet(QString());
     mBoolIncludeFalse->setStyleSheet(QString());
 }
