@@ -115,12 +115,11 @@ private:
     /// Shown when the dictionary is empty; OK stays disabled while visible.
     QLabel *mEnumEmptyPlaceholder;
 
-    /// Numeric-range page: per-bound "unbounded" checkbox toggles the
-    /// adjacent line edit.
+    /// Numeric-range page: an empty line edit on either side means
+    /// "unbounded" on that side; `OnOkClicked` rejects only the
+    /// both-empty case (which would match every numeric row).
     QLineEdit *mNumericMinEdit;
-    QCheckBox *mNumericMinUnbounded;
     QLineEdit *mNumericMaxEdit;
-    QCheckBox *mNumericMaxUnbounded;
 
     /// Boolean page: one checkbox per side (independent toggles --
     /// user may pick either, both, or neither).

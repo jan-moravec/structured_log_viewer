@@ -82,14 +82,12 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     numericValidator->setNotation(QDoubleValidator::ScientificNotation);
 
     mNumericMinEdit = new QLineEdit(this);
-    mNumericMinEdit->setPlaceholderText("Min value");
+    mNumericMinEdit->setPlaceholderText("Min value (empty = unbounded)");
     mNumericMinEdit->setValidator(numericValidator);
-    mNumericMinUnbounded = new QCheckBox("Unbounded (-inf)", this);
 
     mNumericMaxEdit = new QLineEdit(this);
-    mNumericMaxEdit->setPlaceholderText("Max value");
+    mNumericMaxEdit->setPlaceholderText("Max value (empty = unbounded)");
     mNumericMaxEdit->setValidator(numericValidator);
-    mNumericMaxUnbounded = new QCheckBox("Unbounded (+inf)", this);
 
     mBoolIncludeTrue = new QCheckBox("Include true", this);
     mBoolIncludeFalse = new QCheckBox("Include false", this);
@@ -171,24 +169,9 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
 
     connect(mStringLineEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
 
-    // Numeric-range checkboxes toggle their line edits and clear any
-    // red-border warning carried over from a previous OK click.
-    connect(mNumericMinUnbounded, &QCheckBox::toggled, this, [this](bool checked) {
-        mNumericMinEdit->setDisabled(checked);
-        if (checked)
-        {
-            mNumericMinEdit->clear();
-        }
-        ClearWarningStyles();
-    });
-    connect(mNumericMaxUnbounded, &QCheckBox::toggled, this, [this](bool checked) {
-        mNumericMaxEdit->setDisabled(checked);
-        if (checked)
-        {
-            mNumericMaxEdit->clear();
-        }
-        ClearWarningStyles();
-    });
+    // Editing either bound clears any red-border warning carried
+    // over from a previous OK click. An empty edit means "unbounded"
+    // on that side; the both-empty rejection styles both edits.
     connect(mNumericMinEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
     connect(mNumericMaxEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
 
@@ -236,40 +219,21 @@ void FilterEditor::Load(int row, std::optional<double> minValue, std::optional<d
     // round-trip byte-exactly (the validator uses the same locale).
     const QLocale cLocale = QLocale::c();
     // Coerce non-finite bounds (`±inf`/`NaN` from a hand-edited
-    // config) to "unbounded": `OnOkClicked` rejects them at submit
-    // time, which would otherwise trap the user in the dialog.
-    const auto coerceFinite = [](std::optional<double> &v) {
-        if (v.has_value() && !std::isfinite(*v))
+    // config) to "unbounded" (empty edit) so the dialog opens
+    // submittable -- `OnOkClicked` would otherwise reject them on
+    // submit and trap the user.
+    const auto setEdit = [&cLocale](QLineEdit *edit, std::optional<double> v) {
+        if (v.has_value() && std::isfinite(*v))
         {
-            v.reset();
+            edit->setText(cLocale.toString(*v, 'g', std::numeric_limits<double>::max_digits10));
+        }
+        else
+        {
+            edit->clear();
         }
     };
-    coerceFinite(minValue);
-    coerceFinite(maxValue);
-    if (minValue.has_value())
-    {
-        mNumericMinUnbounded->setChecked(false);
-        mNumericMinEdit->setDisabled(false);
-        mNumericMinEdit->setText(cLocale.toString(*minValue, 'g', std::numeric_limits<double>::max_digits10));
-    }
-    else
-    {
-        mNumericMinUnbounded->setChecked(true);
-        mNumericMinEdit->clear();
-        mNumericMinEdit->setDisabled(true);
-    }
-    if (maxValue.has_value())
-    {
-        mNumericMaxUnbounded->setChecked(false);
-        mNumericMaxEdit->setDisabled(false);
-        mNumericMaxEdit->setText(cLocale.toString(*maxValue, 'g', std::numeric_limits<double>::max_digits10));
-    }
-    else
-    {
-        mNumericMaxUnbounded->setChecked(true);
-        mNumericMaxEdit->clear();
-        mNumericMaxEdit->setDisabled(true);
-    }
+    setEdit(mNumericMinEdit, minValue);
+    setEdit(mNumericMaxEdit, maxValue);
 }
 
 void FilterEditor::Load(int row, bool includeTrue, bool includeFalse)
@@ -311,12 +275,16 @@ QStringList FilterEditor::GetSelectedEnumValues() const
 
 std::optional<double> FilterEditor::GetNumericRangeMin() const
 {
-    if (mNumericMinUnbounded->isChecked())
+    // Empty edit means "unbounded"; an unparsable / NaN value also
+    // collapses to unbounded for the getter (`OnOkClicked` is the
+    // place that surfaces parse errors as a red border).
+    const QString text = mNumericMinEdit->text();
+    if (text.isEmpty())
     {
         return std::nullopt;
     }
     bool ok = false;
-    const double value = QLocale::c().toDouble(mNumericMinEdit->text(), &ok);
+    const double value = QLocale::c().toDouble(text, &ok);
     if (!ok || std::isnan(value))
     {
         return std::nullopt;
@@ -326,12 +294,13 @@ std::optional<double> FilterEditor::GetNumericRangeMin() const
 
 std::optional<double> FilterEditor::GetNumericRangeMax() const
 {
-    if (mNumericMaxUnbounded->isChecked())
+    const QString text = mNumericMaxEdit->text();
+    if (text.isEmpty())
     {
         return std::nullopt;
     }
     bool ok = false;
-    const double value = QLocale::c().toDouble(mNumericMaxEdit->text(), &ok);
+    const double value = QLocale::c().toDouble(text, &ok);
     if (!ok || std::isnan(value))
     {
         return std::nullopt;
@@ -410,11 +379,9 @@ void FilterEditor::SetupLayout()
     auto *minLayout = new QHBoxLayout();
     minLayout->addWidget(new QLabel("Min (>=):", this));
     minLayout->addWidget(mNumericMinEdit);
-    minLayout->addWidget(mNumericMinUnbounded);
     auto *maxLayout = new QHBoxLayout();
     maxLayout->addWidget(new QLabel("Max (<=):", this));
     maxLayout->addWidget(mNumericMaxEdit);
-    maxLayout->addWidget(mNumericMaxUnbounded);
     fourthPageLayout->addLayout(minLayout);
     fourthPageLayout->addLayout(maxLayout);
     fourthPage->setLayout(fourthPageLayout);
@@ -504,16 +471,15 @@ void FilterEditor::OnOkClicked()
     else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
              column.type == LogConfiguration::Type::Number)
     {
-        // Insist on at least one finite bound; both unbounded would
-        // match every row.
-        const bool minBounded = !mNumericMinUnbounded->isChecked();
-        const bool maxBounded = !mNumericMaxUnbounded->isChecked();
-        if (!minBounded && !maxBounded)
+        // An empty edit means "unbounded" on that side. Insist on
+        // at least one populated bound -- both empty would match
+        // every numeric row.
+        const QString minText = mNumericMinEdit->text();
+        const QString maxText = mNumericMaxEdit->text();
+        if (minText.isEmpty() && maxText.isEmpty())
         {
-            // Style the checkboxes, not the disabled line edits: the
-            // platform style overrides borders on disabled QLineEdits.
-            mNumericMinUnbounded->setStyleSheet("QCheckBox { color: red; }");
-            mNumericMaxUnbounded->setStyleSheet("QCheckBox { color: red; }");
+            mNumericMinEdit->setStyleSheet("border: 1px solid red");
+            mNumericMaxEdit->setStyleSheet("border: 1px solid red");
             return;
         }
         // Reject `NaN` / `±inf`: `QLocale::toDouble` accepts them,
@@ -532,18 +498,18 @@ void FilterEditor::OnOkClicked()
         };
         std::optional<double> minValue;
         std::optional<double> maxValue;
-        if (minBounded)
+        if (!minText.isEmpty())
         {
-            minValue = parseFinite(mNumericMinEdit->text());
+            minValue = parseFinite(minText);
             if (!minValue.has_value())
             {
                 mNumericMinEdit->setStyleSheet("border: 1px solid red");
                 return;
             }
         }
-        if (maxBounded)
+        if (!maxText.isEmpty())
         {
-            maxValue = parseFinite(mNumericMaxEdit->text());
+            maxValue = parseFinite(maxText);
             if (!maxValue.has_value())
             {
                 mNumericMaxEdit->setStyleSheet("border: 1px solid red");
@@ -730,8 +696,6 @@ void FilterEditor::ClearWarningStyles()
     mStringLineEdit->setStyleSheet(QString());
     mNumericMinEdit->setStyleSheet(QString());
     mNumericMaxEdit->setStyleSheet(QString());
-    mNumericMinUnbounded->setStyleSheet(QString());
-    mNumericMaxUnbounded->setStyleSheet(QString());
     mBoolIncludeTrue->setStyleSheet(QString());
     mBoolIncludeFalse->setStyleSheet(QString());
 }
