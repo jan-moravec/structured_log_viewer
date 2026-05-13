@@ -145,12 +145,12 @@ TcpLogClientImpl::TcpLogClientImpl(const std::string &host, uint16_t port, std::
             // an internal C-style cast, which trips -Wold-style-cast on
             // GCC/Clang -- silence it locally since we don't own the
             // OpenSSL header.
-#if defined(__GNUC__)
+#ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
             SSL_set_tlsext_host_name(mSslStream->native_handle(), sni.c_str());
-#if defined(__GNUC__)
+#ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
         }

@@ -5054,8 +5054,8 @@ private slots:
         const auto editorMax = editor->GetNumericRangeMax();
         QVERIFY(editorMin.has_value());
         QVERIFY(editorMax.has_value());
-        QCOMPARE(*editorMin, 10.0);
-        QCOMPARE(*editorMax, 19.0);
+        QCOMPARE(editorMin.value(), 10.0);
+        QCOMPARE(editorMax.value(), 19.0);
 
         editor->close();
         editor->deleteLater();
