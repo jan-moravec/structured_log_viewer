@@ -1258,7 +1258,11 @@ void MainWindow::AddFilter(
                 delete filterEditor;
                 return;
             }
-            filterEditor->Load(resolvedFilter->row, *resolvedFilter->filterBegin, *resolvedFilter->filterEnd);
+            filterEditor->Load(
+                resolvedFilter->row,
+                static_cast<qint64>(*resolvedFilter->filterBegin),
+                static_cast<qint64>(*resolvedFilter->filterEnd)
+            );
         }
         else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration)
         {
