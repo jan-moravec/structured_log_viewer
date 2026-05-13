@@ -5610,6 +5610,167 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression: a pre-existing enum column whose dictionary merely
+    // grew in this batch must emit `Grew` exactly once and never
+    // `Promoted`. The back-fill range (`LastBackfillRange`) is a
+    // simple min/max over every back-filled column (time +
+    // demoting/promoting enum) so a column whose own dict only grew
+    // can still fall inside it. Pre-fix the back-fill loop fired
+    // `Promoted` for every `Type::Enumeration` column in
+    // `[firstColumn, lastColumn]`, so `MainWindow::UpdateFilters`
+    // rebuilt twice for the same column.
+    //
+    // Setup:
+    //   * batch 1 leaves `colA` at `Type::Unknown` (1 presence,
+    //     stream threshold is 2) and promotes `colB` to
+    //     `Type::Enumeration`.
+    //   * batch 2 promotes `colA` (low index, recordBackfill),
+    //     grows `colB`'s dict (no backfill), and adds `colC` which
+    //     promotes (high index, recordBackfill). The range now
+    //     spans `[colA, colC]` with `colB` sandwiched in the middle.
+    void TestEnumGrewSignalNotDoubledAsPromotedWhenSandwichedInBackfillRange()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeRow = [&](const std::vector<std::pair<std::string, std::string>> &kvs) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.reserve(kvs.size());
+            for (const auto &[k, v] : kvs)
+            {
+                values.emplace_back(keys.GetOrInsert(k), loglib::LogValue(v));
+            }
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: `colA` gets exactly one presence (stays Unknown,
+        // tracker carries 1 presence forward). `colB` gets two
+        // identical presences and promotes to Enumeration with dict
+        // size 1. `colA` is appended first so it lands at column 0.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("colA");
+            batch.newKeys.emplace_back("colB");
+            batch.lines.push_back(makeRow({{"colA", "x"}, {"colB", "y"}}));
+            batch.lines.push_back(makeRow({{"colB", "y"}}));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        const int colA = ColumnByHeader(*model, QStringLiteral("colA"));
+        const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
+        QVERIFY2(colA == 0, "colA must land at column 0 (first appended new key)");
+        QVERIFY2(colB == 1, "colB must land at column 1 (second appended new key)");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Unknown
+        );
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
+        );
+        const loglib::KeyId colBKey = keys.Find("colB");
+        QVERIFY(colBKey != loglib::INVALID_KEY_ID);
+        const loglib::EnumDictionary *colBDict = model->Table().EnumDictionaries().Find(colBKey);
+        QVERIFY2(colBDict != nullptr, "colB must have a registry entry after batch 1");
+        QCOMPARE(static_cast<int>(colBDict->Size()), 1);
+
+        // Spy after batch 1 so only batch-2 emissions count.
+        QSignalSpy enumChangedSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumChangedSpy.isValid());
+
+        // Batch 2 sandwiches `colB` between two recorded back-fills:
+        //   * `colA` promotes (presence count crosses 2): recordBackfill(0).
+        //   * `colB` dict grows from 1 to 2 (`y` -> `y`, `w`): no back-fill.
+        //   * `colC` promotes (2 same-value presences): recordBackfill(2).
+        // `LastBackfillRange` becomes `[0, 2]` with `colB` at column 1.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 3;
+            batch.newKeys.emplace_back("colC");
+            batch.lines.push_back(makeRow({{"colA", "z"}, {"colB", "w"}, {"colC", "m"}}));
+            batch.lines.push_back(makeRow({{"colA", "z"}, {"colB", "w"}, {"colC", "m"}}));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        const int colC = ColumnByHeader(*model, QStringLiteral("colC"));
+        QVERIFY2(colC == 2, "colC must land at column 2 (only new key in batch 2)");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Enumeration
+        );
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
+        );
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colC)].type, loglib::LogConfiguration::Type::Enumeration
+        );
+        const loglib::EnumDictionary *colBDictAfter = model->Table().EnumDictionaries().Find(colBKey);
+        QVERIFY2(colBDictAfter != nullptr, "colB must remain enum across batch 2");
+        QCOMPARE(static_cast<int>(colBDictAfter->Size()), 2);
+
+        // colB is the sandwiched pre-existing enum: must see exactly
+        // one `Grew` and zero `Promoted`. Pre-fix the back-fill loop
+        // would also fire `Promoted` for it, double-triggering
+        // `MainWindow::UpdateFilters`.
+        int colBGrewCount = 0;
+        int colBPromotedCount = 0;
+        int colBDemotedCount = 0;
+        for (const auto &args : enumChangedSpy)
+        {
+            const auto reason = args.at(0).value<EnumColumnsChangeReason>();
+            const int columnIndex = args.at(1).toInt();
+            if (columnIndex != colB)
+            {
+                continue;
+            }
+            switch (reason)
+            {
+            case EnumColumnsChangeReason::Grew:
+                ++colBGrewCount;
+                break;
+            case EnumColumnsChangeReason::Promoted:
+                ++colBPromotedCount;
+                break;
+            case EnumColumnsChangeReason::Demoted:
+                ++colBDemotedCount;
+                break;
+            }
+        }
+        QCOMPARE(colBGrewCount, 1);
+        QVERIFY2(
+            colBPromotedCount == 0,
+            qPrintable(QStringLiteral("colB (already enum at snapshot) must NOT receive a spurious `Promoted`; got %1")
+                           .arg(colBPromotedCount))
+        );
+        QCOMPARE(colBDemotedCount, 0);
+
+        // Sanity: the genuinely new enum columns still get exactly
+        // one `Promoted` each so receivers can rebuild rules
+        // targeting them.
+        const auto countReasonForColumn = [&](int columnIndex, EnumColumnsChangeReason wanted) {
+            int count = 0;
+            for (const auto &args : enumChangedSpy)
+            {
+                if (args.at(1).toInt() == columnIndex && args.at(0).value<EnumColumnsChangeReason>() == wanted)
+                {
+                    ++count;
+                }
+            }
+            return count;
+        };
+        QCOMPARE(countReasonForColumn(colA, EnumColumnsChangeReason::Promoted), 1);
+        QCOMPARE(countReasonForColumn(colC, EnumColumnsChangeReason::Promoted), 1);
+
+        model->EndStreaming(false);
+    }
+
     // Regression: a hand-edited config with `+inf` / `-inf` numeric
     // bounds opens the editor in a non-submittable state because
     // `OnOkClicked` rejects non-finite tokens and `QDoubleValidator`

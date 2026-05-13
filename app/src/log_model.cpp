@@ -572,6 +572,12 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         // Pre-`columnIndex`-scoping the loop early-broke after the
         // first match because the receiver did a broad rebuild
         // anyway; a per-column scoped slot needs the full set.
+        // Skip columns that were already enum at snapshot time: the
+        // back-fill range is a min/max over all back-filled columns
+        // (time + enum) so a pre-existing enum column whose dict only
+        // grew can fall inside it. The `Grew` / `Demoted` diff above
+        // already covers those; firing `Promoted` here as well would
+        // double-trigger `MainWindow::UpdateFilters`.
         const auto &columns = mLogTable.Configuration().Configuration().columns;
         for (int columnIndex = firstColumn; columnIndex <= lastColumn; ++columnIndex)
         {
@@ -579,10 +585,18 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 continue;
             }
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Enumeration)
+            if (columns[static_cast<size_t>(columnIndex)].type != loglib::LogConfiguration::Type::Enumeration)
             {
-                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, columnIndex);
+                continue;
             }
+            const bool wasEnumBefore = std::ranges::any_of(enumSnapshotBefore, [columnIndex](const auto &entry) {
+                return entry.columnIndex == columnIndex;
+            });
+            if (wasEnumBefore)
+            {
+                continue;
+            }
+            emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, columnIndex);
         }
     }
 
