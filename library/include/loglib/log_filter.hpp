@@ -108,20 +108,15 @@ private:
     int64_t mEnd = 0;
 };
 
-/// Inclusive numeric-range predicate over `int64_t`, `uint64_t`, and
-/// `double` slots. Either bound may be `std::nullopt` to leave that
-/// side unbounded; non-numeric slots reject.
+/// Inclusive numeric range over `int64_t`, `uint64_t`, and `double`
+/// slots; non-numeric slots reject. `std::nullopt` leaves the
+/// corresponding side unbounded.
 ///
-/// Compare type is `double` for unification. Outside `[-2^53, 2^53]`
-/// the cast from 64-bit integers loses precision symmetrically on
-/// both ends, which is acceptable for the range filter (callers
-/// wanting bit-exact integer boundaries can use
-/// `TimeRangeRowPredicate`, which is int64-native).
-/// `NaN` slots reject; a `NaN` bound is treated as unbounded; `±inf`
-/// bounds are honoured literally (`+inf` upper bound matches every
-/// finite slot; `-inf` lower bound likewise). The GUI's
-/// `FilterEditor` blocks `NaN` / `±inf` user input upstream so those
-/// degenerate predicates are not user-reachable.
+/// Compares as `double` -- past `2^53` the cast from 64-bit integers
+/// loses precision (acceptable for filter UX; use
+/// `TimeRangeRowPredicate` for bit-exact int64). `NaN` slots reject;
+/// `NaN` bounds collapse to unbounded; `±inf` bounds are honoured
+/// literally. The GUI rejects `NaN`/`±inf` user input upstream.
 class NumericRangeRowPredicate
 {
 public:
@@ -147,10 +142,9 @@ private:
     std::optional<double> mMax;
 };
 
-/// Two-state predicate for `Type::Boolean` columns. `includeTrue` /
-/// `includeFalse` carry the picked sides; if neither is set the
-/// predicate rejects every row (mirrors the empty-`EnumRowPredicate`
-/// behaviour). Non-bool slots also reject.
+/// Two-state predicate for `Type::Boolean` columns. With neither
+/// side selected the predicate rejects every row (mirrors empty
+/// `EnumRowPredicate`). Non-bool slots reject too.
 class BoolRowPredicate
 {
 public:
@@ -217,14 +211,12 @@ private:
     MatchFn mMatch;
 };
 
-/// Closed-set union of concrete row predicates. Stored by value, so
-/// the per-row hot path pays no heap allocation and no virtual dispatch.
+/// Closed union of concrete row predicates. Stored by value -- the
+/// per-row hot path pays no heap allocation or virtual dispatch.
 ///
-/// Alternative ordering is **stable**: nothing in `loglib` persists a
-/// `variant::index()` today, but the GUI test machinery and any
-/// future on-disk predicate serialiser will. Append new alternatives
-/// at the end of the list -- never insert -- so existing indices keep
-/// pointing at the same type.
+/// Alternative order is stable: tests (and any future on-disk
+/// serialiser) persist `variant::index()`. Only append new
+/// alternatives; never insert.
 using RowPredicate = std::variant<
     EnumRowPredicate,
     TimeRangeRowPredicate,
@@ -247,19 +239,14 @@ using RowPredicate = std::variant<
 }
 
 /// Evaluate @p predicates against every row of @p table in parallel
-/// and return the rows that pass all predicates, in ascending order.
-/// Empty @p predicates returns `[0, table.RowCount())`.
+/// and return the surviving rows in ascending order. Empty
+/// @p predicates returns `[0, table.RowCount())`.
 ///
-/// Threading: each worker accumulates surviving rows into a
-/// thread-local bucket via `tbb::parallel_for`; buckets are coalesced
-/// and sorted on the caller thread before return. Predicate
-/// `MatchesRow` implementations must be thread-safe read-only against
-/// @p table -- every predicate in this file qualifies
-/// (`CallbackStringRowPredicate` uses a `thread_local` buffer,
-/// `EnumRowPredicate` reads an immutable bitset snapshot,
-/// `TimeRangeRowPredicate` / `NumericRangeRowPredicate` /
-/// `BoolRowPredicate` are stateless). Lives in `loglib` so callers
-/// don't need a TBB include.
+/// Threading: per-worker thread-local buckets via `tbb::parallel_for`,
+/// coalesced and sorted on the caller thread. `MatchesRow` must be
+/// thread-safe read-only against @p table; every predicate in this
+/// file qualifies. Lives in `loglib` so callers don't need a TBB
+/// include.
 [[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
 
 } // namespace loglib

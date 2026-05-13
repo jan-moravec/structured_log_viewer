@@ -4956,11 +4956,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Numeric-range filter survives a serialise+reload round trip: the
-    // saved JSON is reloaded into a fresh `LogConfiguration`, the
-    // round-tripped `LogFilter` is replayed through `AddFilter`, the
-    // type-match check accepts it, and the editor opens preloaded with
-    // the saved bounds.
+    // Numeric-range filter survives a serialise+reload round trip:
+    // the saved JSON reloads, replays through `AddFilter`, passes the
+    // type-match check, and the editor opens preloaded with the
+    // saved bounds.
     void TestSavedNumericRangeFilterRoundTrips()
     {
         constexpr int FIXTURE_LINES = 100;
@@ -5065,13 +5064,13 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Saved numeric-range filter against a column whose type changes
-    // underneath is dropped at `AddFilter` time, mirroring the
-    // string-filter-on-now-enum drop behaviour.
+    // A saved numeric-range filter against a column whose type
+    // changed underneath gets dropped at `AddFilter` time -- same as
+    // a string filter on a now-enum column.
     void TestSavedNumericRangeFilterDroppedOnTypeMismatch()
     {
-        // `level` promotes to enum after streaming, so a saved
-        // numeric-range filter on the same row mismatches the type.
+        // `level` auto-detects to enum, so a saved numeric-range
+        // filter on the same row mismatches the column type.
         const QStringList levels{QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error")};
         QStringList lines;
         lines.reserve(300);
@@ -5152,10 +5151,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Saved `Type::String` filter against a column that auto-detected
-    // to `Type::Boolean` should be dropped at `AddFilter` time, the
-    // same way it would for an enum-promoted column. Regression cover
-    // for the type-match check after `Boolean` was added.
+    // Regression: a saved `Type::String` filter against a now-
+    // `Boolean` column drops at `AddFilter` time -- same way it would
+    // for an enum-promoted column. Covers the type-match branch
+    // added with `Boolean`.
     void TestSavedStringFilterDroppedOnNowBooleanColumn()
     {
         QStringList lines;
@@ -5234,9 +5233,9 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Saved `Type::String` filter against a numeric column should drop
-    // at `AddFilter` time. Same shape as the now-Boolean / now-Enum
-    // variants but covers the numeric type-match branch.
+    // Regression: a saved `Type::String` filter against a numeric
+    // column drops at `AddFilter` time. Same shape as the now-Boolean
+    // / now-Enum variants; covers the numeric type-match branch.
     void TestSavedStringFilterDroppedOnNowNumericColumn()
     {
         QStringList lines;
@@ -5315,11 +5314,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Hand-edited Boolean filter with mixed-case `"True"` / `"FALSE"`
-    // still restores correctly. `DecodeBooleanFilterSides` is
-    // case-insensitive on the read path so a config touched by a
-    // human (or a non-canonical writer) keeps working; the canonical
-    // submit path still writes lowercase.
+    // A hand-edited Boolean filter with mixed-case `"True"` /
+    // `"FALSE"` still restores correctly. `DecodeBooleanFilterSides`
+    // is case-insensitive on read; the canonical submit path keeps
+    // writing lowercase.
     void TestSavedBooleanFilterCaseInsensitiveRestore()
     {
         QStringList lines;
@@ -5504,11 +5502,9 @@ private slots:
     }
 
     // Regression: `enumColumnsChanged(Promoted, columnIndex)` only
-    // triggers a `MainWindow` filter rebuild when an enum filter
-    // actually targets the promoted column. With per-column scoping
-    // a promotion on column B should NOT invalidate the filter on
-    // column A. Pre-fix the slot rebuilt on any enum filter,
-    // regardless of which column changed.
+    // rebuilds filters that actually target the promoted column.
+    // Pre-fix the slot rebuilt for any enum filter, regardless of
+    // which column changed.
     void TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -5610,24 +5606,19 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: a pre-existing enum column whose dictionary merely
-    // grew in this batch must emit `Grew` exactly once and never
-    // `Promoted`. The back-fill range (`LastBackfillRange`) is a
-    // simple min/max over every back-filled column (time +
-    // demoting/promoting enum) so a column whose own dict only grew
-    // can still fall inside it. Pre-fix the back-fill loop fired
-    // `Promoted` for every `Type::Enumeration` column in
-    // `[firstColumn, lastColumn]`, so `MainWindow::UpdateFilters`
-    // rebuilt twice for the same column.
+    // Regression: a pre-existing enum column whose dict only grew in
+    // a batch must emit `Grew` exactly once and never `Promoted`.
+    // `LastBackfillRange` is a min/max over every back-filled column,
+    // so a grow-only column can fall inside it. Pre-fix the back-fill
+    // loop fired `Promoted` for every enum column in that range,
+    // double-triggering `MainWindow::UpdateFilters`.
     //
     // Setup:
-    //   * batch 1 leaves `colA` at `Type::Unknown` (1 presence,
-    //     stream threshold is 2) and promotes `colB` to
-    //     `Type::Enumeration`.
-    //   * batch 2 promotes `colA` (low index, recordBackfill),
-    //     grows `colB`'s dict (no backfill), and adds `colC` which
-    //     promotes (high index, recordBackfill). The range now
-    //     spans `[colA, colC]` with `colB` sandwiched in the middle.
+    //   * batch 1 leaves `colA` at `Unknown` and promotes `colB`.
+    //   * batch 2 promotes `colA` (low index, back-filled), grows
+    //     `colB`'s dict (no back-fill), and promotes a new `colC`
+    //     (high index, back-filled). Range spans `[colA, colC]`
+    //     with `colB` sandwiched in the middle.
     void TestEnumGrewSignalNotDoubledAsPromotedWhenSandwichedInBackfillRange()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -5715,10 +5706,9 @@ private slots:
         QVERIFY2(colBDictAfter != nullptr, "colB must remain enum across batch 2");
         QCOMPARE(static_cast<int>(colBDictAfter->Size()), 2);
 
-        // colB is the sandwiched pre-existing enum: must see exactly
-        // one `Grew` and zero `Promoted`. Pre-fix the back-fill loop
-        // would also fire `Promoted` for it, double-triggering
-        // `MainWindow::UpdateFilters`.
+        // colB is the sandwiched pre-existing enum: exactly one
+        // `Grew`, zero `Promoted`. Pre-fix the back-fill loop also
+        // fired `Promoted` here, double-triggering `UpdateFilters`.
         int colBGrewCount = 0;
         int colBPromotedCount = 0;
         int colBDemotedCount = 0;
@@ -5751,9 +5741,8 @@ private slots:
         );
         QCOMPARE(colBDemotedCount, 0);
 
-        // Sanity: the genuinely new enum columns still get exactly
-        // one `Promoted` each so receivers can rebuild rules
-        // targeting them.
+        // Genuinely new enum columns still get exactly one
+        // `Promoted` each, so receivers can rebuild their filters.
         const auto countReasonForColumn = [&](int columnIndex, EnumColumnsChangeReason wanted) {
             int count = 0;
             for (const auto &args : enumChangedSpy)
@@ -5771,19 +5760,17 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: a hand-edited config with `+inf` / `-inf` numeric
-    // bounds opens the editor in a non-submittable state because
-    // `OnOkClicked` rejects non-finite tokens and `QDoubleValidator`
-    // doesn't strip them on `setText`. `Load()` coerces non-finite
-    // bounds to "unbounded" so the dialog opens submittable and the
-    // user can adjust as needed.
+    // Regression: a hand-edited config with `+inf`/`-inf`/`NaN`
+    // bounds would open in a non-submittable state (`OnOkClicked`
+    // rejects them, `QDoubleValidator` doesn't strip them on
+    // `setText`). `Load()` coerces non-finite bounds to "unbounded"
+    // so the dialog opens submittable.
     void TestSavedNumericRangeFilterCoercesNonFiniteToUnbounded()
     {
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        // Tiny fixture: just need a numeric column to exist so
-        // `FilterEditor::UpdateSelectedColumn` switches to
+        // Tiny fixture; we just need a numeric column to land on
         // `PAGE_NUMERIC`.
         QStringList lines;
         lines.reserve(64);
@@ -5837,9 +5824,8 @@ private slots:
     }
 
     // Regression: the inverted-range status-bar message uses the
-    // canonical `QLocale::c() + max_digits10` formatter so the user
-    // sees the exact bounds they typed. Pre-fix the message used
-    // `arg(double)` with default precision 6 and silently truncated
+    // C-locale, max-digits10 formatter, matching what the user typed.
+    // Pre-fix it used precision-6 `arg(double)` which collapsed
     // distinct bounds like `12345.6789` and `12345.6790` into the
     // same string.
     void TestNumericRangeRejectionMessagePreservesPrecision()
@@ -5874,12 +5860,9 @@ private slots:
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
 
-        // Use exactly-representable doubles whose `g` precision-6
-        // rendering collides (`"1e+06"` for both, since the
-        // exponent equals the precision and trailing zeros are
-        // stripped) but whose max_digits10 rendering is distinct.
-        // 1000000 + 1/128 and 1000000 + 1/256 are both exact in
-        // IEEE 754 double precision.
+        // Pick exactly-representable doubles whose precision-6
+        // rendering collides (`"1e+06"`) but whose max_digits10
+        // rendering differs. Both values are exact in IEEE 754.
         constexpr double MIN_VALUE = 1000000.0078125;  // = 1e6 + 1/128
         constexpr double MAX_VALUE = 1000000.00390625; // = 1e6 + 1/256, < MIN_VALUE
 
@@ -5913,14 +5896,9 @@ private slots:
     }
 
     // Regression: a Boolean filter with both sides selected renders
-    // its menu title in canonical `"true, false"` order. The
-    // submit slot already writes them in this order, but
-    // `AddLogFilter` now derives the title via
-    // `DecodeBooleanFilterSides` so a future code path that
-    // installs a saved filter with non-canonical order (e.g. a
-    // hand-edited `"filterValues": ["false", "true"]` payload)
-    // still produces a stable title that matches the editor's
-    // checkbox order.
+    // its menu title in canonical `"true, false"` order, even when
+    // `filter.filterValues` is in non-canonical order (e.g. a hand-
+    // edited `["false", "true"]` payload).
     void TestBooleanFilterMenuTitleCanonicalOrder()
     {
         QStringList lines;
@@ -5991,8 +5969,8 @@ private slots:
         QVERIFY2(action != nullptr, "Boolean filter must have a menu entry");
         QCOMPARE(action->text(), QStringLiteral("true, false"));
 
-        // Single-side title sanity check: "false only" must not
-        // accidentally inherit "true, false" from a stale code path.
+        // Single-side sanity: "false only" must render as just
+        // "false" (no leftover "true, " from a stale code path).
         const QString falseOnlyId = QStringLiteral("bool-canonical-title-false");
         QVERIFY2(
             QMetaObject::invokeMethod(

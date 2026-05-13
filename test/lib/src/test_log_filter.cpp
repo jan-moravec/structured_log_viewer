@@ -544,11 +544,9 @@ TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column pr
 namespace
 {
 
-/// Single-column table of arbitrary type seeded with one slot per row.
-/// Mirrors the helper in `test_log_compare.cpp` but lives here so the
-/// numeric / boolean predicate tests can build mixed-type tables
-/// (`int64_t`, `uint64_t`, `double`, `bool`, `monostate`) without
-/// pulling in the bigger compare helpers.
+/// Single-column table seeded with one slot per row. Duplicated from
+/// `test_log_compare.cpp` so the numeric / boolean tests can build
+/// mixed-type tables without pulling in the bigger compare helpers.
 LogTable BuildSingleColumnTable(
     const TestLogFile &testFile,
     const std::string &columnKey,
@@ -609,10 +607,9 @@ TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_fil
 
 TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals max", "[log_filter][numeric_range]")
 {
-    // A `min == max` range is a valid single-point filter: only slots
-    // equal to the shared bound pass. Inverted ranges (`min > max`)
-    // are caught by the GUI submission path; the predicate itself
-    // doesn't enforce ordering.
+    // `min == max` is a valid single-point filter. Inverted ranges
+    // (`min > max`) are caught by the GUI; the predicate doesn't
+    // enforce ordering itself.
     const TestLogFile fixture("log_filter_numeric_single_point.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{4}, int64_t{5}, int64_t{6}, 5.0};

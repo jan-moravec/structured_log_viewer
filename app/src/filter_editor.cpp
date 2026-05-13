@@ -20,10 +20,9 @@ namespace
 {
 constexpr int ENUM_PICKER_MAX_HEIGHT_PX = 320;
 
-/// Page indices in `mStackedWidget`. Order mirrors the `addWidget`
-/// sequence in `FilterEditor::SetupLayout`; bumped together if a new
-/// page is inserted so `UpdateSelectedColumn` and
-/// `UpdateEnumSelectionCount` stay in lockstep.
+/// Page indices in `mStackedWidget`. Must match the insertion order
+/// in `SetupLayout`; bump together with `UpdateSelectedColumn` and
+/// `UpdateEnumSelectionCount` when adding a page.
 constexpr int PAGE_STRING = 0;
 constexpr int PAGE_TIME = 1;
 constexpr int PAGE_ENUM = 2;
@@ -48,10 +47,9 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mStackedWidget = new QStackedWidget(this);
 
     // Picker model + proxy. `setUniformItemSizes(true)` keeps layout
-    // tractable up to `MAX_ENUM_VALUES`. The proxy filters by the
-    // user's search text but does *not* re-sort: `PopulateEnumValues`
-    // already inserts items in locale-aware order so the view matches
-    // the table-column display ordering.
+    // tractable up to `MAX_ENUM_VALUES`. The proxy only filters by
+    // search text; `PopulateEnumValues` inserts items in locale-aware
+    // order, so we don't re-sort.
     mEnumValuesModel = new QStandardItemModel(this);
     mEnumValuesProxy = new QSortFilterProxyModel(this);
     mEnumValuesProxy->setSourceModel(mEnumValuesModel);
@@ -75,9 +73,8 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mEnumEmptyPlaceholder->setWordWrap(true);
     mEnumEmptyPlaceholder->hide();
 
-    // `QDoubleValidator` is shared by both numeric edits; locale is
-    // forced to C so the decimal separator stays a dot regardless of
-    // the user's locale.
+    // Shared validator for both numeric edits. C locale pins the
+    // decimal separator to '.' regardless of system locale.
     auto *numericValidator = new QDoubleValidator(this);
     QLocale cLocale = QLocale::c();
     cLocale.setNumberOptions(QLocale::RejectGroupSeparator);
@@ -235,16 +232,12 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
 void FilterEditor::Load(int row, std::optional<double> minValue, std::optional<double> maxValue)
 {
     mRowComboBox->setCurrentIndex(row);
-    // `QLocale::c()` keeps the decimal separator a dot regardless of
-    // the user's locale; the validator does the same, so the saved
-    // round-trips byte-exactly.
+    // C locale keeps the decimal separator as '.' so saved bounds
+    // round-trip byte-exactly (the validator uses the same locale).
     const QLocale cLocale = QLocale::c();
-    // A hand-edited config can carry `+inf`/`-inf`/`NaN` directly
-    // (glaze parses them happily), but `OnOkClicked` rejects those
-    // bounds at submit time -- the user would see an unrejectable
-    // dialog with no way out other than Cancel. Promote any
-    // non-finite incoming bound to "unbounded" so the editor opens
-    // in a submittable state and the user can adjust as needed.
+    // Coerce non-finite bounds (`±inf`/`NaN` from a hand-edited
+    // config) to "unbounded": `OnOkClicked` rejects them at submit
+    // time, which would otherwise trap the user in the dialog.
     const auto coerceFinite = [](std::optional<double> &v) {
         if (v.has_value() && !std::isfinite(*v))
         {
@@ -434,8 +427,8 @@ void FilterEditor::SetupLayout()
     fifthPageLayout->addStretch(1);
     fifthPage->setLayout(fifthPageLayout);
 
-    // Insertion order must match the `PAGE_*` constants; an inserted
-    // page would shift every later index.
+    // Insert in `PAGE_*` order. Inserting out of order would shift
+    // later page indices.
     mStackedWidget->insertWidget(PAGE_STRING, firstPage);
     mStackedWidget->insertWidget(PAGE_TIME, secondPage);
     mStackedWidget->insertWidget(PAGE_ENUM, thirdPage);
@@ -511,33 +504,22 @@ void FilterEditor::OnOkClicked()
     else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
              column.type == LogConfiguration::Type::Number)
     {
-        // Unbounded on both sides would match every row; insist on at
-        // least one finite bound. Also reject a non-numeric typed
-        // value when the corresponding side isn't marked unbounded.
+        // Insist on at least one finite bound; both unbounded would
+        // match every row.
         const bool minBounded = !mNumericMinUnbounded->isChecked();
         const bool maxBounded = !mNumericMaxUnbounded->isChecked();
         if (!minBounded && !maxBounded)
         {
-            // Style the Unbounded checkboxes, not the disabled line
-            // edits: the platform style overrides a border on a
-            // disabled `QLineEdit`, so the user wouldn't see the
-            // warning otherwise.
+            // Style the checkboxes, not the disabled line edits: the
+            // platform style overrides borders on disabled QLineEdits.
             mNumericMinUnbounded->setStyleSheet("QCheckBox { color: red; }");
             mNumericMaxUnbounded->setStyleSheet("QCheckBox { color: red; }");
             return;
         }
-        // `QLocale::toDouble` accepts "nan" / "inf" / "+inf" / "-inf",
-        // and `QLineEdit::setText` bypasses the validator entirely
-        // (`QDoubleValidator` itself rejects those tokens during
-        // keyboard entry, but a hand-edited saved config or a
-        // programmatic `setText` lands them in the edit unchecked).
-        // Either bound as `NaN` would silently degenerate to
-        // "unbounded on that side" via `NumericRangeRowPredicate`'s
-        // NaN-collapse, and `±inf` would collapse the predicate to
-        // "reject everything"; reject both at submit time so the
-        // user sees the dialog block. (`Load()` additionally coerces
-        // non-finite saved bounds to "unbounded" so the dialog opens
-        // submittable; this is the second line of defence.)
+        // Reject `NaN` / `±inf`: `QLocale::toDouble` accepts them,
+        // and `setText` bypasses the validator. `Load()` already
+        // coerces non-finite saved bounds to "unbounded"; this is
+        // the second line of defence.
         const QLocale cLocale = QLocale::c();
         auto parseFinite = [&cLocale](const QString &text) -> std::optional<double> {
             bool ok = false;
@@ -570,8 +552,8 @@ void FilterEditor::OnOkClicked()
         }
         if (minValue.has_value() && maxValue.has_value() && *minValue > *maxValue)
         {
-            // Inverted range: `min == max` is allowed (single-point
-            // filter), strict `>` is the rejection.
+            // `min == max` is a valid single-point filter; only
+            // strict `>` is rejected.
             mNumericMinEdit->setStyleSheet("border: 1px solid red");
             mNumericMaxEdit->setStyleSheet("border: 1px solid red");
             return;
@@ -641,8 +623,8 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(PAGE_STRING);
         break;
     }
-    // Page change can leave a stale warning border on a hidden page; a
-    // single reset keeps the next OK click against a clean slate.
+    // Reset any stale warning borders from a hidden page so the
+    // next OK click starts from a clean slate.
     ClearWarningStyles();
     // Refresh OK-enabled gating so leaving an empty enum page re-enables OK.
     UpdateEnumSelectionCount();

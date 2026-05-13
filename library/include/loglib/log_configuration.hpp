@@ -21,15 +21,10 @@ struct LogConfiguration
     /// (`"unknown"`, `"any"`, ...); see
     /// `internal/log_configuration_glaze_meta.hpp`.
     ///   - `Unknown`     - new keys; auto-detector candidate.
-    ///   - `Any`         - explicit user opt-out from auto-detection;
-    ///                     also the auto-detector bail when no strings,
-    ///                     no numerics, and no bools were observed (or
-    ///                     bools were observed alongside numerics).
-    ///                     Sorts and filters via the string code path
-    ///                     (`CallbackStringRowPredicate` / byte-wise
-    ///                     compare).
-    ///   - `String`      - inferred string column (too varied to
-    ///                     enumerate).
+    ///   - `Any`         - user opt-out, or auto-detect bail for
+    ///                     unclassifiable values (no values, or bool
+    ///                     mixed with numeric). Sorts/filters as string.
+    ///   - `String`      - inferred string column (too varied to enumerate).
     ///   - `Boolean`     - JSON `true`/`false` slots; false < true.
     ///   - `Integer`     - only Int64/UInt64 observed.
     ///   - `Floating`    - only Double observed.
@@ -70,14 +65,13 @@ struct LogConfiguration
             /// Multi-select over an enum column. Persisted as strings,
             /// resolved to an id bitset at rule construction.
             Enumeration,
-            /// Numeric range over `Integer`/`Floating`/`Number` columns.
-            /// `filterMinValue` / `filterMaxValue` carry the inclusive
-            /// bounds; either may be `nullopt` to leave that side
-            /// unbounded.
+            /// Inclusive numeric range over `Integer`/`Floating`/`Number`
+            /// columns. Carried in `filterMinValue`/`filterMaxValue`
+            /// (either may be `nullopt` for unbounded).
             Number,
             /// True/false multi-select for `Type::Boolean` columns.
-            /// `filterValues` carries the picked sides as a subset of
-            /// {"true", "false"}; empty rejects every row.
+            /// `filterValues` is a subset of {"true","false"}; empty
+            /// rejects every row.
             Boolean
         };
 

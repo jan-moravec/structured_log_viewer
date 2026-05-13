@@ -112,12 +112,10 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
 // linger before the bar reverts to default state.
 constexpr int STATUS_BAR_MESSAGE_TIMEOUT_MS = 5000;
 
-/// Decode `LogConfiguration::LogFilter::filterValues` (a subset of
-/// `{"true", "false"}`, the on-disk shape for a `Type::Boolean`
-/// filter) into the two-toggle pair `BoolRowPredicate` consumes.
-/// Case-insensitive so a hand-edited config with `"True"` / `"FALSE"`
-/// still loads (the canonical writer uses lowercase, but the on-disk
-/// format is human-readable JSON).
+/// Decode the on-disk `Type::Boolean` filter (a subset of
+/// `{"true", "false"}`) into the two-toggle pair
+/// `BoolRowPredicate` consumes. Case-insensitive so a hand-edited
+/// `"True"` / `"FALSE"` still loads.
 struct BooleanFilterSides
 {
     bool includeTrue = false;
@@ -385,15 +383,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int columnIndex) {
         if (reason == EnumColumnsChangeReason::Demoted)
         {
-            // Cache flush is broad: the rank cache is keyed by source
-            // column index and `EnumRankFor` aliases dictionaries
-            // across columns, so invalidate everything to be safe.
+            // Broad flush: rank cache keys alias across columns via
+            // `EnumRankFor`, so invalidate everything to be safe.
             mSortFilterProxyModel->InvalidateEnumRanks();
         }
-        // `columnIndex == -1` is the "scope-unknown" fallback; treat
-        // it as "matches every filter" so we keep the safer broad
-        // behaviour. With per-column scoping the slot only rebuilds
-        // when an enum filter actually targets the affected column.
+        // `columnIndex == -1` means "scope unknown" -- treat as
+        // matches-anything to keep the safe broad behaviour.
         const auto matchesAffectedColumn = [columnIndex](const auto &kv) {
             return columnIndex < 0 || kv.second.row == columnIndex;
         };
@@ -1448,16 +1443,14 @@ void MainWindow::FilterNumericRangeSubmitted(
     const QString &filterID, int row, std::optional<double> minValue, std::optional<double> maxValue
 )
 {
-    // Reject an inverted range up front; the predicate would otherwise
-    // hide every row silently. Mirrors the time-range / regex probes.
+    // Reject inverted ranges up front; otherwise the predicate would
+    // silently hide every row. Mirrors the time-range / regex probes.
     if (minValue.has_value() && maxValue.has_value() && *minValue > *maxValue)
     {
-        // Match the menu-title formatting (`AddLogFilter`) so the
-        // numbers the user sees in the rejection message agree byte-
-        // for-byte with what they typed; the default `arg(double)`
-        // precision of 6 truncates inputs like `12345.6789` and
-        // produces "12345.7 is greater than 12345.7" for two
-        // distinct values.
+        // Use the same formatting as `AddLogFilter`'s menu title so
+        // the rejection message matches what the user typed byte-
+        // for-byte. Default `arg(double)` precision-6 truncates
+        // values like `12345.6789` to `12345.7`.
         const QLocale cLocale = QLocale::c();
         const QString minStr = cLocale.toString(*minValue, 'g', std::numeric_limits<double>::max_digits10);
         const QString maxStr = cLocale.toString(*maxValue, 'g', std::numeric_limits<double>::max_digits10);
@@ -1544,10 +1537,10 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     }
     case loglib::LogConfiguration::LogFilter::Type::Number:
     {
-        // Match `FilterEditor::Load`'s C-locale, max-digits10 formatting
-        // so the menu title and the editor's reopened bounds agree
-        // byte-for-byte. Default `QString::number(double)` uses
-        // precision 6 which silently truncates e.g. `12345.6789`.
+        // Same C-locale, max-digits10 formatting as
+        // `FilterEditor::Load` so the menu title and reopened editor
+        // bounds match byte-for-byte. Default precision-6 would
+        // silently truncate values like `12345.6789`.
         const QLocale cLocale = QLocale::c();
         const QString minStr =
             filter.filterMinValue.has_value()
@@ -1562,13 +1555,9 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     }
     case loglib::LogConfiguration::LogFilter::Type::Boolean:
     {
-        // Canonicalise to "true, false" (or just one side) regardless
-        // of the order in `filter.filterValues`. The submit slot
-        // always writes "true" first, but a hand-edited or
-        // legacy-saved config might list "false" first or duplicate
-        // entries; titles drawn straight from `filterValues` would
-        // then read "false, true" and disagree with the editor's
-        // checkbox order.
+        // Canonicalise to "true, false" order regardless of how
+        // `filter.filterValues` is laid out (the submit slot always
+        // writes "true" first, but a hand-edited config might not).
         const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
         QStringList values;
         if (sides.includeTrue)
@@ -1772,16 +1761,14 @@ void MainWindow::UpdateFilters()
 {
     // Sort filters cheapest-first so `std::ranges::all_of` short-
     // circuits on the cheapest rejecting test:
-    //   1. BoolRowPredicate          - GetValue + alternative test
-    //   2. EnumRowPredicate          - GetEnumValueId + bitset test
-    //   3. TimeRangeRowPredicate     - GetValue + int compare
-    //   4. NumericRangeRowPredicate  - GetValue + double compare
+    //   1. BoolRowPredicate           - GetValue + alternative test
+    //   2. EnumRowPredicate           - GetEnumValueId + bitset test
+    //   3. TimeRangeRowPredicate      - GetValue + int compare
+    //   4. NumericRangeRowPredicate   - GetValue + double compare
     //   5. CallbackStringRowPredicate - regex / UTF-8 walk
-    // `Boolean` and `Enumeration` are effectively tied (both do one
-    // line walk plus a tiny lookup); `Boolean` wins the tie on the
+    // Bool and Enum are effectively tied; Bool wins under the
     // assumption that bool columns reject more aggressively in
-    // practice (most logs have many more enum levels than bool sides).
-    // Tie-break on column index for deterministic, test-friendly order.
+    // practice. Tie-break on column index for deterministic ordering.
     using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
     auto costOf = [](LogFilterType t) -> int {
         switch (t)
@@ -1856,9 +1843,8 @@ void MainWindow::UpdateFilters()
             break;
         }
         case LogFilterType::Number:
-            // `FilterNumericRangeSubmitted` rejects an all-unbounded
-            // filter and an inverted range before it ever reaches
-            // `mFilters`, so at least one bound is engaged here.
+            // `FilterNumericRangeSubmitted` rejects all-unbounded and
+            // inverted ranges upstream; at least one bound is set here.
             rules.emplace_back(
                 std::in_place_type<loglib::NumericRangeRowPredicate>,
                 column,
@@ -1868,11 +1854,9 @@ void MainWindow::UpdateFilters()
             break;
         case LogFilterType::Boolean:
         {
-            // `filter.filterValues` is a subset of {"true", "false"};
-            // empty rejects every row (the predicate handles that),
-            // but `FilterBooleanSubmitted` rejects it up front.
-            // Case-insensitive decode tolerates hand-edited configs
-            // with e.g. `"True"` / `"FALSE"`.
+            // `FilterBooleanSubmitted` already rejects the all-off
+            // case upstream. Case-insensitive decode tolerates
+            // hand-edited configs (e.g. `"True"` / `"FALSE"`).
             const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
             rules.emplace_back(
                 std::in_place_type<loglib::BoolRowPredicate>, column, sides.includeTrue, sides.includeFalse

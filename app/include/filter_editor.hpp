@@ -4,7 +4,6 @@
 
 #include <loglib/log_configuration.hpp>
 
-#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
@@ -16,7 +15,6 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QPushButton>
-#include <QRadioButton>
 #include <QSortFilterProxyModel>
 #include <QStackedWidget>
 #include <QStandardItemModel>
@@ -124,9 +122,8 @@ private:
     QLineEdit *mNumericMaxEdit;
     QCheckBox *mNumericMaxUnbounded;
 
-    /// Boolean page: one button per side, plus a group-owned exclusive
-    /// behaviour set to non-exclusive so the user can pick either,
-    /// both, or neither.
+    /// Boolean page: one checkbox per side (independent toggles --
+    /// user may pick either, both, or neither).
     QCheckBox *mBoolIncludeTrue;
     QCheckBox *mBoolIncludeFalse;
 

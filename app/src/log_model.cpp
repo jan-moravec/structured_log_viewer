@@ -438,8 +438,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     // Snapshot pre-batch dict sizes for active enum columns. The
     // post-batch diff drives one scoped `enumColumnsChanged` per
-    // affected column so `MainWindow` can short-circuit the rebuild
-    // when no enum filter targets the changed column.
+    // affected column so receivers can skip rebuilds for columns
+    // they don't care about.
     struct EnumSnapshotEntry
     {
         loglib::KeyId kid;
@@ -488,9 +488,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
-    // KeyId -> source-column index helper for the demote-tracking
-    // and back-fill emits. Linear in column count; columns are tens
-    // at most so the per-batch cost is negligible.
+    // `KeyId` -> source-column index lookup. Linear, but column
+    // counts are tens at most, so the per-batch cost is negligible.
     const auto findColumnIndexForKey = [this](loglib::KeyId kid) -> int {
         if (kid == loglib::INVALID_KEY_ID)
         {
@@ -511,10 +510,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         return -1;
     };
 
-    // Diff snapshot vs post-batch registry: emit `Grew` per column
-    // whose dict size changed and `Demoted` per column whose dict
-    // disappeared (registry erase). One signal per (column, reason)
-    // so the slot can scope by `columnIndex`.
+    // Diff snapshot vs post-batch registry: `Grew` when the dict
+    // size changed, `Demoted` when the dict disappeared (registry
+    // erase). One signal per (column, reason).
     std::vector<int> demotedColumnsThisBatch;
     if (!enumSnapshotBefore.empty())
     {
@@ -533,11 +531,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             }
         }
     }
-    // Same-batch `Unknown -> Enumeration -> String`: the snapshot
-    // doesn't see it (column wasn't enum at snapshot time), so use
-    // `LogTable::LastBatchDemotedKeys()` recorded by
-    // `DemoteColumnFromEnum`. De-dupe against snapshot demotes so a
-    // column that demoted via both paths only emits once.
+    // Same-batch `Unknown -> Enumeration -> String` isn't visible to
+    // the snapshot diff (column wasn't enum at snapshot time). Use
+    // `LastBatchDemotedKeys()` and de-dupe against snapshot demotes.
     for (const loglib::KeyId kid : mLogTable.LastBatchDemotedKeys())
     {
         const int columnIndex = findColumnIndexForKey(kid);
@@ -568,16 +564,12 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         );
 
         // Emit `Promoted` for every back-filled column that is now an
-        // enumeration so the slot can rebuild filters per column.
-        // Pre-`columnIndex`-scoping the loop early-broke after the
-        // first match because the receiver did a broad rebuild
-        // anyway; a per-column scoped slot needs the full set.
-        // Skip columns that were already enum at snapshot time: the
-        // back-fill range is a min/max over all back-filled columns
-        // (time + enum) so a pre-existing enum column whose dict only
-        // grew can fall inside it. The `Grew` / `Demoted` diff above
-        // already covers those; firing `Promoted` here as well would
-        // double-trigger `MainWindow::UpdateFilters`.
+        // enumeration. Skip columns that were already enum at
+        // snapshot time: the back-fill range is a min/max over all
+        // back-filled columns, so a pre-existing enum whose dict
+        // only grew can fall inside it -- the `Grew` diff above
+        // already covered it and a second emit would double-trigger
+        // `MainWindow::UpdateFilters`.
         const auto &columns = mLogTable.Configuration().Configuration().columns;
         for (int columnIndex = firstColumn; columnIndex <= lastColumn; ++columnIndex)
         {
@@ -648,9 +640,8 @@ void LogModel::EndStreaming(bool cancelled)
     if (!cancelled)
     {
         // Snapshot per-column types so we can emit one scoped
-        // `Promoted` per column that just transitioned. The lib API
-        // returns a single bool ("anything promoted?"), so the diff
-        // happens here.
+        // `Promoted` per transitioned column. The lib API only
+        // reports "anything promoted?", so the diff happens here.
         std::vector<loglib::LogConfiguration::Type> typesBefore;
         {
             const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;

@@ -678,9 +678,8 @@ TEST_CASE(
     "[log_configuration][wire_format_compat][number][boolean]"
 )
 {
-    // The new filter variants use the same lowerCamelCase wire format
-    // as the older variants. Hand-written JSON exercises the names so
-    // future renames stay backward-compatible.
+    // Hand-written JSON pins the lowerCamelCase wire format for the
+    // new filter variants so future renames stay back-compat.
     constexpr std::string_view JSON = R"({
         "columns": [
             {"header":"value","keys":["value"],"printFormat":"{}","type":"number","parseFormats":[]},

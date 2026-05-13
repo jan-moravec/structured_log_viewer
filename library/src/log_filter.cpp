@@ -180,11 +180,9 @@ NumericRangeRowPredicate::NumericRangeRowPredicate(
 )
     : mColumnIndex(columnIndex), mMin(minValue), mMax(maxValue)
 {
-    // `NaN` bounds collapse to "unbounded on that side" so callers can
-    // pass a parsed-but-malformed UI input without silently producing
-    // an always-reject filter. Mirrors the IEEE-754 ordering: nothing
-    // compares either side of NaN, so a real NaN bound rejects every
-    // row -- almost certainly not what the user meant.
+    // Collapse NaN bounds to "unbounded": a real NaN bound would
+    // reject every row (NaN compares unordered), which is almost
+    // never what the caller meant.
     if (mMin.has_value() && std::isnan(*mMin))
     {
         mMin.reset();
@@ -201,10 +199,9 @@ bool NumericRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) con
     return std::visit(
         [this](const auto &alt) -> bool {
             using T = std::decay_t<decltype(alt)>;
-            // MSVC warns C4702 if an `if constexpr` branch returns early
-            // because the trailing common code becomes unreachable for
-            // that instantiation. Collect into an optional and exit
-            // once after the `if constexpr` chain instead.
+            // Single exit after the `if constexpr` chain to avoid
+            // MSVC C4702 (a branch returning early would make the
+            // common tail unreachable for that instantiation).
             std::optional<double> asDouble;
             if constexpr (std::is_same_v<T, double>)
             {
@@ -215,8 +212,7 @@ bool NumericRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) con
             }
             else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)
             {
-                // Above 2^53 the cast loses precision; documented in
-                // the header. Tests cover the small/medium-range cases.
+                // Cast loses precision past 2^53 (see header).
                 asDouble = static_cast<double>(alt);
             }
             if (!asDouble.has_value())

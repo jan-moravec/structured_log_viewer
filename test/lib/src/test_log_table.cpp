@@ -2265,9 +2265,8 @@ TEST_CASE(
     "LogTable -- bool-only column auto-detects to Type::Boolean", "[log_table][append_batch][enum][routing][boolean]"
 )
 {
-    // Bool-only columns: no string and no numeric observations, so the
-    // bail picks the dedicated `Type::Boolean` branch instead of the
-    // historical `Type::Any` fallback.
+    // Bool-only columns route through the dedicated `Type::Boolean`
+    // branch instead of the historical `Type::Any` fallback.
     const TestLogFile testFile("enum_no_string_bool.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2294,8 +2293,8 @@ TEST_CASE(
     "LogTable -- bool mixed with numerics still routes to Type::Any", "[log_table][append_batch][enum][routing][any]"
 )
 {
-    // Mixed bool + integer: no single specialised widget covers the
-    // shape, so the no-string bail falls through to `Type::Any`.
+    // Mixed bool + integer has no single specialised widget, so the
+    // no-string bail falls through to `Type::Any`.
     const TestLogFile testFile("enum_no_string_bool_mixed.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));

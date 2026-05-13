@@ -50,23 +50,17 @@ constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 20;
 /// stderr telemetry line; below it the demote cost is uninteresting.
 constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
 
-/// Picks a terminal type from observed numeric / bool tag counts.
+/// Pick a terminal type from observed numeric / bool tag counts.
 ///
-/// Bools-only columns land on `Type::Boolean`; numeric-only columns
-/// pick `Integer` / `Floating` / `Number` as before; mixed bool +
-/// numeric falls through to `Type::Any` because no single specialised
-/// widget covers that shape (preserves the "saw something
-/// unclassifiable" semantic of `Any`). Empty observation -> `Type::Any`
-/// (the historical bail).
+///   - bools only         -> `Boolean`
+///   - integers / doubles -> `Integer` / `Floating` / `Number`
+///   - bool + numeric mix -> `Any` (no specialised widget)
+///   - nothing observed   -> `Any` (historical bail)
 ///
-/// Caveat: a column that promotes to `Type::Enumeration` but later
-/// sees a wave of `Bool` slots accrues them as `wrongTypeSlots` in
-/// `EncodeColumnRange` and demotes to `Type::String`, not
-/// `Type::Boolean`. The terminal-type-stays-terminal rule prevents a
-/// second auto-detection pass. If real-world data starts hitting that
-/// case (enum → mixed-bool demotion), revisit by routing the demote
-/// decision through this helper using `EnumColumnHealth`'s per-tag
-/// counters rather than the lumped `wrongTypeSlots` total.
+/// Caveat: an already-promoted enum that later sees bool slots
+/// demotes to `Type::String` (via lumped `wrongTypeSlots`), not
+/// `Boolean`. If that case matters, route the demote through here
+/// using `EnumColumnHealth`'s per-tag counters.
 LogConfiguration::Type RouteNoStringBail(
     size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
 ) noexcept

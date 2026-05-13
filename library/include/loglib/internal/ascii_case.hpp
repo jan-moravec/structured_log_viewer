@@ -6,11 +6,9 @@
 namespace loglib::internal
 {
 
-/// Case-insensitive ASCII equality. ASCII-only by design: log column
-/// keys we case-fold ("level", "true", "false", ...) are guaranteed
-/// 7-bit, so a per-byte fold avoids the heap allocation of a
-/// locale-aware comparison and keeps the helper safe to call from
-/// hot parser/filter paths.
+/// Case-insensitive equality on 7-bit ASCII. The keys we fold
+/// ("level", "true", "false", ...) are all ASCII, so we avoid the
+/// allocation a locale-aware comparison would do. Safe on hot paths.
 constexpr bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
 {
     if (a.size() != b.size())

@@ -197,15 +197,11 @@ signals:
     void sourceStatusChanged(loglib::SourceStatus status);
 
     /// Emitted when a `Type::Enumeration` column or its dictionary
-    /// changes shape (auto-promotion, dict growth, end-of-stream
-    /// finalisation). `MainWindow` rebuilds enum filter rules when
-    /// the @p reason warrants it; see `EnumColumnsChangeReason`.
-    /// One signal is emitted per affected column so receivers can
-    /// scope their reaction by @p columnIndex (the source-table
-    /// column index). `columnIndex == -1` means the emitter cannot
-    /// scope it to a single column (e.g. a dictionary registry sweep
-    /// that rebuilt the whole index); receivers should treat it as
-    /// "any enum filter may need attention".
+    /// changes shape (promotion, dict growth, end-of-stream finalise).
+    /// One signal per affected column so receivers can scope by
+    /// @p columnIndex (source-table coords). `columnIndex == -1` is
+    /// "unscoped" (registry-wide sweep) -- treat as "any enum filter
+    /// may need attention". See `EnumColumnsChangeReason`.
     void enumColumnsChanged(EnumColumnsChangeReason reason, int columnIndex);
 
 private:
