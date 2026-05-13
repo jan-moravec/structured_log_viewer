@@ -34,6 +34,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
@@ -3769,9 +3770,9 @@ private slots:
         QVERIFY(filterColumnsMovedSpy.isValid());
         const int src = (levelCol == 0) ? 1 : 0;
         const int dest = (levelCol == 0) ? 0 : 1;
-        QVERIFY2(model->MoveColumnForTest(src, dest), "MoveColumnForTest must succeed");
+        QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
         QCoreApplication::processEvents();
-        QVERIFY2(columnsMovedSpy.count() >= 1, "MoveColumnForTest must emit columnsMoved");
+        QVERIFY2(columnsMovedSpy.count() >= 1, "MoveColumn must emit columnsMoved");
         QVERIFY2(
             filterColumnsAboutToBeMovedSpy.count() >= 1,
             "LogFilterModel must forward columnsAboutToBeMoved from its source"
@@ -3812,6 +3813,422 @@ private slots:
         }
 
         model->EndStreaming(false);
+    }
+
+    // Stream a small two-column fixture into `mWindow` so column-
+    // visibility tests have a real source model to point at. Returns
+    // the column index of the first non-timestamp column ("level"),
+    // which the tests use as their hide / move target.
+    int StreamFixtureForColumnTests()
+    {
+        auto *model = mWindow->Model();
+        Q_ASSERT(model != nullptr);
+
+        // 200 lines is below the static-mode promotion threshold for
+        // arbitrary keys but above `STREAM_PROMOTION_MIN_ROWS`, so
+        // streaming mode promotes `level` to enum and the table has a
+        // stable layout for the rest of the test.
+        const QStringList levels{
+            QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
+        };
+        QStringList lines;
+        lines.reserve(200);
+        for (int i = 0; i < 200; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
+        }
+        TempJsonFile fixture(lines);
+        // `TempJsonFile`'s temp dir lives for the lifetime of the
+        // helper; we let the streaming run finish before returning so
+        // the parser doesn't outlive it.
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (!finishedSpy.isValid())
+        {
+            return -1;
+        }
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+
+        return ColumnByHeader(*model, QStringLiteral("level"));
+    }
+
+    // `MainWindow::SetColumnVisible(idx, false)` flips `Column::
+    // visible` and applies the flag via `QHeaderView::setSectionHidden`.
+    void TestHideColumnUpdatesHeaderAndConfiguration()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto *model = mWindow->Model();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QVERIFY2(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            "column must default to visible before hide"
+        );
+
+        mWindow->SetColumnVisible(levelCol, false);
+
+        QVERIFY2(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+                 "Column::visible must flip to false");
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(header->isSectionHidden(levelCol), "header section must be hidden");
+    }
+
+    // `MainWindow::SetColumnVisible(idx, true)` reverses a hide.
+    void TestShowColumnRestoresSection()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto *model = mWindow->Model();
+        mWindow->SetColumnVisible(levelCol, false);
+        QVERIFY(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible);
+
+        mWindow->SetColumnVisible(levelCol, true);
+
+        QVERIFY2(model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+                 "Column::visible must flip back to true");
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(!header->isSectionHidden(levelCol), "header section must no longer be hidden");
+    }
+
+    // The header context menu lists currently-hidden columns under a
+    // `Show column` submenu so the user can restore them. Counts and
+    // labels are pinned by walking the menu's action tree.
+    void TestHeaderContextMenuListsHiddenColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        // Pick the other (non-level) column as a second hide target.
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        mWindow->SetColumnVisible(levelCol, false);
+        mWindow->SetColumnVisible(msgCol, false);
+
+        // Build a menu rooted at whichever visible column remains
+        // (test fixture is two columns; both are hidden, so any
+        // logical index 0..N-1 is valid -- pick 0).
+        QMenu *menu = mWindow->BuildHeaderContextMenu(0, nullptr);
+        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+
+        // First entry is always `Hide "<header>"`.
+        const QList<QAction *> topActions = menu->actions();
+        QVERIFY2(topActions.size() >= 3, "menu must contain Hide + separator + Show submenu");
+        QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
+
+        // The `Show column` submenu is the action carrying a nested
+        // menu; pull it out and verify it lists each hidden header.
+        QMenu *showMenu = nullptr;
+        for (QAction *act : topActions)
+        {
+            if (act->menu() != nullptr && act->text().startsWith("Show"))
+            {
+                showMenu = act->menu();
+                break;
+            }
+        }
+        QVERIFY2(showMenu != nullptr, "menu must contain a Show column submenu");
+
+        QStringList showActionLabels;
+        for (QAction *act : showMenu->actions())
+        {
+            showActionLabels.append(act->text());
+        }
+        QStringList expected{QStringLiteral("level"), QStringLiteral("msg")};
+        expected.sort();
+        showActionLabels.sort();
+        QCOMPARE(showActionLabels, expected);
+    }
+
+    // Hidden state survives the manual Save / Reset / Load round-trip
+    // exercised by `File -> Save Configuration` and `File -> Load
+    // Configuration` (driven here through the manager directly to
+    // bypass the `QFileDialog` modals).
+    void TestColumnVisibilityRoundTripsThroughSaveLoad()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        mWindow->SetColumnVisible(levelCol, false);
+        QVERIFY(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible);
+
+        QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString savedPath = savedDir.filePath(QStringLiteral("config.json"));
+        model->ConfigurationManager().Save(savedPath.toStdString());
+
+        // Reset wipes the model state; reloading repopulates columns
+        // from the configuration file. `ApplyColumnVisibility()` is
+        // the production hook that pushes `visible` flags into the
+        // header.
+        model->Reset();
+        model->ConfigurationManager().Load(savedPath.toStdString());
+        mWindow->ApplyColumnVisibility();
+        QCoreApplication::processEvents();
+
+        const auto &reloadedColumns = model->Configuration().columns;
+        QVERIFY2(static_cast<size_t>(levelCol) < reloadedColumns.size(),
+                 "level column index must remain valid after reload");
+        QVERIFY2(!reloadedColumns[static_cast<size_t>(levelCol)].visible,
+                 "hidden flag must survive Save / Reset / Load");
+
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(header->isSectionHidden(levelCol), "header section must remain hidden after reload");
+    }
+
+    // `LogModel::MoveColumn` rotates columns at the source level and
+    // remaps `LogFilter::row` for every persisted filter through the
+    // manager. The proxy chain forwards the move; the in-memory
+    // `MainWindow::mFilters` map is updated by `OnHeaderSectionMoved`
+    // when the move was initiated from a header drag, but a direct
+    // `LogModel::MoveColumn` call only updates the lib-side
+    // configuration. This test pins the lib-side remap on the
+    // `LogConfiguration::filters` vector that `Save` would persist.
+    void TestMoveColumnRemapsConfigurationFilters()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        // Seed a single saved filter pointing at `level`. We push
+        // straight onto the underlying configuration vector since the
+        // public `AddFilter` path opens an editor.
+        auto &mgr = model->ConfigurationManager();
+        // `LogConfigurationManager` exposes only `Configuration()
+        // const`, so swap in via Save / Load to get a fresh filter on
+        // disk.
+        loglib::LogConfiguration configuration = mgr.Configuration();
+        configuration.filters.push_back(loglib::LogConfiguration::LogFilter{
+            .type = loglib::LogConfiguration::LogFilter::Type::Enumeration,
+            .row = levelCol,
+            .filterString = std::nullopt,
+            .matchType = std::nullopt,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {"info"},
+        });
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString path = tempDir.filePath(QStringLiteral("with-filter.json"));
+        std::string json;
+        const auto writeError = glz::write_json(configuration, json);
+        QVERIFY(!writeError);
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << json;
+        }
+        model->Reset();
+        mgr.Load(path.toStdString());
+        QCoreApplication::processEvents();
+
+        const int levelAfterReload = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelAfterReload >= 0, "level column must reload");
+        QCOMPARE(mgr.Configuration().filters.size(), static_cast<size_t>(1));
+        QCOMPARE(mgr.Configuration().filters[0].row, levelAfterReload);
+
+        // Move `level` to a different position; the persisted filter's
+        // `row` must follow the column.
+        const int src = levelAfterReload;
+        const int dest = (src == 0) ? model->columnCount() - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mgr.Configuration().filters.size(), static_cast<size_t>(1));
+        QCOMPARE(mgr.Configuration().filters[0].row, dest);
+    }
+
+    // Regression: `Type::Boolean` -> Column::visible field round-trip
+    // is exercised via the legacy-test path (any pre-existing config
+    // file must still load with default `visible == true`). This test
+    // pins the `Save` output's wire format directly.
+    void TestColumnVisibleFieldEmittedInSavedJson()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        mWindow->SetColumnVisible(levelCol, false);
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString path = tempDir.filePath(QStringLiteral("with-visible.json"));
+        model->ConfigurationManager().Save(path.toStdString());
+
+        QFile file(path);
+        QVERIFY(file.open(QFile::ReadOnly));
+        const QByteArray contents = file.readAll();
+        // The flag is serialised both for the visible and hidden
+        // columns; just assert both literals are present so a future
+        // Glaze meta change that hides the field surfaces here.
+        QVERIFY2(contents.contains("\"visible\": true"), "JSON must contain \"visible\": true");
+        QVERIFY2(contents.contains("\"visible\": false"), "JSON must contain \"visible\": false");
+    }
+
+    // Regression: `LogModel::Reset()` emits `modelReset`, which Qt
+    // resets the header for (clearing all `setSectionHidden` flags).
+    // The configuration's `Column::visible` flags survive (the
+    // configuration is not part of the table data wiped by Reset),
+    // and the new `modelReset` -> `ApplyColumnVisibility` connect
+    // pushes them back into the header. Without that hook the column
+    // would be silently re-shown after every reset.
+    void TestVisibilityReappliedAfterModelReset()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        mWindow->SetColumnVisible(levelCol, false);
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(header->isSectionHidden(levelCol), "precondition: section hidden");
+
+        QSignalSpy resetSpy(model, &QAbstractItemModel::modelReset);
+        QVERIFY(resetSpy.isValid());
+        model->Reset();
+        QCoreApplication::processEvents();
+        QVERIFY2(resetSpy.count() >= 1, "Reset must emit modelReset");
+
+        QVERIFY2(
+            !model->Configuration().columns.empty(),
+            "configuration columns must survive Reset (Reset wipes data, not configuration)"
+        );
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            "Column::visible flag must survive Reset"
+        );
+        QVERIFY2(
+            header->isSectionHidden(levelCol),
+            "modelReset hook must reapply Column::visible to the header"
+        );
+    }
+
+    // `MainWindow::TryLoadAsConfiguration` is the single-file entry
+    // point of `OpenFiles` -- it loads a JSON config in place without
+    // resetting the model. That path must reapply `Column::visible`
+    // to the header, otherwise a saved config with hidden columns
+    // would load correctly into the configuration but show every
+    // column in the table.
+    void TestTryLoadAsConfigurationAppliesVisibility()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        mWindow->SetColumnVisible(levelCol, false);
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString savedPath = tempDir.filePath(QStringLiteral("hidden-level.json"));
+        model->ConfigurationManager().Save(savedPath.toStdString());
+
+        // Restore visibility so the load + reapply has something to
+        // do; otherwise the test would also pass without the new
+        // ApplyColumnVisibility call inside TryLoadAsConfiguration.
+        mWindow->SetColumnVisible(levelCol, true);
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(!header->isSectionHidden(levelCol), "precondition: section visible before load");
+
+        QVERIFY2(mWindow->TryLoadAsConfigurationForTest(savedPath), "TryLoadAsConfiguration must succeed");
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            "loaded configuration must mark level hidden"
+        );
+        QVERIFY2(header->isSectionHidden(levelCol), "TryLoadAsConfiguration must reapply visibility to the header");
+    }
+
+    // The `View` menu lists every column with a checkable action
+    // whose `toggled` signal flips `Column::visible`. Reachable even
+    // when every header section is hidden (the only escape hatch in
+    // that state). Rebuilt on each `aboutToShow`.
+    void TestViewMenuTogglesColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        QMenu *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        QVERIFY2(viewMenu != nullptr, "View menu must exist");
+
+        emit viewMenu->aboutToShow();
+
+        const QString levelHeader =
+            QString::fromStdString(model->Configuration().columns[static_cast<size_t>(levelCol)].header);
+        QAction *levelAction = nullptr;
+        for (QAction *act : viewMenu->actions())
+        {
+            if (act->text() == levelHeader)
+            {
+                levelAction = act;
+                break;
+            }
+        }
+        QVERIFY2(levelAction != nullptr, "View menu must contain an action for the level column");
+        QVERIFY2(levelAction->isCheckable(), "View menu action must be checkable");
+        QVERIFY2(levelAction->isChecked(), "View menu action must reflect the visible state");
+
+        levelAction->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            "toggling the View menu action must flip Column::visible"
+        );
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(header->isSectionHidden(levelCol), "header section must follow the toggle");
+
+        // Toggle back; rebuild the menu from scratch so the action
+        // state reflects the new configuration.
+        emit viewMenu->aboutToShow();
+        QAction *levelActionAfter = nullptr;
+        for (QAction *act : viewMenu->actions())
+        {
+            if (act->text() == levelHeader)
+            {
+                levelActionAfter = act;
+                break;
+            }
+        }
+        QVERIFY(levelActionAfter != nullptr);
+        QVERIFY2(!levelActionAfter->isChecked(), "rebuilt action must reflect newly-hidden state");
+        levelActionAfter->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            "second toggle must restore Column::visible"
+        );
+        QVERIFY2(!header->isSectionHidden(levelCol), "second toggle must un-hide the header section");
     }
 
     // Regression: `EnumRankFor` self-heals when the live dictionary

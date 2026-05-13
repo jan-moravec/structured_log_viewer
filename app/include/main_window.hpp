@@ -73,6 +73,38 @@ public:
     }
     [[nodiscard]] QMenu *FiltersMenu() const;
 
+    /// Set @p logicalIndex's visibility. Mutates `LogConfiguration::
+    /// Column::visible` and applies the flag via `QHeaderView::
+    /// setSectionHidden`. Public so tests (and the View menu) can
+    /// drive the flow without simulating a `QContextMenuEvent`.
+    /// No-op for an out-of-range @p logicalIndex.
+    void SetColumnVisible(int logicalIndex, bool visible);
+
+    /// Reapply every column's `visible` flag to the horizontal header.
+    /// Idempotent; invoked after column structural changes (load, reorder).
+    void ApplyColumnVisibility();
+
+    /// Build the right-click header context menu for the column at
+    /// @p logicalColumn. Exposed publicly because the offscreen-QPA
+    /// `findChild<QMenu*>` traversal bug (see `FiltersMenu()`) blocks
+    /// the natural test path; callers own the returned menu. Not
+    /// `const` because it wires `QObject::connect` for the menu's
+    /// `Hide` / `Show column` actions.
+    [[nodiscard]] QMenu *BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
+
+    /// Read-only accessor for the per-filter map; tests use it to
+    /// assert filter-row remap after a reorder.
+    [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
+    {
+        return mFilters;
+    }
+
+    /// Owned `LogModel`; non-null after construction.
+    [[nodiscard]] LogModel *Model() const
+    {
+        return mModel;
+    }
+
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only session-mode override so display-order tests can
     /// exercise the `Static` branch without a real open flow.
@@ -83,6 +115,11 @@ public:
         LiveTail,
     };
     void SetSessionModeForTest(TestSessionMode mode);
+
+    /// Test-only entry point to the production `TryLoadAsConfiguration`
+    /// path used by single-file `OpenFiles`. Exposed because the real
+    /// path is gated behind `QFileDialog`.
+    bool TryLoadAsConfigurationForTest(const QString &file);
 #endif
 
 protected:
@@ -134,6 +171,21 @@ private slots:
     /// Producer status transition; latches `mSourceWaiting` and
     /// refreshes the status bar.
     void OnSourceStatusChanged(loglib::SourceStatus status);
+
+    /// Translate a `QHeaderView::sectionMoved` (visual move) into a
+    /// source-side `LogModel::MoveColumn` + filter-row remap, then
+    /// reset the header's visual order so visual == logical again.
+    void OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
+
+    /// Build and show the header context menu at the click position.
+    void ShowHeaderContextMenu(const QPoint &pos);
+
+    /// Repopulate the `View` menu from the current configuration on
+    /// each `aboutToShow`. Each column gets a checkable `QAction`
+    /// whose `toggled` signal flips `Column::visible`. Reachable even
+    /// when every header section is hidden (the only escape hatch in
+    /// that state).
+    void RebuildViewMenu();
 
 private:
     /// Try to load @p file as a `LogConfiguration`; returns true on
@@ -237,4 +289,10 @@ private:
     /// Latched `SourceStatus::Waiting`; drives the `Source unavailable`
     /// status-bar variant.
     bool mSourceWaiting = false;
+
+    /// Re-entrancy guard for `OnHeaderSectionMoved`. The slot resets
+    /// the header's visual order to identity after committing a
+    /// source-side move; the resets fire `sectionMoved` again, which
+    /// we swallow.
+    bool mApplyingSectionMove = false;
 };

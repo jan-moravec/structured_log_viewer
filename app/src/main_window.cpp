@@ -29,7 +29,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
+#include <QScopeGuard>
+#include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QStringList>
@@ -172,6 +175,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     mModel = new LogModel(mTableView);
     mTableView->setModel(mModel);
+    // `QAbstractItemModel::modelReset` clears the header's per-section
+    // hidden state, but `LogTable::Reset` does *not* clear the
+    // configuration's `Column::visible` flags. Reapply them after
+    // every reset so any path that resets the model (load, re-stream,
+    // teardown, ...) ends up consistent with the saved config.
+    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -205,6 +214,26 @@ MainWindow::MainWindow(QWidget *parent)
     mTableView->horizontalHeader()->setStretchLastSection(true);
     mTableView->horizontalHeader()->setHighlightSections(false);
     mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    mTableView->horizontalHeader()->setSectionsMovable(true);
+    mTableView->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(
+        mTableView->horizontalHeader(),
+        &QHeaderView::sectionMoved,
+        this,
+        &MainWindow::OnHeaderSectionMoved
+    );
+    connect(
+        mTableView->horizontalHeader(),
+        &QHeaderView::customContextMenuRequested,
+        this,
+        &MainWindow::ShowHeaderContextMenu
+    );
+
+    // The `View` menu is rebuilt on demand from the current
+    // configuration. It is the only way to restore visibility once
+    // every header section is hidden, since the header's right-click
+    // menu requires hitting a visible section.
+    connect(ui->menuView, &QMenu::aboutToShow, this, &MainWindow::RebuildViewMenu);
 
     mTableView->setShowGrid(true);
     mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -565,6 +594,10 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
     try
     {
         mModel->ConfigurationManager().Load(file.toStdString());
+        // `Load` updates `Column::visible` but emits no model signal;
+        // push the freshly-loaded flags into the header so this path
+        // matches `LoadConfiguration`'s behaviour.
+        ApplyColumnVisibility();
         return true;
     }
     catch (...)
@@ -1040,6 +1073,11 @@ void MainWindow::SetSessionModeForTest(TestSessionMode mode)
         break;
     }
 }
+
+bool MainWindow::TryLoadAsConfigurationForTest(const QString &file)
+{
+    return TryLoadAsConfiguration(file);
+}
 #endif
 
 void MainWindow::ApplyDisplayOrder()
@@ -1105,6 +1143,11 @@ void MainWindow::LoadConfiguration()
             mModel->Reset();
             mModel->ConfigurationManager().Load(file.toStdString());
             UpdateUi();
+            // The header keeps `setSectionHidden` flags by logical
+            // index across the `Reset()` / Load round-trip, but the
+            // freshly-loaded `Column::visible` values are the new
+            // source of truth -- reassert them.
+            ApplyColumnVisibility();
         }
         catch (std::exception &e)
         {
@@ -1882,4 +1925,209 @@ void MainWindow::UpdateFilters()
         }
     }
     mSortFilterProxyModel->SetFilterRules(std::move(rules));
+}
+
+void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex)
+{
+    if (mApplyingSectionMove)
+    {
+        // Re-entered by the visual-reset loop below; swallow.
+        return;
+    }
+    // The slot only knows how to translate a single user drag against
+    // an identity-mapped header (visual == logical). Anything else
+    // would fold the pre-existing visual permutation into the move
+    // and silently rotate the wrong source column. We restore the
+    // identity invariant at the end of every move; assert it on the
+    // way in so a violation surfaces in debug builds.
+    Q_ASSERT_X(
+        oldVisualIndex == logicalIndex,
+        "MainWindow::OnHeaderSectionMoved",
+        "header expected to be visual==logical before each drag"
+    );
+    QHeaderView *header = mTableView->horizontalHeader();
+    if (header == nullptr)
+    {
+        return;
+    }
+    const auto &columns = mModel->Configuration().columns;
+    if (logicalIndex < 0 || static_cast<size_t>(logicalIndex) >= columns.size())
+    {
+        return;
+    }
+    // The visual-to-logical mapping reflects the user's drop position;
+    // translate it into the corresponding source-side `MoveColumn`
+    // operation. `dest` is the absolute final position the moved
+    // column should land at (matching `LogTable::MoveColumn`).
+    const int dest = newVisualIndex;
+    const int src = logicalIndex;
+    if (src == dest)
+    {
+        return;
+    }
+
+    mApplyingSectionMove = true;
+    // RAII so an exception in any of the calls below cannot leave
+    // the guard latched -- a latched guard would silently disable
+    // every subsequent header drag.
+    const auto guard = qScopeGuard([this]() { mApplyingSectionMove = false; });
+
+    // Commit the move to the source model. The proxy chain forwards
+    // `columnsMoved` to the view, which updates `QHeaderView`'s
+    // logical-to-visual mapping. `LogConfigurationManager::MoveColumn`
+    // also rotates the saved configuration's `filters[*].row`.
+    const bool moved = mModel->MoveColumn(src, dest);
+
+    if (moved)
+    {
+        // Mirror the lib-side filter-row remap onto the live
+        // `mFilters` map so the active rule set follows the move.
+        for (auto &[id, filter] : mFilters)
+        {
+            filter.row = loglib::LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
+        }
+        UpdateFilters();
+    }
+
+    // After the model commits the move, the view's header has
+    // visual == logical for the moved column. But for the leftward
+    // case, Qt also reshuffles the visual indices of the shifted
+    // columns. Reset the visual order to identity (visual == logical)
+    // so future drags start from a known baseline. We swallow the
+    // re-entrancy via `mApplyingSectionMove`.
+    {
+        const QSignalBlocker blocker(header);
+        for (int visual = 0; visual < header->count(); ++visual)
+        {
+            const int currentLogical = header->logicalIndex(visual);
+            if (currentLogical != visual)
+            {
+                header->moveSection(header->visualIndex(visual), visual);
+            }
+        }
+    }
+
+    // Section hidden flags are keyed by logical index in Qt; the
+    // source-side rotation reorders the logical indices, so reapply
+    // each column's persisted `visible` flag.
+    ApplyColumnVisibility();
+}
+
+void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
+{
+    QHeaderView *header = mTableView->horizontalHeader();
+    if (header == nullptr)
+    {
+        return;
+    }
+    const int logical = header->logicalIndexAt(pos);
+    if (logical < 0)
+    {
+        return;
+    }
+    QMenu *menu = BuildHeaderContextMenu(logical, header);
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    menu->popup(header->mapToGlobal(pos));
+}
+
+QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
+{
+    const auto &columns = mModel->Configuration().columns;
+    if (logicalColumn < 0 || static_cast<size_t>(logicalColumn) >= columns.size())
+    {
+        return nullptr;
+    }
+    auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+
+    const QString thisHeader = QString::fromStdString(columns[static_cast<size_t>(logicalColumn)].header);
+    QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(thisHeader));
+    connect(hideAction, &QAction::triggered, this, [this, logicalColumn]() { SetColumnVisible(logicalColumn, false); });
+
+    // Gather every hidden column for the `Show column` submenu. The
+    // clicked column is normally visible (right-click only fires on
+    // visible sections), so it would not appear here in production --
+    // tests can call this with an already-hidden index.
+    std::vector<int> hiddenColumns;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (!columns[i].visible)
+        {
+            hiddenColumns.push_back(static_cast<int>(i));
+        }
+    }
+    if (!hiddenColumns.empty())
+    {
+        menu->addSeparator();
+        QMenu *showMenu = menu->addMenu(tr("Show column"));
+        for (int hiddenLogical : hiddenColumns)
+        {
+            const QString hiddenHeader = QString::fromStdString(columns[static_cast<size_t>(hiddenLogical)].header);
+            QAction *showAction = showMenu->addAction(hiddenHeader);
+            connect(showAction, &QAction::triggered, this, [this, hiddenLogical]() {
+                SetColumnVisible(hiddenLogical, true);
+            });
+        }
+    }
+    return menu;
+}
+
+void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
+{
+    const auto &columns = mModel->Configuration().columns;
+    if (logicalIndex < 0 || static_cast<size_t>(logicalIndex) >= columns.size())
+    {
+        return;
+    }
+    mModel->ConfigurationManager().SetColumnVisible(static_cast<size_t>(logicalIndex), visible);
+    if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
+    {
+        header->setSectionHidden(logicalIndex, !visible);
+    }
+}
+
+void MainWindow::ApplyColumnVisibility()
+{
+    QHeaderView *header = mTableView->horizontalHeader();
+    if (header == nullptr)
+    {
+        return;
+    }
+    const auto &columns = mModel->Configuration().columns;
+    const size_t end = std::min(columns.size(), static_cast<size_t>(std::max(0, header->count())));
+    for (size_t i = 0; i < end; ++i)
+    {
+        header->setSectionHidden(static_cast<int>(i), !columns[i].visible);
+    }
+}
+
+void MainWindow::RebuildViewMenu()
+{
+    QMenu *viewMenu = ui->menuView;
+    if (viewMenu == nullptr)
+    {
+        return;
+    }
+    viewMenu->clear();
+    const auto &columns = mModel->Configuration().columns;
+    if (columns.empty())
+    {
+        // Nothing to toggle yet; surface a disabled placeholder so the
+        // menu is not silently empty.
+        QAction *placeholder = viewMenu->addAction(tr("(no columns yet)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        const int logical = static_cast<int>(i);
+        const QString header = QString::fromStdString(columns[i].header);
+        QAction *action = viewMenu->addAction(header);
+        action->setCheckable(true);
+        action->setChecked(columns[i].visible);
+        connect(action, &QAction::toggled, this, [this, logical](bool on) { SetColumnVisible(logical, on); });
+    }
 }

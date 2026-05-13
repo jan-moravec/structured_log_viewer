@@ -713,3 +713,182 @@ TEST_CASE(
     CHECK(loaded.filters[1].type == FilterType::Boolean);
     CHECK(loaded.filters[1].filterValues == std::vector<std::string>{"true", "false"});
 }
+
+TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")
+{
+    // A hidden-column flag persists across Save / Load via the
+    // `visible` field on `Column`. Saving / re-loading must preserve
+    // the per-column flag (and leave the default `visible == true`
+    // alone on untouched columns).
+    const TestLogConfiguration testConfiguration;
+
+    {
+        LogConfiguration configuration;
+        configuration.columns.push_back(LogConfiguration::Column{
+            .header = "shown",
+            .keys = {"shown"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::String,
+            .parseFormats = {},
+            .visible = true,
+        });
+        configuration.columns.push_back(LogConfiguration::Column{
+            .header = "hidden",
+            .keys = {"hidden"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::String,
+            .parseFormats = {},
+            .visible = false,
+        });
+        testConfiguration.Write(configuration);
+    }
+
+    LogConfigurationManager manager;
+    manager.Load(testConfiguration.GetFilePath());
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].visible);
+    CHECK_FALSE(manager.Configuration().columns[1].visible);
+
+    // Save back through the manager and confirm the flag survives the
+    // serialise -> parse cycle.
+    const TestLogConfiguration roundTrip;
+    manager.Save(roundTrip.GetFilePath());
+
+    LogConfigurationManager reloaded;
+    reloaded.Load(roundTrip.GetFilePath());
+    REQUIRE(reloaded.Configuration().columns.size() == 2);
+    CHECK(reloaded.Configuration().columns[0].visible);
+    CHECK_FALSE(reloaded.Configuration().columns[1].visible);
+}
+
+TEST_CASE(
+    "Legacy JSON without `visible` key loads as visible == true",
+    "[log_configuration][wire_format_compat][column_visibility]"
+)
+{
+    // Configurations saved by builds that pre-date `Column::visible`
+    // must keep loading; Glaze tolerates missing keys, and the field's
+    // default is `true` so a pre-existing column stays visible.
+    constexpr std::string_view LEGACY_JSON = R"({
+        "columns": [
+            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]}
+        ],
+        "filters": []
+    })";
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, LEGACY_JSON);
+    REQUIRE_FALSE(readError);
+    REQUIRE(loaded.columns.size() == 1);
+    CHECK(loaded.columns[0].visible);
+}
+
+TEST_CASE(
+    "LogConfigurationManager::MoveColumn remaps LogFilter::row through the permutation",
+    "[LogConfigurationManager][move_column][filter_row_remap]"
+)
+{
+    // Setup: four columns with one filter per column. Each filter's
+    // `row` field initially equals its column index.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"a", "b", "c", "d"});
+    REQUIRE(manager.Configuration().columns.size() == 4);
+
+    // Bypass the public `AddFilter` flow by writing the configuration
+    // to disk with hand-picked filters, then re-loading.
+    {
+        LogConfiguration configuration;
+        configuration.columns = manager.Configuration().columns;
+        for (int row = 0; row < 4; ++row)
+        {
+            configuration.filters.push_back(LogConfiguration::LogFilter{
+                .type = LogConfiguration::LogFilter::Type::String,
+                .row = row,
+                .filterString = std::string{"x"},
+                .matchType = LogConfiguration::LogFilter::Match::Contains,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {},
+            });
+        }
+        const TestLogConfiguration testConfiguration;
+        testConfiguration.Write(configuration);
+        manager.Load(testConfiguration.GetFilePath());
+    }
+    REQUIRE(manager.Configuration().filters.size() == 4);
+
+    SECTION("Right-to-left move (3 -> 0) shifts everything else right")
+    {
+        manager.MoveColumn(3, 0);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        // Filters were created in column order, so they still appear
+        // in that order; only the `row` field follows the permutation:
+        //   col 0 (orig 'a') -> row 1
+        //   col 1 (orig 'b') -> row 2
+        //   col 2 (orig 'c') -> row 3
+        //   col 3 (orig 'd') -> row 0
+        CHECK(filters[0].row == 1);
+        CHECK(filters[1].row == 2);
+        CHECK(filters[2].row == 3);
+        CHECK(filters[3].row == 0);
+    }
+
+    SECTION("Left-to-right move (0 -> 3) shifts the in-between columns left")
+    {
+        manager.MoveColumn(0, 3);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        // Permutation:
+        //   col 0 (orig 'a') -> row 3
+        //   col 1 (orig 'b') -> row 0
+        //   col 2 (orig 'c') -> row 1
+        //   col 3 (orig 'd') -> row 2
+        CHECK(filters[0].row == 3);
+        CHECK(filters[1].row == 0);
+        CHECK(filters[2].row == 1);
+        CHECK(filters[3].row == 2);
+    }
+
+    SECTION("Adjacent swap (1 -> 2) only touches the two adjacent rows")
+    {
+        manager.MoveColumn(1, 2);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        CHECK(filters[0].row == 0);
+        CHECK(filters[1].row == 2);
+        CHECK(filters[2].row == 1);
+        CHECK(filters[3].row == 3);
+    }
+
+    SECTION("Out-of-range / no-op move leaves rows unchanged")
+    {
+        manager.MoveColumn(0, 0);
+        manager.MoveColumn(0, 99);
+        manager.MoveColumn(99, 0);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        CHECK(filters[0].row == 0);
+        CHECK(filters[1].row == 1);
+        CHECK(filters[2].row == 2);
+        CHECK(filters[3].row == 3);
+    }
+}
+
+TEST_CASE("RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic", "[LogConfigurationManager][move_column]")
+{
+    // The static helper is the contract the app uses to remap the
+    // live in-memory filter map after a header-drag reorder; keep it
+    // in lockstep with the lib-side `MoveColumn` rotation.
+    using Mgr = LogConfigurationManager;
+    CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 0) == 0);
+    CHECK(Mgr::RemapColumnIndexAfterMove(2, 3, 0) == 3);
+    CHECK(Mgr::RemapColumnIndexAfterMove(3, 3, 0) == 0);
+    CHECK(Mgr::RemapColumnIndexAfterMove(0, 3, 0) == 1);
+    CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 3) == 3);
+    CHECK(Mgr::RemapColumnIndexAfterMove(1, 0, 3) == 0);
+    CHECK(Mgr::RemapColumnIndexAfterMove(3, 0, 3) == 2);
+    CHECK(Mgr::RemapColumnIndexAfterMove(5, 1, 2) == 5);
+}

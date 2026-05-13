@@ -991,8 +991,7 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
     return true;
 }
 
-#ifdef LOGAPP_BUILD_TESTING
-bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
+bool LogModel::MoveColumn(int srcIndex, int destIndex)
 {
     if (srcIndex == destIndex)
     {
@@ -1016,8 +1015,9 @@ bool LogModel::MoveColumnForTest(int srcIndex, int destIndex)
     {
         return false;
     }
+    // `LogTable::MoveColumn` delegates to `LogConfigurationManager::MoveColumn`
+    // which both rotates `columns` and remaps every `LogFilter::row`.
     mLogTable.MoveColumn(static_cast<size_t>(srcIndex), static_cast<size_t>(destIndex));
     endMoveColumns();
     return true;
 }
-#endif

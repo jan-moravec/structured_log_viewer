@@ -181,7 +181,46 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
+    // Persisted filters carry a column index (`LogFilter::row`)
+    // pointing at the column they were created for. Single-column
+    // reorder remaps them through the same permutation so the
+    // filter follows its column.
+    const int src = static_cast<int>(srcIndex);
+    const int dest = static_cast<int>(destIndex);
+    for (LogConfiguration::LogFilter &filter : mConfiguration.filters)
+    {
+        filter.row = LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
+    }
     // Pure reorder; key cache is unchanged.
+}
+
+int LogConfigurationManager::RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex)
+{
+    if (srcIndex == destIndex)
+    {
+        return columnIndex;
+    }
+    if (columnIndex == srcIndex)
+    {
+        return destIndex;
+    }
+    if (srcIndex < destIndex)
+    {
+        // Columns in (srcIndex, destIndex] shift one slot left.
+        if (columnIndex > srcIndex && columnIndex <= destIndex)
+        {
+            return columnIndex - 1;
+        }
+    }
+    else
+    {
+        // Columns in [destIndex, srcIndex) shift one slot right.
+        if (columnIndex >= destIndex && columnIndex < srcIndex)
+        {
+            return columnIndex + 1;
+        }
+    }
+    return columnIndex;
 }
 
 void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration::Type type)
@@ -191,6 +230,15 @@ void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration
         return;
     }
     mConfiguration.columns[columnIndex].type = type;
+}
+
+void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].visible = visible;
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const

@@ -172,12 +172,15 @@ public:
     /// single linear scan.
     [[nodiscard]] static bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept;
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Test-only: move a column with `beginMoveColumns`/`endMoveColumns`
-    /// so `columnsMoved` propagates through the proxy chain.
-    /// Returns `true` on success.
-    bool MoveColumnForTest(int srcIndex, int destIndex);
-#endif
+    /// Move the column at @p srcIndex to @p destIndex. Brackets the
+    /// move with `beginMoveColumns` / `endMoveColumns` so the proxy
+    /// chain forwards `columnsMoved` to the view, and remaps any
+    /// persisted `LogFilter::row` in the underlying configuration so
+    /// saved filters follow the column. Returns `true` on success.
+    /// Note: @p destIndex is the column's final absolute position
+    /// (matches `LogTable::MoveColumn`), not Qt's "insert before"
+    /// destination child.
+    bool MoveColumn(int srcIndex, int destIndex);
 
 signals:
     /// Cumulative error count, emitted when a batch carries errors.

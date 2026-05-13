@@ -54,6 +54,11 @@ struct LogConfiguration
         /// reversible via demote-to-string on overflow.
         Type type = Type::Unknown;
         std::vector<std::string> parseFormats;
+        /// Hidden columns stay in the table (data, sort, and filters
+        /// keep working); only `QHeaderView::setSectionHidden` is
+        /// toggled in the view. Defaults to `true` so legacy JSON
+        /// (missing key) loads as visible.
+        bool visible = true;
     };
 
     struct LogFilter
@@ -124,12 +129,29 @@ public:
     /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
-    /// Move the column at @p srcIndex to @p destIndex.
+    /// Move the column at @p srcIndex to @p destIndex. Also remaps
+    /// every `LogConfiguration::filters[*].row` through the same
+    /// single-column permutation so persisted filters follow the
+    /// column they originally pointed at.
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
     /// Flip the type of the column at @p columnIndex; caller back-fills
     /// any row data. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
+
+    /// Toggle visibility of @p columnIndex; no-op out of range. The
+    /// column stays in the table -- only `Column::visible` flips, so
+    /// data, sort, and filters keep working. View applies the flag
+    /// via `QHeaderView::setSectionHidden`.
+    void SetColumnVisible(size_t columnIndex, bool visible);
+
+    /// Apply the single-column reorder permutation `(srcIndex ->
+    /// destIndex)` to a stored column index @p columnIndex (e.g. a
+    /// `LogFilter::row`). Returns the new column index; out-of-range
+    /// inputs pass through unchanged. Exposed so the app's live
+    /// in-memory filter map can be remapped with the same logic the
+    /// manager uses internally.
+    [[nodiscard]] static int RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex);
 
     const LogConfiguration &Configuration() const;
 
