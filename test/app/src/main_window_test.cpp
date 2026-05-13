@@ -5506,6 +5506,357 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression: `enumColumnsChanged(Promoted, columnIndex)` only
+    // triggers a `MainWindow` filter rebuild when an enum filter
+    // actually targets the promoted column. With per-column scoping
+    // a promotion on column B should NOT invalidate the filter on
+    // column A. Pre-fix the slot rebuilt on any enum filter,
+    // regardless of which column changed.
+    void TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        auto *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeColARow = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("colA"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+        const auto makeColBRow = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("colB"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: promote colA to Enumeration via the streaming
+        // threshold (`presenceCount >= 2`). colB doesn't appear so
+        // it stays `Type::Unknown` until batch 2 introduces it.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("colA");
+            batch.lines.push_back(makeColARow("alpha"));
+            batch.lines.push_back(makeColARow("alpha"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        const int colA = ColumnByHeader(*model, QStringLiteral("colA"));
+        QVERIFY2(colA >= 0, "colA must exist after batch 1");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Enumeration
+        );
+
+        // Install an enum filter on colA only. Predicate is built
+        // with the live dictionary so it's already on the fast path.
+        const QString filterId = QStringLiteral("scoped-promote-test");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, colA),
+                Q_ARG(QStringList, QStringList{QStringLiteral("alpha")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        // Spy after install so only post-install rebuilds count.
+        const QSignalSpy layoutChangedSpy(filterModel, &QAbstractItemModel::layoutChanged);
+        QVERIFY(layoutChangedSpy.isValid());
+
+        // Batch 2: introduce colB with 2 same-value rows so it
+        // promotes via the streaming threshold. colA does not
+        // appear in this batch so its dictionary is untouched.
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 3;
+            batch.newKeys.emplace_back("colB");
+            batch.lines.push_back(makeColBRow("x"));
+            batch.lines.push_back(makeColBRow("x"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
+        QVERIFY2(colB >= 0, "colB must exist after batch 2");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
+        );
+        QVERIFY2(colA != colB, "colA and colB must be distinct columns for the scoping test");
+
+        // The filter on colA must NOT have been rebuilt. The only
+        // `layoutChanged` source on `LogFilterModel` is
+        // `RebuildAcceptedRows` (via `SetFilterRules`), so a count
+        // of 0 confirms the slot short-circuited.
+        QVERIFY2(
+            layoutChangedSpy.count() == 0,
+            qPrintable(
+                QStringLiteral(
+                    "filter on colA must not be rebuilt when an unrelated column promotes; got layoutChanged count %1"
+                )
+                    .arg(layoutChangedSpy.count())
+            )
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: a hand-edited config with `+inf` / `-inf` numeric
+    // bounds opens the editor in a non-submittable state because
+    // `OnOkClicked` rejects non-finite tokens and `QDoubleValidator`
+    // doesn't strip them on `setText`. `Load()` coerces non-finite
+    // bounds to "unbounded" so the dialog opens submittable and the
+    // user can adjust as needed.
+    void TestSavedNumericRangeFilterCoercesNonFiniteToUnbounded()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        // Tiny fixture: just need a numeric column to exist so
+        // `FilterEditor::UpdateSelectedColumn` switches to
+        // `PAGE_NUMERIC`.
+        QStringList lines;
+        lines.reserve(64);
+        for (int i = 0; i < 64; ++i)
+        {
+            lines.append(QStringLiteral(R"({"value": %1.5})").arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+
+        const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY2(valueCol >= 0, "value column must exist");
+
+        FilterEditor editor(*model, QStringLiteral("inf-coerce"));
+        editor.Load(
+            valueCol,
+            std::optional<double>(std::numeric_limits<double>::infinity()),
+            std::optional<double>(-std::numeric_limits<double>::infinity())
+        );
+
+        QVERIFY2(
+            !editor.GetNumericRangeMin().has_value(),
+            "+inf min must coerce to unbounded so the dialog opens submittable"
+        );
+        QVERIFY2(
+            !editor.GetNumericRangeMax().has_value(),
+            "-inf max must coerce to unbounded so the dialog opens submittable"
+        );
+
+        // NaN should also coerce.
+        editor.Load(valueCol, std::optional<double>(std::nan("")), std::optional<double>(std::nan("")));
+        QVERIFY2(!editor.GetNumericRangeMin().has_value(), "NaN min must coerce to unbounded");
+        QVERIFY2(!editor.GetNumericRangeMax().has_value(), "NaN max must coerce to unbounded");
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: the inverted-range status-bar message uses the
+    // canonical `QLocale::c() + max_digits10` formatter so the user
+    // sees the exact bounds they typed. Pre-fix the message used
+    // `arg(double)` with default precision 6 and silently truncated
+    // distinct bounds like `12345.6789` and `12345.6790` into the
+    // same string.
+    void TestNumericRangeRejectionMessagePreservesPrecision()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QStringList lines;
+        lines.reserve(64);
+        for (int i = 0; i < 64; ++i)
+        {
+            lines.append(QStringLiteral(R"({"value": %1.5})").arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+
+        const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY2(valueCol >= 0, "value column must exist");
+
+        // Use exactly-representable doubles whose `g` precision-6
+        // rendering collides (`"1e+06"` for both, since the
+        // exponent equals the precision and trailing zeros are
+        // stripped) but whose max_digits10 rendering is distinct.
+        // 1000000 + 1/128 and 1000000 + 1/256 are both exact in
+        // IEEE 754 double precision.
+        constexpr double MIN_VALUE = 1000000.0078125;     // = 1e6 + 1/128
+        constexpr double MAX_VALUE = 1000000.00390625;    // = 1e6 + 1/256, < MIN_VALUE
+
+        mWindow->statusBar()->clearMessage();
+        const QString filterId = QStringLiteral("inverted-precision");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterNumericRangeSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, valueCol),
+                Q_ARG(std::optional<double>, std::optional<double>(MIN_VALUE)),
+                Q_ARG(std::optional<double>, std::optional<double>(MAX_VALUE))
+            ),
+            "FilterNumericRangeSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("1000000.0078125")),
+            qPrintable(QStringLiteral("rejection message must preserve full precision of min; got '%1'").arg(message))
+        );
+        QVERIFY2(
+            message.contains(QStringLiteral("1000000.00390625")),
+            qPrintable(QStringLiteral("rejection message must preserve full precision of max; got '%1'").arg(message))
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: a Boolean filter with both sides selected renders
+    // its menu title in canonical `"true, false"` order. The
+    // submit slot already writes them in this order, but
+    // `AddLogFilter` now derives the title via
+    // `DecodeBooleanFilterSides` so a future code path that
+    // installs a saved filter with non-canonical order (e.g. a
+    // hand-edited `"filterValues": ["false", "true"]` payload)
+    // still produces a stable title that matches the editor's
+    // checkbox order.
+    void TestBooleanFilterMenuTitleCanonicalOrder()
+    {
+        QStringList lines;
+        lines.reserve(60);
+        for (int i = 0; i < 60; ++i)
+        {
+            lines.append(QStringLiteral(R"({"flag": %1})").arg(i % 2 == 0 ? "true" : "false"));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+
+        const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
+        QVERIFY2(flagCol >= 0, "flag column must exist");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(flagCol)].type,
+            loglib::LogConfiguration::Type::Boolean
+        );
+
+        const QString filterId = QStringLiteral("bool-canonical-title");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterBooleanSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, flagCol),
+                Q_ARG(bool, true),
+                Q_ARG(bool, true)
+            ),
+            "FilterBooleanSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const auto findFilterMenuAction = [&](const QString &id) -> QAction * {
+            const auto *menu = mWindow->FiltersMenu();
+            if (menu == nullptr)
+            {
+                return nullptr;
+            }
+            for (QAction *action : menu->actions())
+            {
+                if (action->data().toString() == id)
+                {
+                    return action;
+                }
+            }
+            return nullptr;
+        };
+
+        QAction *action = findFilterMenuAction(filterId);
+        QVERIFY2(action != nullptr, "Boolean filter must have a menu entry");
+        QCOMPARE(action->text(), QStringLiteral("true, false"));
+
+        // Single-side title sanity check: "false only" must not
+        // accidentally inherit "true, false" from a stale code path.
+        const QString falseOnlyId = QStringLiteral("bool-canonical-title-false");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterBooleanSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, falseOnlyId),
+                Q_ARG(int, flagCol),
+                Q_ARG(bool, false),
+                Q_ARG(bool, true)
+            ),
+            "FilterBooleanSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QAction *falseAction = findFilterMenuAction(falseOnlyId);
+        QVERIFY2(falseAction != nullptr, "false-only Boolean filter must have a menu entry");
+        QCOMPARE(falseAction->text(), QStringLiteral("false"));
+
+        model->EndStreaming(false);
+    }
+
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
     // so moc doesn't expose it as a test method.
     static void AssertTimestampFixture(StreamingRun &run, qint64 expectedFirstUtcUs, int rowCount)

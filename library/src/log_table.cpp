@@ -1,6 +1,7 @@
 #include "loglib/log_table.hpp"
 
 #include "loglib/file_line_source.hpp"
+#include "loglib/internal/ascii_case.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/log_processing.hpp"
 
@@ -114,30 +115,10 @@ constexpr std::array<std::string_view, 13> WELL_KNOWN_ENUM_KEYS = {
     "module",
 };
 
-bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
-{
-    if (a.size() != b.size())
-    {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i)
-    {
-        const auto ca = static_cast<unsigned char>(a[i]);
-        const auto cb = static_cast<unsigned char>(b[i]);
-        const unsigned char la = (ca >= 'A' && ca <= 'Z') ? static_cast<unsigned char>(ca + ('a' - 'A')) : ca;
-        const unsigned char lb = (cb >= 'A' && cb <= 'Z') ? static_cast<unsigned char>(cb + ('a' - 'A')) : cb;
-        if (la != lb)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool IsWellKnownEnumKey(std::string_view canonicalKey) noexcept
 {
     return std::ranges::any_of(WELL_KNOWN_ENUM_KEYS, [canonicalKey](std::string_view candidate) {
-        return EqualsIgnoreCaseAscii(canonicalKey, candidate);
+        return internal::EqualsIgnoreCaseAscii(canonicalKey, candidate);
     });
 }
 

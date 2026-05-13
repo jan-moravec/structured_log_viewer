@@ -239,6 +239,20 @@ void FilterEditor::Load(int row, std::optional<double> minValue, std::optional<d
     // the user's locale; the validator does the same, so the saved
     // round-trips byte-exactly.
     const QLocale cLocale = QLocale::c();
+    // A hand-edited config can carry `+inf`/`-inf`/`NaN` directly
+    // (glaze parses them happily), but `OnOkClicked` rejects those
+    // bounds at submit time -- the user would see an unrejectable
+    // dialog with no way out other than Cancel. Promote any
+    // non-finite incoming bound to "unbounded" so the editor opens
+    // in a submittable state and the user can adjust as needed.
+    const auto coerceFinite = [](std::optional<double> &v) {
+        if (v.has_value() && !std::isfinite(*v))
+        {
+            v.reset();
+        }
+    };
+    coerceFinite(minValue);
+    coerceFinite(maxValue);
     if (minValue.has_value())
     {
         mNumericMinUnbounded->setChecked(false);
@@ -514,12 +528,18 @@ void FilterEditor::OnOkClicked()
             mNumericMaxUnbounded->setStyleSheet("QCheckBox { color: red; }");
             return;
         }
-        // `QLocale::toDouble` accepts "nan" / "inf" / "+inf" / "-inf"
-        // (and the validator lets them through). Either bound as
-        // `NaN` would silently degenerate to "unbounded on that side"
-        // via `NumericRangeRowPredicate`'s NaN-collapse, and `±inf`
-        // would collapse the predicate to "reject everything"; reject
-        // both at submit time so the user sees the dialog block.
+        // `QLocale::toDouble` accepts "nan" / "inf" / "+inf" / "-inf",
+        // and `QLineEdit::setText` bypasses the validator entirely
+        // (`QDoubleValidator` itself rejects those tokens during
+        // keyboard entry, but a hand-edited saved config or a
+        // programmatic `setText` lands them in the edit unchecked).
+        // Either bound as `NaN` would silently degenerate to
+        // "unbounded on that side" via `NumericRangeRowPredicate`'s
+        // NaN-collapse, and `±inf` would collapse the predicate to
+        // "reject everything"; reject both at submit time so the
+        // user sees the dialog block. (`Load()` additionally coerces
+        // non-finite saved bounds to "unbounded" so the dialog opens
+        // submittable; this is the second line of defence.)
         const QLocale cLocale = QLocale::c();
         auto parseFinite = [&cLocale](const QString &text) -> std::optional<double> {
             bool ok = false;

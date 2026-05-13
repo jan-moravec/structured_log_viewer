@@ -10,6 +10,7 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/internal/ascii_case.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
@@ -111,30 +112,6 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
 // linger before the bar reverts to default state.
 constexpr int STATUS_BAR_MESSAGE_TIMEOUT_MS = 5000;
 
-/// Case-insensitive ASCII equality. Mirrors the helper of the same
-/// shape in `library/src/log_table.cpp`; duplicated here because that
-/// one lives in an anonymous namespace and the GUI side has no
-/// equivalent header to pull from.
-bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
-{
-    if (a.size() != b.size())
-    {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i)
-    {
-        const auto ca = static_cast<unsigned char>(a[i]);
-        const auto cb = static_cast<unsigned char>(b[i]);
-        const unsigned char la = (ca >= 'A' && ca <= 'Z') ? static_cast<unsigned char>(ca + ('a' - 'A')) : ca;
-        const unsigned char lb = (cb >= 'A' && cb <= 'Z') ? static_cast<unsigned char>(cb + ('a' - 'A')) : cb;
-        if (la != lb)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 /// Decode `LogConfiguration::LogFilter::filterValues` (a subset of
 /// `{"true", "false"}`, the on-disk shape for a `Type::Boolean`
 /// filter) into the two-toggle pair `BoolRowPredicate` consumes.
@@ -152,11 +129,11 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     BooleanFilterSides sides;
     for (const std::string &v : filterValues)
     {
-        if (EqualsIgnoreCaseAscii(v, "true"))
+        if (loglib::internal::EqualsIgnoreCaseAscii(v, "true"))
         {
             sides.includeTrue = true;
         }
-        else if (EqualsIgnoreCaseAscii(v, "false"))
+        else if (loglib::internal::EqualsIgnoreCaseAscii(v, "false"))
         {
             sides.includeFalse = true;
         }
@@ -405,26 +382,40 @@ MainWindow::MainWindow(QWidget *parent)
     //     ids, string-set fallback for unresolved). Rebuild only when
     //     a filter has unresolved values that may have just been
     //     interned -- the only case where rebuilding upgrades anything.
-    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason) {
+    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int columnIndex) {
         if (reason == EnumColumnsChangeReason::Demoted)
         {
+            // Cache flush is broad: the rank cache is keyed by source
+            // column index and `EnumRankFor` aliases dictionaries
+            // across columns, so invalidate everything to be safe.
             mSortFilterProxyModel->InvalidateEnumRanks();
         }
+        // `columnIndex == -1` is the "scope-unknown" fallback; treat
+        // it as "matches every filter" so we keep the safer broad
+        // behaviour. With per-column scoping the slot only rebuilds
+        // when an enum filter actually targets the affected column.
+        const auto matchesAffectedColumn = [columnIndex](const auto &kv) {
+            return columnIndex < 0 || kv.second.row == columnIndex;
+        };
         bool rebuild = false;
         switch (reason)
         {
         case EnumColumnsChangeReason::Demoted:
-            rebuild = true;
+            rebuild = std::ranges::any_of(mFilters, [&matchesAffectedColumn](const auto &kv) {
+                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                       matchesAffectedColumn(kv);
+            });
             break;
         case EnumColumnsChangeReason::Promoted:
-            rebuild = std::ranges::any_of(mFilters, [](const auto &kv) {
-                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration;
+            rebuild = std::ranges::any_of(mFilters, [&matchesAffectedColumn](const auto &kv) {
+                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                       matchesAffectedColumn(kv);
             });
             break;
         case EnumColumnsChangeReason::Grew:
-            rebuild = std::ranges::any_of(mFilters, [this](const auto &kv) {
+            rebuild = std::ranges::any_of(mFilters, [this, &matchesAffectedColumn](const auto &kv) {
                 return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                       !EnumFilterFullyResolved(kv.second);
+                       matchesAffectedColumn(kv) && !EnumFilterFullyResolved(kv.second);
             });
             break;
         }
@@ -1463,8 +1454,17 @@ void MainWindow::FilterNumericRangeSubmitted(
     // hide every row silently. Mirrors the time-range / regex probes.
     if (minValue.has_value() && maxValue.has_value() && *minValue > *maxValue)
     {
+        // Match the menu-title formatting (`AddLogFilter`) so the
+        // numbers the user sees in the rejection message agree byte-
+        // for-byte with what they typed; the default `arg(double)`
+        // precision of 6 truncates inputs like `12345.6789` and
+        // produces "12345.7 is greater than 12345.7" for two
+        // distinct values.
+        const QLocale cLocale = QLocale::c();
+        const QString minStr = cLocale.toString(*minValue, 'g', std::numeric_limits<double>::max_digits10);
+        const QString maxStr = cLocale.toString(*maxValue, 'g', std::numeric_limits<double>::max_digits10);
         statusBar()->showMessage(
-            QString("Numeric-range filter rejected: min (%1) is greater than max (%2)").arg(*minValue).arg(*maxValue),
+            QString("Numeric-range filter rejected: min (%1) is greater than max (%2)").arg(minStr, maxStr),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         ClearFilter(filterID);
@@ -1562,11 +1562,22 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     }
     case loglib::LogConfiguration::LogFilter::Type::Boolean:
     {
+        // Canonicalise to "true, false" (or just one side) regardless
+        // of the order in `filter.filterValues`. The submit slot
+        // always writes "true" first, but a hand-edited or
+        // legacy-saved config might list "false" first or duplicate
+        // entries; titles drawn straight from `filterValues` would
+        // then read "false, true" and disagree with the editor's
+        // checkbox order.
+        const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
         QStringList values;
-        values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
-        for (const std::string &v : filter.filterValues)
+        if (sides.includeTrue)
         {
-            values.append(QString::fromStdString(v));
+            values.append(QStringLiteral("true"));
+        }
+        if (sides.includeFalse)
+        {
+            values.append(QStringLiteral("false"));
         }
         title = values.join(QStringLiteral(", "));
         break;
