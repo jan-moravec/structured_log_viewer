@@ -465,7 +465,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             }
             if (const loglib::EnumDictionary *dict = registryBefore.Find(kid); dict != nullptr)
             {
-                enumSnapshotBefore.push_back({kid, static_cast<int>(columnIndex), dict->Size()});
+                enumSnapshotBefore.push_back(
+                    {.kid = kid, .columnIndex = static_cast<int>(columnIndex), .sizeBefore = dict->Size()}
+                );
             }
         }
     }

@@ -5830,7 +5830,7 @@ private slots:
             return nullptr;
         };
 
-        QAction *action = findFilterMenuAction(filterId);
+        const QAction *action = findFilterMenuAction(filterId);
         QVERIFY2(action != nullptr, "Boolean filter must have a menu entry");
         QCOMPARE(action->text(), QStringLiteral("true, false"));
 
@@ -5850,7 +5850,7 @@ private slots:
             "FilterBooleanSubmitted slot must be invocable via meta-object"
         );
         QCoreApplication::processEvents();
-        QAction *falseAction = findFilterMenuAction(falseOnlyId);
+        const QAction *falseAction = findFilterMenuAction(falseOnlyId);
         QVERIFY2(falseAction != nullptr, "false-only Boolean filter must have a menu entry");
         QCOMPARE(falseAction->text(), QStringLiteral("false"));
 
