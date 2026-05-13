@@ -1,6 +1,7 @@
 #include "loglib/log_table.hpp"
 
 #include "loglib/file_line_source.hpp"
+#include "loglib/internal/ascii_case.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/log_processing.hpp"
 
@@ -49,13 +50,33 @@ constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 20;
 /// stderr telemetry line; below it the demote cost is uninteresting.
 constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
 
-/// Picks a terminal numeric type from observed integer/floating tag counts.
+/// Pick a terminal type from observed numeric / bool tag counts.
+///
+///   - bools only         -> `Boolean`
+///   - integers / doubles -> `Integer` / `Floating` / `Number`
+///   - bool + numeric mix -> `Any` (no specialised widget)
+///   - nothing observed   -> `Any` (historical bail)
+///
+/// Caveat: an already-promoted enum that later sees bool slots
+/// demotes to `Type::String` (via lumped `wrongTypeSlots`), not
+/// `Boolean`. If that case matters, route the demote through here
+/// using `EnumColumnHealth`'s per-tag counters.
 LogConfiguration::Type RouteNoStringBail(
-    size_t intObservations, size_t uintObservations, size_t doubleObservations
+    size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
 ) noexcept
 {
     const bool sawIntegral = intObservations > 0 || uintObservations > 0;
     const bool sawDouble = doubleObservations > 0;
+    const bool sawBool = boolObservations > 0;
+    const bool sawNumeric = sawIntegral || sawDouble;
+    if (sawBool && sawNumeric)
+    {
+        return LogConfiguration::Type::Any;
+    }
+    if (sawBool)
+    {
+        return LogConfiguration::Type::Boolean;
+    }
     if (sawIntegral && sawDouble)
     {
         return LogConfiguration::Type::Number;
@@ -88,30 +109,10 @@ constexpr std::array<std::string_view, 13> WELL_KNOWN_ENUM_KEYS = {
     "module",
 };
 
-bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
-{
-    if (a.size() != b.size())
-    {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i)
-    {
-        const auto ca = static_cast<unsigned char>(a[i]);
-        const auto cb = static_cast<unsigned char>(b[i]);
-        const unsigned char la = (ca >= 'A' && ca <= 'Z') ? static_cast<unsigned char>(ca + ('a' - 'A')) : ca;
-        const unsigned char lb = (cb >= 'A' && cb <= 'Z') ? static_cast<unsigned char>(cb + ('a' - 'A')) : cb;
-        if (la != lb)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool IsWellKnownEnumKey(std::string_view canonicalKey) noexcept
 {
     return std::ranges::any_of(WELL_KNOWN_ENUM_KEYS, [canonicalKey](std::string_view candidate) {
-        return EqualsIgnoreCaseAscii(canonicalKey, candidate);
+        return internal::EqualsIgnoreCaseAscii(canonicalKey, candidate);
     });
 }
 
@@ -1013,6 +1014,10 @@ void LogTable::RunEnumPassForAppendBatch(
                 {
                     ++tracker.doubleObservations;
                 }
+                else if (slot->tag == internal::CompactTag::Bool)
+                {
+                    ++tracker.boolObservations;
+                }
             }
             if (tracker.killed)
             {
@@ -1063,7 +1068,12 @@ void LogTable::RunEnumPassForAppendBatch(
             {
                 mConfiguration.SetColumnType(
                     columnIndex,
-                    RouteNoStringBail(tracker.intObservations, tracker.uintObservations, tracker.doubleObservations)
+                    RouteNoStringBail(
+                        tracker.intObservations,
+                        tracker.uintObservations,
+                        tracker.doubleObservations,
+                        tracker.boolObservations
+                    )
                 );
                 mEnumTrackers.erase(trackerIt);
             }
@@ -1116,7 +1126,12 @@ bool LogTable::FinalizeAutoDetection()
         {
             mConfiguration.SetColumnType(
                 columnIndex,
-                RouteNoStringBail(tracker.intObservations, tracker.uintObservations, tracker.doubleObservations)
+                RouteNoStringBail(
+                    tracker.intObservations,
+                    tracker.uintObservations,
+                    tracker.doubleObservations,
+                    tracker.boolObservations
+                )
             );
             continue;
         }

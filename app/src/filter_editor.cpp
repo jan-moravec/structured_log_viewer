@@ -3,18 +3,32 @@
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/log_processing.hpp>
 
+#include <QDoubleValidator>
+#include <QLocale>
 #include <QMessageBox>
 #include <QStandardItem>
 #include <QTimeZone>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <optional>
 
 using namespace loglib;
 
 namespace
 {
 constexpr int ENUM_PICKER_MAX_HEIGHT_PX = 320;
-}
+
+/// Page indices in `mStackedWidget`. Must match the insertion order
+/// in `SetupLayout`; bump together with `UpdateSelectedColumn` and
+/// `UpdateEnumSelectionCount` when adding a page.
+constexpr int PAGE_STRING = 0;
+constexpr int PAGE_TIME = 1;
+constexpr int PAGE_ENUM = 2;
+constexpr int PAGE_NUMERIC = 3;
+constexpr int PAGE_BOOLEAN = 4;
+} // namespace
 
 FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
@@ -33,13 +47,13 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mStackedWidget = new QStackedWidget(this);
 
     // Picker model + proxy. `setUniformItemSizes(true)` keeps layout
-    // tractable up to `MAX_ENUM_VALUES`.
+    // tractable up to `MAX_ENUM_VALUES`. The proxy only filters by
+    // search text; `PopulateEnumValues` inserts items in locale-aware
+    // order, so we don't re-sort.
     mEnumValuesModel = new QStandardItemModel(this);
     mEnumValuesProxy = new QSortFilterProxyModel(this);
     mEnumValuesProxy->setSourceModel(mEnumValuesModel);
     mEnumValuesProxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
-    mEnumValuesProxy->setSortCaseSensitivity(Qt::CaseInsensitive);
-    mEnumValuesProxy->sort(0, Qt::AscendingOrder);
     mEnumValuesView = new QListView(this);
     mEnumValuesView->setModel(mEnumValuesProxy);
     mEnumValuesView->setSelectionMode(QAbstractItemView::NoSelection);
@@ -58,6 +72,25 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mEnumEmptyPlaceholder->setAlignment(Qt::AlignCenter);
     mEnumEmptyPlaceholder->setWordWrap(true);
     mEnumEmptyPlaceholder->hide();
+
+    // Shared validator for both numeric edits. C locale pins the
+    // decimal separator to '.' regardless of system locale.
+    auto *numericValidator = new QDoubleValidator(this);
+    QLocale cLocale = QLocale::c();
+    cLocale.setNumberOptions(QLocale::RejectGroupSeparator);
+    numericValidator->setLocale(cLocale);
+    numericValidator->setNotation(QDoubleValidator::ScientificNotation);
+
+    mNumericMinEdit = new QLineEdit(this);
+    mNumericMinEdit->setPlaceholderText("Min value (empty = unbounded)");
+    mNumericMinEdit->setValidator(numericValidator);
+
+    mNumericMaxEdit = new QLineEdit(this);
+    mNumericMaxEdit->setPlaceholderText("Max value (empty = unbounded)");
+    mNumericMaxEdit->setValidator(numericValidator);
+
+    mBoolIncludeTrue = new QCheckBox("Include true", this);
+    mBoolIncludeFalse = new QCheckBox("Include false", this);
 
     mOkButton = new QPushButton("Ok", this);
     mCancelButton = new QPushButton("Cancel", this);
@@ -136,6 +169,16 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
 
     connect(mStringLineEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
 
+    // Editing either bound clears any red-border warning carried
+    // over from a previous OK click. An empty edit means "unbounded"
+    // on that side; the both-empty rejection styles both edits.
+    connect(mNumericMinEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
+    connect(mNumericMaxEdit, &QLineEdit::textChanged, this, [this](const QString &) { ClearWarningStyles(); });
+
+    // Boolean checkboxes: clear any warning border on toggle.
+    connect(mBoolIncludeTrue, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
+    connect(mBoolIncludeFalse, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
+
     UpdateSelectedColumn(0);
 }
 
@@ -169,6 +212,37 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
     UpdateEnumSelectionCount();
 }
 
+void FilterEditor::Load(int row, std::optional<double> minValue, std::optional<double> maxValue)
+{
+    mRowComboBox->setCurrentIndex(row);
+    // C locale keeps the decimal separator as '.' so saved bounds
+    // round-trip byte-exactly (the validator uses the same locale).
+    const QLocale cLocale = QLocale::c();
+    // Coerce non-finite bounds (`±inf`/`NaN` from a hand-edited
+    // config) to "unbounded" (empty edit) so the dialog opens
+    // submittable -- `OnOkClicked` would otherwise reject them on
+    // submit and trap the user.
+    const auto setEdit = [&cLocale](QLineEdit *edit, std::optional<double> v) {
+        if (v.has_value() && std::isfinite(*v))
+        {
+            edit->setText(cLocale.toString(*v, 'g', std::numeric_limits<double>::max_digits10));
+        }
+        else
+        {
+            edit->clear();
+        }
+    };
+    setEdit(mNumericMinEdit, minValue);
+    setEdit(mNumericMaxEdit, maxValue);
+}
+
+void FilterEditor::Load(int row, bool includeTrue, bool includeFalse)
+{
+    mRowComboBox->setCurrentIndex(row);
+    mBoolIncludeTrue->setChecked(includeTrue);
+    mBoolIncludeFalse->setChecked(includeFalse);
+}
+
 int FilterEditor::GetRowToFilter() const
 {
     return mRowComboBox->currentIndex();
@@ -197,6 +271,51 @@ QStringList FilterEditor::GetSelectedEnumValues() const
         }
     }
     return selected;
+}
+
+std::optional<double> FilterEditor::GetNumericRangeMin() const
+{
+    // Empty edit means "unbounded"; an unparsable / NaN value also
+    // collapses to unbounded for the getter (`OnOkClicked` is the
+    // place that surfaces parse errors as a red border).
+    const QString text = mNumericMinEdit->text();
+    if (text.isEmpty())
+    {
+        return std::nullopt;
+    }
+    bool ok = false;
+    const double value = QLocale::c().toDouble(text, &ok);
+    if (!ok || std::isnan(value))
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+std::optional<double> FilterEditor::GetNumericRangeMax() const
+{
+    const QString text = mNumericMaxEdit->text();
+    if (text.isEmpty())
+    {
+        return std::nullopt;
+    }
+    bool ok = false;
+    const double value = QLocale::c().toDouble(text, &ok);
+    if (!ok || std::isnan(value))
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+bool FilterEditor::GetBooleanIncludeTrue() const
+{
+    return mBoolIncludeTrue->isChecked();
+}
+
+bool FilterEditor::GetBooleanIncludeFalse() const
+{
+    return mBoolIncludeFalse->isChecked();
 }
 
 void FilterEditor::SetupLayout()
@@ -255,9 +374,33 @@ void FilterEditor::SetupLayout()
     thirdPageLayout->addWidget(mEnumEmptyPlaceholder);
     thirdPage->setLayout(thirdPageLayout);
 
-    mStackedWidget->addWidget(firstPage);
-    mStackedWidget->addWidget(secondPage);
-    mStackedWidget->addWidget(thirdPage);
+    auto *fourthPage = new QWidget(this);
+    auto *fourthPageLayout = new QVBoxLayout(fourthPage);
+    auto *minLayout = new QHBoxLayout();
+    minLayout->addWidget(new QLabel("Min (>=):", this));
+    minLayout->addWidget(mNumericMinEdit);
+    auto *maxLayout = new QHBoxLayout();
+    maxLayout->addWidget(new QLabel("Max (<=):", this));
+    maxLayout->addWidget(mNumericMaxEdit);
+    fourthPageLayout->addLayout(minLayout);
+    fourthPageLayout->addLayout(maxLayout);
+    fourthPage->setLayout(fourthPageLayout);
+
+    auto *fifthPage = new QWidget(this);
+    auto *fifthPageLayout = new QVBoxLayout(fifthPage);
+    fifthPageLayout->addWidget(new QLabel("Boolean values to include:", this));
+    fifthPageLayout->addWidget(mBoolIncludeTrue);
+    fifthPageLayout->addWidget(mBoolIncludeFalse);
+    fifthPageLayout->addStretch(1);
+    fifthPage->setLayout(fifthPageLayout);
+
+    // Insert in `PAGE_*` order. Inserting out of order would shift
+    // later page indices.
+    mStackedWidget->insertWidget(PAGE_STRING, firstPage);
+    mStackedWidget->insertWidget(PAGE_TIME, secondPage);
+    mStackedWidget->insertWidget(PAGE_ENUM, thirdPage);
+    mStackedWidget->insertWidget(PAGE_NUMERIC, fourthPage);
+    mStackedWidget->insertWidget(PAGE_BOOLEAN, fifthPage);
     mainLayout->addWidget(mStackedWidget);
 
     auto *buttonLayout = new QHBoxLayout();
@@ -325,6 +468,76 @@ void FilterEditor::OnOkClicked()
         }
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
+    else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
+             column.type == LogConfiguration::Type::Number)
+    {
+        // An empty edit means "unbounded" on that side. Insist on
+        // at least one populated bound -- both empty would match
+        // every numeric row.
+        const QString minText = mNumericMinEdit->text();
+        const QString maxText = mNumericMaxEdit->text();
+        if (minText.isEmpty() && maxText.isEmpty())
+        {
+            mNumericMinEdit->setStyleSheet("border: 1px solid red");
+            mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+            return;
+        }
+        // Reject `NaN` / `±inf`: `QLocale::toDouble` accepts them,
+        // and `setText` bypasses the validator. `Load()` already
+        // coerces non-finite saved bounds to "unbounded"; this is
+        // the second line of defence.
+        const QLocale cLocale = QLocale::c();
+        auto parseFinite = [&cLocale](const QString &text) -> std::optional<double> {
+            bool ok = false;
+            const double value = cLocale.toDouble(text, &ok);
+            if (!ok || std::isnan(value) || std::isinf(value))
+            {
+                return std::nullopt;
+            }
+            return value;
+        };
+        std::optional<double> minValue;
+        std::optional<double> maxValue;
+        if (!minText.isEmpty())
+        {
+            minValue = parseFinite(minText);
+            if (!minValue.has_value())
+            {
+                mNumericMinEdit->setStyleSheet("border: 1px solid red");
+                return;
+            }
+        }
+        if (!maxText.isEmpty())
+        {
+            maxValue = parseFinite(maxText);
+            if (!maxValue.has_value())
+            {
+                mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+                return;
+            }
+        }
+        if (minValue.has_value() && maxValue.has_value() && *minValue > *maxValue)
+        {
+            // `min == max` is a valid single-point filter; only
+            // strict `>` is rejected.
+            mNumericMinEdit->setStyleSheet("border: 1px solid red");
+            mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+            return;
+        }
+        emit FilterNumericRangeSubmitted(mFilterID, index, minValue, maxValue);
+    }
+    else if (column.type == LogConfiguration::Type::Boolean)
+    {
+        const bool includeTrue = mBoolIncludeTrue->isChecked();
+        const bool includeFalse = mBoolIncludeFalse->isChecked();
+        if (!includeTrue && !includeFalse)
+        {
+            mBoolIncludeTrue->setStyleSheet("QCheckBox { color: red; }");
+            mBoolIncludeFalse->setStyleSheet("QCheckBox { color: red; }");
+            return;
+        }
+        emit FilterBooleanSubmitted(mFilterID, index, includeTrue, includeFalse);
+    }
     else
     {
         if (mStringLineEdit->text().isEmpty())
@@ -349,7 +562,7 @@ void FilterEditor::UpdateSelectedColumn(int index)
     {
     case LogConfiguration::Type::Time:
     {
-        mStackedWidget->setCurrentIndex(1);
+        mStackedWidget->setCurrentIndex(PAGE_TIME);
         const auto minMax = mModel.GetMinMaxValues<qint64>(index);
         if (minMax.has_value())
         {
@@ -358,21 +571,27 @@ void FilterEditor::UpdateSelectedColumn(int index)
         break;
     }
     case LogConfiguration::Type::Enumeration:
-        mStackedWidget->setCurrentIndex(2);
+        mStackedWidget->setCurrentIndex(PAGE_ENUM);
         PopulateEnumValues(index);
+        break;
+    case LogConfiguration::Type::Integer:
+    case LogConfiguration::Type::Floating:
+    case LogConfiguration::Type::Number:
+        mStackedWidget->setCurrentIndex(PAGE_NUMERIC);
+        break;
+    case LogConfiguration::Type::Boolean:
+        mStackedWidget->setCurrentIndex(PAGE_BOOLEAN);
         break;
     case LogConfiguration::Type::Unknown:
     case LogConfiguration::Type::Any:
     case LogConfiguration::Type::String:
-    case LogConfiguration::Type::Integer:
-    case LogConfiguration::Type::Floating:
-    case LogConfiguration::Type::Number:
     default:
-        // Numeric / range pickers TBD: integer/floating/number use the
-        // string widget for now.
-        mStackedWidget->setCurrentIndex(0);
+        mStackedWidget->setCurrentIndex(PAGE_STRING);
         break;
     }
+    // Reset any stale warning borders from a hidden page so the
+    // next OK click starts from a clean slate.
+    ClearWarningStyles();
     // Refresh OK-enabled gating so leaving an empty enum page re-enables OK.
     UpdateEnumSelectionCount();
 }
@@ -449,7 +668,7 @@ void FilterEditor::UpdateEnumSelectionCount()
 
     // Enum page: show placeholder and disable OK when empty/no checks.
     // Other pages defer validation to `OnOkClicked`.
-    const bool onEnumPage = mStackedWidget->currentIndex() == 2;
+    const bool onEnumPage = mStackedWidget->currentIndex() == PAGE_ENUM;
     if (onEnumPage)
     {
         const bool empty = total == 0;
@@ -475,4 +694,8 @@ void FilterEditor::ClearWarningStyles()
 {
     mEnumValuesView->setStyleSheet(QString());
     mStringLineEdit->setStyleSheet(QString());
+    mNumericMinEdit->setStyleSheet(QString());
+    mNumericMaxEdit->setStyleSheet(QString());
+    mBoolIncludeTrue->setStyleSheet(QString());
+    mBoolIncludeFalse->setStyleSheet(QString());
 }

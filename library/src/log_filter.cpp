@@ -10,12 +10,15 @@
 #include <oneapi/tbb/parallel_for.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -170,6 +173,84 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
         },
         value
     );
+}
+
+NumericRangeRowPredicate::NumericRangeRowPredicate(
+    size_t columnIndex, std::optional<double> minValue, std::optional<double> maxValue
+)
+    : mColumnIndex(columnIndex), mMin(minValue), mMax(maxValue)
+{
+    // Collapse NaN bounds to "unbounded": a real NaN bound would
+    // reject every row (NaN compares unordered), which is almost
+    // never what the caller meant.
+    if (mMin.has_value() && std::isnan(*mMin))
+    {
+        mMin.reset();
+    }
+    if (mMax.has_value() && std::isnan(*mMax))
+    {
+        mMax.reset();
+    }
+}
+
+bool NumericRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
+{
+    const LogValue value = table.GetValue(row, mColumnIndex);
+    return std::visit(
+        [this](const auto &alt) -> bool {
+            using T = std::decay_t<decltype(alt)>;
+            // Single exit after the `if constexpr` chain to avoid
+            // MSVC C4702 (a branch returning early would make the
+            // common tail unreachable for that instantiation).
+            std::optional<double> asDouble;
+            if constexpr (std::is_same_v<T, double>)
+            {
+                if (!std::isnan(alt))
+                {
+                    asDouble = alt;
+                }
+            }
+            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)
+            {
+                // Cast loses precision past 2^53 (see header).
+                asDouble = static_cast<double>(alt);
+            }
+            if (!asDouble.has_value())
+            {
+                return false;
+            }
+            const double numeric = *asDouble;
+            if (mMin.has_value() && numeric < *mMin)
+            {
+                return false;
+            }
+            if (mMax.has_value() && numeric > *mMax)
+            {
+                return false;
+            }
+            return true;
+        },
+        value
+    );
+}
+
+BoolRowPredicate::BoolRowPredicate(size_t columnIndex, bool includeTrue, bool includeFalse)
+    : mColumnIndex(columnIndex), mIncludeTrue(includeTrue), mIncludeFalse(includeFalse)
+{
+}
+
+bool BoolRowPredicate::MatchesRow(const LogTable &table, size_t row) const
+{
+    if (!mIncludeTrue && !mIncludeFalse)
+    {
+        return false;
+    }
+    const LogValue value = table.GetValue(row, mColumnIndex);
+    if (const auto *b = std::get_if<bool>(&value); b != nullptr)
+    {
+        return *b ? mIncludeTrue : mIncludeFalse;
+    }
+    return false;
 }
 
 CallbackStringRowPredicate::CallbackStringRowPredicate(size_t columnIndex, MatchFn match)

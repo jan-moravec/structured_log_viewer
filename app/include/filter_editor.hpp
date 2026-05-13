@@ -4,6 +4,7 @@
 
 #include <loglib/log_configuration.hpp>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
 #include <QDateTime>
@@ -22,6 +23,8 @@
 #include <QTimeEdit>
 #include <QVBoxLayout>
 
+#include <optional>
+
 class FilterEditor : public QDialog
 {
     Q_OBJECT
@@ -34,11 +37,20 @@ public:
     /// Preselect @p selectedValues; values absent from the current
     /// dictionary are skipped.
     void Load(int row, const QStringList &selectedValues);
+    /// Restore a numeric-range filter. `std::nullopt` on either bound
+    /// leaves that side unbounded.
+    void Load(int row, std::optional<double> minValue, std::optional<double> maxValue);
+    /// Restore a boolean filter.
+    void Load(int row, bool includeTrue, bool includeFalse);
 
     int GetRowToFilter() const;
     QString GetStringToFilter() const;
     int GetMatchType() const;
     QStringList GetSelectedEnumValues() const;
+    std::optional<double> GetNumericRangeMin() const;
+    std::optional<double> GetNumericRangeMax() const;
+    bool GetBooleanIncludeTrue() const;
+    bool GetBooleanIncludeFalse() const;
 
     /// Test-only accessors for the enum-picker page widgets. Tests cannot
     /// rely on `findChildren<...>()` to locate them: on the Linux runner
@@ -70,6 +82,12 @@ signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
+    /// Numeric range filter. `std::nullopt` bounds are unbounded.
+    void FilterNumericRangeSubmitted(
+        const QString &filterID, int row, std::optional<double> minValue, std::optional<double> maxValue
+    );
+    /// Boolean filter; at least one of @p includeTrue / @p includeFalse is set.
+    void FilterBooleanSubmitted(const QString &filterID, int row, bool includeTrue, bool includeFalse);
 
 private:
     const LogModel &mModel;
@@ -96,6 +114,17 @@ private:
     QLabel *mEnumSelectionCount;
     /// Shown when the dictionary is empty; OK stays disabled while visible.
     QLabel *mEnumEmptyPlaceholder;
+
+    /// Numeric-range page: an empty line edit on either side means
+    /// "unbounded" on that side; `OnOkClicked` rejects only the
+    /// both-empty case (which would match every numeric row).
+    QLineEdit *mNumericMinEdit;
+    QLineEdit *mNumericMaxEdit;
+
+    /// Boolean page: one checkbox per side (independent toggles --
+    /// user may pick either, both, or neither).
+    QCheckBox *mBoolIncludeTrue;
+    QCheckBox *mBoolIncludeFalse;
 
     QPushButton *mOkButton;
     QPushButton *mCancelButton;

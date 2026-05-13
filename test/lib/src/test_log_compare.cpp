@@ -532,6 +532,28 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
     CHECK(SignOf(CompareRows(table, 1, 0, 0, /*rankForEnumColumn=*/nullptr)) == -1); // info < warn
 }
 
+TEST_CASE("CompareRows on Boolean columns orders false < true and sinks non-bool to tail", "[log_compare][boolean]")
+{
+    const TestLogFile fixture("log_compare_boolean.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {
+        true,
+        false,
+        true,
+        std::monostate{},
+        std::string("not-a-bool"), // wrong-type slot joins the tail bucket
+    };
+    const LogTable table = BuildSingleColumnTable(fixture, "flag", LogConfiguration::Type::Boolean, values);
+
+    CHECK(SignOf(CompareRows(table, 0, 1, 0)) == 1);  // true > false
+    CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // false < true
+    CHECK(CompareRows(table, 0, 2, 0) == 0);          // true == true
+    CHECK(SignOf(CompareRows(table, 3, 0, 0)) == 1);  // monostate > bool
+    CHECK(SignOf(CompareRows(table, 0, 3, 0)) == -1);
+    CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1); // wrong-type slot > bool
+    CHECK(CompareRows(table, 3, 4, 0) == 0);         // tail members compare equal pairwise
+}
+
 TEST_CASE("CompareRows on String/Any columns compares byte-wise", "[log_compare][string]")
 {
     const TestLogFile fixture("log_compare_string.json");

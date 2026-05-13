@@ -49,6 +49,7 @@ private:
 /// Three-way row comparator over a single column (<0, 0, >0).
 ///
 /// Dispatch by `LogConfiguration::Type`:
+///   - `Boolean`              -- bool compare; `false < true`.
 ///   - `Integer`              -- int64_t compare; uint64_t > INT64_MAX
 ///                               clamps to INT64_MAX.
 ///   - `Floating` / `Number`  -- double compare; NaN sinks to tail.
@@ -62,6 +63,7 @@ private:
 /// the column's logical type sorts strictly greater than every
 /// representable slot and equal to every other unrepresentable slot.
 /// Membership per type:
+///   - `Boolean`              -- monostate, non-bool slots.
 ///   - `Integer`              -- monostate, NaN. ±inf / out-of-range
 ///                               doubles clamp rather than joining.
 ///   - `Floating` / `Number`  -- monostate, non-numeric slots.

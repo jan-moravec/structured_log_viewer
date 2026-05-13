@@ -196,13 +196,13 @@ signals:
     /// Producer status transition; re-emitted on the GUI.
     void sourceStatusChanged(loglib::SourceStatus status);
 
-    /// Emitted when the set of `Type::Enumeration` columns or any of
-    /// their dictionaries changes shape (auto-promotion, dict growth,
-    /// end-of-stream finalisation). `MainWindow` rebuilds enum filter
-    /// rules when the @p reason warrants it; see
-    /// `EnumColumnsChangeReason`. A single batch may emit multiple
-    /// reasons (e.g. one column promoted, another demoted).
-    void enumColumnsChanged(EnumColumnsChangeReason reason);
+    /// Emitted when a `Type::Enumeration` column or its dictionary
+    /// changes shape (promotion, dict growth, end-of-stream finalise).
+    /// One signal per affected column so receivers can scope by
+    /// @p columnIndex (source-table coords). `columnIndex == -1` is
+    /// "unscoped" (registry-wide sweep) -- treat as "any enum filter
+    /// may need attention". See `EnumColumnsChangeReason`.
+    void enumColumnsChanged(EnumColumnsChangeReason reason, int columnIndex);
 
 private:
     /// Shared `BeginStreaming` setup: install @p source, reset the

@@ -149,24 +149,26 @@ int CompareLogValuesBytewise(const LogTable &table, size_t lhsRow, size_t rhsRow
     // MSVC rejects `static` inside local classes, so the counter
     // lives at function scope and the RAII guard takes it by reference.
     thread_local int sDepth = 0;
-    struct ReentryGuard
+    class ReentryGuard
     {
-        int &depth;
-
+    public:
         explicit ReentryGuard(int &d)
-            : depth(d)
+            : mDepth(d)
         {
-            assert(depth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
-            ++depth;
+            assert(mDepth == 0 && "CompareLogValuesBytewise is not re-entrant (thread_local buffers)");
+            ++mDepth;
         }
         ~ReentryGuard()
         {
-            --depth;
+            --mDepth;
         }
         ReentryGuard(const ReentryGuard &) = delete;
         ReentryGuard(ReentryGuard &&) = delete;
         ReentryGuard &operator=(const ReentryGuard &) = delete;
         ReentryGuard &operator=(ReentryGuard &&) = delete;
+
+    private:
+        int &mDepth;
     };
     const ReentryGuard guard(sDepth);
 #endif
@@ -223,6 +225,20 @@ int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Comp
         return 1;
     }
     return 0;
+}
+
+int CompareBool(const LogValue &lhs, const LogValue &rhs)
+{
+    auto toBool = [](const LogValue &v) -> std::optional<bool> {
+        if (const auto *b = std::get_if<bool>(&v); b != nullptr)
+        {
+            return *b;
+        }
+        return std::nullopt;
+    };
+    // `false < true` follows `int(false) < int(true)`; non-bool slots
+    // join the tail bucket via `CompareTyped`.
+    return CompareTyped(lhs, rhs, toBool, [](bool a, bool b) { return ThreeWay(a, b); });
 }
 
 int CompareInteger(const LogValue &lhs, const LogValue &rhs)
@@ -370,6 +386,8 @@ int CompareRows(
 
     switch (type)
     {
+    case LogConfiguration::Type::Boolean:
+        return CompareBool(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
     case LogConfiguration::Type::Integer:
         return CompareInteger(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
     case LogConfiguration::Type::Floating:

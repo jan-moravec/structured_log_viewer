@@ -436,17 +436,24 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
-    // Snapshot pre-batch dict sizes for active enum columns. If the
-    // batch grows any, emit `enumColumnsChanged` so `MainWindow`
-    // rebuilds rules and the `loglib::EnumRowPredicate` bitset stays
-    // current.
-    std::vector<std::pair<loglib::KeyId, uint16_t>> enumDictSizesBefore;
+    // Snapshot pre-batch dict sizes for active enum columns. The
+    // post-batch diff drives one scoped `enumColumnsChanged` per
+    // affected column so receivers can skip rebuilds for columns
+    // they don't care about.
+    struct EnumSnapshotEntry
+    {
+        loglib::KeyId kid;
+        int columnIndex;
+        uint16_t sizeBefore;
+    };
+    std::vector<EnumSnapshotEntry> enumSnapshotBefore;
     {
         const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
         const auto &keysBefore = mLogTable.Keys();
         const auto &registryBefore = mLogTable.EnumDictionaries();
-        for (const auto &column : columnsBefore)
+        for (size_t columnIndex = 0; columnIndex < columnsBefore.size(); ++columnIndex)
         {
+            const auto &column = columnsBefore[columnIndex];
             if (column.type != loglib::LogConfiguration::Type::Enumeration || column.keys.empty())
             {
                 continue;
@@ -458,45 +465,14 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             }
             if (const loglib::EnumDictionary *dict = registryBefore.Find(kid); dict != nullptr)
             {
-                enumDictSizesBefore.emplace_back(kid, dict->Size());
+                enumSnapshotBefore.push_back(
+                    {.kid = kid, .columnIndex = static_cast<int>(columnIndex), .sizeBefore = dict->Size()}
+                );
             }
         }
     }
 
     mLogTable.AppendBatch(std::move(batch));
-
-    // Registry shape change for pre-batch enum columns: dict erased
-    // (column demoted to string) or grew (new value interned). Track
-    // both separately so the follow-up emits can scope reactions --
-    // demote forces a rank-cache flush, growth doesn't (self-heals).
-    bool enumColumnDemoted = false;
-    bool enumDictGrew = false;
-    if (!enumDictSizesBefore.empty())
-    {
-        const auto &registryAfter = mLogTable.EnumDictionaries();
-        for (const auto &[kid, sizeBefore] : enumDictSizesBefore)
-        {
-            const loglib::EnumDictionary *dict = registryAfter.Find(kid);
-            if (dict == nullptr)
-            {
-                enumColumnDemoted = true;
-            }
-            else if (dict->Size() != sizeBefore)
-            {
-                enumDictGrew = true;
-            }
-        }
-    }
-    // Also pick up the silent "promoted then immediately demoted in
-    // the same batch" case (`Unknown -> Enumeration -> String`, no
-    // dict surviving on either side). The `enumDictSizesBefore`
-    // snapshot doesn't see it because the column wasn't yet
-    // `Type::Enumeration`; `LogTable::LastBatchDemotedKeys()` records
-    // it from inside `DemoteColumnFromEnum`.
-    if (!mLogTable.LastBatchDemotedKeys().empty())
-    {
-        enumColumnDemoted = true;
-    }
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
     // proxy connected to `rowsInserted` walks new rows against a
@@ -512,7 +488,67 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
-    bool emittedPromotedFromBackfill = false;
+    // `KeyId` -> source-column index lookup. Linear, but column
+    // counts are tens at most, so the per-batch cost is negligible.
+    const auto findColumnIndexForKey = [this](loglib::KeyId kid) -> int {
+        if (kid == loglib::INVALID_KEY_ID)
+        {
+            return -1;
+        }
+        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        const auto &keys = mLogTable.Keys();
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            for (const auto &key : columns[i].keys)
+            {
+                if (keys.Find(key) == kid)
+                {
+                    return static_cast<int>(i);
+                }
+            }
+        }
+        return -1;
+    };
+
+    // Diff snapshot vs post-batch registry: `Grew` when the dict
+    // size changed, `Demoted` when the dict disappeared (registry
+    // erase). One signal per (column, reason).
+    std::vector<int> demotedColumnsThisBatch;
+    if (!enumSnapshotBefore.empty())
+    {
+        const auto &registryAfter = mLogTable.EnumDictionaries();
+        for (const auto &entry : enumSnapshotBefore)
+        {
+            const loglib::EnumDictionary *dict = registryAfter.Find(entry.kid);
+            if (dict == nullptr)
+            {
+                demotedColumnsThisBatch.push_back(entry.columnIndex);
+                emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, entry.columnIndex);
+            }
+            else if (dict->Size() != entry.sizeBefore)
+            {
+                emit enumColumnsChanged(EnumColumnsChangeReason::Grew, entry.columnIndex);
+            }
+        }
+    }
+    // Same-batch `Unknown -> Enumeration -> String` isn't visible to
+    // the snapshot diff (column wasn't enum at snapshot time). Use
+    // `LastBatchDemotedKeys()` and de-dupe against snapshot demotes.
+    for (const loglib::KeyId kid : mLogTable.LastBatchDemotedKeys())
+    {
+        const int columnIndex = findColumnIndexForKey(kid);
+        if (columnIndex < 0)
+        {
+            continue;
+        }
+        if (std::ranges::find(demotedColumnsThisBatch, columnIndex) != demotedColumnsThisBatch.end())
+        {
+            continue;
+        }
+        demotedColumnsThisBatch.push_back(columnIndex);
+        emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, columnIndex);
+    }
+
     if (const auto &range = mLogTable.LastBackfillRange(); range.has_value() && newRowCount > 0)
     {
         const int firstColumn = static_cast<int>(range->first);
@@ -527,7 +563,13 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
              static_cast<int>(LogModelItemDataRole::EnumValueRole)}
         );
 
-        // Notify if any back-filled column is now an enumeration.
+        // Emit `Promoted` for every back-filled column that is now an
+        // enumeration. Skip columns that were already enum at
+        // snapshot time: the back-fill range is a min/max over all
+        // back-filled columns, so a pre-existing enum whose dict
+        // only grew can fall inside it -- the `Grew` diff above
+        // already covered it and a second emit would double-trigger
+        // `MainWindow::UpdateFilters`.
         const auto &columns = mLogTable.Configuration().Configuration().columns;
         for (int columnIndex = firstColumn; columnIndex <= lastColumn; ++columnIndex)
         {
@@ -535,26 +577,19 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 continue;
             }
-            if (columns[static_cast<size_t>(columnIndex)].type == loglib::LogConfiguration::Type::Enumeration)
+            if (columns[static_cast<size_t>(columnIndex)].type != loglib::LogConfiguration::Type::Enumeration)
             {
-                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted);
-                emittedPromotedFromBackfill = true;
-                break;
+                continue;
             }
+            const bool wasEnumBefore = std::ranges::any_of(enumSnapshotBefore, [columnIndex](const auto &entry) {
+                return entry.columnIndex == columnIndex;
+            });
+            if (wasEnumBefore)
+            {
+                continue;
+            }
+            emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, columnIndex);
         }
-    }
-
-    // The back-fill branch above only fires on *promotion*. Cover
-    // dict growth and demotion here. Emit each reason independently
-    // so a batch that grows one column and demotes another delivers
-    // two scoped signals.
-    if (!emittedPromotedFromBackfill && enumDictGrew)
-    {
-        emit enumColumnsChanged(EnumColumnsChangeReason::Grew);
-    }
-    if (enumColumnDemoted)
-    {
-        emit enumColumnsChanged(EnumColumnsChangeReason::Demoted);
     }
 
     // Match `LogConfigurationManager::Update`: bubble each freshly
@@ -604,9 +639,30 @@ void LogModel::EndStreaming(bool cancelled)
     // a stable dictionary by the time the UI re-enables editing.
     if (!cancelled)
     {
+        // Snapshot per-column types so we can emit one scoped
+        // `Promoted` per transitioned column. The lib API only
+        // reports "anything promoted?", so the diff happens here.
+        std::vector<loglib::LogConfiguration::Type> typesBefore;
+        {
+            const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+            typesBefore.reserve(columnsBefore.size());
+            for (const auto &column : columnsBefore)
+            {
+                typesBefore.push_back(column.type);
+            }
+        }
         if (mLogTable.FinalizeAutoDetection())
         {
-            emit enumColumnsChanged(EnumColumnsChangeReason::Promoted);
+            const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
+            const size_t commonCount = std::min(typesBefore.size(), columnsAfter.size());
+            for (size_t i = 0; i < commonCount; ++i)
+            {
+                if (typesBefore[i] != loglib::LogConfiguration::Type::Enumeration &&
+                    columnsAfter[i].type == loglib::LogConfiguration::Type::Enumeration)
+                {
+                    emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
+                }
+            }
         }
     }
 
