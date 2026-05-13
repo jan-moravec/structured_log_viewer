@@ -2262,8 +2262,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- bool-only column auto-detects to Type::Boolean",
-    "[log_table][append_batch][enum][routing][boolean]"
+    "LogTable -- bool-only column auto-detects to Type::Boolean", "[log_table][append_batch][enum][routing][boolean]"
 )
 {
     // Bool-only columns: no string and no numeric observations, so the
@@ -2292,8 +2291,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- bool mixed with numerics still routes to Type::Any",
-    "[log_table][append_batch][enum][routing][any]"
+    "LogTable -- bool mixed with numerics still routes to Type::Any", "[log_table][append_batch][enum][routing][any]"
 )
 {
     // Mixed bool + integer: no single specialised widget covers the

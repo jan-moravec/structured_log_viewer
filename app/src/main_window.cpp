@@ -1247,9 +1247,7 @@ void MainWindow::AddFilter(
     connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
     connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
     connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
-    connect(
-        filterEditor, &FilterEditor::FilterNumericRangeSubmitted, this, &MainWindow::FilterNumericRangeSubmitted
-    );
+    connect(filterEditor, &FilterEditor::FilterNumericRangeSubmitted, this, &MainWindow::FilterNumericRangeSubmitted);
     connect(filterEditor, &FilterEditor::FilterBooleanSubmitted, this, &MainWindow::FilterBooleanSubmitted);
     if (resolvedFilter.has_value())
     {
@@ -1551,12 +1549,14 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         // byte-for-byte. Default `QString::number(double)` uses
         // precision 6 which silently truncates e.g. `12345.6789`.
         const QLocale cLocale = QLocale::c();
-        const QString minStr = filter.filterMinValue.has_value()
-                                   ? cLocale.toString(*filter.filterMinValue, 'g', std::numeric_limits<double>::max_digits10)
-                                   : QStringLiteral("-inf");
-        const QString maxStr = filter.filterMaxValue.has_value()
-                                   ? cLocale.toString(*filter.filterMaxValue, 'g', std::numeric_limits<double>::max_digits10)
-                                   : QStringLiteral("+inf");
+        const QString minStr =
+            filter.filterMinValue.has_value()
+                ? cLocale.toString(*filter.filterMinValue, 'g', std::numeric_limits<double>::max_digits10)
+                : QStringLiteral("-inf");
+        const QString maxStr =
+            filter.filterMaxValue.has_value()
+                ? cLocale.toString(*filter.filterMaxValue, 'g', std::numeric_limits<double>::max_digits10)
+                : QStringLiteral("+inf");
         title = QStringLiteral("[%1, %2]").arg(minStr, maxStr);
         break;
     }

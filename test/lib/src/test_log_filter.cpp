@@ -607,10 +607,7 @@ TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_fil
     CHECK_FALSE(predicate.MatchesRow(table, 5)); // monostate rejects
 }
 
-TEST_CASE(
-    "NumericRangeRowPredicate accepts a single-point range when min equals max",
-    "[log_filter][numeric_range]"
-)
+TEST_CASE("NumericRangeRowPredicate accepts a single-point range when min equals max", "[log_filter][numeric_range]")
 {
     // A `min == max` range is a valid single-point filter: only slots
     // equal to the shared bound pass. Inverted ranges (`min > max`)

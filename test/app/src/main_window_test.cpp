@@ -5188,8 +5188,7 @@ private slots:
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(flagCol)].type,
-            loglib::LogConfiguration::Type::Boolean
+            model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean
         );
 
         loglib::LogConfiguration::LogFilter savedFilter;
@@ -5270,8 +5269,7 @@ private slots:
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
         QVERIFY2(valueCol >= 0, "value column must exist");
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(valueCol)].type,
-            loglib::LogConfiguration::Type::Integer
+            model->Configuration().columns[static_cast<size_t>(valueCol)].type, loglib::LogConfiguration::Type::Integer
         );
 
         loglib::LogConfiguration::LogFilter savedFilter;
@@ -5354,8 +5352,7 @@ private slots:
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(flagCol)].type,
-            loglib::LogConfiguration::Type::Boolean
+            model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean
         );
 
         loglib::LogConfiguration::LogFilter savedFilter;
@@ -5722,8 +5719,8 @@ private slots:
         // stripped) but whose max_digits10 rendering is distinct.
         // 1000000 + 1/128 and 1000000 + 1/256 are both exact in
         // IEEE 754 double precision.
-        constexpr double MIN_VALUE = 1000000.0078125;     // = 1e6 + 1/128
-        constexpr double MAX_VALUE = 1000000.00390625;    // = 1e6 + 1/256, < MIN_VALUE
+        constexpr double MIN_VALUE = 1000000.0078125;  // = 1e6 + 1/128
+        constexpr double MAX_VALUE = 1000000.00390625; // = 1e6 + 1/256, < MIN_VALUE
 
         mWindow->statusBar()->clearMessage();
         const QString filterId = QStringLiteral("inverted-precision");
@@ -5795,8 +5792,7 @@ private slots:
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
         QVERIFY2(flagCol >= 0, "flag column must exist");
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(flagCol)].type,
-            loglib::LogConfiguration::Type::Boolean
+            model->Configuration().columns[static_cast<size_t>(flagCol)].type, loglib::LogConfiguration::Type::Boolean
         );
 
         const QString filterId = QStringLiteral("bool-canonical-title");

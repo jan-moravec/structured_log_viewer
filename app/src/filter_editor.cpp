@@ -508,10 +508,8 @@ void FilterEditor::OnOkClicked()
         }
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
-    else if (
-        column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
-        column.type == LogConfiguration::Type::Number
-    )
+    else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
+             column.type == LogConfiguration::Type::Number)
     {
         // Unbounded on both sides would match every row; insist on at
         // least one finite bound. Also reject a non-numeric typed

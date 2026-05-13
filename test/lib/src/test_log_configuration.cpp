@@ -515,10 +515,7 @@ TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_
     CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"info", "warn", "error"});
 }
 
-TEST_CASE(
-    "Round-trip LogFilter with Type::Number and bounded / unbounded range",
-    "[log_configuration][number]"
-)
+TEST_CASE("Round-trip LogFilter with Type::Number and bounded / unbounded range", "[log_configuration][number]")
 {
     LogConfiguration original;
 

@@ -550,8 +550,8 @@ TEST_CASE("CompareRows on Boolean columns orders false < true and sinks non-bool
     CHECK(CompareRows(table, 0, 2, 0) == 0);          // true == true
     CHECK(SignOf(CompareRows(table, 3, 0, 0)) == 1);  // monostate > bool
     CHECK(SignOf(CompareRows(table, 0, 3, 0)) == -1);
-    CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1);  // wrong-type slot > bool
-    CHECK(CompareRows(table, 3, 4, 0) == 0);          // tail members compare equal pairwise
+    CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1); // wrong-type slot > bool
+    CHECK(CompareRows(table, 3, 4, 0) == 0);         // tail members compare equal pairwise
 }
 
 TEST_CASE("CompareRows on String/Any columns compares byte-wise", "[log_compare][string]")
