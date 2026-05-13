@@ -241,6 +241,11 @@ void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
     mConfiguration.columns[columnIndex].visible = visible;
 }
 
+void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)
+{
+    mConfiguration.filters = std::move(filters);
+}
+
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
 {
     if (newKeys.empty())

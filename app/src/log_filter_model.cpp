@@ -1135,11 +1135,33 @@ QList<QModelIndex> LogFilterModel::MatchRow(
         }
     };
 
+    // Hidden columns are skipped: a Find hit on an invisible cell
+    // would scroll the row into view but leave the user with no
+    // visual feedback about *what* matched (the section has zero
+    // width). Source of truth is `Column::visible` on the
+    // configuration; `MainWindow::ApplyColumnVisibility` keeps the
+    // header in sync. Falls through gracefully when `mLogModel` is
+    // null (test wiring without a configuration).
+    const auto *columnsForVisibility =
+        mLogModel != nullptr ? &mLogModel->Configuration().columns : nullptr;
+    auto isColumnHidden = [columnsForVisibility](int column) {
+        if (columnsForVisibility == nullptr)
+        {
+            return false;
+        }
+        const auto idx = static_cast<size_t>(column);
+        return idx < columnsForVisibility->size() && !(*columnsForVisibility)[idx].visible;
+    };
+
     auto scanRow = [&](int actualRow) -> bool {
         int logRowCached = LOG_ROW_UNRESOLVED;
         for (int col = 0; col < columnCount; ++col)
         {
             const int actualColumn = (startColumn + col) % columnCount;
+            if (isColumnHidden(actualColumn))
+            {
+                continue;
+            }
             const QModelIndex proxyIndex = this->index(actualRow, actualColumn, start.parent());
             resolveLogRow(proxyIndex, logRowCached);
             if (probeCell(proxyIndex, logRowCached))

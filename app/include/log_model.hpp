@@ -182,6 +182,17 @@ public:
     /// destination child.
     bool MoveColumn(int srcIndex, int destIndex);
 
+    /// Notify the view that the configuration's column structure
+    /// (count / order / per-column metadata) was replaced out-of-band
+    /// by a path that does not emit Qt model signals -- e.g.
+    /// `LogConfigurationManager::Load` rewriting the in-memory
+    /// configuration. Brackets a `beginResetModel` /
+    /// `endResetModel` so the view re-initialises its header section
+    /// count, drops stale `setSectionHidden` flags, and re-queries
+    /// `headerData` for every column. Cheap; emits no per-row
+    /// signals.
+    void NotifyConfigurationReplaced();
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);

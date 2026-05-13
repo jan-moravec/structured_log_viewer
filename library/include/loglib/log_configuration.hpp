@@ -145,6 +145,13 @@ public:
     /// via `QHeaderView::setSectionHidden`.
     void SetColumnVisible(size_t columnIndex, bool visible);
 
+    /// Replace the configuration's filter vector wholesale. Intended
+    /// for the app's eager mirror of `MainWindow::mFilters` -> the
+    /// wire-format `LogConfiguration::filters`, so that `Save` and
+    /// the lib-side `MoveColumn` filter-row remap operate on the
+    /// live runtime set rather than a permanently empty vector.
+    void SetFilters(std::vector<LogConfiguration::LogFilter> filters);
+
     /// Apply the single-column reorder permutation `(srcIndex ->
     /// destIndex)` to a stored column index @p columnIndex (e.g. a
     /// `LogFilter::row`). Returns the new column index; out-of-range

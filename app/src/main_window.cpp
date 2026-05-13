@@ -142,6 +142,128 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     return sides;
 }
 
+/// Why a saved `LogFilter` could not be revived against the current
+/// column layout. Used by the load-side validator to report dropped
+/// filters in a single summary dialog.
+enum class FilterValidationReason
+{
+    OutOfRangeRow,
+    EmptyEnumSelection,
+    TypeMismatch,
+    MissingTimeRange,
+    MissingNumericRange,
+    MissingStringMatch,
+    MissingBooleanSelection,
+};
+
+struct FilterValidationFailure
+{
+    FilterValidationReason reason;
+    int row;
+    /// Empty when `row` is out of range; otherwise the column header
+    /// the filter pointed at.
+    std::string columnHeader;
+};
+
+QString FilterValidationReasonString(FilterValidationReason reason)
+{
+    switch (reason)
+    {
+    case FilterValidationReason::OutOfRangeRow:
+        return QStringLiteral("column index out of range");
+    case FilterValidationReason::EmptyEnumSelection:
+        return QStringLiteral("enumeration selection was empty (would hide every row)");
+    case FilterValidationReason::TypeMismatch:
+        return QStringLiteral("filter type does not match column type");
+    case FilterValidationReason::MissingTimeRange:
+        return QStringLiteral("time range is missing");
+    case FilterValidationReason::MissingNumericRange:
+        return QStringLiteral("numeric range is missing");
+    case FilterValidationReason::MissingStringMatch:
+        return QStringLiteral("string match is missing");
+    case FilterValidationReason::MissingBooleanSelection:
+        return QStringLiteral("no boolean side selected");
+    }
+    return QStringLiteral("unknown");
+}
+
+/// Single source of truth for "is this saved filter usable against
+/// the current column layout". Called from the configuration-load
+/// path (which drops any failure into a summary dialog) and from
+/// `MainWindow::AddFilter`'s pre-guard (which keeps its existing
+/// status-bar UX). Returns `nullopt` on success.
+std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
+    const loglib::LogConfiguration::LogFilter &filter, const std::vector<loglib::LogConfiguration::Column> &columns
+)
+{
+    using LogFilter = loglib::LogConfiguration::LogFilter;
+    using ColumnType = loglib::LogConfiguration::Type;
+
+    if (filter.row < 0 || static_cast<size_t>(filter.row) >= columns.size())
+    {
+        return FilterValidationFailure{FilterValidationReason::OutOfRangeRow, filter.row, std::string{}};
+    }
+
+    const auto &column = columns[static_cast<size_t>(filter.row)];
+
+    if (filter.type == LogFilter::Type::Enumeration && filter.filterValues.empty())
+    {
+        return FilterValidationFailure{FilterValidationReason::EmptyEnumSelection, filter.row, column.header};
+    }
+
+    const bool isNumericColumn = column.type == ColumnType::Integer || column.type == ColumnType::Floating ||
+                                 column.type == ColumnType::Number;
+    const bool typesMatch =
+        (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
+        (filter.type == LogFilter::Type::Enumeration && column.type == ColumnType::Enumeration) ||
+        (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
+        (filter.type == LogFilter::Type::Number && isNumericColumn) ||
+        (filter.type == LogFilter::Type::String && column.type != ColumnType::Time &&
+         column.type != ColumnType::Enumeration && column.type != ColumnType::Boolean && !isNumericColumn);
+    if (!typesMatch)
+    {
+        return FilterValidationFailure{FilterValidationReason::TypeMismatch, filter.row, column.header};
+    }
+
+    switch (filter.type)
+    {
+    case LogFilter::Type::Time:
+        if (!filter.filterBegin.has_value() || !filter.filterEnd.has_value())
+        {
+            return FilterValidationFailure{FilterValidationReason::MissingTimeRange, filter.row, column.header};
+        }
+        break;
+    case LogFilter::Type::Number:
+        if (!filter.filterMinValue.has_value() && !filter.filterMaxValue.has_value())
+        {
+            return FilterValidationFailure{FilterValidationReason::MissingNumericRange, filter.row, column.header};
+        }
+        break;
+    case LogFilter::Type::Boolean:
+    {
+        const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
+        if (!sides.includeTrue && !sides.includeFalse)
+        {
+            return FilterValidationFailure{
+                FilterValidationReason::MissingBooleanSelection, filter.row, column.header
+            };
+        }
+        break;
+    }
+    case LogFilter::Type::String:
+        if (!filter.filterString.has_value() || !filter.matchType.has_value())
+        {
+            return FilterValidationFailure{FilterValidationReason::MissingStringMatch, filter.row, column.header};
+        }
+        break;
+    case LogFilter::Type::Enumeration:
+        // Empty-selection already handled above.
+        break;
+    }
+
+    return std::nullopt;
+}
+
 // Diagnostic for "no tzdata found" matching common.cpp's shape.
 QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &searched)
 {
@@ -541,8 +663,18 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::UpdateUi()
 {
-    for (int i = 0; i < mTableView->model()->columnCount() - 1; ++i)
+    QHeaderView *header = mTableView->horizontalHeader();
+    const int columnCount = mTableView->model()->columnCount();
+    // Skip the trailing column (it stretches to fill) and any
+    // hidden columns -- `resizeColumnToContents` walks the model
+    // even for zero-width sections, so honouring `isSectionHidden`
+    // saves the per-row size-hint pass on hidden columns.
+    for (int i = 0; i < columnCount - 1; ++i)
     {
+        if (header != nullptr && header->isSectionHidden(i))
+        {
+            continue;
+        }
         mTableView->resizeColumnToContents(i);
     }
 }
@@ -594,10 +726,20 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
     try
     {
         mModel->ConfigurationManager().Load(file.toStdString());
-        // `Load` updates `Column::visible` but emits no model signal;
-        // push the freshly-loaded flags into the header so this path
-        // matches `LoadConfiguration`'s behaviour.
+        // `Load` rewrites `mConfiguration` (column count, order,
+        // visibility, ...) without emitting a Qt model signal.
+        // `NotifyConfigurationReplaced` brackets a `beginResetModel`
+        // / `endResetModel` so the header re-initialises its section
+        // count and the wired `ApplyColumnVisibility` callback
+        // re-applies the freshly-loaded `visible` flags. The
+        // explicit follow-up call is belt-and-braces in case the
+        // wiring changes.
+        mModel->NotifyConfigurationReplaced();
         ApplyColumnVisibility();
+        // Revive any persisted filters against the freshly-loaded
+        // column layout. Shared with `DoLoadConfiguration`; surfaces
+        // a dialog summarising any drops.
+        RebuildFiltersFromConfiguration();
         return true;
     }
     catch (...)
@@ -875,6 +1017,20 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
+    // Column reorder + hide/show mutate `mConfiguration.columns` and
+    // would race with parser-thread-driven `AppendKeys` /
+    // auto-promotion bookkeeping that reads the same vector. Gate
+    // the header's drag affordance and the right-click context menu
+    // on the same flag so the column-management UX is consistent
+    // with Load/Save/Preferences. The `View` menu is intentionally
+    // *not* gated -- it is the always-reachable escape hatch for
+    // restoring an accidentally-hidden column, and only flips the
+    // `visible` flag (no rotation, no key-cache mutation).
+    if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
+    {
+        header->setSectionsMovable(enabled);
+        header->setContextMenuPolicy(enabled ? Qt::CustomContextMenu : Qt::NoContextMenu);
+    }
 }
 
 void MainWindow::UpdateStreamingStatus()
@@ -1078,6 +1234,31 @@ bool MainWindow::TryLoadAsConfigurationForTest(const QString &file)
 {
     return TryLoadAsConfiguration(file);
 }
+
+void MainWindow::SetConfigurationUiEnabledForTest(bool enabled)
+{
+    SetConfigurationUiEnabled(enabled);
+}
+
+void MainWindow::SaveConfigurationToPathForTest(const QString &path)
+{
+    DoSaveConfiguration(path);
+}
+
+void MainWindow::LoadConfigurationFromPathForTest(const QString &path)
+{
+    DoLoadConfiguration(path);
+}
+
+void MainWindow::SetSuppressDialogsForTest(bool suppress)
+{
+    mSuppressDialogsForTest = suppress;
+}
+
+int MainWindow::LastDroppedFilterCountForTest() const
+{
+    return mLastDroppedFilterCountForTest;
+}
 #endif
 
 void MainWindow::ApplyDisplayOrder()
@@ -1122,37 +1303,158 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
     QMessageBox::warning(this, title, message);
 }
 
+void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &message)
+{
+#ifdef LOGAPP_BUILD_TESTING
+    mLastDroppedFilterCountForTest = droppedCount;
+    if (mSuppressDialogsForTest)
+    {
+        // Headless test path: avoid the modal so the test thread
+        // does not block. The count is the only assertion the tests
+        // need; the formatted message is exercised under the
+        // production path.
+        return;
+    }
+#else
+    (void)droppedCount;
+#endif
+    QMessageBox::warning(this, QStringLiteral("Filters Dropped on Load"), message);
+}
+
+void MainWindow::MirrorFiltersToConfiguration()
+{
+    // Snapshot the runtime UUID-keyed map into the wire-format
+    // vector so `Save` and the lib-side `MoveColumn` filter remap
+    // operate on the live state. Order is unspecified: UUIDs are
+    // GUI-internal and are regenerated on load; the load path
+    // rebuilds menu order from the vector iteration order.
+    std::vector<loglib::LogConfiguration::LogFilter> snapshot;
+    snapshot.reserve(mFilters.size());
+    for (const auto &[id, f] : mFilters)
+    {
+        snapshot.push_back(f);
+    }
+    mModel->ConfigurationManager().SetFilters(std::move(snapshot));
+}
+
 void MainWindow::SaveConfiguration()
 {
     const QString file =
         QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
-    if (!file.isEmpty())
+    if (file.isEmpty())
     {
-        mModel->ConfigurationManager().Save(file.toStdString());
+        return;
     }
+    try
+    {
+        DoSaveConfiguration(file);
+    }
+    catch (std::exception &e)
+    {
+        QMessageBox::warning(this, "Error Saving Configuration", e.what());
+    }
+}
+
+bool MainWindow::DoSaveConfiguration(const QString &path)
+{
+    // Eager mirror keeps `mConfiguration.filters` current, but the
+    // explicit call here documents intent and survives a future
+    // mutation point that forgets to mirror.
+    MirrorFiltersToConfiguration();
+    mModel->ConfigurationManager().Save(path.toStdString());
+    return true;
 }
 
 void MainWindow::LoadConfiguration()
 {
     const QString file =
         QFileDialog::getOpenFileName(this, "Load Configuration", QString(), "JSON (*.json);;All Files (*)");
-    if (!file.isEmpty())
+    if (file.isEmpty())
     {
-        try
+        return;
+    }
+    DoLoadConfiguration(file);
+}
+
+bool MainWindow::DoLoadConfiguration(const QString &path)
+{
+    try
+    {
+        mModel->Reset();
+        mModel->ConfigurationManager().Load(path.toStdString());
+        // `Load` mutates `mConfiguration` in-place and emits no
+        // signal, so the model's `columnCount()` may have jumped
+        // since the prior `Reset()`. `NotifyConfigurationReplaced`
+        // brackets a model reset so the header re-initialises its
+        // section count to the new value before
+        // `ApplyColumnVisibility` pushes per-section flags.
+        mModel->NotifyConfigurationReplaced();
+        UpdateUi();
+        // The wired `modelReset` callback already calls
+        // `ApplyColumnVisibility`; this explicit call is defensive
+        // (and matches `TryLoadAsConfiguration`'s shape).
+        ApplyColumnVisibility();
+
+        RebuildFiltersFromConfiguration();
+        return true;
+    }
+    catch (std::exception &e)
+    {
+        QMessageBox::warning(this, "Error Parsing Configuration", e.what());
+        return false;
+    }
+}
+
+void MainWindow::RebuildFiltersFromConfiguration()
+{
+    // Take ownership of the freshly-loaded wire-format vector, then
+    // drop runtime + menu state (`ClearAllFilters` mirrors an empty
+    // vector back into the manager) before walking the local copy.
+    // Re-entering through `AddLogFilter` rebuilds `mFilters`, the
+    // Filters menu items, and re-populates the wire-format vector
+    // via the eager mirror -- so the saved set survives the
+    // round-trip. UUIDs are GUI-only and are regenerated here.
+    std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
+
+    ClearAllFilters();
+#ifdef LOGAPP_BUILD_TESTING
+    mLastDroppedFilterCountForTest = 0;
+#endif
+
+    const auto &columns = mModel->Configuration().columns;
+    std::vector<FilterValidationFailure> dropped;
+    for (const auto &saved : loadedFilters)
+    {
+        if (auto failure = ValidateFilterAgainstColumns(saved, columns))
         {
-            mModel->Reset();
-            mModel->ConfigurationManager().Load(file.toStdString());
-            UpdateUi();
-            // The header keeps `setSectionHidden` flags by logical
-            // index across the `Reset()` / Load round-trip, but the
-            // freshly-loaded `Column::visible` values are the new
-            // source of truth -- reassert them.
-            ApplyColumnVisibility();
+            dropped.push_back(std::move(*failure));
+            continue;
         }
-        catch (std::exception &e)
+        AddLogFilter(QUuid::createUuid().toString(), saved);
+    }
+
+    if (!dropped.empty())
+    {
+        constexpr size_t MAX_SHOWN = 20;
+        QString message =
+            QString("%1 saved filter(s) were dropped because they no longer fit the column layout:\n\n")
+                .arg(dropped.size());
+        const size_t shown = std::min(dropped.size(), MAX_SHOWN);
+        for (size_t i = 0; i < shown; ++i)
         {
-            QMessageBox::warning(this, "Error Parsing Configuration", e.what());
+            const QString header = dropped[i].columnHeader.empty()
+                                       ? QStringLiteral("(out-of-range column)")
+                                       : QString::fromStdString(dropped[i].columnHeader);
+            message += QString("- column '%1' (row %2): %3\n")
+                           .arg(header)
+                           .arg(dropped[i].row)
+                           .arg(FilterValidationReasonString(dropped[i].reason));
         }
+        if (dropped.size() > MAX_SHOWN)
+        {
+            message += QString("... and %1 more.").arg(dropped.size() - MAX_SHOWN);
+        }
+        ShowDroppedFiltersDialog(static_cast<int>(dropped.size()), message);
     }
 }
 
@@ -1216,50 +1518,34 @@ void MainWindow::AddFilter(
 
     // Drop saved filters whose type no longer matches the column type
     // (e.g. string filter against a column that auto-promoted to enum).
+    // The shared `ValidateFilterAgainstColumns` helper is the single
+    // source of truth for "is this filter still usable"; this pre-guard
+    // adapts the validator's structured failure into the legacy
+    // status-bar UX. The post-editor "missing payload" guards below
+    // remain inline because they need the editor object to delete on
+    // failure; the validator catches the same payload gaps for the
+    // configuration-load path.
     std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
         const auto &columns = mModel->Configuration().columns;
-        const auto rowIndex = static_cast<size_t>(resolvedFilter->row);
-        // Saved empty enum selection: would hide every row.
-        if (rowIndex < columns.size() &&
-            resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-            resolvedFilter->filterValues.empty())
+        if (auto failure = ValidateFilterAgainstColumns(*resolvedFilter, columns))
         {
-            statusBar()->showMessage(
-                QString("Saved enumeration filter for '%1' had no values selected; ignoring")
-                    .arg(QString::fromStdString(columns[rowIndex].header)),
-                STATUS_BAR_MESSAGE_TIMEOUT_MS
-            );
-            ClearFilter(filterId);
-            return;
-        }
-        if (rowIndex < columns.size())
-        {
-            const loglib::LogConfiguration::Type columnType = columns[rowIndex].type;
-            const loglib::LogConfiguration::LogFilter::Type filterType = resolvedFilter->type;
-
-            const bool isNumericColumn = columnType == loglib::LogConfiguration::Type::Integer ||
-                                         columnType == loglib::LogConfiguration::Type::Floating ||
-                                         columnType == loglib::LogConfiguration::Type::Number;
-            const bool typesMatch =
-                (filterType == loglib::LogConfiguration::LogFilter::Type::Time &&
-                 columnType == loglib::LogConfiguration::Type::Time) ||
-                (filterType == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                 columnType == loglib::LogConfiguration::Type::Enumeration) ||
-                (filterType == loglib::LogConfiguration::LogFilter::Type::Boolean &&
-                 columnType == loglib::LogConfiguration::Type::Boolean) ||
-                (filterType == loglib::LogConfiguration::LogFilter::Type::Number && isNumericColumn) ||
-                (filterType == loglib::LogConfiguration::LogFilter::Type::String &&
-                 columnType != loglib::LogConfiguration::Type::Time &&
-                 columnType != loglib::LogConfiguration::Type::Enumeration &&
-                 columnType != loglib::LogConfiguration::Type::Boolean && !isNumericColumn);
-            if (!typesMatch)
+            switch (failure->reason)
             {
+            case FilterValidationReason::EmptyEnumSelection:
+                statusBar()->showMessage(
+                    QString("Saved enumeration filter for '%1' had no values selected; ignoring")
+                        .arg(QString::fromStdString(failure->columnHeader)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                return;
+            case FilterValidationReason::TypeMismatch:
                 ClearFilter(filterId);
                 statusBar()->showMessage(
                     QString("Filter '%1' was removed because the column type changed")
-                        .arg(QString::fromStdString(columns[rowIndex].header)),
+                        .arg(QString::fromStdString(failure->columnHeader)),
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
                 resolvedFilter.reset();
@@ -1271,6 +1557,20 @@ void MainWindow::AddFilter(
                 // because the column type changed; open a fresh editor
                 // so the user can re-pick values for the new type.
                 // Regression: `TestSavedStringFilterDroppedOnNowEnumColumn`.
+                break;
+            case FilterValidationReason::OutOfRangeRow:
+            case FilterValidationReason::MissingTimeRange:
+            case FilterValidationReason::MissingNumericRange:
+            case FilterValidationReason::MissingStringMatch:
+            case FilterValidationReason::MissingBooleanSelection:
+                // The pre-guard intentionally *only* reacts to the
+                // empty-enum and type-mismatch reasons; the historical
+                // edit-path behavior expects the post-editor branch
+                // below to surface the missing-payload reasons (so it
+                // can `delete filterEditor` on the way out). The
+                // configuration-load path runs the validator
+                // separately and never reaches this branch.
+                break;
             }
         }
     }
@@ -1371,6 +1671,7 @@ void MainWindow::AddFilter(
 void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
+    MirrorFiltersToConfiguration();
     mSortFilterProxyModel->SetFilterRules({});
 
     for (QAction *action : ui->menuFilters->actions())
@@ -1388,6 +1689,7 @@ void MainWindow::ClearAllFilters()
 void MainWindow::ClearFilter(const QString &filterID)
 {
     mFilters.erase(filterID.toStdString());
+    MirrorFiltersToConfiguration();
     UpdateFilters();
 
     unsigned filters = 0;
@@ -1560,6 +1862,7 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter)
 {
     mFilters[id.toStdString()] = filter;
+    MirrorFiltersToConfiguration();
     UpdateFilters();
 
     QString title;
@@ -2013,10 +2316,18 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     {
         // Mirror the lib-side filter-row remap onto the live
         // `mFilters` map so the active rule set follows the move.
+        // The lib's `MoveColumn` already rotated
+        // `mConfiguration.filters[*].row` in lockstep -- both stores
+        // stay consistent because they apply the same
+        // `RemapColumnIndexAfterMove` permutation. The explicit
+        // `MirrorFiltersToConfiguration` keeps the wire-format
+        // vector bit-identical with `mFilters` regardless of any
+        // future divergence in the lib's internal remap details.
         for (auto &[id, filter] : mFilters)
         {
             filter.row = loglib::LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
         }
+        MirrorFiltersToConfiguration();
         UpdateFilters();
     }
 
@@ -2045,12 +2356,16 @@ void MainWindow::ResetHeaderToIdentity()
         return;
     }
     const QSignalBlocker blocker(header);
-    for (int visual = 0; visual < header->count(); ++visual)
+    // Walk left-to-right and place each logical index at its matching
+    // visual position. Earlier iterations restore the prefix and only
+    // touch later positions monotonically, so the loop converges in
+    // a single sweep.
+    for (int target = 0; target < header->count(); ++target)
     {
-        const int currentLogical = header->logicalIndex(visual);
-        if (currentLogical != visual)
+        const int currentVisual = header->visualIndex(target);
+        if (currentVisual != target)
         {
-            header->moveSection(header->visualIndex(visual), visual);
+            header->moveSection(currentVisual, target);
         }
     }
 }
@@ -2091,15 +2406,26 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
     // popup is open); the index would then point at the wrong
     // column. `FindColumnIndexByKeys` re-resolves at trigger time.
     const std::vector<std::string> &thisKeys = columns[static_cast<size_t>(logicalColumn)].keys;
-    const QString thisHeader = QString::fromStdString(columns[static_cast<size_t>(logicalColumn)].header);
-    QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(thisHeader));
-    connect(hideAction, &QAction::triggered, this, [this, keys = thisKeys]() {
-        const int idx = FindColumnIndexByKeys(keys);
-        if (idx >= 0)
-        {
-            SetColumnVisible(idx, false);
-        }
-    });
+    const auto &thisColumn = columns[static_cast<size_t>(logicalColumn)];
+
+    // Only offer Hide for currently-visible columns. In production,
+    // right-click only fires on a visible section so this branch is
+    // always taken; test callers (`BuildHeaderContextMenu` is public
+    // for the offscreen-QPA `findChild<QMenu*>` workaround) may pass
+    // an already-hidden index, where `Hide` would be a confusing
+    // no-op.
+    if (thisColumn.visible)
+    {
+        const QString hideLabel = ColumnMenuLabel(static_cast<size_t>(logicalColumn));
+        QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(hideLabel));
+        connect(hideAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx >= 0)
+            {
+                SetColumnVisible(idx, false);
+            }
+        });
+    }
 
     // Gather every hidden column for the `Show column` submenu. The
     // clicked column is normally visible (right-click only fires on
@@ -2115,13 +2441,16 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
     }
     if (!hiddenColumns.empty())
     {
-        menu->addSeparator();
+        if (!menu->isEmpty())
+        {
+            menu->addSeparator();
+        }
         QMenu *showMenu = menu->addMenu(tr("Show column"));
         for (int hiddenLogical : hiddenColumns)
         {
             const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;
-            const QString hiddenHeader = QString::fromStdString(columns[static_cast<size_t>(hiddenLogical)].header);
-            QAction *showAction = showMenu->addAction(hiddenHeader);
+            const QString hiddenLabel = ColumnMenuLabel(static_cast<size_t>(hiddenLogical));
+            QAction *showAction = showMenu->addAction(hiddenLabel);
             connect(showAction, &QAction::triggered, this, [this, keys = hiddenKeys]() {
                 const int idx = FindColumnIndexByKeys(keys);
                 if (idx >= 0)
@@ -2142,9 +2471,21 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
         return;
     }
     mModel->ConfigurationManager().SetColumnVisible(static_cast<size_t>(logicalIndex), visible);
-    if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
+    QHeaderView *header = mTableView->horizontalHeader();
+    if (header == nullptr)
     {
-        header->setSectionHidden(logicalIndex, !visible);
+        return;
+    }
+    header->setSectionHidden(logicalIndex, !visible);
+    // If we just hid the column the user is sorting by, the sort
+    // indicator becomes invisible while the sort still drives the
+    // proxy. That state is unrecoverable from the UI (no sort glyph
+    // to click on), so reset to the unsorted baseline. The user can
+    // re-pick a sort column via Show column / View menu and a
+    // header click. Pinned by `TestHidingSortedColumnClearsSort`.
+    if (!visible && header->isSortIndicatorShown() && header->sortIndicatorSection() == logicalIndex)
+    {
+        mTableView->sortByColumn(-1, Qt::AscendingOrder);
     }
 }
 
@@ -2182,8 +2523,8 @@ void MainWindow::RebuildViewMenu()
     }
     for (size_t i = 0; i < columns.size(); ++i)
     {
-        const QString header = QString::fromStdString(columns[i].header);
-        QAction *action = viewMenu->addAction(header);
+        const QString label = ColumnMenuLabel(i);
+        QAction *action = viewMenu->addAction(label);
         action->setCheckable(true);
         action->setChecked(columns[i].visible);
         // Capture the column's stable `keys`, not its index: the menu
@@ -2200,6 +2541,43 @@ void MainWindow::RebuildViewMenu()
             }
         });
     }
+}
+
+QString MainWindow::ColumnMenuLabel(size_t columnIndex) const
+{
+    const auto &columns = mModel->Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return {};
+    }
+    QString header = QString::fromStdString(columns[columnIndex].header);
+    // Disambiguate when two columns share the same `header`. `header`
+    // is user-visible and not unique; `keys` is the stable identifier
+    // (per `LogConfiguration::Column`). Append the joined keys when a
+    // collision exists so the View / Hide / Show menu entries point
+    // at the right column. Single occurrence -> raw header.
+    int duplicates = 0;
+    for (const auto &other : columns)
+    {
+        if (QString::fromStdString(other.header) == header)
+        {
+            if (++duplicates > 1)
+            {
+                break;
+            }
+        }
+    }
+    if (duplicates <= 1)
+    {
+        return header;
+    }
+    QStringList keys;
+    keys.reserve(static_cast<qsizetype>(columns[columnIndex].keys.size()));
+    for (const std::string &k : columns[columnIndex].keys)
+    {
+        keys.append(QString::fromStdString(k));
+    }
+    return QStringLiteral("%1 [%2]").arg(std::move(header), keys.join(QLatin1Char(',')));
 }
 
 int MainWindow::FindColumnIndexByKeys(const std::vector<std::string> &keys) const

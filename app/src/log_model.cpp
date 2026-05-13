@@ -991,6 +991,18 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
     return true;
 }
 
+void LogModel::NotifyConfigurationReplaced()
+{
+    // `LogConfigurationManager::Load` rewrites `mConfiguration`
+    // in-place without emitting any Qt model signal, so a follow-up
+    // `columnCount()` jump leaves the view's header out of sync
+    // (stale section count, stale `setSectionHidden` flags). Bracket
+    // a model reset so the view re-queries everything from scratch.
+    // No data signals are emitted -- the row store is unchanged.
+    beginResetModel();
+    endResetModel();
+}
+
 bool LogModel::MoveColumn(int srcIndex, int destIndex)
 {
     if (srcIndex == destIndex)

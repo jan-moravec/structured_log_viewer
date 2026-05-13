@@ -128,6 +128,33 @@ public:
     /// path used by single-file `OpenFiles`. Exposed because the real
     /// path is gated behind `QFileDialog`.
     bool TryLoadAsConfigurationForTest(const QString &file);
+
+    /// Test-only entry point to the production
+    /// `SetConfigurationUiEnabled` slot so the column-management gate
+    /// (header drag + right-click menu) can be exercised without
+    /// opening a real streaming session.
+    void SetConfigurationUiEnabledForTest(bool enabled);
+
+    /// Test-only entry points to the production `SaveConfiguration` /
+    /// `LoadConfiguration` slots. Bypass the `QFileDialog` pop-up so
+    /// the filter-persistence round-trip can be exercised headlessly.
+    /// Both delegate to the same private helpers the dialog-driven
+    /// slots use, so they exercise the eager-mirror + load-rebuild
+    /// paths verbatim.
+    void SaveConfigurationToPathForTest(const QString &path);
+    void LoadConfigurationFromPathForTest(const QString &path);
+
+    /// Test-only flag: when true, `ShowDroppedFiltersDialog` records
+    /// the dropped count into `LastDroppedFilterCountForTest` instead
+    /// of popping a modal `QMessageBox` (which would block the test
+    /// thread under the offscreen QPA). Defaults to false; tests
+    /// flip it on before driving a load.
+    void SetSuppressDialogsForTest(bool suppress);
+
+    /// Number of saved filters dropped on the most recent
+    /// `LoadConfigurationFromPathForTest` call. Reset to 0 at the
+    /// start of each load.
+    [[nodiscard]] int LastDroppedFilterCountForTest() const;
 #endif
 
 protected:
@@ -207,6 +234,14 @@ private:
     /// bubbling) shifts indices between menu construction and trigger.
     [[nodiscard]] int FindColumnIndexByKeys(const std::vector<std::string> &keys) const;
 
+    /// Display label for column @p columnIndex in the View / Hide /
+    /// Show menus. Returns the column's `header` verbatim when it
+    /// uniquely identifies the column, or `header [keys]` when the
+    /// header collides with another column's header (Qt allows
+    /// duplicate headers; `keys` is the stable identifier). Empty
+    /// when @p columnIndex is out of range.
+    [[nodiscard]] QString ColumnMenuLabel(size_t columnIndex) const;
+
     /// Try to load @p file as a `LogConfiguration`; returns true on
     /// success.
     bool TryLoadAsConfiguration(const QString &file);
@@ -221,8 +256,49 @@ private:
     void StreamNextPendingFile();
 
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
+
+    /// Show a single warning dialog summarising filters that were
+    /// dropped on load. Built message is pre-rendered by the caller
+    /// (the structured `FilterValidationFailure` type is a `.cpp`-
+    /// local detail). Records @p droppedCount into the test-only
+    /// counter and skips the modal when
+    /// `mSuppressDialogsForTest` is set.
+    void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
+
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
     void UpdateFilters();
+
+    /// Snapshot the live `mFilters` map into the wire-format
+    /// `LogConfiguration::filters` vector so `Save` and the lib-side
+    /// `MoveColumn` filter-row remap operate on the current runtime
+    /// state. Cheap; called eagerly from every `mFilters` mutation
+    /// point. Order within the vector is unspecified (UUIDs are not
+    /// persisted; menu ordering is rebuilt from the vector on load).
+    void MirrorFiltersToConfiguration();
+
+    /// Path-based save / load helpers shared by the dialog-driven
+    /// `SaveConfiguration` / `LoadConfiguration` slots and the
+    /// `LOGAPP_BUILD_TESTING` test seams. `DoSaveConfiguration`
+    /// runs `MirrorFiltersToConfiguration` before delegating to the
+    /// manager so persisted filters reflect the live UI; throws on
+    /// I/O / serialisation failure (caller adapts to its own UX).
+    /// `DoLoadConfiguration` resets the model, drops stale runtime
+    /// filter state, validates each saved filter against the new
+    /// column layout, and surfaces any drops through
+    /// `ShowDroppedFiltersDialog`. Returns true on full success;
+    /// false (with the failure already surfaced) on parse error.
+    bool DoSaveConfiguration(const QString &path);
+    bool DoLoadConfiguration(const QString &path);
+
+    /// Drop runtime filter state, walk the freshly-loaded
+    /// `LogConfiguration::filters` vector, validate each entry
+    /// against the new column layout, and either revive the entry
+    /// via `AddLogFilter` (with a fresh UUID) or accumulate a
+    /// drop reason. Surfaces a single summary dialog if any
+    /// filters were dropped. Shared by the full
+    /// `DoLoadConfiguration` path and the speculative
+    /// `TryLoadAsConfiguration` (single-file open / drop) path.
+    void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
     /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
@@ -313,4 +389,13 @@ private:
     /// source-side move; the resets fire `sectionMoved` again, which
     /// we swallow.
     bool mApplyingSectionMove = false;
+
+#ifdef LOGAPP_BUILD_TESTING
+    /// When true, `ShowDroppedFiltersDialog` skips the modal
+    /// `QMessageBox::warning` and only updates
+    /// `mLastDroppedFilterCountForTest`. Tests flip this on so
+    /// `LoadConfigurationFromPathForTest` does not block.
+    bool mSuppressDialogsForTest = false;
+    int mLastDroppedFilterCountForTest = 0;
+#endif
 };
