@@ -5054,7 +5054,9 @@ private slots:
         const auto editorMax = editor->GetNumericRangeMax();
         QVERIFY(editorMin.has_value());
         QVERIFY(editorMax.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(editorMin.value(), 10.0);
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(editorMax.value(), 19.0);
 
         editor->close();
