@@ -1156,13 +1156,21 @@ void MainWindow::AddFilter(
             const loglib::LogConfiguration::Type columnType = columns[rowIndex].type;
             const loglib::LogConfiguration::LogFilter::Type filterType = resolvedFilter->type;
 
-            const bool typesMatch = (filterType == loglib::LogConfiguration::LogFilter::Type::Time &&
-                                     columnType == loglib::LogConfiguration::Type::Time) ||
-                                    (filterType == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                                     columnType == loglib::LogConfiguration::Type::Enumeration) ||
-                                    (filterType == loglib::LogConfiguration::LogFilter::Type::String &&
-                                     columnType != loglib::LogConfiguration::Type::Time &&
-                                     columnType != loglib::LogConfiguration::Type::Enumeration);
+            const bool isNumericColumn = columnType == loglib::LogConfiguration::Type::Integer ||
+                                         columnType == loglib::LogConfiguration::Type::Floating ||
+                                         columnType == loglib::LogConfiguration::Type::Number;
+            const bool typesMatch =
+                (filterType == loglib::LogConfiguration::LogFilter::Type::Time &&
+                 columnType == loglib::LogConfiguration::Type::Time) ||
+                (filterType == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
+                 columnType == loglib::LogConfiguration::Type::Enumeration) ||
+                (filterType == loglib::LogConfiguration::LogFilter::Type::Boolean &&
+                 columnType == loglib::LogConfiguration::Type::Boolean) ||
+                (filterType == loglib::LogConfiguration::LogFilter::Type::Number && isNumericColumn) ||
+                (filterType == loglib::LogConfiguration::LogFilter::Type::String &&
+                 columnType != loglib::LogConfiguration::Type::Time &&
+                 columnType != loglib::LogConfiguration::Type::Enumeration &&
+                 columnType != loglib::LogConfiguration::Type::Boolean && !isNumericColumn);
             if (!typesMatch)
             {
                 ClearFilter(filterId);
@@ -1194,6 +1202,10 @@ void MainWindow::AddFilter(
     connect(filterEditor, &FilterEditor::FilterSubmitted, this, &MainWindow::FilterSubmitted);
     connect(filterEditor, &FilterEditor::FilterTimeStampSubmitted, this, &MainWindow::FilterTimeStampSubmitted);
     connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
+    connect(
+        filterEditor, &FilterEditor::FilterNumericRangeSubmitted, this, &MainWindow::FilterNumericRangeSubmitted
+    );
+    connect(filterEditor, &FilterEditor::FilterBooleanSubmitted, this, &MainWindow::FilterBooleanSubmitted);
     if (resolvedFilter.has_value())
     {
         if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
@@ -1219,6 +1231,47 @@ void MainWindow::AddFilter(
                 values.append(QString::fromStdString(v));
             }
             filterEditor->Load(resolvedFilter->row, values);
+        }
+        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Number)
+        {
+            if (!resolvedFilter->filterMinValue.has_value() && !resolvedFilter->filterMaxValue.has_value())
+            {
+                statusBar()->showMessage(
+                    QString("Filter '%1' was dropped because its numeric range is missing").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                delete filterEditor;
+                return;
+            }
+            filterEditor->Load(resolvedFilter->row, resolvedFilter->filterMinValue, resolvedFilter->filterMaxValue);
+        }
+        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Boolean)
+        {
+            bool includeTrue = false;
+            bool includeFalse = false;
+            for (const std::string &v : resolvedFilter->filterValues)
+            {
+                if (v == "true")
+                {
+                    includeTrue = true;
+                }
+                else if (v == "false")
+                {
+                    includeFalse = true;
+                }
+            }
+            if (!includeTrue && !includeFalse)
+            {
+                statusBar()->showMessage(
+                    QString("Filter '%1' was dropped because no boolean side was selected").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                ClearFilter(filterId);
+                delete filterEditor;
+                return;
+            }
+            filterEditor->Load(resolvedFilter->row, includeTrue, includeFalse);
         }
         else
         {
@@ -1360,6 +1413,70 @@ void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QSt
     AddLogFilter(filterID, filter);
 }
 
+void MainWindow::FilterNumericRangeSubmitted(
+    const QString &filterID, int row, std::optional<double> minValue, std::optional<double> maxValue
+)
+{
+    // Reject an inverted range up front; the predicate would otherwise
+    // hide every row silently. Mirrors the time-range / regex probes.
+    if (minValue.has_value() && maxValue.has_value() && *minValue > *maxValue)
+    {
+        statusBar()->showMessage(
+            QString("Numeric-range filter rejected: min (%1) is greater than max (%2)").arg(*minValue).arg(*maxValue),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+    if (!minValue.has_value() && !maxValue.has_value())
+    {
+        statusBar()->showMessage(
+            QString("Numeric-range filter rejected: both bounds are unbounded"), STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+
+    ClearFilter(filterID);
+
+    loglib::LogConfiguration::LogFilter filter;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Number;
+    filter.row = row;
+    filter.filterMinValue = minValue;
+    filter.filterMaxValue = maxValue;
+
+    AddLogFilter(filterID, filter);
+}
+
+void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool includeTrue, bool includeFalse)
+{
+    if (!includeTrue && !includeFalse)
+    {
+        // Empty selection would hide every row.
+        statusBar()->showMessage(
+            QString("Boolean filter rejected: neither true nor false selected"), STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+
+    ClearFilter(filterID);
+
+    loglib::LogConfiguration::LogFilter filter;
+    filter.type = loglib::LogConfiguration::LogFilter::Type::Boolean;
+    filter.row = row;
+    if (includeTrue)
+    {
+        filter.filterValues.emplace_back("true");
+    }
+    if (includeFalse)
+    {
+        filter.filterValues.emplace_back("false");
+    }
+
+    AddLogFilter(filterID, filter);
+}
+
 void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter)
 {
     mFilters[id.toStdString()] = filter;
@@ -1375,6 +1492,26 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         );
         break;
     case loglib::LogConfiguration::LogFilter::Type::Enumeration:
+    {
+        QStringList values;
+        values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
+        for (const std::string &v : filter.filterValues)
+        {
+            values.append(QString::fromStdString(v));
+        }
+        title = values.join(QStringLiteral(", "));
+        break;
+    }
+    case loglib::LogConfiguration::LogFilter::Type::Number:
+    {
+        const QString minStr =
+            filter.filterMinValue.has_value() ? QString::number(*filter.filterMinValue) : QStringLiteral("-inf");
+        const QString maxStr =
+            filter.filterMaxValue.has_value() ? QString::number(*filter.filterMaxValue) : QStringLiteral("+inf");
+        title = QStringLiteral("[%1, %2]").arg(minStr, maxStr);
+        break;
+    }
+    case loglib::LogConfiguration::LogFilter::Type::Boolean:
     {
         QStringList values;
         values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
@@ -1575,21 +1712,27 @@ void MainWindow::UpdateFilters()
 {
     // Sort filters cheapest-first so `std::ranges::all_of` short-
     // circuits on the cheapest rejecting test:
-    //   1. EnumRowPredicate          - GetEnumValueId + bitset test
-    //   2. TimeRangeRowPredicate     - GetValue + int compare
-    //   3. CallbackStringRowPredicate - regex / UTF-8 walk
+    //   1. BoolRowPredicate          - GetValue + alternative test
+    //   2. EnumRowPredicate          - GetEnumValueId + bitset test
+    //   3. TimeRangeRowPredicate     - GetValue + int compare
+    //   4. NumericRangeRowPredicate  - GetValue + double compare
+    //   5. CallbackStringRowPredicate - regex / UTF-8 walk
     // Tie-break on column index for deterministic, test-friendly order.
     using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
     auto costOf = [](LogFilterType t) -> int {
         switch (t)
         {
-        case LogFilterType::Enumeration:
+        case LogFilterType::Boolean:
             return 0;
-        case LogFilterType::Time:
+        case LogFilterType::Enumeration:
             return 1;
+        case LogFilterType::Time:
+            return 2;
+        case LogFilterType::Number:
+            return 3;
         case LogFilterType::String:
         default:
-            return 2;
+            return 4;
         }
     };
     std::vector<const loglib::LogConfiguration::LogFilter *> ordered;
@@ -1645,6 +1788,40 @@ void MainWindow::UpdateFilters()
                 column,
                 std::span<const std::string_view>(selectedViews),
                 dictionary
+            );
+            break;
+        }
+        case LogFilterType::Number:
+            // `FilterNumericRangeSubmitted` rejects an all-unbounded
+            // filter and an inverted range before it ever reaches
+            // `mFilters`, so at least one bound is engaged here.
+            rules.emplace_back(
+                std::in_place_type<loglib::NumericRangeRowPredicate>,
+                column,
+                filter.filterMinValue,
+                filter.filterMaxValue
+            );
+            break;
+        case LogFilterType::Boolean:
+        {
+            // `filter.filterValues` is a subset of {"true", "false"};
+            // empty rejects every row (the predicate handles that),
+            // but `FilterBooleanSubmitted` rejects it up front.
+            bool includeTrue = false;
+            bool includeFalse = false;
+            for (const std::string &v : filter.filterValues)
+            {
+                if (v == "true")
+                {
+                    includeTrue = true;
+                }
+                else if (v == "false")
+                {
+                    includeFalse = true;
+                }
+            }
+            rules.emplace_back(
+                std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse
             );
             break;
         }

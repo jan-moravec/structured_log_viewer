@@ -21,8 +21,14 @@ struct LogConfiguration
     /// (`"unknown"`, `"any"`, ...); see
     /// `internal/log_configuration_glaze_meta.hpp`.
     ///   - `Unknown`     - new keys; auto-detector candidate.
-    ///   - `Any`         - mixed / unclassifiable.
-    ///   - `String`      - too varied to enumerate.
+    ///   - `Any`         - explicit user opt-out from auto-detection;
+    ///                     also the auto-detector bail when no strings,
+    ///                     no numerics, and no bools were observed (or
+    ///                     bools were observed alongside numerics).
+    ///                     Sorts/filters as a string.
+    ///   - `String`      - inferred string column (too varied to
+    ///                     enumerate).
+    ///   - `Boolean`     - JSON `true`/`false` slots; false < true.
     ///   - `Integer`     - only Int64/UInt64 observed.
     ///   - `Floating`    - only Double observed.
     ///   - `Number`      - mix of integer and floating.
@@ -33,6 +39,7 @@ struct LogConfiguration
         Unknown,
         Any,
         String,
+        Boolean,
         Integer,
         Floating,
         Number,
@@ -60,7 +67,16 @@ struct LogConfiguration
             Time,
             /// Multi-select over an enum column. Persisted as strings,
             /// resolved to an id bitset at rule construction.
-            Enumeration
+            Enumeration,
+            /// Numeric range over `Integer`/`Floating`/`Number` columns.
+            /// `filterMinValue` / `filterMaxValue` carry the inclusive
+            /// bounds; either may be `nullopt` to leave that side
+            /// unbounded.
+            Number,
+            /// True/false multi-select for `Type::Boolean` columns.
+            /// `filterValues` carries the picked sides as a subset of
+            /// {"true", "false"}; empty rejects every row.
+            Boolean
         };
 
         enum class Match
@@ -77,7 +93,14 @@ struct LogConfiguration
         std::optional<Match> matchType;
         std::optional<int64_t> filterBegin;
         std::optional<int64_t> filterEnd;
-        /// Selected values for `Type::Enumeration`. Empty otherwise.
+        /// Inclusive lower bound for `Type::Number`. `nullopt` means
+        /// unbounded (-inf).
+        std::optional<double> filterMinValue;
+        /// Inclusive upper bound for `Type::Number`. `nullopt` means
+        /// unbounded (+inf).
+        std::optional<double> filterMaxValue;
+        /// Selected values for `Type::Enumeration` and `Type::Boolean`.
+        /// Empty otherwise.
         std::vector<std::string> filterValues;
     };
 

@@ -49,13 +49,30 @@ constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 20;
 /// stderr telemetry line; below it the demote cost is uninteresting.
 constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
 
-/// Picks a terminal numeric type from observed integer/floating tag counts.
+/// Picks a terminal type from observed numeric / bool tag counts.
+///
+/// Bools-only columns land on `Type::Boolean`; numeric-only columns
+/// pick `Integer` / `Floating` / `Number` as before; mixed bool +
+/// numeric falls through to `Type::Any` because no single specialised
+/// widget covers that shape (preserves the "saw something
+/// unclassifiable" semantic of `Any`). Empty observation -> `Type::Any`
+/// (the historical bail).
 LogConfiguration::Type RouteNoStringBail(
-    size_t intObservations, size_t uintObservations, size_t doubleObservations
+    size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
 ) noexcept
 {
     const bool sawIntegral = intObservations > 0 || uintObservations > 0;
     const bool sawDouble = doubleObservations > 0;
+    const bool sawBool = boolObservations > 0;
+    const bool sawNumeric = sawIntegral || sawDouble;
+    if (sawBool && sawNumeric)
+    {
+        return LogConfiguration::Type::Any;
+    }
+    if (sawBool)
+    {
+        return LogConfiguration::Type::Boolean;
+    }
     if (sawIntegral && sawDouble)
     {
         return LogConfiguration::Type::Number;
@@ -1013,6 +1030,10 @@ void LogTable::RunEnumPassForAppendBatch(
                 {
                     ++tracker.doubleObservations;
                 }
+                else if (slot->tag == internal::CompactTag::Bool)
+                {
+                    ++tracker.boolObservations;
+                }
             }
             if (tracker.killed)
             {
@@ -1063,7 +1084,12 @@ void LogTable::RunEnumPassForAppendBatch(
             {
                 mConfiguration.SetColumnType(
                     columnIndex,
-                    RouteNoStringBail(tracker.intObservations, tracker.uintObservations, tracker.doubleObservations)
+                    RouteNoStringBail(
+                        tracker.intObservations,
+                        tracker.uintObservations,
+                        tracker.doubleObservations,
+                        tracker.boolObservations
+                    )
                 );
                 mEnumTrackers.erase(trackerIt);
             }
@@ -1116,7 +1142,12 @@ bool LogTable::FinalizeAutoDetection()
         {
             mConfiguration.SetColumnType(
                 columnIndex,
-                RouteNoStringBail(tracker.intObservations, tracker.uintObservations, tracker.doubleObservations)
+                RouteNoStringBail(
+                    tracker.intObservations,
+                    tracker.uintObservations,
+                    tracker.doubleObservations,
+                    tracker.boolObservations
+                )
             );
             continue;
         }

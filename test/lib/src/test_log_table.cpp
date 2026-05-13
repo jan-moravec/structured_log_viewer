@@ -2262,12 +2262,13 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- no-string bail with no observed values stays Type::Any",
-    "[log_table][append_batch][enum][routing][any]"
+    "LogTable -- bool-only column auto-detects to Type::Boolean",
+    "[log_table][append_batch][enum][routing][boolean]"
 )
 {
-    // Bool / monostate / DictRef-only columns: no string or numeric
-    // observations, so the bail falls through to `Type::Any`.
+    // Bool-only columns: no string and no numeric observations, so the
+    // bail picks the dedicated `Type::Boolean` branch instead of the
+    // historical `Type::Any` fallback.
     const TestLogFile testFile("enum_no_string_bool.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2283,6 +2284,42 @@ TEST_CASE(
     for (size_t i = 0; i < 8; ++i)
     {
         batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"flag", LogValue{i % 2 == 0}}}));
+    }
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Boolean);
+}
+
+TEST_CASE(
+    "LogTable -- bool mixed with numerics still routes to Type::Any",
+    "[log_table][append_batch][enum][routing][any]"
+)
+{
+    // Mixed bool + integer: no single specialised widget covers the
+    // shape, so the no-string bail falls through to `Type::Any`.
+    const TestLogFile testFile("enum_no_string_bool_mixed.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"flag"};
+    for (size_t i = 0; i < 8; ++i)
+    {
+        if (i % 2 == 0)
+        {
+            batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"flag", LogValue{i % 4 == 0}}}));
+        }
+        else
+        {
+            batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"flag", LogValue{static_cast<int64_t>(i)}}}));
+        }
     }
     table.AppendBatch(std::move(batch));
 

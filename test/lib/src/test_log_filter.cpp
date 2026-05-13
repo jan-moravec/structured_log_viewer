@@ -17,7 +17,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -537,4 +539,184 @@ TEST_CASE("CallbackStringRowPredicate formats non-string slots via the column pr
     INFO("formatted=" << captured);
     CHECK(predicate.MatchesRow(table, 0));
     CHECK_FALSE(captured.empty());
+}
+
+namespace
+{
+
+/// Single-column table of arbitrary type seeded with one slot per row.
+/// Mirrors the helper in `test_log_compare.cpp` but lives here so the
+/// numeric / boolean predicate tests can build mixed-type tables
+/// (`int64_t`, `uint64_t`, `double`, `bool`, `monostate`) without
+/// pulling in the bigger compare helpers.
+LogTable BuildSingleColumnTable(
+    const TestLogFile &testFile,
+    const std::string &columnKey,
+    LogConfiguration::Type type,
+    const std::vector<LogValue> &perRowValues
+)
+{
+    auto source = testFile.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = columnKey, .keys = {columnKey}, .printFormat = "{}", .type = type, .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.lines.reserve(perRowValues.size());
+    for (const auto &v : perRowValues)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{columnKey, v}}));
+    }
+    if (!perRowValues.empty())
+    {
+        batch.newKeys.emplace_back(columnKey);
+    }
+    table.AppendBatch(std::move(batch));
+    return table;
+}
+
+} // namespace
+
+TEST_CASE("NumericRangeRowPredicate accepts inclusive bounded ranges", "[log_filter][numeric_range]")
+{
+    const TestLogFile fixture("log_filter_numeric_bounded.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {
+        int64_t{-5}, int64_t{0}, int64_t{5}, int64_t{10}, int64_t{15}, std::monostate{}
+    };
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+
+    const NumericRangeRowPredicate predicate(0, 0.0, 10.0);
+    CHECK_FALSE(predicate.MatchesRow(table, 0)); // -5 < 0
+    CHECK(predicate.MatchesRow(table, 1));       // 0
+    CHECK(predicate.MatchesRow(table, 2));       // 5
+    CHECK(predicate.MatchesRow(table, 3));       // 10
+    CHECK_FALSE(predicate.MatchesRow(table, 4)); // 15 > 10
+    CHECK_FALSE(predicate.MatchesRow(table, 5)); // monostate rejects
+}
+
+TEST_CASE("NumericRangeRowPredicate handles unbounded sides", "[log_filter][numeric_range]")
+{
+    const TestLogFile fixture("log_filter_numeric_unbounded.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {int64_t{-100}, int64_t{0}, int64_t{100}, int64_t{1000}};
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+
+    SECTION("unbounded min keeps everything <= max")
+    {
+        const NumericRangeRowPredicate predicate(0, std::nullopt, 100.0);
+        CHECK(predicate.MatchesRow(table, 0));
+        CHECK(predicate.MatchesRow(table, 1));
+        CHECK(predicate.MatchesRow(table, 2));
+        CHECK_FALSE(predicate.MatchesRow(table, 3));
+    }
+
+    SECTION("unbounded max keeps everything >= min")
+    {
+        const NumericRangeRowPredicate predicate(0, 0.0, std::nullopt);
+        CHECK_FALSE(predicate.MatchesRow(table, 0));
+        CHECK(predicate.MatchesRow(table, 1));
+        CHECK(predicate.MatchesRow(table, 2));
+        CHECK(predicate.MatchesRow(table, 3));
+    }
+
+    SECTION("both sides unbounded keeps every numeric slot")
+    {
+        const NumericRangeRowPredicate predicate(0, std::nullopt, std::nullopt);
+        CHECK(predicate.MatchesRow(table, 0));
+        CHECK(predicate.MatchesRow(table, 1));
+        CHECK(predicate.MatchesRow(table, 2));
+        CHECK(predicate.MatchesRow(table, 3));
+    }
+}
+
+TEST_CASE("NumericRangeRowPredicate matches int / uint / double slots", "[log_filter][numeric_range]")
+{
+    const TestLogFile fixture("log_filter_numeric_mixed.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {
+        int64_t{1}, uint64_t{2}, 3.5, std::numeric_limits<double>::quiet_NaN(), std::string("not-a-number")
+    };
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Number, values);
+
+    const NumericRangeRowPredicate predicate(0, 1.0, 4.0);
+    CHECK(predicate.MatchesRow(table, 0));       // int 1
+    CHECK(predicate.MatchesRow(table, 1));       // uint 2
+    CHECK(predicate.MatchesRow(table, 2));       // double 3.5
+    CHECK_FALSE(predicate.MatchesRow(table, 3)); // NaN slot rejects
+    CHECK_FALSE(predicate.MatchesRow(table, 4)); // wrong-type slot rejects
+}
+
+TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[log_filter][numeric_range]")
+{
+    const TestLogFile fixture("log_filter_numeric_nan_bounds.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {int64_t{-50}, int64_t{0}, int64_t{50}};
+    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const NumericRangeRowPredicate predicate(0, nan, nan);
+    // NaN bounds collapse to "unbounded", so every numeric row passes.
+    CHECK(predicate.MatchesRow(table, 0));
+    CHECK(predicate.MatchesRow(table, 1));
+    CHECK(predicate.MatchesRow(table, 2));
+}
+
+TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
+{
+    const TestLogFile fixture("log_filter_boolean.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {true, false, true, false, std::monostate{}};
+    const LogTable table = BuildSingleColumnTable(fixture, "flag", LogConfiguration::Type::Boolean, values);
+
+    SECTION("only true")
+    {
+        const BoolRowPredicate predicate(0, /*includeTrue=*/true, /*includeFalse=*/false);
+        CHECK(predicate.MatchesRow(table, 0));
+        CHECK_FALSE(predicate.MatchesRow(table, 1));
+        CHECK(predicate.MatchesRow(table, 2));
+        CHECK_FALSE(predicate.MatchesRow(table, 3));
+        CHECK_FALSE(predicate.MatchesRow(table, 4));
+    }
+
+    SECTION("only false")
+    {
+        const BoolRowPredicate predicate(0, /*includeTrue=*/false, /*includeFalse=*/true);
+        CHECK_FALSE(predicate.MatchesRow(table, 0));
+        CHECK(predicate.MatchesRow(table, 1));
+        CHECK_FALSE(predicate.MatchesRow(table, 2));
+        CHECK(predicate.MatchesRow(table, 3));
+        CHECK_FALSE(predicate.MatchesRow(table, 4));
+    }
+
+    SECTION("both selected accepts every bool")
+    {
+        const BoolRowPredicate predicate(0, /*includeTrue=*/true, /*includeFalse=*/true);
+        CHECK(predicate.MatchesRow(table, 0));
+        CHECK(predicate.MatchesRow(table, 1));
+        CHECK(predicate.MatchesRow(table, 2));
+        CHECK(predicate.MatchesRow(table, 3));
+        CHECK_FALSE(predicate.MatchesRow(table, 4)); // monostate still rejects
+    }
+
+    SECTION("neither selected rejects every row")
+    {
+        const BoolRowPredicate predicate(0, /*includeTrue=*/false, /*includeFalse=*/false);
+        for (size_t row = 0; row < 5; ++row)
+        {
+            CHECK_FALSE(predicate.MatchesRow(table, row));
+        }
+    }
 }

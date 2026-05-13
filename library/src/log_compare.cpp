@@ -225,6 +225,20 @@ int CompareTyped(const LogValue &lhs, const LogValue &rhs, Extract extract, Comp
     return 0;
 }
 
+int CompareBool(const LogValue &lhs, const LogValue &rhs)
+{
+    auto toBool = [](const LogValue &v) -> std::optional<bool> {
+        if (const auto *b = std::get_if<bool>(&v); b != nullptr)
+        {
+            return *b;
+        }
+        return std::nullopt;
+    };
+    // `false < true` follows `int(false) < int(true)`; non-bool slots
+    // join the tail bucket via `CompareTyped`.
+    return CompareTyped(lhs, rhs, toBool, [](bool a, bool b) { return ThreeWay(a, b); });
+}
+
 int CompareInteger(const LogValue &lhs, const LogValue &rhs)
 {
     auto toInt = [](const LogValue &v) -> std::optional<int64_t> {
@@ -370,6 +384,8 @@ int CompareRows(
 
     switch (type)
     {
+    case LogConfiguration::Type::Boolean:
+        return CompareBool(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
     case LogConfiguration::Type::Integer:
         return CompareInteger(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
     case LogConfiguration::Type::Floating:

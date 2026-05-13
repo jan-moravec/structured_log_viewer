@@ -200,6 +200,7 @@ private:
         size_t intObservations = 0;
         size_t uintObservations = 0;
         size_t doubleObservations = 0;
+        size_t boolObservations = 0;
         bool killed = false;
 
         EnumCandidateTracker() = default;

@@ -113,6 +113,13 @@ private slots:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
+    /// Slot for `FilterEditor::FilterNumericRangeSubmitted`. Either bound
+    /// may be `std::nullopt` to leave that side unbounded.
+    void FilterNumericRangeSubmitted(
+        const QString &filterID, int row, std::optional<double> minValue, std::optional<double> maxValue
+    );
+    /// Slot for `FilterEditor::FilterBooleanSubmitted`.
+    void FilterBooleanSubmitted(const QString &filterID, int row, bool includeTrue, bool includeFalse);
 
     /// Pause / resume on the bridging sink. Bound to `actionPauseStream`.
     void TogglePauseStream(bool paused);

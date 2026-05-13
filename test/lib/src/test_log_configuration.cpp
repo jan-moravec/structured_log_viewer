@@ -448,6 +448,7 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
         Type::Unknown,
         Type::Any,
         Type::String,
+        Type::Boolean,
         Type::Integer,
         Type::Floating,
         Type::Number,
@@ -473,6 +474,7 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
 
     CHECK(json.contains("\"unknown\""));
     CHECK(json.contains("\"any\""));
+    CHECK(json.contains("\"boolean\""));
     CHECK(json.contains("\"integer\""));
     CHECK(json.contains("\"floating\""));
     CHECK_FALSE(json.contains("\"double\""));
@@ -511,6 +513,86 @@ TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_
     CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Enumeration);
     CHECK(loaded.filters[0].row == 2);
     CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"info", "warn", "error"});
+}
+
+TEST_CASE(
+    "Round-trip LogFilter with Type::Number and bounded / unbounded range",
+    "[log_configuration][number]"
+)
+{
+    LogConfiguration original;
+
+    LogConfiguration::LogFilter bounded;
+    bounded.type = LogConfiguration::LogFilter::Type::Number;
+    bounded.row = 1;
+    bounded.filterMinValue = -2.5;
+    bounded.filterMaxValue = 17.25;
+    original.filters.push_back(bounded);
+
+    LogConfiguration::LogFilter unboundedMin;
+    unboundedMin.type = LogConfiguration::LogFilter::Type::Number;
+    unboundedMin.row = 2;
+    unboundedMin.filterMaxValue = 100.0;
+    original.filters.push_back(unboundedMin);
+
+    LogConfiguration::LogFilter unboundedMax;
+    unboundedMax.type = LogConfiguration::LogFilter::Type::Number;
+    unboundedMax.row = 3;
+    unboundedMax.filterMinValue = 0.0;
+    original.filters.push_back(unboundedMax);
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"number\""));
+    CHECK(json.contains("\"filterMinValue\""));
+    CHECK(json.contains("\"filterMaxValue\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.filters.size() == 3);
+    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Number);
+    REQUIRE(loaded.filters[0].filterMinValue.has_value());
+    REQUIRE(loaded.filters[0].filterMaxValue.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(-2.5));
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(17.25));
+
+    CHECK_FALSE(loaded.filters[1].filterMinValue.has_value());
+    REQUIRE(loaded.filters[1].filterMaxValue.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*loaded.filters[1].filterMaxValue == Catch::Approx(100.0));
+
+    REQUIRE(loaded.filters[2].filterMinValue.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*loaded.filters[2].filterMinValue == Catch::Approx(0.0));
+    CHECK_FALSE(loaded.filters[2].filterMaxValue.has_value());
+}
+
+TEST_CASE("Round-trip LogFilter with Type::Boolean", "[log_configuration][boolean]")
+{
+    LogConfiguration original;
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::Boolean;
+    filter.row = 0;
+    filter.filterValues = {"true"};
+    original.filters.push_back(filter);
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"boolean\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.filters.size() == 1);
+    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Boolean);
+    CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"true"});
 }
 
 TEST_CASE(
@@ -592,4 +674,46 @@ TEST_CASE(
     CHECK_FALSE(roundTripJson.contains("\"Unknown\""));
     CHECK_FALSE(roundTripJson.contains("\"Enumeration\""));
     CHECK_FALSE(roundTripJson.contains("\"RegularExpression\""));
+}
+
+TEST_CASE(
+    "LogFilter::Type::Number and Type::Boolean load via lowerCamelCase JSON keys",
+    "[log_configuration][wire_format_compat][number][boolean]"
+)
+{
+    // The new filter variants use the same lowerCamelCase wire format
+    // as the older variants. Hand-written JSON exercises the names so
+    // future renames stay backward-compatible.
+    constexpr std::string_view JSON = R"({
+        "columns": [
+            {"header":"value","keys":["value"],"printFormat":"{}","type":"number","parseFormats":[]},
+            {"header":"flag","keys":["flag"],"printFormat":"{}","type":"boolean","parseFormats":[]}
+        ],
+        "filters": [
+            {"type":"number","row":0,"filterMinValue":1.5,"filterMaxValue":5.0,"filterValues":[]},
+            {"type":"boolean","row":1,"filterValues":["true","false"]}
+        ]
+    })";
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, JSON);
+    REQUIRE_FALSE(readError);
+
+    using Type = LogConfiguration::Type;
+    REQUIRE(loaded.columns.size() == 2);
+    CHECK(loaded.columns[0].type == Type::Number);
+    CHECK(loaded.columns[1].type == Type::Boolean);
+
+    using FilterType = LogConfiguration::LogFilter::Type;
+    REQUIRE(loaded.filters.size() == 2);
+    CHECK(loaded.filters[0].type == FilterType::Number);
+    REQUIRE(loaded.filters[0].filterMinValue.has_value());
+    REQUIRE(loaded.filters[0].filterMaxValue.has_value());
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(1.5));
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+    CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(5.0));
+
+    CHECK(loaded.filters[1].type == FilterType::Boolean);
+    CHECK(loaded.filters[1].filterValues == std::vector<std::string>{"true", "false"});
 }

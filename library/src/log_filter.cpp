@@ -10,12 +10,15 @@
 #include <oneapi/tbb/parallel_for.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -170,6 +173,88 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
         },
         value
     );
+}
+
+NumericRangeRowPredicate::NumericRangeRowPredicate(
+    size_t columnIndex, std::optional<double> minValue, std::optional<double> maxValue
+)
+    : mColumnIndex(columnIndex), mMin(minValue), mMax(maxValue)
+{
+    // `NaN` bounds collapse to "unbounded on that side" so callers can
+    // pass a parsed-but-malformed UI input without silently producing
+    // an always-reject filter. Mirrors the IEEE-754 ordering: nothing
+    // compares either side of NaN, so a real NaN bound rejects every
+    // row -- almost certainly not what the user meant.
+    if (mMin.has_value() && std::isnan(*mMin))
+    {
+        mMin.reset();
+    }
+    if (mMax.has_value() && std::isnan(*mMax))
+    {
+        mMax.reset();
+    }
+}
+
+bool NumericRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
+{
+    const LogValue value = table.GetValue(row, mColumnIndex);
+    return std::visit(
+        [this](const auto &alt) -> bool {
+            using T = std::decay_t<decltype(alt)>;
+            // MSVC warns C4702 if an `if constexpr` branch returns early
+            // because the trailing common code becomes unreachable for
+            // that instantiation. Collect into an optional and exit
+            // once after the `if constexpr` chain instead.
+            std::optional<double> asDouble;
+            if constexpr (std::is_same_v<T, double>)
+            {
+                if (!std::isnan(alt))
+                {
+                    asDouble = alt;
+                }
+            }
+            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)
+            {
+                // Above 2^53 the cast loses precision; documented in
+                // the header. Tests cover the small/medium-range cases.
+                asDouble = static_cast<double>(alt);
+            }
+            if (!asDouble.has_value())
+            {
+                return false;
+            }
+            const double numeric = *asDouble;
+            if (mMin.has_value() && numeric < *mMin)
+            {
+                return false;
+            }
+            if (mMax.has_value() && numeric > *mMax)
+            {
+                return false;
+            }
+            return true;
+        },
+        value
+    );
+}
+
+BoolRowPredicate::BoolRowPredicate(size_t columnIndex, bool includeTrue, bool includeFalse)
+    : mColumnIndex(columnIndex), mIncludeTrue(includeTrue), mIncludeFalse(includeFalse)
+{
+}
+
+bool BoolRowPredicate::MatchesRow(const LogTable &table, size_t row) const
+{
+    if (!mIncludeTrue && !mIncludeFalse)
+    {
+        return false;
+    }
+    const LogValue value = table.GetValue(row, mColumnIndex);
+    if (const auto *b = std::get_if<bool>(&value); b != nullptr)
+    {
+        return *b ? mIncludeTrue : mIncludeFalse;
+    }
+    return false;
 }
 
 CallbackStringRowPredicate::CallbackStringRowPredicate(size_t columnIndex, MatchFn match)

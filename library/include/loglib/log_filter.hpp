@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -107,6 +108,79 @@ private:
     int64_t mEnd = 0;
 };
 
+/// Inclusive numeric-range predicate over `int64_t`, `uint64_t`, and
+/// `double` slots. Either bound may be `std::nullopt` to leave that
+/// side unbounded; non-numeric slots reject.
+///
+/// Compare type is `double` for unification. Above 2^53 the cast from
+/// 64-bit integers loses precision, which is acceptable for the
+/// range filter (callers wanting bit-exact integer boundaries can use
+/// `TimeRangeRowPredicate`, which is int64-native).
+/// `NaN` slots reject; a `NaN` bound is treated as unbounded.
+class NumericRangeRowPredicate
+{
+public:
+    NumericRangeRowPredicate(size_t columnIndex, std::optional<double> minValue, std::optional<double> maxValue);
+
+    NumericRangeRowPredicate(const NumericRangeRowPredicate &) = default;
+    NumericRangeRowPredicate &operator=(const NumericRangeRowPredicate &) = default;
+    NumericRangeRowPredicate(NumericRangeRowPredicate &&) noexcept = default;
+    NumericRangeRowPredicate &operator=(NumericRangeRowPredicate &&) noexcept = default;
+    ~NumericRangeRowPredicate() = default;
+
+    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
+
+    /// Column index this predicate targets, in `LogTable` coords.
+    [[nodiscard]] size_t ColumnIndex() const noexcept
+    {
+        return mColumnIndex;
+    }
+
+private:
+    size_t mColumnIndex = 0;
+    std::optional<double> mMin;
+    std::optional<double> mMax;
+};
+
+/// Two-state predicate for `Type::Boolean` columns. `includeTrue` /
+/// `includeFalse` carry the picked sides; if neither is set the
+/// predicate rejects every row (mirrors the empty-`EnumRowPredicate`
+/// behaviour). Non-bool slots also reject.
+class BoolRowPredicate
+{
+public:
+    BoolRowPredicate(size_t columnIndex, bool includeTrue, bool includeFalse);
+
+    BoolRowPredicate(const BoolRowPredicate &) = default;
+    BoolRowPredicate &operator=(const BoolRowPredicate &) = default;
+    BoolRowPredicate(BoolRowPredicate &&) noexcept = default;
+    BoolRowPredicate &operator=(BoolRowPredicate &&) noexcept = default;
+    ~BoolRowPredicate() = default;
+
+    [[nodiscard]] bool MatchesRow(const LogTable &table, size_t row) const;
+
+    /// Column index this predicate targets, in `LogTable` coords.
+    [[nodiscard]] size_t ColumnIndex() const noexcept
+    {
+        return mColumnIndex;
+    }
+
+    [[nodiscard]] bool IncludeTrue() const noexcept
+    {
+        return mIncludeTrue;
+    }
+
+    [[nodiscard]] bool IncludeFalse() const noexcept
+    {
+        return mIncludeFalse;
+    }
+
+private:
+    size_t mColumnIndex = 0;
+    bool mIncludeTrue = false;
+    bool mIncludeFalse = false;
+};
+
 /// String predicate that defers matching to a caller-supplied
 /// callback. Keeps Qt-flavoured regex / wildcard semantics in the GUI
 /// without pulling Qt into the lib. The caller owns callback
@@ -140,7 +214,12 @@ private:
 
 /// Closed-set union of concrete row predicates. Stored by value, so
 /// the per-row hot path pays no heap allocation and no virtual dispatch.
-using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, CallbackStringRowPredicate>;
+using RowPredicate = std::variant<
+    EnumRowPredicate,
+    TimeRangeRowPredicate,
+    NumericRangeRowPredicate,
+    BoolRowPredicate,
+    CallbackStringRowPredicate>;
 
 /// Visit-dispatch helper. Resolves to the concrete `MatchesRow` at
 /// compile time.
@@ -164,11 +243,12 @@ using RowPredicate = std::variant<EnumRowPredicate, TimeRangeRowPredicate, Callb
 /// thread-local bucket via `tbb::parallel_for`; buckets are coalesced
 /// and sorted on the caller thread before return. Predicate
 /// `MatchesRow` implementations must be thread-safe read-only against
-/// @p table -- the three predicates in this file qualify
+/// @p table -- every predicate in this file qualifies
 /// (`CallbackStringRowPredicate` uses a `thread_local` buffer,
 /// `EnumRowPredicate` reads an immutable bitset snapshot,
-/// `TimeRangeRowPredicate` is stateless). Lives in `loglib` so
-/// callers don't need a TBB include.
+/// `TimeRangeRowPredicate` / `NumericRangeRowPredicate` /
+/// `BoolRowPredicate` are stateless). Lives in `loglib` so callers
+/// don't need a TBB include.
 [[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
 
 } // namespace loglib
