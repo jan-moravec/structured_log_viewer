@@ -874,7 +874,10 @@ TEST_CASE(
     }
 }
 
-TEST_CASE("RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic", "[LogConfigurationManager][move_column]")
+TEST_CASE(
+    "RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic",
+    "[LogConfigurationManager][move_column]"
+)
 {
     // The app uses this static helper to remap its runtime filter
     // map; keep it in lockstep with `MoveColumn`'s rotation.
@@ -964,9 +967,7 @@ TEST_CASE(
     CHECK(manager.Configuration().filters[1].filterString == std::string{"y"});
 }
 
-TEST_CASE(
-    "Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]"
-)
+TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]")
 {
     // A malformed file must not corrupt the previously loaded
     // configuration. Glaze writes member-by-member, so a direct read

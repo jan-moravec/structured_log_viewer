@@ -1139,8 +1139,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     // row into view but leaves the user with no idea what matched
     // (zero-width section). Source of truth is `Column::visible`.
     // No-op when `mLogModel` is null (tests without a config).
-    const auto *columnsForVisibility =
-        mLogModel != nullptr ? &mLogModel->Configuration().columns : nullptr;
+    const auto *columnsForVisibility = mLogModel != nullptr ? &mLogModel->Configuration().columns : nullptr;
     auto isColumnHidden = [columnsForVisibility](int column) {
         if (columnsForVisibility == nullptr)
         {

@@ -212,8 +212,8 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         };
     }
 
-    const bool isNumericColumn = column.type == ColumnType::Integer || column.type == ColumnType::Floating ||
-                                 column.type == ColumnType::Number;
+    const bool isNumericColumn =
+        column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number;
     const bool typesMatch =
         (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
         (filter.type == LogFilter::Type::Enumeration && column.type == ColumnType::Enumeration) ||
@@ -242,9 +242,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         if (!filter.filterMinValue.has_value() && !filter.filterMaxValue.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingNumericRange,
-                .row = filter.row,
-                .columnHeader = column.header
+                .reason = FilterValidationReason::MissingNumericRange, .row = filter.row, .columnHeader = column.header
             };
         }
         break;
@@ -265,9 +263,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         if (!filter.filterString.has_value() || !filter.matchType.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingStringMatch,
-                .row = filter.row,
-                .columnHeader = column.header
+                .reason = FilterValidationReason::MissingStringMatch, .row = filter.row, .columnHeader = column.header
             };
         }
         break;
@@ -351,12 +347,7 @@ MainWindow::MainWindow(QWidget *parent)
     mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     mTableView->horizontalHeader()->setSectionsMovable(true);
     mTableView->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(
-        mTableView->horizontalHeader(),
-        &QHeaderView::sectionMoved,
-        this,
-        &MainWindow::OnHeaderSectionMoved
-    );
+    connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
     connect(
         mTableView->horizontalHeader(),
         &QHeaderView::customContextMenuRequested,
@@ -1487,9 +1478,8 @@ void MainWindow::RebuildFiltersFromConfiguration()
     if (!dropped.empty())
     {
         constexpr size_t MAX_SHOWN = 20;
-        QString message =
-            QString("%1 saved filter(s) were dropped because they no longer fit the column layout:\n\n")
-                .arg(dropped.size());
+        QString message = QString("%1 saved filter(s) were dropped because they no longer fit the column layout:\n\n")
+                              .arg(dropped.size());
         const size_t shown = std::min(dropped.size(), MAX_SHOWN);
         for (size_t i = 0; i < shown; ++i)
         {
@@ -1497,10 +1487,9 @@ void MainWindow::RebuildFiltersFromConfiguration()
             // column may legitimately have an empty `header`, so an
             // empty-check would mis-render type mismatches against it
             // as "out of range".
-            const QString header =
-                (dropped[i].reason == FilterValidationReason::OutOfRangeRow)
-                    ? QStringLiteral("(out-of-range column)")
-                    : QString::fromStdString(dropped[i].columnHeader);
+            const QString header = (dropped[i].reason == FilterValidationReason::OutOfRangeRow)
+                                       ? QStringLiteral("(out-of-range column)")
+                                       : QString::fromStdString(dropped[i].columnHeader);
             message += QString("- column '%1' (row %2): %3\n")
                            .arg(header)
                            .arg(dropped[i].row)
@@ -2373,11 +2362,8 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
         qWarning() << "MainWindow::OnHeaderSectionMoved: header was not identity-mapped"
                    << "(logicalIndex=" << logicalIndex << ", oldVisualIndex=" << oldVisualIndex
                    << ", newVisualIndex=" << newVisualIndex
-                   << ", logical->visual=" << permutation.join(QLatin1Char(','))
-                   << "); resetting and ignoring drag.";
-        statusBar()->showMessage(
-            tr("Couldn't apply column move; please try again."), STATUS_BAR_MESSAGE_TIMEOUT_MS
-        );
+                   << ", logical->visual=" << permutation.join(QLatin1Char(',')) << "); resetting and ignoring drag.";
+        statusBar()->showMessage(tr("Couldn't apply column move; please try again."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         ResetHeaderToIdentity();
         ApplyColumnVisibility();
         return;
@@ -2421,8 +2407,7 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     {
         qWarning() << "MainWindow::OnHeaderSectionMoved: exception while applying move:" << e.what();
         statusBar()->showMessage(
-            tr("Failed to apply column move: %1").arg(QString::fromLocal8Bit(e.what())),
-            STATUS_BAR_MESSAGE_TIMEOUT_MS
+            tr("Failed to apply column move: %1").arg(QString::fromLocal8Bit(e.what())), STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         // Recover to a known baseline. `OnSourceColumnsMoved` only
         // fires on a committed move, so re-apply visibility here.

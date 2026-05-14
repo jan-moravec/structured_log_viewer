@@ -3881,8 +3881,9 @@ private slots:
 
         mWindow->SetColumnVisible(levelCol, false);
 
-        QVERIFY2(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
-                 "Column::visible must flip to false");
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(levelCol)].visible, "Column::visible must flip to false"
+        );
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -3901,8 +3902,10 @@ private slots:
 
         mWindow->SetColumnVisible(levelCol, true);
 
-        QVERIFY2(model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
-                 "Column::visible must flip back to true");
+        QVERIFY2(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
+            "Column::visible must flip back to true"
+        );
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -3930,9 +3933,7 @@ private slots:
         const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
 
         const QList<QAction *> topActions = menu->actions();
-        QVERIFY2(
-            topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu"
-        );
+        QVERIFY2(topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu");
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
         // The `Show column` submenu is the action carrying a nested
@@ -3979,8 +3980,7 @@ private slots:
         for (const QAction *act : menu->actions())
         {
             QVERIFY2(
-                !act->text().startsWith("Hide"),
-                "menu rooted at a hidden column must not advertise a Hide action"
+                !act->text().startsWith("Hide"), "menu rooted at a hidden column must not advertise a Hide action"
             );
         }
     }
@@ -4011,10 +4011,12 @@ private slots:
         QCoreApplication::processEvents();
 
         const auto &reloadedColumns = model->Configuration().columns;
-        QVERIFY2(static_cast<size_t>(levelCol) < reloadedColumns.size(),
-                 "level column index must remain valid after reload");
-        QVERIFY2(!reloadedColumns[static_cast<size_t>(levelCol)].visible,
-                 "hidden flag must survive Save / Reset / Load");
+        QVERIFY2(
+            static_cast<size_t>(levelCol) < reloadedColumns.size(), "level column index must remain valid after reload"
+        );
+        QVERIFY2(
+            !reloadedColumns[static_cast<size_t>(levelCol)].visible, "hidden flag must survive Save / Reset / Load"
+        );
 
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
@@ -4195,13 +4197,9 @@ private slots:
         // the `ApplyColumnVisibility()` inside `OnSourceColumnsMoved`,
         // this would only hold on the user-drag path.
         QVERIFY2(
-            header->isSectionHidden(dest),
-            "header section at the moved column's new logical index must remain hidden"
+            header->isSectionHidden(dest), "header section at the moved column's new logical index must remain hidden"
         );
-        QVERIFY2(
-            !header->isSectionHidden(src),
-            "header section at the displaced column's index must not be hidden"
-        );
+        QVERIFY2(!header->isSectionHidden(src), "header section at the displaced column's index must not be hidden");
     }
 
     // Pin the wire format: `Save` output must contain `visible`
@@ -4257,10 +4255,7 @@ private slots:
             !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
             "Column::visible flag must survive Reset"
         );
-        QVERIFY2(
-            header->isSectionHidden(levelCol),
-            "modelReset hook must reapply Column::visible to the header"
-        );
+        QVERIFY2(header->isSectionHidden(levelCol), "modelReset hook must reapply Column::visible to the header");
     }
 
     // `TryLoadAsConfiguration` is the single-file entry from
@@ -4826,10 +4821,10 @@ private slots:
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(pathA);
         QCoreApplication::processEvents();
-        const QString pathC = savedDir.filePath(QStringLiteral("save-c.json"));
-        mWindow->SaveConfigurationToPathForTest(pathC);
+        const QString pathRoundTrip = savedDir.filePath(QStringLiteral("save-c.json"));
+        mWindow->SaveConfigurationToPathForTest(pathRoundTrip);
 
-        QFile fileC(pathC);
+        QFile fileC(pathRoundTrip);
         QVERIFY(fileC.open(QFile::ReadOnly));
         const QByteArray bytesC = fileC.readAll();
         QCOMPARE(bytesC, bytesA);
@@ -4863,8 +4858,7 @@ private slots:
 
         const QModelIndexList afterHide = proxy->MatchRow(start, Qt::DisplayRole, needle, 1, flags, true, 0);
         QVERIFY2(
-            afterHide.isEmpty(),
-            "Find must skip hidden columns; hiding the only matching column must yield no result"
+            afterHide.isEmpty(), "Find must skip hidden columns; hiding the only matching column must yield no result"
         );
     }
 
