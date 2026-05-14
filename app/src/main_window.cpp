@@ -749,6 +749,14 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // immediately afterwards.
         mSortFilterProxyModel->SetFilterRules({});
 
+        // Drop any active sort. The new configuration may reorder
+        // columns (or remove the sorted-by column entirely), so the
+        // proxy's `mSortColumn` and the header's sort indicator
+        // would otherwise still point at a column index whose
+        // identity changed under the load. `sortByColumn(-1, ...)`
+        // resets both in one call.
+        mTableView->sortByColumn(-1, Qt::AscendingOrder);
+
         mModel->ConfigurationManager().Load(file.toStdString());
         // `Load` rewrites `mConfiguration` (column count, order,
         // visibility, ...) without emitting a Qt model signal.
@@ -1474,6 +1482,13 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         // explicitly by `RebuildFiltersFromConfiguration` below.
         mSortFilterProxyModel->SetFilterRules({});
 
+        // Drop any active sort for the same reason as
+        // `TryLoadAsConfiguration`: the loaded configuration may
+        // reorder or remove the sorted-by column, leaving the
+        // proxy's `mSortColumn` pointing at a different column
+        // identity than the user picked.
+        mTableView->sortByColumn(-1, Qt::AscendingOrder);
+
         mModel->Reset();
         mModel->ConfigurationManager().Load(path.toStdString());
         // `Load` mutates `mConfiguration` in-place and emits no
@@ -1542,9 +1557,16 @@ void MainWindow::RebuildFiltersFromConfiguration()
         const size_t shown = std::min(dropped.size(), MAX_SHOWN);
         for (size_t i = 0; i < shown; ++i)
         {
-            const QString header = dropped[i].columnHeader.empty()
-                                       ? QStringLiteral("(out-of-range column)")
-                                       : QString::fromStdString(dropped[i].columnHeader);
+            // Render the column identity off the validation reason
+            // rather than off `columnHeader.empty()`. A real column
+            // can legitimately have an empty `header` string, and a
+            // non-`OutOfRangeRow` failure (e.g. `TypeMismatch`)
+            // against such a column would otherwise mis-render as
+            // `(out-of-range column)`.
+            const QString header =
+                (dropped[i].reason == FilterValidationReason::OutOfRangeRow)
+                    ? QStringLiteral("(out-of-range column)")
+                    : QString::fromStdString(dropped[i].columnHeader);
             message += QString("- column '%1' (row %2): %3\n")
                            .arg(header)
                            .arg(dropped[i].row)
@@ -1670,15 +1692,39 @@ void MainWindow::AddFilter(
                 // Regression: `TestSavedStringFilterDroppedOnNowEnumColumn`.
                 break;
             case FilterValidationReason::OutOfRangeRow:
+                // Out-of-range column indices reach `AddFilter` only
+                // through unusual paths (the configuration-load flow
+                // validates separately and drops them before getting
+                // here, and the per-filter Edit menu reads the live
+                // `mFilters` whose rows are remapped on every column
+                // move). Guard anyway: pre-loading the editor with an
+                // out-of-range row would land in `FilterEditor::Load`
+                // with a column index past `columns.size()`, which
+                // would either crash or silently bind to the wrong
+                // column. Drop the saved filter and -- if the caller
+                // wanted an editor -- open a fresh one without a
+                // pre-load (matches the `TypeMismatch` recovery shape).
+                ClearFilter(filterId);
+                statusBar()->showMessage(
+                    QString("Filter '%1' was removed because its column no longer exists").arg(filterId),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+                resolvedFilter.reset();
+                if (!openEditor)
+                {
+                    return;
+                }
+                break;
             case FilterValidationReason::MissingTimeRange:
             case FilterValidationReason::MissingNumericRange:
             case FilterValidationReason::MissingStringMatch:
             case FilterValidationReason::MissingBooleanSelection:
                 // The pre-guard intentionally *only* reacts to the
-                // empty-enum and type-mismatch reasons; the historical
-                // edit-path behavior expects the post-editor branch
-                // below to surface the missing-payload reasons (so it
-                // can `delete filterEditor` on the way out). The
+                // empty-enum, type-mismatch, and out-of-range reasons;
+                // the historical edit-path behavior expects the
+                // post-editor branch below to surface the
+                // missing-payload reasons (so it can `delete
+                // filterEditor` on the way out). The
                 // configuration-load path runs the validator
                 // separately and never reaches this branch.
                 break;
@@ -2423,9 +2469,25 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
         // slot's identity-precondition needs to be relaxed (or the
         // path that scrambled the visual mapping needs to restore
         // identity before returning control to the user).
+        //
+        // Dump the full visual<->logical permutation so a recurring
+        // failure in the wild has enough breadcrumbs to diagnose. A
+        // bare `(logicalIndex, oldVisualIndex, newVisualIndex)`
+        // triple isn't enough -- the assertion failure is "the
+        // *header* drifted off identity", which depends on every
+        // section, not just the one the drag touched.
+        QStringList permutation;
+        const int sectionCount = header->count();
+        permutation.reserve(sectionCount);
+        for (int logical = 0; logical < sectionCount; ++logical)
+        {
+            permutation.append(QStringLiteral("%1->%2").arg(logical).arg(header->visualIndex(logical)));
+        }
         qWarning() << "MainWindow::OnHeaderSectionMoved: header was not identity-mapped"
                    << "(logicalIndex=" << logicalIndex << ", oldVisualIndex=" << oldVisualIndex
-                   << ", newVisualIndex=" << newVisualIndex << "); resetting and ignoring drag.";
+                   << ", newVisualIndex=" << newVisualIndex
+                   << ", logical->visual=" << permutation.join(QLatin1Char(','))
+                   << "); resetting and ignoring drag.";
         statusBar()->showMessage(
             tr("Couldn't apply column move; please try again."), STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
@@ -2485,15 +2547,13 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
         // from a known baseline regardless of Qt-version drift.
         // Re-entrancy through `sectionMoved` is swallowed by
         // `mApplyingSectionMove`.
+        //
+        // `Column::visible` flags are reapplied to the header by the
+        // synchronously-fired `OnSourceColumnsMoved` slot (wired to
+        // `LogModel::columnsMoved`), so we don't need a second
+        // `ApplyColumnVisibility()` here -- single source of truth
+        // for both the user-drag path and the streaming-bubble path.
         ResetHeaderToIdentity();
-
-        // `LogConfigurationManager::MoveColumn` rotated the
-        // configuration's `Column::visible` flags in lockstep with
-        // the columns vector, so the post-move flags already point at
-        // the right columns. `setSectionHidden` is keyed by logical
-        // index, however: the logical indices shifted under the
-        // rotation, so push the post-move flags back into the header.
-        ApplyColumnVisibility();
     }
     catch (const std::exception &e)
     {
@@ -2503,6 +2563,10 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         // Recover to a known baseline so the next drag starts clean.
+        // `OnSourceColumnsMoved` only fires when the model actually
+        // committed a move, so its `ApplyColumnVisibility()` call
+        // can't be relied on here -- reapply explicitly along the
+        // exception path.
         ResetHeaderToIdentity();
         ApplyColumnVisibility();
     }
@@ -2577,6 +2641,19 @@ void MainWindow::OnSourceColumnsMoved(
     {
         UpdateFilters();
     }
+
+    // Push the post-move `Column::visible` flags back into the header.
+    // Qt's persistent-index machinery normally carries `setSectionHidden`
+    // flags through a `columnsMoved` when `rowCount > 0`, but
+    // `QHeaderViewPrivate::sectionsAboutToBeChanged` early-returns on a
+    // zero-row source -- in that case `sectionsChanged` falls through
+    // to `initializeSections()`, which clears every `isHidden` flag.
+    // Reapplying here keeps both move paths (user header drag and
+    // streaming-induced timestamp bubble in `LogModel::AppendBatch`)
+    // consistent regardless of row count, and avoids the contract
+    // drift where one slot pushed visibility and the other didn't.
+    // Pinned by `TestSourceColumnMovePreservesHiddenColumn`.
+    ApplyColumnVisibility();
 }
 
 void MainWindow::ResetHeaderToIdentity()
@@ -2599,6 +2676,22 @@ void MainWindow::ResetHeaderToIdentity()
             header->moveSection(currentVisual, target);
         }
     }
+#ifndef NDEBUG
+    // Pin the post-condition: every logical index now sits at the
+    // matching visual index. Crashing here in debug builds keeps a
+    // future header-rendering regression from silently leaving the
+    // header off identity (which `OnHeaderSectionMoved` would later
+    // trip on, but only as a soft "ignore the drag" warning rather
+    // than a clear failure at the source).
+    for (int logical = 0; logical < header->count(); ++logical)
+    {
+        Q_ASSERT_X(
+            header->visualIndex(logical) == logical,
+            "MainWindow::ResetHeaderToIdentity",
+            "header is not identity-mapped after reset"
+        );
+    }
+#endif
 }
 
 void MainWindow::ShowHeaderContextMenu(const QPoint &pos)

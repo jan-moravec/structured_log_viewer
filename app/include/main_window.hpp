@@ -227,8 +227,9 @@ private slots:
 
     /// Slot for `LogModel::columnsMoved`. Single source of truth for
     /// translating a source-side column move into a runtime
-    /// `mFilters` remap. Wired to the lowest model in the chain
-    /// (`LogModel`) rather than the proxy because the lib-side
+    /// `mFilters` remap and a header `Column::visible` re-apply.
+    /// Wired to the lowest model in the chain (`LogModel`) rather
+    /// than the proxy because the lib-side
     /// `LogConfigurationManager::MoveColumn` already touched
     /// `mConfiguration.filters[*].row`; we mirror the runtime map
     /// back over the wire-format vector here so both stores share
@@ -238,7 +239,13 @@ private slots:
     /// (`LogModel::AppendBatch` -> `mLogTable.MoveColumn`); without
     /// the latter, mid-stream timestamp promotion would silently
     /// shift every existing column under live filter rules, leaving
-    /// the rules pointing at the wrong source columns.
+    /// the rules pointing at the wrong source columns. The
+    /// `ApplyColumnVisibility()` call at the end keeps
+    /// `QHeaderView::setSectionHidden` flags aligned with the
+    /// post-move logical indices for both paths -- Qt's persistent
+    /// index machinery handles the common case but bails (clearing
+    /// every hidden flag via `initializeSections()`) when the source
+    /// has zero rows.
     void OnSourceColumnsMoved(
         const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
     );
@@ -331,6 +338,15 @@ private:
     /// byte-identical JSON and the load-side menu ordering survives
     /// round-trips (UUIDs are not persisted; menu ordering is
     /// rebuilt from the vector iteration order on load).
+    ///
+    /// Per-call cost is `O(N log N)` over `mFilters` (the sort
+    /// dominates -- the comparator walks every payload field for
+    /// stable tie-breaking). At typical filter counts this is
+    /// negligible, but bulk callers should pass `deferSync = true`
+    /// to `AddLogFilter` / `ClearFilter` and run a single trailing
+    /// `MirrorFiltersToConfiguration()` after the loop to keep the
+    /// path linear -- `RebuildFiltersFromConfiguration` is the
+    /// canonical example.
     void MirrorFiltersToConfiguration();
 
     /// Path-based save / load helpers shared by the dialog-driven

@@ -4175,6 +4175,71 @@ private slots:
         QVERIFY2(proxy->rowCount() > 0, "filter on level=info must keep at least one row visible after the move");
     }
 
+    // Regression: a source-side column move (header drag *or*
+    // streaming-induced timestamp bubble) must keep the header's
+    // `setSectionHidden` flags aligned with the rotated
+    // `Column::visible` flags. Qt's persistent-index machinery
+    // normally carries hidden flags through a `columnsMoved` when
+    // `rowCount > 0`, but `OnSourceColumnsMoved` explicitly
+    // re-applies them too so the rule holds even on the zero-row
+    // bail-out path inside `QHeaderViewPrivate::sectionsAboutToBeChanged`.
+    // Pinned alongside `TestSourceColumnMoveRemapsRuntimeFilters`
+    // because both slots run from the same `LogModel::columnsMoved`
+    // signal -- this asserts the second responsibility (visibility),
+    // the neighbour asserts the first (filter remap).
+    void TestSourceColumnMovePreservesHiddenColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        // Hide `level` so the post-move check has something to assert.
+        // The originally-at-levelCol column ends up at `dest` after the
+        // move; the header section at the new logical index should
+        // still report hidden.
+        mWindow->SetColumnVisible(levelCol, false);
+        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        QVERIFY2(header != nullptr, "view must own a horizontal header");
+        QVERIFY2(header->isSectionHidden(levelCol), "precondition: section hidden before move");
+
+        // Drive the bubble path: `LogModel::MoveColumn` emits the same
+        // `columnsMoved` payload `LogModel::AppendBatch`'s timestamp
+        // bubble does, so the slot under test runs the same code.
+        const int src = levelCol;
+        const int dest = (src == 0) ? columnCount - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
+        QCoreApplication::processEvents();
+
+        // The configuration's `Column::visible` flag follows the
+        // column through the rotation (the entire `Column` struct is
+        // rotated by `LogConfigurationManager::MoveColumn`), so
+        // `dest` is now the hidden one.
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(dest)].visible,
+            "Column::visible must follow the moved column to its new index"
+        );
+        QVERIFY2(
+            model->Configuration().columns[static_cast<size_t>(src)].visible,
+            "the column displaced to `src` must remain visible"
+        );
+
+        // Header-side flags must agree with the configuration. Without
+        // the explicit `ApplyColumnVisibility()` in
+        // `OnSourceColumnsMoved`, this would only hold on the
+        // user-drag path.
+        QVERIFY2(
+            header->isSectionHidden(dest),
+            "header section at the moved column's new logical index must remain hidden"
+        );
+        QVERIFY2(
+            !header->isSectionHidden(src),
+            "header section at the displaced column's index must not be hidden"
+        );
+    }
+
     // Regression: `Type::Boolean` -> Column::visible field round-trip
     // is exercised via the legacy-test path (any pre-existing config
     // file must still load with default `visible == true`). This test
@@ -4274,6 +4339,51 @@ private slots:
             "loaded configuration must mark level hidden"
         );
         QVERIFY2(header->isSectionHidden(levelCol), "TryLoadAsConfiguration must reapply visibility to the header");
+    }
+
+    // Regression: loading a configuration must reset the active
+    // sort. Saved column layouts can reorder or remove columns, so
+    // a stale `mSortColumn` index from before the load now points
+    // at a different column identity (or none at all). Without the
+    // explicit `sortByColumn(-1, ...)` inside the load helpers, the
+    // proxy would silently sort by whatever column happens to land
+    // at the old index, and the header's sort indicator would still
+    // be advertising the wrong column.
+    void TestLoadConfigurationResetsActiveSort()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        // Engage a sort on `level` via the view, then save the
+        // configuration and reload it. Sort state lives on the
+        // header (indicator) and on the proxy (`mSortColumn`); both
+        // must clear after the reload.
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        QHeaderView *header = tableView->horizontalHeader();
+        QVERIFY(header != nullptr);
+        tableView->sortByColumn(levelCol, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(header->isSortIndicatorShown(), "precondition: sort indicator must be shown after sortByColumn");
+        QCOMPARE(header->sortIndicatorSection(), levelCol);
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString savedPath = tempDir.filePath(QStringLiteral("with-sort.json"));
+        model->ConfigurationManager().Save(savedPath.toStdString());
+
+        // `TryLoadAsConfigurationForTest` exercises the single-file
+        // open path; the same reset is wired into
+        // `DoLoadConfiguration` (driven via the dialog-driven slot)
+        // so the contract is uniform across the two entry points.
+        QVERIFY2(mWindow->TryLoadAsConfigurationForTest(savedPath), "TryLoadAsConfiguration must succeed");
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !header->isSortIndicatorShown() || header->sortIndicatorSection() == -1,
+            "sort indicator must clear after configuration load"
+        );
     }
 
     // The `View` menu lists every column with a checkable action

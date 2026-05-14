@@ -896,6 +896,89 @@ TEST_CASE("RemapColumnIndexAfterMove permutation matches MoveColumn's internal l
 }
 
 TEST_CASE(
+    "Update's auto-promoted timestamp bubble remaps persisted LogFilter::row",
+    "[LogConfigurationManager][update][filter_row_remap]"
+)
+{
+    // `Update` appends auto-promoted timestamp columns, then bubbles
+    // them to position 0 via `MoveColumn`. The bubble must drag any
+    // persisted `LogFilter::row` through the same permutation, so a
+    // hand-loaded configuration whose filters were authored against
+    // a pre-bubble layout still ends up pointing at the right column
+    // after `Update` runs. This test pins the contract on the legacy
+    // (non-streaming) path -- the streaming bubble inside
+    // `LogModel::AppendBatch` is exercised by the app-side
+    // `TestSourceColumnMoveRemapsRuntimeFilters`.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"regular_a", "regular_b"});
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    REQUIRE(manager.Configuration().columns[0].header == "regular_a");
+    REQUIRE(manager.Configuration().columns[1].header == "regular_b");
+
+    // Hand-craft filters pointing at the two existing columns. Both
+    // should follow their column through the upcoming bubble.
+    {
+        LogConfiguration configuration;
+        configuration.columns = manager.Configuration().columns;
+        configuration.filters.push_back(LogConfiguration::LogFilter{
+            .type = LogConfiguration::LogFilter::Type::String,
+            .row = 0,
+            .filterString = std::string{"x"},
+            .matchType = LogConfiguration::LogFilter::Match::Contains,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {},
+        });
+        configuration.filters.push_back(LogConfiguration::LogFilter{
+            .type = LogConfiguration::LogFilter::Type::String,
+            .row = 1,
+            .filterString = std::string{"y"},
+            .matchType = LogConfiguration::LogFilter::Match::Contains,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {},
+        });
+        const TestLogConfiguration testConfiguration;
+        testConfiguration.Write(configuration);
+        manager.Load(testConfiguration.GetFilePath());
+    }
+    REQUIRE(manager.Configuration().filters.size() == 2);
+
+    // Drive `Update` with a `LogData` whose only fresh key is
+    // `timestamp`. The auto-promote path appends it at index 2 and
+    // bubbles it to index 0; existing columns shift right.
+    const TestLogFile testLogFile;
+    auto source = testLogFile.CreateFileLineSource();
+    KeyIndex testKeys;
+    std::vector<LogLine> testLines;
+    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
+    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+
+    manager.Update(logData);
+
+    REQUIRE(manager.Configuration().columns.size() == 3);
+    CHECK(manager.Configuration().columns[0].header == "timestamp");
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[1].header == "regular_a");
+    CHECK(manager.Configuration().columns[2].header == "regular_b");
+
+    // Both filters must have followed the bubble: the one originally
+    // at row 0 (`regular_a`) now lives at row 1; the one at row 1
+    // (`regular_b`) now lives at row 2. Without the `MoveColumn`
+    // remap inside `Update`, both would still report the pre-bubble
+    // indices and silently target the wrong columns.
+    REQUIRE(manager.Configuration().filters.size() == 2);
+    CHECK(manager.Configuration().filters[0].row == 1);
+    CHECK(manager.Configuration().filters[0].filterString == std::string{"x"});
+    CHECK(manager.Configuration().filters[1].row == 2);
+    CHECK(manager.Configuration().filters[1].filterString == std::string{"y"});
+}
+
+TEST_CASE(
     "Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]"
 )
 {
