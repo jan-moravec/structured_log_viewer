@@ -555,18 +555,14 @@ TEST_CASE("Round-trip LogFilter with Type::Number and bounded / unbounded range"
     CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Number);
     REQUIRE(loaded.filters[0].filterMinValue.has_value());
     REQUIRE(loaded.filters[0].filterMaxValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(-2.5));
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(17.25));
 
     CHECK_FALSE(loaded.filters[1].filterMinValue.has_value());
     REQUIRE(loaded.filters[1].filterMaxValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[1].filterMaxValue == Catch::Approx(100.0));
 
     REQUIRE(loaded.filters[2].filterMinValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[2].filterMinValue == Catch::Approx(0.0));
     CHECK_FALSE(loaded.filters[2].filterMaxValue.has_value());
 }
@@ -645,20 +641,13 @@ TEST_CASE(
     using Match = LogConfiguration::LogFilter::Match;
     REQUIRE(loaded.filters.size() == 6);
     CHECK(loaded.filters[0].type == FilterType::String);
-    // The `REQUIRE(has_value())` guards above are not modelled by
-    // `bugprone-unchecked-optional-access` (only `if`/`DCHECK`/`ASSERT_TRUE`
-    // are), so the `operator*` accesses below are false positives.
     REQUIRE(loaded.filters[0].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].matchType == Match::Exactly);
     REQUIRE(loaded.filters[1].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[1].matchType == Match::Contains);
     REQUIRE(loaded.filters[2].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[2].matchType == Match::RegularExpression);
     REQUIRE(loaded.filters[3].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[3].matchType == Match::Wildcard);
     CHECK(loaded.filters[4].type == FilterType::Time);
     CHECK(loaded.filters[5].type == FilterType::Enumeration);
@@ -707,9 +696,7 @@ TEST_CASE(
     CHECK(loaded.filters[0].type == FilterType::Number);
     REQUIRE(loaded.filters[0].filterMinValue.has_value());
     REQUIRE(loaded.filters[0].filterMaxValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(1.5));
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(5.0));
 
     CHECK(loaded.filters[1].type == FilterType::Boolean);

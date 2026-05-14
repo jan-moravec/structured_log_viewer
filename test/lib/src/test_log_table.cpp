@@ -1237,7 +1237,6 @@ TEST_CASE(
         const LogValue v = table.GetValue(row, 0);
         const auto sv = AsStringView(v);
         REQUIRE(sv.has_value());
-        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         CHECK(*sv == tiers[row % tiers.size()]);
     }
 }
@@ -1290,7 +1289,6 @@ TEST_CASE(
         const LogValue v = table.GetValue(row, 0);
         const auto sv = AsStringView(v);
         REQUIRE(sv.has_value());
-        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         CHECK(*sv == levels[row % levels.size()]);
     }
 }
@@ -1404,13 +1402,11 @@ TEST_CASE(
         const LogValue v = table.GetValue(i, 0);
         const auto sv = AsStringView(v);
         REQUIRE(sv.has_value());
-        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
         CHECK(*sv == capValues[i]);
         CHECK_FALSE(table.Data().Lines()[i].IsDictRef(tagKey));
     }
     const LogValue lastValue = table.GetValue(TEST_CAP, 0);
     REQUIRE(AsStringView(lastValue).has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - REQUIRE above aborts the test on `nullopt`.
     CHECK(*AsStringView(lastValue) == "never-seen");
     CHECK_FALSE(table.Data().Lines()[TEST_CAP].IsDictRef(tagKey));
 
@@ -1748,7 +1744,6 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
         REQUIRE(vid.has_value());
         const auto sv = AsStringView(table.GetValue(row, 0));
         REQUIRE(sv.has_value());
-        // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - both REQUIREs above abort the test on `nullopt`.
         CHECK(dict->Resolve(*vid) == *sv);
     }
 
