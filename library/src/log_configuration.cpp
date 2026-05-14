@@ -108,10 +108,19 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .type = LogConfiguration::Type::Time,
                     .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
-                // Bubble timestamps to column 0.
-                for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
+                // Bubble the freshly-appended timestamp column to
+                // position 0. Use `MoveColumn` (not an inline
+                // `std::swap` chain) so any persisted
+                // `LogConfiguration::filters[*].row` is remapped
+                // through the same `RemapColumnIndexAfterMove`
+                // permutation -- otherwise a hand-loaded
+                // configuration with filters would silently keep
+                // filter rows pointing at the pre-bubble column
+                // indices. No-op when the new column was already
+                // the only one.
+                if (mConfiguration.columns.size() > 1)
                 {
-                    std::swap(mConfiguration.columns[i], mConfiguration.columns[i - 1]);
+                    MoveColumn(mConfiguration.columns.size() - 1, 0);
                 }
             }
             else

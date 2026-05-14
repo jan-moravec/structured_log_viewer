@@ -4096,6 +4096,85 @@ private slots:
         QCOMPARE(mgr.Configuration().filters[0].row, dest);
     }
 
+    // Regression: a streaming-induced column reorder
+    // (`LogModel::AppendBatch` bubbling a freshly-detected timestamp
+    // to position 0 via `mLogTable.MoveColumn`) used to leave the
+    // runtime `MainWindow::mFilters` map pointing at the pre-move
+    // column indices. `LogConfigurationManager::MoveColumn` correctly
+    // rotated the wire-format `mConfiguration.filters[*].row`, but
+    // the UI's UUID-keyed runtime view -- which drives the proxy's
+    // rule list -- did not, so active filter rules silently shifted
+    // onto the wrong columns; a subsequent `Save` would also mirror
+    // the stale runtime rows back over the lib-rotated wire format,
+    // dropping the filter on next load via type mismatch.
+    //
+    // The fix wires `MainWindow::OnSourceColumnsMoved` to
+    // `LogModel::columnsMoved`, replaying the same permutation onto
+    // `mFilters` and rebuilding the proxy's rule list. This exercises
+    // the slot through `LogModel::MoveColumn`, which emits exactly
+    // the same `columnsMoved` payload the bubble path uses (both
+    // brackets `beginMoveColumns` / `endMoveColumns` around
+    // `mLogTable.MoveColumn`).
+    void TestSourceColumnMoveRemapsRuntimeFilters()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        // Install an enum filter on `level` via the production
+        // `FilterEnumSubmitted` slot so `mFilters` and the wire-format
+        // vector are both populated through the supported entry point.
+        const QString filterId = QStringLiteral("bubble-remap");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const std::string filterKey = filterId.toStdString();
+        QVERIFY2(mWindow->Filters().contains(filterKey), "filter must land in mFilters after submit");
+        QCOMPARE(mWindow->Filters().at(filterKey).row, levelCol);
+
+        // Drive the bubble path: emit `columnsMoved` through
+        // `LogModel::MoveColumn`. The slot is wired directly to
+        // `LogModel::columnsMoved` and fires synchronously inside
+        // `endMoveColumns()`. We deliberately bypass
+        // `OnHeaderSectionMoved` (the header-drag entry point) to
+        // simulate exactly what the streaming-bubble code path does.
+        const int src = levelCol;
+        const int dest = (src == 0) ? columnCount - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
+        QCoreApplication::processEvents();
+
+        // Runtime map and wire-format vector both follow the move.
+        QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the source-side move");
+        QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
+        const auto &wireFilters = model->Configuration().filters;
+        QCOMPARE(wireFilters.size(), static_cast<size_t>(1));
+        QCOMPARE(wireFilters[0].row, dest);
+
+        // The proxy's accepted-row count should remain non-empty: the
+        // remapped rule still targets the `level` column, which still
+        // resolves `"info"` rows. A stale `row` would silently flip
+        // every row's accept verdict (numeric comparator vs enum bytes)
+        // and zero this out.
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        QAbstractItemModel *proxy = tableView->model();
+        QVERIFY(proxy != nullptr);
+        QVERIFY2(proxy->rowCount() > 0, "filter on level=info must keep at least one row visible after the move");
+    }
+
     // Regression: `Type::Boolean` -> Column::visible field round-trip
     // is exercised via the legacy-test path (any pre-existing config
     // file must still load with default `visible == true`). This test

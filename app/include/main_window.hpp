@@ -181,7 +181,14 @@ private slots:
         bool openEditor = true
     );
     void ClearAllFilters();
-    void ClearFilter(const QString &filterID);
+    /// Remove a single filter rule. `deferSync` suppresses the
+    /// `MirrorFiltersToConfiguration` / `UpdateFilters` calls so
+    /// the submit slots (which `ClearFilter` -> `AddLogFilter`)
+    /// can collapse the two-step replace into a single mirror +
+    /// rule rebuild done by `AddLogFilter`. Default `false` preserves
+    /// the eager-sync behaviour all other callers (Clear menu
+    /// action, error-bail branches) rely on.
+    void ClearFilter(const QString &filterID, bool deferSync = false);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
@@ -208,9 +215,33 @@ private slots:
     void OnSourceStatusChanged(loglib::SourceStatus status);
 
     /// Translate a `QHeaderView::sectionMoved` (visual move) into a
-    /// source-side `LogModel::MoveColumn` + filter-row remap, then
-    /// reset the header's visual order so visual == logical again.
+    /// source-side `LogModel::MoveColumn`, then reset the header's
+    /// visual order so visual == logical again. The runtime
+    /// `mFilters[*].row` remap is wired separately through
+    /// `OnSourceColumnsMoved`, which fires from the same
+    /// `LogModel::MoveColumn` we trigger here -- and which also
+    /// catches *implicit* moves (e.g. the streaming-time timestamp-
+    /// bubble in `LogModel::AppendBatch`), so the runtime map stays
+    /// in lockstep regardless of who initiated the move.
     void OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
+
+    /// Slot for `LogModel::columnsMoved`. Single source of truth for
+    /// translating a source-side column move into a runtime
+    /// `mFilters` remap. Wired to the lowest model in the chain
+    /// (`LogModel`) rather than the proxy because the lib-side
+    /// `LogConfigurationManager::MoveColumn` already touched
+    /// `mConfiguration.filters[*].row`; we mirror the runtime map
+    /// back over the wire-format vector here so both stores share
+    /// the runtime values. Fires from header-drag moves
+    /// (via `OnHeaderSectionMoved` -> `LogModel::MoveColumn`) and
+    /// from streaming-induced timestamp bubbles
+    /// (`LogModel::AppendBatch` -> `mLogTable.MoveColumn`); without
+    /// the latter, mid-stream timestamp promotion would silently
+    /// shift every existing column under live filter rules, leaving
+    /// the rules pointing at the wrong source columns.
+    void OnSourceColumnsMoved(
+        const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
+    );
 
     /// Build and show the header context menu at the click position.
     void ShowHeaderContextMenu(const QPoint &pos);
@@ -240,7 +271,23 @@ private:
     /// header collides with another column's header (Qt allows
     /// duplicate headers; `keys` is the stable identifier). Empty
     /// when @p columnIndex is out of range.
+    ///
+    /// Convenience for single-column queries (header context menu
+    /// builds one or two labels per popup). When you need labels for
+    /// every column -- e.g. the `View` menu rebuild -- prefer
+    /// `BuildAllColumnMenuLabels`, which scans the duplicate-header
+    /// map in a single pass instead of the O(N) re-scan this entry
+    /// point does per call.
     [[nodiscard]] QString ColumnMenuLabel(size_t columnIndex) const;
+
+    /// Build the menu label for every column in `mModel`'s current
+    /// configuration in a single O(N) pass over the columns vector.
+    /// Equivalent (per-element) to looping over `ColumnMenuLabel(i)`,
+    /// but materialises the duplicate-header tally once and reuses
+    /// it for every entry -- a substantial win on configurations
+    /// with many columns since `ColumnMenuLabel` would otherwise
+    /// re-scan the columns vector on every call.
+    [[nodiscard]] std::vector<QString> BuildAllColumnMenuLabels() const;
 
     /// Try to load @p file as a `LogConfiguration`; returns true on
     /// success.
@@ -297,7 +344,14 @@ private:
     /// column layout, and surfaces any drops through
     /// `ShowDroppedFiltersDialog`. Returns true on full success;
     /// false (with the failure already surfaced) on parse error.
-    bool DoSaveConfiguration(const QString &path);
+    /// Persist the current configuration to @p path. Propagates the
+    /// underlying `std::exception` on I/O failure -- callers are
+    /// expected to wrap the call in a `try / catch` and surface the
+    /// failure (`SaveConfiguration` and `OnSaveAct` both do). No
+    /// boolean status is returned because there is no in-band
+    /// failure mode: success means "wrote the file", failure means
+    /// "threw an exception".
+    void DoSaveConfiguration(const QString &path);
     bool DoLoadConfiguration(const QString &path);
 
     /// Drop runtime filter state, walk the freshly-loaded
