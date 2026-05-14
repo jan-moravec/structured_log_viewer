@@ -201,14 +201,18 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
 
     if (filter.row < 0 || static_cast<size_t>(filter.row) >= columns.size())
     {
-        return FilterValidationFailure{FilterValidationReason::OutOfRangeRow, filter.row, std::string{}};
+        return FilterValidationFailure{
+            .reason = FilterValidationReason::OutOfRangeRow, .row = filter.row, .columnHeader = std::string{}
+        };
     }
 
     const auto &column = columns[static_cast<size_t>(filter.row)];
 
     if (filter.type == LogFilter::Type::Enumeration && filter.filterValues.empty())
     {
-        return FilterValidationFailure{FilterValidationReason::EmptyEnumSelection, filter.row, column.header};
+        return FilterValidationFailure{
+            .reason = FilterValidationReason::EmptyEnumSelection, .row = filter.row, .columnHeader = column.header
+        };
     }
 
     const bool isNumericColumn = column.type == ColumnType::Integer || column.type == ColumnType::Floating ||
@@ -222,7 +226,9 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
          column.type != ColumnType::Enumeration && column.type != ColumnType::Boolean && !isNumericColumn);
     if (!typesMatch)
     {
-        return FilterValidationFailure{FilterValidationReason::TypeMismatch, filter.row, column.header};
+        return FilterValidationFailure{
+            .reason = FilterValidationReason::TypeMismatch, .row = filter.row, .columnHeader = column.header
+        };
     }
 
     switch (filter.type)
@@ -230,13 +236,19 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     case LogFilter::Type::Time:
         if (!filter.filterBegin.has_value() || !filter.filterEnd.has_value())
         {
-            return FilterValidationFailure{FilterValidationReason::MissingTimeRange, filter.row, column.header};
+            return FilterValidationFailure{
+                .reason = FilterValidationReason::MissingTimeRange, .row = filter.row, .columnHeader = column.header
+            };
         }
         break;
     case LogFilter::Type::Number:
         if (!filter.filterMinValue.has_value() && !filter.filterMaxValue.has_value())
         {
-            return FilterValidationFailure{FilterValidationReason::MissingNumericRange, filter.row, column.header};
+            return FilterValidationFailure{
+                .reason = FilterValidationReason::MissingNumericRange,
+                .row = filter.row,
+                .columnHeader = column.header
+            };
         }
         break;
     case LogFilter::Type::Boolean:
@@ -245,7 +257,9 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         if (!sides.includeTrue && !sides.includeFalse)
         {
             return FilterValidationFailure{
-                FilterValidationReason::MissingBooleanSelection, filter.row, column.header
+                .reason = FilterValidationReason::MissingBooleanSelection,
+                .row = filter.row,
+                .columnHeader = column.header
             };
         }
         break;
@@ -253,7 +267,11 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     case LogFilter::Type::String:
         if (!filter.filterString.has_value() || !filter.matchType.has_value())
         {
-            return FilterValidationFailure{FilterValidationReason::MissingStringMatch, filter.row, column.header};
+            return FilterValidationFailure{
+                .reason = FilterValidationReason::MissingStringMatch,
+                .row = filter.row,
+                .columnHeader = column.header
+            };
         }
         break;
     case LogFilter::Type::Enumeration:
@@ -674,7 +692,7 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::UpdateUi()
 {
-    QHeaderView *header = mTableView->horizontalHeader();
+    const QHeaderView *header = mTableView->horizontalHeader();
     const int columnCount = mTableView->model()->columnCount();
     // Skip the trailing column (it stretches to fill) and any
     // hidden columns -- `resizeColumnToContents` walks the model
@@ -1520,7 +1538,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
     // Filters menu items, and re-populates the wire-format vector
     // via the eager mirror -- so the saved set survives the
     // round-trip. UUIDs are GUI-only and are regenerated here.
-    std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
+    const std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
 
     ClearAllFilters();
 #ifdef LOGAPP_BUILD_TESTING
@@ -2438,7 +2456,7 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
         // Re-entered by the visual-reset loop below; swallow.
         return;
     }
-    QHeaderView *header = mTableView->horizontalHeader();
+    const QHeaderView *header = mTableView->horizontalHeader();
     if (header == nullptr)
     {
         return;
@@ -2746,7 +2764,7 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
     if (thisColumn.visible)
     {
         const QString &hideLabel = labels[static_cast<size_t>(logicalColumn)];
-        QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(hideLabel));
+        const QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(hideLabel));
         connect(hideAction, &QAction::triggered, this, [this, keys = thisKeys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx >= 0)
@@ -2775,11 +2793,11 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
             menu->addSeparator();
         }
         QMenu *showMenu = menu->addMenu(tr("Show column"));
-        for (int hiddenLogical : hiddenColumns)
+        for (const int hiddenLogical : hiddenColumns)
         {
             const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;
             const QString &hiddenLabel = labels[static_cast<size_t>(hiddenLogical)];
-            QAction *showAction = showMenu->addAction(hiddenLabel);
+            const QAction *showAction = showMenu->addAction(hiddenLabel);
             connect(showAction, &QAction::triggered, this, [this, keys = hiddenKeys]() {
                 const int idx = FindColumnIndexByKeys(keys);
                 if (idx >= 0)

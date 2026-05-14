@@ -3840,7 +3840,7 @@ private slots:
         {
             lines.append(QStringLiteral(R"({"level": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
         }
-        TempJsonFile fixture(lines);
+        const TempJsonFile fixture(lines);
         // `TempJsonFile`'s temp dir lives for the lifetime of the
         // helper; we let the streaming run finish before returning so
         // the parser doesn't outlive it.
@@ -3879,6 +3879,7 @@ private slots:
 
         auto *model = mWindow->Model();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(
             model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
             "column must default to visible before hide"
@@ -3888,8 +3889,9 @@ private slots:
 
         QVERIFY2(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
                  "Column::visible must flip to false");
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSectionHidden(levelCol), "header section must be hidden");
     }
 
@@ -3907,8 +3909,9 @@ private slots:
 
         QVERIFY2(model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
                  "Column::visible must flip back to true");
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(!header->isSectionHidden(levelCol), "header section must no longer be hidden");
     }
 
@@ -3934,7 +3937,7 @@ private slots:
 
         QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
         QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
 
         const QList<QAction *> topActions = menu->actions();
         QVERIFY2(
@@ -3944,8 +3947,8 @@ private slots:
 
         // The `Show column` submenu is the action carrying a nested
         // menu; pull it out and verify it lists each hidden header.
-        QMenu *showMenu = nullptr;
-        for (QAction *act : topActions)
+        const QMenu *showMenu = nullptr;
+        for (const QAction *act : topActions)
         {
             if (act->menu() != nullptr && act->text().startsWith("Show"))
             {
@@ -3956,7 +3959,8 @@ private slots:
         QVERIFY2(showMenu != nullptr, "menu must contain a Show column submenu");
 
         QStringList showActionLabels;
-        for (QAction *act : showMenu->actions())
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (const QAction *act : showMenu->actions())
         {
             showActionLabels.append(act->text());
         }
@@ -3980,9 +3984,9 @@ private slots:
 
         QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
         QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
 
-        for (QAction *act : menu->actions())
+        for (const QAction *act : menu->actions())
         {
             QVERIFY2(
                 !act->text().startsWith("Hide"),
@@ -4004,7 +4008,7 @@ private slots:
         mWindow->SetColumnVisible(levelCol, false);
         QVERIFY(!model->Configuration().columns[static_cast<size_t>(levelCol)].visible);
 
-        QTemporaryDir savedDir;
+        const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString savedPath = savedDir.filePath(QStringLiteral("config.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
@@ -4024,8 +4028,9 @@ private slots:
         QVERIFY2(!reloadedColumns[static_cast<size_t>(levelCol)].visible,
                  "hidden flag must survive Save / Reset / Load");
 
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSectionHidden(levelCol), "header section must remain hidden after reload");
     }
 
@@ -4064,7 +4069,7 @@ private slots:
             .filterMaxValue = std::nullopt,
             .filterValues = {"info"},
         });
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("with-filter.json"));
         std::string json;
@@ -4170,7 +4175,7 @@ private slots:
         // and zero this out.
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
-        QAbstractItemModel *proxy = tableView->model();
+        const QAbstractItemModel *proxy = tableView->model();
         QVERIFY(proxy != nullptr);
         QVERIFY2(proxy->rowCount() > 0, "filter on level=info must keep at least one row visible after the move");
     }
@@ -4200,8 +4205,9 @@ private slots:
         // move; the header section at the new logical index should
         // still report hidden.
         mWindow->SetColumnVisible(levelCol, false);
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSectionHidden(levelCol), "precondition: section hidden before move");
 
         // Drive the bubble path: `LogModel::MoveColumn` emits the same
@@ -4251,7 +4257,7 @@ private slots:
         auto *model = mWindow->Model();
         mWindow->SetColumnVisible(levelCol, false);
 
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("with-visible.json"));
         model->ConfigurationManager().Save(path.toStdString());
@@ -4280,11 +4286,12 @@ private slots:
         auto *model = mWindow->Model();
 
         mWindow->SetColumnVisible(levelCol, false);
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSectionHidden(levelCol), "precondition: section hidden");
 
-        QSignalSpy resetSpy(model, &QAbstractItemModel::modelReset);
+        const QSignalSpy resetSpy(model, &QAbstractItemModel::modelReset);
         QVERIFY(resetSpy.isValid());
         model->Reset();
         QCoreApplication::processEvents();
@@ -4318,7 +4325,7 @@ private slots:
 
         mWindow->SetColumnVisible(levelCol, false);
 
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString savedPath = tempDir.filePath(QStringLiteral("hidden-level.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
@@ -4327,8 +4334,9 @@ private slots:
         // do; otherwise the test would also pass without the new
         // ApplyColumnVisibility call inside TryLoadAsConfiguration.
         mWindow->SetColumnVisible(levelCol, true);
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(!header->isSectionHidden(levelCol), "precondition: section visible before load");
 
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(savedPath), "TryLoadAsConfiguration must succeed");
@@ -4361,14 +4369,14 @@ private slots:
         // must clear after the reload.
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
-        QHeaderView *header = tableView->horizontalHeader();
+        const QHeaderView *header = tableView->horizontalHeader();
         QVERIFY(header != nullptr);
         tableView->sortByColumn(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
         QVERIFY2(header->isSortIndicatorShown(), "precondition: sort indicator must be shown after sortByColumn");
         QCOMPARE(header->sortIndicatorSection(), levelCol);
 
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString savedPath = tempDir.filePath(QStringLiteral("with-sort.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
@@ -4396,7 +4404,7 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
 
-        QMenu *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
 
         emit viewMenu->aboutToShow();
@@ -4413,18 +4421,21 @@ private slots:
             }
         }
         QVERIFY2(levelAction != nullptr, "View menu must contain an action for the level column");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(levelAction->isCheckable(), "View menu action must be checkable");
         QVERIFY2(levelAction->isChecked(), "View menu action must reflect the visible state");
 
         levelAction->trigger();
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
         QCoreApplication::processEvents();
 
         QVERIFY2(
             !model->Configuration().columns[static_cast<size_t>(levelCol)].visible,
             "toggling the View menu action must flip Column::visible"
         );
-        QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
+        const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSectionHidden(levelCol), "header section must follow the toggle");
 
         // Toggle back; rebuild the menu from scratch so the action
@@ -4521,10 +4532,11 @@ private slots:
         // Find the per-filter sub-menu and its `Edit` action via the
         // public `FiltersMenu()` accessor (the offscreen-QPA
         // `findChild<QMenu*>` bug strands the direct path).
-        QMenu *filtersMenu = mWindow->FiltersMenu();
+        const QMenu *filtersMenu = mWindow->FiltersMenu();
         QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
-        QAction *filterMenuAction = nullptr;
-        for (QAction *action : filtersMenu->actions())
+        const QAction *filterMenuAction = nullptr;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (const QAction *action : filtersMenu->actions())
         {
             if (action->data().toString() == filterId)
             {
@@ -4533,7 +4545,8 @@ private slots:
             }
         }
         QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
-        QMenu *filterSubMenu = filterMenuAction->menu();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        const QMenu *filterSubMenu = filterMenuAction->menu();
         QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Clear sub-menu");
         QAction *editAction = nullptr;
         for (QAction *action : filterSubMenu->actions())
@@ -4621,7 +4634,7 @@ private slots:
         QCOMPARE(model->Configuration().filters[0].row, msgCol);
         QCOMPARE(model->Configuration().filters[0].type, loglib::LogConfiguration::LogFilter::Type::String);
 
-        QTemporaryDir savedDir;
+        const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString savedPath = savedDir.filePath(QStringLiteral("filter-persistence.json"));
 
@@ -4698,7 +4711,7 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
         QCOMPARE(model->Configuration().filters.size(), static_cast<size_t>(2));
 
-        QTemporaryDir savedDir;
+        const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString savedPath = savedDir.filePath(QStringLiteral("multi-filter.json"));
         mWindow->SaveConfigurationToPathForTest(savedPath);
@@ -4736,10 +4749,11 @@ private slots:
         QVERIFY2(sawEnum, "enum filter on level must revive");
 
         // Filters menu must hold one sub-menu per revived filter.
-        QMenu *filtersMenu = mWindow->FiltersMenu();
+        const QMenu *filtersMenu = mWindow->FiltersMenu();
         QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
         int subMenuCount = 0;
-        for (QAction *action : filtersMenu->actions())
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (const QAction *action : filtersMenu->actions())
         {
             if (!action->data().toString().isNull())
             {
@@ -4791,7 +4805,7 @@ private slots:
             .filterValues = {},
         });
 
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("mixed-filters.json"));
         std::string json;
@@ -4864,7 +4878,7 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        QTemporaryDir savedDir;
+        const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString pathA = savedDir.filePath(QStringLiteral("save-a.json"));
         const QString pathB = savedDir.filePath(QStringLiteral("save-b.json"));
@@ -4909,8 +4923,9 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
 
-        LogFilterModel *proxy = mWindow->FilterModel();
+        const LogFilterModel *proxy = mWindow->FilterModel();
         QVERIFY2(proxy != nullptr, "MainWindow must own a LogFilterModel");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(proxy->rowCount() > 0, "fixture must yield at least one row");
 
         const QModelIndex start = proxy->index(0, 0);
@@ -4944,12 +4959,13 @@ private slots:
 
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
-        QHeaderView *header = tableView->horizontalHeader();
+        const QHeaderView *header = tableView->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
 
         // Sort by `level` so the indicator points at it.
         tableView->sortByColumn(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSortIndicatorShown(), "precondition: sort indicator must be shown after sortByColumn");
         QCOMPARE(header->sortIndicatorSection(), levelCol);
 
@@ -4973,7 +4989,7 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         auto *tableView = mWindow->findChild<LogTableView *>();
-        QHeaderView *header = tableView->horizontalHeader();
+        const QHeaderView *header = tableView->horizontalHeader();
 
         tableView->sortByColumn(levelCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
@@ -4998,7 +5014,7 @@ private slots:
     {
         QVERIFY(StreamFixtureForColumnTests() >= 0);
         auto *tableView = mWindow->findChild<LogTableView *>();
-        QHeaderView *header = tableView->horizontalHeader();
+        const QHeaderView *header = tableView->horizontalHeader();
         QVERIFY(header != nullptr);
 
         // Idle baseline: drag + custom context menu armed.
@@ -5043,7 +5059,7 @@ private slots:
         const QString sharedHeader = QString::fromStdString(mutated.columns[0].header);
         mutated.columns[1].header = mutated.columns[0].header;
 
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("dupes.json"));
         {
@@ -5059,12 +5075,12 @@ private slots:
 
         // Trigger the View menu rebuild so the labels are produced
         // through the production path.
-        QMenu *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
         emit viewMenu->aboutToShow();
 
         QStringList labels;
-        for (QAction *act : viewMenu->actions())
+        for (const QAction *act : viewMenu->actions())
         {
             labels.append(act->text());
         }
