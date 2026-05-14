@@ -1221,6 +1221,16 @@ QMenu *MainWindow::ViewMenu() const
     return ui->menuView;
 }
 
+QMenu *MainWindow::FilterSubMenu(const QString &filterID) const
+{
+    const auto it = mFilterSubMenus.find(filterID.toStdString());
+    if (it == mFilterSubMenus.end())
+    {
+        return nullptr;
+    }
+    return it->second;
+}
+
 #ifdef LOGAPP_BUILD_TESTING
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
@@ -1749,6 +1759,7 @@ void MainWindow::AddFilter(
 void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
+    mFilterSubMenus.clear();
     MirrorFiltersToConfiguration();
     mSortFilterProxyModel->SetFilterRules({});
 
@@ -1767,6 +1778,7 @@ void MainWindow::ClearAllFilters()
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 {
     mFilters.erase(filterID.toStdString());
+    mFilterSubMenus.erase(filterID.toStdString());
     if (!deferSync)
     {
         MirrorFiltersToConfiguration();
@@ -2016,6 +2028,10 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
     menuItem->menuAction()->setData(QVariant(id));
+    // Track the submenu pointer so tests can find it without going
+    // through `QAction::menu()` or `qobject_cast<QMenu*>(child)` --
+    // both fail under the Linux Release offscreen-QPA toolchain.
+    mFilterSubMenus[id.toStdString()] = menuItem;
 
     const QAction *editAction = menuItem->addAction("Edit");
     // Capture only the filter id and resolve the live filter at
@@ -2543,8 +2559,12 @@ void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
     menu->popup(header->mapToGlobal(pos));
 }
 
-QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
+QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QMenu **outShowSubMenu)
 {
+    if (outShowSubMenu != nullptr)
+    {
+        *outShowSubMenu = nullptr;
+    }
     const auto &columns = mModel->Configuration().columns;
     if (logicalColumn < 0 || static_cast<size_t>(logicalColumn) >= columns.size())
     {
@@ -2597,6 +2617,10 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
             menu->addSeparator();
         }
         QMenu *showMenu = menu->addMenu(tr("Show column"));
+        if (outShowSubMenu != nullptr)
+        {
+            *outShowSubMenu = showMenu;
+        }
         for (const int hiddenLogical : hiddenColumns)
         {
             const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;

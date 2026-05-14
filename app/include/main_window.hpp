@@ -95,14 +95,30 @@ public:
     /// Build the right-click header menu for @p logicalColumn.
     /// Caller owns the returned menu. Public so tests can drive the
     /// menu without an offscreen-QPA `findChild<QMenu*>` (see
-    /// `FiltersMenu()`).
-    [[nodiscard]] QMenu *BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
+    /// `FiltersMenu()`). When @p outShowSubMenu is non-null and the
+    /// build produced a `Show column` submenu, the pointer is stored
+    /// there for tests -- the Linux Release offscreen build's
+    /// `QAction::menu()` and `QObject::children()`/`qobject_cast`
+    /// traversals both fail to recover this otherwise (the submenu's
+    /// QtWidgets metaobject hooks are stripped at link time).
+    [[nodiscard]] QMenu *BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr,
+                                                QMenu **outShowSubMenu = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
     {
         return mFilters;
     }
+
+    /// Test-only direct lookup for a per-filter sub-menu by id.
+    /// Same Linux-Release-offscreen reason as `BuildHeaderContextMenu`'s
+    /// out-parameter: walking `ui->menuFilters->actions()` and calling
+    /// `QAction::menu()` -- or iterating `children()` and casting to
+    /// `QMenu*` -- both return null on that toolchain even though the
+    /// production code wires the submenu correctly. The map is
+    /// maintained by `AddLogFilter` / `ClearFilter` / `ClearAllFilters`
+    /// so the answer is the live submenu pointer.
+    [[nodiscard]] QMenu *FilterSubMenu(const QString &filterID) const;
 
     /// Owned `LogModel`; non-null after construction.
     [[nodiscard]] LogModel *Model() const
@@ -327,6 +343,13 @@ private:
     FindRecordWidget *mFindRecord;
     PreferencesEditor *mPreferencesEditor;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
+
+    /// Per-filter `Filters` sub-menu pointers, keyed by filter id.
+    /// Maintained alongside `mFilters`; the test-only `FilterSubMenu()`
+    /// accessor reads from here because Qt 6.8 + offscreen QPA on the
+    /// Linux Release toolchain strips the metaobject hooks that make
+    /// `QAction::menu()` and `qobject_cast<QMenu*>(child)` work.
+    std::unordered_map<std::string, QMenu *> mFilterSubMenus;
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;

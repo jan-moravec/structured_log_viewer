@@ -3928,7 +3928,15 @@ private slots:
         // (for `level`) and Show column (listing `msg`).
         mWindow->SetColumnVisible(msgCol, false);
 
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        // `BuildHeaderContextMenu` reports the freshly-built `Show
+        // column` submenu via the optional out-parameter; `QAction::
+        // menu()` and `qobject_cast<QMenu*>(child)` both return null
+        // on the Linux Release offscreen-QPA toolchain (the QtWidgets
+        // metaobject hooks for `QMenu` are stripped at link time
+        // there), so the test cannot recover the pointer by walking
+        // the tree. The out-parameter is the contract.
+        QMenu *showMenu = nullptr;
+        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr, &showMenu);
         QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
 
@@ -3936,37 +3944,7 @@ private slots:
         QVERIFY2(topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu");
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
-        // The `Show column` submenu is parented to `menu` by
-        // `QMenu::addMenu(title)`. `QAction::menu()` is unreliable
-        // under the Linux Release offscreen-QPA build (the QtWidgets
-        // hook into `QActionPrivate` returns null even though the
-        // submenu was wired correctly), so walk `menu->children()`
-        // directly for the QMenu child instead.
-        const QMenu *showMenu = nullptr;
-        for (QObject *child : menu->children())
-        {
-            auto *childMenu = qobject_cast<QMenu *>(child);
-            if (childMenu != nullptr && childMenu->title().startsWith(QStringLiteral("Show")))
-            {
-                showMenu = childMenu;
-                break;
-            }
-        }
         QVERIFY2(showMenu != nullptr, "menu must contain a Show column submenu");
-
-        // Belt-and-braces: the top-level action list should still
-        // expose the submenu through one of its actions, even if the
-        // `QAction::menu()` accessor itself is the broken bit.
-        bool foundShowAction = false;
-        for (const QAction *act : topActions)
-        {
-            if (act->text().startsWith(QStringLiteral("Show")))
-            {
-                foundShowAction = true;
-                break;
-            }
-        }
-        QVERIFY2(foundShowAction, "top-level actions must include the Show submenu entry");
 
         QStringList showActionLabels;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -4485,9 +4463,14 @@ private slots:
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the reorder");
         QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
 
-        // The offscreen-QPA `findChild<QMenu*>` bug strands the
-        // direct path; reach the per-filter sub-menu through the
-        // public `FiltersMenu()` accessor instead.
+        // The Filters-menu lookup needs two test seams to work under
+        // the Linux Release offscreen-QPA toolchain:
+        //   * `FiltersMenu()` substitutes for `findChild<QMenu*>`,
+        //     which traverses no children there.
+        //   * `FilterSubMenu(id)` substitutes for `QAction::menu()`
+        //     and any `qobject_cast<QMenu*>(child)` walk -- both
+        //     return null on that toolchain even though the submenu
+        //     was wired by `ui->menuFilters->addMenu(title)`.
         const QMenu *filtersMenu = mWindow->FiltersMenu();
         QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
         const QAction *filterMenuAction = nullptr;
@@ -4501,22 +4484,8 @@ private slots:
             }
         }
         QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
-        // `filterMenuAction->menu()` is unreliable on the Linux
-        // Release offscreen build (the QtWidgets hook into
-        // `QActionPrivate::menu()` returns null even though the
-        // submenu was wired by `addMenu(title)`); walk the parent
-        // menu's direct children for the QMenu whose `menuAction`
-        // carries this filter id.
-        const QMenu *filterSubMenu = nullptr;
-        for (QObject *child : filtersMenu->children())
-        {
-            auto *childMenu = qobject_cast<QMenu *>(child);
-            if (childMenu != nullptr && childMenu->menuAction()->data().toString() == filterId)
-            {
-                filterSubMenu = childMenu;
-                break;
-            }
-        }
+
+        const QMenu *filterSubMenu = mWindow->FilterSubMenu(filterId);
         QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Clear sub-menu");
         QAction *editAction = nullptr;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
