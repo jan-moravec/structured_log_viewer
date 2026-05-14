@@ -101,8 +101,9 @@ public:
     /// `QAction::menu()` and `QObject::children()`/`qobject_cast`
     /// traversals both fail to recover this otherwise (the submenu's
     /// QtWidgets metaobject hooks are stripped at link time).
-    [[nodiscard]] QMenu *BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr,
-                                                QMenu **outShowSubMenu = nullptr);
+    [[nodiscard]] QMenu *BuildHeaderContextMenu(
+        int logicalColumn, QWidget *parent = nullptr, QMenu **outShowSubMenu = nullptr
+    );
 
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
