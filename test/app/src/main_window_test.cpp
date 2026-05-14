@@ -3936,18 +3936,37 @@ private slots:
         QVERIFY2(topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu");
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
-        // The `Show column` submenu is the action carrying a nested
-        // menu. Pull it out and verify the hidden headers are listed.
+        // The `Show column` submenu is parented to `menu` by
+        // `QMenu::addMenu(title)`. `QAction::menu()` is unreliable
+        // under the Linux Release offscreen-QPA build (the QtWidgets
+        // hook into `QActionPrivate` returns null even though the
+        // submenu was wired correctly), so walk `menu->children()`
+        // directly for the QMenu child instead.
         const QMenu *showMenu = nullptr;
-        for (const QAction *act : topActions)
+        for (QObject *child : menu->children())
         {
-            if (act->menu() != nullptr && act->text().startsWith("Show"))
+            auto *childMenu = qobject_cast<QMenu *>(child);
+            if (childMenu != nullptr && childMenu->title().startsWith(QStringLiteral("Show")))
             {
-                showMenu = act->menu();
+                showMenu = childMenu;
                 break;
             }
         }
         QVERIFY2(showMenu != nullptr, "menu must contain a Show column submenu");
+
+        // Belt-and-braces: the top-level action list should still
+        // expose the submenu through one of its actions, even if the
+        // `QAction::menu()` accessor itself is the broken bit.
+        bool foundShowAction = false;
+        for (const QAction *act : topActions)
+        {
+            if (act->text().startsWith(QStringLiteral("Show")))
+            {
+                foundShowAction = true;
+                break;
+            }
+        }
+        QVERIFY2(foundShowAction, "top-level actions must include the Show submenu entry");
 
         QStringList showActionLabels;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -4346,7 +4365,11 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
 
-        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        // The Qt 6.8 + offscreen-QPA `findChild<QMenu*>` traversal
+        // bug strands `findChild<QMenu*>("menuView")` on the Linux
+        // runner; reach the View menu through `ViewMenu()` instead
+        // (mirrors the `FiltersMenu()` workaround).
+        auto *viewMenu = mWindow->ViewMenu();
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
 
         emit viewMenu->aboutToShow();
@@ -4478,10 +4501,25 @@ private slots:
             }
         }
         QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        const QMenu *filterSubMenu = filterMenuAction->menu();
+        // `filterMenuAction->menu()` is unreliable on the Linux
+        // Release offscreen build (the QtWidgets hook into
+        // `QActionPrivate::menu()` returns null even though the
+        // submenu was wired by `addMenu(title)`); walk the parent
+        // menu's direct children for the QMenu whose `menuAction`
+        // carries this filter id.
+        const QMenu *filterSubMenu = nullptr;
+        for (QObject *child : filtersMenu->children())
+        {
+            auto *childMenu = qobject_cast<QMenu *>(child);
+            if (childMenu != nullptr && childMenu->menuAction()->data().toString() == filterId)
+            {
+                filterSubMenu = childMenu;
+                break;
+            }
+        }
         QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Clear sub-menu");
         QAction *editAction = nullptr;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         for (QAction *action : filterSubMenu->actions())
         {
             if (action->text() == QStringLiteral("Edit"))
@@ -4978,8 +5016,10 @@ private slots:
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
         QCoreApplication::processEvents();
 
-        // Rebuild the View menu through the production path.
-        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        // Rebuild the View menu through the production path. The
+        // `findChild<QMenu*>` traversal is broken under the offscreen
+        // QPA on Linux; `ViewMenu()` reaches `ui->menuView` directly.
+        auto *viewMenu = mWindow->ViewMenu();
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
         emit viewMenu->aboutToShow();
 

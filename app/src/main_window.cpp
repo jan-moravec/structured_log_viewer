@@ -1216,6 +1216,11 @@ QMenu *MainWindow::FiltersMenu() const
     return ui->menuFilters;
 }
 
+QMenu *MainWindow::ViewMenu() const
+{
+    return ui->menuView;
+}
+
 #ifdef LOGAPP_BUILD_TESTING
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {

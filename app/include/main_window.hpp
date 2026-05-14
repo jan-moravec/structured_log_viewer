@@ -73,6 +73,11 @@ public:
     }
     [[nodiscard]] QMenu *FiltersMenu() const;
 
+    /// Test-only `View` menu accessor. Mirrors `FiltersMenu()`: the
+    /// Qt 6.8 + offscreen-QPA `findChild<QMenu*>` traversal bug also
+    /// strands `findChild<QMenu*>("menuView")` on the Linux runner.
+    [[nodiscard]] QMenu *ViewMenu() const;
+
     /// Toggle column visibility. Updates `Column::visible` and the
     /// header. No-op for an out-of-range index. Public for tests and
     /// the View menu.
