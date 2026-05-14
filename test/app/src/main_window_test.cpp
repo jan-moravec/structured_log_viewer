@@ -4502,6 +4502,7 @@ private slots:
         // Triggering Edit opens a `FilterEditor`. In the buggy build
         // the stale lambda would type-mismatch against `columns[src]`
         // and silently drop the filter from `mFilters`.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         editAction->trigger();
         QCoreApplication::processEvents();
 
