@@ -172,25 +172,16 @@ public:
     /// single linear scan.
     [[nodiscard]] static bool IsSingleLineAsciiTrim(std::string_view bytes) noexcept;
 
-    /// Move the column at @p srcIndex to @p destIndex. Brackets the
-    /// move with `beginMoveColumns` / `endMoveColumns` so the proxy
-    /// chain forwards `columnsMoved` to the view, and remaps any
-    /// persisted `LogFilter::row` in the underlying configuration so
-    /// saved filters follow the column. Returns `true` on success.
-    /// Note: @p destIndex is the column's final absolute position
-    /// (matches `LogTable::MoveColumn`), not Qt's "insert before"
-    /// destination child.
+    /// Move column @p srcIndex to @p destIndex (absolute final
+    /// position, not Qt's "insert before"). Emits `columnsMoved`
+    /// and remaps `LogFilter::row` so saved filters follow the
+    /// column. Returns `true` on success.
     bool MoveColumn(int srcIndex, int destIndex);
 
-    /// Notify the view that the configuration's column structure
-    /// (count / order / per-column metadata) was replaced out-of-band
-    /// by a path that does not emit Qt model signals -- e.g.
-    /// `LogConfigurationManager::Load` rewriting the in-memory
-    /// configuration. Brackets a `beginResetModel` /
-    /// `endResetModel` so the view re-initialises its header section
-    /// count, drops stale `setSectionHidden` flags, and re-queries
-    /// `headerData` for every column. Cheap; emits no per-row
-    /// signals.
+    /// Tell the view to refresh its column structure after an
+    /// out-of-band rewrite of the configuration (e.g. `Load`).
+    /// Wraps a `beginResetModel` / `endResetModel`; row data is
+    /// untouched.
     void NotifyConfigurationReplaced();
 
 signals:

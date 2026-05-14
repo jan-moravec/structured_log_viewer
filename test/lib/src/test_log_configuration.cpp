@@ -718,10 +718,7 @@ TEST_CASE(
 
 TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")
 {
-    // A hidden-column flag persists across Save / Load via the
-    // `visible` field on `Column`. Saving / re-loading must preserve
-    // the per-column flag (and leave the default `visible == true`
-    // alone on untouched columns).
+    // The hidden-column flag must survive Save / Load.
     const TestLogConfiguration testConfiguration;
 
     {
@@ -751,8 +748,7 @@ TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationMan
     CHECK(manager.Configuration().columns[0].visible);
     CHECK_FALSE(manager.Configuration().columns[1].visible);
 
-    // Save back through the manager and confirm the flag survives the
-    // serialise -> parse cycle.
+    // Save back and confirm the flag survives the round-trip.
     const TestLogConfiguration roundTrip;
     manager.Save(roundTrip.GetFilePath());
 
@@ -768,9 +764,8 @@ TEST_CASE(
     "[log_configuration][wire_format_compat][column_visibility]"
 )
 {
-    // Configurations saved by builds that pre-date `Column::visible`
-    // must keep loading; Glaze tolerates missing keys, and the field's
-    // default is `true` so a pre-existing column stays visible.
+    // Pre-`Column::visible` configs must keep loading. Glaze
+    // tolerates missing keys; the field defaults to `true`.
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
             {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]}
@@ -790,14 +785,14 @@ TEST_CASE(
     "[LogConfigurationManager][move_column][filter_row_remap]"
 )
 {
-    // Setup: four columns with one filter per column. Each filter's
-    // `row` field initially equals its column index.
+    // Four columns + one filter per column; each filter's `row`
+    // starts equal to its column index.
     LogConfigurationManager manager;
     manager.AppendKeys({"a", "b", "c", "d"});
     REQUIRE(manager.Configuration().columns.size() == 4);
 
-    // Bypass the public `AddFilter` flow by writing the configuration
-    // to disk with hand-picked filters, then re-loading.
+    // Bypass `AddFilter` (opens an editor): write filters to disk
+    // and re-load.
     {
         LogConfiguration configuration;
         configuration.columns = manager.Configuration().columns;
@@ -826,12 +821,12 @@ TEST_CASE(
         manager.MoveColumn(3, 0);
         const auto &filters = manager.Configuration().filters;
         REQUIRE(filters.size() == 4);
-        // Filters were created in column order, so they still appear
-        // in that order; only the `row` field follows the permutation:
-        //   col 0 (orig 'a') -> row 1
-        //   col 1 (orig 'b') -> row 2
-        //   col 2 (orig 'c') -> row 3
-        //   col 3 (orig 'd') -> row 0
+        // Filters keep their order (created in column order); only
+        // `row` follows the permutation:
+        //   col 0 ('a') -> row 1
+        //   col 1 ('b') -> row 2
+        //   col 2 ('c') -> row 3
+        //   col 3 ('d') -> row 0
         CHECK(filters[0].row == 1);
         CHECK(filters[1].row == 2);
         CHECK(filters[2].row == 3);
@@ -844,10 +839,10 @@ TEST_CASE(
         const auto &filters = manager.Configuration().filters;
         REQUIRE(filters.size() == 4);
         // Permutation:
-        //   col 0 (orig 'a') -> row 3
-        //   col 1 (orig 'b') -> row 0
-        //   col 2 (orig 'c') -> row 1
-        //   col 3 (orig 'd') -> row 2
+        //   col 0 ('a') -> row 3
+        //   col 1 ('b') -> row 0
+        //   col 2 ('c') -> row 1
+        //   col 3 ('d') -> row 2
         CHECK(filters[0].row == 3);
         CHECK(filters[1].row == 0);
         CHECK(filters[2].row == 1);
@@ -881,9 +876,8 @@ TEST_CASE(
 
 TEST_CASE("RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic", "[LogConfigurationManager][move_column]")
 {
-    // The static helper is the contract the app uses to remap the
-    // live in-memory filter map after a header-drag reorder; keep it
-    // in lockstep with the lib-side `MoveColumn` rotation.
+    // The app uses this static helper to remap its runtime filter
+    // map; keep it in lockstep with `MoveColumn`'s rotation.
     using Mgr = LogConfigurationManager;
     CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 0) == 0);
     CHECK(Mgr::RemapColumnIndexAfterMove(2, 3, 0) == 3);
@@ -900,14 +894,9 @@ TEST_CASE(
     "[LogConfigurationManager][update][filter_row_remap]"
 )
 {
-    // `Update` appends auto-promoted timestamp columns, then bubbles
-    // them to position 0 via `MoveColumn`. The bubble must drag any
-    // persisted `LogFilter::row` through the same permutation, so a
-    // hand-loaded configuration whose filters were authored against
-    // a pre-bubble layout still ends up pointing at the right column
-    // after `Update` runs. This test pins the contract on the legacy
-    // (non-streaming) path -- the streaming bubble inside
-    // `LogModel::AppendBatch` is exercised by the app-side
+    // `Update` appends auto-promoted timestamp columns and bubbles
+    // them to index 0. Persisted `LogFilter::row` must follow the
+    // bubble. Streaming-side coverage lives in
     // `TestSourceColumnMoveRemapsRuntimeFilters`.
     LogConfigurationManager manager;
     manager.AppendKeys({"regular_a", "regular_b"});
@@ -915,8 +904,8 @@ TEST_CASE(
     REQUIRE(manager.Configuration().columns[0].header == "regular_a");
     REQUIRE(manager.Configuration().columns[1].header == "regular_b");
 
-    // Hand-craft filters pointing at the two existing columns. Both
-    // should follow their column through the upcoming bubble.
+    // Filters pointing at the two existing columns; both must
+    // follow their column through the bubble.
     {
         LogConfiguration configuration;
         configuration.columns = manager.Configuration().columns;
@@ -948,9 +937,8 @@ TEST_CASE(
     }
     REQUIRE(manager.Configuration().filters.size() == 2);
 
-    // Drive `Update` with a `LogData` whose only fresh key is
-    // `timestamp`. The auto-promote path appends it at index 2 and
-    // bubbles it to index 0; existing columns shift right.
+    // `Update` with a fresh `timestamp` key: appended at index 2
+    // then bubbled to index 0; existing columns shift right.
     const TestLogFile testLogFile;
     auto source = testLogFile.CreateFileLineSource();
     KeyIndex testKeys;
@@ -966,11 +954,9 @@ TEST_CASE(
     CHECK(manager.Configuration().columns[1].header == "regular_a");
     CHECK(manager.Configuration().columns[2].header == "regular_b");
 
-    // Both filters must have followed the bubble: the one originally
-    // at row 0 (`regular_a`) now lives at row 1; the one at row 1
-    // (`regular_b`) now lives at row 2. Without the `MoveColumn`
-    // remap inside `Update`, both would still report the pre-bubble
-    // indices and silently target the wrong columns.
+    // Filters followed the bubble: row 0 -> row 1, row 1 -> row 2.
+    // Without the remap they would still report pre-bubble indices
+    // and silently target the wrong columns.
     REQUIRE(manager.Configuration().filters.size() == 2);
     CHECK(manager.Configuration().filters[0].row == 1);
     CHECK(manager.Configuration().filters[0].filterString == std::string{"x"});
@@ -982,17 +968,14 @@ TEST_CASE(
     "Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]"
 )
 {
-    // A malformed configuration file must not corrupt a previously
-    // loaded configuration. Glaze writes into the target member-by-
-    // member, so reading directly into `mConfiguration` and then
-    // throwing on a parse error would leave the live state half-
-    // populated -- and `MainWindow::TryLoadAsConfiguration`'s
-    // catch-and-fall-through to the streaming path would inherit
-    // that corruption.
+    // A malformed file must not corrupt the previously loaded
+    // configuration. Glaze writes member-by-member, so a direct read
+    // into `mConfiguration` would half-populate it on parse failure
+    // -- and `TryLoadAsConfiguration`'s fall-through would then
+    // start streaming over corrupt state.
     LogConfigurationManager manager;
 
-    // Stage 1: load a known-good configuration so we have a baseline
-    // to compare against after the failed load.
+    // Stage 1: load a known-good configuration as the baseline.
     {
         LogConfiguration good;
         good.columns.push_back(LogConfiguration::Column{
@@ -1020,10 +1003,8 @@ TEST_CASE(
     REQUIRE(manager.Configuration().columns[1].header == "good_b");
     REQUIRE_FALSE(manager.Configuration().columns[1].visible);
 
-    // Stage 2: hand-author a malformed JSON so Glaze fails partway
-    // through. `"columns"` opens with a valid first entry then
-    // breaks on a structural error so the parser is guaranteed to
-    // touch the live struct before erroring.
+    // Stage 2: malformed JSON that parses partway through so Glaze
+    // is guaranteed to touch the live struct before erroring.
     constexpr std::string_view BROKEN_JSON = R"({
         "columns": [
             {"header":"new_a","keys":["a"],"printFormat":"{}","type":"string","parseFormats":[]},
@@ -1039,10 +1020,9 @@ TEST_CASE(
     }
     CHECK_THROWS_AS(manager.Load(brokenFile.GetFilePath()), std::runtime_error);
 
-    // Stage 3: the previous configuration must be byte-identical to
-    // its pre-load state. Without atomic load, Glaze would have
-    // overwritten `columns[0]` with `{header:"new_a", ...}` before
-    // throwing on the malformed second entry.
+    // Stage 3: the previous configuration must be byte-identical
+    // to its pre-load state. Without atomic load, `columns[0]`
+    // would already read as `new_a`.
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "good_a");
     CHECK(manager.Configuration().columns[1].header == "good_b");

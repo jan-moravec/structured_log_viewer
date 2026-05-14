@@ -55,9 +55,8 @@ struct LogConfiguration
         Type type = Type::Unknown;
         std::vector<std::string> parseFormats;
         /// Hidden columns stay in the table (data, sort, and filters
-        /// keep working); only `QHeaderView::setSectionHidden` is
-        /// toggled in the view. Defaults to `true` so legacy JSON
-        /// (missing key) loads as visible.
+        /// keep working); only the view toggles `setSectionHidden`.
+        /// Defaults to `true` so legacy JSON loads as visible.
         bool visible = true;
     };
 
@@ -88,11 +87,9 @@ struct LogConfiguration
             Wildcard
         };
 
-        /// Defaults chosen so a default-constructed `LogFilter` is
-        /// inert: `row = -1` is rejected by `OutOfRangeRow` in
-        /// `ValidateFilterAgainstColumns`, and `String` is the most
-        /// permissive type (no missing-payload obligations beyond
-        /// `filterString` / `matchType`, which the validator catches).
+        /// Defaults make a default-constructed `LogFilter` inert:
+        /// `row = -1` is rejected by `ValidateFilterAgainstColumns`,
+        /// and `String` is the most permissive type.
         Type type = Type::String;
         int row = -1;
         std::optional<std::string> filterString;
@@ -134,35 +131,29 @@ public:
     /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
-    /// Move the column at @p srcIndex to @p destIndex. Also remaps
+    /// Move the column at @p srcIndex to @p destIndex. Also runs
     /// every `LogConfiguration::filters[*].row` through the same
-    /// single-column permutation so persisted filters follow the
-    /// column they originally pointed at.
+    /// permutation so persisted filters follow the column.
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
-    /// Flip the type of the column at @p columnIndex; caller back-fills
-    /// any row data. No-op out of range.
+    /// Flip the type of the column at @p columnIndex; caller
+    /// back-fills row data. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
-    /// Toggle visibility of @p columnIndex; no-op out of range. The
-    /// column stays in the table -- only `Column::visible` flips, so
-    /// data, sort, and filters keep working. View applies the flag
-    /// via `QHeaderView::setSectionHidden`.
+    /// Toggle `Column::visible` for @p columnIndex. The column stays
+    /// in the table; only the header section is hidden. No-op out
+    /// of range.
     void SetColumnVisible(size_t columnIndex, bool visible);
 
-    /// Replace the configuration's filter vector wholesale. Intended
-    /// for the app's eager mirror of `MainWindow::mFilters` -> the
-    /// wire-format `LogConfiguration::filters`, so that `Save` and
-    /// the lib-side `MoveColumn` filter-row remap operate on the
-    /// live runtime set rather than a permanently empty vector.
+    /// Replace `LogConfiguration::filters` wholesale. The app calls
+    /// this from its `mFilters` -> wire-format mirror so `Save` and
+    /// `MoveColumn`'s row remap see the live runtime set.
     void SetFilters(std::vector<LogConfiguration::LogFilter> filters);
 
-    /// Apply the single-column reorder permutation `(srcIndex ->
-    /// destIndex)` to a stored column index @p columnIndex (e.g. a
-    /// `LogFilter::row`). Returns the new column index; out-of-range
-    /// inputs pass through unchanged. Exposed so the app's live
-    /// in-memory filter map can be remapped with the same logic the
-    /// manager uses internally.
+    /// Apply the `(srcIndex -> destIndex)` single-column move to a
+    /// stored column index. Out-of-range inputs pass through
+    /// unchanged. Exposed so the app can remap its runtime filter
+    /// map with the same logic.
     [[nodiscard]] static int RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex);
 
     const LogConfiguration &Configuration() const;

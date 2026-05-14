@@ -55,13 +55,9 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
     buffer << file.rdbuf();
     const std::string content = buffer.str();
 
-    // Parse into a temporary first so a malformed file cannot leave
-    // `mConfiguration` half-populated. Glaze writes into the target
-    // member-by-member, so reading directly into `mConfiguration` and
-    // then throwing would corrupt the live state and any subsequent
-    // open path (e.g. the speculative `TryLoadAsConfiguration`'s
-    // catch-and-fall-through to streaming) would inherit the partial
-    // mutation.
+    // Parse into a temporary first: Glaze writes member-by-member,
+    // so reading directly into `mConfiguration` would leave it
+    // half-populated if a parse error throws mid-file.
     LogConfiguration parsed;
     const auto error = glz::read_json(parsed, content);
     if (error)
@@ -109,15 +105,10 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
                 // Bubble the freshly-appended timestamp column to
-                // position 0. Use `MoveColumn` (not an inline
-                // `std::swap` chain) so any persisted
-                // `LogConfiguration::filters[*].row` is remapped
-                // through the same `RemapColumnIndexAfterMove`
-                // permutation -- otherwise a hand-loaded
-                // configuration with filters would silently keep
-                // filter rows pointing at the pre-bubble column
-                // indices. No-op when the new column was already
-                // the only one.
+                // position 0. `MoveColumn` (not an inline swap chain)
+                // so persisted `filters[*].row` is remapped along
+                // with the rotation. No-op when this is the only
+                // column.
                 if (mConfiguration.columns.size() > 1)
                 {
                     MoveColumn(mConfiguration.columns.size() - 1, 0);
@@ -197,10 +188,8 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // Persisted filters carry a column index (`LogFilter::row`)
-    // pointing at the column they were created for. Single-column
-    // reorder remaps them through the same permutation so the
-    // filter follows its column.
+    // Run every persisted `LogFilter::row` through the same
+    // permutation so each filter follows its column.
     const int src = static_cast<int>(srcIndex);
     const int dest = static_cast<int>(destIndex);
     for (LogConfiguration::LogFilter &filter : mConfiguration.filters)

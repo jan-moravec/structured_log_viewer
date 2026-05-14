@@ -142,9 +142,8 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     return sides;
 }
 
-/// Why a saved `LogFilter` could not be revived against the current
-/// column layout. Used by the load-side validator to report dropped
-/// filters in a single summary dialog.
+/// Why a saved `LogFilter` could not be revived. The load-side
+/// validator uses this to summarise drops in one dialog.
 enum class FilterValidationReason
 {
     OutOfRangeRow,
@@ -160,8 +159,7 @@ struct FilterValidationFailure
 {
     FilterValidationReason reason;
     int row;
-    /// Empty when `row` is out of range; otherwise the column header
-    /// the filter pointed at.
+    /// The filter's column header, or empty when `row` is out of range.
     std::string columnHeader;
 };
 
@@ -187,11 +185,10 @@ QString FilterValidationReasonString(FilterValidationReason reason)
     return QStringLiteral("unknown");
 }
 
-/// Single source of truth for "is this saved filter usable against
-/// the current column layout". Called from the configuration-load
-/// path (which drops any failure into a summary dialog) and from
-/// `MainWindow::AddFilter`'s pre-guard (which keeps its existing
-/// status-bar UX). Returns `nullopt` on success.
+/// Check whether a saved filter still fits the current column
+/// layout. Called from configuration load (drops failures into a
+/// summary dialog) and from `MainWindow::AddFilter`'s pre-guard.
+/// Returns `nullopt` on success.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     const loglib::LogConfiguration::LogFilter &filter, const std::vector<loglib::LogConfiguration::Column> &columns
 )
@@ -315,11 +312,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     mModel = new LogModel(mTableView);
     mTableView->setModel(mModel);
-    // `QAbstractItemModel::modelReset` clears the header's per-section
-    // hidden state, but `LogTable::Reset` does *not* clear the
-    // configuration's `Column::visible` flags. Reapply them after
-    // every reset so any path that resets the model (load, re-stream,
-    // teardown, ...) ends up consistent with the saved config.
+    // `modelReset` clears the header's hidden flags, but
+    // `Column::visible` survives. Re-apply on every reset so load /
+    // re-stream / teardown all stay consistent with the saved config.
     connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
@@ -368,22 +363,13 @@ MainWindow::MainWindow(QWidget *parent)
         this,
         &MainWindow::ShowHeaderContextMenu
     );
-    // Wire the runtime `mFilters` remap to the model's `columnsMoved`
-    // signal so it fires for *both* user-initiated header drags
-    // (re-entry through `OnHeaderSectionMoved` -> `LogModel::MoveColumn`)
-    // and implicit moves done by the model itself (the streaming-time
-    // timestamp-bubble in `LogModel::AppendBatch` is the production
-    // case). Without this, a timestamp column auto-promoted mid-stream
-    // would silently shift every other column under live filter rules,
-    // leaving the runtime map and proxy rules pointing at the wrong
-    // source columns and a subsequent `Save` rewriting the wire-format
-    // vector with the stale runtime rows.
+    // Catch every column move (header drag and implicit moves like
+    // mid-stream timestamp bubbling) so the runtime filter map and
+    // proxy rules stay aligned with the source layout.
     connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
 
-    // The `View` menu is rebuilt on demand from the current
-    // configuration. It is the only way to restore visibility once
-    // every header section is hidden, since the header's right-click
-    // menu requires hitting a visible section.
+    // Rebuild on demand. This is the only escape hatch when every
+    // header section is hidden (right-click needs a visible section).
     connect(ui->menuView, &QMenu::aboutToShow, this, &MainWindow::RebuildViewMenu);
 
     mTableView->setShowGrid(true);
@@ -694,10 +680,9 @@ void MainWindow::UpdateUi()
 {
     const QHeaderView *header = mTableView->horizontalHeader();
     const int columnCount = mTableView->model()->columnCount();
-    // Skip the trailing column (it stretches to fill) and any
-    // hidden columns -- `resizeColumnToContents` walks the model
-    // even for zero-width sections, so honouring `isSectionHidden`
-    // saves the per-row size-hint pass on hidden columns.
+    // Skip the trailing column (it stretches to fill) and hidden
+    // columns -- `resizeColumnToContents` walks the model even for
+    // zero-width sections.
     for (int i = 0; i < columnCount - 1; ++i)
     {
         if (header != nullptr && header->isSectionHidden(i))
@@ -754,40 +739,21 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 {
     try
     {
-        // Drop the proxy's filter rules *before* `Load` rewrites the
-        // configuration. Without this, the upcoming
-        // `NotifyConfigurationReplaced` -> `modelReset` triggers
-        // `LogFilterModel::OnSourceModelReset`, which calls
-        // `RecomputeAcceptedRows` against the still-active rule list
-        // -- those rules were built for the old column layout, so
-        // they would briefly evaluate against the wrong source
-        // columns. The runtime `mFilters` map is left untouched (we
-        // need it readable for the bypass branch below); it will be
-        // wiped + rebuilt by `RebuildFiltersFromConfiguration`
-        // immediately afterwards.
+        // Drop proxy rules and the sort *before* `Load` rewrites the
+        // configuration: existing rules / `mSortColumn` were built
+        // for the old column layout and would otherwise evaluate
+        // against the wrong columns under the upcoming model reset.
+        // `mFilters` itself is rebuilt below by
+        // `RebuildFiltersFromConfiguration`.
         mSortFilterProxyModel->SetFilterRules({});
-
-        // Drop any active sort. The new configuration may reorder
-        // columns (or remove the sorted-by column entirely), so the
-        // proxy's `mSortColumn` and the header's sort indicator
-        // would otherwise still point at a column index whose
-        // identity changed under the load. `sortByColumn(-1, ...)`
-        // resets both in one call.
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         mModel->ConfigurationManager().Load(file.toStdString());
-        // `Load` rewrites `mConfiguration` (column count, order,
-        // visibility, ...) without emitting a Qt model signal.
-        // `NotifyConfigurationReplaced` brackets a `beginResetModel`
-        // / `endResetModel` so the header re-initialises its section
-        // count and the wired `ApplyColumnVisibility` callback (on
-        // `modelReset`) re-applies the freshly-loaded `visible`
-        // flags. No explicit follow-up call is needed: the wired
-        // callback is the single source of truth.
+        // `Load` rewrites the configuration without emitting any
+        // model signal; the reset re-initialises the header and
+        // pulls the loaded `visible` flags via the wired
+        // `modelReset -> ApplyColumnVisibility` connect.
         mModel->NotifyConfigurationReplaced();
-        // Revive any persisted filters against the freshly-loaded
-        // column layout. Shared with `DoLoadConfiguration`; surfaces
-        // a dialog summarising any drops.
         RebuildFiltersFromConfiguration();
         return true;
     }
@@ -1066,21 +1032,12 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
-    // Column reorder is gated mid-stream because `LogModel::MoveColumn`
-    // rotates the source-side `LogConfiguration::columns` vector
-    // while the streaming pipeline is interleaving its own mutations
-    // through `LogTable::AppendBatch -> AppendKeys` (both run on the
-    // GUI thread, but a user-initiated reorder landing between two
-    // batches would scramble the proxy chain's column-index-keyed
-    // state -- sort column, filter rules, enum rank cache -- in ways
-    // the streaming-time invalidation hooks aren't built to cover).
-    // The right-click menu is gated on the same flag so the
-    // column-management UX (Hide / Show + Reorder) is consistent
-    // with Load/Save/Preferences. The `View` menu is intentionally
-    // *not* gated -- it is the always-reachable escape hatch for
-    // restoring an accidentally-hidden column, and only flips the
-    // `visible` flag (no rotation, no key-cache mutation, no proxy
-    // invalidation).
+    // Reorder + right-click are gated mid-stream because
+    // `LogModel::MoveColumn` rotates `columns` while the streaming
+    // pipeline is busy mutating it through `AppendKeys`; a drag
+    // between batches would scramble the proxy chain's column-keyed
+    // state. The `View` menu stays reachable (only flips the
+    // `visible` flag).
     if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
     {
         header->setSectionsMovable(enabled);
@@ -1364,10 +1321,8 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
     mLastDroppedFilterCountForTest = droppedCount;
     if (mSuppressDialogsForTest)
     {
-        // Headless test path: avoid the modal so the test thread
-        // does not block. The count is the only assertion the tests
-        // need; the formatted message is exercised under the
-        // production path.
+        // Skip the modal so the offscreen-QPA test thread does not
+        // block; the count is what the tests assert against.
         return;
     }
 #else
@@ -1378,20 +1333,13 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
 
 void MainWindow::MirrorFiltersToConfiguration()
 {
-    // Snapshot the runtime UUID-keyed map into the wire-format
-    // vector so `Save` and the lib-side `MoveColumn` filter remap
-    // operate on the live state. UUIDs are GUI-internal and are
-    // regenerated on load; the load path rebuilds menu order from
-    // the vector iteration order.
+    // Snapshot the runtime map into the wire-format vector so
+    // `Save` and the lib-side `MoveColumn` row-remap see the live
+    // set. UUIDs are GUI-internal and regenerated on load.
     //
-    // Sort the snapshot so two consecutive `Save`s of the same
-    // filter set produce byte-identical JSON, and so the Filters
-    // menu reconstructed on load presents entries in a stable order
-    // across round-trips. Primary key is the column index (filters
-    // group by column); secondary is the filter type (one filter of
-    // each type per column is the common case); ties beyond that are
-    // broken by the type-specific payload so identical (row, type)
-    // pairs still sort deterministically.
+    // Sort by (row, type, payload) so two consecutive saves write
+    // byte-identical JSON and the Filters-menu order on the
+    // round-trip is stable.
     std::vector<loglib::LogConfiguration::LogFilter> snapshot;
     snapshot.reserve(mFilters.size());
     for (const auto &[id, f] : mFilters)
@@ -1408,8 +1356,8 @@ void MainWindow::MirrorFiltersToConfiguration()
         {
             return static_cast<int>(a.type) < static_cast<int>(b.type);
         }
-        // Same (row, type): compare each type's payload field-wise so
-        // duplicate filters land in a stable order.
+        // Tie-break field-wise so duplicate filters still land in a
+        // deterministic order.
         if (a.filterString != b.filterString)
         {
             return a.filterString < b.filterString;
@@ -1459,19 +1407,11 @@ void MainWindow::SaveConfiguration()
 
 void MainWindow::DoSaveConfiguration(const QString &path)
 {
-    // Eager mirror keeps `mConfiguration.filters` current, but the
-    // explicit call here documents intent and survives a future
-    // mutation point that forgets to mirror.
-    //
-    // `Save` propagates `std::exception` (typically `glz`'s
-    // `write_file_json` error or an `std::filesystem` failure) on
-    // disk I/O; the two production callers (`SaveConfiguration` and
-    // `OnSaveAct`) both wrap this call in a `try / catch` that maps
-    // the exception to a user-visible `QMessageBox`. The previous
-    // `bool` return value was always `true` (any error path threw
-    // before reaching the `return`) and misled callers into thinking
-    // they had a status flag to react to -- collapsed to `void` so
-    // the contract matches the implementation.
+    // The eager mirror at every mutation point already keeps
+    // `mConfiguration.filters` current; the call here documents
+    // intent and survives a future mutation point that forgets to
+    // mirror. `Save` propagates `std::exception` on I/O failure;
+    // both production callers wrap this in a `try / catch`.
     MirrorFiltersToConfiguration();
     mModel->ConfigurationManager().Save(path.toStdString());
 }
@@ -1491,31 +1431,18 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
 {
     try
     {
-        // Drop the proxy's filter rules before tearing down the
-        // model so the cascading `modelReset` from `Reset()` /
-        // `NotifyConfigurationReplaced()` does not run
-        // `LogFilterModel::RecomputeAcceptedRows` against the
-        // stale-but-still-installed rule list (built for the old
-        // column layout). The runtime `mFilters` map is rebuilt
-        // explicitly by `RebuildFiltersFromConfiguration` below.
+        // Drop proxy rules and the active sort before the model is
+        // reset: both were built for the old column layout. The
+        // runtime `mFilters` map is rebuilt below.
         mSortFilterProxyModel->SetFilterRules({});
-
-        // Drop any active sort for the same reason as
-        // `TryLoadAsConfiguration`: the loaded configuration may
-        // reorder or remove the sorted-by column, leaving the
-        // proxy's `mSortColumn` pointing at a different column
-        // identity than the user picked.
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         mModel->Reset();
         mModel->ConfigurationManager().Load(path.toStdString());
-        // `Load` mutates `mConfiguration` in-place and emits no
-        // signal, so the model's `columnCount()` may have jumped
-        // since the prior `Reset()`. `NotifyConfigurationReplaced`
-        // brackets a model reset so the header re-initialises its
-        // section count to the new value; the wired
-        // `modelReset -> ApplyColumnVisibility` callback then
-        // pushes per-section flags.
+        // `Load` rewrites the configuration without emitting any
+        // model signal; the reset re-initialises the header section
+        // count and the wired `modelReset -> ApplyColumnVisibility`
+        // pushes the freshly-loaded `visible` flags.
         mModel->NotifyConfigurationReplaced();
         UpdateUi();
 
@@ -1531,13 +1458,10 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
 
 void MainWindow::RebuildFiltersFromConfiguration()
 {
-    // Take ownership of the freshly-loaded wire-format vector, then
-    // drop runtime + menu state (`ClearAllFilters` mirrors an empty
-    // vector back into the manager) before walking the local copy.
-    // Re-entering through `AddLogFilter` rebuilds `mFilters`, the
-    // Filters menu items, and re-populates the wire-format vector
-    // via the eager mirror -- so the saved set survives the
-    // round-trip. UUIDs are GUI-only and are regenerated here.
+    // Copy the loaded vector out, wipe runtime + menu state, then
+    // walk the copy. Re-entering `AddLogFilter` rebuilds `mFilters`,
+    // the Filters menu, and the wire-format vector. UUIDs are GUI-
+    // only and regenerated here.
     const std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
 
     ClearAllFilters();
@@ -1554,15 +1478,9 @@ void MainWindow::RebuildFiltersFromConfiguration()
             dropped.push_back(std::move(*failure));
             continue;
         }
-        // Defer the mirror + rule-list rebuild so we pay them once
-        // at the end of the loop instead of N times. The menu entry
-        // for each filter is built inline by `AddLogFilter`
-        // regardless of `deferSync`, so the Filters menu still ends
-        // up populated when the load returns.
+        // Defer mirror + rule rebuild; one trailing sync below.
         AddLogFilter(QUuid::createUuid().toString(), saved, /*deferSync=*/true);
     }
-    // Single trailing sync so the wire-format vector and the proxy's
-    // rule list both reflect the surviving filter set.
     MirrorFiltersToConfiguration();
     UpdateFilters();
 
@@ -1575,12 +1493,10 @@ void MainWindow::RebuildFiltersFromConfiguration()
         const size_t shown = std::min(dropped.size(), MAX_SHOWN);
         for (size_t i = 0; i < shown; ++i)
         {
-            // Render the column identity off the validation reason
-            // rather than off `columnHeader.empty()`. A real column
-            // can legitimately have an empty `header` string, and a
-            // non-`OutOfRangeRow` failure (e.g. `TypeMismatch`)
-            // against such a column would otherwise mis-render as
-            // `(out-of-range column)`.
+            // Branch on the reason, not `columnHeader.empty()`: a real
+            // column may legitimately have an empty `header`, so an
+            // empty-check would mis-render type mismatches against it
+            // as "out of range".
             const QString header =
                 (dropped[i].reason == FilterValidationReason::OutOfRangeRow)
                     ? QStringLiteral("(out-of-range column)")
@@ -1653,11 +1569,9 @@ void MainWindow::AddFilter(
 {
     if (mModel->rowCount() == 0)
     {
-        // No rows means no columns the editor could populate against.
-        // Surface a status-bar hint so the user is not left wondering
-        // why the menu click did nothing -- e.g. clicking Edit on a
-        // saved filter after `StopAndKeepRows` then `Reset`, or
-        // clicking Add Filter before opening any file.
+        // No rows means there are no columns for the editor to
+        // bind against. Hint the user via the status bar instead
+        // of silently doing nothing.
         if (openEditor)
         {
             statusBar()->showMessage(
@@ -1667,15 +1581,12 @@ void MainWindow::AddFilter(
         return;
     }
 
-    // Drop saved filters whose type no longer matches the column type
-    // (e.g. string filter against a column that auto-promoted to enum).
-    // The shared `ValidateFilterAgainstColumns` helper is the single
-    // source of truth for "is this filter still usable"; this pre-guard
-    // adapts the validator's structured failure into the legacy
-    // status-bar UX. The post-editor "missing payload" guards below
-    // remain inline because they need the editor object to delete on
-    // failure; the validator catches the same payload gaps for the
-    // configuration-load path.
+    // Drop saved filters that no longer fit the current columns
+    // (e.g. a string filter against a column that auto-promoted to
+    // enum). `ValidateFilterAgainstColumns` is the shared check;
+    // this pre-guard adapts its result to the legacy status-bar UX.
+    // The post-editor "missing payload" guards remain inline because
+    // they need to delete the editor on failure.
     std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
@@ -1704,24 +1615,16 @@ void MainWindow::AddFilter(
                 {
                     return;
                 }
-                // Intentional fallthrough: the saved filter was dropped
-                // because the column type changed; open a fresh editor
-                // so the user can re-pick values for the new type.
-                // Regression: `TestSavedStringFilterDroppedOnNowEnumColumn`.
+                // Fall through: drop the stale filter but still open a
+                // fresh editor so the user can re-pick for the new
+                // type. Regression: `TestSavedStringFilterDroppedOnNowEnumColumn`.
                 break;
             case FilterValidationReason::OutOfRangeRow:
-                // Out-of-range column indices reach `AddFilter` only
-                // through unusual paths (the configuration-load flow
-                // validates separately and drops them before getting
-                // here, and the per-filter Edit menu reads the live
-                // `mFilters` whose rows are remapped on every column
-                // move). Guard anyway: pre-loading the editor with an
-                // out-of-range row would land in `FilterEditor::Load`
-                // with a column index past `columns.size()`, which
-                // would either crash or silently bind to the wrong
-                // column. Drop the saved filter and -- if the caller
-                // wanted an editor -- open a fresh one without a
-                // pre-load (matches the `TypeMismatch` recovery shape).
+                // Should not reach `AddFilter` in normal flow (the
+                // load path validates separately, and the Edit menu
+                // re-reads the live `mFilters`). Guard anyway: a stale
+                // row would crash or mis-bind `FilterEditor::Load`.
+                // Recovery shape mirrors `TypeMismatch`.
                 ClearFilter(filterId);
                 statusBar()->showMessage(
                     QString("Filter '%1' was removed because its column no longer exists").arg(filterId),
@@ -1737,14 +1640,10 @@ void MainWindow::AddFilter(
             case FilterValidationReason::MissingNumericRange:
             case FilterValidationReason::MissingStringMatch:
             case FilterValidationReason::MissingBooleanSelection:
-                // The pre-guard intentionally *only* reacts to the
-                // empty-enum, type-mismatch, and out-of-range reasons;
-                // the historical edit-path behavior expects the
-                // post-editor branch below to surface the
-                // missing-payload reasons (so it can `delete
-                // filterEditor` on the way out). The
-                // configuration-load path runs the validator
-                // separately and never reaches this branch.
+                // Missing-payload reasons fall through to the
+                // post-editor inline guards below (they need to
+                // delete the editor on failure). The load path
+                // validates these separately and never reaches here.
                 break;
             }
         }
@@ -1757,18 +1656,13 @@ void MainWindow::AddFilter(
     }
 
     auto *filterEditor = new FilterEditor(*mModel, filterId, this);
-    // Editor is parented to `this`, so without explicit cleanup
-    // every Add / Edit-Filter click would leak a `FilterEditor`
-    // (and its signal connections) until `MainWindow` is destroyed.
-    // `WA_DeleteOnClose` handles the X-button path (a `QCloseEvent`
-    // triggers the deferred delete). `accept()` -- which the editor
-    // calls on OK -- only hides the dialog and does *not* fire a
-    // close event, so we also wire the post-`accept()` /
-    // post-`reject()` `QDialog::accepted` / `rejected` signals to
-    // `deleteLater()` so OK and Cancel both clean up. The explicit
-    // `delete filterEditor` branches below handle the early-exit
-    // "missing payload" cases that happen *before* the editor is
-    // shown.
+    // Without explicit cleanup, every Add / Edit click leaks a
+    // `FilterEditor` (parented to `this`) until window teardown.
+    // `WA_DeleteOnClose` handles the X-button; `accept()` /
+    // `reject()` only hide, so we wire `accepted` / `rejected` to
+    // `deleteLater` so OK and Cancel also clean up. The explicit
+    // `delete filterEditor` branches below cover early-exit
+    // "missing payload" cases that fire before the editor is shown.
     filterEditor->setAttribute(Qt::WA_DeleteOnClose);
     connect(filterEditor, &QDialog::accepted, filterEditor, &QObject::deleteLater);
     connect(filterEditor, &QDialog::rejected, filterEditor, &QObject::deleteLater);
@@ -1928,10 +1822,9 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
         }
     }
 
-    // Defer the mirror + rule-rebuild here so the upcoming
-    // `AddLogFilter` does both passes in one shot. Otherwise every
-    // submit replays the proxy's `RecomputeAcceptedRows` twice over
-    // the same row set, which becomes pathological on large logs.
+    // Defer mirror + rule-rebuild; the upcoming `AddLogFilter` does
+    // both in one pass instead of running them twice per submit
+    // (pathological on large logs).
     ClearFilter(filterID, /*deferSync=*/true);
 
     loglib::LogConfiguration::LogFilter filter;
@@ -2131,18 +2024,12 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     menuItem->menuAction()->setData(QVariant(id));
 
     const QAction *editAction = menuItem->addAction("Edit");
-    // Capture only the (stable) filter id, then look up the live
-    // filter from `mFilters` at trigger time. Capturing the
-    // `LogConfiguration::LogFilter` value here would freeze
-    // `filter.row` at the column index it had when the menu was
-    // built, so a subsequent column reorder (drag-to-reorder)
-    // would leave the Edit action pointing at the wrong column --
-    // and `AddFilter`'s type-match guard would then silently drop
-    // the filter blaming a "column type change". The live lookup
-    // keeps Edit in lockstep with the remap done by
-    // `OnHeaderSectionMoved`. Regression:
+    // Capture only the filter id and resolve the live filter at
+    // trigger time. Capturing the filter by value would freeze its
+    // `row` at the column it had at menu-build time, so a column
+    // reorder between build and click would mis-target Edit and the
+    // type-match guard would silently drop the filter. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
-    // Qt slot; `AddFilter` uses normal exception-throwing STL; failures surface as usual.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
         const auto it = mFilters.find(id.toStdString());
@@ -2461,14 +2348,11 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     {
         return;
     }
-    // The slot only knows how to translate a single user drag against
-    // an identity-mapped header (visual == logical). Anything else
-    // would fold the pre-existing visual permutation into the move
-    // and silently rotate the wrong source column. We restore the
-    // identity invariant at the end of every move; assert it on the
-    // way in so a violation surfaces in debug builds, and bail
-    // safely in release so a stale permutation cannot scramble the
-    // source layout.
+    // The slot only handles a drag against an identity-mapped
+    // header (visual == logical for every section). Anything else
+    // would fold a stale visual permutation into the move and
+    // rotate the wrong source column. We restore identity at the
+    // end of every move; assert in debug, recover in release.
     Q_ASSERT_X(
         oldVisualIndex == logicalIndex,
         "MainWindow::OnHeaderSectionMoved",
@@ -2476,24 +2360,9 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     );
     if (oldVisualIndex != logicalIndex)
     {
-        // Out-of-band header state -- force the visual mapping back
-        // to identity so the next drag starts from a known baseline,
-        // and reassert visibility flags (`setSectionHidden` is keyed
-        // by logical index and may have followed the visual shuffle).
-        // The user's drag is silently dropped here; log a warning so
-        // a recurring violation in the wild is at least diagnosable,
-        // and surface a brief status-bar hint so end-users see *some*
-        // feedback rather than a no-op drag. If this ever fires, the
-        // slot's identity-precondition needs to be relaxed (or the
-        // path that scrambled the visual mapping needs to restore
-        // identity before returning control to the user).
-        //
-        // Dump the full visual<->logical permutation so a recurring
-        // failure in the wild has enough breadcrumbs to diagnose. A
-        // bare `(logicalIndex, oldVisualIndex, newVisualIndex)`
-        // triple isn't enough -- the assertion failure is "the
-        // *header* drifted off identity", which depends on every
-        // section, not just the one the drag touched.
+        // Drop the drag, force identity, re-apply visibility, and
+        // dump the full permutation so a recurrence in the wild is
+        // at least diagnosable.
         QStringList permutation;
         const int sectionCount = header->count();
         permutation.reserve(sectionCount);
@@ -2518,10 +2387,8 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     {
         return;
     }
-    // The visual-to-logical mapping reflects the user's drop position;
-    // translate it into the corresponding source-side `MoveColumn`
-    // operation. `dest` is the absolute final position the moved
-    // column should land at (matching `LogTable::MoveColumn`).
+    // Identity-mapped header, so `newVisualIndex` is the absolute
+    // final position the column should land at.
     const int dest = newVisualIndex;
     const int src = logicalIndex;
     if (src == dest)
@@ -2530,47 +2397,24 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     }
 
     mApplyingSectionMove = true;
-    // RAII so an exception in any of the calls below cannot leave
-    // the guard latched -- a latched guard would silently disable
-    // every subsequent header drag.
+    // RAII reset: a latched guard would silently disable every
+    // subsequent header drag if anything below threw.
     const auto guard = qScopeGuard([this]() { mApplyingSectionMove = false; });
 
-    // Slot is called from the Qt event loop; an exception escaping
-    // here would propagate into Qt with undefined behaviour. Wrap
-    // the body so a thrown `std::bad_alloc` (or anything else from
-    // the model / proxy / mirror calls) leaves the UI in a known
-    // baseline state and surfaces an error rather than tearing
-    // down the application.
+    // The slot runs from the Qt event loop, where an unhandled
+    // exception is UB. Wrap so a throw leaves the UI in a known
+    // baseline rather than tearing the app down.
     try
     {
-        // Commit the move to the source model. `LogModel::MoveColumn`
-        // brackets `beginMoveColumns` / `endMoveColumns`, which causes
-        // `columnsMoved` to fire synchronously -- the connected
-        // `OnSourceColumnsMoved` slot then takes care of remapping
-        // every `mFilters[id].row`, mirroring the runtime map back
-        // over `mConfiguration.filters`, and refreshing the proxy's
-        // rule list. `LogConfigurationManager::MoveColumn` already
-        // rotated the saved configuration's `filters[*].row`; the
-        // mirror call inside the slot overwrites that with the
-        // runtime values so the two stores share one source of truth.
+        // `MoveColumn` emits `columnsMoved` synchronously; the
+        // connected `OnSourceColumnsMoved` slot remaps `mFilters`,
+        // re-applies visibility, and refreshes the proxy rules.
         (void)mModel->MoveColumn(src, dest);
 
-        // After the model commits the move, the view's header has
-        // visual == logical for the moved column. Empirically Qt also
-        // reshuffles the visual indices of the shifted columns on the
-        // leftward case (`columnsMoved` permutes `QHeaderView`'s
-        // `visualIndices` array to preserve user-visible order), so
-        // the identity invariant is *usually* restored automatically.
-        // Defensive: reapply identity anyway so future drags start
+        // Qt usually restores visual == logical for shifted columns
+        // by itself, but reset defensively so the next drag starts
         // from a known baseline regardless of Qt-version drift.
-        // Re-entrancy through `sectionMoved` is swallowed by
-        // `mApplyingSectionMove`.
-        //
-        // `Column::visible` flags are reapplied to the header by the
-        // synchronously-fired `OnSourceColumnsMoved` slot (wired to
-        // `LogModel::columnsMoved`), so we don't need a second
-        // `ApplyColumnVisibility()` here -- single source of truth
-        // for both the user-drag path and the streaming-bubble path.
+        // Re-entry is swallowed by `mApplyingSectionMove`.
         ResetHeaderToIdentity();
     }
     catch (const std::exception &e)
@@ -2580,11 +2424,8 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
             tr("Failed to apply column move: %1").arg(QString::fromLocal8Bit(e.what())),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
-        // Recover to a known baseline so the next drag starts clean.
-        // `OnSourceColumnsMoved` only fires when the model actually
-        // committed a move, so its `ApplyColumnVisibility()` call
-        // can't be relied on here -- reapply explicitly along the
-        // exception path.
+        // Recover to a known baseline. `OnSourceColumnsMoved` only
+        // fires on a committed move, so re-apply visibility here.
         ResetHeaderToIdentity();
         ApplyColumnVisibility();
     }
@@ -2601,42 +2442,32 @@ void MainWindow::OnSourceColumnsMoved(
     const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
 )
 {
-    // Top-level moves only. Nested-parent moves don't make sense for
-    // our flat table model, but Qt's signal carries the parents for
-    // future-compat; ignore them defensively.
+    // Flat table model, so nested-parent moves are nonsense. Qt
+    // carries the parents for future-compat; ignore defensively.
     if (parent.isValid() || destParent.isValid())
     {
         return;
     }
     if (first != last)
     {
-        // Both move paths in the codebase (`LogModel::MoveColumn` and
-        // the streaming bubble in `LogModel::AppendBatch`) move a
-        // single column at a time. A multi-column range here would
-        // be a future Qt-side change we'd need to think about; bail
-        // safely so we don't silently mis-remap.
+        // Both move paths (`LogModel::MoveColumn` and the streaming
+        // timestamp bubble) move a single column. Multi-column moves
+        // would need a deliberate redesign; bail safely.
         return;
     }
     const int src = first;
-    // `columnsMoved` uses Qt's "insert before" semantics for
-    // `destColumn`. `LogConfigurationManager::RemapColumnIndexAfterMove`
-    // takes an absolute final-position index (matching
-    // `LogTable::MoveColumn`). Convert: a rightward move at
-    // `destColumn > src` lands at `destColumn - 1`; a leftward move
-    // at `destColumn <= src` lands at `destColumn`.
+    // `columnsMoved`'s `destColumn` uses "insert before" semantics;
+    // `RemapColumnIndexAfterMove` wants the absolute final position.
     const int finalDest = (destColumn > src) ? destColumn - 1 : destColumn;
     if (src == finalDest)
     {
         return;
     }
-    // Lib-side `LogConfigurationManager::MoveColumn` already rotated
-    // `mConfiguration.filters[*].row` -- the wire-format vector is
-    // correct as it stands. Replay the same permutation onto the
-    // runtime UUID-keyed `mFilters` so both stores agree, then
-    // rebuild the proxy's rule list against the post-move column
-    // indices so the active filter follows its column. Deliberately
-    // do *not* call `MirrorFiltersToConfiguration` here: it would
-    // overwrite the lib-side wire-format with a snapshot of the
+    // The lib-side `MoveColumn` already rotated
+    // `mConfiguration.filters[*].row`. Replay the same permutation
+    // onto the runtime `mFilters` so both stores agree, then rebuild
+    // the proxy rules. Deliberately not mirroring back here: that
+    // would clobber the lib-side wire-format with a snapshot of the
     // runtime map, which is wrong in the (test-only) case where the
     // wire-format was populated via a direct `mgr.Load` that bypassed
     // `MainWindow::RebuildFiltersFromConfiguration` -- the runtime
@@ -2660,17 +2491,10 @@ void MainWindow::OnSourceColumnsMoved(
         UpdateFilters();
     }
 
-    // Push the post-move `Column::visible` flags back into the header.
-    // Qt's persistent-index machinery normally carries `setSectionHidden`
-    // flags through a `columnsMoved` when `rowCount > 0`, but
-    // `QHeaderViewPrivate::sectionsAboutToBeChanged` early-returns on a
-    // zero-row source -- in that case `sectionsChanged` falls through
-    // to `initializeSections()`, which clears every `isHidden` flag.
-    // Reapplying here keeps both move paths (user header drag and
-    // streaming-induced timestamp bubble in `LogModel::AppendBatch`)
-    // consistent regardless of row count, and avoids the contract
-    // drift where one slot pushed visibility and the other didn't.
-    // Pinned by `TestSourceColumnMovePreservesHiddenColumn`.
+    // Re-apply hidden flags after the move. Qt usually carries them
+    // through `columnsMoved`, but `initializeSections()` clears them
+    // when the source has zero rows. Pinned by
+    // `TestSourceColumnMovePreservesHiddenColumn`.
     ApplyColumnVisibility();
 }
 
@@ -2682,10 +2506,9 @@ void MainWindow::ResetHeaderToIdentity()
         return;
     }
     const QSignalBlocker blocker(header);
-    // Walk left-to-right and place each logical index at its matching
-    // visual position. Earlier iterations restore the prefix and only
-    // touch later positions monotonically, so the loop converges in
-    // a single sweep.
+    // Walk left-to-right and pin each logical index to its matching
+    // visual position. Earlier iterations only touch later positions,
+    // so the loop converges in one sweep.
     for (int target = 0; target < header->count(); ++target)
     {
         const int currentVisual = header->visualIndex(target);
@@ -2695,12 +2518,9 @@ void MainWindow::ResetHeaderToIdentity()
         }
     }
 #ifndef NDEBUG
-    // Pin the post-condition: every logical index now sits at the
-    // matching visual index. Crashing here in debug builds keeps a
-    // future header-rendering regression from silently leaving the
-    // header off identity (which `OnHeaderSectionMoved` would later
-    // trip on, but only as a soft "ignore the drag" warning rather
-    // than a clear failure at the source).
+    // Crash in debug if the loop failed to converge -- a soft
+    // "ignore the drag" warning in `OnHeaderSectionMoved` would be
+    // a much harder regression to trace.
     for (int logical = 0; logical < header->count(); ++logical)
     {
         Q_ASSERT_X(
@@ -2742,25 +2562,20 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
     }
     auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
 
-    // Capture each entry's stable `keys` snapshot rather than its
-    // logical index. The menu can outlive a column move (e.g. a
-    // streaming-induced timestamp bubble shifts indices while the
-    // popup is open); the index would then point at the wrong
-    // column. `FindColumnIndexByKeys` re-resolves at trigger time.
+    // Capture stable `keys` rather than the logical index: a column
+    // move while the menu is open would otherwise leave the action
+    // pointing at the wrong column. `FindColumnIndexByKeys`
+    // re-resolves at trigger time.
     const std::vector<std::string> &thisKeys = columns[static_cast<size_t>(logicalColumn)].keys;
     const auto &thisColumn = columns[static_cast<size_t>(logicalColumn)];
 
-    // Build all labels in one O(N) pass; the prior per-column
-    // `ColumnMenuLabel` invocations turned the `Show column` submenu
-    // construction into O(N^2) over the column set.
+    // O(N) bulk build; `ColumnMenuLabel` per column would be
+    // O(N^2) on the `Show column` submenu.
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
 
-    // Only offer Hide for currently-visible columns. In production,
-    // right-click only fires on a visible section so this branch is
-    // always taken; test callers (`BuildHeaderContextMenu` is public
-    // for the offscreen-QPA `findChild<QMenu*>` workaround) may pass
-    // an already-hidden index, where `Hide` would be a confusing
-    // no-op.
+    // Only offer Hide for visible columns. Production right-clicks
+    // always hit a visible section; the test seam may pass a hidden
+    // index, where Hide would be a confusing no-op.
     if (thisColumn.visible)
     {
         const QString &hideLabel = labels[static_cast<size_t>(logicalColumn)];
@@ -2774,10 +2589,9 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
         });
     }
 
-    // Gather every hidden column for the `Show column` submenu. The
-    // clicked column is normally visible (right-click only fires on
-    // visible sections), so it would not appear here in production --
-    // tests can call this with an already-hidden index.
+    // Hidden columns populate the `Show column` submenu. The clicked
+    // column is normally visible, so it would not appear here in
+    // production -- tests can call this with a hidden index.
     std::vector<int> hiddenColumns;
     for (size_t i = 0; i < columns.size(); ++i)
     {
@@ -2824,12 +2638,9 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
         return;
     }
     header->setSectionHidden(logicalIndex, !visible);
-    // If we just hid the column the user is sorting by, the sort
-    // indicator becomes invisible while the sort still drives the
-    // proxy. That state is unrecoverable from the UI (no sort glyph
-    // to click on), so reset to the unsorted baseline. The user can
-    // re-pick a sort column via Show column / View menu and a
-    // header click. Pinned by `TestHidingSortedColumnClearsSort`.
+    // Hiding the sorted-by column would leave the sort active with
+    // no UI glyph to clear it; reset to the unsorted baseline.
+    // Pinned by `TestHidingSortedColumnClearsSort`.
     if (!visible && header->isSortIndicatorShown() && header->sortIndicatorSection() == logicalIndex)
     {
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
@@ -2862,15 +2673,11 @@ void MainWindow::RebuildViewMenu()
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())
     {
-        // Nothing to toggle yet; surface a disabled placeholder so the
-        // menu is not silently empty.
+        // Disabled placeholder so an empty View menu is not silent.
         QAction *placeholder = viewMenu->addAction(tr("(no columns yet)"));
         placeholder->setEnabled(false);
         return;
     }
-    // O(N) bulk label build -- prior per-call `ColumnMenuLabel` was
-    // O(N^2) over the column set because it re-scanned the columns
-    // vector for duplicate-header detection on every iteration.
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
     for (size_t i = 0; i < columns.size(); ++i)
     {
@@ -2878,12 +2685,8 @@ void MainWindow::RebuildViewMenu()
         QAction *action = viewMenu->addAction(label);
         action->setCheckable(true);
         action->setChecked(columns[i].visible);
-        // Capture the column's stable `keys`, not its index: the menu
-        // is rebuilt on every `aboutToShow`, but a streaming-induced
-        // column move (e.g. timestamp bubble) between show and trigger
-        // would invalidate a captured index. `FindColumnIndexByKeys`
-        // re-resolves at trigger time so the toggle always lands on
-        // the right column.
+        // Capture stable `keys` so the toggle still hits the right
+        // column if a column move lands between show and trigger.
         connect(action, &QAction::toggled, this, [this, keys = columns[i].keys](bool on) {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx >= 0)
@@ -2901,14 +2704,10 @@ QString MainWindow::ColumnMenuLabel(size_t columnIndex) const
     {
         return {};
     }
-    // Disambiguate when two columns share the same `header`. `header`
-    // is user-visible and not unique; `keys` is the stable identifier
-    // (per `LogConfiguration::Column`). Compare in `std::string` so
-    // the per-iteration `QString::fromStdString` allocation is gone;
-    // short-circuit once a second match is found. Single occurrence
-    // -> raw header. The `View`-menu rebuild path should call
-    // `BuildAllColumnMenuLabels` instead so this O(N) re-scan does
-    // not get amortised to O(N^2) over the full column set.
+    // Disambiguate duplicate headers via `keys` (the stable id).
+    // Compare in `std::string` to avoid per-iteration UTF-8 alloc;
+    // short-circuit once a second match is found. For a full scan
+    // over every column, prefer `BuildAllColumnMenuLabels`.
     const std::string &thisHeader = columns[columnIndex].header;
     int duplicates = 0;
     for (const auto &other : columns)
@@ -2932,9 +2731,7 @@ QString MainWindow::ColumnMenuLabel(size_t columnIndex) const
     {
         keys.append(QString::fromStdString(k));
     }
-    // `|` rather than `,` because JSON keys can legally contain `,`
-    // (rare but legal); the disambiguator stays unambiguous regardless
-    // of the underlying key bytes.
+    // `|` (not `,`) because JSON keys can legally contain commas.
     return QStringLiteral("%1 [%2]").arg(std::move(header), keys.join(QLatin1Char('|')));
 }
 
@@ -2947,9 +2744,8 @@ std::vector<QString> MainWindow::BuildAllColumnMenuLabels() const
     {
         return labels;
     }
-    // Single pass: tally how many columns share each `header` value.
-    // Subsequent label construction is a single hashmap lookup per
-    // entry, giving the whole helper O(N) over the columns vector.
+    // Tally duplicate-header counts once, then look up per entry.
+    // Whole helper is O(N) over the columns vector.
     std::unordered_map<std::string, int> headerCounts;
     headerCounts.reserve(columns.size());
     for (const auto &c : columns)

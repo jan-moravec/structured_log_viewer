@@ -73,35 +73,27 @@ public:
     }
     [[nodiscard]] QMenu *FiltersMenu() const;
 
-    /// Set @p logicalIndex's visibility. Mutates `LogConfiguration::
-    /// Column::visible` and applies the flag via `QHeaderView::
-    /// setSectionHidden`. Public so tests (and the View menu) can
-    /// drive the flow without simulating a `QContextMenuEvent`.
-    /// No-op for an out-of-range @p logicalIndex.
+    /// Toggle column visibility. Updates `Column::visible` and the
+    /// header. No-op for an out-of-range index. Public for tests and
+    /// the View menu.
     void SetColumnVisible(int logicalIndex, bool visible);
 
-    /// Reapply every column's `visible` flag to the horizontal header.
-    /// Idempotent; invoked after column structural changes (load, reorder).
+    /// Push every `Column::visible` flag to the header. Idempotent;
+    /// run after a load or reorder.
     void ApplyColumnVisibility();
 
-    /// Force the horizontal header's visual-to-logical mapping back to
-    /// identity (`visual == logical` for every section). Brackets the
-    /// reordering with a `QSignalBlocker` so the no-op `sectionMoved`
-    /// volley does not re-enter `OnHeaderSectionMoved`. Exposed so the
-    /// out-of-band recovery path can call it without duplicating the
-    /// loop. Idempotent.
+    /// Restore the header so visual == logical for every section.
+    /// Suppresses re-entry into `OnHeaderSectionMoved` while doing
+    /// so. Idempotent.
     void ResetHeaderToIdentity();
 
-    /// Build the right-click header context menu for the column at
-    /// @p logicalColumn. Exposed publicly because the offscreen-QPA
-    /// `findChild<QMenu*>` traversal bug (see `FiltersMenu()`) blocks
-    /// the natural test path; callers own the returned menu. Not
-    /// `const` because it wires `QObject::connect` for the menu's
-    /// `Hide` / `Show column` actions.
+    /// Build the right-click header menu for @p logicalColumn.
+    /// Caller owns the returned menu. Public so tests can drive the
+    /// menu without an offscreen-QPA `findChild<QMenu*>` (see
+    /// `FiltersMenu()`).
     [[nodiscard]] QMenu *BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
-    /// Read-only accessor for the per-filter map; tests use it to
-    /// assert filter-row remap after a reorder.
+    /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
     {
         return mFilters;
@@ -124,36 +116,27 @@ public:
     };
     void SetSessionModeForTest(TestSessionMode mode);
 
-    /// Test-only entry point to the production `TryLoadAsConfiguration`
-    /// path used by single-file `OpenFiles`. Exposed because the real
-    /// path is gated behind `QFileDialog`.
+    /// Test-only entry to the `TryLoadAsConfiguration` path
+    /// (production gates it behind `QFileDialog`).
     bool TryLoadAsConfigurationForTest(const QString &file);
 
-    /// Test-only entry point to the production
-    /// `SetConfigurationUiEnabled` slot so the column-management gate
-    /// (header drag + right-click menu) can be exercised without
-    /// opening a real streaming session.
+    /// Test-only entry to `SetConfigurationUiEnabled` so the
+    /// column-management gate can be exercised without a real
+    /// streaming session.
     void SetConfigurationUiEnabledForTest(bool enabled);
 
-    /// Test-only entry points to the production `SaveConfiguration` /
-    /// `LoadConfiguration` slots. Bypass the `QFileDialog` pop-up so
-    /// the filter-persistence round-trip can be exercised headlessly.
-    /// Both delegate to the same private helpers the dialog-driven
-    /// slots use, so they exercise the eager-mirror + load-rebuild
-    /// paths verbatim.
+    /// Test-only entries to `SaveConfiguration` / `LoadConfiguration`
+    /// that bypass the file dialog and run the same private helpers.
     void SaveConfigurationToPathForTest(const QString &path);
     void LoadConfigurationFromPathForTest(const QString &path);
 
-    /// Test-only flag: when true, `ShowDroppedFiltersDialog` records
-    /// the dropped count into `LastDroppedFilterCountForTest` instead
-    /// of popping a modal `QMessageBox` (which would block the test
-    /// thread under the offscreen QPA). Defaults to false; tests
-    /// flip it on before driving a load.
+    /// When true, `ShowDroppedFiltersDialog` skips the modal and
+    /// only updates the test counter (modals block the offscreen
+    /// QPA test thread). Default false.
     void SetSuppressDialogsForTest(bool suppress);
 
-    /// Number of saved filters dropped on the most recent
-    /// `LoadConfigurationFromPathForTest` call. Reset to 0 at the
-    /// start of each load.
+    /// Filters dropped on the most recent
+    /// `LoadConfigurationFromPathForTest` call. Reset on each load.
     [[nodiscard]] int LastDroppedFilterCountForTest() const;
 #endif
 
@@ -181,13 +164,9 @@ private slots:
         bool openEditor = true
     );
     void ClearAllFilters();
-    /// Remove a single filter rule. `deferSync` suppresses the
-    /// `MirrorFiltersToConfiguration` / `UpdateFilters` calls so
-    /// the submit slots (which `ClearFilter` -> `AddLogFilter`)
-    /// can collapse the two-step replace into a single mirror +
-    /// rule rebuild done by `AddLogFilter`. Default `false` preserves
-    /// the eager-sync behaviour all other callers (Clear menu
-    /// action, error-bail branches) rely on.
+    /// Remove a single filter rule. Pass `deferSync = true` when the
+    /// caller (e.g. a submit slot) immediately re-adds the filter
+    /// so the mirror + rule rebuild only run once.
     void ClearFilter(const QString &filterID, bool deferSync = false);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
@@ -214,86 +193,50 @@ private slots:
     /// refreshes the status bar.
     void OnSourceStatusChanged(loglib::SourceStatus status);
 
-    /// Translate a `QHeaderView::sectionMoved` (visual move) into a
-    /// source-side `LogModel::MoveColumn`, then reset the header's
-    /// visual order so visual == logical again. The runtime
-    /// `mFilters[*].row` remap is wired separately through
-    /// `OnSourceColumnsMoved`, which fires from the same
-    /// `LogModel::MoveColumn` we trigger here -- and which also
-    /// catches *implicit* moves (e.g. the streaming-time timestamp-
-    /// bubble in `LogModel::AppendBatch`), so the runtime map stays
-    /// in lockstep regardless of who initiated the move.
+    /// Translate a header drag into a source-side `LogModel::
+    /// MoveColumn`, then restore visual == logical. The runtime
+    /// filter remap and visibility re-apply happen in
+    /// `OnSourceColumnsMoved`, which also catches implicit moves
+    /// (e.g. mid-stream timestamp bubbling).
     void OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
 
-    /// Slot for `LogModel::columnsMoved`. Single source of truth for
-    /// translating a source-side column move into a runtime
-    /// `mFilters` remap and a header `Column::visible` re-apply.
-    /// Wired to the lowest model in the chain (`LogModel`) rather
-    /// than the proxy because the lib-side
-    /// `LogConfigurationManager::MoveColumn` already touched
-    /// `mConfiguration.filters[*].row`; we mirror the runtime map
-    /// back over the wire-format vector here so both stores share
-    /// the runtime values. Fires from header-drag moves
-    /// (via `OnHeaderSectionMoved` -> `LogModel::MoveColumn`) and
-    /// from streaming-induced timestamp bubbles
-    /// (`LogModel::AppendBatch` -> `mLogTable.MoveColumn`); without
-    /// the latter, mid-stream timestamp promotion would silently
-    /// shift every existing column under live filter rules, leaving
-    /// the rules pointing at the wrong source columns. The
-    /// `ApplyColumnVisibility()` call at the end keeps
-    /// `QHeaderView::setSectionHidden` flags aligned with the
-    /// post-move logical indices for both paths -- Qt's persistent
-    /// index machinery handles the common case but bails (clearing
-    /// every hidden flag via `initializeSections()`) when the source
-    /// has zero rows.
+    /// `LogModel::columnsMoved` slot: remap `mFilters[*].row`,
+    /// re-apply `Column::visible`, and refresh the proxy rules.
+    /// Single source of truth for both header-drag and streaming-
+    /// induced column moves (the latter is the timestamp bubble in
+    /// `LogModel::AppendBatch`). The visibility re-apply is needed
+    /// because Qt clears hidden flags via `initializeSections()`
+    /// when the source has zero rows.
     void OnSourceColumnsMoved(
         const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
     );
 
-    /// Build and show the header context menu at the click position.
+    /// Build and show the header context menu at @p pos.
     void ShowHeaderContextMenu(const QPoint &pos);
 
-    /// Repopulate the `View` menu from the current configuration on
-    /// each `aboutToShow`. Each column gets a checkable `QAction`
-    /// whose `toggled` signal flips `Column::visible`. Reachable even
-    /// when every header section is hidden (the only escape hatch in
-    /// that state).
+    /// Rebuild the `View` menu on each `aboutToShow`. Each column
+    /// gets a checkable action that toggles `Column::visible`.
+    /// Always reachable, so it can restore visibility when every
+    /// header section is hidden.
     void RebuildViewMenu();
 
 private:
-    /// Locate the column whose persisted `keys` exactly equals @p keys
-    /// and return its current logical index, or `-1` if no such column
-    /// exists. `keys` is the column's set of JSON keys (per
-    /// `LogConfiguration::Column::keys`), which is the only identifier
-    /// that survives a column reorder (logical indices shift; headers
-    /// are user-visible and could legitimately duplicate). Used by the
-    /// header / `View` menus so their lambdas resolve the right column
-    /// even when a streaming-induced column move (e.g. timestamp
-    /// bubbling) shifts indices between menu construction and trigger.
+    /// Logical index of the column whose `keys` match @p keys, or
+    /// `-1` if none. `keys` is the only identifier that survives a
+    /// reorder; menu lambdas use it to re-resolve the target column
+    /// at trigger time.
     [[nodiscard]] int FindColumnIndexByKeys(const std::vector<std::string> &keys) const;
 
-    /// Display label for column @p columnIndex in the View / Hide /
-    /// Show menus. Returns the column's `header` verbatim when it
-    /// uniquely identifies the column, or `header [keys]` when the
-    /// header collides with another column's header (Qt allows
-    /// duplicate headers; `keys` is the stable identifier). Empty
-    /// when @p columnIndex is out of range.
-    ///
-    /// Convenience for single-column queries (header context menu
-    /// builds one or two labels per popup). When you need labels for
-    /// every column -- e.g. the `View` menu rebuild -- prefer
-    /// `BuildAllColumnMenuLabels`, which scans the duplicate-header
-    /// map in a single pass instead of the O(N) re-scan this entry
-    /// point does per call.
+    /// Menu label for one column: the header, or `header [keys]`
+    /// when the header is shared with another column. Empty when
+    /// @p columnIndex is out of range. For all columns at once,
+    /// prefer `BuildAllColumnMenuLabels` (this entry point is O(N)
+    /// per call).
     [[nodiscard]] QString ColumnMenuLabel(size_t columnIndex) const;
 
-    /// Build the menu label for every column in `mModel`'s current
-    /// configuration in a single O(N) pass over the columns vector.
-    /// Equivalent (per-element) to looping over `ColumnMenuLabel(i)`,
-    /// but materialises the duplicate-header tally once and reuses
-    /// it for every entry -- a substantial win on configurations
-    /// with many columns since `ColumnMenuLabel` would otherwise
-    /// re-scan the columns vector on every call.
+    /// Menu labels for every column in one O(N) pass (tallies
+    /// duplicate headers once and reuses the count). Use this from
+    /// the `View` menu rebuild instead of looping `ColumnMenuLabel`.
     [[nodiscard]] std::vector<QString> BuildAllColumnMenuLabels() const;
 
     /// Try to load @p file as a `LogConfiguration`; returns true on
@@ -311,73 +254,39 @@ private:
 
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
 
-    /// Show a single warning dialog summarising filters that were
-    /// dropped on load. Built message is pre-rendered by the caller
-    /// (the structured `FilterValidationFailure` type is a `.cpp`-
-    /// local detail). Records @p droppedCount into the test-only
-    /// counter and skips the modal when
+    /// Pop a warning dialog summarising filters dropped on load.
+    /// Records @p droppedCount for tests and skips the modal when
     /// `mSuppressDialogsForTest` is set.
     void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
 
-    /// Add @p filter to `mFilters`, build its menu entry, and
-    /// (unless @p deferSync is true) mirror the live map into the
-    /// wire-format vector and refresh the proxy's rule list.
-    /// Bulk callers (`RebuildFiltersFromConfiguration`) pass
-    /// `deferSync = true` and run a single trailing
-    /// `MirrorFiltersToConfiguration` + `UpdateFilters` after the
-    /// loop to avoid an O(N^2) walk.
+    /// Add @p filter to `mFilters` and build its menu entry. Pass
+    /// `deferSync = true` from bulk callers
+    /// (`RebuildFiltersFromConfiguration`) and run a single
+    /// trailing mirror + `UpdateFilters` after the loop.
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync = false);
     void UpdateFilters();
 
-    /// Snapshot the live `mFilters` map into the wire-format
-    /// `LogConfiguration::filters` vector so `Save` and the lib-side
-    /// `MoveColumn` filter-row remap operate on the current runtime
-    /// state. Cheap; called eagerly from every `mFilters` mutation
-    /// point. The snapshot is sorted by `(row, type, payload)` so two
-    /// consecutive `Save`s of the same filter set produce
-    /// byte-identical JSON and the load-side menu ordering survives
-    /// round-trips (UUIDs are not persisted; menu ordering is
-    /// rebuilt from the vector iteration order on load).
-    ///
-    /// Per-call cost is `O(N log N)` over `mFilters` (the sort
-    /// dominates -- the comparator walks every payload field for
-    /// stable tie-breaking). At typical filter counts this is
-    /// negligible, but bulk callers should pass `deferSync = true`
-    /// to `AddLogFilter` / `ClearFilter` and run a single trailing
-    /// `MirrorFiltersToConfiguration()` after the loop to keep the
-    /// path linear -- `RebuildFiltersFromConfiguration` is the
-    /// canonical example.
+    /// Snapshot `mFilters` into the wire-format vector on the
+    /// configuration so `Save` and `MoveColumn`'s row-remap see the
+    /// live set. Output is sorted by `(row, type, payload)` so two
+    /// consecutive saves produce byte-identical JSON. O(N log N);
+    /// bulk callers should `deferSync = true` and mirror once at
+    /// the end.
     void MirrorFiltersToConfiguration();
 
     /// Path-based save / load helpers shared by the dialog-driven
-    /// `SaveConfiguration` / `LoadConfiguration` slots and the
-    /// `LOGAPP_BUILD_TESTING` test seams. `DoSaveConfiguration`
-    /// runs `MirrorFiltersToConfiguration` before delegating to the
-    /// manager so persisted filters reflect the live UI; throws on
-    /// I/O / serialisation failure (caller adapts to its own UX).
-    /// `DoLoadConfiguration` resets the model, drops stale runtime
-    /// filter state, validates each saved filter against the new
-    /// column layout, and surfaces any drops through
-    /// `ShowDroppedFiltersDialog`. Returns true on full success;
-    /// false (with the failure already surfaced) on parse error.
-    /// Persist the current configuration to @p path. Propagates the
-    /// underlying `std::exception` on I/O failure -- callers are
-    /// expected to wrap the call in a `try / catch` and surface the
-    /// failure (`SaveConfiguration` and `OnSaveAct` both do). No
-    /// boolean status is returned because there is no in-band
-    /// failure mode: success means "wrote the file", failure means
-    /// "threw an exception".
+    /// slots and the test seams. `DoSaveConfiguration` mirrors
+    /// filters then writes; throws on I/O / serialisation failure.
+    /// `DoLoadConfiguration` resets the model, validates each
+    /// saved filter, surfaces drops via
+    /// `ShowDroppedFiltersDialog`, and returns false on parse
+    /// error.
     void DoSaveConfiguration(const QString &path);
     bool DoLoadConfiguration(const QString &path);
 
-    /// Drop runtime filter state, walk the freshly-loaded
-    /// `LogConfiguration::filters` vector, validate each entry
-    /// against the new column layout, and either revive the entry
-    /// via `AddLogFilter` (with a fresh UUID) or accumulate a
-    /// drop reason. Surfaces a single summary dialog if any
-    /// filters were dropped. Shared by the full
-    /// `DoLoadConfiguration` path and the speculative
-    /// `TryLoadAsConfiguration` (single-file open / drop) path.
+    /// Re-validate every saved filter against the freshly-loaded
+    /// columns and revive survivors via `AddLogFilter`. Shared by
+    /// `DoLoadConfiguration` and `TryLoadAsConfiguration`.
     void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
@@ -464,17 +373,14 @@ private:
     /// status-bar variant.
     bool mSourceWaiting = false;
 
-    /// Re-entrancy guard for `OnHeaderSectionMoved`. The slot resets
-    /// the header's visual order to identity after committing a
-    /// source-side move; the resets fire `sectionMoved` again, which
-    /// we swallow.
+    /// Re-entrancy guard for `OnHeaderSectionMoved`: the slot
+    /// re-fires `sectionMoved` while resetting visual order, and
+    /// we swallow that volley.
     bool mApplyingSectionMove = false;
 
 #ifdef LOGAPP_BUILD_TESTING
-    /// When true, `ShowDroppedFiltersDialog` skips the modal
-    /// `QMessageBox::warning` and only updates
-    /// `mLastDroppedFilterCountForTest`. Tests flip this on so
-    /// `LoadConfigurationFromPathForTest` does not block.
+    /// Skip `ShowDroppedFiltersDialog`'s modal so the test thread
+    /// is not blocked under offscreen QPA.
     bool mSuppressDialogsForTest = false;
     int mLastDroppedFilterCountForTest = 0;
 #endif

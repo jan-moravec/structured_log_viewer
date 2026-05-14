@@ -3815,22 +3815,17 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Stream a small two-column fixture into `mWindow` so column-
-    // visibility tests have a real source model to point at. Returns
-    // the column index of the first non-timestamp column ("level"),
-    // which the tests use as their hide / move target. Lives inside
-    // `private slots:` for `mWindow` access; QTest filters non-void
-    // slots out of the test-method scan, so moc registers it but
-    // `QTEST_MAIN` does not invoke it.
+    // Stream a small two-column fixture and return the `level`
+    // column index. QTest filters non-void slots out of the test
+    // scan, so this stays callable from inside `private slots:`.
     int StreamFixtureForColumnTests()
     {
         auto *model = mWindow->Model();
         Q_ASSERT(model != nullptr);
 
-        // 200 lines is below the static-mode promotion threshold for
-        // arbitrary keys but above `STREAM_PROMOTION_MIN_ROWS`, so
-        // streaming mode promotes `level` to enum and the table has a
-        // stable layout for the rest of the test.
+        // 200 lines: above `STREAM_PROMOTION_MIN_ROWS` so streaming
+        // promotes `level` to enum, but below the static-mode
+        // promotion threshold for arbitrary keys.
         const QStringList levels{
             QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
         };
@@ -3841,9 +3836,8 @@ private slots:
             lines.append(QStringLiteral(R"({"level": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
         }
         const TempJsonFile fixture(lines);
-        // `TempJsonFile`'s temp dir lives for the lifetime of the
-        // helper; we let the streaming run finish before returning so
-        // the parser doesn't outlive it.
+        // Let the parse finish before returning so it doesn't
+        // outlive `fixture`'s temp dir.
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         if (!finishedSpy.isValid())
@@ -3870,8 +3864,8 @@ private slots:
         return ColumnByHeader(*model, QStringLiteral("level"));
     }
 
-    // `MainWindow::SetColumnVisible(idx, false)` flips `Column::
-    // visible` and applies the flag via `QHeaderView::setSectionHidden`.
+    // `SetColumnVisible(idx, false)` flips `Column::visible` and
+    // hides the matching header section.
     void TestHideColumnUpdatesHeaderAndConfiguration()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -3895,7 +3889,7 @@ private slots:
         QVERIFY2(header->isSectionHidden(levelCol), "header section must be hidden");
     }
 
-    // `MainWindow::SetColumnVisible(idx, true)` reverses a hide.
+    // `SetColumnVisible(idx, true)` reverses a hide.
     void TestShowColumnRestoresSection()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -3915,13 +3909,10 @@ private slots:
         QVERIFY2(!header->isSectionHidden(levelCol), "header section must no longer be hidden");
     }
 
-    // The header context menu lists currently-hidden columns under a
-    // `Show column` submenu so the user can restore them. Counts and
-    // labels are pinned by walking the menu's action tree. Built
-    // against a *visible* clicked column so the `Hide` entry is
-    // present (production right-clicks only fire on visible
-    // sections; the no-Hide-when-already-hidden branch is exercised
-    // by `TestHeaderContextMenuOmitsHideForHiddenColumn`).
+    // The header menu's `Show column` submenu lists every hidden
+    // column. Built against a visible clicked column so the `Hide`
+    // entry is present too. The hidden-column branch is covered by
+    // `TestHeaderContextMenuOmitsHideForHiddenColumn`.
     void TestHeaderContextMenuListsHiddenColumns()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -3930,9 +3921,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Hide only `msg`; leave `level` visible so the menu rooted
-        // at `level` carries both a Hide entry (for `level`) and a
-        // Show column submenu (listing `msg`).
+        // Hide only `msg` so the menu on `level` shows both Hide
+        // (for `level`) and Show column (listing `msg`).
         mWindow->SetColumnVisible(msgCol, false);
 
         QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
@@ -3946,7 +3936,7 @@ private slots:
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
         // The `Show column` submenu is the action carrying a nested
-        // menu; pull it out and verify it lists each hidden header.
+        // menu. Pull it out and verify the hidden headers are listed.
         const QMenu *showMenu = nullptr;
         for (const QAction *act : topActions)
         {
@@ -3970,11 +3960,11 @@ private slots:
         QCOMPARE(showActionLabels, expected);
     }
 
-    // Right-clicking on a hidden column (not reachable in production
-    // but exposed via the public `BuildHeaderContextMenu` test seam)
-    // must omit the `Hide` entry: the action would be a confusing
-    // no-op against an already-hidden column. The Show submenu is
-    // still surfaced so the only path forward (re-show) is reachable.
+    // The header menu must omit `Hide` when the clicked column is
+    // already hidden (the action would be a confusing no-op). The
+    // Show submenu is still present so the user can re-show.
+    // Hidden-column right-clicks are reachable only via the test
+    // seam; production right-clicks only fire on visible sections.
     void TestHeaderContextMenuOmitsHideForHiddenColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -3995,10 +3985,9 @@ private slots:
         }
     }
 
-    // Hidden state survives the manual Save / Reset / Load round-trip
-    // exercised by `File -> Save Configuration` and `File -> Load
-    // Configuration` (driven here through the manager directly to
-    // bypass the `QFileDialog` modals).
+    // `Column::visible` survives the Save / Reset / Load round-trip
+    // (driven through the manager directly so the file dialogs
+    // don't pop).
     void TestColumnVisibilityRoundTripsThroughSaveLoad()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4013,10 +4002,9 @@ private slots:
         const QString savedPath = savedDir.filePath(QStringLiteral("config.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
 
-        // Reset wipes the model state; reloading repopulates columns
-        // from the configuration file. `ApplyColumnVisibility()` is
-        // the production hook that pushes `visible` flags into the
-        // header.
+        // `Reset` wipes the model; `Load` repopulates columns;
+        // `ApplyColumnVisibility` is the production hook that pushes
+        // the loaded flags onto the header.
         model->Reset();
         model->ConfigurationManager().Load(savedPath.toStdString());
         mWindow->ApplyColumnVisibility();
@@ -4050,13 +4038,10 @@ private slots:
         const int columnCount = model->columnCount();
         QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
 
-        // Seed a single saved filter pointing at `level`. We push
-        // straight onto the underlying configuration vector since the
-        // public `AddFilter` path opens an editor.
+        // Seed a saved filter on `level`. The public `AddFilter`
+        // path opens an editor, so write through Save / Load instead
+        // (the manager only exposes a const `Configuration()`).
         auto &mgr = model->ConfigurationManager();
-        // `LogConfigurationManager` exposes only `Configuration()
-        // const`, so swap in via Save / Load to get a fresh filter on
-        // disk.
         loglib::LogConfiguration configuration = mgr.Configuration();
         configuration.filters.push_back(loglib::LogConfiguration::LogFilter{
             .type = loglib::LogConfiguration::LogFilter::Type::Enumeration,
@@ -4089,8 +4074,7 @@ private slots:
         QCOMPARE(mgr.Configuration().filters.size(), static_cast<size_t>(1));
         QCOMPARE(mgr.Configuration().filters[0].row, levelAfterReload);
 
-        // Move `level` to a different position; the persisted filter's
-        // `row` must follow the column.
+        // Move `level`; the saved filter's `row` must follow it.
         const int src = levelAfterReload;
         const int dest = (src == 0) ? model->columnCount() - 1 : 0;
         QVERIFY(src != dest);
@@ -4101,25 +4085,14 @@ private slots:
         QCOMPARE(mgr.Configuration().filters[0].row, dest);
     }
 
-    // Regression: a streaming-induced column reorder
-    // (`LogModel::AppendBatch` bubbling a freshly-detected timestamp
-    // to position 0 via `mLogTable.MoveColumn`) used to leave the
-    // runtime `MainWindow::mFilters` map pointing at the pre-move
-    // column indices. `LogConfigurationManager::MoveColumn` correctly
-    // rotated the wire-format `mConfiguration.filters[*].row`, but
-    // the UI's UUID-keyed runtime view -- which drives the proxy's
-    // rule list -- did not, so active filter rules silently shifted
-    // onto the wrong columns; a subsequent `Save` would also mirror
-    // the stale runtime rows back over the lib-rotated wire format,
-    // dropping the filter on next load via type mismatch.
-    //
-    // The fix wires `MainWindow::OnSourceColumnsMoved` to
-    // `LogModel::columnsMoved`, replaying the same permutation onto
-    // `mFilters` and rebuilding the proxy's rule list. This exercises
-    // the slot through `LogModel::MoveColumn`, which emits exactly
-    // the same `columnsMoved` payload the bubble path uses (both
-    // brackets `beginMoveColumns` / `endMoveColumns` around
-    // `mLogTable.MoveColumn`).
+    // Regression: an implicit source-side move (e.g. the streaming
+    // timestamp bubble in `LogModel::AppendBatch`) used to leave
+    // the runtime `mFilters` map pointing at the pre-move indices,
+    // which `Save` would then mirror back over the lib-rotated
+    // wire format and drop on next load. The fix wires
+    // `OnSourceColumnsMoved` to `LogModel::columnsMoved`. This
+    // exercises the slot through `LogModel::MoveColumn`, which
+    // emits the same payload the bubble path does.
     void TestSourceColumnMoveRemapsRuntimeFilters()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4129,8 +4102,8 @@ private slots:
         QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
 
         // Install an enum filter on `level` via the production
-        // `FilterEnumSubmitted` slot so `mFilters` and the wire-format
-        // vector are both populated through the supported entry point.
+        // `FilterEnumSubmitted` slot so both stores populate through
+        // the supported entry point.
         const QString filterId = QStringLiteral("bubble-remap");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -4149,12 +4122,10 @@ private slots:
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must land in mFilters after submit");
         QCOMPARE(mWindow->Filters().at(filterKey).row, levelCol);
 
-        // Drive the bubble path: emit `columnsMoved` through
-        // `LogModel::MoveColumn`. The slot is wired directly to
-        // `LogModel::columnsMoved` and fires synchronously inside
-        // `endMoveColumns()`. We deliberately bypass
-        // `OnHeaderSectionMoved` (the header-drag entry point) to
-        // simulate exactly what the streaming-bubble code path does.
+        // Bypass `OnHeaderSectionMoved` and emit `columnsMoved`
+        // directly via `LogModel::MoveColumn` -- the streaming
+        // bubble path runs the same code synchronously inside
+        // `endMoveColumns()`.
         const int src = levelCol;
         const int dest = (src == 0) ? columnCount - 1 : 0;
         QVERIFY(src != dest);
@@ -4168,11 +4139,9 @@ private slots:
         QCOMPARE(wireFilters.size(), static_cast<size_t>(1));
         QCOMPARE(wireFilters[0].row, dest);
 
-        // The proxy's accepted-row count should remain non-empty: the
-        // remapped rule still targets the `level` column, which still
-        // resolves `"info"` rows. A stale `row` would silently flip
-        // every row's accept verdict (numeric comparator vs enum bytes)
-        // and zero this out.
+        // The remapped rule still targets `level`, so the proxy
+        // should keep matching rows visible. A stale `row` would
+        // silently zero this out.
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
         const QAbstractItemModel *proxy = tableView->model();
@@ -4180,18 +4149,12 @@ private slots:
         QVERIFY2(proxy->rowCount() > 0, "filter on level=info must keep at least one row visible after the move");
     }
 
-    // Regression: a source-side column move (header drag *or*
-    // streaming-induced timestamp bubble) must keep the header's
-    // `setSectionHidden` flags aligned with the rotated
-    // `Column::visible` flags. Qt's persistent-index machinery
-    // normally carries hidden flags through a `columnsMoved` when
-    // `rowCount > 0`, but `OnSourceColumnsMoved` explicitly
-    // re-applies them too so the rule holds even on the zero-row
-    // bail-out path inside `QHeaderViewPrivate::sectionsAboutToBeChanged`.
-    // Pinned alongside `TestSourceColumnMoveRemapsRuntimeFilters`
-    // because both slots run from the same `LogModel::columnsMoved`
-    // signal -- this asserts the second responsibility (visibility),
-    // the neighbour asserts the first (filter remap).
+    // Regression: a source-side column move (header drag or
+    // streaming bubble) must keep `setSectionHidden` aligned with
+    // `Column::visible`. Qt usually carries hidden flags through
+    // `columnsMoved`, but bails on a zero-row source -- so
+    // `OnSourceColumnsMoved` re-applies explicitly. Pairs with
+    // `TestSourceColumnMoveRemapsRuntimeFilters` (filter remap).
     void TestSourceColumnMovePreservesHiddenColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4200,29 +4163,25 @@ private slots:
         const int columnCount = model->columnCount();
         QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
 
-        // Hide `level` so the post-move check has something to assert.
-        // The originally-at-levelCol column ends up at `dest` after the
-        // move; the header section at the new logical index should
-        // still report hidden.
+        // Hide `level`; after the move it lands at `dest` and the
+        // matching header section should still report hidden.
         mWindow->SetColumnVisible(levelCol, false);
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(header->isSectionHidden(levelCol), "precondition: section hidden before move");
 
-        // Drive the bubble path: `LogModel::MoveColumn` emits the same
-        // `columnsMoved` payload `LogModel::AppendBatch`'s timestamp
-        // bubble does, so the slot under test runs the same code.
+        // `LogModel::MoveColumn` emits the same `columnsMoved`
+        // payload the streaming bubble does, so the slot under test
+        // runs the same code.
         const int src = levelCol;
         const int dest = (src == 0) ? columnCount - 1 : 0;
         QVERIFY(src != dest);
         QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
         QCoreApplication::processEvents();
 
-        // The configuration's `Column::visible` flag follows the
-        // column through the rotation (the entire `Column` struct is
-        // rotated by `LogConfigurationManager::MoveColumn`), so
-        // `dest` is now the hidden one.
+        // The whole `Column` struct rotates with the move, so
+        // `dest` is now the hidden index.
         QVERIFY2(
             !model->Configuration().columns[static_cast<size_t>(dest)].visible,
             "Column::visible must follow the moved column to its new index"
@@ -4232,10 +4191,9 @@ private slots:
             "the column displaced to `src` must remain visible"
         );
 
-        // Header-side flags must agree with the configuration. Without
-        // the explicit `ApplyColumnVisibility()` in
-        // `OnSourceColumnsMoved`, this would only hold on the
-        // user-drag path.
+        // Header flags must agree with the configuration. Without
+        // the `ApplyColumnVisibility()` inside `OnSourceColumnsMoved`,
+        // this would only hold on the user-drag path.
         QVERIFY2(
             header->isSectionHidden(dest),
             "header section at the moved column's new logical index must remain hidden"
@@ -4246,10 +4204,9 @@ private slots:
         );
     }
 
-    // Regression: `Type::Boolean` -> Column::visible field round-trip
-    // is exercised via the legacy-test path (any pre-existing config
-    // file must still load with default `visible == true`). This test
-    // pins the `Save` output's wire format directly.
+    // Pin the wire format: `Save` output must contain `visible`
+    // for both visible and hidden columns. A future Glaze meta
+    // change that hides the field would surface here.
     void TestColumnVisibleFieldEmittedInSavedJson()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4265,20 +4222,15 @@ private slots:
         QFile file(path);
         QVERIFY(file.open(QFile::ReadOnly));
         const QByteArray contents = file.readAll();
-        // The flag is serialised both for the visible and hidden
-        // columns; just assert both literals are present so a future
-        // Glaze meta change that hides the field surfaces here.
         QVERIFY2(contents.contains("\"visible\": true"), "JSON must contain \"visible\": true");
         QVERIFY2(contents.contains("\"visible\": false"), "JSON must contain \"visible\": false");
     }
 
-    // Regression: `LogModel::Reset()` emits `modelReset`, which Qt
-    // resets the header for (clearing all `setSectionHidden` flags).
-    // The configuration's `Column::visible` flags survive (the
-    // configuration is not part of the table data wiped by Reset),
-    // and the new `modelReset` -> `ApplyColumnVisibility` connect
-    // pushes them back into the header. Without that hook the column
-    // would be silently re-shown after every reset.
+    // Regression: `Reset` emits `modelReset`, which clears every
+    // `setSectionHidden` flag. The configuration's `Column::visible`
+    // survives, and the wired `modelReset -> ApplyColumnVisibility`
+    // pushes the flags back. Without it, a hidden column would be
+    // silently re-shown after every reset.
     void TestVisibilityReappliedAfterModelReset()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4311,12 +4263,10 @@ private slots:
         );
     }
 
-    // `MainWindow::TryLoadAsConfiguration` is the single-file entry
-    // point of `OpenFiles` -- it loads a JSON config in place without
-    // resetting the model. That path must reapply `Column::visible`
-    // to the header, otherwise a saved config with hidden columns
-    // would load correctly into the configuration but show every
-    // column in the table.
+    // `TryLoadAsConfiguration` is the single-file entry from
+    // `OpenFiles`. It must reapply `Column::visible` to the header,
+    // otherwise a saved config would load but every column would
+    // still be shown.
     void TestTryLoadAsConfigurationAppliesVisibility()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4330,9 +4280,9 @@ private slots:
         const QString savedPath = tempDir.filePath(QStringLiteral("hidden-level.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
 
-        // Restore visibility so the load + reapply has something to
-        // do; otherwise the test would also pass without the new
-        // ApplyColumnVisibility call inside TryLoadAsConfiguration.
+        // Re-show first so the load + reapply has something to
+        // do; otherwise the test would pass without the new
+        // `ApplyColumnVisibility` inside `TryLoadAsConfiguration`.
         mWindow->SetColumnVisible(levelCol, true);
         const QHeaderView *header = mWindow->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY2(header != nullptr, "view must own a horizontal header");
@@ -4381,10 +4331,8 @@ private slots:
         const QString savedPath = tempDir.filePath(QStringLiteral("with-sort.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
 
-        // `TryLoadAsConfigurationForTest` exercises the single-file
-        // open path; the same reset is wired into
-        // `DoLoadConfiguration` (driven via the dialog-driven slot)
-        // so the contract is uniform across the two entry points.
+        // The single-file open path; `DoLoadConfiguration` does the
+        // same reset, so both entry points share the contract.
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(savedPath), "TryLoadAsConfiguration must succeed");
         QCoreApplication::processEvents();
 
@@ -4394,10 +4342,9 @@ private slots:
         );
     }
 
-    // The `View` menu lists every column with a checkable action
-    // whose `toggled` signal flips `Column::visible`. Reachable even
-    // when every header section is hidden (the only escape hatch in
-    // that state). Rebuilt on each `aboutToShow`.
+    // The `View` menu rebuilds on every `aboutToShow` and gives
+    // each column a checkable action that flips `Column::visible`.
+    // It stays reachable when every header section is hidden.
     void TestViewMenuTogglesColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4462,19 +4409,12 @@ private slots:
         QVERIFY2(!header->isSectionHidden(levelCol), "second toggle must un-hide the header section");
     }
 
-    // Regression: clicking `Edit` on a filter menu after the filter's
-    // column was reordered must open the editor against the column's
-    // *current* index, not the index it had when the menu was built.
-    //
-    // Before the fix the `Edit` lambda captured the
-    // `LogConfiguration::LogFilter` value by copy, so `filter.row`
-    // froze at the index the column had at menu construction. After a
-    // drag-to-reorder (or any path that runs `OnHeaderSectionMoved`),
-    // `mFilters[id].row` was remapped to the new index but the
-    // captured copy was not. Triggering Edit then ran
-    // `AddFilter(id, staleFilter)` against `columns[staleRow]` --
-    // a different column with a (likely) different type -- and the
-    // type-match guard silently `ClearFilter`'d the filter.
+    // Regression: clicking Edit after the filter's column was
+    // reordered must open the editor against the column's *current*
+    // index. Before the fix the lambda captured the filter by value,
+    // freezing `row` at menu-build time; after a reorder, Edit
+    // would mis-target the wrong column and `AddFilter`'s type-match
+    // guard would silently drop the filter.
     void TestEditFilterAfterColumnReorderUsesCurrentRow()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4484,9 +4424,8 @@ private slots:
         const int columnCount = model->columnCount();
         QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
 
-        // Install an enum filter on the `level` column via the
-        // production `FilterEnumSubmitted` slot (mirrors what
-        // `FilterEditor` emits on OK).
+        // Install an enum filter on `level` via the production
+        // submit slot (mirrors what `FilterEditor` emits on OK).
         const QString filterId = QStringLiteral("edit-after-move");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -4505,9 +4444,8 @@ private slots:
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must land in mFilters after submit");
         QCOMPARE(mWindow->Filters().at(filterKey).row, levelCol);
 
-        // Reorder the `level` column via `OnHeaderSectionMoved` (the
-        // production header-drag entry point). This both moves the
-        // source column and remaps `mFilters[*].row`.
+        // Reorder `level` via the production header-drag slot;
+        // both the source column and `mFilters[*].row` shift.
         const int src = levelCol;
         const int dest = (src == 0) ? columnCount - 1 : 0;
         QVERIFY(src != dest);
@@ -4529,9 +4467,9 @@ private slots:
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the reorder");
         QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
 
-        // Find the per-filter sub-menu and its `Edit` action via the
-        // public `FiltersMenu()` accessor (the offscreen-QPA
-        // `findChild<QMenu*>` bug strands the direct path).
+        // The offscreen-QPA `findChild<QMenu*>` bug strands the
+        // direct path; reach the per-filter sub-menu through the
+        // public `FiltersMenu()` accessor instead.
         const QMenu *filtersMenu = mWindow->FiltersMenu();
         QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
         const QAction *filterMenuAction = nullptr;
@@ -4559,10 +4497,9 @@ private slots:
         }
         QVERIFY2(editAction != nullptr, "filter sub-menu must contain an Edit action");
 
-        // Triggering Edit opens a `FilterEditor`; in the buggy build
-        // the lambda would have called `AddFilter(id, staleFilter)`,
-        // type-mismatched against `columns[src]` (now a different
-        // column), and silently dropped the filter from `mFilters`.
+        // Triggering Edit opens a `FilterEditor`. In the buggy build
+        // the stale lambda would type-mismatch against `columns[src]`
+        // and silently drop the filter from `mFilters`.
         editAction->trigger();
         QCoreApplication::processEvents();
 
@@ -4572,8 +4509,8 @@ private slots:
         );
         QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
 
-        // Confirm the opened `FilterEditor` is pointing at the
-        // post-move column (`dest`), not the stale `src`.
+        // The opened `FilterEditor` should be pointing at `dest`,
+        // not the stale `src`.
         FilterEditor *editor = nullptr;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
@@ -4591,14 +4528,11 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // Regression: filters added via the Filters menu live in
-    // `MainWindow::mFilters` (UUID-keyed runtime view) but were
-    // never copied into the wire-format `LogConfiguration::filters`
-    // vector that `Save` persists; the result was that filters
-    // silently disappeared across a Save / Load round-trip. The
-    // eager `MirrorFiltersToConfiguration` call on every mutation
-    // point keeps the two stores in lockstep, and the load path
-    // rebuilds `mFilters` from the loaded vector.
+    // Regression: filters added via the Filters menu used to live
+    // only in `mFilters` and were never mirrored into the wire-
+    // format vector `Save` persists, so they vanished on Save /
+    // Load. The eager mirror keeps both stores in lockstep; the
+    // load path rebuilds `mFilters` from the loaded vector.
     void TestFilterPersistenceRoundtrip()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4608,8 +4542,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Install a string filter on the `msg` column (string-typed
-        // by default) via the production submit slot.
+        // Install a string filter on `msg` (string-typed by
+        // default) via the production submit slot.
         const QString filterId = QStringLiteral("persisted-string");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -4628,8 +4562,8 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
 
         // The eager mirror must have copied the filter into the
-        // wire-format vector by now -- before any Save call. This
-        // is the load-bearing invariant the bug fix establishes.
+        // wire-format vector before any Save -- the load-bearing
+        // invariant this fix establishes.
         QCOMPARE(model->Configuration().filters.size(), static_cast<size_t>(1));
         QCOMPARE(model->Configuration().filters[0].row, msgCol);
         QCOMPARE(model->Configuration().filters[0].type, loglib::LogConfiguration::LogFilter::Type::String);
@@ -4647,9 +4581,9 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
         QCOMPARE(model->Configuration().filters.size(), static_cast<size_t>(0));
 
-        // Suppress the dropped-filters dialog (none expected here,
-        // but the load path always checks before showing) so the
-        // test thread does not block.
+        // Suppress the modal so the test thread does not block.
+        // No drops are expected here, but the load path always
+        // checks before showing.
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(savedPath);
         QCoreApplication::processEvents();
@@ -4668,10 +4602,9 @@ private slots:
         QCOMPARE(model->Configuration().filters.size(), static_cast<size_t>(1));
     }
 
-    // Multi-type round-trip: a string filter, an enum filter, and a
-    // numeric filter all persist together and revive into the
-    // correct slots. The Filters menu also rebuilds with one
-    // sub-menu per revived filter.
+    // Multi-type round-trip: a string filter and an enum filter
+    // persist together and revive into the correct slots, with one
+    // Filters-menu entry per revived filter.
     void TestFilterPersistenceMultipleTypes()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4693,10 +4626,8 @@ private slots:
         );
         // Enum filter on level (auto-promoted to enum by the streaming threshold).
         const QString enumId = QStringLiteral("persisted-enum");
-        // Hoist the QStringList to a named local: a brace-init list
-        // with multiple elements inside `Q_ARG(...)` confuses the
-        // preprocessor (the inner comma is parsed as a macro-arg
-        // separator).
+        // Hoist to a named local: an inline brace-init inside
+        // `Q_ARG(...)` confuses the preprocessor (commas).
         const QStringList enumValues{QStringLiteral("info"), QStringLiteral("warn")};
         QMetaObject::invokeMethod(
             mWindow,
@@ -4763,11 +4694,10 @@ private slots:
         QCOMPARE(subMenuCount, 2);
     }
 
-    // Hand-author a configuration JSON that mixes one valid filter
-    // with one bogus filter (out-of-range column index). The load
-    // path must keep the valid filter, drop the invalid one, and
-    // surface the drop through `ShowDroppedFiltersDialog` (observed
-    // here via the test-only counter).
+    // A configuration JSON mixing a valid filter with an invalid
+    // one (out-of-range column index) must keep the valid filter,
+    // drop the invalid one, and surface the drop through
+    // `ShowDroppedFiltersDialog` (observed via the test counter).
     void TestFilterPersistenceDropsInvalidFilters()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4775,11 +4705,10 @@ private slots:
         auto *model = mWindow->Model();
         const int columnCount = model->columnCount();
 
-        // Hand-build a configuration with two filters: one valid
-        // (enum on `level`), one with a row index off the end. We
-        // serialise via Glaze using the same meta the manager uses
-        // so the load path receives a wire-format that exactly
-        // matches what `Save` would emit.
+        // Build a config with two filters: a valid enum on `level`
+        // and a string filter pointing past the end of the columns.
+        // Serialise via Glaze so the load path sees the same wire
+        // format `Save` emits.
         loglib::LogConfiguration configuration = model->Configuration();
         configuration.filters.clear();
         configuration.filters.push_back(loglib::LogConfiguration::LogFilter{
@@ -4830,13 +4759,11 @@ private slots:
         QCOMPARE(surviving.row, levelColAfterLoad);
     }
 
-    // Regression: two consecutive `Save`s of the same filter set must
-    // produce byte-identical JSON. `MirrorFiltersToConfiguration`
-    // sorts the snapshot by `(row, type, payload)` so the wire-format
-    // vector is independent of the source `unordered_map`'s
-    // (implementation-defined) iteration order. Without the sort, a
-    // user who saves -> closes -> reopens -> saves the same config
-    // could see the file change every time.
+    // Two consecutive `Save`s of the same filter set must produce
+    // byte-identical JSON. `MirrorFiltersToConfiguration` sorts the
+    // snapshot so the output is independent of the `unordered_map`
+    // iteration order. Without the sort, save -> reopen -> save
+    // would change the file every round-trip.
     void TestFilterPersistenceSaveOrderingIsDeterministic()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4845,10 +4772,9 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Three filters across two columns + types so the sort key
-        // has to break ties on more than just `row`. Submit them in
-        // an order that does NOT match the expected sort order so a
-        // missing sort would be visible in the saved bytes.
+        // Three filters across two columns and two types so the
+        // sort has to break ties beyond `row`. Submit out of sort
+        // order so a missing sort would show in the saved bytes.
         const QStringList enumValues{QStringLiteral("info"), QStringLiteral("warn")};
         QMetaObject::invokeMethod(
             mWindow,
@@ -4895,9 +4821,8 @@ private slots:
         QCOMPARE(bytesA, bytesB);
 
         // Stronger pin: round-trip through Load and save again. The
-        // load-side path rebuilds `mFilters` with fresh UUIDs, so the
-        // unordered_map's iteration order is *guaranteed* different
-        // from the pre-save state -- yet the saved bytes must match.
+        // load rebuilds `mFilters` with fresh UUIDs, so the iteration
+        // order is guaranteed different -- yet the bytes must match.
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(pathA);
         QCoreApplication::processEvents();
@@ -4910,13 +4835,9 @@ private slots:
         QCOMPARE(bytesC, bytesA);
     }
 
-    // Regression: `MainWindow::Find` (via `LogFilterModel::MatchRow`)
-    // must skip hidden columns. A find hit on an invisible cell would
-    // scroll the row into view but leave the user with no visual
-    // feedback about *what* matched (the section has zero width).
-    // The fixture has `level` (info/warn/error/debug) and `msg`
-    // (m0..m199); searching for "info" matches only `level` cells, so
-    // hiding `level` must yield an empty match list.
+    // Find must skip hidden columns. The fixture has `level`
+    // (info/warn/...) and `msg` (m0..m199); "info" only matches
+    // `level`, so hiding `level` yields an empty match list.
     void TestFindSkipsHiddenColumns()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4947,11 +4868,9 @@ private slots:
         );
     }
 
-    // Regression: hiding the column the user is sorting by removes
-    // the sort indicator from the visible header (it lives on a
-    // zero-width section), leaving the sort active with no UI to
-    // clear it. `SetColumnVisible` must reset the sort to the
-    // unsorted baseline in that case.
+    // Hiding the sorted-by column would leave the sort active
+    // with no UI glyph to clear it (the indicator lives on a
+    // zero-width section). `SetColumnVisible` resets the sort.
     void TestHidingSortedColumnClearsSort()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -5003,13 +4922,11 @@ private slots:
         );
     }
 
-    // `SetConfigurationUiEnabled(false)` (called on every open path)
-    // must lock down the column-management entry points: Qt's header
-    // drag (`setSectionsMovable(false)`) and the right-click context
-    // menu (`Qt::NoContextMenu`). Otherwise a header drag mid-stream
-    // would race with parser-thread `AppendKeys` mutating
-    // `mConfiguration.columns`. The corresponding `enabled = true`
-    // call (the post-stream tear-up path) restores both affordances.
+    // `SetConfigurationUiEnabled(false)` must lock down both
+    // column-management entry points (header drag + right-click
+    // menu). Otherwise a drag mid-stream would race with
+    // `AppendKeys` mutating `columns`. `enabled = true` restores
+    // both.
     void TestStreamingDisablesColumnReorderAndContextMenu()
     {
         QVERIFY(StreamFixtureForColumnTests() >= 0);
@@ -5032,28 +4949,22 @@ private slots:
         QCOMPARE(header->contextMenuPolicy(), Qt::CustomContextMenu);
     }
 
-    // The `View` and `Show column` menus disambiguate duplicate
-    // column headers. Qt allows two columns to share a `header`
-    // string; the stable identifier is `keys`. A duplicate header
-    // gets `header [key1,key2]` so the user can tell entries apart.
+    // Duplicate-header disambiguation in the View / Show menus.
+    // Qt lets two columns share a header; the stable id is `keys`.
+    // Each duplicate gets `header [keys]` so the user can tell
+    // them apart.
     void TestDuplicateHeaderDisambiguation()
     {
         QVERIFY(StreamFixtureForColumnTests() >= 0);
         auto *model = mWindow->Model();
 
-        // Force the column count > 1, then rename column 1's header
-        // to match column 0's so we have a real header collision to
-        // disambiguate. We can't go through a public mutator without
-        // changing production code; mutate the configuration in
-        // place via the manager. The columns vector is exposed
-        // read-only so we cast to mutate -- this is test-only code.
+        // Make column 1's header collide with column 0's so we
+        // have a real duplicate. The configuration is read-only
+        // through the manager, so we round-trip via Save / Load.
         auto &mgr = model->ConfigurationManager();
         const auto &columns = mgr.Configuration().columns;
         QVERIFY2(columns.size() >= 2, "fixture must have at least two columns");
 
-        // Save a config that duplicates column 0's header onto
-        // column 1, then load it back so the manager picks it up.
-        // This avoids casting away const on the live configuration.
         loglib::LogConfiguration mutated;
         mutated.columns = columns;
         const QString sharedHeader = QString::fromStdString(mutated.columns[0].header);
@@ -5073,8 +4984,7 @@ private slots:
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
         QCoreApplication::processEvents();
 
-        // Trigger the View menu rebuild so the labels are produced
-        // through the production path.
+        // Rebuild the View menu through the production path.
         auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
         emit viewMenu->aboutToShow();

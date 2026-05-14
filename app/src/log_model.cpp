@@ -993,12 +993,10 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 
 void LogModel::NotifyConfigurationReplaced()
 {
-    // `LogConfigurationManager::Load` rewrites `mConfiguration`
-    // in-place without emitting any Qt model signal, so a follow-up
-    // `columnCount()` jump leaves the view's header out of sync
-    // (stale section count, stale `setSectionHidden` flags). Bracket
-    // a model reset so the view re-queries everything from scratch.
-    // No data signals are emitted -- the row store is unchanged.
+    // `LogConfigurationManager::Load` rewrites the configuration
+    // without emitting any model signal. Bracket a reset so the view
+    // re-queries column count, header data, and section flags. The
+    // row store is unchanged.
     beginResetModel();
     endResetModel();
 }
@@ -1010,25 +1008,22 @@ bool LogModel::MoveColumn(int srcIndex, int destIndex)
         return false;
     }
     const int cols = columnCount();
-    // `destIndex` is an absolute final-position index (matching
+    // `destIndex` is the absolute final position (same as
     // `LogTable::MoveColumn`).
     if (srcIndex < 0 || srcIndex >= cols || destIndex < 0 || destIndex >= cols)
     {
         return false;
     }
-    // `beginMoveColumns`'s `destinationChild` uses "insert before"
-    // semantics, while `LogTable::MoveColumn`'s `destIndex` is the
-    // column's final absolute position. The two agree for leftward
-    // moves (srcIndex > destIndex) but differ by one for rightward
-    // moves -- Qt would land the column at `destIndex - 1`. Translate
-    // so both APIs describe the same post-move layout.
+    // Translate to Qt's "insert before" `destinationChild`:
+    // rightward moves (`srcIndex < destIndex`) land at `destIndex - 1`
+    // unless we shift by one; leftward moves agree with `destIndex`.
     const int qtDestinationChild = (srcIndex < destIndex) ? destIndex + 1 : destIndex;
     if (!beginMoveColumns(QModelIndex(), srcIndex, srcIndex, QModelIndex(), qtDestinationChild))
     {
         return false;
     }
-    // `LogTable::MoveColumn` delegates to `LogConfigurationManager::MoveColumn`
-    // which both rotates `columns` and remaps every `LogFilter::row`.
+    // `LogTable::MoveColumn` rotates `columns` and remaps every
+    // `LogFilter::row` via the configuration manager.
     mLogTable.MoveColumn(static_cast<size_t>(srcIndex), static_cast<size_t>(destIndex));
     endMoveColumns();
     return true;
