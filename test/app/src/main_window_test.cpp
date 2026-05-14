@@ -4627,6 +4627,86 @@ private slots:
         QCOMPARE(surviving.row, levelColAfterLoad);
     }
 
+    // Regression: two consecutive `Save`s of the same filter set must
+    // produce byte-identical JSON. `MirrorFiltersToConfiguration`
+    // sorts the snapshot by `(row, type, payload)` so the wire-format
+    // vector is independent of the source `unordered_map`'s
+    // (implementation-defined) iteration order. Without the sort, a
+    // user who saves -> closes -> reopens -> saves the same config
+    // could see the file change every time.
+    void TestFilterPersistenceSaveOrderingIsDeterministic()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Three filters across two columns + types so the sort key
+        // has to break ties on more than just `row`. Submit them in
+        // an order that does NOT match the expected sort order so a
+        // missing sort would be visible in the saved bytes.
+        const QStringList enumValues{QStringLiteral("info"), QStringLiteral("warn")};
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterEnumSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("z-enum")),
+            Q_ARG(int, levelCol),
+            Q_ARG(QStringList, enumValues)
+        );
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("a-string-msg")),
+            Q_ARG(int, msgCol),
+            Q_ARG(QString, QStringLiteral("m1")),
+            Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+        );
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("m-string-msg-2")),
+            Q_ARG(int, msgCol),
+            Q_ARG(QString, QStringLiteral("m2")),
+            Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+        );
+        QCoreApplication::processEvents();
+
+        QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString pathA = savedDir.filePath(QStringLiteral("save-a.json"));
+        const QString pathB = savedDir.filePath(QStringLiteral("save-b.json"));
+
+        mWindow->SaveConfigurationToPathForTest(pathA);
+        mWindow->SaveConfigurationToPathForTest(pathB);
+
+        QFile fileA(pathA);
+        QFile fileB(pathB);
+        QVERIFY(fileA.open(QFile::ReadOnly));
+        QVERIFY(fileB.open(QFile::ReadOnly));
+        const QByteArray bytesA = fileA.readAll();
+        const QByteArray bytesB = fileB.readAll();
+        QCOMPARE(bytesA, bytesB);
+
+        // Stronger pin: round-trip through Load and save again. The
+        // load-side path rebuilds `mFilters` with fresh UUIDs, so the
+        // unordered_map's iteration order is *guaranteed* different
+        // from the pre-save state -- yet the saved bytes must match.
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(pathA);
+        QCoreApplication::processEvents();
+        const QString pathC = savedDir.filePath(QStringLiteral("save-c.json"));
+        mWindow->SaveConfigurationToPathForTest(pathC);
+
+        QFile fileC(pathC);
+        QVERIFY(fileC.open(QFile::ReadOnly));
+        const QByteArray bytesC = fileC.readAll();
+        QCOMPARE(bytesC, bytesA);
+    }
+
     // Regression: `MainWindow::Find` (via `LogFilterModel::MatchRow`)
     // must skip hidden columns. A find hit on an invisible cell would
     // scroll the row into view but leave the user with no visual

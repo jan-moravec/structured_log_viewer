@@ -47,22 +47,29 @@ namespace loglib
 void LogConfigurationManager::Load(const std::filesystem::path &path)
 {
     const std::ifstream file(path);
-    if (file.is_open())
-    {
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        const std::string content = buffer.str();
-        const auto error = glz::read_json(mConfiguration, content);
-        if (error)
-        {
-            throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
-        }
-        mCacheStale = true;
-    }
-    else
+    if (!file.is_open())
     {
         throw std::runtime_error("Failed to open file '" + path.string() + "'.");
     }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    const std::string content = buffer.str();
+
+    // Parse into a temporary first so a malformed file cannot leave
+    // `mConfiguration` half-populated. Glaze writes into the target
+    // member-by-member, so reading directly into `mConfiguration` and
+    // then throwing would corrupt the live state and any subsequent
+    // open path (e.g. the speculative `TryLoadAsConfiguration`'s
+    // catch-and-fall-through to streaming) would inherit the partial
+    // mutation.
+    LogConfiguration parsed;
+    const auto error = glz::read_json(parsed, content);
+    if (error)
+    {
+        throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
+    }
+    mConfiguration = std::move(parsed);
+    mCacheStale = true;
 }
 
 void LogConfigurationManager::Save(const std::filesystem::path &path) const

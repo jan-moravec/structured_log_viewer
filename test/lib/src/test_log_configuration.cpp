@@ -10,6 +10,8 @@
 #include <glaze/glaze.hpp>
 
 #include <filesystem>
+#include <fstream>
+#include <string_view>
 
 using namespace loglib;
 
@@ -891,4 +893,76 @@ TEST_CASE("RemapColumnIndexAfterMove permutation matches MoveColumn's internal l
     CHECK(Mgr::RemapColumnIndexAfterMove(1, 0, 3) == 0);
     CHECK(Mgr::RemapColumnIndexAfterMove(3, 0, 3) == 2);
     CHECK(Mgr::RemapColumnIndexAfterMove(5, 1, 2) == 5);
+}
+
+TEST_CASE(
+    "Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]"
+)
+{
+    // A malformed configuration file must not corrupt a previously
+    // loaded configuration. Glaze writes into the target member-by-
+    // member, so reading directly into `mConfiguration` and then
+    // throwing on a parse error would leave the live state half-
+    // populated -- and `MainWindow::TryLoadAsConfiguration`'s
+    // catch-and-fall-through to the streaming path would inherit
+    // that corruption.
+    LogConfigurationManager manager;
+
+    // Stage 1: load a known-good configuration so we have a baseline
+    // to compare against after the failed load.
+    {
+        LogConfiguration good;
+        good.columns.push_back(LogConfiguration::Column{
+            .header = "good_a",
+            .keys = {"a"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::String,
+            .parseFormats = {},
+            .visible = true,
+        });
+        good.columns.push_back(LogConfiguration::Column{
+            .header = "good_b",
+            .keys = {"b"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::Integer,
+            .parseFormats = {},
+            .visible = false,
+        });
+        const TestLogConfiguration goodFile;
+        goodFile.Write(good);
+        manager.Load(goodFile.GetFilePath());
+    }
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    REQUIRE(manager.Configuration().columns[0].header == "good_a");
+    REQUIRE(manager.Configuration().columns[1].header == "good_b");
+    REQUIRE_FALSE(manager.Configuration().columns[1].visible);
+
+    // Stage 2: hand-author a malformed JSON so Glaze fails partway
+    // through. `"columns"` opens with a valid first entry then
+    // breaks on a structural error so the parser is guaranteed to
+    // touch the live struct before erroring.
+    constexpr std::string_view BROKEN_JSON = R"({
+        "columns": [
+            {"header":"new_a","keys":["a"],"printFormat":"{}","type":"string","parseFormats":[]},
+            {"header":"new_b","keys":["b"],"printFormat":"{}","type": NOT_A_VALID_VALUE]
+        ],
+        "filters": []
+    })";
+    const TestLogConfiguration brokenFile;
+    {
+        std::ofstream stream(brokenFile.GetFilePath(), std::ios::binary);
+        REQUIRE(stream.is_open());
+        stream << BROKEN_JSON;
+    }
+    CHECK_THROWS_AS(manager.Load(brokenFile.GetFilePath()), std::runtime_error);
+
+    // Stage 3: the previous configuration must be byte-identical to
+    // its pre-load state. Without atomic load, Glaze would have
+    // overwritten `columns[0]` with `{header:"new_a", ...}` before
+    // throwing on the malformed second entry.
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].header == "good_a");
+    CHECK(manager.Configuration().columns[1].header == "good_b");
+    CHECK(manager.Configuration().columns[0].visible);
+    CHECK_FALSE(manager.Configuration().columns[1].visible);
 }

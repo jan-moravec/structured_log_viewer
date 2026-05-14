@@ -81,6 +81,14 @@ CMakeUserPresets.json
 # Build
 /build/
 
+# Ad-hoc test runner output captured at the workspace root (e.g.
+# `apptest.exe > apptest_o.txt`). Build artifacts already live under
+# `/build/`; this catches stray captures left over from local runs.
+/apptest*.log
+/apptest*.txt
+/test_*.txt
+/test_*.log
+
 # Third-party AI dev tasks helper (cloned alongside, not part of the project)
 /ai-dev-tasks-main/
 # Benchmark scratch dirs (one per investigation, freely named).

@@ -265,15 +265,25 @@ private:
     /// `mSuppressDialogsForTest` is set.
     void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
 
-    void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
+    /// Add @p filter to `mFilters`, build its menu entry, and
+    /// (unless @p deferSync is true) mirror the live map into the
+    /// wire-format vector and refresh the proxy's rule list.
+    /// Bulk callers (`RebuildFiltersFromConfiguration`) pass
+    /// `deferSync = true` and run a single trailing
+    /// `MirrorFiltersToConfiguration` + `UpdateFilters` after the
+    /// loop to avoid an O(N^2) walk.
+    void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync = false);
     void UpdateFilters();
 
     /// Snapshot the live `mFilters` map into the wire-format
     /// `LogConfiguration::filters` vector so `Save` and the lib-side
     /// `MoveColumn` filter-row remap operate on the current runtime
     /// state. Cheap; called eagerly from every `mFilters` mutation
-    /// point. Order within the vector is unspecified (UUIDs are not
-    /// persisted; menu ordering is rebuilt from the vector on load).
+    /// point. The snapshot is sorted by `(row, type, payload)` so two
+    /// consecutive `Save`s of the same filter set produce
+    /// byte-identical JSON and the load-side menu ordering survives
+    /// round-trips (UUIDs are not persisted; menu ordering is
+    /// rebuilt from the vector iteration order on load).
     void MirrorFiltersToConfiguration();
 
     /// Path-based save / load helpers shared by the dialog-driven

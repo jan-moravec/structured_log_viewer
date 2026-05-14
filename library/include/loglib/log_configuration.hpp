@@ -88,8 +88,13 @@ struct LogConfiguration
             Wildcard
         };
 
-        Type type;
-        int row;
+        /// Defaults chosen so a default-constructed `LogFilter` is
+        /// inert: `row = -1` is rejected by `OutOfRangeRow` in
+        /// `ValidateFilterAgainstColumns`, and `String` is the most
+        /// permissive type (no missing-payload obligations beyond
+        /// `filterString` / `matchType`, which the validator catches).
+        Type type = Type::String;
+        int row = -1;
         std::optional<std::string> filterString;
         std::optional<Match> matchType;
         std::optional<int64_t> filterBegin;
