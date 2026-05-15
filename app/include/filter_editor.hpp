@@ -43,6 +43,11 @@ public:
     /// Restore a boolean filter.
     void Load(int row, bool includeTrue, bool includeFalse);
 
+    /// Preselect a column on a fresh editor (no filter payload).
+    /// Used by the header right-click "Add filter on ..." entry.
+    /// No-op when @p row is out of range or hidden.
+    void SetInitialColumn(int row);
+
     int GetRowToFilter() const;
     QString GetStringToFilter() const;
     int GetMatchType() const;

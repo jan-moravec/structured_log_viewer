@@ -3912,11 +3912,15 @@ private slots:
         QVERIFY2(!header->isSectionHidden(levelCol), "header section must no longer be hidden");
     }
 
-    // The header menu's `Show column` submenu lists every hidden
-    // column. Built against a visible clicked column so the `Hide`
-    // entry is present too. The hidden-column branch is covered by
-    // `TestHeaderContextMenuOmitsHideForHiddenColumn`.
-    void TestHeaderContextMenuListsHiddenColumns()
+    // The header menu must never advertise a hidden column on a
+    // visible-column right-click: re-showing hidden columns is
+    // intentionally delegated to the `View` menu (the only escape
+    // hatch when *every* column is hidden, since no header section
+    // is left to right-click). Built against a visible clicked
+    // column so the `Hide` entry is present and the contrast is
+    // sharp. Pinned so a future regression that reintroduces a
+    // `Show column` submenu trips here.
+    void TestHeaderContextMenuOmitsShowColumnSubmenu()
     {
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
@@ -3924,45 +3928,35 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Hide only `msg` so the menu on `level` shows both Hide
-        // (for `level`) and Show column (listing `msg`).
         mWindow->SetColumnVisible(msgCol, false);
 
-        // `BuildHeaderContextMenu` reports the freshly-built `Show
-        // column` submenu via the optional out-parameter; `QAction::
-        // menu()` and `qobject_cast<QMenu*>(child)` both return null
-        // on the Linux Release offscreen-QPA toolchain (the QtWidgets
-        // metaobject hooks for `QMenu` are stripped at link time
-        // there), so the test cannot recover the pointer by walking
-        // the tree. The out-parameter is the contract.
-        QMenu *showMenu = nullptr;
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr, &showMenu);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        const QList<QAction *> topActions = menu->actions();
-        QVERIFY2(topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu");
+        const QList<QAction *> topActions = built.menu->actions();
+        QVERIFY2(!topActions.isEmpty(), "visible-column menu must contain at least the Hide entry");
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
-        QVERIFY2(showMenu != nullptr, "menu must contain a Show column submenu");
-
-        QStringList showActionLabels;
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        for (const QAction *act : showMenu->actions())
+        for (const QAction *act : topActions)
         {
-            showActionLabels.append(act->text());
+            QVERIFY2(
+                act->text() != QStringLiteral("Show column"),
+                "header context menu must not offer a Show column submenu (use the View menu)"
+            );
+            QVERIFY2(
+                act->text() != QStringLiteral("msg"),
+                "header context menu must not list the hidden `msg` column as an action"
+            );
         }
-        QStringList expected{QStringLiteral("msg")};
-        expected.sort();
-        showActionLabels.sort();
-        QCOMPARE(showActionLabels, expected);
     }
 
-    // The header menu must omit `Hide` when the clicked column is
-    // already hidden (the action would be a confusing no-op). The
-    // Show submenu is still present so the user can re-show.
-    // Hidden-column right-clicks are reachable only via the test
-    // seam; production right-clicks only fire on visible sections.
+    // For a hidden column the menu must omit both `Hide` and
+    // `Add filter on ...` (both would be confusing no-ops). The
+    // hidden-column right-click is only reachable via the test
+    // seam -- production right-clicks fire on visible sections --
+    // and re-showing hidden columns is delegated to the `View`
+    // menu, so the resulting menu is empty in this branch.
     void TestHeaderContextMenuOmitsHideForHiddenColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -3970,15 +3964,490 @@ private slots:
 
         mWindow->SetColumnVisible(levelCol, false);
 
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        for (const QAction *act : menu->actions())
+        for (const QAction *act : built.menu->actions())
         {
             QVERIFY2(
                 !act->text().startsWith("Hide"), "menu rooted at a hidden column must not advertise a Hide action"
             );
+            QVERIFY2(
+                !act->text().startsWith("Add filter on"),
+                "menu rooted at a hidden column must not advertise an Add-filter action"
+            );
+        }
+    }
+
+    // The header menu always offers `Add filter on "<col>"...` so
+    // the user can scope a filter to the clicked column without
+    // leaving the right-click menu.
+    void TestHeaderContextMenuOffersAddFilter()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        const QAction *addFilterAction = nullptr;
+        for (const QAction *act : built.menu->actions())
+        {
+            if (act->text().startsWith(QStringLiteral("Add filter on")))
+            {
+                addFilterAction = act;
+                break;
+            }
+        }
+        QVERIFY2(addFilterAction != nullptr, "menu must contain an `Add filter on ...` action");
+        QVERIFY2(
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+            addFilterAction->text().contains(QStringLiteral("level")),
+            "Add filter action title must reference the clicked column"
+        );
+    }
+
+    // Triggering Add filter opens a `FilterEditor` with the row
+    // combobox already pointed at the clicked column.
+    void TestHeaderContextMenuAddFilterOpensEditorWithColumnPreselected()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        QAction *addFilterAction = nullptr;
+        for (QAction *act : built.menu->actions())
+        {
+            if (act->text().startsWith(QStringLiteral("Add filter on")))
+            {
+                addFilterAction = act;
+                break;
+            }
+        }
+        QVERIFY2(addFilterAction != nullptr, "menu must contain an `Add filter on ...` action");
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        addFilterAction->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "Add filter must spawn a FilterEditor");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QCOMPARE(editor->GetRowToFilter(), levelCol);
+
+        editor->close();
+        editor->deleteLater();
+        QCoreApplication::processEvents();
+    }
+
+    // Every existing filter on the clicked column gets a per-filter
+    // submenu (titled with its display value, mirroring the Filters
+    // menu) carrying `Edit` and `Remove` actions.
+    void TestHeaderContextMenuListsExistingFiltersForColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Two filters on `level`, one on `msg` (the latter must
+        // not appear in the menu rooted at `level`).
+        const QString levelFilter1 = QStringLiteral("level-filter-1");
+        const QString levelFilter2 = QStringLiteral("level-filter-2");
+        const QString msgFilter = QStringLiteral("msg-filter");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, levelFilter1),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, levelFilter2),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("warn")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, msgFilter),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("m1")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(3));
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        QCOMPARE(built.filterSubMenus.size(), static_cast<size_t>(2));
+        QVERIFY2(built.filterSubMenus.contains(levelFilter1.toStdString()), "level-filter-1 submenu must be exposed");
+        QVERIFY2(built.filterSubMenus.contains(levelFilter2.toStdString()), "level-filter-2 submenu must be exposed");
+        QVERIFY2(
+            !built.filterSubMenus.contains(msgFilter.toStdString()),
+            "filters on a different column must not appear in this header menu"
+        );
+
+        // Use MainWindow's translation context so a future
+        // translation of "Edit" / "Remove" cannot silently break
+        // this assertion.
+        const QString editLabel = MainWindow::tr("Edit");
+        const QString removeLabel = MainWindow::tr("Remove");
+        for (const auto &[id, subMenu] : built.filterSubMenus)
+        {
+            QVERIFY2(subMenu != nullptr, "filter sub-menu pointer must be non-null");
+            const QList<QAction *> actions = subMenu->actions();
+            QStringList labels;
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+            for (const QAction *act : actions)
+            {
+                labels.append(act->text());
+            }
+            QVERIFY2(labels.contains(editLabel), "filter sub-menu must contain an Edit action");
+            QVERIFY2(labels.contains(removeLabel), "filter sub-menu must contain a Remove action");
+        }
+    }
+
+    // Triggering `Remove` on a header-menu filter submenu drops
+    // the filter from `mFilters` (and the wire-format mirror).
+    void TestHeaderContextMenuRemoveClearsFilter()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        const QString filterId = QStringLiteral("header-remove");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QVERIFY2(mWindow->Filters().contains(filterId.toStdString()), "filter must land in mFilters before remove");
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed via the struct");
+        QAction *removeAction = nullptr;
+        const QString removeLabel = MainWindow::tr("Remove");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (QAction *act : subMenu->actions())
+        {
+            if (act->text() == removeLabel)
+            {
+                removeAction = act;
+                break;
+            }
+        }
+        QVERIFY2(removeAction != nullptr, "sub-menu must contain a Remove action");
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        removeAction->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(!mWindow->Filters().contains(filterId.toStdString()), "Remove must drop the filter from mFilters");
+    }
+
+    // Triggering `Edit` on a header-menu filter submenu opens a
+    // `FilterEditor` bound to the filter's column.
+    void TestHeaderContextMenuEditOpensEditor()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        const QString filterId = QStringLiteral("header-edit");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
+        QAction *editAction = nullptr;
+        const QString editLabel = MainWindow::tr("Edit");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (QAction *act : subMenu->actions())
+        {
+            if (act->text() == editLabel)
+            {
+                editAction = act;
+                break;
+            }
+        }
+        QVERIFY2(editAction != nullptr, "sub-menu must contain an Edit action");
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        editAction->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "Edit must open a FilterEditor");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QCOMPARE(editor->GetRowToFilter(), levelCol);
+        QVERIFY2(
+            mWindow->Filters().contains(filterId.toStdString()),
+            "Edit must not drop the filter; the lambda re-resolves mFilters[id] live"
+        );
+
+        editor->close();
+        editor->deleteLater();
+        QCoreApplication::processEvents();
+    }
+
+    // Regression: the `Add filter on ...` lambda must re-resolve by
+    // keys, so a column reorder between menu build and click still
+    // targets the column's current index. Mirrors
+    // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
+    void TestHeaderContextMenuAddFilterAfterColumnReorderResolvesByKeys()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        QAction *addFilterAction = nullptr;
+        for (QAction *act : built.menu->actions())
+        {
+            if (act->text().startsWith(QStringLiteral("Add filter on")))
+            {
+                addFilterAction = act;
+                break;
+            }
+        }
+        QVERIFY2(addFilterAction != nullptr, "menu must contain an `Add filter on ...` action");
+
+        // Reorder `level` after the menu is built but before the
+        // action is triggered; the lambda must re-resolve the index
+        // from the captured keys.
+        const int src = levelCol;
+        const int dest = (src == 0) ? columnCount - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "OnHeaderSectionMoved",
+                Qt::DirectConnection,
+                Q_ARG(int, src),
+                Q_ARG(int, src),
+                Q_ARG(int, dest)
+            ),
+            "OnHeaderSectionMoved slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(ColumnByHeader(*model, QStringLiteral("level")), dest);
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        addFilterAction->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "Add filter must spawn a FilterEditor");
+        // The editor's row must reflect the post-reorder index,
+        // proving the lambda re-resolved by keys rather than
+        // freezing on the build-time index.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QCOMPARE(editor->GetRowToFilter(), dest);
+
+        editor->close();
+        editor->deleteLater();
+        QCoreApplication::processEvents();
+    }
+
+    // The header menu must keep a stable, polished order: Hide →
+    // separator → Add filter → filter submenus. The order is only
+    // encoded in `BuildHeaderContextMenu`'s control flow, so a
+    // future reorder could quietly break the menu's polish without
+    // tripping any other test.
+    void TestHeaderContextMenuActionOrdering()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Hide `msg` to assert it does *not* leak into the menu
+        // (re-showing is owned by the `View` menu), add a filter on
+        // `level` so the filter group is present, and root the menu
+        // at `level` (still visible) so every group is reachable.
+        mWindow->SetColumnVisible(msgCol, false);
+        const QString filterId = QStringLiteral("order-test");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        const QList<QAction *> topActions = built.menu->actions();
+        QCOMPARE(topActions.size(), 4);
+
+        // Hide → separator → Add filter on ... → filter submenu.
+        QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
+        QVERIFY2(topActions[1]->isSeparator(), "second action must be a separator");
+        QVERIFY2(topActions[2]->text().startsWith("Add filter on"), "third action must be Add filter on ...");
+        // Last non-separator is the filter submenu; its title is the
+        // filter's display value, not a fixed string.
+        QVERIFY2(!topActions[3]->isSeparator(), "fourth action must be the filter submenu");
+    }
+
+    // With zero rows, Add-filter and per-filter Edit must be
+    // disabled (`AddFilter` short-circuits with a status-bar hint,
+    // so enabled entries would advertise a no-op). Remove stays
+    // enabled -- dropping a filter doesn't need rows. The save /
+    // reset / load detour is the only seam that yields a
+    // columns-without-rows state outside a fresh stream open.
+    void TestHeaderContextMenuDisablesFilterActionsWhenModelEmpty()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        // Round-trip the configuration so the model keeps its
+        // streamed columns but loses all rows. Same shape as
+        // `TestColumnVisibilityRoundTripsThroughSaveLoad`.
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString savedPath = tempDir.filePath(QStringLiteral("rowless.json"));
+        model->ConfigurationManager().Save(savedPath.toStdString());
+        model->Reset();
+        model->ConfigurationManager().Load(savedPath.toStdString());
+        mWindow->ApplyColumnVisibility();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 0);
+        const int reloadedLevelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(reloadedLevelCol >= 0, "level column must survive the config round-trip");
+
+        // Inject a filter post-reload so the Edit/Remove submenus
+        // are populated. `FilterEnumSubmitted` does not need rows.
+        const QString filterId = QStringLiteral("empty-model-filter");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, reloadedLevelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        auto built = mWindow->BuildHeaderContextMenu(reloadedLevelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
+
+        const QAction *addFilterAction = nullptr;
+        for (const QAction *act : built.menu->actions())
+        {
+            if (act->text().startsWith(QStringLiteral("Add filter on")))
+            {
+                addFilterAction = act;
+                break;
+            }
+        }
+        QVERIFY2(addFilterAction != nullptr, "menu must contain an Add-filter action");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QVERIFY2(!addFilterAction->isEnabled(), "Add filter must be disabled when the model has no rows");
+
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
+        const QString editLabel = MainWindow::tr("Edit");
+        const QString removeLabel = MainWindow::tr("Remove");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (const QAction *act : subMenu->actions())
+        {
+            if (act->text() == editLabel)
+            {
+                QVERIFY2(!act->isEnabled(), "Edit must be disabled when the model has no rows");
+            }
+            else if (act->text() == removeLabel)
+            {
+                QVERIFY2(act->isEnabled(), "Remove must stay enabled even when the model has no rows");
+            }
         }
     }
 
@@ -4486,7 +4955,7 @@ private slots:
         QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
 
         const QMenu *filterSubMenu = mWindow->FilterSubMenu(filterId);
-        QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Clear sub-menu");
+        QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Remove sub-menu");
         QAction *editAction = nullptr;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         for (QAction *action : filterSubMenu->actions())

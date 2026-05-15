@@ -243,6 +243,26 @@ void FilterEditor::Load(int row, bool includeTrue, bool includeFalse)
     mBoolIncludeFalse->setChecked(includeFalse);
 }
 
+void FilterEditor::SetInitialColumn(int row)
+{
+    const auto &columns = mModel.Configuration().columns;
+    if (row < 0 || static_cast<size_t>(row) >= columns.size())
+    {
+        return;
+    }
+    // Defensive: production only passes visible columns, but
+    // binding a filter to a hidden column is confusing UX.
+    if (!columns[static_cast<size_t>(row)].visible)
+    {
+        return;
+    }
+    // setCurrentIndex fires `currentIndexChanged` -> `UpdateSelectedColumn`,
+    // which swaps the stacked page (string / time / enum / numeric / bool).
+    // No emit when the index is unchanged, but the constructor already
+    // calls `UpdateSelectedColumn(0)` for that case.
+    mRowComboBox->setCurrentIndex(row);
+}
+
 int FilterEditor::GetRowToFilter() const
 {
     return mRowComboBox->currentIndex();

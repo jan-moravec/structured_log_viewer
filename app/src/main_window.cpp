@@ -1568,7 +1568,10 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 }
 
 void MainWindow::AddFilter(
-    const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter, bool openEditor
+    const QString &filterId,
+    const std::optional<loglib::LogConfiguration::LogFilter> &filter,
+    bool openEditor,
+    int initialColumn
 )
 {
     if (mModel->rowCount() == 0)
@@ -1675,6 +1678,13 @@ void MainWindow::AddFilter(
     connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
     connect(filterEditor, &FilterEditor::FilterNumericRangeSubmitted, this, &MainWindow::FilterNumericRangeSubmitted);
     connect(filterEditor, &FilterEditor::FilterBooleanSubmitted, this, &MainWindow::FilterBooleanSubmitted);
+    // Preselect the clicked column for the header "Add filter on
+    // ..." entry. The `Load(...)` calls below also set the row, so
+    // only meaningful when no payload is being restored.
+    if (!resolvedFilter.has_value() && initialColumn >= 0)
+    {
+        filterEditor->SetInitialColumn(initialColumn);
+    }
     if (resolvedFilter.has_value())
     {
         if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
@@ -1955,37 +1965,35 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
     AddLogFilter(filterID, filter);
 }
 
-void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync)
+QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const
 {
-    mFilters[id.toStdString()] = filter;
-    if (!deferSync)
-    {
-        MirrorFiltersToConfiguration();
-        UpdateFilters();
-    }
-
-    QString title;
+    // No `default:`: a new `LogFilter::Type` must trip `-Wswitch`
+    // rather than silently fall through and deref a `nullopt`.
+    // The Q_ASSERTs below catch un-validated inserts in debug;
+    // every filter in `mFilters` is supposed to have a fully-
+    // populated payload (enforced by `ValidateFilterAgainstColumns`).
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
-        title = QString::fromStdString(
+        Q_ASSERT(filter.filterBegin.has_value() && filter.filterEnd.has_value());
+        return QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
-        break;
     case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
+        Q_ASSERT(!filter.filterValues.empty());
         QStringList values;
         values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
         for (const std::string &v : filter.filterValues)
         {
             values.append(QString::fromStdString(v));
         }
-        title = values.join(QStringLiteral(", "));
-        break;
+        return values.join(QStringLiteral(", "));
     }
     case loglib::LogConfiguration::LogFilter::Type::Number:
     {
+        Q_ASSERT(filter.filterMinValue.has_value() || filter.filterMaxValue.has_value());
         // Same C-locale, max-digits10 formatting as
         // `FilterEditor::Load` so the menu title and reopened editor
         // bounds match byte-for-byte. Default precision-6 would
@@ -1999,8 +2007,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
             filter.filterMaxValue.has_value()
                 ? cLocale.toString(*filter.filterMaxValue, 'g', std::numeric_limits<double>::max_digits10)
                 : QStringLiteral("+inf");
-        title = QStringLiteral("[%1, %2]").arg(minStr, maxStr);
-        break;
+        return QStringLiteral("[%1, %2]").arg(minStr, maxStr);
     }
     case loglib::LogConfiguration::LogFilter::Type::Boolean:
     {
@@ -2008,6 +2015,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         // `filter.filterValues` is laid out (the submit slot always
         // writes "true" first, but a hand-edited config might not).
         const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
+        Q_ASSERT(sides.includeTrue || sides.includeFalse);
         QStringList values;
         if (sides.includeTrue)
         {
@@ -2017,14 +2025,27 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         {
             values.append(QStringLiteral("false"));
         }
-        title = values.join(QStringLiteral(", "));
-        break;
+        return values.join(QStringLiteral(", "));
     }
     case loglib::LogConfiguration::LogFilter::Type::String:
-    default:
-        title = QString::fromStdString(*filter.filterString);
-        break;
+        Q_ASSERT(filter.filterString.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        return QString::fromStdString(*filter.filterString);
     }
+    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LogFilter::Type");
+    return {};
+}
+
+void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync)
+{
+    mFilters[id.toStdString()] = filter;
+    if (!deferSync)
+    {
+        MirrorFiltersToConfiguration();
+        UpdateFilters();
+    }
+
+    const QString title = BuildFilterTitle(filter);
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
     menuItem->menuAction()->setData(QVariant(id));
@@ -2033,13 +2054,17 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     // both fail under the Linux Release offscreen-QPA toolchain.
     mFilterSubMenus[id.toStdString()] = menuItem;
 
-    const QAction *editAction = menuItem->addAction("Edit");
-    // Capture only the filter id and resolve the live filter at
-    // trigger time. Capturing the filter by value would freeze its
-    // `row` at the column it had at menu-build time, so a column
-    // reorder between build and click would mis-target Edit and the
-    // type-match guard would silently drop the filter. Regression:
+    const QAction *editAction = menuItem->addAction(tr("Edit"));
+    // Capture only the id and re-resolve the live filter at trigger
+    // time, so a column reorder between menu build and click still
+    // targets the right row. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
+    //
+    // The lint suppression below covers `mFilters.find` / `LogFilter`
+    // copy, which can technically throw. The body has no real source
+    // of exceptions (no user input, no I/O), so wrapping it in
+    // try/catch would be pure noise. Same applies to the matching
+    // Edit lambda in `BuildHeaderContextMenu`.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
         const auto it = mFilters.find(id.toStdString());
@@ -2051,8 +2076,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         AddFilter(id, it->second);
     });
 
-    const QAction *clearAction = menuItem->addAction("Clear");
-    connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
+    const QAction *removeAction = menuItem->addAction(tr("Remove"));
+    connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
 }
 
@@ -2550,27 +2575,25 @@ void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
     {
         return;
     }
-    QMenu *menu = BuildHeaderContextMenu(logical, header);
-    if (menu == nullptr)
+    HeaderContextMenu built = BuildHeaderContextMenu(logical, header);
+    if (built.menu == nullptr)
     {
         return;
     }
-    menu->setAttribute(Qt::WA_DeleteOnClose);
-    menu->popup(header->mapToGlobal(pos));
+    built.menu->setAttribute(Qt::WA_DeleteOnClose);
+    built.menu->popup(header->mapToGlobal(pos));
 }
 
-QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QMenu **outShowSubMenu)
+MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
 {
-    if (outShowSubMenu != nullptr)
-    {
-        *outShowSubMenu = nullptr;
-    }
+    HeaderContextMenu result;
     const auto &columns = mModel->Configuration().columns;
     if (logicalColumn < 0 || static_cast<size_t>(logicalColumn) >= columns.size())
     {
-        return nullptr;
+        return result;
     }
     auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+    result.menu = menu;
 
     // Capture stable `keys` rather than the logical index: a column
     // move while the menu is open would otherwise leave the action
@@ -2579,17 +2602,16 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QM
     const std::vector<std::string> &thisKeys = columns[static_cast<size_t>(logicalColumn)].keys;
     const auto &thisColumn = columns[static_cast<size_t>(logicalColumn)];
 
-    // O(N) bulk build; `ColumnMenuLabel` per column would be
-    // O(N^2) on the `Show column` submenu.
-    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+    // Only the clicked column's label is needed -- re-showing hidden
+    // columns is handled by the `View` menu, not this context menu.
+    const QString thisLabel = ColumnMenuLabel(static_cast<size_t>(logicalColumn));
 
     // Only offer Hide for visible columns. Production right-clicks
     // always hit a visible section; the test seam may pass a hidden
     // index, where Hide would be a confusing no-op.
     if (thisColumn.visible)
     {
-        const QString &hideLabel = labels[static_cast<size_t>(logicalColumn)];
-        const QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(hideLabel));
+        const QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(thisLabel));
         connect(hideAction, &QAction::triggered, this, [this, keys = thisKeys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx >= 0)
@@ -2599,43 +2621,101 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QM
         });
     }
 
-    // Hidden columns populate the `Show column` submenu. The clicked
-    // column is normally visible, so it would not appear here in
-    // production -- tests can call this with a hidden index.
-    std::vector<int> hiddenColumns;
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        if (!columns[i].visible)
-        {
-            hiddenColumns.push_back(static_cast<int>(i));
-        }
-    }
-    if (!hiddenColumns.empty())
+    // Filter block: `Add filter on "<col>"` plus a submenu per
+    // existing filter on this column. Lambdas capture stable keys /
+    // ids and re-resolve at trigger time, so a column reorder
+    // between build and click still hits the right index.
+    //
+    // Add and Edit are gated on row count > 0 -- `AddFilter` bails
+    // out with a status-bar hint otherwise, so leaving them enabled
+    // would advertise a no-op. Remove stays enabled (dropping a
+    // filter doesn't need rows).
+    const bool modelHasRows = mModel->rowCount() > 0;
+
+    // Hidden columns: skip Add-filter. Production can't right-click
+    // them, but the test seam can, and `SetInitialColumn` refuses to
+    // preselect a hidden column -- so the action would advertise a
+    // column the editor wouldn't actually preselect.
+    if (thisColumn.visible)
     {
         if (!menu->isEmpty())
         {
             menu->addSeparator();
         }
-        QMenu *showMenu = menu->addMenu(tr("Show column"));
-        if (outShowSubMenu != nullptr)
+        QAction *addFilterAction = menu->addAction(tr("Add filter on \"%1\"…").arg(thisLabel));
+        addFilterAction->setEnabled(modelHasRows);
+        connect(addFilterAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0)
+            {
+                return;
+            }
+            AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
+        });
+    }
+
+    // Existing filters on this column, sorted by display title.
+    // `mFilters` is an unordered_map keyed by UUID, so without
+    // sorting the menu order would be effectively random.
+    struct FilterEntry
+    {
+        std::string id;
+        QString title;
+        loglib::LogConfiguration::LogFilter::Type type;
+    };
+    std::vector<FilterEntry> filtersForColumn;
+    filtersForColumn.reserve(mFilters.size());
+    for (const auto &entry : mFilters)
+    {
+        if (entry.second.row == logicalColumn)
         {
-            *outShowSubMenu = showMenu;
-        }
-        for (const int hiddenLogical : hiddenColumns)
-        {
-            const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;
-            const QString &hiddenLabel = labels[static_cast<size_t>(hiddenLogical)];
-            const QAction *showAction = showMenu->addAction(hiddenLabel);
-            connect(showAction, &QAction::triggered, this, [this, keys = hiddenKeys]() {
-                const int idx = FindColumnIndexByKeys(keys);
-                if (idx >= 0)
-                {
-                    SetColumnVisible(idx, true);
-                }
-            });
+            filtersForColumn.push_back(
+                {.id = entry.first, .title = BuildFilterTitle(entry.second), .type = entry.second.type}
+            );
         }
     }
-    return menu;
+    std::sort(filtersForColumn.begin(), filtersForColumn.end(), [](const FilterEntry &a, const FilterEntry &b) {
+        const int compare = a.title.localeAwareCompare(b.title);
+        if (compare != 0)
+        {
+            return compare < 0;
+        }
+        // Tie-break: type first (so a String `true, false` and a
+        // Boolean filter group together), then UUID for determinism.
+        if (a.type != b.type)
+        {
+            return a.type < b.type;
+        }
+        return a.id < b.id;
+    });
+    for (const FilterEntry &entry : filtersForColumn)
+    {
+        const QString filterId = QString::fromStdString(entry.id);
+        QMenu *filterSubMenu = menu->addMenu(entry.title);
+        result.filterSubMenus[entry.id] = filterSubMenu;
+        QAction *editAction = filterSubMenu->addAction(tr("Edit"));
+        editAction->setEnabled(modelHasRows);
+        // Same id-resolve-on-trigger pattern as the Filters-menu
+        // Edit action; see `AddLogFilter` for the lint suppression.
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        connect(editAction, &QAction::triggered, this, [this, filterId]() {
+            const auto it = mFilters.find(filterId.toStdString());
+            if (it == mFilters.end())
+            {
+                AddFilter(filterId);
+                return;
+            }
+            AddFilter(filterId, it->second);
+        });
+        const QAction *removeAction = filterSubMenu->addAction(tr("Remove"));
+        connect(removeAction, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
+    }
+
+    // Re-showing hidden columns is intentionally not offered here:
+    // the `View` menu already covers it (and is the only escape
+    // hatch when *every* column is hidden, since no header section
+    // is left to right-click).
+    return result;
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
