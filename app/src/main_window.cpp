@@ -2601,10 +2601,9 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     const std::vector<std::string> &thisKeys = columns[static_cast<size_t>(logicalColumn)].keys;
     const auto &thisColumn = columns[static_cast<size_t>(logicalColumn)];
 
-    // O(N) bulk build; `ColumnMenuLabel` per column would be
-    // O(N^2) on the `Show column` submenu.
-    const std::vector<QString> labels = BuildAllColumnMenuLabels();
-    const QString &thisLabel = labels[static_cast<size_t>(logicalColumn)];
+    // Only the clicked column's label is needed -- re-showing hidden
+    // columns is handled by the `View` menu, not this context menu.
+    const QString thisLabel = ColumnMenuLabel(static_cast<size_t>(logicalColumn));
 
     // Only offer Hide for visible columns. Production right-clicks
     // always hit a visible section; the test seam may pass a hidden
@@ -2709,39 +2708,10 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         connect(removeAction, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
     }
 
-    // Hidden columns populate the `Show column` submenu. The clicked
-    // column is normally visible, so it would not appear here in
-    // production -- tests can call this with a hidden index.
-    std::vector<int> hiddenColumns;
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        if (!columns[i].visible)
-        {
-            hiddenColumns.push_back(static_cast<int>(i));
-        }
-    }
-    if (!hiddenColumns.empty())
-    {
-        if (!menu->isEmpty())
-        {
-            menu->addSeparator();
-        }
-        QMenu *showMenu = menu->addMenu(tr("Show column"));
-        result.showSubMenu = showMenu;
-        for (const int hiddenLogical : hiddenColumns)
-        {
-            const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;
-            const QString &hiddenLabel = labels[static_cast<size_t>(hiddenLogical)];
-            const QAction *showAction = showMenu->addAction(hiddenLabel);
-            connect(showAction, &QAction::triggered, this, [this, keys = hiddenKeys]() {
-                const int idx = FindColumnIndexByKeys(keys);
-                if (idx >= 0)
-                {
-                    SetColumnVisible(idx, true);
-                }
-            });
-        }
-    }
+    // Re-showing hidden columns is intentionally not offered here:
+    // the `View` menu already covers it (and is the only escape
+    // hatch when *every* column is hidden, since no header section
+    // is left to right-click).
     return result;
 }
 

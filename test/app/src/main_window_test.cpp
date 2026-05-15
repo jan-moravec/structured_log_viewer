@@ -3912,11 +3912,15 @@ private slots:
         QVERIFY2(!header->isSectionHidden(levelCol), "header section must no longer be hidden");
     }
 
-    // The header menu's `Show column` submenu lists every hidden
-    // column. Built against a visible clicked column so the `Hide`
-    // entry is present too. The hidden-column branch is covered by
-    // `TestHeaderContextMenuOmitsHideForHiddenColumn`.
-    void TestHeaderContextMenuListsHiddenColumns()
+    // The header menu must never advertise a hidden column on a
+    // visible-column right-click: re-showing hidden columns is
+    // intentionally delegated to the `View` menu (the only escape
+    // hatch when *every* column is hidden, since no header section
+    // is left to right-click). Built against a visible clicked
+    // column so the `Hide` entry is present and the contrast is
+    // sharp. Pinned so a future regression that reintroduces a
+    // `Show column` submenu trips here.
+    void TestHeaderContextMenuOmitsShowColumnSubmenu()
     {
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
@@ -3924,43 +3928,35 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Hide only `msg` so the menu on `level` shows both Hide
-        // (for `level`) and Show column (listing `msg`).
         mWindow->SetColumnVisible(msgCol, false);
 
-        // `BuildHeaderContextMenu` exposes the Show-column submenu
-        // via the returned struct. On Linux Release offscreen-QPA,
-        // QMenu metaobject hooks are stripped, so `QAction::menu()`
-        // and `qobject_cast<QMenu*>(child)` both return null --
-        // tests can't recover the submenu by walking the tree, so
-        // the struct is the contract.
         auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QList<QAction *> topActions = built.menu->actions();
-        QVERIFY2(topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu");
+        QVERIFY2(!topActions.isEmpty(), "visible-column menu must contain at least the Hide entry");
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
-        QVERIFY2(built.showSubMenu != nullptr, "menu must contain a Show column submenu");
-
-        QStringList showActionLabels;
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        for (const QAction *act : built.showSubMenu->actions())
+        for (const QAction *act : topActions)
         {
-            showActionLabels.append(act->text());
+            QVERIFY2(
+                act->text() != QStringLiteral("Show column"),
+                "header context menu must not offer a Show column submenu (use the View menu)"
+            );
+            QVERIFY2(
+                act->text() != QStringLiteral("msg"),
+                "header context menu must not list the hidden `msg` column as an action"
+            );
         }
-        QStringList expected{QStringLiteral("msg")};
-        expected.sort();
-        showActionLabels.sort();
-        QCOMPARE(showActionLabels, expected);
     }
 
     // For a hidden column the menu must omit both `Hide` and
-    // `Add filter on ...` (both would be confusing no-ops); the
-    // Show submenu is still present so the user can re-show.
-    // Hidden-column right-clicks are only reachable via the test
-    // seam -- production right-clicks fire on visible sections.
+    // `Add filter on ...` (both would be confusing no-ops). The
+    // hidden-column right-click is only reachable via the test
+    // seam -- production right-clicks fire on visible sections --
+    // and re-showing hidden columns is delegated to the `View`
+    // menu, so the resulting menu is empty in this branch.
     void TestHeaderContextMenuOmitsHideForHiddenColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4328,10 +4324,10 @@ private slots:
     }
 
     // The header menu must keep a stable, polished order: Hide →
-    // separator → Add filter → filter submenus → separator → Show
-    // column. The order is only encoded in `BuildHeaderContextMenu`'s
-    // control flow, so a future reorder could quietly break the
-    // menu's polish without tripping any other test.
+    // separator → Add filter → filter submenus. The order is only
+    // encoded in `BuildHeaderContextMenu`'s control flow, so a
+    // future reorder could quietly break the menu's polish without
+    // tripping any other test.
     void TestHeaderContextMenuActionOrdering()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4340,10 +4336,10 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Hide `msg` so the Show-column submenu appears, add a
-        // filter on `level` so the filter group is present, and
-        // root the menu at `level` (still visible) so every group
-        // is reachable.
+        // Hide `msg` to assert it does *not* leak into the menu
+        // (re-showing is owned by the `View` menu), add a filter on
+        // `level` so the filter group is present, and root the menu
+        // at `level` (still visible) so every group is reachable.
         mWindow->SetColumnVisible(msgCol, false);
         const QString filterId = QStringLiteral("order-test");
         QVERIFY2(
@@ -4364,20 +4360,15 @@ private slots:
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QList<QAction *> topActions = built.menu->actions();
-        QVERIFY2(topActions.size() >= 6, "menu must contain Hide + sep + Add + filter + sep + Show submenu");
+        QCOMPARE(topActions.size(), 4);
 
-        // Hide → separator → Add filter on ... → filter submenu →
-        // separator → Show column.
+        // Hide → separator → Add filter on ... → filter submenu.
         QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
         QVERIFY2(topActions[1]->isSeparator(), "second action must be a separator");
         QVERIFY2(topActions[2]->text().startsWith("Add filter on"), "third action must be Add filter on ...");
-        // Next non-separator is the filter submenu; its title is the
+        // Last non-separator is the filter submenu; its title is the
         // filter's display value, not a fixed string.
         QVERIFY2(!topActions[3]->isSeparator(), "fourth action must be the filter submenu");
-        QVERIFY2(topActions[4]->isSeparator(), "fifth action must be a separator before Show column");
-        QVERIFY2(
-            topActions[5]->text() == QStringLiteral("Show column"), "sixth action must be the Show column submenu"
-        );
     }
 
     // With zero rows, Add-filter and per-filter Edit must be

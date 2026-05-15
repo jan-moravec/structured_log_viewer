@@ -93,15 +93,13 @@ public:
     void ResetHeaderToIdentity();
 
     /// Result of `BuildHeaderContextMenu`. `menu` is the caller-
-    /// owned root menu; `showSubMenu` and `filterSubMenus` are
-    /// non-owning test seams (the Linux Release offscreen-QPA
-    /// toolchain strips `QMenu` metaobject hooks, so tests can't
-    /// recover submenus by walking the tree). Production callers
-    /// only need `menu`.
+    /// owned root menu; `filterSubMenus` is a non-owning test seam
+    /// (the Linux Release offscreen-QPA toolchain strips `QMenu`
+    /// metaobject hooks, so tests can't recover submenus by walking
+    /// the tree). Production callers only need `menu`.
     struct HeaderContextMenu
     {
         QMenu *menu = nullptr;
-        QMenu *showSubMenu = nullptr;
         std::unordered_map<std::string, QMenu *> filterSubMenus;
     };
 

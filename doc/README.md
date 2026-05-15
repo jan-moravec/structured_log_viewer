@@ -186,7 +186,7 @@ You can rearrange and hide columns to fit your view:
 
 - **Reorder**: drag a column header sideways to a new position. Filters and the sort indicator track the column to its new index, and the new order is preserved by [configurations](#configurations).
 - **Hide a column**: right-click the header and choose **Hide "\<col>"**, or uncheck the column in the **View** menu. Hidden columns stay in the model — data, sort, search, and filters keep working — only the header section is hidden.
-- **Show a hidden column**: right-click any visible header and pick the column from the **Show column** submenu, or re-check it in the **View** menu. The **View** menu is also the way back when *every* column is hidden (no header section is left to right-click).
+- **Show a hidden column**: re-check the column in the **View** menu. The **View** menu is the only way back, and stays reachable even when *every* column is hidden (no header section is left to right-click).
 
 Duplicate header names are disambiguated as `header [key]` in both menus so columns sharing a header are still individually addressable.
 
