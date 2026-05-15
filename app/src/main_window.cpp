@@ -1973,15 +1973,22 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
     // the String branch, which would dereference a `nullopt`
     // `filter.filterString` and crash. Every payload read below
     // assumes the matching submit slot already validated it.
+    // Debug tripwires for `ValidateFilterAgainstColumns`: every
+    // filter that lands in `mFilters` is supposed to have a fully-
+    // populated payload for its declared type. Asserting here turns
+    // a stray un-validated insert into an immediate debug failure
+    // rather than a release-only `optional` deref crash later.
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
+        Q_ASSERT(filter.filterBegin.has_value() && filter.filterEnd.has_value());
         return QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
     case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
+        Q_ASSERT(!filter.filterValues.empty());
         QStringList values;
         values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
         for (const std::string &v : filter.filterValues)
@@ -1992,6 +1999,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
     }
     case loglib::LogConfiguration::LogFilter::Type::Number:
     {
+        Q_ASSERT(filter.filterMinValue.has_value() || filter.filterMaxValue.has_value());
         // Same C-locale, max-digits10 formatting as
         // `FilterEditor::Load` so the menu title and reopened editor
         // bounds match byte-for-byte. Default precision-6 would
@@ -2013,6 +2021,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
         // `filter.filterValues` is laid out (the submit slot always
         // writes "true" first, but a hand-edited config might not).
         const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
+        Q_ASSERT(sides.includeTrue || sides.includeFalse);
         QStringList values;
         if (sides.includeTrue)
         {
@@ -2025,6 +2034,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
         return values.join(QStringLiteral(", "));
     }
     case loglib::LogConfiguration::LogFilter::Type::String:
+        Q_ASSERT(filter.filterString.has_value());
         return QString::fromStdString(*filter.filterString);
     }
     Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LogFilter::Type");
@@ -2630,19 +2640,37 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     // live, mirroring the Filters-menu Edit/Remove actions wired
     // in `AddLogFilter`. A leading separator keeps Hide visually
     // distinct from the filter group when both are present.
-    if (!menu->isEmpty())
+    //
+    // Both Add and Edit are gated on the model having at least one
+    // row -- `AddFilter` itself bails out with a status-bar hint in
+    // that case, so leaving the actions enabled would advertise a
+    // no-op. Remove stays enabled because dropping a filter does
+    // not need the model to be populated.
+    const bool modelHasRows = mModel->rowCount() > 0;
+
+    // Skip the Add-filter action for hidden columns: in production
+    // they cannot be right-clicked (the header is invisible), but
+    // the public test seam can pass a hidden index, and
+    // `FilterEditor::SetInitialColumn` refuses to preselect a
+    // hidden column -- leaving the action title advertising a
+    // column the editor would not actually preselect.
+    if (thisColumn.visible)
     {
-        menu->addSeparator();
-    }
-    const QAction *addFilterAction = menu->addAction(tr("Add filter on \"%1\"...").arg(thisLabel));
-    connect(addFilterAction, &QAction::triggered, this, [this, keys = thisKeys]() {
-        const int idx = FindColumnIndexByKeys(keys);
-        if (idx < 0)
+        if (!menu->isEmpty())
         {
-            return;
+            menu->addSeparator();
         }
-        AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
-    });
+        QAction *addFilterAction = menu->addAction(tr("Add filter on \"%1\"…").arg(thisLabel));
+        addFilterAction->setEnabled(modelHasRows);
+        connect(addFilterAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0)
+            {
+                return;
+            }
+            AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
+        });
+    }
 
     // Existing filters on this column. Sort by display title so
     // the menu reads like a sorted list to the user; `mFilters` is
@@ -2652,6 +2680,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         std::string id;
         QString title;
+        loglib::LogConfiguration::LogFilter::Type type;
     };
     std::vector<FilterEntry> filtersForColumn;
     filtersForColumn.reserve(mFilters.size());
@@ -2659,22 +2688,33 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         if (entry.second.row == logicalColumn)
         {
-            filtersForColumn.push_back({entry.first, BuildFilterTitle(entry.second)});
+            filtersForColumn.push_back({entry.first, BuildFilterTitle(entry.second), entry.second.type});
         }
     }
     std::sort(filtersForColumn.begin(), filtersForColumn.end(), [](const FilterEntry &a, const FilterEntry &b) {
         const int compare = a.title.localeAwareCompare(b.title);
-        // Tie-break on the UUID so the order is fully deterministic
-        // (two filters with identical titles, e.g. both `info`, would
-        // otherwise still flicker across rebuilds).
-        return compare != 0 ? compare < 0 : a.id < b.id;
+        if (compare != 0)
+        {
+            return compare < 0;
+        }
+        // Tie-break by filter type first so two filters that render
+        // to the same title (e.g. a String filter spelt `true, false`
+        // and a Boolean filter) sit next to each other in type-stable
+        // order. Final tie-break on the UUID makes the order fully
+        // deterministic across rebuilds.
+        if (a.type != b.type)
+        {
+            return a.type < b.type;
+        }
+        return a.id < b.id;
     });
     for (const FilterEntry &entry : filtersForColumn)
     {
         const QString filterId = QString::fromStdString(entry.id);
         QMenu *filterSubMenu = menu->addMenu(entry.title);
         result.filterSubMenus[entry.id] = filterSubMenu;
-        const QAction *editAction = filterSubMenu->addAction(tr("Edit"));
+        QAction *editAction = filterSubMenu->addAction(tr("Edit"));
+        editAction->setEnabled(modelHasRows);
         // Same look-up-by-id pattern as the Filters-menu Edit
         // action (capturing the filter by value would freeze its
         // `row` at menu-build time); see `AddLogFilter` for the
