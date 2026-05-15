@@ -4,14 +4,18 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace loglib;
 
@@ -1016,4 +1020,128 @@ TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigura
     CHECK(manager.Configuration().columns[1].header == "good_b");
     CHECK(manager.Configuration().columns[0].visible);
     CHECK_FALSE(manager.Configuration().columns[1].visible);
+}
+
+TEST_CASE("IsLogLevelKey recognises canonical level aliases case-insensitively", "[log_configuration][log_level]")
+{
+    CHECK(IsLogLevelKey("level"));
+    CHECK(IsLogLevelKey("Level"));
+    CHECK(IsLogLevelKey("LEVEL"));
+    CHECK(IsLogLevelKey("severity"));
+    CHECK(IsLogLevelKey("loglevel"));
+    CHECK(IsLogLevelKey("log_level"));
+    CHECK(IsLogLevelKey("log.level"));
+    CHECK(IsLogLevelKey("lvl"));
+    CHECK(IsLogLevelKey("priority"));
+
+    CHECK_FALSE(IsLogLevelKey("status"));
+    CHECK_FALSE(IsLogLevelKey("timestamp"));
+    CHECK_FALSE(IsLogLevelKey(""));
+    CHECK_FALSE(IsLogLevelKey("levelish"));
+}
+
+TEST_CASE(
+    "LogConfiguration serialises Type::Level and Column::levelMapping round-trip",
+    "[log_configuration][log_level][serialization]"
+)
+{
+    LogConfiguration cfg;
+    LogConfiguration::Column column;
+    column.header = "severity";
+    column.keys = {"severity"};
+    column.printFormat = "{}";
+    column.type = LogConfiguration::Type::Level;
+    column.parseFormats = {};
+    column.levelMapping = {
+        {"NOTICE", "Info"},
+        {"PANIC", "Fatal"},
+    };
+    cfg.columns.push_back(column);
+
+    const TestLogConfiguration file;
+    file.Write(cfg);
+
+    LogConfigurationManager loaded;
+    loaded.Load(file.GetFilePath());
+
+    REQUIRE(loaded.Configuration().columns.size() == 1);
+    const auto &restored = loaded.Configuration().columns[0];
+    CHECK(restored.header == "severity");
+    CHECK(restored.type == LogConfiguration::Type::Level);
+    REQUIRE(restored.levelMapping.size() == 2);
+    CHECK(restored.levelMapping[0].first == "NOTICE");
+    CHECK(restored.levelMapping[0].second == "Info");
+    CHECK(restored.levelMapping[1].first == "PANIC");
+    CHECK(restored.levelMapping[1].second == "Fatal");
+}
+
+TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
+{
+    using Expected = std::pair<std::string_view, LogLevel>;
+    constexpr std::array<Expected, 19> CASES = {{
+        {"trace", LogLevel::Trace},
+        {"TRACE", LogLevel::Trace},
+        {"trc", LogLevel::Trace},
+        {"debug", LogLevel::Debug},
+        {"dbg", LogLevel::Debug},
+        {"verbose", LogLevel::Debug},
+        {"info", LogLevel::Info},
+        {"Information", LogLevel::Info},
+        {"informational", LogLevel::Info},
+        {"notice", LogLevel::Info},
+        {"warn", LogLevel::Warn},
+        {"WARNING", LogLevel::Warn},
+        {"error", LogLevel::Error},
+        {"ERR", LogLevel::Error},
+        {"severe", LogLevel::Error},
+        {"fatal", LogLevel::Fatal},
+        {"critical", LogLevel::Fatal},
+        {"crit", LogLevel::Fatal},
+        {"emerg", LogLevel::Fatal},
+    }};
+    for (const auto &[input, expected] : CASES)
+    {
+        CAPTURE(input);
+        const auto actual = ParseLevelName(input);
+        REQUIRE(actual.has_value());
+        CHECK(*actual == expected);
+    }
+
+    CHECK_FALSE(ParseLevelName("").has_value());
+    CHECK_FALSE(ParseLevelName("INFOMATION").has_value());
+    CHECK_FALSE(ParseLevelName("unknown").has_value());
+    CHECK_FALSE(ParseLevelName("\\t info").has_value());
+}
+
+TEST_CASE("CanonicalLevelName mirrors the LogLevel enum", "[log_level]")
+{
+    CHECK(CanonicalLevelName(LogLevel::Trace) == "Trace");
+    CHECK(CanonicalLevelName(LogLevel::Debug) == "Debug");
+    CHECK(CanonicalLevelName(LogLevel::Info) == "Info");
+    CHECK(CanonicalLevelName(LogLevel::Warn) == "Warn");
+    CHECK(CanonicalLevelName(LogLevel::Error) == "Error");
+    CHECK(CanonicalLevelName(LogLevel::Fatal) == "Fatal");
+    CHECK(CanonicalLevelName(LogLevel::Unknown) == "Unknown");
+}
+
+TEST_CASE("ResolveLevel honours per-column alias overrides", "[log_level]")
+{
+    const std::vector<std::pair<std::string, std::string>> overrides{
+        {"INF", "Info"},
+        {"PANIC", "Fatal"},
+        // Bogus canonical name -- ignored.
+        {"WAT", "NotARealLevel"},
+        // Re-map a built-in alias to a different level.
+        {"warn", "Error"},
+    };
+
+    CHECK(ResolveLevel("INF", overrides) == LogLevel::Info);
+    CHECK(ResolveLevel("inf", overrides) == LogLevel::Info);
+    CHECK(ResolveLevel("PANIC", overrides) == LogLevel::Fatal);
+    // Override takes precedence over built-in.
+    CHECK(ResolveLevel("warn", overrides) == LogLevel::Error);
+    // Invalid override falls through to built-in (no match here).
+    CHECK_FALSE(ResolveLevel("WAT", overrides).has_value());
+    // Built-in alias still works for entries not in overrides.
+    CHECK(ResolveLevel("info", overrides) == LogLevel::Info);
 }

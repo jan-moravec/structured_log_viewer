@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace loglib
@@ -31,6 +32,12 @@ struct LogConfiguration
     ///   - `Number`      - mix of integer and floating.
     ///   - `Time`        - timestamp column.
     ///   - `Enumeration` - small fixed vocabulary stored as `DictRef`.
+    ///   - `Level`       - Enumeration subtype recognised as a log-level
+    ///                     column. Raw user strings are preserved verbatim
+    ///                     in the dictionary; a per-column cache maps
+    ///                     each dictionary id to a canonical `LogLevel`
+    ///                     so sort, filter, and styling use canonical
+    ///                     rank instead of alphabetic order.
     enum class Type
     {
         Unknown,
@@ -41,7 +48,8 @@ struct LogConfiguration
         Floating,
         Number,
         Time,
-        Enumeration
+        Enumeration,
+        Level
     };
 
     struct Column
@@ -58,6 +66,13 @@ struct LogConfiguration
         /// keep working); only the view toggles `setSectionHidden`.
         /// Defaults to `true` so legacy JSON loads as visible.
         bool visible = true;
+        /// Per-column alias overrides for `Type::Level` columns. Each
+        /// entry is `(alias, canonicalName)`; aliases are matched
+        /// case-insensitively against the raw user string, canonical
+        /// names must spell-match a canonical `LogLevel` (`"Info"`,
+        /// `"Warn"`, ...). Entries augment the built-in alias table.
+        /// Empty by default; ignored for non-Level columns.
+        std::vector<std::pair<std::string, std::string>> levelMapping;
     };
 
     struct LogFilter
@@ -110,6 +125,12 @@ struct LogConfiguration
     std::vector<Column> columns;
     std::vector<LogFilter> filters;
 };
+
+/// Case-insensitive match against the canonical level-key alias list
+/// (`level`, `severity`, `loglevel`, ...). Used by `LogTable` to decide
+/// whether an auto-detected `Type::Enumeration` column is eligible for
+/// promotion to `Type::Level`.
+[[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
 /// Loads, saves, and updates a `LogConfiguration` from observed data.
 class LogConfigurationManager

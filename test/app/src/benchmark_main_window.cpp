@@ -221,7 +221,16 @@ private slots:
             }
         }
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        // The `level` column auto-promotes through Enumeration to the
+        // canonical Level type when the dictionary is dominated by
+        // canonical log-level names; both terminal enum-like states are
+        // valid here because the underlying storage stays as `DictRef`.
+        const auto levelType = columns[static_cast<size_t>(levelCol)].type;
+        QVERIFY2(
+            levelType == loglib::LogConfiguration::Type::Enumeration ||
+                levelType == loglib::LogConfiguration::Type::Level,
+            "level column must promote to Enumeration or Level"
+        );
 
         const loglib::EnumDictionary *dict = nullptr;
         const loglib::KeyId keyId =
@@ -324,7 +333,15 @@ private slots:
             }
         }
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        // Accept either Enumeration or Level: the canonical Level type is
+        // a sub-promotion of Enumeration and uses the same `DictRef`
+        // storage / dictionary the sort fast path consumes here.
+        const auto levelType = columns[static_cast<size_t>(levelCol)].type;
+        QVERIFY2(
+            levelType == loglib::LogConfiguration::Type::Enumeration ||
+                levelType == loglib::LogConfiguration::Type::Level,
+            "level column must promote to Enumeration or Level"
+        );
 
         using Ms = std::chrono::duration<double, std::milli>;
 

@@ -591,3 +591,52 @@ TEST_CASE("CompareRows is total: a<b iff b>a, and a=a", "[log_compare][propertie
         CHECK(CompareRows(table, a, a, 0) == 0);
     }
 }
+
+TEST_CASE(
+    "CompareRows on Type::Level columns orders rows by canonical severity rank, not byte order",
+    "[log_compare][level]"
+)
+{
+    const TestLogFile fixture("log_compare_level.json");
+    fixture.Write("");
+    // User-pinned `Type::Level` column with mixed-case aliases. Sort
+    // must use canonical rank (Info < Warn < Error < Fatal), not
+    // alphabetic byte order ("ERROR" < "INFO" alphabetically).
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    const std::vector<std::string> rowValues = {"WARN", "INFO", "ERROR", "FATAL", "qux"};
+    for (const auto &v : rowValues)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+    }
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    // Info(1) < Warn(0) < Error(2) < Fatal(3); the qux row joins the tail.
+    CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // INFO < WARN
+    CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // WARN < ERROR
+    CHECK(SignOf(CompareRows(table, 2, 3, 0)) == -1); // ERROR < FATAL
+    // Unmapped value sinks to the tail.
+    CHECK(SignOf(CompareRows(table, 3, 4, 0)) == -1); // FATAL < qux (tail)
+    CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1);  // qux (tail) > WARN
+}

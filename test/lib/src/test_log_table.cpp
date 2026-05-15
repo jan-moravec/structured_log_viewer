@@ -7,6 +7,7 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_processing.hpp>
@@ -1507,7 +1508,7 @@ TEST_CASE(
 
     // Batch 2: canonical key `level` arrives with cap-friendly data.
     // Terminal `Type::String` blocks re-promotion.
-    constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
+    constexpr size_t MIN_ROWS_FOR_PROMOTION = 4096;
     const std::vector<std::string> fewLevelValues = {"info", "warn"};
     table.AppendBatch(BuildEnumBatch(
         keys, *sourcePtr, "level", fewLevelValues, TEST_CAP + 2, MIN_ROWS_FOR_PROMOTION + 1, /*announceNewKey=*/true
@@ -1573,8 +1574,8 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // Batch 1: cap+1 distinct values past the row threshold kills the
-    // tracker before promotion (non-well-known key, many unique values).
-    constexpr size_t MIN_ROWS_FOR_PROMOTION = 256;
+    // tracker before promotion (many unique values trip the dict-cap kill).
+    constexpr size_t MIN_ROWS_FOR_PROMOTION = 4096;
     std::vector<std::string> manyValues;
     manyValues.reserve(TEST_CAP + 1);
     for (uint16_t i = 0; i < TEST_CAP + 1; ++i)
@@ -1790,39 +1791,12 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
 }
 
 TEST_CASE(
-    "LogTable -- well-known enum keys auto-promote within the well-known threshold",
-    "[log_table][append_batch][enum][well_known]"
-)
-{
-    // Keys in `WELL_KNOWN_ENUM_KEYS` (level, severity, status, ...) use a
-    // tighter promotion threshold (16 rows instead of 256).
-    const TestLogFile testFile("enum_well_known.json");
-    testFile.Write("");
-    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
-    FileLineSource *sourcePtr = source.get();
-
-    LogTable table;
-    table.BeginStreaming(std::move(source));
-    KeyIndex &keys = table.Keys();
-
-    // 32 rows: above the well-known threshold (16), below the standard one (256).
-    constexpr size_t WELL_KNOWN_PROMOTION_ROWS = 32;
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, WELL_KNOWN_PROMOTION_ROWS, true));
-
-    REQUIRE(table.RowCount() == WELL_KNOWN_PROMOTION_ROWS);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    CHECK(table.EnumDictionaries().Contains(levelKey));
-}
-
-TEST_CASE(
     "LogTable -- auto-discovered column tolerates a single stray long value",
     "[log_table][append_batch][enum][length_cap]"
 )
 {
     // Length-cap policy is percentile-based: a single overlong line in an
-    // otherwise enum-shaped column stays under the 5% tolerance and the
+    // otherwise enum-shaped column stays under the 1% tolerance and the
     // column still promotes.
     const TestLogFile testFile("enum_length_cap.json");
     testFile.Write("");
@@ -1833,7 +1807,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // 1/320 = 0.3% long values: well below the 5% tolerance.
+    // 1/320 = 0.3% long values: well below the 1% tolerance.
     const std::string longValue(80, 'x');
     std::vector<std::string> values;
     values.reserve(320);
@@ -1853,7 +1827,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 320);
     // Column promoted; the lone long line stays as `OwnedString`
-    // (under the 5% health tolerance).
+    // (under the 1% health tolerance).
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     const KeyId tierKey = keys.Find("tier");
     REQUIRE(tierKey != INVALID_KEY_ID);
@@ -1869,8 +1843,8 @@ TEST_CASE(
     "[log_table][append_batch][enum][length_cap]"
 )
 {
-    // Inverse of the previous test: 10% long values blow the 5% tolerance
-    // once the 20-sample min is satisfied; column flips to `Type::String`.
+    // Inverse of the previous test: 10% long values blow the 1% tolerance
+    // once the 50-sample min is satisfied; column flips to `Type::String`.
     const TestLogFile testFile("enum_length_cap_demote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1910,7 +1884,7 @@ TEST_CASE(
 )
 {
     // User-pinned columns share the same tolerance. With 4 rows we are
-    // under the 20-sample min, so the column stays `Type::Enumeration`
+    // under the 50-sample min, so the column stays `Type::Enumeration`
     // even though 50% of slots are over-cap; long values stay as
     // `OwnedString` and never enter the dictionary.
     const TestLogFile testFile("enum_length_cap_pinned.json");
@@ -1957,7 +1931,7 @@ TEST_CASE(
 {
     // Cumulative health check: a user-pinned column's `EnumColumnHealth`
     // accumulates across batches. Once the sample size is large enough
-    // and the over-cap fraction breaks 5%, the column demotes to
+    // and the over-cap fraction breaks 1%, the column demotes to
     // `Type::String` (no more "pinned forever" escape hatch).
     const TestLogFile testFile("enum_length_cap_pinned_demote.json");
     testFile.Write("");
@@ -1983,10 +1957,10 @@ TEST_CASE(
 
     const std::string longValue(80, 'q');
     std::vector<std::string> values;
-    values.reserve(50);
-    for (size_t i = 0; i < 50; ++i)
+    values.reserve(100);
+    for (size_t i = 0; i < 100; ++i)
     {
-        // 10% long values: above the 5% tolerance, past the 20-sample min.
+        // 10% long values: above the 1% tolerance, past the 50-sample min.
         values.push_back((i % 10 == 0) ? longValue : "short");
     }
     StreamedBatch batch;
@@ -2102,7 +2076,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Plenty of rows + well-known key would normally promote; the
+    // Plenty of rows would normally promote the column; the
     // user-locked `Type::Any` keeps it as text.
     constexpr size_t ROWS = 320;
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, ROWS, false));
@@ -2340,12 +2314,15 @@ LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 } // namespace
 
 TEST_CASE(
-    "LogTable -- static-mode high-cardinality string bail routes to Type::String",
+    "LogTable -- static-mode high-cardinality column routes to Type::String",
     "[log_table][update][enum][routing][cardinality_bail][static_mode]"
 )
 {
-    // The cardinality bail only fires in static mode. We use one distinct
-    // value per row to push past `ENUM_CARDINALITY_BAIL_RATIO`.
+    // High-cardinality columns route to `Type::String` via the dict-cap
+    // kill in `EnumCandidateTracker::Observe` (cap = `DEFAULT_ENUM_VALUE_CAP`
+    // = 64). With the simplified threshold (scanCap = 8192) the cardinality
+    // ratio bail itself rarely fires under the default cap, but the cap kill
+    // catches truly-unique columns long before scanCap is reached.
     const TestLogFile testFile("enum_cardinality_bail.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2353,8 +2330,8 @@ TEST_CASE(
 
     KeyIndex keys;
     std::vector<LogLine> lines;
-    // Non-well-known key (scanCap = 512). 600 distinct rows overshoot both
-    // the scan window and the cardinality ratio.
+    // 600 distinct rows: tracker exceeds the 64-entry dict cap inside
+    // `Observe`, gets killed, and the column flips to `Type::String`.
     lines.reserve(600);
     for (size_t i = 0; i < 600; ++i)
     {
@@ -2375,7 +2352,7 @@ TEST_CASE(
     "[log_table][finalize][enum][small_file]"
 )
 {
-    // Static parse with only 4 rows: per-batch promotion never fires (256
+    // Static parse with only 4 rows: per-batch promotion never fires (4096
     // row threshold). `FinalizeAutoDetection` applies the permissive
     // end-of-parse rule and promotes the column anyway.
     const TestLogFile testFile("enum_finalize_small.json");
@@ -2435,7 +2412,7 @@ TEST_CASE(
     "LogTable -- static-mode constructor finalize promotes mid-size files", "[log_table][static_mode][enum][threshold]"
 )
 {
-    // 100 rows do not hit the static per-batch threshold (256); the
+    // 100 rows do not hit the static per-batch threshold (4096); the
     // constructor's `FinalizeAutoDetection` sweep promotes them anyway.
     // Also confirms the constructor leaves `mIsStreaming = false`.
     const TestLogFile testFile("enum_static_threshold.json");
@@ -2485,7 +2462,7 @@ TEST_CASE(
         table.BeginStreaming(std::move(source));
         table.SetEnumValueCap(TINY_CAP);
 
-        // Well-known key "level" with the 2-row streaming threshold:
+        // Stream-mode key "level" with the 2-row promotion threshold:
         // `info`/`info` promotes, then the encode pass trips the
         // 2-cap on `warn`/`error`/`fatal` and demotes to
         // `Type::String` -- all in one `AppendBatch`.
@@ -2553,4 +2530,163 @@ TEST_CASE(
         CHECK(target.LastBatchDemotedKeys().front() == demotedKey);
         CHECK(source.LastBatchDemotedKeys().empty()); // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     }
+}
+
+TEST_CASE(
+    "LogTable -- auto-detected `level` column with canonical values promotes to Type::Level",
+    "[log_table][append_batch][level]"
+)
+{
+    // Name-match (`level`) plus mostly-canonical dictionary entries
+    // ({info, warn, error}) trigger the `Enumeration -> Level`
+    // second-step promotion inside `PromoteColumnToEnum`.
+    const TestLogFile testFile("level_auto_promote.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 1, 6, true));
+
+    REQUIRE(table.RowCount() == 6);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    // GetLevelForRow drives sort/filter/style; cycle through rows
+    // matching the BuildEnumBatch cycle pattern.
+    CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
+    CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
+    CHECK(table.GetLevelForRow(2, 0) == LogLevel::Error);
+}
+
+TEST_CASE(
+    "LogTable -- non-level column name does not promote to Type::Level despite canonical values",
+    "[log_table][append_batch][level]"
+)
+{
+    // Same dictionary as the previous test but with a non-level key
+    // name: `tier`. The column should promote to `Type::Enumeration`
+    // but not further to `Type::Level`.
+    const TestLogFile testFile("level_no_name_match.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "tier", {"info", "warn", "error"}, 1, 6, true));
+
+    REQUIRE(table.RowCount() == 6);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    CHECK_FALSE(table.GetLevelForRow(0, 0).has_value());
+}
+
+TEST_CASE(
+    "LogTable -- `level` column with mostly non-canonical values stays Type::Enumeration",
+    "[log_table][append_batch][level]"
+)
+{
+    // Key name matches but most dictionary entries do not resolve to
+    // a canonical level -- below the 80% threshold, so the column
+    // stops at `Type::Enumeration`.
+    const TestLogFile testFile("level_threshold.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // 5 distinct entries; only 1 resolves to a canonical level (info).
+    // 1/5 = 20% well below the 80% threshold.
+    table.AppendBatch(
+        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true)
+    );
+
+    REQUIRE(table.RowCount() == 10);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+}
+
+TEST_CASE(
+    "LogTable -- user-pinned Type::Level column populates the rank cache and preserves raw bytes",
+    "[log_table][append_batch][level][user_pinned]"
+)
+{
+    // A configured `Type::Level` column with a `levelMapping`
+    // override still keeps the raw user strings in the dictionary --
+    // the rank cache holds the canonical mapping separately.
+    const TestLogFile testFile("level_user_pinned.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "lvl",
+         .keys = {"lvl"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {},
+         .levelMapping = {{"PANIC", "Fatal"}, {"NOTICE", "Info"}}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "lvl", {"NOTICE", "PANIC", "info"}, 1, 6, true));
+
+    REQUIRE(table.RowCount() == 6);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    // BuildEnumBatch cycles through values modulo size: row 0/3 = NOTICE, 1/4 = PANIC, 2/5 = info.
+    CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
+    CHECK(table.GetLevelForRow(1, 0) == LogLevel::Fatal);
+    CHECK(table.GetLevelForRow(2, 0) == LogLevel::Info);
+
+    // Raw strings preserved in the formatted-display path.
+    CHECK(table.GetFormattedValue(0, 0) == "NOTICE");
+    CHECK(table.GetFormattedValue(1, 0) == "PANIC");
+}
+
+TEST_CASE(
+    "LogTable -- Type::Level column with a stray non-canonical value reports nullopt for that row",
+    "[log_table][append_batch][level]"
+)
+{
+    // 4/5 = 80% canonical: above the threshold, column promotes to
+    // `Type::Level`. The non-canonical entry stays in the dictionary
+    // (display fidelity); `GetLevelForRow` returns nullopt for its
+    // rows so sort/filter/style treat them as "no level info".
+    const TestLogFile testFile("level_unmapped_value.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // 5 distinct values; only `"qux"` is non-canonical.
+    table.AppendBatch(
+        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
+    );
+
+    REQUIRE(table.RowCount() == 10);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    // BuildEnumBatch cycles values mod 5: row 0 = info, 1 = warn, 2 = error, 3 = fatal, 4 = qux.
+    CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
+    CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
+    CHECK(table.GetLevelForRow(2, 0) == LogLevel::Error);
+    CHECK(table.GetLevelForRow(3, 0) == LogLevel::Fatal);
+    CHECK_FALSE(table.GetLevelForRow(4, 0).has_value());
+    // Raw "qux" remains the visible value.
+    CHECK(table.GetFormattedValue(4, 0) == "qux");
 }

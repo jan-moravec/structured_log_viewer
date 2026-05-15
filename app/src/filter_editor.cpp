@@ -1,6 +1,7 @@
 #include "filter_editor.hpp"
 
 #include <loglib/enum_dictionary.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 
 #include <QDoubleValidator>
@@ -198,7 +199,17 @@ void FilterEditor::Load(int row, const qint64 begin, qint64 end)
 void FilterEditor::Load(int row, const QStringList &selectedValues)
 {
     mRowComboBox->setCurrentIndex(row);
-    PopulateEnumValues(row);
+    const auto &columns = mModel.Configuration().columns;
+    const bool isLevel = row >= 0 && static_cast<size_t>(row) < columns.size() &&
+                         columns[static_cast<size_t>(row)].type == LogConfiguration::Type::Level;
+    if (isLevel)
+    {
+        PopulateLevelValues(row);
+    }
+    else
+    {
+        PopulateEnumValues(row);
+    }
     const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
     for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
     {
@@ -477,7 +488,7 @@ void FilterEditor::OnOkClicked()
             ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())
         );
     }
-    else if (column.type == LogConfiguration::Type::Enumeration)
+    else if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
     {
         const QStringList selected = GetSelectedEnumValues();
         if (selected.isEmpty())
@@ -486,6 +497,9 @@ void FilterEditor::OnOkClicked()
             mEnumValuesView->setStyleSheet("QListView { border: 1px solid red; }");
             return;
         }
+        // Level columns submit canonical level names verbatim; the
+        // predicate-build path expands them to matching dictionary
+        // entries via the per-column rank cache.
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
     else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
@@ -594,6 +608,10 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(PAGE_ENUM);
         PopulateEnumValues(index);
         break;
+    case LogConfiguration::Type::Level:
+        mStackedWidget->setCurrentIndex(PAGE_ENUM);
+        PopulateLevelValues(index);
+        break;
     case LogConfiguration::Type::Integer:
     case LogConfiguration::Type::Floating:
     case LogConfiguration::Type::Number:
@@ -665,6 +683,38 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
     for (const QString &value : sortedValues)
     {
         auto *item = new QStandardItem(value);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        mEnumValuesModel->appendRow(item);
+    }
+    UpdateEnumSelectionCount();
+}
+
+void FilterEditor::PopulateLevelValues(int columnIndex)
+{
+    mEnumValuesModel->clear();
+    mEnumSearchEdit->clear();
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
+    {
+        UpdateEnumSelectionCount();
+        return;
+    }
+    const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
+    if (column.type != LogConfiguration::Type::Level)
+    {
+        UpdateEnumSelectionCount();
+        return;
+    }
+    // Show the six canonical levels in severity order. The filter UI
+    // is canonical regardless of the raw dictionary entries the
+    // column carries; the predicate translates back at build time.
+    constexpr std::array<LogLevel, CANONICAL_LEVEL_COUNT> CANONICAL_LEVELS = {
+        LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
+    };
+    for (const LogLevel level : CANONICAL_LEVELS)
+    {
+        auto *item = new QStandardItem(QString::fromUtf8(CanonicalLevelName(level).data(),
+                                                          static_cast<int>(CanonicalLevelName(level).size())));
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Unchecked);
         mEnumValuesModel->appendRow(item);

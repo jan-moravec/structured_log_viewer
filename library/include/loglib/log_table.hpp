@@ -7,6 +7,7 @@
 #include "log_configuration.hpp"
 #include "log_data.hpp"
 #include "log_file.hpp"
+#include "log_level.hpp"
 #include "log_parse_sink.hpp"
 
 #include <cstdint>
@@ -144,6 +145,19 @@ public:
     /// else nullopt. Powers the `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(size_t row, size_t column) const noexcept;
 
+    /// Canonical `LogLevel` for the slot at (@p row, @p column) when the
+    /// column is `Type::Level` and the slot resolves to a known level via
+    /// the per-column cache. Returns `std::nullopt` for non-Level columns,
+    /// monostate slots, or slots whose dictionary entry doesn't map.
+    [[nodiscard]] std::optional<LogLevel> GetLevelForRow(size_t row, size_t columnIndex) const noexcept;
+
+    /// Per-`Type::Level`-column cache mapping `EnumValueId` -> `LogLevel`.
+    /// Indexed by dictionary id; the value at `id` is the canonical level
+    /// for dictionary entry `id`, or `LogLevel::Unknown` if the raw string
+    /// did not resolve. Empty for columns that are not `Type::Level`.
+    /// Keyed by `Column::header` so column reorder is automatic.
+    [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(const std::string &columnHeader) const noexcept;
+
     /// Outcome of `ResolveEnumColumn`:
     ///   - `canonicalKey == INVALID_KEY_ID`: column out of range, has
     ///     no keys, or its first key isn't interned. Skip enum logic.
@@ -253,6 +267,17 @@ private:
     /// existing row's slot as `DictRef`.
     void PromoteColumnToEnum(size_t columnIndex);
 
+    /// If @p columnIndex is `Type::Enumeration` and (a) its key matches
+    /// `IsLogLevelKey` and (b) >=80% of dictionary entries resolve via
+    /// `ResolveLevel`, flip the type to `Type::Level` and populate the
+    /// cache entry in `mLevelRankCache`. No-op otherwise.
+    void MaybePromoteToLevel(size_t columnIndex);
+
+    /// Rebuild / extend the cached `EnumValueId -> LogLevel` table for the
+    /// column at @p columnIndex. Idempotent; safe to call after dictionary
+    /// growth. No-op if the column is not `Type::Level`.
+    void RefreshLevelRankCache(size_t columnIndex);
+
     /// Demote @p columnIndex from enum to string, materialising every
     /// `DictRef` into `OwnedString` and dropping the dictionary.
     void DemoteColumnFromEnum(size_t columnIndex);
@@ -304,6 +329,12 @@ private:
     /// so the id stays stable; consumed by `LogModel` to scope its
     /// `enumColumnsChanged(Demoted)` emit.
     std::vector<KeyId> mLastBatchDemotedKeys;
+
+    /// Per-`Type::Level`-column `EnumValueId -> LogLevel` cache. Keyed
+    /// by `Column::header` (same idiom `mEnumColumnHealth` uses) so
+    /// column reorder is automatic. Empty entries for non-Level columns
+    /// are filtered at `RefreshLevelRankCache`.
+    std::unordered_map<std::string, std::vector<LogLevel>> mLevelRankCache;
 };
 
 } // namespace loglib

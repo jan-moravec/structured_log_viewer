@@ -4,6 +4,7 @@
 #include "loglib/log_compare.hpp"
 
 #include "loglib/log_configuration.hpp"
+#include "loglib/log_level.hpp"
 #include "loglib/log_table.hpp"
 #include "loglib/log_value.hpp"
 
@@ -367,6 +368,29 @@ int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t co
     return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
 }
 
+/// `Type::Level` rows compare by canonical `LogLevel` ordinal (Trace
+/// < Debug < ... < Fatal). Slots that don't resolve to a canonical
+/// level (monostate, unmapped string, missing cache) join the tail
+/// bucket -- same invariant `CompareEnum` enforces.
+int CompareLevel(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
+{
+    const auto lhsLevel = table.GetLevelForRow(lhsRow, column);
+    const auto rhsLevel = table.GetLevelForRow(rhsRow, column);
+    if (lhsLevel.has_value() && rhsLevel.has_value())
+    {
+        return ThreeWay(static_cast<uint8_t>(*lhsLevel), static_cast<uint8_t>(*rhsLevel));
+    }
+    if (!lhsLevel.has_value() && !rhsLevel.has_value())
+    {
+        return 0;
+    }
+    if (!lhsLevel.has_value())
+    {
+        return 1;
+    }
+    return -1;
+}
+
 } // namespace
 
 int CompareRows(
@@ -397,6 +421,8 @@ int CompareRows(
         return CompareTime(LoadValue(table, lhsRow, columnIndex), LoadValue(table, rhsRow, columnIndex));
     case LogConfiguration::Type::Enumeration:
         return CompareEnum(table, lhsRow, rhsRow, columnIndex, rankForEnumColumn);
+    case LogConfiguration::Type::Level:
+        return CompareLevel(table, lhsRow, rhsRow, columnIndex);
     case LogConfiguration::Type::String:
     case LogConfiguration::Type::Any:
     case LogConfiguration::Type::Unknown:
@@ -426,6 +452,7 @@ std::vector<size_t> SortPermutationByColumn(
     const auto &columns = table.Configuration().Configuration().columns;
     const bool columnInRange = columnIndex < columns.size();
     const bool isEnum = columnInRange && columns[columnIndex].type == LogConfiguration::Type::Enumeration;
+    const bool isLevel = columnInRange && columns[columnIndex].type == LogConfiguration::Type::Level;
 
     // Fast path: enum column with a precomputed rank table. Pre-
     // materialise a `uint16_t` rank per row in parallel; the sort
@@ -472,6 +499,47 @@ std::vector<size_t> SortPermutationByColumn(
             // secondary (input index) ascending. Matches legacy
             // semantics where ties always resolved to source-row
             // ascending regardless of the user's chosen direction.
+            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
+                if (rankForRow[a] != rankForRow[b])
+                {
+                    return rankForRow[a] > rankForRow[b];
+                }
+                return a < b;
+            });
+        }
+        return permutation;
+    }
+
+    // Level fast path: pre-materialise canonical `LogLevel` ordinals
+    // per row in parallel. Unresolved slots get an out-of-range
+    // sentinel so they sort after every resolved level, matching the
+    // `CompareLevel` tail-bucket invariant.
+    if (isLevel)
+    {
+        constexpr auto SENTINEL = static_cast<uint8_t>(std::numeric_limits<uint8_t>::max());
+        std::vector<uint8_t> rankForRow(n);
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, n),
+            [&table, columnIndex, &logRows, &rankForRow](const tbb::blocked_range<size_t> &range) {
+                for (size_t i = range.begin(); i != range.end(); ++i)
+                {
+                    const auto level = table.GetLevelForRow(logRows[i], columnIndex);
+                    rankForRow[i] = level.has_value() ? static_cast<uint8_t>(*level) : SENTINEL;
+                }
+            }
+        );
+        if (ascending)
+        {
+            tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
+                if (rankForRow[a] != rankForRow[b])
+                {
+                    return rankForRow[a] < rankForRow[b];
+                }
+                return a < b;
+            });
+        }
+        else
+        {
             tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {
                 if (rankForRow[a] != rankForRow[b])
                 {

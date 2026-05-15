@@ -25,6 +25,7 @@ add_library(
     src/log_factory.cpp
     src/log_file.cpp
     src/log_filter.cpp
+    src/log_level.cpp
     src/log_line.cpp
     src/log_processing.cpp
     src/log_table.cpp

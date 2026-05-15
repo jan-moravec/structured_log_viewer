@@ -214,13 +214,14 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
 
     const bool isNumericColumn =
         column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number;
+    const bool isEnumLikeColumn = column.type == ColumnType::Enumeration || column.type == ColumnType::Level;
     const bool typesMatch =
         (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
-        (filter.type == LogFilter::Type::Enumeration && column.type == ColumnType::Enumeration) ||
+        (filter.type == LogFilter::Type::Enumeration && isEnumLikeColumn) ||
         (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
         (filter.type == LogFilter::Type::Number && isNumericColumn) ||
-        (filter.type == LogFilter::Type::String && column.type != ColumnType::Time &&
-         column.type != ColumnType::Enumeration && column.type != ColumnType::Boolean && !isNumericColumn);
+        (filter.type == LogFilter::Type::String && column.type != ColumnType::Time && !isEnumLikeColumn &&
+         column.type != ColumnType::Boolean && !isNumericColumn);
     if (!typesMatch)
     {
         return FilterValidationFailure{
@@ -2122,6 +2123,17 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
         // Column not yet promoted: defer resolution until first growth.
         return false;
     }
+    // Level columns hold canonical names in `filter.filterValues`; the
+    // raw dictionary entries are derived from the cache at predicate-
+    // build time, so dictionary growth may surface entries that map to
+    // a selected canonical level. Treat them as never-fully-resolved
+    // so the `Grew` rebuild gate retranslates the predicate.
+    const auto &columnsCfg = mModel->Configuration().columns;
+    if (filter.row >= 0 && static_cast<size_t>(filter.row) < columnsCfg.size() &&
+        columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level)
+    {
+        return false;
+    }
     return std::ranges::all_of(filter.filterValues, [dictionary](const std::string &value) {
         return dictionary->Find(value) != loglib::INVALID_ENUM_VALUE_ID;
     });
@@ -2318,7 +2330,63 @@ void MainWindow::UpdateFilters()
             // outlive the views. `EnumRowPredicate`'s constructor
             // copies/indexes them and keeps no reference back into the
             // span (pinned by the lifetime test in `test_log_filter.cpp`).
+            //
+            // Level columns route through the same predicate but with
+            // a canonical-name -> raw-dictionary-entry translation:
+            // the saved filter values are canonical level names
+            // (`"Info"`, `"Warn"`, ...) and we expand them to every
+            // raw dictionary entry that resolves to one of the
+            // selected canonical levels via the column's
+            // `LevelRankCache`. `expandedStorage` owns the expanded
+            // strings (dictionary `Resolve` returns views, so a copy
+            // is needed for lifetime).
             std::vector<std::string_view> selectedViews;
+            std::vector<std::string> expandedStorage;
+            const auto &columnsCfg = mModel->Configuration().columns;
+            const bool isLevelColumn = static_cast<size_t>(filter.row) < columnsCfg.size() &&
+                                       columnsCfg[static_cast<size_t>(filter.row)].type ==
+                                           loglib::LogConfiguration::Type::Level;
+            if (isLevelColumn)
+            {
+                const auto &lvlColumn = columnsCfg[static_cast<size_t>(filter.row)];
+                std::unordered_set<loglib::LogLevel> selectedLevels;
+                selectedLevels.reserve(filter.filterValues.size());
+                for (const std::string &name : filter.filterValues)
+                {
+                    if (auto level = loglib::ParseLevelName(name); level.has_value())
+                    {
+                        selectedLevels.insert(*level);
+                    }
+                }
+                const std::vector<loglib::LogLevel> *ranks =
+                    mModel->Table().LevelRankCache(lvlColumn.header);
+                const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+                if (ranks != nullptr && dictionary != nullptr)
+                {
+                    expandedStorage.reserve(ranks->size());
+                    for (size_t valueId = 0; valueId < ranks->size(); ++valueId)
+                    {
+                        if (selectedLevels.contains((*ranks)[valueId]))
+                        {
+                            const std::string_view bytes =
+                                dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                            expandedStorage.emplace_back(bytes);
+                        }
+                    }
+                }
+                selectedViews.reserve(expandedStorage.size());
+                for (const std::string &v : expandedStorage)
+                {
+                    selectedViews.emplace_back(v);
+                }
+                rules.emplace_back(
+                    std::in_place_type<loglib::EnumRowPredicate>,
+                    column,
+                    std::span<const std::string_view>(selectedViews),
+                    dictionary
+                );
+                break;
+            }
             selectedViews.reserve(filter.filterValues.size());
             for (const std::string &v : filter.filterValues)
             {

@@ -454,7 +454,13 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         for (size_t columnIndex = 0; columnIndex < columnsBefore.size(); ++columnIndex)
         {
             const auto &column = columnsBefore[columnIndex];
-            if (column.type != loglib::LogConfiguration::Type::Enumeration || column.keys.empty())
+            // Snapshot both enum and level columns: a level column is
+            // an enumeration subtype and shares the same dictionary,
+            // so we must catch `Grew` / `Demoted` for level columns
+            // the same way we do for plain enums.
+            if ((column.type != loglib::LogConfiguration::Type::Enumeration &&
+                 column.type != loglib::LogConfiguration::Type::Level) ||
+                column.keys.empty())
             {
                 continue;
             }
@@ -577,7 +583,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 continue;
             }
-            if (columns[static_cast<size_t>(columnIndex)].type != loglib::LogConfiguration::Type::Enumeration)
+            const auto colType = columns[static_cast<size_t>(columnIndex)].type;
+            if (colType != loglib::LogConfiguration::Type::Enumeration &&
+                colType != loglib::LogConfiguration::Type::Level)
             {
                 continue;
             }
@@ -657,8 +665,11 @@ void LogModel::EndStreaming(bool cancelled)
             const size_t commonCount = std::min(typesBefore.size(), columnsAfter.size());
             for (size_t i = 0; i < commonCount; ++i)
             {
-                if (typesBefore[i] != loglib::LogConfiguration::Type::Enumeration &&
-                    columnsAfter[i].type == loglib::LogConfiguration::Type::Enumeration)
+                const bool isEnumLikeAfter = columnsAfter[i].type == loglib::LogConfiguration::Type::Enumeration ||
+                                             columnsAfter[i].type == loglib::LogConfiguration::Type::Level;
+                const bool wasEnumLikeBefore = typesBefore[i] == loglib::LogConfiguration::Type::Enumeration ||
+                                               typesBefore[i] == loglib::LogConfiguration::Type::Level;
+                if (!wasEnumLikeBefore && isEnumLikeAfter)
                 {
                     emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                 }
