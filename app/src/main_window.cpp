@@ -2029,6 +2029,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
     }
     case loglib::LogConfiguration::LogFilter::Type::String:
         Q_ASSERT(filter.filterString.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         return QString::fromStdString(*filter.filterString);
     }
     Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LogFilter::Type");
