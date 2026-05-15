@@ -1079,24 +1079,12 @@ TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
 {
     using Expected = std::pair<std::string_view, LogLevel>;
     constexpr std::array<Expected, 19> CASES = {{
-        {"trace", LogLevel::Trace},
-        {"TRACE", LogLevel::Trace},
-        {"trc", LogLevel::Trace},
-        {"debug", LogLevel::Debug},
-        {"dbg", LogLevel::Debug},
-        {"verbose", LogLevel::Debug},
-        {"info", LogLevel::Info},
-        {"Information", LogLevel::Info},
-        {"informational", LogLevel::Info},
-        {"notice", LogLevel::Info},
-        {"warn", LogLevel::Warn},
-        {"WARNING", LogLevel::Warn},
-        {"error", LogLevel::Error},
-        {"ERR", LogLevel::Error},
-        {"severe", LogLevel::Error},
-        {"fatal", LogLevel::Fatal},
-        {"critical", LogLevel::Fatal},
-        {"crit", LogLevel::Fatal},
+        {"trace", LogLevel::Trace}, {"TRACE", LogLevel::Trace},      {"trc", LogLevel::Trace},
+        {"debug", LogLevel::Debug}, {"dbg", LogLevel::Debug},        {"verbose", LogLevel::Debug},
+        {"info", LogLevel::Info},   {"Information", LogLevel::Info}, {"informational", LogLevel::Info},
+        {"notice", LogLevel::Info}, {"warn", LogLevel::Warn},        {"WARNING", LogLevel::Warn},
+        {"error", LogLevel::Error}, {"ERR", LogLevel::Error},        {"severe", LogLevel::Error},
+        {"fatal", LogLevel::Fatal}, {"critical", LogLevel::Fatal},   {"crit", LogLevel::Fatal},
         {"emerg", LogLevel::Fatal},
     }};
     for (const auto &[input, expected] : CASES)
@@ -1108,7 +1096,7 @@ TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
     }
 
     CHECK_FALSE(ParseLevelName("").has_value());
-    CHECK_FALSE(ParseLevelName("INFOMATION").has_value());
+    CHECK_FALSE(ParseLevelName("INFOZ").has_value()); // near-miss of "info"; alias table is exact-match only
     CHECK_FALSE(ParseLevelName("unknown").has_value());
     CHECK_FALSE(ParseLevelName("\\t info").has_value());
 }

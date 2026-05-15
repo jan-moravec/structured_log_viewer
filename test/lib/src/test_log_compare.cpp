@@ -593,8 +593,7 @@ TEST_CASE("CompareRows is total: a<b iff b>a, and a=a", "[log_compare][propertie
 }
 
 TEST_CASE(
-    "CompareRows on Type::Level columns orders rows by canonical severity rank, not byte order",
-    "[log_compare][level]"
+    "CompareRows on Type::Level columns orders rows by canonical severity rank, not byte order", "[log_compare][level]"
 )
 {
     const TestLogFile fixture("log_compare_level.json");

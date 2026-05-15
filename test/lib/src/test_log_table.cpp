@@ -2603,9 +2603,7 @@ TEST_CASE(
 
     // 5 distinct entries; only 1 resolves to a canonical level (info).
     // 1/5 = 20% well below the 80% threshold.
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true)
-    );
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true));
 
     REQUIRE(table.RowCount() == 10);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
@@ -2675,8 +2673,7 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // 5 distinct values; only `"qux"` is non-canonical.
-    table.AppendBatch(
-        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
     );
 
     REQUIRE(table.RowCount() == 10);

@@ -215,13 +215,12 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     const bool isNumericColumn =
         column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number;
     const bool isEnumLikeColumn = column.type == ColumnType::Enumeration || column.type == ColumnType::Level;
-    const bool typesMatch =
-        (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
-        (filter.type == LogFilter::Type::Enumeration && isEnumLikeColumn) ||
-        (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
-        (filter.type == LogFilter::Type::Number && isNumericColumn) ||
-        (filter.type == LogFilter::Type::String && column.type != ColumnType::Time && !isEnumLikeColumn &&
-         column.type != ColumnType::Boolean && !isNumericColumn);
+    const bool typesMatch = (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
+                            (filter.type == LogFilter::Type::Enumeration && isEnumLikeColumn) ||
+                            (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
+                            (filter.type == LogFilter::Type::Number && isNumericColumn) ||
+                            (filter.type == LogFilter::Type::String && column.type != ColumnType::Time &&
+                             !isEnumLikeColumn && column.type != ColumnType::Boolean && !isNumericColumn);
     if (!typesMatch)
     {
         return FilterValidationFailure{
@@ -2343,9 +2342,9 @@ void MainWindow::UpdateFilters()
             std::vector<std::string_view> selectedViews;
             std::vector<std::string> expandedStorage;
             const auto &columnsCfg = mModel->Configuration().columns;
-            const bool isLevelColumn = static_cast<size_t>(filter.row) < columnsCfg.size() &&
-                                       columnsCfg[static_cast<size_t>(filter.row)].type ==
-                                           loglib::LogConfiguration::Type::Level;
+            const bool isLevelColumn =
+                static_cast<size_t>(filter.row) < columnsCfg.size() &&
+                columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level;
             if (isLevelColumn)
             {
                 const auto &lvlColumn = columnsCfg[static_cast<size_t>(filter.row)];
@@ -2358,8 +2357,7 @@ void MainWindow::UpdateFilters()
                         selectedLevels.insert(*level);
                     }
                 }
-                const std::vector<loglib::LogLevel> *ranks =
-                    mModel->Table().LevelRankCache(lvlColumn.header);
+                const std::vector<loglib::LogLevel> *ranks = mModel->Table().LevelRankCache(lvlColumn.header);
                 const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
                 if (ranks != nullptr && dictionary != nullptr)
                 {

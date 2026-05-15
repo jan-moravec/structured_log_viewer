@@ -166,7 +166,9 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
   > **Note:** the heuristic is **destructive** for streaming opens. If a key matching the heuristic appears mid-parse, the corresponding column is flipped from `any` to `time` in-place and every row already in the table is back-filled with the parsed `TimeStamp`. The original raw string variant is replaced by the parsed value, so disabling the column's `time` type later (via a saved configuration) does not bring the original textual value back without re-opening the file.
 
 - Columns drawn from a small, stable set of strings (e.g. `service`, `host`, `module`) are auto-promoted to **enumeration columns** once at least 4096 rows have been seen and the column holds at most 64 distinct values. Smaller files are caught by an end-of-parse sweep, and streaming opens promote the column eagerly after 2 rows. Enum columns are stored compactly as dictionary references and unlock the value-picker filter UI (see [Filtering an enumeration column](#filtering-an-enumeration-column)). A 1 % tolerance for over-long or wrong-type values (evaluated after 50 observations) governs both promotion and demotion; a column that breaches the budget or outgrows 64 distinct values is demoted to text and stays demoted for the session.
+
 - An enumeration column whose key is named `level`, `severity`, `loglevel`, `log.level`, `log_level`, `lvl`, `levelname`, or `priority` is further promoted to a **log-level column** once at least 80 % of its dictionary entries resolve to a canonical level (`Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`). Level columns sort by canonical severity rather than alphabetic order, and the filter dialog shows the six canonical levels as the selection set. The built-in alias table recognises `trc` / `trace`, `dbg` / `debug` / `verbose`, `info` / `notice` / `information` / `informational`, `warn` / `warning`, `err` / `error` / `severe`, and `fatal` / `crit` / `critical` / `emerg` / `emergency` / `panic` / `alert` (all case-insensitive). The raw bytes in the dictionary are preserved verbatim for display; only sort, filter, and styling consult the canonical mapping.
+
   > **Mapping unrecognised aliases.** Add a `levelMapping` array to the column in a saved configuration to extend the alias table per-column. Entries are `(alias, canonicalName)` pairs and override the built-in table:
   >
   > ```json
@@ -179,7 +181,7 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
   >   "levelMapping": [["NOTICE", "Info"], ["PANIC", "Fatal"]]
   > }
   > ```
-
+  >
   > **Note:** auto-promotion only happens for columns that are **not** explicitly typed by a loaded [configuration](#configurations). Save a column as `any` to lock it as text.
 
 - All other keys become generic columns with the format `{}` (pass-through).
