@@ -245,14 +245,27 @@ void FilterEditor::Load(int row, bool includeTrue, bool includeFalse)
 
 void FilterEditor::SetInitialColumn(int row)
 {
-    if (row < 0 || static_cast<size_t>(row) >= mModel.Configuration().columns.size())
+    const auto &columns = mModel.Configuration().columns;
+    if (row < 0 || static_cast<size_t>(row) >= columns.size())
+    {
+        return;
+    }
+    // Production callers (the column-header right-click menu) only
+    // ever pass visible columns. Reject hidden columns defensively:
+    // the editor would still pop, but binding a filter to a hidden
+    // column is a confusing UX that no real entry point should hit.
+    if (!columns[static_cast<size_t>(row)].visible)
     {
         return;
     }
     // The combobox's `currentIndexChanged` is wired to
     // `UpdateSelectedColumn`, which swaps the stacked widget to the
-    // matching page (string / time / enum / numeric / boolean), so
-    // setting the index here is the only call needed.
+    // matching page (string / time / enum / numeric / boolean).
+    // `setCurrentIndex` emits the signal only when the index
+    // actually changes, so callers passing the same index the
+    // constructor already initialised to (0) get the right
+    // stacked page from the constructor's explicit
+    // `UpdateSelectedColumn(0)` call instead.
     mRowComboBox->setCurrentIndex(row);
 }
 

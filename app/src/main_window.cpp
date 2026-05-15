@@ -1968,6 +1968,11 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 
 QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const
 {
+    // No `default:`: a new `LogFilter::Type` member must trip the
+    // compiler's `-Wswitch` warning rather than silently fall into
+    // the String branch, which would dereference a `nullopt`
+    // `filter.filterString` and crash. Every payload read below
+    // assumes the matching submit slot already validated it.
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
@@ -2020,9 +2025,10 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
         return values.join(QStringLiteral(", "));
     }
     case loglib::LogConfiguration::LogFilter::Type::String:
-    default:
         return QString::fromStdString(*filter.filterString);
     }
+    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LogFilter::Type");
+    return {};
 }
 
 void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync)
@@ -2043,13 +2049,21 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     // both fail under the Linux Release offscreen-QPA toolchain.
     mFilterSubMenus[id.toStdString()] = menuItem;
 
-    const QAction *editAction = menuItem->addAction("Edit");
+    const QAction *editAction = menuItem->addAction(tr("Edit"));
     // Capture only the filter id and resolve the live filter at
     // trigger time. Capturing the filter by value would freeze its
     // `row` at the column it had at menu-build time, so a column
     // reorder between build and click would mis-target Edit and the
     // type-match guard would silently drop the filter. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
+    //
+    // `bugprone-exception-escape` fires because `mFilters.find` and
+    // copying a `LogFilter` can technically allocate; throwing out
+    // of a Qt slot is undefined behaviour. The body has no source
+    // of recoverable exceptions (no user input, no I/O), so the
+    // alternative -- a `try`/`catch` around two map lookups -- is
+    // pure noise. Same justification applies to the matching Edit
+    // lambda in `BuildHeaderContextMenu`.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
         const auto it = mFilters.find(id.toStdString());
@@ -2061,8 +2075,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         AddFilter(id, it->second);
     });
 
-    const QAction *clearAction = menuItem->addAction("Clear");
-    connect(clearAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
+    const QAction *removeAction = menuItem->addAction(tr("Remove"));
+    connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
 }
 
@@ -2560,36 +2574,25 @@ void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
     {
         return;
     }
-    QMenu *menu = BuildHeaderContextMenu(logical, header);
-    if (menu == nullptr)
+    HeaderContextMenu built = BuildHeaderContextMenu(logical, header);
+    if (built.menu == nullptr)
     {
         return;
     }
-    menu->setAttribute(Qt::WA_DeleteOnClose);
-    menu->popup(header->mapToGlobal(pos));
+    built.menu->setAttribute(Qt::WA_DeleteOnClose);
+    built.menu->popup(header->mapToGlobal(pos));
 }
 
-QMenu *MainWindow::BuildHeaderContextMenu(
-    int logicalColumn,
-    QWidget *parent,
-    QMenu **outShowSubMenu,
-    std::unordered_map<std::string, QMenu *> *outFilterSubMenus
-)
+MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent)
 {
-    if (outShowSubMenu != nullptr)
-    {
-        *outShowSubMenu = nullptr;
-    }
-    if (outFilterSubMenus != nullptr)
-    {
-        outFilterSubMenus->clear();
-    }
+    HeaderContextMenu result;
     const auto &columns = mModel->Configuration().columns;
     if (logicalColumn < 0 || static_cast<size_t>(logicalColumn) >= columns.size())
     {
-        return nullptr;
+        return result;
     }
     auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+    result.menu = menu;
 
     // Capture stable `keys` rather than the logical index: a column
     // move while the menu is open would otherwise leave the action
@@ -2620,11 +2623,13 @@ QMenu *MainWindow::BuildHeaderContextMenu(
 
     // Filter block: an `Add filter on "<col>"` action plus a per-
     // filter submenu for every existing filter targeting this
-    // column. Both paths re-resolve the column from `thisKeys` at
-    // trigger time so a column move between menu build and click
-    // still hits the right index. The filter submenus capture only
-    // the filter id; `mFilters[id]` is looked up live, mirroring
-    // the Filters-menu Edit/Clear actions wired in `AddLogFilter`.
+    // column. The Add path re-resolves the column from `thisKeys`
+    // at trigger time so a column move between menu build and
+    // click still hits the right index. The filter submenus
+    // capture only the filter id; `mFilters[id]` is looked up
+    // live, mirroring the Filters-menu Edit/Remove actions wired
+    // in `AddLogFilter`. A leading separator keeps Hide visually
+    // distinct from the filter group when both are present.
     if (!menu->isEmpty())
     {
         menu->addSeparator();
@@ -2639,31 +2644,41 @@ QMenu *MainWindow::BuildHeaderContextMenu(
         AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
     });
 
-    // Existing filters on this column. Sort by id for a stable
-    // menu order across rebuilds (`mFilters` is an unordered_map).
-    std::vector<std::string> filterIdsForColumn;
-    filterIdsForColumn.reserve(mFilters.size());
+    // Existing filters on this column. Sort by display title so
+    // the menu reads like a sorted list to the user; `mFilters` is
+    // an `unordered_map` keyed by UUID, which would otherwise
+    // present filters in essentially random order.
+    struct FilterEntry
+    {
+        std::string id;
+        QString title;
+    };
+    std::vector<FilterEntry> filtersForColumn;
+    filtersForColumn.reserve(mFilters.size());
     for (const auto &entry : mFilters)
     {
         if (entry.second.row == logicalColumn)
         {
-            filterIdsForColumn.push_back(entry.first);
+            filtersForColumn.push_back({entry.first, BuildFilterTitle(entry.second)});
         }
     }
-    std::sort(filterIdsForColumn.begin(), filterIdsForColumn.end());
-    for (const std::string &filterIdStd : filterIdsForColumn)
+    std::sort(filtersForColumn.begin(), filtersForColumn.end(), [](const FilterEntry &a, const FilterEntry &b) {
+        const int compare = a.title.localeAwareCompare(b.title);
+        // Tie-break on the UUID so the order is fully deterministic
+        // (two filters with identical titles, e.g. both `info`, would
+        // otherwise still flicker across rebuilds).
+        return compare != 0 ? compare < 0 : a.id < b.id;
+    });
+    for (const FilterEntry &entry : filtersForColumn)
     {
-        const QString filterId = QString::fromStdString(filterIdStd);
-        const QString filterTitle = BuildFilterTitle(mFilters.at(filterIdStd));
-        QMenu *filterSubMenu = menu->addMenu(filterTitle);
-        if (outFilterSubMenus != nullptr)
-        {
-            (*outFilterSubMenus)[filterIdStd] = filterSubMenu;
-        }
+        const QString filterId = QString::fromStdString(entry.id);
+        QMenu *filterSubMenu = menu->addMenu(entry.title);
+        result.filterSubMenus[entry.id] = filterSubMenu;
         const QAction *editAction = filterSubMenu->addAction(tr("Edit"));
         // Same look-up-by-id pattern as the Filters-menu Edit
-        // action: capturing the filter by value would freeze its
-        // `row` at menu-build time.
+        // action (capturing the filter by value would freeze its
+        // `row` at menu-build time); see `AddLogFilter` for the
+        // `bugprone-exception-escape` justification.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         connect(editAction, &QAction::triggered, this, [this, filterId]() {
             const auto it = mFilters.find(filterId.toStdString());
@@ -2696,10 +2711,7 @@ QMenu *MainWindow::BuildHeaderContextMenu(
             menu->addSeparator();
         }
         QMenu *showMenu = menu->addMenu(tr("Show column"));
-        if (outShowSubMenu != nullptr)
-        {
-            *outShowSubMenu = showMenu;
-        }
+        result.showSubMenu = showMenu;
         for (const int hiddenLogical : hiddenColumns)
         {
             const std::vector<std::string> &hiddenKeys = columns[static_cast<size_t>(hiddenLogical)].keys;
@@ -2714,7 +2726,7 @@ QMenu *MainWindow::BuildHeaderContextMenu(
             });
         }
     }
-    return menu;
+    return result;
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)

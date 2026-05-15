@@ -224,15 +224,17 @@ When the **Row to filter** dropdown points at an [enumeration column](#automatic
 
 If a column is demoted back to text mid-session, saved enum filters fall back to comparing the row's text value against the saved selection. A saved text filter on a column that later auto-promotes to enum continues to match by text; re-edit it to switch to the value picker.
 
-### Editing or Clearing a Filter
+### Editing or Removing a Filter
 
-Each filter entry in the Filters menu has **Edit** and **Clear** sub-actions:
+Each filter entry in the Filters menu has **Edit** and **Remove** sub-actions:
 
 - **Edit** re-opens the Filter Editor pre-populated with the current values.
-- **Clear** removes just that filter.
+- **Remove** drops just that filter.
 - **Filters → Clear All** removes every filter at once.
 
-Filters are live: the table updates immediately when a filter is added, edited, or cleared.
+You can also right-click a column header for the same actions scoped to that column: **Add filter on "&lt;col&gt;"…** opens the Filter Editor preselected to the clicked column, and every existing filter targeting the column appears with its own **Edit** / **Remove** sub-menu.
+
+Filters are live: the table updates immediately when a filter is added, edited, or removed.
 
 ## Configurations
 

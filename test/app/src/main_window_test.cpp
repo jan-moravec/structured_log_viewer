@@ -3929,26 +3929,25 @@ private slots:
         mWindow->SetColumnVisible(msgCol, false);
 
         // `BuildHeaderContextMenu` reports the freshly-built `Show
-        // column` submenu via the optional out-parameter; `QAction::
-        // menu()` and `qobject_cast<QMenu*>(child)` both return null
-        // on the Linux Release offscreen-QPA toolchain (the QtWidgets
+        // column` submenu via the returned struct; `QAction::menu()`
+        // and `qobject_cast<QMenu*>(child)` both return null on the
+        // Linux Release offscreen-QPA toolchain (the QtWidgets
         // metaobject hooks for `QMenu` are stripped at link time
         // there), so the test cannot recover the pointer by walking
-        // the tree. The out-parameter is the contract.
-        QMenu *showMenu = nullptr;
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr, &showMenu);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        // the tree. The struct is the contract.
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        const QList<QAction *> topActions = menu->actions();
+        const QList<QAction *> topActions = built.menu->actions();
         QVERIFY2(topActions.size() >= 3, "visible-column menu must contain Hide + separator + Show submenu");
         QVERIFY2(topActions.front()->text().startsWith("Hide"), "first action must be the Hide entry");
 
-        QVERIFY2(showMenu != nullptr, "menu must contain a Show column submenu");
+        QVERIFY2(built.showSubMenu != nullptr, "menu must contain a Show column submenu");
 
         QStringList showActionLabels;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        for (const QAction *act : showMenu->actions())
+        for (const QAction *act : built.showSubMenu->actions())
         {
             showActionLabels.append(act->text());
         }
@@ -3970,11 +3969,11 @@ private slots:
 
         mWindow->SetColumnVisible(levelCol, false);
 
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        for (const QAction *act : menu->actions())
+        for (const QAction *act : built.menu->actions())
         {
             QVERIFY2(
                 !act->text().startsWith("Hide"), "menu rooted at a hidden column must not advertise a Hide action"
@@ -3990,12 +3989,12 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
 
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QAction *addFilterAction = nullptr;
-        for (const QAction *act : menu->actions())
+        for (const QAction *act : built.menu->actions())
         {
             if (act->text().startsWith(QStringLiteral("Add filter on")))
             {
@@ -4018,12 +4017,12 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
 
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         QAction *addFilterAction = nullptr;
-        for (QAction *act : menu->actions())
+        for (QAction *act : built.menu->actions())
         {
             if (act->text().startsWith(QStringLiteral("Add filter on")))
             {
@@ -4109,20 +4108,24 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(3));
 
-        std::unordered_map<std::string, QMenu *> filterSubMenus;
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr, nullptr, &filterSubMenus);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        QCOMPARE(filterSubMenus.size(), static_cast<size_t>(2));
-        QVERIFY2(filterSubMenus.contains(levelFilter1.toStdString()), "level-filter-1 submenu must be exposed");
-        QVERIFY2(filterSubMenus.contains(levelFilter2.toStdString()), "level-filter-2 submenu must be exposed");
+        QCOMPARE(built.filterSubMenus.size(), static_cast<size_t>(2));
+        QVERIFY2(built.filterSubMenus.contains(levelFilter1.toStdString()), "level-filter-1 submenu must be exposed");
+        QVERIFY2(built.filterSubMenus.contains(levelFilter2.toStdString()), "level-filter-2 submenu must be exposed");
         QVERIFY2(
-            !filterSubMenus.contains(msgFilter.toStdString()),
+            !built.filterSubMenus.contains(msgFilter.toStdString()),
             "filters on a different column must not appear in this header menu"
         );
 
-        for (const auto &[id, subMenu] : filterSubMenus)
+        // Compare against the same translation context the production
+        // code uses, so a future translation of "Edit" / "Remove" in
+        // `MainWindow`'s context can't quietly break the assertion.
+        const QString editLabel = MainWindow::tr("Edit");
+        const QString removeLabel = MainWindow::tr("Remove");
+        for (const auto &[id, subMenu] : built.filterSubMenus)
         {
             QVERIFY2(subMenu != nullptr, "filter sub-menu pointer must be non-null");
             const QList<QAction *> actions = subMenu->actions();
@@ -4132,8 +4135,8 @@ private slots:
             {
                 labels.append(act->text());
             }
-            QVERIFY2(labels.contains(QStringLiteral("Edit")), "filter sub-menu must contain an Edit action");
-            QVERIFY2(labels.contains(QStringLiteral("Remove")), "filter sub-menu must contain a Remove action");
+            QVERIFY2(labels.contains(editLabel), "filter sub-menu must contain an Edit action");
+            QVERIFY2(labels.contains(removeLabel), "filter sub-menu must contain a Remove action");
         }
     }
 
@@ -4159,18 +4162,18 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(mWindow->Filters().contains(filterId.toStdString()), "filter must land in mFilters before remove");
 
-        std::unordered_map<std::string, QMenu *> filterSubMenus;
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr, nullptr, &filterSubMenus);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        QMenu *subMenu = filterSubMenus.at(filterId.toStdString());
-        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed via the out-parameter");
+        QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed via the struct");
         QAction *removeAction = nullptr;
+        const QString removeLabel = MainWindow::tr("Remove");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         for (QAction *act : subMenu->actions())
         {
-            if (act->text() == QStringLiteral("Remove"))
+            if (act->text() == removeLabel)
             {
                 removeAction = act;
                 break;
@@ -4209,18 +4212,18 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        std::unordered_map<std::string, QMenu *> filterSubMenus;
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr, nullptr, &filterSubMenus);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        QMenu *subMenu = filterSubMenus.at(filterId.toStdString());
+        QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         QAction *editAction = nullptr;
+        const QString editLabel = MainWindow::tr("Edit");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         for (QAction *act : subMenu->actions())
         {
-            if (act->text() == QStringLiteral("Edit"))
+            if (act->text() == editLabel)
             {
                 editAction = act;
                 break;
@@ -4266,12 +4269,12 @@ private slots:
         const int columnCount = model->columnCount();
         QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
 
-        QMenu *menu = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
-        QVERIFY2(menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        const QScopeGuard menuDeleter([menu]() { menu->deleteLater(); });
+        auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         QAction *addFilterAction = nullptr;
-        for (QAction *act : menu->actions())
+        for (QAction *act : built.menu->actions())
         {
             if (act->text().startsWith(QStringLiteral("Add filter on")))
             {
@@ -4830,7 +4833,7 @@ private slots:
         QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
 
         const QMenu *filterSubMenu = mWindow->FilterSubMenu(filterId);
-        QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Clear sub-menu");
+        QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Remove sub-menu");
         QAction *editAction = nullptr;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         for (QAction *action : filterSubMenu->actions())

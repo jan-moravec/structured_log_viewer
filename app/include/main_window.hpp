@@ -92,25 +92,27 @@ public:
     /// so. Idempotent.
     void ResetHeaderToIdentity();
 
+    /// Bundle returned by `BuildHeaderContextMenu`. `menu` is the
+    /// root context menu (caller-owned); `showSubMenu` and
+    /// `filterSubMenus` are non-owning pointers into it that exist
+    /// purely for tests -- on the Linux Release offscreen-QPA
+    /// toolchain, `QAction::menu()` and
+    /// `QObject::children()`/`qobject_cast` both fail to recover
+    /// submenu pointers (the QtWidgets metaobject hooks for
+    /// `QMenu` are stripped at link time there). Production
+    /// callers only need `menu`.
+    struct HeaderContextMenu
+    {
+        QMenu *menu = nullptr;
+        QMenu *showSubMenu = nullptr;
+        std::unordered_map<std::string, QMenu *> filterSubMenus;
+    };
+
     /// Build the right-click header menu for @p logicalColumn.
-    /// Caller owns the returned menu. Public so tests can drive the
-    /// menu without an offscreen-QPA `findChild<QMenu*>` (see
-    /// `FiltersMenu()`). When @p outShowSubMenu is non-null and the
-    /// build produced a `Show column` submenu, the pointer is stored
-    /// there for tests -- the Linux Release offscreen build's
-    /// `QAction::menu()` and `QObject::children()`/`qobject_cast`
-    /// traversals both fail to recover this otherwise (the submenu's
-    /// QtWidgets metaobject hooks are stripped at link time).
-    /// When @p outFilterSubMenus is non-null, the per-filter
-    /// Edit/Remove submenus built for filters targeting the clicked
-    /// column are recorded there keyed by filter id, for the same
-    /// offscreen-QPA reason.
-    [[nodiscard]] QMenu *BuildHeaderContextMenu(
-        int logicalColumn,
-        QWidget *parent = nullptr,
-        QMenu **outShowSubMenu = nullptr,
-        std::unordered_map<std::string, QMenu *> *outFilterSubMenus = nullptr
-    );
+    /// Caller owns `result.menu`. Returns a default-constructed
+    /// struct (with `menu == nullptr`) when @p logicalColumn is out
+    /// of range.
+    [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const

@@ -46,7 +46,7 @@ public:
     /// Preselect the column without loading a payload. Used by the
     /// header right-click "Add filter on <column>" entry to open a
     /// fresh editor pointing at the clicked column. No-op when
-    /// @p row is out of range.
+    /// @p row is out of range or refers to a hidden column.
     void SetInitialColumn(int row);
 
     int GetRowToFilter() const;
