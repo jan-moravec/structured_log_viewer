@@ -47,22 +47,25 @@ namespace loglib
 void LogConfigurationManager::Load(const std::filesystem::path &path)
 {
     const std::ifstream file(path);
-    if (file.is_open())
-    {
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        const std::string content = buffer.str();
-        const auto error = glz::read_json(mConfiguration, content);
-        if (error)
-        {
-            throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
-        }
-        mCacheStale = true;
-    }
-    else
+    if (!file.is_open())
     {
         throw std::runtime_error("Failed to open file '" + path.string() + "'.");
     }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    const std::string content = buffer.str();
+
+    // Parse into a temporary first: Glaze writes member-by-member,
+    // so reading directly into `mConfiguration` would leave it
+    // half-populated if a parse error throws mid-file.
+    LogConfiguration parsed;
+    const auto error = glz::read_json(parsed, content);
+    if (error)
+    {
+        throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
+    }
+    mConfiguration = std::move(parsed);
+    mCacheStale = true;
 }
 
 void LogConfigurationManager::Save(const std::filesystem::path &path) const
@@ -101,10 +104,14 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .type = LogConfiguration::Type::Time,
                     .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
                 });
-                // Bubble timestamps to column 0.
-                for (size_t i = mConfiguration.columns.size() - 1; i > 0; --i)
+                // Bubble the freshly-appended timestamp column to
+                // position 0. `MoveColumn` (not an inline swap chain)
+                // so persisted `filters[*].row` is remapped along
+                // with the rotation. No-op when this is the only
+                // column.
+                if (mConfiguration.columns.size() > 1)
                 {
-                    std::swap(mConfiguration.columns[i], mConfiguration.columns[i - 1]);
+                    MoveColumn(mConfiguration.columns.size() - 1, 0);
                 }
             }
             else
@@ -181,7 +188,44 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
+    // Run every persisted `LogFilter::row` through the same
+    // permutation so each filter follows its column.
+    const int src = static_cast<int>(srcIndex);
+    const int dest = static_cast<int>(destIndex);
+    for (LogConfiguration::LogFilter &filter : mConfiguration.filters)
+    {
+        filter.row = LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
+    }
     // Pure reorder; key cache is unchanged.
+}
+
+int LogConfigurationManager::RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex)
+{
+    if (srcIndex == destIndex)
+    {
+        return columnIndex;
+    }
+    if (columnIndex == srcIndex)
+    {
+        return destIndex;
+    }
+    if (srcIndex < destIndex)
+    {
+        // Columns in (srcIndex, destIndex] shift one slot left.
+        if (columnIndex > srcIndex && columnIndex <= destIndex)
+        {
+            return columnIndex - 1;
+        }
+    }
+    else
+    {
+        // Columns in [destIndex, srcIndex) shift one slot right.
+        if (columnIndex >= destIndex && columnIndex < srcIndex)
+        {
+            return columnIndex + 1;
+        }
+    }
+    return columnIndex;
 }
 
 void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration::Type type)
@@ -191,6 +235,20 @@ void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration
         return;
     }
     mConfiguration.columns[columnIndex].type = type;
+}
+
+void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].visible = visible;
+}
+
+void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)
+{
+    mConfiguration.filters = std::move(filters);
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const

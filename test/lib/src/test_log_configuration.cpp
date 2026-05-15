@@ -10,6 +10,8 @@
 #include <glaze/glaze.hpp>
 
 #include <filesystem>
+#include <fstream>
+#include <string_view>
 
 using namespace loglib;
 
@@ -553,18 +555,14 @@ TEST_CASE("Round-trip LogFilter with Type::Number and bounded / unbounded range"
     CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Number);
     REQUIRE(loaded.filters[0].filterMinValue.has_value());
     REQUIRE(loaded.filters[0].filterMaxValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(-2.5));
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(17.25));
 
     CHECK_FALSE(loaded.filters[1].filterMinValue.has_value());
     REQUIRE(loaded.filters[1].filterMaxValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[1].filterMaxValue == Catch::Approx(100.0));
 
     REQUIRE(loaded.filters[2].filterMinValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[2].filterMinValue == Catch::Approx(0.0));
     CHECK_FALSE(loaded.filters[2].filterMaxValue.has_value());
 }
@@ -643,20 +641,13 @@ TEST_CASE(
     using Match = LogConfiguration::LogFilter::Match;
     REQUIRE(loaded.filters.size() == 6);
     CHECK(loaded.filters[0].type == FilterType::String);
-    // The `REQUIRE(has_value())` guards above are not modelled by
-    // `bugprone-unchecked-optional-access` (only `if`/`DCHECK`/`ASSERT_TRUE`
-    // are), so the `operator*` accesses below are false positives.
     REQUIRE(loaded.filters[0].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].matchType == Match::Exactly);
     REQUIRE(loaded.filters[1].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[1].matchType == Match::Contains);
     REQUIRE(loaded.filters[2].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[2].matchType == Match::RegularExpression);
     REQUIRE(loaded.filters[3].matchType.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[3].matchType == Match::Wildcard);
     CHECK(loaded.filters[4].type == FilterType::Time);
     CHECK(loaded.filters[5].type == FilterType::Enumeration);
@@ -705,11 +696,324 @@ TEST_CASE(
     CHECK(loaded.filters[0].type == FilterType::Number);
     REQUIRE(loaded.filters[0].filterMinValue.has_value());
     REQUIRE(loaded.filters[0].filterMaxValue.has_value());
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(1.5));
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(5.0));
 
     CHECK(loaded.filters[1].type == FilterType::Boolean);
     CHECK(loaded.filters[1].filterValues == std::vector<std::string>{"true", "false"});
+}
+
+TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")
+{
+    // The hidden-column flag must survive Save / Load.
+    const TestLogConfiguration testConfiguration;
+
+    {
+        LogConfiguration configuration;
+        configuration.columns.push_back(LogConfiguration::Column{
+            .header = "shown",
+            .keys = {"shown"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::String,
+            .parseFormats = {},
+            .visible = true,
+        });
+        configuration.columns.push_back(LogConfiguration::Column{
+            .header = "hidden",
+            .keys = {"hidden"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::String,
+            .parseFormats = {},
+            .visible = false,
+        });
+        testConfiguration.Write(configuration);
+    }
+
+    LogConfigurationManager manager;
+    manager.Load(testConfiguration.GetFilePath());
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].visible);
+    CHECK_FALSE(manager.Configuration().columns[1].visible);
+
+    // Save back and confirm the flag survives the round-trip.
+    const TestLogConfiguration roundTrip;
+    manager.Save(roundTrip.GetFilePath());
+
+    LogConfigurationManager reloaded;
+    reloaded.Load(roundTrip.GetFilePath());
+    REQUIRE(reloaded.Configuration().columns.size() == 2);
+    CHECK(reloaded.Configuration().columns[0].visible);
+    CHECK_FALSE(reloaded.Configuration().columns[1].visible);
+}
+
+TEST_CASE(
+    "Legacy JSON without `visible` key loads as visible == true",
+    "[log_configuration][wire_format_compat][column_visibility]"
+)
+{
+    // Pre-`Column::visible` configs must keep loading. Glaze
+    // tolerates missing keys; the field defaults to `true`.
+    constexpr std::string_view LEGACY_JSON = R"({
+        "columns": [
+            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]}
+        ],
+        "filters": []
+    })";
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, LEGACY_JSON);
+    REQUIRE_FALSE(readError);
+    REQUIRE(loaded.columns.size() == 1);
+    CHECK(loaded.columns[0].visible);
+}
+
+TEST_CASE(
+    "LogConfigurationManager::MoveColumn remaps LogFilter::row through the permutation",
+    "[LogConfigurationManager][move_column][filter_row_remap]"
+)
+{
+    // Four columns + one filter per column; each filter's `row`
+    // starts equal to its column index.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"a", "b", "c", "d"});
+    REQUIRE(manager.Configuration().columns.size() == 4);
+
+    // Bypass `AddFilter` (opens an editor): write filters to disk
+    // and re-load.
+    {
+        LogConfiguration configuration;
+        configuration.columns = manager.Configuration().columns;
+        for (int row = 0; row < 4; ++row)
+        {
+            configuration.filters.push_back(LogConfiguration::LogFilter{
+                .type = LogConfiguration::LogFilter::Type::String,
+                .row = row,
+                .filterString = std::string{"x"},
+                .matchType = LogConfiguration::LogFilter::Match::Contains,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {},
+            });
+        }
+        const TestLogConfiguration testConfiguration;
+        testConfiguration.Write(configuration);
+        manager.Load(testConfiguration.GetFilePath());
+    }
+    REQUIRE(manager.Configuration().filters.size() == 4);
+
+    SECTION("Right-to-left move (3 -> 0) shifts everything else right")
+    {
+        manager.MoveColumn(3, 0);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        // Filters keep their order (created in column order); only
+        // `row` follows the permutation:
+        //   col 0 ('a') -> row 1
+        //   col 1 ('b') -> row 2
+        //   col 2 ('c') -> row 3
+        //   col 3 ('d') -> row 0
+        CHECK(filters[0].row == 1);
+        CHECK(filters[1].row == 2);
+        CHECK(filters[2].row == 3);
+        CHECK(filters[3].row == 0);
+    }
+
+    SECTION("Left-to-right move (0 -> 3) shifts the in-between columns left")
+    {
+        manager.MoveColumn(0, 3);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        // Permutation:
+        //   col 0 ('a') -> row 3
+        //   col 1 ('b') -> row 0
+        //   col 2 ('c') -> row 1
+        //   col 3 ('d') -> row 2
+        CHECK(filters[0].row == 3);
+        CHECK(filters[1].row == 0);
+        CHECK(filters[2].row == 1);
+        CHECK(filters[3].row == 2);
+    }
+
+    SECTION("Adjacent swap (1 -> 2) only touches the two adjacent rows")
+    {
+        manager.MoveColumn(1, 2);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        CHECK(filters[0].row == 0);
+        CHECK(filters[1].row == 2);
+        CHECK(filters[2].row == 1);
+        CHECK(filters[3].row == 3);
+    }
+
+    SECTION("Out-of-range / no-op move leaves rows unchanged")
+    {
+        manager.MoveColumn(0, 0);
+        manager.MoveColumn(0, 99);
+        manager.MoveColumn(99, 0);
+        const auto &filters = manager.Configuration().filters;
+        REQUIRE(filters.size() == 4);
+        CHECK(filters[0].row == 0);
+        CHECK(filters[1].row == 1);
+        CHECK(filters[2].row == 2);
+        CHECK(filters[3].row == 3);
+    }
+}
+
+TEST_CASE(
+    "RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic",
+    "[LogConfigurationManager][move_column]"
+)
+{
+    // The app uses this static helper to remap its runtime filter
+    // map; keep it in lockstep with `MoveColumn`'s rotation.
+    using Mgr = LogConfigurationManager;
+    CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 0) == 0);
+    CHECK(Mgr::RemapColumnIndexAfterMove(2, 3, 0) == 3);
+    CHECK(Mgr::RemapColumnIndexAfterMove(3, 3, 0) == 0);
+    CHECK(Mgr::RemapColumnIndexAfterMove(0, 3, 0) == 1);
+    CHECK(Mgr::RemapColumnIndexAfterMove(0, 0, 3) == 3);
+    CHECK(Mgr::RemapColumnIndexAfterMove(1, 0, 3) == 0);
+    CHECK(Mgr::RemapColumnIndexAfterMove(3, 0, 3) == 2);
+    CHECK(Mgr::RemapColumnIndexAfterMove(5, 1, 2) == 5);
+}
+
+TEST_CASE(
+    "Update's auto-promoted timestamp bubble remaps persisted LogFilter::row",
+    "[LogConfigurationManager][update][filter_row_remap]"
+)
+{
+    // `Update` appends auto-promoted timestamp columns and bubbles
+    // them to index 0. Persisted `LogFilter::row` must follow the
+    // bubble. Streaming-side coverage lives in
+    // `TestSourceColumnMoveRemapsRuntimeFilters`.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"regular_a", "regular_b"});
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    REQUIRE(manager.Configuration().columns[0].header == "regular_a");
+    REQUIRE(manager.Configuration().columns[1].header == "regular_b");
+
+    // Filters pointing at the two existing columns; both must
+    // follow their column through the bubble.
+    {
+        LogConfiguration configuration;
+        configuration.columns = manager.Configuration().columns;
+        configuration.filters.push_back(LogConfiguration::LogFilter{
+            .type = LogConfiguration::LogFilter::Type::String,
+            .row = 0,
+            .filterString = std::string{"x"},
+            .matchType = LogConfiguration::LogFilter::Match::Contains,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {},
+        });
+        configuration.filters.push_back(LogConfiguration::LogFilter{
+            .type = LogConfiguration::LogFilter::Type::String,
+            .row = 1,
+            .filterString = std::string{"y"},
+            .matchType = LogConfiguration::LogFilter::Match::Contains,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {},
+        });
+        const TestLogConfiguration testConfiguration;
+        testConfiguration.Write(configuration);
+        manager.Load(testConfiguration.GetFilePath());
+    }
+    REQUIRE(manager.Configuration().filters.size() == 2);
+
+    // `Update` with a fresh `timestamp` key: appended at index 2
+    // then bubbled to index 0; existing columns shift right.
+    const TestLogFile testLogFile;
+    auto source = testLogFile.CreateFileLineSource();
+    KeyIndex testKeys;
+    std::vector<LogLine> testLines;
+    testLines.emplace_back(LogMap{{"timestamp", std::string("2023-01-01T12:00:00Z")}}, testKeys, *source, 0);
+    const LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+
+    manager.Update(logData);
+
+    REQUIRE(manager.Configuration().columns.size() == 3);
+    CHECK(manager.Configuration().columns[0].header == "timestamp");
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[1].header == "regular_a");
+    CHECK(manager.Configuration().columns[2].header == "regular_b");
+
+    // Filters followed the bubble: row 0 -> row 1, row 1 -> row 2.
+    // Without the remap they would still report pre-bubble indices
+    // and silently target the wrong columns.
+    REQUIRE(manager.Configuration().filters.size() == 2);
+    CHECK(manager.Configuration().filters[0].row == 1);
+    CHECK(manager.Configuration().filters[0].filterString == std::string{"x"});
+    CHECK(manager.Configuration().filters[1].row == 2);
+    CHECK(manager.Configuration().filters[1].filterString == std::string{"y"});
+}
+
+TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]")
+{
+    // A malformed file must not corrupt the previously loaded
+    // configuration. Glaze writes member-by-member, so a direct read
+    // into `mConfiguration` would half-populate it on parse failure
+    // -- and `TryLoadAsConfiguration`'s fall-through would then
+    // start streaming over corrupt state.
+    LogConfigurationManager manager;
+
+    // Stage 1: load a known-good configuration as the baseline.
+    {
+        LogConfiguration good;
+        good.columns.push_back(LogConfiguration::Column{
+            .header = "good_a",
+            .keys = {"a"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::String,
+            .parseFormats = {},
+            .visible = true,
+        });
+        good.columns.push_back(LogConfiguration::Column{
+            .header = "good_b",
+            .keys = {"b"},
+            .printFormat = "{}",
+            .type = LogConfiguration::Type::Integer,
+            .parseFormats = {},
+            .visible = false,
+        });
+        const TestLogConfiguration goodFile;
+        goodFile.Write(good);
+        manager.Load(goodFile.GetFilePath());
+    }
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    REQUIRE(manager.Configuration().columns[0].header == "good_a");
+    REQUIRE(manager.Configuration().columns[1].header == "good_b");
+    REQUIRE_FALSE(manager.Configuration().columns[1].visible);
+
+    // Stage 2: malformed JSON that parses partway through so Glaze
+    // is guaranteed to touch the live struct before erroring.
+    constexpr std::string_view BROKEN_JSON = R"({
+        "columns": [
+            {"header":"new_a","keys":["a"],"printFormat":"{}","type":"string","parseFormats":[]},
+            {"header":"new_b","keys":["b"],"printFormat":"{}","type": NOT_A_VALID_VALUE]
+        ],
+        "filters": []
+    })";
+    const TestLogConfiguration brokenFile;
+    {
+        std::ofstream stream(brokenFile.GetFilePath(), std::ios::binary);
+        REQUIRE(stream.is_open());
+        stream << BROKEN_JSON;
+    }
+    CHECK_THROWS_AS(manager.Load(brokenFile.GetFilePath()), std::runtime_error);
+
+    // Stage 3: the previous configuration must be byte-identical
+    // to its pre-load state. Without atomic load, `columns[0]`
+    // would already read as `new_a`.
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].header == "good_a");
+    CHECK(manager.Configuration().columns[1].header == "good_b");
+    CHECK(manager.Configuration().columns[0].visible);
+    CHECK_FALSE(manager.Configuration().columns[1].visible);
 }

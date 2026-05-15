@@ -54,6 +54,10 @@ struct LogConfiguration
         /// reversible via demote-to-string on overflow.
         Type type = Type::Unknown;
         std::vector<std::string> parseFormats;
+        /// Hidden columns stay in the table (data, sort, and filters
+        /// keep working); only the view toggles `setSectionHidden`.
+        /// Defaults to `true` so legacy JSON loads as visible.
+        bool visible = true;
     };
 
     struct LogFilter
@@ -83,8 +87,11 @@ struct LogConfiguration
             Wildcard
         };
 
-        Type type;
-        int row;
+        /// Defaults make a default-constructed `LogFilter` inert:
+        /// `row = -1` is rejected by `ValidateFilterAgainstColumns`,
+        /// and `String` is the most permissive type.
+        Type type = Type::String;
+        int row = -1;
         std::optional<std::string> filterString;
         std::optional<Match> matchType;
         std::optional<int64_t> filterBegin;
@@ -124,12 +131,30 @@ public:
     /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
-    /// Move the column at @p srcIndex to @p destIndex.
+    /// Move the column at @p srcIndex to @p destIndex. Also runs
+    /// every `LogConfiguration::filters[*].row` through the same
+    /// permutation so persisted filters follow the column.
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
-    /// Flip the type of the column at @p columnIndex; caller back-fills
-    /// any row data. No-op out of range.
+    /// Flip the type of the column at @p columnIndex; caller
+    /// back-fills row data. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
+
+    /// Toggle `Column::visible` for @p columnIndex. The column stays
+    /// in the table; only the header section is hidden. No-op out
+    /// of range.
+    void SetColumnVisible(size_t columnIndex, bool visible);
+
+    /// Replace `LogConfiguration::filters` wholesale. The app calls
+    /// this from its `mFilters` -> wire-format mirror so `Save` and
+    /// `MoveColumn`'s row remap see the live runtime set.
+    void SetFilters(std::vector<LogConfiguration::LogFilter> filters);
+
+    /// Apply the `(srcIndex -> destIndex)` single-column move to a
+    /// stored column index. Out-of-range inputs pass through
+    /// unchanged. Exposed so the app can remap its runtime filter
+    /// map with the same logic.
+    [[nodiscard]] static int RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex);
 
     const LogConfiguration &Configuration() const;
 

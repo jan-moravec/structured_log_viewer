@@ -73,6 +73,60 @@ public:
     }
     [[nodiscard]] QMenu *FiltersMenu() const;
 
+    /// Test-only `View` menu accessor. Mirrors `FiltersMenu()`: the
+    /// Qt 6.8 + offscreen-QPA `findChild<QMenu*>` traversal bug also
+    /// strands `findChild<QMenu*>("menuView")` on the Linux runner.
+    [[nodiscard]] QMenu *ViewMenu() const;
+
+    /// Toggle column visibility. Updates `Column::visible` and the
+    /// header. No-op for an out-of-range index. Public for tests and
+    /// the View menu.
+    void SetColumnVisible(int logicalIndex, bool visible);
+
+    /// Push every `Column::visible` flag to the header. Idempotent;
+    /// run after a load or reorder.
+    void ApplyColumnVisibility();
+
+    /// Restore the header so visual == logical for every section.
+    /// Suppresses re-entry into `OnHeaderSectionMoved` while doing
+    /// so. Idempotent.
+    void ResetHeaderToIdentity();
+
+    /// Build the right-click header menu for @p logicalColumn.
+    /// Caller owns the returned menu. Public so tests can drive the
+    /// menu without an offscreen-QPA `findChild<QMenu*>` (see
+    /// `FiltersMenu()`). When @p outShowSubMenu is non-null and the
+    /// build produced a `Show column` submenu, the pointer is stored
+    /// there for tests -- the Linux Release offscreen build's
+    /// `QAction::menu()` and `QObject::children()`/`qobject_cast`
+    /// traversals both fail to recover this otherwise (the submenu's
+    /// QtWidgets metaobject hooks are stripped at link time).
+    [[nodiscard]] QMenu *BuildHeaderContextMenu(
+        int logicalColumn, QWidget *parent = nullptr, QMenu **outShowSubMenu = nullptr
+    );
+
+    /// Live filter map; tests inspect it after a reorder.
+    [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
+    {
+        return mFilters;
+    }
+
+    /// Test-only direct lookup for a per-filter sub-menu by id.
+    /// Same Linux-Release-offscreen reason as `BuildHeaderContextMenu`'s
+    /// out-parameter: walking `ui->menuFilters->actions()` and calling
+    /// `QAction::menu()` -- or iterating `children()` and casting to
+    /// `QMenu*` -- both return null on that toolchain even though the
+    /// production code wires the submenu correctly. The map is
+    /// maintained by `AddLogFilter` / `ClearFilter` / `ClearAllFilters`
+    /// so the answer is the live submenu pointer.
+    [[nodiscard]] QMenu *FilterSubMenu(const QString &filterID) const;
+
+    /// Owned `LogModel`; non-null after construction.
+    [[nodiscard]] LogModel *Model() const
+    {
+        return mModel;
+    }
+
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only session-mode override so display-order tests can
     /// exercise the `Static` branch without a real open flow.
@@ -83,6 +137,29 @@ public:
         LiveTail,
     };
     void SetSessionModeForTest(TestSessionMode mode);
+
+    /// Test-only entry to the `TryLoadAsConfiguration` path
+    /// (production gates it behind `QFileDialog`).
+    bool TryLoadAsConfigurationForTest(const QString &file);
+
+    /// Test-only entry to `SetConfigurationUiEnabled` so the
+    /// column-management gate can be exercised without a real
+    /// streaming session.
+    void SetConfigurationUiEnabledForTest(bool enabled);
+
+    /// Test-only entries to `SaveConfiguration` / `LoadConfiguration`
+    /// that bypass the file dialog and run the same private helpers.
+    void SaveConfigurationToPathForTest(const QString &path);
+    void LoadConfigurationFromPathForTest(const QString &path);
+
+    /// When true, `ShowDroppedFiltersDialog` skips the modal and
+    /// only updates the test counter (modals block the offscreen
+    /// QPA test thread). Default false.
+    void SetSuppressDialogsForTest(bool suppress);
+
+    /// Filters dropped on the most recent
+    /// `LoadConfigurationFromPathForTest` call. Reset on each load.
+    [[nodiscard]] int LastDroppedFilterCountForTest() const;
 #endif
 
 protected:
@@ -109,7 +186,10 @@ private slots:
         bool openEditor = true
     );
     void ClearAllFilters();
-    void ClearFilter(const QString &filterID);
+    /// Remove a single filter rule. Pass `deferSync = true` when the
+    /// caller (e.g. a submit slot) immediately re-adds the filter
+    /// so the mirror + rule rebuild only run once.
+    void ClearFilter(const QString &filterID, bool deferSync = false);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
@@ -135,7 +215,52 @@ private slots:
     /// refreshes the status bar.
     void OnSourceStatusChanged(loglib::SourceStatus status);
 
+    /// Translate a header drag into a source-side `LogModel::
+    /// MoveColumn`, then restore visual == logical. The runtime
+    /// filter remap and visibility re-apply happen in
+    /// `OnSourceColumnsMoved`, which also catches implicit moves
+    /// (e.g. mid-stream timestamp bubbling).
+    void OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
+
+    /// `LogModel::columnsMoved` slot: remap `mFilters[*].row`,
+    /// re-apply `Column::visible`, and refresh the proxy rules.
+    /// Single source of truth for both header-drag and streaming-
+    /// induced column moves (the latter is the timestamp bubble in
+    /// `LogModel::AppendBatch`). The visibility re-apply is needed
+    /// because Qt clears hidden flags via `initializeSections()`
+    /// when the source has zero rows.
+    void OnSourceColumnsMoved(
+        const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
+    );
+
+    /// Build and show the header context menu at @p pos.
+    void ShowHeaderContextMenu(const QPoint &pos);
+
+    /// Rebuild the `View` menu on each `aboutToShow`. Each column
+    /// gets a checkable action that toggles `Column::visible`.
+    /// Always reachable, so it can restore visibility when every
+    /// header section is hidden.
+    void RebuildViewMenu();
+
 private:
+    /// Logical index of the column whose `keys` match @p keys, or
+    /// `-1` if none. `keys` is the only identifier that survives a
+    /// reorder; menu lambdas use it to re-resolve the target column
+    /// at trigger time.
+    [[nodiscard]] int FindColumnIndexByKeys(const std::vector<std::string> &keys) const;
+
+    /// Menu label for one column: the header, or `header [keys]`
+    /// when the header is shared with another column. Empty when
+    /// @p columnIndex is out of range. For all columns at once,
+    /// prefer `BuildAllColumnMenuLabels` (this entry point is O(N)
+    /// per call).
+    [[nodiscard]] QString ColumnMenuLabel(size_t columnIndex) const;
+
+    /// Menu labels for every column in one O(N) pass (tallies
+    /// duplicate headers once and reuses the count). Use this from
+    /// the `View` menu rebuild instead of looping `ColumnMenuLabel`.
+    [[nodiscard]] std::vector<QString> BuildAllColumnMenuLabels() const;
+
     /// Try to load @p file as a `LogConfiguration`; returns true on
     /// success.
     bool TryLoadAsConfiguration(const QString &file);
@@ -150,8 +275,41 @@ private:
     void StreamNextPendingFile();
 
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
-    void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter);
+
+    /// Pop a warning dialog summarising filters dropped on load.
+    /// Records @p droppedCount for tests and skips the modal when
+    /// `mSuppressDialogsForTest` is set.
+    void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
+
+    /// Add @p filter to `mFilters` and build its menu entry. Pass
+    /// `deferSync = true` from bulk callers
+    /// (`RebuildFiltersFromConfiguration`) and run a single
+    /// trailing mirror + `UpdateFilters` after the loop.
+    void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync = false);
     void UpdateFilters();
+
+    /// Snapshot `mFilters` into the wire-format vector on the
+    /// configuration so `Save` and `MoveColumn`'s row-remap see the
+    /// live set. Output is sorted by `(row, type, payload)` so two
+    /// consecutive saves produce byte-identical JSON. O(N log N);
+    /// bulk callers should `deferSync = true` and mirror once at
+    /// the end.
+    void MirrorFiltersToConfiguration();
+
+    /// Path-based save / load helpers shared by the dialog-driven
+    /// slots and the test seams. `DoSaveConfiguration` mirrors
+    /// filters then writes; throws on I/O / serialisation failure.
+    /// `DoLoadConfiguration` resets the model, validates each
+    /// saved filter, surfaces drops via
+    /// `ShowDroppedFiltersDialog`, and returns false on parse
+    /// error.
+    void DoSaveConfiguration(const QString &path);
+    bool DoLoadConfiguration(const QString &path);
+
+    /// Re-validate every saved filter against the freshly-loaded
+    /// columns and revive survivors via `AddLogFilter`. Shared by
+    /// `DoLoadConfiguration` and `TryLoadAsConfiguration`.
+    void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
     /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
@@ -185,8 +343,14 @@ private:
     LogModel *mModel;
     FindRecordWidget *mFindRecord;
     PreferencesEditor *mPreferencesEditor;
-    loglib::LogConfiguration mConfiguration;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
+
+    /// Per-filter `Filters` sub-menu pointers, keyed by filter id.
+    /// Maintained alongside `mFilters`; the test-only `FilterSubMenu()`
+    /// accessor reads from here because Qt 6.8 + offscreen QPA on the
+    /// Linux Release toolchain strips the metaobject hooks that make
+    /// `QAction::menu()` and `qobject_cast<QMenu*>(child)` work.
+    std::unordered_map<std::string, QMenu *> mFilterSubMenus;
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
@@ -237,4 +401,16 @@ private:
     /// Latched `SourceStatus::Waiting`; drives the `Source unavailable`
     /// status-bar variant.
     bool mSourceWaiting = false;
+
+    /// Re-entrancy guard for `OnHeaderSectionMoved`: the slot
+    /// re-fires `sectionMoved` while resetting visual order, and
+    /// we swallow that volley.
+    bool mApplyingSectionMove = false;
+
+#ifdef LOGAPP_BUILD_TESTING
+    /// Skip `ShowDroppedFiltersDialog`'s modal so the test thread
+    /// is not blocked under offscreen QPA.
+    bool mSuppressDialogsForTest = false;
+    int mLastDroppedFilterCountForTest = 0;
+#endif
 };

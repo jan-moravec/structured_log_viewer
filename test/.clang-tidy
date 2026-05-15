@@ -7,6 +7,12 @@
 # exposed fields is idiomatic here. `cppcoreguidelines-owning-memory`
 # fires on the `FILE *fp = std::fopen(...)` / manual `fclose` dance that
 # the latency benchmark deliberately uses for direct-syscall control.
+# `bugprone-unchecked-optional-access` only models a tiny set of guard
+# forms (`if`/`DCHECK`/`ASSERT_TRUE`); the Catch2 / QtTest idioms used
+# throughout the suite (`REQUIRE(opt.has_value()); CHECK(*opt == ...)`,
+# `QVERIFY(opt.has_value()); QCOMPARE(opt.value(), ...)`) trip false
+# positives on every `*opt` / `opt.value()` access, so the check is
+# uniformly noise here.
 
 InheritParentConfig: true
 
@@ -16,4 +22,5 @@ Checks: >
   -cert-err58-cpp,
   -misc-non-private-member-variables-in-classes,
   -cppcoreguidelines-non-private-member-variables-in-classes,
-  -cppcoreguidelines-owning-memory
+  -cppcoreguidelines-owning-memory,
+  -bugprone-unchecked-optional-access

@@ -43,6 +43,11 @@
     <addaction name="actionCopy"/>
     <addaction name="actionFind"/>
    </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title">
+     <string>View</string>
+    </property>
+   </widget>
    <widget class="QMenu" name="menuFilters">
     <property name="title">
      <string>Filters</string>
@@ -67,6 +72,7 @@
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
+   <addaction name="menuView"/>
    <addaction name="menuFilters"/>
    <addaction name="menuStream"/>
    <addaction name="menuSettings"/>
