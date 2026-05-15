@@ -180,6 +180,18 @@ You can persist a customized column layout and filter set via [configurations](#
 - **Smooth scrolling** is enabled by default (per-pixel) both vertically and horizontally.
 - **Alternating row colors** improve readability on dense logs. The table respects the application's light/dark palette.
 
+### Column Management
+
+You can rearrange and hide columns to fit your view:
+
+- **Reorder**: drag a column header sideways to a new position. Filters and the sort indicator track the column to its new index, and the new order is preserved by [configurations](#configurations).
+- **Hide a column**: right-click the header and choose **Hide "\<col>"**, or uncheck the column in the **View** menu. Hidden columns stay in the model — data, sort, search, and filters keep working — only the header section is hidden.
+- **Show a hidden column**: right-click any visible header and pick the column from the **Show column** submenu, or re-check it in the **View** menu. The **View** menu is also the way back when *every* column is hidden (no header section is left to right-click).
+
+Duplicate header names are disambiguated as `header [key]` in both menus so columns sharing a header are still individually addressable.
+
+> Hiding the column the table is currently sorted by clears the sort, since the sort glyph would otherwise live on a hidden section with no way to undo it.
+
 ### Selecting and Copying Rows
 
 - Click a row to select it. Hold `Ctrl`/`Shift` to extend the selection.
@@ -232,20 +244,20 @@ Each filter entry in the Filters menu has **Edit** and **Remove** sub-actions:
 - **Remove** drops just that filter.
 - **Filters → Clear All** removes every filter at once.
 
-You can also right-click a column header for the same actions scoped to that column: **Add filter on "&lt;col&gt;"…** opens the Filter Editor preselected to the clicked column, and every existing filter targeting the column appears with its own **Edit** / **Remove** sub-menu.
+You can also right-click a column header for the same actions scoped to that column: **Add filter on "\<col>"…** opens the Filter Editor preselected to the clicked column, and every existing filter targeting the column appears with its own **Edit** / **Remove** sub-menu.
 
 Filters are live: the table updates immediately when a filter is added, edited, or removed.
 
 ## Configurations
 
-A *configuration* captures the current column layout (headers, keys, print format, timestamp parse formats). Configurations are saved as JSON files, and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
+A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / …), **column order**, **per-column visibility** — and the **active filter set**. Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
 
-- **File → Save Configuration…** (`Ctrl+S`) — writes the current layout to a `.json` file.
+- **File → Save Configuration…** (`Ctrl+S`) — writes the current layout and filters to a `.json` file.
 - **File → Load Configuration…** — loads a configuration file and clears any open logs. Open logs again afterwards to apply the layout.
 
 Because `Open…` auto-detects configurations, double-clicking a saved configuration file also works (it loads the layout without opening any logs).
 
-> Filters are not currently persisted in configurations.
+> Saved filters are validated against the loaded column set on every Load. Filters that no longer match a column (e.g. the key was renamed, or the column type changed in an incompatible way) are dropped and reported in a summary dialog so you can re-create them; the rest are restored as live entries in the **Filters** menu.
 
 ## Preferences
 

@@ -43,10 +43,9 @@ public:
     /// Restore a boolean filter.
     void Load(int row, bool includeTrue, bool includeFalse);
 
-    /// Preselect the column without loading a payload. Used by the
-    /// header right-click "Add filter on <column>" entry to open a
-    /// fresh editor pointing at the clicked column. No-op when
-    /// @p row is out of range or refers to a hidden column.
+    /// Preselect a column on a fresh editor (no filter payload).
+    /// Used by the header right-click "Add filter on ..." entry.
+    /// No-op when @p row is out of range or hidden.
     void SetInitialColumn(int row);
 
     int GetRowToFilter() const;

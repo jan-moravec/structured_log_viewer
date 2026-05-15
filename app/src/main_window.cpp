@@ -1678,10 +1678,9 @@ void MainWindow::AddFilter(
     connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
     connect(filterEditor, &FilterEditor::FilterNumericRangeSubmitted, this, &MainWindow::FilterNumericRangeSubmitted);
     connect(filterEditor, &FilterEditor::FilterBooleanSubmitted, this, &MainWindow::FilterBooleanSubmitted);
-    // Preselect the clicked column for the header right-click "Add
-    // filter on <column>" entry. The `Load(...)` overloads below
-    // also set the row, so this is only meaningful when no payload
-    // is being restored.
+    // Preselect the clicked column for the header "Add filter on
+    // ..." entry. The `Load(...)` calls below also set the row, so
+    // only meaningful when no payload is being restored.
     if (!resolvedFilter.has_value() && initialColumn >= 0)
     {
         filterEditor->SetInitialColumn(initialColumn);
@@ -1968,16 +1967,11 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 
 QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const
 {
-    // No `default:`: a new `LogFilter::Type` member must trip the
-    // compiler's `-Wswitch` warning rather than silently fall into
-    // the String branch, which would dereference a `nullopt`
-    // `filter.filterString` and crash. Every payload read below
-    // assumes the matching submit slot already validated it.
-    // Debug tripwires for `ValidateFilterAgainstColumns`: every
-    // filter that lands in `mFilters` is supposed to have a fully-
-    // populated payload for its declared type. Asserting here turns
-    // a stray un-validated insert into an immediate debug failure
-    // rather than a release-only `optional` deref crash later.
+    // No `default:`: a new `LogFilter::Type` must trip `-Wswitch`
+    // rather than silently fall through and deref a `nullopt`.
+    // The Q_ASSERTs below catch un-validated inserts in debug;
+    // every filter in `mFilters` is supposed to have a fully-
+    // populated payload (enforced by `ValidateFilterAgainstColumns`).
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
@@ -2060,20 +2054,16 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     mFilterSubMenus[id.toStdString()] = menuItem;
 
     const QAction *editAction = menuItem->addAction(tr("Edit"));
-    // Capture only the filter id and resolve the live filter at
-    // trigger time. Capturing the filter by value would freeze its
-    // `row` at the column it had at menu-build time, so a column
-    // reorder between build and click would mis-target Edit and the
-    // type-match guard would silently drop the filter. Regression:
+    // Capture only the id and re-resolve the live filter at trigger
+    // time, so a column reorder between menu build and click still
+    // targets the right row. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     //
-    // `bugprone-exception-escape` fires because `mFilters.find` and
-    // copying a `LogFilter` can technically allocate; throwing out
-    // of a Qt slot is undefined behaviour. The body has no source
-    // of recoverable exceptions (no user input, no I/O), so the
-    // alternative -- a `try`/`catch` around two map lookups -- is
-    // pure noise. Same justification applies to the matching Edit
-    // lambda in `BuildHeaderContextMenu`.
+    // The lint suppression below covers `mFilters.find` / `LogFilter`
+    // copy, which can technically throw. The body has no real source
+    // of exceptions (no user input, no I/O), so wrapping it in
+    // try/catch would be pure noise. Same applies to the matching
+    // Edit lambda in `BuildHeaderContextMenu`.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
         const auto it = mFilters.find(id.toStdString());
@@ -2631,29 +2621,21 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         });
     }
 
-    // Filter block: an `Add filter on "<col>"` action plus a per-
-    // filter submenu for every existing filter targeting this
-    // column. The Add path re-resolves the column from `thisKeys`
-    // at trigger time so a column move between menu build and
-    // click still hits the right index. The filter submenus
-    // capture only the filter id; `mFilters[id]` is looked up
-    // live, mirroring the Filters-menu Edit/Remove actions wired
-    // in `AddLogFilter`. A leading separator keeps Hide visually
-    // distinct from the filter group when both are present.
+    // Filter block: `Add filter on "<col>"` plus a submenu per
+    // existing filter on this column. Lambdas capture stable keys /
+    // ids and re-resolve at trigger time, so a column reorder
+    // between build and click still hits the right index.
     //
-    // Both Add and Edit are gated on the model having at least one
-    // row -- `AddFilter` itself bails out with a status-bar hint in
-    // that case, so leaving the actions enabled would advertise a
-    // no-op. Remove stays enabled because dropping a filter does
-    // not need the model to be populated.
+    // Add and Edit are gated on row count > 0 -- `AddFilter` bails
+    // out with a status-bar hint otherwise, so leaving them enabled
+    // would advertise a no-op. Remove stays enabled (dropping a
+    // filter doesn't need rows).
     const bool modelHasRows = mModel->rowCount() > 0;
 
-    // Skip the Add-filter action for hidden columns: in production
-    // they cannot be right-clicked (the header is invisible), but
-    // the public test seam can pass a hidden index, and
-    // `FilterEditor::SetInitialColumn` refuses to preselect a
-    // hidden column -- leaving the action title advertising a
-    // column the editor would not actually preselect.
+    // Hidden columns: skip Add-filter. Production can't right-click
+    // them, but the test seam can, and `SetInitialColumn` refuses to
+    // preselect a hidden column -- so the action would advertise a
+    // column the editor wouldn't actually preselect.
     if (thisColumn.visible)
     {
         if (!menu->isEmpty())
@@ -2672,10 +2654,9 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         });
     }
 
-    // Existing filters on this column. Sort by display title so
-    // the menu reads like a sorted list to the user; `mFilters` is
-    // an `unordered_map` keyed by UUID, which would otherwise
-    // present filters in essentially random order.
+    // Existing filters on this column, sorted by display title.
+    // `mFilters` is an unordered_map keyed by UUID, so without
+    // sorting the menu order would be effectively random.
     struct FilterEntry
     {
         std::string id;
@@ -2697,11 +2678,8 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         {
             return compare < 0;
         }
-        // Tie-break by filter type first so two filters that render
-        // to the same title (e.g. a String filter spelt `true, false`
-        // and a Boolean filter) sit next to each other in type-stable
-        // order. Final tie-break on the UUID makes the order fully
-        // deterministic across rebuilds.
+        // Tie-break: type first (so a String `true, false` and a
+        // Boolean filter group together), then UUID for determinism.
         if (a.type != b.type)
         {
             return a.type < b.type;
@@ -2715,10 +2693,8 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         result.filterSubMenus[entry.id] = filterSubMenu;
         QAction *editAction = filterSubMenu->addAction(tr("Edit"));
         editAction->setEnabled(modelHasRows);
-        // Same look-up-by-id pattern as the Filters-menu Edit
-        // action (capturing the filter by value would freeze its
-        // `row` at menu-build time); see `AddLogFilter` for the
-        // `bugprone-exception-escape` justification.
+        // Same id-resolve-on-trigger pattern as the Filters-menu
+        // Edit action; see `AddLogFilter` for the lint suppression.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         connect(editAction, &QAction::triggered, this, [this, filterId]() {
             const auto it = mFilters.find(filterId.toStdString());

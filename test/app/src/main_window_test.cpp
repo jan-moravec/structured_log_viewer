@@ -3928,13 +3928,12 @@ private slots:
         // (for `level`) and Show column (listing `msg`).
         mWindow->SetColumnVisible(msgCol, false);
 
-        // `BuildHeaderContextMenu` reports the freshly-built `Show
-        // column` submenu via the returned struct; `QAction::menu()`
-        // and `qobject_cast<QMenu*>(child)` both return null on the
-        // Linux Release offscreen-QPA toolchain (the QtWidgets
-        // metaobject hooks for `QMenu` are stripped at link time
-        // there), so the test cannot recover the pointer by walking
-        // the tree. The struct is the contract.
+        // `BuildHeaderContextMenu` exposes the Show-column submenu
+        // via the returned struct. On Linux Release offscreen-QPA,
+        // QMenu metaobject hooks are stripped, so `QAction::menu()`
+        // and `qobject_cast<QMenu*>(child)` both return null --
+        // tests can't recover the submenu by walking the tree, so
+        // the struct is the contract.
         auto built = mWindow->BuildHeaderContextMenu(levelCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
@@ -3957,15 +3956,11 @@ private slots:
         QCOMPARE(showActionLabels, expected);
     }
 
-    // The header menu must omit both `Hide` and `Add filter on ...`
-    // when the clicked column is already hidden -- both actions
-    // would be confusing no-ops (Hide is already hidden;
-    // `FilterEditor::SetInitialColumn` silently refuses to preselect
-    // a hidden column, so the Add-filter action would advertise a
-    // column the editor would not actually point at). The Show
-    // submenu is still present so the user can re-show. Hidden-
-    // column right-clicks are reachable only via the test seam;
-    // production right-clicks only fire on visible sections.
+    // For a hidden column the menu must omit both `Hide` and
+    // `Add filter on ...` (both would be confusing no-ops); the
+    // Show submenu is still present so the user can re-show.
+    // Hidden-column right-clicks are only reachable via the test
+    // seam -- production right-clicks fire on visible sections.
     void TestHeaderContextMenuOmitsHideForHiddenColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -3989,9 +3984,9 @@ private slots:
         }
     }
 
-    // The header menu must always offer an `Add filter on "<col>"...`
-    // action so the user can scope a filter to the clicked column
-    // without leaving the right-click menu.
+    // The header menu always offers `Add filter on "<col>"...` so
+    // the user can scope a filter to the clicked column without
+    // leaving the right-click menu.
     void TestHeaderContextMenuOffersAddFilter()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4017,9 +4012,8 @@ private slots:
         );
     }
 
-    // Triggering the header menu's Add filter entry opens a
-    // `FilterEditor` with the row combobox already pointed at the
-    // clicked column, so the user does not have to re-pick it.
+    // Triggering Add filter opens a `FilterEditor` with the row
+    // combobox already pointed at the clicked column.
     void TestHeaderContextMenuAddFilterOpensEditorWithColumnPreselected()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4062,10 +4056,9 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // The header menu lists every existing filter targeting the
-    // clicked column as a per-filter submenu (titled with the
-    // filter's display value, mirroring the Filters menu). Each
-    // submenu carries an `Edit` and a `Remove` action.
+    // Every existing filter on the clicked column gets a per-filter
+    // submenu (titled with its display value, mirroring the Filters
+    // menu) carrying `Edit` and `Remove` actions.
     void TestHeaderContextMenuListsExistingFiltersForColumn()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4074,8 +4067,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Two filters on `level`, one filter on `msg` (which must
-        // not appear in the header menu rooted at `level`).
+        // Two filters on `level`, one on `msg` (the latter must
+        // not appear in the menu rooted at `level`).
         const QString levelFilter1 = QStringLiteral("level-filter-1");
         const QString levelFilter2 = QStringLiteral("level-filter-2");
         const QString msgFilter = QStringLiteral("msg-filter");
@@ -4128,9 +4121,9 @@ private slots:
             "filters on a different column must not appear in this header menu"
         );
 
-        // Compare against the same translation context the production
-        // code uses, so a future translation of "Edit" / "Remove" in
-        // `MainWindow`'s context can't quietly break the assertion.
+        // Use MainWindow's translation context so a future
+        // translation of "Edit" / "Remove" cannot silently break
+        // this assertion.
         const QString editLabel = MainWindow::tr("Edit");
         const QString removeLabel = MainWindow::tr("Remove");
         for (const auto &[id, subMenu] : built.filterSubMenus)
@@ -4148,8 +4141,8 @@ private slots:
         }
     }
 
-    // Triggering `Remove` on a header-menu filter sub-menu drops
-    // the filter from `mFilters` (and from the wire-format mirror).
+    // Triggering `Remove` on a header-menu filter submenu drops
+    // the filter from `mFilters` (and the wire-format mirror).
     void TestHeaderContextMenuRemoveClearsFilter()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4196,8 +4189,8 @@ private slots:
         QVERIFY2(!mWindow->Filters().contains(filterId.toStdString()), "Remove must drop the filter from mFilters");
     }
 
-    // Triggering `Edit` on a header-menu filter sub-menu opens a
-    // `FilterEditor` bound to the same column the filter targets.
+    // Triggering `Edit` on a header-menu filter submenu opens a
+    // `FilterEditor` bound to the filter's column.
     void TestHeaderContextMenuEditOpensEditor()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4262,10 +4255,10 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // Regression-guard for the keys-based re-resolution in the new
-    // `Add filter on ...` lambda: a column reorder between menu
-    // build and click must still target the column's *current*
-    // index. Same shape as `TestEditFilterAfterColumnReorderUsesCurrentRow`.
+    // Regression: the `Add filter on ...` lambda must re-resolve by
+    // keys, so a column reorder between menu build and click still
+    // targets the column's current index. Mirrors
+    // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     void TestHeaderContextMenuAddFilterAfterColumnReorderResolvesByKeys()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4289,9 +4282,9 @@ private slots:
         }
         QVERIFY2(addFilterAction != nullptr, "menu must contain an `Add filter on ...` action");
 
-        // Reorder `level` *after* the menu is built but *before*
-        // the action is triggered. The lambda must re-resolve the
-        // index from the captured keys.
+        // Reorder `level` after the menu is built but before the
+        // action is triggered; the lambda must re-resolve the index
+        // from the captured keys.
         const int src = levelCol;
         const int dest = (src == 0) ? columnCount - 1 : 0;
         QVERIFY(src != dest);
@@ -4323,9 +4316,9 @@ private slots:
             }
         }
         QVERIFY2(editor != nullptr, "Add filter must spawn a FilterEditor");
-        // The editor's row must reflect the *post-reorder* column
-        // index, proving the lambda re-resolved by keys at trigger
-        // time rather than freezing on the build-time index.
+        // The editor's row must reflect the post-reorder index,
+        // proving the lambda re-resolved by keys rather than
+        // freezing on the build-time index.
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QCOMPARE(editor->GetRowToFilter(), dest);
 
@@ -4334,12 +4327,11 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // The header menu actions must appear in a stable, polished
-    // order: Hide → separator → Add filter on "..." → filter
-    // submenus → separator → Show column. The order is only encoded
-    // in `BuildHeaderContextMenu`'s control flow today, so a future
-    // reorder could silently flip the menu's polish without tripping
-    // any other test.
+    // The header menu must keep a stable, polished order: Hide →
+    // separator → Add filter → filter submenus → separator → Show
+    // column. The order is only encoded in `BuildHeaderContextMenu`'s
+    // control flow, so a future reorder could quietly break the
+    // menu's polish without tripping any other test.
     void TestHeaderContextMenuActionOrdering()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -4348,10 +4340,10 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Hide `msg` so the Show-column submenu appears, and add a
-        // filter on `level` so the filter-submenu group is present.
-        // The menu is rooted at `level` (still visible) so every
-        // group is reachable.
+        // Hide `msg` so the Show-column submenu appears, add a
+        // filter on `level` so the filter group is present, and
+        // root the menu at `level` (still visible) so every group
+        // is reachable.
         mWindow->SetColumnVisible(msgCol, false);
         const QString filterId = QStringLiteral("order-test");
         QVERIFY2(
@@ -4379,8 +4371,8 @@ private slots:
         QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
         QVERIFY2(topActions[1]->isSeparator(), "second action must be a separator");
         QVERIFY2(topActions[2]->text().startsWith("Add filter on"), "third action must be Add filter on ...");
-        // The filter submenu is the next non-separator action; its
-        // title is the filter's display value, not a fixed string.
+        // Next non-separator is the filter submenu; its title is the
+        // filter's display value, not a fixed string.
         QVERIFY2(!topActions[3]->isSeparator(), "fourth action must be the filter submenu");
         QVERIFY2(topActions[4]->isSeparator(), "fifth action must be a separator before Show column");
         QVERIFY2(
@@ -4388,23 +4380,20 @@ private slots:
         );
     }
 
-    // The Add-filter and per-filter Edit actions must be disabled
-    // when the model has zero rows: `AddFilter` already short-
-    // circuits with a status-bar message in that case, so leaving
-    // the menu entries enabled would advertise a no-op. Remove
-    // stays enabled because dropping a filter does not need any
-    // rows. Exercised via the save / reset / load detour because
-    // that is the only seam that yields a columns-without-rows
-    // state (production hits it only transiently during a fresh
-    // stream open).
+    // With zero rows, Add-filter and per-filter Edit must be
+    // disabled (`AddFilter` short-circuits with a status-bar hint,
+    // so enabled entries would advertise a no-op). Remove stays
+    // enabled -- dropping a filter doesn't need rows. The save /
+    // reset / load detour is the only seam that yields a
+    // columns-without-rows state outside a fresh stream open.
     void TestHeaderContextMenuDisablesFilterActionsWhenModelEmpty()
     {
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
 
-        // Round-trip the configuration so the model ends up with the
-        // streamed columns but no rows. Same shape as
+        // Round-trip the configuration so the model keeps its
+        // streamed columns but loses all rows. Same shape as
         // `TestColumnVisibilityRoundTripsThroughSaveLoad`.
         QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
@@ -4419,7 +4408,7 @@ private slots:
         const int reloadedLevelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(reloadedLevelCol >= 0, "level column must survive the config round-trip");
 
-        // Inject a filter post-reload so the Edit/Remove sub-menus
+        // Inject a filter post-reload so the Edit/Remove submenus
         // are populated. `FilterEnumSubmitted` does not need rows.
         const QString filterId = QStringLiteral("empty-model-filter");
         QVERIFY2(

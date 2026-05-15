@@ -92,15 +92,12 @@ public:
     /// so. Idempotent.
     void ResetHeaderToIdentity();
 
-    /// Bundle returned by `BuildHeaderContextMenu`. `menu` is the
-    /// root context menu (caller-owned); `showSubMenu` and
-    /// `filterSubMenus` are non-owning pointers into it that exist
-    /// purely for tests -- on the Linux Release offscreen-QPA
-    /// toolchain, `QAction::menu()` and
-    /// `QObject::children()`/`qobject_cast` both fail to recover
-    /// submenu pointers (the QtWidgets metaobject hooks for
-    /// `QMenu` are stripped at link time there). Production
-    /// callers only need `menu`.
+    /// Result of `BuildHeaderContextMenu`. `menu` is the caller-
+    /// owned root menu; `showSubMenu` and `filterSubMenus` are
+    /// non-owning test seams (the Linux Release offscreen-QPA
+    /// toolchain strips `QMenu` metaobject hooks, so tests can't
+    /// recover submenus by walking the tree). Production callers
+    /// only need `menu`.
     struct HeaderContextMenu
     {
         QMenu *menu = nullptr;
@@ -109,9 +106,8 @@ public:
     };
 
     /// Build the right-click header menu for @p logicalColumn.
-    /// Caller owns `result.menu`. Returns a default-constructed
-    /// struct (with `menu == nullptr`) when @p logicalColumn is out
-    /// of range.
+    /// Caller owns `result.menu`. `result.menu` is null when
+    /// @p logicalColumn is out of range.
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.
@@ -187,13 +183,11 @@ private slots:
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
     /// Add a filter rule, optionally opening the editor. Pass
-    /// `openEditor = false` from the configuration-load path so a
-    /// dropped saved filter does not pop the editor.
-    /// When @p filter is `std::nullopt` and @p initialColumn is
-    /// non-negative, the freshly-opened editor preselects that
-    /// column. Used by the column-header right-click "Add filter on
-    /// <column>" entry. Ignored when @p filter has a value (the
-    /// loaded filter already pins the row).
+    /// `openEditor = false` on the config-load path so a restored
+    /// filter does not pop the editor. When @p filter is empty and
+    /// @p initialColumn >= 0, the editor preselects that column
+    /// (used by the header "Add filter on ..." entry). Ignored
+    /// when @p filter has a value (it already pins the row).
     void AddFilter(
         const QString &filterId,
         const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt,
@@ -302,10 +296,9 @@ private:
     /// trailing mirror + `UpdateFilters` after the loop.
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync = false);
 
-    /// Display title for @p filter, matching the format used in the
-    /// `Filters` menu entries (e.g. `info, warn` for an enum filter,
-    /// `[1.5, 2.0]` for a numeric range). Shared between the Filters
-    /// menu builder and the column-header right-click menu.
+    /// Display title for @p filter (e.g. `info, warn` for an enum
+    /// filter, `[1.5, 2.0]` for a numeric range). Shared between
+    /// the Filters menu and the column-header right-click menu.
     [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
