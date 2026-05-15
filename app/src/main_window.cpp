@@ -1568,7 +1568,10 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 }
 
 void MainWindow::AddFilter(
-    const QString &filterId, const std::optional<loglib::LogConfiguration::LogFilter> &filter, bool openEditor
+    const QString &filterId,
+    const std::optional<loglib::LogConfiguration::LogFilter> &filter,
+    bool openEditor,
+    int initialColumn
 )
 {
     if (mModel->rowCount() == 0)
@@ -1675,6 +1678,14 @@ void MainWindow::AddFilter(
     connect(filterEditor, &FilterEditor::FilterEnumSubmitted, this, &MainWindow::FilterEnumSubmitted);
     connect(filterEditor, &FilterEditor::FilterNumericRangeSubmitted, this, &MainWindow::FilterNumericRangeSubmitted);
     connect(filterEditor, &FilterEditor::FilterBooleanSubmitted, this, &MainWindow::FilterBooleanSubmitted);
+    // Preselect the clicked column for the header right-click "Add
+    // filter on <column>" entry. The `Load(...)` overloads below
+    // also set the row, so this is only meaningful when no payload
+    // is being restored.
+    if (!resolvedFilter.has_value() && initialColumn >= 0)
+    {
+        filterEditor->SetInitialColumn(initialColumn);
+    }
     if (resolvedFilter.has_value())
     {
         if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
@@ -1955,24 +1966,15 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
     AddLogFilter(filterID, filter);
 }
 
-void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync)
+QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const
 {
-    mFilters[id.toStdString()] = filter;
-    if (!deferSync)
-    {
-        MirrorFiltersToConfiguration();
-        UpdateFilters();
-    }
-
-    QString title;
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
-        title = QString::fromStdString(
+        return QString::fromStdString(
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
             loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
         );
-        break;
     case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
         QStringList values;
@@ -1981,8 +1983,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         {
             values.append(QString::fromStdString(v));
         }
-        title = values.join(QStringLiteral(", "));
-        break;
+        return values.join(QStringLiteral(", "));
     }
     case loglib::LogConfiguration::LogFilter::Type::Number:
     {
@@ -1999,8 +2000,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
             filter.filterMaxValue.has_value()
                 ? cLocale.toString(*filter.filterMaxValue, 'g', std::numeric_limits<double>::max_digits10)
                 : QStringLiteral("+inf");
-        title = QStringLiteral("[%1, %2]").arg(minStr, maxStr);
-        break;
+        return QStringLiteral("[%1, %2]").arg(minStr, maxStr);
     }
     case loglib::LogConfiguration::LogFilter::Type::Boolean:
     {
@@ -2017,14 +2017,24 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         {
             values.append(QStringLiteral("false"));
         }
-        title = values.join(QStringLiteral(", "));
-        break;
+        return values.join(QStringLiteral(", "));
     }
     case loglib::LogConfiguration::LogFilter::Type::String:
     default:
-        title = QString::fromStdString(*filter.filterString);
-        break;
+        return QString::fromStdString(*filter.filterString);
     }
+}
+
+void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync)
+{
+    mFilters[id.toStdString()] = filter;
+    if (!deferSync)
+    {
+        MirrorFiltersToConfiguration();
+        UpdateFilters();
+    }
+
+    const QString title = BuildFilterTitle(filter);
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
     menuItem->menuAction()->setData(QVariant(id));
@@ -2559,11 +2569,20 @@ void MainWindow::ShowHeaderContextMenu(const QPoint &pos)
     menu->popup(header->mapToGlobal(pos));
 }
 
-QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QMenu **outShowSubMenu)
+QMenu *MainWindow::BuildHeaderContextMenu(
+    int logicalColumn,
+    QWidget *parent,
+    QMenu **outShowSubMenu,
+    std::unordered_map<std::string, QMenu *> *outFilterSubMenus
+)
 {
     if (outShowSubMenu != nullptr)
     {
         *outShowSubMenu = nullptr;
+    }
+    if (outFilterSubMenus != nullptr)
+    {
+        outFilterSubMenus->clear();
     }
     const auto &columns = mModel->Configuration().columns;
     if (logicalColumn < 0 || static_cast<size_t>(logicalColumn) >= columns.size())
@@ -2582,14 +2601,14 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QM
     // O(N) bulk build; `ColumnMenuLabel` per column would be
     // O(N^2) on the `Show column` submenu.
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
+    const QString &thisLabel = labels[static_cast<size_t>(logicalColumn)];
 
     // Only offer Hide for visible columns. Production right-clicks
     // always hit a visible section; the test seam may pass a hidden
     // index, where Hide would be a confusing no-op.
     if (thisColumn.visible)
     {
-        const QString &hideLabel = labels[static_cast<size_t>(logicalColumn)];
-        const QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(hideLabel));
+        const QAction *hideAction = menu->addAction(tr("Hide \"%1\"").arg(thisLabel));
         connect(hideAction, &QAction::triggered, this, [this, keys = thisKeys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx >= 0)
@@ -2597,6 +2616,66 @@ QMenu *MainWindow::BuildHeaderContextMenu(int logicalColumn, QWidget *parent, QM
                 SetColumnVisible(idx, false);
             }
         });
+    }
+
+    // Filter block: an `Add filter on "<col>"` action plus a per-
+    // filter submenu for every existing filter targeting this
+    // column. Both paths re-resolve the column from `thisKeys` at
+    // trigger time so a column move between menu build and click
+    // still hits the right index. The filter submenus capture only
+    // the filter id; `mFilters[id]` is looked up live, mirroring
+    // the Filters-menu Edit/Clear actions wired in `AddLogFilter`.
+    if (!menu->isEmpty())
+    {
+        menu->addSeparator();
+    }
+    const QAction *addFilterAction = menu->addAction(tr("Add filter on \"%1\"...").arg(thisLabel));
+    connect(addFilterAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+        const int idx = FindColumnIndexByKeys(keys);
+        if (idx < 0)
+        {
+            return;
+        }
+        AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
+    });
+
+    // Existing filters on this column. Sort by id for a stable
+    // menu order across rebuilds (`mFilters` is an unordered_map).
+    std::vector<std::string> filterIdsForColumn;
+    filterIdsForColumn.reserve(mFilters.size());
+    for (const auto &entry : mFilters)
+    {
+        if (entry.second.row == logicalColumn)
+        {
+            filterIdsForColumn.push_back(entry.first);
+        }
+    }
+    std::sort(filterIdsForColumn.begin(), filterIdsForColumn.end());
+    for (const std::string &filterIdStd : filterIdsForColumn)
+    {
+        const QString filterId = QString::fromStdString(filterIdStd);
+        const QString filterTitle = BuildFilterTitle(mFilters.at(filterIdStd));
+        QMenu *filterSubMenu = menu->addMenu(filterTitle);
+        if (outFilterSubMenus != nullptr)
+        {
+            (*outFilterSubMenus)[filterIdStd] = filterSubMenu;
+        }
+        const QAction *editAction = filterSubMenu->addAction(tr("Edit"));
+        // Same look-up-by-id pattern as the Filters-menu Edit
+        // action: capturing the filter by value would freeze its
+        // `row` at menu-build time.
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        connect(editAction, &QAction::triggered, this, [this, filterId]() {
+            const auto it = mFilters.find(filterId.toStdString());
+            if (it == mFilters.end())
+            {
+                AddFilter(filterId);
+                return;
+            }
+            AddFilter(filterId, it->second);
+        });
+        const QAction *removeAction = filterSubMenu->addAction(tr("Remove"));
+        connect(removeAction, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
     }
 
     // Hidden columns populate the `Show column` submenu. The clicked

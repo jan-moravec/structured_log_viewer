@@ -101,8 +101,15 @@ public:
     /// `QAction::menu()` and `QObject::children()`/`qobject_cast`
     /// traversals both fail to recover this otherwise (the submenu's
     /// QtWidgets metaobject hooks are stripped at link time).
+    /// When @p outFilterSubMenus is non-null, the per-filter
+    /// Edit/Remove submenus built for filters targeting the clicked
+    /// column are recorded there keyed by filter id, for the same
+    /// offscreen-QPA reason.
     [[nodiscard]] QMenu *BuildHeaderContextMenu(
-        int logicalColumn, QWidget *parent = nullptr, QMenu **outShowSubMenu = nullptr
+        int logicalColumn,
+        QWidget *parent = nullptr,
+        QMenu **outShowSubMenu = nullptr,
+        std::unordered_map<std::string, QMenu *> *outFilterSubMenus = nullptr
     );
 
     /// Live filter map; tests inspect it after a reorder.
@@ -180,10 +187,16 @@ private slots:
     /// Add a filter rule, optionally opening the editor. Pass
     /// `openEditor = false` from the configuration-load path so a
     /// dropped saved filter does not pop the editor.
+    /// When @p filter is `std::nullopt` and @p initialColumn is
+    /// non-negative, the freshly-opened editor preselects that
+    /// column. Used by the column-header right-click "Add filter on
+    /// <column>" entry. Ignored when @p filter has a value (the
+    /// loaded filter already pins the row).
     void AddFilter(
         const QString &filterId,
         const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt,
-        bool openEditor = true
+        bool openEditor = true,
+        int initialColumn = -1
     );
     void ClearAllFilters();
     /// Remove a single filter rule. Pass `deferSync = true` when the
@@ -286,6 +299,12 @@ private:
     /// (`RebuildFiltersFromConfiguration`) and run a single
     /// trailing mirror + `UpdateFilters` after the loop.
     void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync = false);
+
+    /// Display title for @p filter, matching the format used in the
+    /// `Filters` menu entries (e.g. `info, warn` for an enum filter,
+    /// `[1.5, 2.0]` for a numeric range). Shared between the Filters
+    /// menu builder and the column-header right-click menu.
+    [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
     /// Snapshot `mFilters` into the wire-format vector on the

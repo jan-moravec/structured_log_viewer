@@ -243,6 +243,19 @@ void FilterEditor::Load(int row, bool includeTrue, bool includeFalse)
     mBoolIncludeFalse->setChecked(includeFalse);
 }
 
+void FilterEditor::SetInitialColumn(int row)
+{
+    if (row < 0 || static_cast<size_t>(row) >= mModel.Configuration().columns.size())
+    {
+        return;
+    }
+    // The combobox's `currentIndexChanged` is wired to
+    // `UpdateSelectedColumn`, which swaps the stacked widget to the
+    // matching page (string / time / enum / numeric / boolean), so
+    // setting the index here is the only call needed.
+    mRowComboBox->setCurrentIndex(row);
+}
+
 int FilterEditor::GetRowToFilter() const
 {
     return mRowComboBox->currentIndex();
