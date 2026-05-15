@@ -4003,6 +4003,7 @@ private slots:
         }
         QVERIFY2(addFilterAction != nullptr, "menu must contain an `Add filter on ...` action");
         QVERIFY2(
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
             addFilterAction->text().contains(QStringLiteral("level")),
             "Add filter action title must reference the clicked column"
         );
@@ -4163,7 +4164,7 @@ private slots:
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed via the struct");
         QAction *removeAction = nullptr;
         const QString removeLabel = MainWindow::tr("Remove");
@@ -4210,7 +4211,7 @@ private slots:
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         QAction *editAction = nullptr;
         const QString editLabel = MainWindow::tr("Edit");
@@ -4386,7 +4387,7 @@ private slots:
         // Round-trip the configuration so the model keeps its
         // streamed columns but loses all rows. Same shape as
         // `TestColumnVisibilityRoundTripsThroughSaveLoad`.
-        QTemporaryDir tempDir;
+        const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString savedPath = tempDir.filePath(QStringLiteral("rowless.json"));
         model->ConfigurationManager().Save(savedPath.toStdString());
@@ -4420,7 +4421,7 @@ private slots:
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QAction *addFilterAction = nullptr;
-        for (QAction *act : built.menu->actions())
+        for (const QAction *act : built.menu->actions())
         {
             if (act->text().startsWith(QStringLiteral("Add filter on")))
             {
@@ -4432,7 +4433,7 @@ private slots:
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(!addFilterAction->isEnabled(), "Add filter must be disabled when the model has no rows");
 
-        QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         const QString editLabel = MainWindow::tr("Edit");
         const QString removeLabel = MainWindow::tr("Remove");

@@ -2668,7 +2668,9 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         if (entry.second.row == logicalColumn)
         {
-            filtersForColumn.push_back({entry.first, BuildFilterTitle(entry.second), entry.second.type});
+            filtersForColumn.push_back(
+                {.id = entry.first, .title = BuildFilterTitle(entry.second), .type = entry.second.type}
+            );
         }
     }
     std::sort(filtersForColumn.begin(), filtersForColumn.end(), [](const FilterEntry &a, const FilterEntry &b) {
