@@ -14,6 +14,8 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string_view>
+#include <unordered_set>
 
 using namespace loglib;
 
@@ -205,20 +207,54 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
     if (isLevel)
     {
         PopulateLevelValues(row);
+
+        // For `Type::Level` columns the populated items carry the
+        // canonical names ("Info", "Warn", ...) while `selectedValues`
+        // may hold raw dictionary entries from a prior Enumeration
+        // session ("info", "INFO", "WARNING", custom `levelMapping`
+        // aliases, ...). A case-sensitive set lookup would silently
+        // drop those, so resolve each saved value through the same
+        // alias table the filter pipeline uses and key the selection
+        // by `LogLevel` instead.
+        const auto &column = columns[static_cast<size_t>(row)];
+        std::unordered_set<LogLevel> selectedLevels;
+        selectedLevels.reserve(static_cast<size_t>(selectedValues.size()));
+        for (const QString &value : selectedValues)
+        {
+            const QByteArray utf8 = value.toUtf8();
+            const std::string_view bytes(utf8.constData(), static_cast<size_t>(utf8.size()));
+            if (auto level = ResolveLevel(bytes, column.levelMapping); level.has_value())
+            {
+                selectedLevels.insert(*level);
+            }
+        }
+        for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
+        {
+            QStandardItem *item = mEnumValuesModel->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            const QByteArray itemUtf8 = item->text().toUtf8();
+            const std::string_view itemBytes(itemUtf8.constData(), static_cast<size_t>(itemUtf8.size()));
+            const auto itemLevel = ParseLevelName(itemBytes);
+            const bool checked = itemLevel.has_value() && selectedLevels.contains(*itemLevel);
+            item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+        }
     }
     else
     {
         PopulateEnumValues(row);
-    }
-    const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
-    for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
-    {
-        QStandardItem *item = mEnumValuesModel->item(i);
-        if (item == nullptr)
+        const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
+        for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
         {
-            continue;
+            QStandardItem *item = mEnumValuesModel->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            item->setCheckState(selectionSet.contains(item->text()) ? Qt::Checked : Qt::Unchecked);
         }
-        item->setCheckState(selectionSet.contains(item->text()) ? Qt::Checked : Qt::Unchecked);
     }
     UpdateEnumSelectionCount();
 }

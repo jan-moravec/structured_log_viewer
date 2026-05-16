@@ -20,8 +20,11 @@ struct LevelAlias
 };
 
 /// Built-in alias table. Aliases are compared case-insensitively against
-/// the input byte sequence; ordering is informational only.
-constexpr std::array<LevelAlias, 22> BUILTIN_ALIASES = {{
+/// the input byte sequence; ordering is informational only. Aliases that
+/// map to `LogLevel::Unknown` (the sentinel) are intentionally absent --
+/// `ParseLevelName` already treats "no match" as `std::nullopt`, so
+/// including such an entry would be dead code.
+constexpr std::array<LevelAlias, 21> BUILTIN_ALIASES = {{
     {"trace", LogLevel::Trace},      {"trc", LogLevel::Trace},          {"debug", LogLevel::Debug},
     {"dbg", LogLevel::Debug},        {"verbose", LogLevel::Debug},      {"info", LogLevel::Info},
     {"information", LogLevel::Info}, {"informational", LogLevel::Info}, {"notice", LogLevel::Info},
@@ -29,7 +32,6 @@ constexpr std::array<LevelAlias, 22> BUILTIN_ALIASES = {{
     {"err", LogLevel::Error},        {"severe", LogLevel::Error},       {"fatal", LogLevel::Fatal},
     {"critical", LogLevel::Fatal},   {"crit", LogLevel::Fatal},         {"emerg", LogLevel::Fatal},
     {"emergency", LogLevel::Fatal},  {"panic", LogLevel::Fatal},        {"alert", LogLevel::Fatal},
-    {"unknown", LogLevel::Unknown},
 }};
 
 } // namespace
@@ -66,14 +68,6 @@ std::optional<LogLevel> ParseLevelName(std::string_view bytes) noexcept
     {
         if (internal::EqualsIgnoreCaseAscii(bytes, entry.alias))
         {
-            // The `"unknown"` alias maps to `LogLevel::Unknown`, which we
-            // treat as "did not match a real level" for promotion-decision
-            // purposes. Surface it via the same `nullopt` so callers don't
-            // need to branch on the sentinel.
-            if (entry.level == LogLevel::Unknown)
-            {
-                return std::nullopt;
-            }
             return entry.level;
         }
     }

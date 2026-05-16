@@ -47,13 +47,18 @@ constexpr double ENUM_HEALTH_TOLERANCE_RATIO = 0.01;
 /// Minimum samples before consulting the tolerance ratio.
 constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 50;
 
-/// Minimum fraction of dictionary entries that must resolve to a
-/// canonical `LogLevel` before `MaybePromoteToLevel` flips a column
-/// from `Type::Enumeration` to `Type::Level`. Trades false-positive
-/// risk (calling a status column "level" because it happens to share
-/// a string with one) against tolerance for occasional non-canonical
-/// values mixed into a real level column.
-constexpr double LEVEL_PROMOTION_THRESHOLD = 0.80;
+/// Dict-weighted tolerance for `MaybePromoteToLevel`: promote when
+/// `unrecognized * LEVEL_DICT_TOLERANCE_RATIO <= canonical`, i.e. at
+/// most one unrecognized entry is allowed per four canonical ones.
+/// Concretely: dicts up to size 4 must be 100% canonical; size 5
+/// tolerates 1 weird value; size 9 tolerates 2; size N tolerates
+/// `floor(N * 0.2)` weird values once at least one canonical entry
+/// is present. Trades false-positive risk (calling a status column
+/// "level" because it happens to share a string with one) against
+/// tolerance for occasional non-canonical values mixed into a real
+/// level column. Dict-weighted (not row-weighted) so a single dict
+/// pass suffices on every re-check.
+constexpr size_t LEVEL_DICT_TOLERANCE_RATIO = 4;
 
 /// Microsecond threshold above which `DemoteColumnFromEnum` emits a
 /// stderr telemetry line; below it the demote cost is uninteresting.
@@ -263,6 +268,11 @@ void LogTable::Reset()
     mLevelRankCache.clear();
     mIsStreaming = false;
     mLastBackfillRange.reset();
+    // Sibling teardown paths (`BeginStreaming`, `Update`, `AppendBatch`,
+    // move-ops) all clear this -- keep `Reset` consistent so a reader
+    // that calls `LastBatchDemotedKeys()` between `Reset` and the next
+    // batch-style call doesn't see ids from the prior session.
+    mLastBatchDemotedKeys.clear();
     RefreshColumnKeyIds();
 }
 
@@ -930,9 +940,11 @@ void LogTable::RunEnumPassForAppendBatch(
             }
             EnumColumnHealth &health = mEnumColumnHealth[column.header];
 
-            // Snapshot dictionary size before the encode pass so we can
-            // detect growth and re-check `Enumeration -> Level`
-            // promotion below.
+            // Snapshot dictionary size before the encode pass so we
+            // can gate the `Enumeration -> Level` re-check on growth.
+            // The promotion rule is purely dict-weighted, so when no
+            // new entries appeared in this batch the answer is
+            // guaranteed unchanged.
             const EnumDictionary *dictBefore = mEnumDictionaries.Find(resolvedKeys.front());
             const size_t oldDictSize = (dictBefore != nullptr) ? dictBefore->Size() : 0;
 
@@ -949,11 +961,12 @@ void LogTable::RunEnumPassForAppendBatch(
                 continue;
             }
             // Level-promotion re-check: an `Enumeration` column whose
-            // key matches `IsLogLevelKey` may finally cross the 80%
-            // occurrence-weighted threshold once enough rows have
-            // arrived. Guard on dictionary growth (no new entries =>
-            // same answer) and on the name match (avoids the per-row
-            // sweep on every enum column).
+            // key matches `IsLogLevelKey` may finally satisfy the
+            // 1-in-4 dict tolerance once enough canonical entries
+            // arrive (e.g., a batch that mints `error` after earlier
+            // batches only carried `info`/`warn`). Gated on dict
+            // growth + name match so non-level Enum columns pay no
+            // cost.
             if (column.type == LogConfiguration::Type::Enumeration)
             {
                 const EnumDictionary *dictAfter = mEnumDictionaries.Find(resolvedKeys.front());
@@ -1327,8 +1340,12 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     }
 
     // Two-signal level detection: key matches the level alias list AND
-    // the freshly-encoded dictionary maps mostly to canonical levels.
-    // No-op for non-matching columns.
+    // the freshly-encoded dictionary satisfies the 1-in-4 tolerance
+    // (see `LEVEL_DICT_TOLERANCE_RATIO`). The check is dict-only, so
+    // running it here -- right after the encode pass that filled the
+    // dictionary -- gives a complete answer; subsequent batches
+    // re-evaluate only when the dictionary grows. No-op for keys
+    // that don't match `IsLogLevelKey`.
     MaybePromoteToLevel(columnIndex);
 }
 
@@ -1445,10 +1462,9 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return;
     }
 
-    // Signal 1: column name. We require at least one configured key
-    // to match the level alias list (`level`, `severity`, ...).
-    const bool nameMatches = std::ranges::any_of(column.keys, IsLogLevelKey);
-    if (!nameMatches)
+    // Signal 1: column name. At least one configured key must match
+    // the level alias list (`level`, `severity`, ...).
+    if (!std::ranges::any_of(column.keys, IsLogLevelKey))
     {
         return;
     }
@@ -1474,42 +1490,25 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return;
     }
 
-    // Pre-resolve every dictionary entry once: the row sweep below only
-    // pays an `EnumValueId` -> bool lookup per row. Indexed by `EnumValueId`.
-    std::vector<bool> idResolvesToLevel(dict->Size(), false);
+    // Dict-weighted 1-in-4 tolerance: at most one unrecognized entry
+    // per `LEVEL_DICT_TOLERANCE_RATIO` canonical ones, with at least
+    // one canonical entry required. Resolves via the alias table plus
+    // any per-column `levelMapping` overrides the user configured.
+    size_t canonicalEntries = 0;
+    size_t unrecognizedEntries = 0;
     for (size_t valueId = 0; valueId < dict->Size(); ++valueId)
     {
         const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(valueId));
-        idResolvesToLevel[valueId] = ResolveLevel(bytes, column.levelMapping).has_value();
-    }
-
-    // Occurrence-weighted check: count `canonicalRows` (slot resolves to
-    // a canonical level) and `observedRows` (slot has any `EnumValueId`)
-    // across every existing row. A column with 10000 `info` rows + 1
-    // `weird` row passes; a column with 5 distinct entries of which only
-    // 1 is canonical does not (unless that one entry dominates the rows).
-    size_t canonicalRows = 0;
-    size_t observedRows = 0;
-    const size_t rowCount = mData.Lines().size();
-    for (size_t row = 0; row < rowCount; ++row)
-    {
-        const std::optional<EnumValueId> id = GetEnumValueId(row, columnIndex);
-        if (!id.has_value())
+        if (ResolveLevel(bytes, column.levelMapping).has_value())
         {
-            continue;
+            ++canonicalEntries;
         }
-        ++observedRows;
-        if (static_cast<size_t>(*id) < idResolvesToLevel.size() && idResolvesToLevel[static_cast<size_t>(*id)])
+        else
         {
-            ++canonicalRows;
+            ++unrecognizedEntries;
         }
     }
-    if (observedRows == 0)
-    {
-        return;
-    }
-    const double ratio = static_cast<double>(canonicalRows) / static_cast<double>(observedRows);
-    if (ratio < LEVEL_PROMOTION_THRESHOLD)
+    if (canonicalEntries == 0 || unrecognizedEntries * LEVEL_DICT_TOLERANCE_RATIO > canonicalEntries)
     {
         return;
     }

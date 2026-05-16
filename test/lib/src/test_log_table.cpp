@@ -2590,8 +2590,8 @@ TEST_CASE(
 )
 {
     // Key name matches but most dictionary entries do not resolve to
-    // a canonical level -- below the 80% threshold, so the column
-    // stops at `Type::Enumeration`.
+    // a canonical level -- the 1-in-4 dict tolerance is not satisfied,
+    // so the column stops at `Type::Enumeration`.
     const TestLogFile testFile("level_threshold.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2602,7 +2602,8 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // 5 distinct entries; only 1 resolves to a canonical level (info).
-    // 1/5 = 20% well below the 80% threshold.
+    // `unrecognized * LEVEL_DICT_TOLERANCE_RATIO (4) = 16` is well
+    // above `canonical = 1`, so promotion is blocked.
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true));
 
     REQUIRE(table.RowCount() == 10);
@@ -2659,7 +2660,9 @@ TEST_CASE(
     "[log_table][append_batch][level]"
 )
 {
-    // 4/5 = 80% canonical: above the threshold, column promotes to
+    // 4 canonical + 1 unrecognized dict entries: under the dict-weighted
+    // 1-in-4 tolerance (`unrecognized * LEVEL_DICT_TOLERANCE_RATIO <=
+    // canonical`, i.e. `1 * 4 <= 4`) the column still promotes to
     // `Type::Level`. The non-canonical entry stays in the dictionary
     // (display fidelity); `GetLevelForRow` returns nullopt for its
     // rows so sort/filter/style treat them as "no level info".

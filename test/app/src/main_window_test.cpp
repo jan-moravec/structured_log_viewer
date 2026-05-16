@@ -3169,9 +3169,10 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
-        // The dominant signal is the occurrence-weighted threshold: every
-        // observed row resolves to a canonical level, so promotion must
-        // reach `Type::Level`, not stop at `Type::Enumeration`.
+        // Every dictionary entry resolves to a canonical level (0
+        // unrecognized), so the 1-in-4 dict tolerance trivially holds
+        // and promotion must reach `Type::Level`, not stop at
+        // `Type::Enumeration`.
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level);
 
         // Row-cycle pattern is `levels[i % 6]`; check the first few.

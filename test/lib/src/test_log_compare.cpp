@@ -672,8 +672,10 @@ TEST_CASE(
 
     StreamedBatch batch;
     batch.firstLineNumber = 1;
-    // Insertion order: info, warn, error, fatal, qux. Ranks are
-    // 2 < 3 < 4 < 5 < sentinel(255), so:
+    // Insertion order: info, warn, error, fatal, qux. `LogLevel`
+    // ordinals are `Unknown=0, Trace=1, Debug=2, Info=3, Warn=4,
+    // Error=5, Fatal=6`, so the per-row ranks come out
+    // `3 < 4 < 5 < 6 < sentinel(255)`, giving:
     //   ascending  -> [0, 1, 2, 3, 4]
     //   descending -> [4, 3, 2, 1, 0]  (sentinel sorts FIRST in
     //     descending because primary key is `rankA > rankB`; this

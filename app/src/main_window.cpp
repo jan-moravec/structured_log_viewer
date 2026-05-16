@@ -2350,6 +2350,19 @@ void MainWindow::UpdateFilters()
             if (isLevelColumn)
             {
                 const auto &lvlColumn = columnsCfg[static_cast<size_t>(filter.row)];
+                const std::vector<loglib::LogLevel> *ranks = mModel->Table().LevelRankCache(lvlColumn.header);
+                const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+                if (ranks == nullptr || dictionary == nullptr)
+                {
+                    // Column configured `Type::Level` but no data yet:
+                    // skip the rule. `EnumFilterFullyResolved` returns
+                    // false for Level filters, so the next
+                    // `enumColumnsChanged(Grew)` fires a rebuild and
+                    // we'll install the predicate then. Rejecting every
+                    // row here would hide unrelated rows just because
+                    // the Level column hasn't been observed.
+                    break;
+                }
                 std::unordered_set<loglib::LogLevel> selectedLevels;
                 selectedLevels.reserve(filter.filterValues.size());
                 for (const std::string &name : filter.filterValues)
@@ -2359,19 +2372,14 @@ void MainWindow::UpdateFilters()
                         selectedLevels.insert(*level);
                     }
                 }
-                const std::vector<loglib::LogLevel> *ranks = mModel->Table().LevelRankCache(lvlColumn.header);
-                const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
-                if (ranks != nullptr && dictionary != nullptr)
+                expandedStorage.reserve(ranks->size());
+                for (size_t valueId = 0; valueId < ranks->size(); ++valueId)
                 {
-                    expandedStorage.reserve(ranks->size());
-                    for (size_t valueId = 0; valueId < ranks->size(); ++valueId)
+                    if (selectedLevels.contains((*ranks)[valueId]))
                     {
-                        if (selectedLevels.contains((*ranks)[valueId]))
-                        {
-                            const std::string_view bytes =
-                                dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
-                            expandedStorage.emplace_back(bytes);
-                        }
+                        const std::string_view bytes =
+                            dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                        expandedStorage.emplace_back(bytes);
                     }
                 }
                 selectedViews.reserve(expandedStorage.size());
@@ -2379,6 +2387,11 @@ void MainWindow::UpdateFilters()
                 {
                     selectedViews.emplace_back(v);
                 }
+                // Empty `selectedViews` here is the legitimate
+                // "selection picks no dictionary entry" case (e.g. user
+                // chose `Trace` but only `Info`/`Warn` slots have been
+                // observed). Matches the Enum branch's empty-selection
+                // semantics: reject every row.
                 rules.emplace_back(
                     std::in_place_type<loglib::EnumRowPredicate>,
                     column,

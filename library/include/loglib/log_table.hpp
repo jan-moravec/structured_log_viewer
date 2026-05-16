@@ -268,12 +268,14 @@ private:
     void PromoteColumnToEnum(size_t columnIndex);
 
     /// If @p columnIndex is `Type::Enumeration` and (a) its key matches
-    /// `IsLogLevelKey` and (b) at least 80% of the observed rows for the
-    /// column resolve via `ResolveLevel`, flip the type to `Type::Level`
-    /// and populate the cache entry in `mLevelRankCache`. Counting by
-    /// row occurrence (not distinct dictionary entries) keeps a flood of
-    /// canonical rows from being defeated by one rare non-canonical
-    /// value. No-op otherwise.
+    /// `IsLogLevelKey` and (b) the dictionary satisfies
+    /// `unrecognized * LEVEL_DICT_TOLERANCE_RATIO <= canonical` (i.e.
+    /// at most one unrecognized entry per four canonical ones), flip
+    /// the type to `Type::Level` and populate the cache entry in
+    /// `mLevelRankCache`. The check is dict-weighted, not row-weighted:
+    /// re-evaluation only matters when the dictionary grows. No-op
+    /// otherwise. Cost is `O(dict size)`; dict size is bounded by
+    /// `mEnumValueCap`.
     void MaybePromoteToLevel(size_t columnIndex);
 
     /// Rebuild / extend the cached `EnumValueId -> LogLevel` table for the
@@ -283,6 +285,23 @@ private:
 
     /// Demote @p columnIndex from enum to string, materialising every
     /// `DictRef` into `OwnedString` and dropping the dictionary.
+    ///
+    /// Despite the name, this is also the demote path for
+    /// `Type::Level` columns -- a `Type::Level` column that breaches
+    /// the enum health budget (cap overflow or wrong-type ratio) drops
+    /// straight to `Type::String`, which is terminal (see
+    /// `IsEnumPassEligible`: `String` is not re-evaluated). The
+    /// reasoning: a Level column got there by passing the
+    /// dict-weighted 1-in-4 tolerance, so when its dictionary now
+    /// fails the enum invariants the data has *also* outgrown what
+    /// `Type::Enumeration` could support. Returning to Enum would
+    /// immediately cycle into another demote (kill-once-stay-killed
+    /// matches the candidate scanner's contract). Tear down the
+    /// `mLevelRankCache` entry here so the column doesn't carry stale
+    /// level metadata while sitting as `Type::String`. If a user
+    /// reloads the file with a different configuration (column pinned
+    /// back to `Type::Unknown`), the candidate scanner gets a fresh
+    /// shot at re-promoting.
     void DemoteColumnFromEnum(size_t columnIndex);
 
     /// Encode column slots in `[rowBegin, rowEnd)` as `DictRef`. Returns
