@@ -639,3 +639,79 @@ TEST_CASE(
     CHECK(SignOf(CompareRows(table, 3, 4, 0)) == -1); // FATAL < qux (tail)
     CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1);  // qux (tail) > WARN
 }
+
+TEST_CASE(
+    "SortPermutationByColumn fast path on Type::Level honours canonical rank in both directions",
+    "[log_compare][level][sort_permutation]"
+)
+{
+    // Regression for the dedicated `Type::Level` fast path in
+    // `SortPermutationByColumn`: pre-materialised `uint8_t` ranks +
+    // sentinel for unmapped slots must agree with `CompareLevel` on
+    // ordering for both ascending and descending sorts.
+    const TestLogFile fixture("log_compare_level_sort_perm.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    // Insertion order: info, warn, error, fatal, qux. Ranks are
+    // 2 < 3 < 4 < 5 < sentinel(255), so:
+    //   ascending  -> [0, 1, 2, 3, 4]
+    //   descending -> [4, 3, 2, 1, 0]  (sentinel sorts FIRST in
+    //     descending because primary key is `rankA > rankB`; this
+    //     matches the existing enum fast-path convention).
+    const std::vector<std::string> rowValues = {"info", "warn", "error", "fatal", "qux"};
+    for (const auto &v : rowValues)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+    }
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+
+    const std::vector<size_t> logRows = {0, 1, 2, 3, 4};
+    {
+        const std::vector<size_t> perm = SortPermutationByColumn(
+            table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, /*rankForEnumColumn=*/nullptr
+        );
+        REQUIRE(perm.size() == 5);
+        CHECK(perm[0] == 0); // info
+        CHECK(perm[1] == 1); // warn
+        CHECK(perm[2] == 2); // error
+        CHECK(perm[3] == 3); // fatal
+        CHECK(perm[4] == 4); // qux (tail / sentinel)
+    }
+    {
+        const std::vector<size_t> perm = SortPermutationByColumn(
+            table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/false, /*rankForEnumColumn=*/nullptr
+        );
+        REQUIRE(perm.size() == 5);
+        // Sentinel comes first in descending: matches the generic path
+        // (`CompareLevel` returns +1 for an unresolved lhs, and the
+        // descending generic comparator uses `cmp > 0`).
+        CHECK(perm[0] == 4); // qux (tail / sentinel)
+        CHECK(perm[1] == 3); // fatal
+        CHECK(perm[2] == 2); // error
+        CHECK(perm[3] == 1); // warn
+        CHECK(perm[4] == 0); // info
+    }
+}

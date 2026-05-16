@@ -6,9 +6,11 @@
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <string_view>
 
 namespace
 {
@@ -44,15 +46,11 @@ bool IsLogLevelKey(const std::string &key)
     // to enum-shape (auto-promotion via `RunEnumPassForAppendBatch`)
     // before `LogTable::MaybePromoteToLevel` will flip the type from
     // `Type::Enumeration` to `Type::Level`.
-    static const std::vector<std::string> LEVEL_KEYS = {
+    static constexpr std::array<std::string_view, 8> LEVEL_KEYS = {
         "level", "severity", "loglevel", "log.level", "log_level", "lvl", "levelname", "priority"
     };
-    const std::string lower = [&] {
-        std::string out = key;
-        std::ranges::transform(out, out.begin(), [](auto c) { return static_cast<unsigned char>(std::tolower(c)); });
-        return out;
-    }();
-    return std::ranges::any_of(LEVEL_KEYS, [&lower](const std::string &value) { return lower == value; });
+    const std::string lower = ToLower(key);
+    return std::ranges::any_of(LEVEL_KEYS, [&lower](std::string_view value) { return lower == value; });
 }
 
 } // namespace loglib

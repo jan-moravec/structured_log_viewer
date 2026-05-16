@@ -47,9 +47,15 @@ inline constexpr size_t CANONICAL_LEVEL_COUNT = 6;
 
 /// Per-column alias overrides: `(alias, canonicalName)` pairs. Canonical
 /// names are matched against `CanonicalLevelName` (case-insensitive); a
-/// pair whose canonical side is not a recognised level name is silently
-/// ignored. Aliases are matched case-insensitively. Overrides take
-/// precedence over the built-in table.
+/// pair whose canonical side is not one of `Trace`, `Debug`, `Info`,
+/// `Warn`, `Error`, or `Fatal` (notably including `Unknown` and any
+/// misspelled name) is silently ignored, and the matching alias falls
+/// through to the built-in table. Aliases are matched case-
+/// insensitively. Overrides take precedence over the built-in table.
+///
+/// To suppress an alias entirely (rather than remap it) the caller
+/// should either remove it from the column's data or pin the column to
+/// `Type::Enumeration`; there is no sentinel for "treat as no level".
 ///
 /// @p bytes is the raw user string to map. Returns `std::nullopt` if no
 /// override and no built-in alias matches.

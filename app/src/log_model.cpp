@@ -445,6 +445,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         loglib::KeyId kid;
         int columnIndex;
         uint16_t sizeBefore;
+        loglib::LogConfiguration::Type typeBefore;
     };
     std::vector<EnumSnapshotEntry> enumSnapshotBefore;
     {
@@ -472,7 +473,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             if (const loglib::EnumDictionary *dict = registryBefore.Find(kid); dict != nullptr)
             {
                 enumSnapshotBefore.push_back(
-                    {.kid = kid, .columnIndex = static_cast<int>(columnIndex), .sizeBefore = dict->Size()}
+                    {.kid = kid,
+                     .columnIndex = static_cast<int>(columnIndex),
+                     .sizeBefore = dict->Size(),
+                     .typeBefore = column.type}
                 );
             }
         }
@@ -518,11 +522,16 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     // Diff snapshot vs post-batch registry: `Grew` when the dict
     // size changed, `Demoted` when the dict disappeared (registry
-    // erase). One signal per (column, reason).
+    // erase), `Promoted` when a column flipped from `Enumeration` to
+    // `Level` (sub-promotion: shares the dictionary, so a `Grew` would
+    // otherwise be the only signal -- but the filter UI needs to
+    // re-render against the canonical-level picker). One signal per
+    // (column, reason).
     std::vector<int> demotedColumnsThisBatch;
     if (!enumSnapshotBefore.empty())
     {
         const auto &registryAfter = mLogTable.EnumDictionaries();
+        const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
         for (const auto &entry : enumSnapshotBefore)
         {
             const loglib::EnumDictionary *dict = registryAfter.Find(entry.kid);
@@ -530,6 +539,18 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 demotedColumnsThisBatch.push_back(entry.columnIndex);
                 emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, entry.columnIndex);
+                continue;
+            }
+            const auto columnIndexSz = static_cast<size_t>(entry.columnIndex);
+            const auto typeAfter =
+                (columnIndexSz < columnsAfter.size()) ? columnsAfter[columnIndexSz].type : entry.typeBefore;
+            if (entry.typeBefore == loglib::LogConfiguration::Type::Enumeration &&
+                typeAfter == loglib::LogConfiguration::Type::Level)
+            {
+                // Sub-promotion supersedes `Grew`: receivers re-read
+                // the column type, so one event covers both the new
+                // entries and the type flip.
+                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, entry.columnIndex);
             }
             else if (dict->Size() != entry.sizeBefore)
             {
@@ -669,7 +690,17 @@ void LogModel::EndStreaming(bool cancelled)
                                              columnsAfter[i].type == loglib::LogConfiguration::Type::Level;
                 const bool wasEnumLikeBefore = typesBefore[i] == loglib::LogConfiguration::Type::Enumeration ||
                                                typesBefore[i] == loglib::LogConfiguration::Type::Level;
+                // Fresh promotion to any enum-like type.
                 if (!wasEnumLikeBefore && isEnumLikeAfter)
+                {
+                    emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
+                    continue;
+                }
+                // Sub-promotion `Enumeration -> Level`. Same signal so
+                // the filter UI re-renders against the canonical-level
+                // picker.
+                if (typesBefore[i] == loglib::LogConfiguration::Type::Enumeration &&
+                    columnsAfter[i].type == loglib::LogConfiguration::Type::Level)
                 {
                     emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                 }

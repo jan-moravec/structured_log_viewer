@@ -13,6 +13,7 @@
 #include <loglib/internal/ascii_case.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
@@ -48,6 +49,7 @@
 #include <limits>
 #include <memory>
 #include <system_error>
+#include <unordered_set>
 #include <vector>
 
 namespace

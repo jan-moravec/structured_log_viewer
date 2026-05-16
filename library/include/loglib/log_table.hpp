@@ -268,9 +268,12 @@ private:
     void PromoteColumnToEnum(size_t columnIndex);
 
     /// If @p columnIndex is `Type::Enumeration` and (a) its key matches
-    /// `IsLogLevelKey` and (b) >=80% of dictionary entries resolve via
-    /// `ResolveLevel`, flip the type to `Type::Level` and populate the
-    /// cache entry in `mLevelRankCache`. No-op otherwise.
+    /// `IsLogLevelKey` and (b) at least 80% of the observed rows for the
+    /// column resolve via `ResolveLevel`, flip the type to `Type::Level`
+    /// and populate the cache entry in `mLevelRankCache`. Counting by
+    /// row occurrence (not distinct dictionary entries) keeps a flood of
+    /// canonical rows from being defeated by one rare non-canonical
+    /// value. No-op otherwise.
     void MaybePromoteToLevel(size_t columnIndex);
 
     /// Rebuild / extend the cached `EnumValueId -> LogLevel` table for the

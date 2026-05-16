@@ -929,6 +929,13 @@ void LogTable::RunEnumPassForAppendBatch(
                 continue;
             }
             EnumColumnHealth &health = mEnumColumnHealth[column.header];
+
+            // Snapshot dictionary size before the encode pass so we can
+            // detect growth and re-check `Enumeration -> Level`
+            // promotion below.
+            const EnumDictionary *dictBefore = mEnumDictionaries.Find(resolvedKeys.front());
+            const size_t oldDictSize = (dictBefore != nullptr) ? dictBefore->Size() : 0;
+
             if (!EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, health))
             {
                 DemoteColumnFromEnum(columnIndex);
@@ -941,8 +948,27 @@ void LogTable::RunEnumPassForAppendBatch(
                 recordBackfill(columnIndex);
                 continue;
             }
+            // Level-promotion re-check: an `Enumeration` column whose
+            // key matches `IsLogLevelKey` may finally cross the 80%
+            // occurrence-weighted threshold once enough rows have
+            // arrived. Guard on dictionary growth (no new entries =>
+            // same answer) and on the name match (avoids the per-row
+            // sweep on every enum column).
+            if (column.type == LogConfiguration::Type::Enumeration)
+            {
+                const EnumDictionary *dictAfter = mEnumDictionaries.Find(resolvedKeys.front());
+                const size_t newDictSize = (dictAfter != nullptr) ? dictAfter->Size() : 0;
+                if (newDictSize > oldDictSize && std::ranges::any_of(column.keys, IsLogLevelKey))
+                {
+                    MaybePromoteToLevel(columnIndex);
+                }
+            }
             if (column.type == LogConfiguration::Type::Level)
             {
+                // Idempotent: covers both the just-promoted case
+                // (`MaybePromoteToLevel` already populated the cache, so
+                // the inner loop appends zero entries) and the stable
+                // Level column (append the entries this batch added).
                 RefreshLevelRankCache(columnIndex);
             }
             continue;
@@ -1448,16 +1474,41 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return;
     }
 
-    size_t resolved = 0;
+    // Pre-resolve every dictionary entry once: the row sweep below only
+    // pays an `EnumValueId` -> bool lookup per row. Indexed by `EnumValueId`.
+    std::vector<bool> idResolvesToLevel(dict->Size(), false);
     for (size_t valueId = 0; valueId < dict->Size(); ++valueId)
     {
         const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(valueId));
-        if (ResolveLevel(bytes, column.levelMapping).has_value())
+        idResolvesToLevel[valueId] = ResolveLevel(bytes, column.levelMapping).has_value();
+    }
+
+    // Occurrence-weighted check: count `canonicalRows` (slot resolves to
+    // a canonical level) and `observedRows` (slot has any `EnumValueId`)
+    // across every existing row. A column with 10000 `info` rows + 1
+    // `weird` row passes; a column with 5 distinct entries of which only
+    // 1 is canonical does not (unless that one entry dominates the rows).
+    size_t canonicalRows = 0;
+    size_t observedRows = 0;
+    const size_t rowCount = mData.Lines().size();
+    for (size_t row = 0; row < rowCount; ++row)
+    {
+        const std::optional<EnumValueId> id = GetEnumValueId(row, columnIndex);
+        if (!id.has_value())
         {
-            ++resolved;
+            continue;
+        }
+        ++observedRows;
+        if (static_cast<size_t>(*id) < idResolvesToLevel.size() && idResolvesToLevel[static_cast<size_t>(*id)])
+        {
+            ++canonicalRows;
         }
     }
-    const double ratio = static_cast<double>(resolved) / static_cast<double>(dict->Size());
+    if (observedRows == 0)
+    {
+        return;
+    }
+    const double ratio = static_cast<double>(canonicalRows) / static_cast<double>(observedRows);
     if (ratio < LEVEL_PROMOTION_THRESHOLD)
     {
         return;

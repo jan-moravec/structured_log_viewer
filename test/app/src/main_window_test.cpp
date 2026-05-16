@@ -16,6 +16,7 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_filter.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_value.hpp>
@@ -3133,6 +3134,166 @@ private slots:
         searchBox->clear();
         QCoreApplication::processEvents();
         QCOMPARE(proxy->rowCount(), 5);
+    }
+
+    // End-to-end: a JSON `level` column with canonical names auto-
+    // promotes through `Type::Enumeration` to `Type::Level`, and
+    // `LogTable::GetLevelForRow` then reports the canonical rank for
+    // each row. The peer `TestFilterEditorPickerSearchFiltersVisibleCount`
+    // uses `category` precisely to *avoid* this promotion path; this
+    // test pins the level path with its real key name.
+    void TestLevelColumnAutoPromotesFromCanonicalLevelKey()
+    {
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+            QStringLiteral("debug"),
+            QStringLiteral("trace"),
+            QStringLiteral("fatal"),
+        };
+        QStringList lines;
+        lines.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model->StreamingErrors().empty());
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+        const auto &columns = run.model->Configuration().columns;
+        QVERIFY(static_cast<size_t>(levelCol) < columns.size());
+        // The dominant signal is the occurrence-weighted threshold: every
+        // observed row resolves to a canonical level, so promotion must
+        // reach `Type::Level`, not stop at `Type::Enumeration`.
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level);
+
+        // Row-cycle pattern is `levels[i % 6]`; check the first few.
+        const auto col = static_cast<size_t>(levelCol);
+        QCOMPARE(run.model->Table().GetLevelForRow(0, col).value(), loglib::LogLevel::Info);
+        QCOMPARE(run.model->Table().GetLevelForRow(1, col).value(), loglib::LogLevel::Warn);
+        QCOMPARE(run.model->Table().GetLevelForRow(2, col).value(), loglib::LogLevel::Error);
+        QCOMPARE(run.model->Table().GetLevelForRow(3, col).value(), loglib::LogLevel::Debug);
+        QCOMPARE(run.model->Table().GetLevelForRow(4, col).value(), loglib::LogLevel::Trace);
+        QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
+    }
+
+    // End-to-end round-trip for `Column::levelMapping`: a saved config
+    // pins a `Type::Level` column with custom alias overrides
+    // (`NOTICE -> Info`, `PANIC -> Fatal`); a filter selecting the
+    // canonical `Info` then expands through the per-column rank cache
+    // to match both `NOTICE` (mapped) and `info` (built-in alias) while
+    // rejecting `PANIC`.
+    void TestLevelMappingRoundTripThroughFilterEditor()
+    {
+        // Step 1: build the saved configuration on disk.
+        loglib::LogConfiguration cfg;
+        loglib::LogConfiguration::Column column;
+        column.header = "lvl";
+        column.keys = {"lvl"};
+        column.printFormat = "{}";
+        column.type = loglib::LogConfiguration::Type::Level;
+        column.parseFormats = {};
+        column.levelMapping = {
+            {"NOTICE", "Info"},
+            {"PANIC", "Fatal"},
+        };
+        cfg.columns.push_back(column);
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString cfgPath = tempDir.filePath(QStringLiteral("level-mapping.json"));
+        {
+            std::string json;
+            QVERIFY(!glz::write_json(cfg, json));
+            QFile out(cfgPath);
+            QVERIFY(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            out.write(QByteArray::fromStdString(json));
+        }
+
+        // Step 2: load the configuration through MainWindow so the
+        // filter UI plumbing is rebuilt against the new layout.
+        QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
+        QCoreApplication::processEvents();
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("lvl"));
+        QVERIFY2(levelCol >= 0, "lvl column must exist after configuration load");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
+        );
+
+        // Step 3: drive a stream with mixed canonical / aliased values.
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("lvl"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.lines.push_back(makeLine("NOTICE")); // override -> Info
+            batch.lines.push_back(makeLine("PANIC"));  // override -> Fatal
+            batch.lines.push_back(makeLine("info"));   // built-in -> Info
+            batch.lines.push_back(makeLine("WARN"));   // built-in -> Warn
+            batch.lines.push_back(makeLine("qux"));    // unmapped (no level)
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        // Step 4: submit a canonical-`Info` filter through the same
+        // slot the FilterEditor uses; the predicate-build path in
+        // `MainWindow::UpdateFilters` expands `"Info"` to every raw
+        // dictionary entry that resolves to `LogLevel::Info` via the
+        // per-column `LevelRankCache`.
+        const QString filterId = QStringLiteral("level-mapping-info-only");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("Info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        // Step 5: only the two rows resolving to canonical `Info`
+        // (`NOTICE` via override, `info` via built-in alias) survive.
+        // `PANIC` (Fatal), `WARN` (Warn), and `qux` (unresolved) are
+        // filtered out.
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        std::vector<QString> visible;
+        visible.reserve(static_cast<size_t>(filterModel->rowCount()));
+        for (int i = 0; i < filterModel->rowCount(); ++i)
+        {
+            visible.push_back(filterModel->index(i, levelCol).data(Qt::DisplayRole).toString());
+        }
+        std::ranges::sort(visible);
+        QCOMPARE(visible.size(), static_cast<size_t>(2));
+        QCOMPARE(visible[0], QStringLiteral("NOTICE"));
+        QCOMPARE(visible[1], QStringLiteral("info"));
+
+        model->EndStreaming(false);
     }
 
     // A saved string filter against a now-enum column must be dropped at

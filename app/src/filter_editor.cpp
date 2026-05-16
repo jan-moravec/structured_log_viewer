@@ -713,9 +713,8 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
     };
     for (const LogLevel level : CANONICAL_LEVELS)
     {
-        auto *item = new QStandardItem(
-            QString::fromUtf8(CanonicalLevelName(level).data(), static_cast<int>(CanonicalLevelName(level).size()))
-        );
+        const std::string_view name = CanonicalLevelName(level);
+        auto *item = new QStandardItem(QString::fromUtf8(name.data(), static_cast<int>(name.size())));
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Unchecked);
         mEnumValuesModel->appendRow(item);
