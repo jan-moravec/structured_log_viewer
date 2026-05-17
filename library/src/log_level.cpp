@@ -86,17 +86,15 @@ std::optional<LogLevel> ResolveLevel(
         {
             continue;
         }
-        // Resolve the canonical side by name. Invalid canonical strings
-        // are silently ignored so a typo in saved config can't crash the
-        // resolver.
+        // Resolve the canonical side via the built-in alias table
+        // (so both `"Info"` and `"info"` work). Invalid canonical
+        // strings (typos, `"Unknown"`) silently fall through to the
+        // next override and ultimately to the built-in lookup below,
+        // matching the contract documented in the header.
         if (const auto resolved = ParseLevelName(canonicalName); resolved.has_value())
         {
             return resolved;
         }
-        // Also accept the canonical form (`"Info"`) which `ParseLevelName`
-        // happens to recognise via the alias `"info"`; the lookup above
-        // already handled it. Fall through to try the next override (in
-        // case the user listed multiple entries for the same alias).
     }
     return ParseLevelName(bytes);
 }

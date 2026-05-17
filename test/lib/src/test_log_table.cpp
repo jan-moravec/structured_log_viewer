@@ -1299,6 +1299,10 @@ TEST_CASE(
     "[log_table][append_batch][enum]"
 )
 {
+    // Non-level key (`category`) keeps the column at `Type::Enumeration`
+    // -- a `level`-named column with canonical values would auto-flip
+    // to `Type::Level` via `MaybePromoteToLevel`, which is the wrong
+    // path to exercise here.
     const TestLogFile testFile("enum_preconfigured.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1306,8 +1310,8 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -1321,22 +1325,22 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, 4, true));
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
 
     REQUIRE(table.RowCount() == 4);
     REQUIRE(table.ColumnCount() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
 
     // Every row encodes on first arrival; no whole-table back-fill since
     // the column was already configured.
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
-        CHECK(table.Data().Lines()[row].IsDictRef(levelKey));
+        CHECK(table.Data().Lines()[row].IsDictRef(categoryKey));
     }
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
     CHECK(dict->Size() == 2);
 
@@ -1522,6 +1526,10 @@ TEST_CASE(
 
 TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table][reset][enum]")
 {
+    // Non-level key (`category`) keeps the configured `Type::Enumeration`
+    // post-batch; the `Reset` contract that this test pins is "post-reset
+    // the configured type survives", which a `level`-named column would
+    // muddy by also flipping through `Type::Level`.
     const TestLogFile testFile("enum_reset.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1529,8 +1537,8 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -1544,7 +1552,7 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     table.BeginStreaming(std::move(source));
 
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, 4, true));
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
     REQUIRE_FALSE(table.EnumDictionaries().Empty());
 
     table.Reset();
@@ -2094,7 +2102,10 @@ TEST_CASE(
 )
 {
     // A user-pinned `Type::Enumeration` column still encodes as `DictRef`
-    // regardless of what the auto-detector would do.
+    // regardless of what the auto-detector would do. Non-level key
+    // (`category`) so the dict-shaped data doesn't get auto-flipped
+    // to `Type::Level` -- that path is covered by the level-specific
+    // tests in this file.
     const TestLogFile testFile("enum_user_pinned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2102,8 +2113,8 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -2116,15 +2127,15 @@ TEST_CASE(
     LogTable table({}, std::move(mgr));
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn"}, 1, 6, true));
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 6, true));
 
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    REQUIRE(table.EnumDictionaries().Contains(levelKey));
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
+    REQUIRE(table.EnumDictionaries().Contains(categoryKey));
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
-        CHECK(table.Data().Lines()[row].IsDictRef(levelKey));
+        CHECK(table.Data().Lines()[row].IsDictRef(categoryKey));
     }
 }
 

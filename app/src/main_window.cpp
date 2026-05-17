@@ -2363,11 +2363,19 @@ void MainWindow::UpdateFilters()
                     // the Level column hasn't been observed.
                     break;
                 }
+                // `ResolveLevel`, not `ParseLevelName`: filter values
+                // are usually canonical names submitted by the picker,
+                // but a filter saved while the column was
+                // `Type::Enumeration` carries the raw user strings
+                // (`"NOTICE"`, `"INF"`, ...). Honouring the column's
+                // `levelMapping` here lets those custom aliases survive
+                // an `Enumeration -> Level` sub-promotion -- matches
+                // the resolution `FilterEditor::Load` uses.
                 std::unordered_set<loglib::LogLevel> selectedLevels;
                 selectedLevels.reserve(filter.filterValues.size());
                 for (const std::string &name : filter.filterValues)
                 {
-                    if (auto level = loglib::ParseLevelName(name); level.has_value())
+                    if (auto level = loglib::ResolveLevel(name, lvlColumn.levelMapping); level.has_value())
                     {
                         selectedLevels.insert(*level);
                     }

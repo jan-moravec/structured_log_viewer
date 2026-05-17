@@ -513,21 +513,47 @@ std::vector<size_t> SortPermutationByColumn(
     // Level fast path: pre-materialise canonical `LogLevel` ordinals
     // per row in parallel. Unresolved slots get an out-of-range
     // sentinel so they sort after every resolved level, matching the
-    // `CompareLevel` tail-bucket invariant.
+    // `CompareLevel` tail-bucket invariant. The rank cache is hoisted
+    // once outside the parallel loop -- inside the loop the canonical
+    // rank lookup collapses to an indexed `ranks[id]` read, skipping
+    // the per-row `mLevelRankCache.find(header)` walk that
+    // `GetLevelForRow` would do.
     if (isLevel)
     {
         constexpr auto SENTINEL = static_cast<uint8_t>(std::numeric_limits<uint8_t>::max());
         std::vector<uint8_t> rankForRow(n);
-        tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, n),
-            [&table, columnIndex, &logRows, &rankForRow](const tbb::blocked_range<size_t> &range) {
-                for (size_t i = range.begin(); i != range.end(); ++i)
-                {
-                    const auto level = table.GetLevelForRow(logRows[i], columnIndex);
-                    rankForRow[i] = level.has_value() ? static_cast<uint8_t>(*level) : SENTINEL;
+        const std::vector<LogLevel> *ranks = table.LevelRankCache(columns[columnIndex].header);
+        if (ranks == nullptr)
+        {
+            // Configured `Type::Level` column with no observations yet
+            // (e.g. a saved config loaded before any batches arrive):
+            // every row sorts to the sentinel tail bucket. Matches the
+            // tail-only output `CompareLevel` would produce in the same
+            // state.
+            std::fill(rankForRow.begin(), rankForRow.end(), SENTINEL);
+        }
+        else
+        {
+            const std::vector<LogLevel> &ranksRef = *ranks;
+            tbb::parallel_for(
+                tbb::blocked_range<size_t>(0, n),
+                [&table, columnIndex, &logRows, &rankForRow, &ranksRef](const tbb::blocked_range<size_t> &range) {
+                    for (size_t i = range.begin(); i != range.end(); ++i)
+                    {
+                        const auto id = table.GetEnumValueId(logRows[i], columnIndex);
+                        if (!id.has_value() || static_cast<size_t>(*id) >= ranksRef.size())
+                        {
+                            rankForRow[i] = SENTINEL;
+                            continue;
+                        }
+                        const LogLevel lvl = ranksRef[static_cast<size_t>(*id)];
+                        // `Unknown` is the cache's "raw bytes did not
+                        // map" marker; treat it like a missing slot.
+                        rankForRow[i] = (lvl == LogLevel::Unknown) ? SENTINEL : static_cast<uint8_t>(lvl);
+                    }
                 }
-            }
-        );
+            );
+        }
         if (ascending)
         {
             tbb::parallel_sort(permutation.begin(), permutation.end(), [&rankForRow](size_t a, size_t b) {

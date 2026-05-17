@@ -50,14 +50,15 @@ constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 50;
 /// Dict-weighted tolerance for `MaybePromoteToLevel`: promote when
 /// `unrecognized * LEVEL_DICT_TOLERANCE_RATIO <= canonical`, i.e. at
 /// most one unrecognized entry is allowed per four canonical ones.
+/// Equivalent closed form: `unrecognized <= dictSize / 5` (`floor`).
 /// Concretely: dicts up to size 4 must be 100% canonical; size 5
-/// tolerates 1 weird value; size 9 tolerates 2; size N tolerates
-/// `floor(N * 0.2)` weird values once at least one canonical entry
-/// is present. Trades false-positive risk (calling a status column
-/// "level" because it happens to share a string with one) against
-/// tolerance for occasional non-canonical values mixed into a real
-/// level column. Dict-weighted (not row-weighted) so a single dict
-/// pass suffices on every re-check.
+/// tolerates 1 weird value; size 10 tolerates 2; size 15 tolerates 3;
+/// size N tolerates `floor(N / 5)` weird values once at least one
+/// canonical entry is present. Trades false-positive risk (calling a
+/// status column "level" because it happens to share a string with
+/// one) against tolerance for occasional non-canonical values mixed
+/// into a real level column. Dict-weighted (not row-weighted) so a
+/// single dict pass suffices on every re-check.
 constexpr size_t LEVEL_DICT_TOLERANCE_RATIO = 4;
 
 /// Microsecond threshold above which `DemoteColumnFromEnum` emits a
@@ -203,7 +204,8 @@ LogTable::LogTable(LogTable &&other) noexcept
 {
     other.mIsStreaming = false;
     other.mLastBatchDemotedKeys.clear();
-    // Rebind sources' cached pointers to `other.mEnumDictionaries`.
+    // Each `LineSource` cached `&other.mEnumDictionaries` before the
+    // move; rebind every source we now own at `&this->mEnumDictionaries`.
     RewireSourceRegistries();
 }
 
@@ -229,7 +231,8 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mLastBatchDemotedKeys = std::move(other.mLastBatchDemotedKeys);
     other.mLastBatchDemotedKeys.clear();
     mLevelRankCache = std::move(other.mLevelRankCache);
-    // Rebind sources' cached pointers to `other.mEnumDictionaries`.
+    // Each `LineSource` cached `&other.mEnumDictionaries` before the
+    // move; rebind every source we now own at `&this->mEnumDictionaries`.
     RewireSourceRegistries();
     return *this;
 }
@@ -1344,9 +1347,13 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     // (see `LEVEL_DICT_TOLERANCE_RATIO`). The check is dict-only, so
     // running it here -- right after the encode pass that filled the
     // dictionary -- gives a complete answer; subsequent batches
-    // re-evaluate only when the dictionary grows. No-op for keys
-    // that don't match `IsLogLevelKey`.
-    MaybePromoteToLevel(columnIndex);
+    // re-evaluate only when the dictionary grows. Gate on the
+    // (cheap) key-name match so the dictionary walk inside
+    // `MaybePromoteToLevel` runs only for plausible level columns.
+    if (std::ranges::any_of(columns[columnIndex].keys, IsLogLevelKey))
+    {
+        MaybePromoteToLevel(columnIndex);
+    }
 }
 
 void LogTable::DemoteColumnFromEnum(size_t columnIndex)

@@ -317,6 +317,10 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
 
 TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_compare][enum]")
 {
+    // Non-level key (`category`): `LogTable::MaybePromoteToLevel` is
+    // gated on `IsLogLevelKey`, so the column stays `Type::Enumeration`
+    // even though the dictionary content happens to be canonical level
+    // names. Pins the rank-table compare path against alphabetic order.
     const TestLogFile fixture("log_compare_enum.json");
     fixture.Write("");
 
@@ -324,8 +328,8 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -345,15 +349,15 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     const std::vector<std::string> rowValues = {"warn", "info", "error", "debug", "warn"};
     for (const auto &v : rowValues)
     {
-        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
-    batch.newKeys.emplace_back("level");
+    batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
 
     const EnumDictRank rank{*dict};
@@ -418,14 +422,17 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
 // disagreed with a bulk re-sort on where wrong-type slots landed.
 TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table", "[log_compare][enum][regression]")
 {
+    // Non-level key (`category`) so the column stays `Type::Enumeration`
+    // and exercises `CompareEnum` -- a level-named key would route the
+    // same dictionary content through `CompareLevel` instead.
     const TestLogFile fixture("log_compare_enum_tail_bucket.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -441,21 +448,21 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     StreamedBatch batch;
     batch.firstLineNumber = 1;
     // Row 0: dict-resolved "info".
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("info")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("info")}}));
     // Row 1: dict-resolved "warn".
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("warn")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("warn")}}));
     // Row 2: monostate (no field) -> non-DictRef.
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {}));
     // Row 3: wrong-type slot (int instead of string) -> encode pass
     // refuses to dict-encode it, leaving the slot as Int64 -> non-DictRef.
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", LogValue(int64_t{42})}}));
-    batch.newKeys.emplace_back("level");
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", LogValue(int64_t{42})}}));
+    batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
     const EnumDictRank rank{*dict};
 
@@ -497,14 +504,18 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
 
 TEST_CASE("CompareRows on enum column without rank falls back to string compare", "[log_compare][enum][fallback]")
 {
+    // Non-level key (`category`) so the column stays
+    // `Type::Enumeration`; we want the no-rank `CompareEnum` fallback,
+    // not the `CompareLevel` path that a `level`-named column would
+    // take with these dictionary entries.
     const TestLogFile fixture("log_compare_enum_no_rank.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -522,9 +533,9 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
     const std::vector<std::string> rowValues = {"warn", "info", "error"};
     for (const auto &v : rowValues)
     {
-        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
-    batch.newKeys.emplace_back("level");
+    batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
     // Compare resolved bytes directly. error < info < warn.

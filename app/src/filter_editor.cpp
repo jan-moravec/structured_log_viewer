@@ -11,6 +11,7 @@
 #include <QTimeZone>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>

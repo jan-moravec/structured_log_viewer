@@ -1,5 +1,6 @@
 #include "loglib/log_configuration.hpp"
 
+#include "loglib/internal/ascii_case.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/log_data.hpp"
 
@@ -45,12 +46,15 @@ bool IsLogLevelKey(const std::string &key)
     // case-insensitively. Detection is purely advisory: a column needs
     // to enum-shape (auto-promotion via `RunEnumPassForAppendBatch`)
     // before `LogTable::MaybePromoteToLevel` will flip the type from
-    // `Type::Enumeration` to `Type::Level`.
+    // `Type::Enumeration` to `Type::Level`. Allocation-free comparison
+    // because this fires once per column per batch in the enum pass.
     static constexpr std::array<std::string_view, 8> LEVEL_KEYS = {
         "level", "severity", "loglevel", "log.level", "log_level", "lvl", "levelname", "priority"
     };
-    const std::string lower = ToLower(key);
-    return std::ranges::any_of(LEVEL_KEYS, [&lower](std::string_view value) { return lower == value; });
+    const std::string_view keyView(key);
+    return std::ranges::any_of(LEVEL_KEYS, [keyView](std::string_view value) {
+        return internal::EqualsIgnoreCaseAscii(keyView, value);
+    });
 }
 
 } // namespace loglib

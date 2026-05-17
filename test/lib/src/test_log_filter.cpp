@@ -196,12 +196,17 @@ std::vector<std::string_view> ToViews(const std::vector<std::string> &values)
 
 TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log_filter][enum]")
 {
+    // Non-level key (`category`) keeps the column as `Type::Enumeration`
+    // so the predicate is built against the enum dictionary. A
+    // `level`-named column with the same canonical values would
+    // auto-promote to `Type::Level` and break the explicit
+    // `type == Enumeration` REQUIRE below.
     const TestLogFile fixture("log_filter_enum_accept.json");
     fixture.Write("");
-    const std::vector<std::string> levels = {"info", "warn", "error"};
-    LogTable table = BuildEnumTable(fixture, "level", levels, 12);
+    const std::vector<std::string> values = {"info", "warn", "error"};
+    LogTable table = BuildEnumTable(fixture, "category", values, 12);
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const EnumDictionary *dict = FindDictionary(table, "level");
+    const EnumDictionary *dict = FindDictionary(table, "category");
     REQUIRE(dict != nullptr);
 
     const std::vector<std::string> selected = {"warn", "error"};
@@ -212,7 +217,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
     // Rows cycle [info, warn, error, info, warn, error, ...].
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
-        const std::string_view expected = levels[row % levels.size()];
+        const std::string_view expected = values[row % values.size()];
         const bool selectedRow = expected != "info";
         INFO("row=" << row << " value=" << expected);
         CHECK(predicate.MatchesRow(table, row) == selectedRow);
