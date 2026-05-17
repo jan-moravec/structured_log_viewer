@@ -154,9 +154,15 @@ public:
     /// Per-`Type::Level`-column cache mapping `EnumValueId` -> `LogLevel`.
     /// Indexed by dictionary id; the value at `id` is the canonical level
     /// for dictionary entry `id`, or `LogLevel::Unknown` if the raw string
-    /// did not resolve. Empty for columns that are not `Type::Level`.
-    /// Keyed by `Column::header` so column reorder is automatic.
-    [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(const std::string &columnHeader) const noexcept;
+    /// did not resolve. Returns `nullptr` for columns that are not
+    /// `Type::Level`, that are out of range, or whose canonical key has
+    /// not been observed yet.
+    ///
+    /// Keyed internally by canonical `KeyId` (resolved from
+    /// `column.keys.front()`) -- not by `column.header` -- so two
+    /// `Type::Level` columns whose `Column::header` collides (allowed
+    /// when `keys` differ) keep separate rank vectors.
+    [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(size_t columnIndex) const noexcept;
 
     /// Outcome of `ResolveEnumColumn`:
     ///   - `canonicalKey == INVALID_KEY_ID`: column out of range, has
@@ -353,10 +359,12 @@ private:
     std::vector<KeyId> mLastBatchDemotedKeys;
 
     /// Per-`Type::Level`-column `EnumValueId -> LogLevel` cache. Keyed
-    /// by `Column::header` (same idiom `mEnumColumnHealth` uses) so
-    /// column reorder is automatic. Empty entries for non-Level columns
-    /// are filtered at `RefreshLevelRankCache`.
-    std::unordered_map<std::string, std::vector<LogLevel>> mLevelRankCache;
+    /// by canonical `KeyId` (the same id `mEnumDictionaries` registers
+    /// the dictionary under), so column reorder is automatic and two
+    /// columns sharing a `Column::header` but pointing at different
+    /// `keys` cannot alias each other's rank vector. Empty entries for
+    /// non-Level columns are filtered at `RefreshLevelRankCache`.
+    std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
 };
 
 } // namespace loglib

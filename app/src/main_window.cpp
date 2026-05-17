@@ -545,6 +545,89 @@ MainWindow::MainWindow(QWidget *parent)
             // Broad flush: rank cache keys alias across columns via
             // `EnumRankFor`, so invalidate everything to be safe.
             mSortFilterProxyModel->InvalidateEnumRanks();
+
+            // A `Type::Level` column that loses its dictionary
+            // (`Level -> String` demote) leaves any saved
+            // canonical-name filter (`"Info"`, `"Warn"`, ...)
+            // pointing at strings that no longer exist in the
+            // column's data. Translate them to the raw dictionary
+            // entries observed pre-demote -- captured by
+            // `LogModel::AppendBatch` while the dictionary was still
+            // alive -- so the filter keeps matching the same rows.
+            // Other demote scenarios (`Enum -> String`) keep their
+            // raw filter values verbatim and need no translation;
+            // `LastBatchLevelDemoteMappingFor` returns nullptr there.
+            if (columnIndex >= 0)
+            {
+                if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex);
+                    levelMapping != nullptr)
+                {
+                    const auto &columnsCfg = mModel->Configuration().columns;
+                    const loglib::LogConfiguration::Column *demotedColumn =
+                        std::cmp_less(columnIndex, columnsCfg.size())
+                            ? &columnsCfg[static_cast<size_t>(columnIndex)]
+                            : nullptr;
+                    for (auto &kv : mFilters)
+                    {
+                        loglib::LogConfiguration::LogFilter &filter = kv.second;
+                        if (filter.row != columnIndex)
+                        {
+                            continue;
+                        }
+                        if (filter.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+                        {
+                            continue;
+                        }
+                        // `ResolveLevel` honours the column's saved
+                        // `levelMapping` (still intact post-demote
+                        // because the demote only flips
+                        // `Column::type`), so user-aliased entries
+                        // like `"NOTICE" -> Info` survive.
+                        std::vector<std::string> expanded;
+                        for (const std::string &name : filter.filterValues)
+                        {
+                            std::optional<loglib::LogLevel> level;
+                            if (demotedColumn != nullptr)
+                            {
+                                level = loglib::ResolveLevel(name, demotedColumn->levelMapping);
+                            }
+                            else
+                            {
+                                level = loglib::ParseLevelName(name);
+                            }
+                            if (!level.has_value())
+                            {
+                                continue;
+                            }
+                            const auto it = levelMapping->find(*level);
+                            if (it == levelMapping->end())
+                            {
+                                continue;
+                            }
+                            for (const std::string &raw : it->second)
+                            {
+                                expanded.push_back(raw);
+                            }
+                        }
+                        // Drop duplicates while preserving an
+                        // order-stable view of the saved selection.
+                        std::ranges::sort(expanded);
+                        const auto dupTail = std::ranges::unique(expanded);
+                        expanded.erase(dupTail.begin(), dupTail.end());
+                        // Empty `expanded` is the legitimate
+                        // "selection no longer matches anything"
+                        // case; keep the now-empty selection so the
+                        // `EnumRowPredicate` rebuild below rejects
+                        // every row, mirroring the empty-selection
+                        // semantics of the regular enum branch.
+                        filter.filterValues = std::move(expanded);
+                    }
+                    // Mirror once after the per-filter walk: the
+                    // wire-format vector is snapshotted whole and a
+                    // per-filter call would do redundant work.
+                    MirrorFiltersToConfiguration();
+                }
+            }
         }
         // `columnIndex == -1` means "scope unknown" -- treat as
         // matches-anything to keep the safe broad behaviour.
@@ -2350,7 +2433,8 @@ void MainWindow::UpdateFilters()
             if (isLevelColumn)
             {
                 const auto &lvlColumn = columnsCfg[static_cast<size_t>(filter.row)];
-                const std::vector<loglib::LogLevel> *ranks = mModel->Table().LevelRankCache(lvlColumn.header);
+                const std::vector<loglib::LogLevel> *ranks =
+                    mModel->Table().LevelRankCache(static_cast<size_t>(filter.row));
                 const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
                 if (ranks == nullptr || dictionary == nullptr)
                 {

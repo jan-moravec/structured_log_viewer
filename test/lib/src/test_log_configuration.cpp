@@ -460,6 +460,7 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
         Type::Number,
         Type::Time,
         Type::Enumeration,
+        Type::Level,
     };
 
     LogConfiguration original;
@@ -486,6 +487,10 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     CHECK_FALSE(json.contains("\"double\""));
     CHECK(json.contains("\"number\""));
     CHECK(json.contains("\"enumeration\""));
+    // `Type::Level` rides on top of `Type::Enumeration` at runtime
+    // but has its own wire key so saved configurations distinguish a
+    // user-pinned Level column from a regular enum column on load.
+    CHECK(json.contains("\"level\""));
 
     LogConfiguration loaded;
     const auto readError = glz::read_json(loaded, json);
@@ -705,6 +710,59 @@ TEST_CASE(
 
     CHECK(loaded.filters[1].type == FilterType::Boolean);
     CHECK(loaded.filters[1].filterValues == std::vector<std::string>{"true", "false"});
+}
+
+TEST_CASE(
+    "Column::Type::Level survives a JSON round-trip alongside levelMapping",
+    "[log_configuration][wire_format_compat][level]"
+)
+{
+    // Pins the lowerCamelCase `"level"` wire token for `Type::Level`
+    // and the `levelMapping` field name. The pair encoding glaze emits
+    // for `std::vector<std::pair<...>>` is an internal default; this
+    // test goes through `write_json` -> `read_json` so the shape stays
+    // self-consistent regardless of which pair-encoding glaze picks,
+    // while still asserting the public wire tokens.
+    LogConfiguration original;
+    LogConfiguration::Column column;
+    column.header = "severity";
+    column.keys = {"severity"};
+    column.printFormat = "{}";
+    column.type = LogConfiguration::Type::Level;
+    column.parseFormats = {};
+    column.levelMapping = {
+        {"NOTICE", "Info"},
+        {"30", "Info"},
+    };
+    original.columns.push_back(column);
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+
+    // Public wire tokens. The glaze meta locks `"level"` to
+    // `Type::Level`; the field name is straight from the struct.
+    CHECK(json.contains("\"type\":\"level\""));
+    CHECK(json.contains("\"levelMapping\""));
+    CHECK(json.contains("\"NOTICE\""));
+    CHECK(json.contains("\"Info\""));
+    CHECK(json.contains("\"30\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.columns.size() == 1);
+    CHECK(loaded.columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(loaded.columns[0].levelMapping.size() == 2);
+    CHECK(loaded.columns[0].levelMapping[0].first == "NOTICE");
+    CHECK(loaded.columns[0].levelMapping[0].second == "Info");
+    CHECK(loaded.columns[0].levelMapping[1].first == "30");
+    CHECK(loaded.columns[0].levelMapping[1].second == "Info");
+
+    const auto &mapping = loaded.columns[0].levelMapping;
+    CHECK(ResolveLevel("NOTICE", mapping) == LogLevel::Info);
+    CHECK(ResolveLevel("30", mapping) == LogLevel::Info);
 }
 
 TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")

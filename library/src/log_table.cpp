@@ -277,6 +277,14 @@ void LogTable::Reset()
     // batch-style call doesn't see ids from the prior session.
     mLastBatchDemotedKeys.clear();
     RefreshColumnKeyIds();
+    // Re-seed enum / level dictionaries from the configuration so callers
+    // that query `LevelRankCache` between `Reset` and the next
+    // `Update` / `BeginStreaming` see the configured Level columns
+    // instead of `nullptr`. `RefreshSnapshotEnumKeys` is the same
+    // entry point sibling state-transitions use, so any stale cache
+    // (e.g. a freshly-loaded configuration with a different
+    // `levelMapping`) is rebuilt against the live `Configuration()`.
+    RefreshSnapshotEnumKeys();
 }
 
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
@@ -752,6 +760,16 @@ void LogTable::RefreshSnapshotEnumKeys()
     // Multi-key columns share one canonical dictionary via `Alias`.
     // Idempotent. Level columns are an Enumeration subtype: storage stays
     // as DictRef, so they wire the same dictionary plumbing.
+    //
+    // The level rank cache is dropped first so a freshly-loaded
+    // configuration with a different `levelMapping` is reflected: the
+    // self-healing growth path inside `RefreshLevelRankCache` only
+    // re-resolves dictionary entries it has not seen before, which
+    // would otherwise leave already-cached entries on the stale
+    // mapping. Cost is bounded by the number of Level columns and is
+    // negligible -- this is a state-transition entry point, not a
+    // hot-loop call site.
+    mLevelRankCache.clear();
     const auto &columns = mConfiguration.Configuration().columns;
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
@@ -1286,23 +1304,35 @@ bool LogTable::EncodeColumnRangeAsEnum(
 
 void LogTable::PromoteColumnToEnum(size_t columnIndex)
 {
-    const auto &columns = mConfiguration.Configuration().columns;
-    if (columnIndex >= columns.size())
+    if (columnIndex >= mConfiguration.Configuration().columns.size())
     {
         return;
     }
-    if (columns[columnIndex].type == LogConfiguration::Type::Enumeration ||
-        columns[columnIndex].type == LogConfiguration::Type::Level)
     {
-        return;
+        const auto &snapshot = mConfiguration.Configuration().columns[columnIndex];
+        if (snapshot.type == LogConfiguration::Type::Enumeration ||
+            snapshot.type == LogConfiguration::Type::Level)
+        {
+            return;
+        }
     }
+
+    // Snapshot the fields we need across the mutation. `SetColumnType`
+    // doesn't resize the columns vector today, but the captured
+    // reference is only documented as valid up to the next mutating
+    // call, and a future refactor that grows the vector (re-allocates,
+    // reorders, etc.) would silently invalidate any captured ref. Take
+    // local copies of the small POD-ish bits so the rest of the
+    // function is independent of the live vector.
+    const std::vector<std::string> columnKeys = mConfiguration.Configuration().columns[columnIndex].keys;
+    const std::string headerKey = mConfiguration.Configuration().columns[columnIndex].header;
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Enumeration);
     // Pre-create canonical dictionary and alias-wire so the encode hot
     // path can skip alias bookkeeping.
     {
         std::optional<KeyId> canonical;
-        for (const std::string &key : columns[columnIndex].keys)
+        for (const std::string &key : columnKeys)
         {
             const KeyId id = mData.Keys().GetOrInsert(key);
             if (!canonical.has_value())
@@ -1319,7 +1349,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
                         "[loglib] PromoteColumnToEnum: failed to alias key {} onto canonical {} for column '{}'\n",
                         static_cast<uint32_t>(id),
                         static_cast<uint32_t>(*canonical),
-                        columns[columnIndex].header
+                        headerKey
                     );
                 }
             }
@@ -1329,9 +1359,10 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     // Encode all existing rows; this seeds the health tracker. Hard cap
     // demotes immediately; the tolerance check catches an unscanned tail
     // whose shape does not actually match an enum.
-    const std::string headerKey = columns[columnIndex].header;
     EnumColumnHealth &health = mEnumColumnHealth[headerKey];
-    if (!EncodeColumnRangeAsEnum(columns[columnIndex], 0U, mData.Lines().size(), health))
+    if (!EncodeColumnRangeAsEnum(
+            mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health
+        ))
     {
         DemoteColumnFromEnum(columnIndex);
         return;
@@ -1350,7 +1381,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     // re-evaluate only when the dictionary grows. Gate on the
     // (cheap) key-name match so the dictionary walk inside
     // `MaybePromoteToLevel` runs only for plausible level columns.
-    if (std::ranges::any_of(columns[columnIndex].keys, IsLogLevelKey))
+    if (std::ranges::any_of(columnKeys, IsLogLevelKey))
     {
         MaybePromoteToLevel(columnIndex);
     }
@@ -1438,8 +1469,13 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
 
     mEnumColumnHealth.erase(column.header);
     // Level columns share the demote path with plain enums; drop any
-    // cached rank vector when the type leaves the level family.
-    mLevelRankCache.erase(column.header);
+    // cached rank vector when the type leaves the level family. The
+    // cache is keyed by canonical `KeyId` (`keyIds.front()`), the same
+    // id `mEnumDictionaries.Erase` consumed above.
+    if (!keyIds.empty())
+    {
+        mLevelRankCache.erase(keyIds.front());
+    }
 
     const auto demoteElapsed =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - demoteStart);
@@ -1458,20 +1494,24 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
 
 void LogTable::MaybePromoteToLevel(size_t columnIndex)
 {
-    const auto &columns = mConfiguration.Configuration().columns;
-    if (columnIndex >= columns.size())
+    if (columnIndex >= mConfiguration.Configuration().columns.size())
     {
         return;
     }
-    const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::Enumeration)
+    // Snapshot the column fields we need before the (possible)
+    // `SetColumnType` mutation so the rest of the function is
+    // independent of the live vector reference.
+    const auto snapshotColumn = [this, columnIndex]() -> const LogConfiguration::Column & {
+        return mConfiguration.Configuration().columns[columnIndex];
+    };
+    if (snapshotColumn().type != LogConfiguration::Type::Enumeration)
     {
         return;
     }
 
     // Signal 1: column name. At least one configured key must match
     // the level alias list (`level`, `severity`, ...).
-    if (!std::ranges::any_of(column.keys, IsLogLevelKey))
+    if (!std::ranges::any_of(snapshotColumn().keys, IsLogLevelKey))
     {
         return;
     }
@@ -1479,7 +1519,7 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     // Signal 2: dictionary content. Look up the canonical dictionary
     // via the first resolved key (aliases share the entry).
     KeyId canonical = INVALID_KEY_ID;
-    for (const std::string &key : column.keys)
+    for (const std::string &key : snapshotColumn().keys)
     {
         canonical = mData.Keys().Find(key);
         if (canonical != INVALID_KEY_ID)
@@ -1503,16 +1543,19 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     // any per-column `levelMapping` overrides the user configured.
     size_t canonicalEntries = 0;
     size_t unrecognizedEntries = 0;
-    for (size_t valueId = 0; valueId < dict->Size(); ++valueId)
     {
-        const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(valueId));
-        if (ResolveLevel(bytes, column.levelMapping).has_value())
+        const auto &column = snapshotColumn();
+        for (size_t valueId = 0; valueId < dict->Size(); ++valueId)
         {
-            ++canonicalEntries;
-        }
-        else
-        {
-            ++unrecognizedEntries;
+            const std::string_view bytes = dict->Resolve(static_cast<EnumValueId>(valueId));
+            if (ResolveLevel(bytes, column.levelMapping).has_value())
+            {
+                ++canonicalEntries;
+            }
+            else
+            {
+                ++unrecognizedEntries;
+            }
         }
     }
     if (canonicalEntries == 0 || unrecognizedEntries * LEVEL_DICT_TOLERANCE_RATIO > canonicalEntries)
@@ -1549,22 +1592,24 @@ void LogTable::RefreshLevelRankCache(size_t columnIndex)
     if (canonical == INVALID_KEY_ID)
     {
         // Column is configured `Type::Level` but no key has been
-        // observed yet. Keep an empty cache entry so subsequent reads
-        // see "no level info".
-        mLevelRankCache[column.header] = {};
+        // observed yet. No cache entry is created -- `LevelRankCache`
+        // returns nullptr until the canonical key is registered.
         return;
     }
     const EnumDictionary *dict = mEnumDictionaries.Find(canonical);
     if (dict == nullptr)
     {
-        mLevelRankCache[column.header] = {};
+        mLevelRankCache[canonical] = {};
         return;
     }
 
-    std::vector<LogLevel> &ranks = mLevelRankCache[column.header];
+    std::vector<LogLevel> &ranks = mLevelRankCache[canonical];
     // Self-healing growth: rebuild from scratch when the dictionary has
     // shrunk (only happens on `Reset`), append in place otherwise so we
-    // don't re-`ResolveLevel` for entries already cached.
+    // don't re-`ResolveLevel` for entries already cached. Callers that
+    // need the column's `levelMapping` re-read for already-cached
+    // entries (e.g. configuration reload mid-session) must clear the
+    // cache first; `RefreshSnapshotEnumKeys` does so wholesale.
     if (ranks.size() > dict->Size())
     {
         ranks.clear();
@@ -1586,11 +1631,16 @@ std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex)
         return std::nullopt;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::Level)
+    if (column.type != LogConfiguration::Type::Level || column.keys.empty())
     {
         return std::nullopt;
     }
-    const auto cacheIt = mLevelRankCache.find(column.header);
+    const KeyId canonical = mData.Keys().Find(column.keys.front());
+    if (canonical == INVALID_KEY_ID)
+    {
+        return std::nullopt;
+    }
+    const auto cacheIt = mLevelRankCache.find(canonical);
     if (cacheIt == mLevelRankCache.end())
     {
         return std::nullopt;
@@ -1612,9 +1662,24 @@ std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex)
     return level;
 }
 
-const std::vector<LogLevel> *LogTable::LevelRankCache(const std::string &columnHeader) const noexcept
+const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const noexcept
 {
-    const auto it = mLevelRankCache.find(columnHeader);
+    const auto &columns = mConfiguration.Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return nullptr;
+    }
+    const auto &column = columns[columnIndex];
+    if (column.type != LogConfiguration::Type::Level || column.keys.empty())
+    {
+        return nullptr;
+    }
+    const KeyId canonical = mData.Keys().Find(column.keys.front());
+    if (canonical == INVALID_KEY_ID)
+    {
+        return nullptr;
+    }
+    const auto it = mLevelRankCache.find(canonical);
     if (it == mLevelRankCache.end())
     {
         return nullptr;

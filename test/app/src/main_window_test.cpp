@@ -3768,6 +3768,118 @@ private slots:
     // falls back to its string-set path. A cached
     // "fully-resolved" snapshot would let a stale armed predicate
     // hide every row (post-demote `GetEnumValueId` returns nullopt).
+    // Regression: a `Type::Level` column whose dictionary overflows
+    // and demotes to `Type::String` mid-session must keep filtering
+    // the same rows. The persisted filter values are canonical names
+    // (`"Info"`, `"Warn"`, ...) populated by the level picker, but
+    // the demoted column carries raw bytes -- without translation
+    // every `info` row would silently fall out of the filter.
+    // `LogModel::AppendBatch` snapshots the canonical-level -> raw-bytes
+    // mapping pre-demote and exposes it via
+    // `LastBatchLevelDemoteMappingFor`; the `enumColumnsChanged(Demoted)`
+    // handler in `MainWindow` then rewrites
+    // `LogFilter::filterValues` to the raw bytes the column actually
+    // contains.
+    void TestLevelFilterTranslatesOnDemoteToString()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        // Cap of 3 lets batch 1 promote to `Type::Level` (dict size 2,
+        // both canonical). Batch 2 adds three new distinct values
+        // and trips the cap -> demote to `Type::String`.
+        constexpr uint16_t TEST_CAP = 3;
+        model->Table().SetEnumValueCap(TEST_CAP);
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: two `info` rows + one `warn` row promote `level`
+        // through Enumeration to Level (key matches `IsLogLevelKey`,
+        // both dict entries resolve canonically).
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            model->AppendBatch(std::move(batch));
+        }
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after promotion");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Level
+        );
+
+        // Submit a canonical-`Info` filter through the FilterEditor
+        // slot. With three rows total, only the two `info` rows
+        // should survive.
+        const QString filterId = QStringLiteral("level-demote-translation");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("Info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        // Batch 2: three new distinct values overflow the cap. The
+        // column demotes to `Type::String`. The Demoted handler
+        // expands `filterValues` from `["Info"]` to the raw entries
+        // that resolved to `Info` pre-demote (`["info"]`).
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 4;
+            batch.lines.push_back(makeLine("error"));
+            batch.lines.push_back(makeLine("debug"));
+            batch.lines.push_back(makeLine("trace"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::String
+        );
+
+        // Translation succeeded if the two `info` rows still match
+        // post-demote and the `warn` row stays excluded. Without the
+        // canonical-name translation, the saved `["Info"]` selection
+        // would byte-compare against `info` raw bytes and reject
+        // every row.
+        QCOMPARE(filterModel->rowCount(), 2);
+        for (int i = 0; i < filterModel->rowCount(); ++i)
+        {
+            QCOMPARE(
+                filterModel->index(i, levelCol).data(Qt::DisplayRole).toString(), QStringLiteral("info")
+            );
+        }
+
+        model->EndStreaming(false);
+    }
+
     void TestEnumFilterRebuiltAfterDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();

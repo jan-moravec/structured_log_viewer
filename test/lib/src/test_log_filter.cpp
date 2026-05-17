@@ -780,7 +780,7 @@ TEST_CASE(
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
-    const auto *ranks = table.LevelRankCache("level");
+    const auto *ranks = table.LevelRankCache(0);
     REQUIRE(ranks != nullptr);
     const auto &registry = table.EnumDictionaries();
     const KeyId kid = table.Keys().Find("level");

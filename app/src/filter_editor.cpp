@@ -4,9 +4,12 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 
+#include <QApplication>
 #include <QDoubleValidator>
+#include <QFont>
 #include <QLocale>
 #include <QMessageBox>
+#include <QPalette>
 #include <QStandardItem>
 #include <QTimeZone>
 
@@ -742,18 +745,70 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
         UpdateEnumSelectionCount();
         return;
     }
+    // Drive the per-level "observed?" check from the column's
+    // `LevelRankCache`. Each rank slot is a `LogLevel` (or
+    // `Unknown`); a level shows up here iff at least one raw
+    // dictionary entry resolved to it via the alias table or the
+    // column's `levelMapping`. `nullptr` means the column has been
+    // configured `Type::Level` but no batch has populated the cache
+    // yet (transient between `BeginStreaming` and the first batch),
+    // in which case we surface every canonical level as enabled --
+    // the saved selection still travels through `LogFilter::filterValues`,
+    // and the cache will catch up on the next `Grew` rebuild.
+    const std::vector<LogLevel> *ranks = mModel.Table().LevelRankCache(static_cast<size_t>(columnIndex));
+    std::array<bool, CANONICAL_LEVEL_COUNT> observed{};
+    if (ranks == nullptr)
+    {
+        observed.fill(true);
+    }
+    else
+    {
+        for (const LogLevel rank : *ranks)
+        {
+            if (rank == LogLevel::Unknown)
+            {
+                continue;
+            }
+            const auto ordinal = static_cast<size_t>(rank);
+            if (ordinal < observed.size())
+            {
+                observed[ordinal] = true;
+            }
+        }
+    }
+
     // Show the six canonical levels in severity order. The filter UI
     // is canonical regardless of the raw dictionary entries the
     // column carries; the predicate translates back at build time.
+    // Items stay interactively togglable in every case so a saved
+    // filter pointing at a level that just rotated out of view can
+    // still be unticked; unobserved levels are annotated with a
+    // tooltip + italic font so the user sees that picking them
+    // would currently reject every row.
     constexpr std::array<LogLevel, CANONICAL_LEVEL_COUNT> CANONICAL_LEVELS = {
         LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
     };
     for (const LogLevel level : CANONICAL_LEVELS)
     {
         const std::string_view name = CanonicalLevelName(level);
-        auto *item = new QStandardItem(QString::fromUtf8(name.data(), static_cast<int>(name.size())));
+        const QString display = QString::fromUtf8(name.data(), static_cast<int>(name.size()));
+        auto *item = new QStandardItem(display);
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Unchecked);
+        if (!observed[static_cast<size_t>(level)])
+        {
+            item->setToolTip(tr("No %1 entries observed in this column yet.").arg(display));
+            QFont font = item->font();
+            font.setItalic(true);
+            item->setFont(font);
+            // Soften the colour so unobserved rows are visually
+            // distinct from active levels but still legible. The
+            // hard-coded grey matches the placeholder text the
+            // empty-enum view uses; both dark and light Qt themes
+            // resolve it through `QPalette::PlaceholderText` if a
+            // custom style overrides it.
+            item->setForeground(QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+        }
         mEnumValuesModel->appendRow(item);
     }
     UpdateEnumSelectionCount();

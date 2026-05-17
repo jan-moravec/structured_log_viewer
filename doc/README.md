@@ -274,6 +274,8 @@ When the **Row to filter** dropdown points at an [enumeration column](#automatic
 
 If a column is demoted back to text mid-session, saved enum filters fall back to comparing the row's text value against the saved selection. A saved text filter on a column that later auto-promotes to enum continues to match by text; re-edit it to switch to the value picker.
 
+Saved filters on a **log-level column** that demotes back to text are translated automatically: the canonical names you ticked (`Info`, `Warn`, …) are expanded to every raw dictionary entry that resolved to one of those levels just before the demote (e.g. `Info` becomes `info`, plus any per-column `levelMapping` aliases such as `NOTICE` or `30`), and the rewritten filter then matches the demoted column's raw text the same way an ordinary enum filter would. New raw values that arrive *after* the demote are not retroactively added — re-edit the filter once the column stabilises if a freshly observed alias should join the saved selection.
+
 ### Editing or Removing a Filter
 
 Each filter entry in the Filters menu has **Edit** and **Remove** sub-actions:

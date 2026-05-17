@@ -1554,12 +1554,29 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     KeyIndex &keys = table.Keys();
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"info", "warn"}, 1, 4, true));
     REQUIRE_FALSE(table.EnumDictionaries().Empty());
+    {
+        const KeyId categoryKid = table.Keys().Find("category");
+        REQUIRE(categoryKid != INVALID_KEY_ID);
+        const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKid);
+        REQUIRE(dict != nullptr);
+        REQUIRE(dict->Size() > 0);
+    }
 
     table.Reset();
-    CHECK(table.EnumDictionaries().Empty());
+    // Reset re-seeds empty dictionary slots for every configured enum /
+    // level column (sibling to `BeginStreaming`), so the registry is
+    // not strictly empty -- but every slot has zero observed values
+    // until the next batch.
     CHECK(table.RowCount() == 0);
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    {
+        const KeyId categoryKid = table.Keys().Find("category");
+        REQUIRE(categoryKid != INVALID_KEY_ID);
+        const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKid);
+        REQUIRE(dict != nullptr);
+        CHECK(dict->Empty());
+    }
 }
 
 TEST_CASE(

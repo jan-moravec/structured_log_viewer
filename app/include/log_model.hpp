@@ -2,6 +2,7 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 template <typename T> class QFutureWatcher;
@@ -184,6 +186,20 @@ public:
     /// untouched.
     void NotifyConfigurationReplaced();
 
+    /// Canonical-level -> raw-dictionary-bytes mapping captured at the
+    /// most recent `AppendBatch` for any `Type::Level` column that
+    /// demoted to `Type::String` during that batch. Returns `nullptr`
+    /// when no such demote happened in the last batch for the given
+    /// @p columnIndex. The mapping reflects the dictionary contents
+    /// the moment before the demote, so callers consuming the
+    /// adjacent `enumColumnsChanged(Demoted)` signal can translate
+    /// canonical-name filters (e.g. `"Info"`) back into the raw
+    /// dictionary entries (`"info"`, `"INF"`, `"30"`, ...) that were
+    /// observed for that column. Cleared at the start of every
+    /// subsequent `AppendBatch`.
+    [[nodiscard]] const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *
+    LastBatchLevelDemoteMappingFor(int columnIndex) const noexcept;
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);
@@ -240,6 +256,16 @@ private:
 
     /// Retention cap; `0` means unbounded.
     size_t mRetentionCap = 0;
+
+    /// Per-batch capture: column -> (canonical level -> raw dictionary
+    /// bytes). Populated when a `Type::Level` column loses its
+    /// dictionary during the current `AppendBatch`. Consumed by
+    /// `MainWindow::enumColumnsChanged(Demoted)` to translate stored
+    /// canonical-name filter selections into the raw dictionary
+    /// entries that resolved to those levels at demote time. Cleared
+    /// at the top of every `AppendBatch`.
+    std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
+        mLastBatchLevelDemoteMapping;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

@@ -63,11 +63,34 @@ bool IsLogLevelKey(const std::string &key)
     //   - Structured-JSON conventions (Serilog `@l`, Datadog @-fields,
     //     etc.): `@level`.
     static constexpr std::array<std::string_view, 23> LEVEL_KEYS = {
-        "level",        "severity",      "loglevel",     "log.level",   "log_level",
-        "lvl",          "levelname",     "priority",     "l",           "lv",
-        "lev",          "sev",           "s",            "loglvl",      "severity_text",
-        "severity.text", "severitytext", "log_severity", "log.severity", "logseverity",
-        "level_name",   "level.name",    "@level"
+        // Long-form / classic.
+        "level",
+        "severity",
+        "loglevel",
+        "log.level",
+        "log_level",
+        "lvl",
+        "levelname",
+        "priority",
+        // Short forms used by compact loggers / embedded targets.
+        "l",
+        "lv",
+        "lev",
+        "sev",
+        "s",
+        "loglvl",
+        // OpenTelemetry / ECS / GCP.
+        "severity_text",
+        "severity.text",
+        "severitytext",
+        "log_severity",
+        "log.severity",
+        "logseverity",
+        // Separator variants of `levelname`.
+        "level_name",
+        "level.name",
+        // Structured-JSON conventions (Serilog `@l`, Datadog @-fields, ...).
+        "@level",
     };
     const std::string_view keyView(key);
     return std::ranges::any_of(LEVEL_KEYS, [keyView](std::string_view value) {
