@@ -2701,3 +2701,66 @@ TEST_CASE(
     // Raw "qux" remains the visible value.
     CHECK(table.GetFormattedValue(4, 0) == "qux");
 }
+
+TEST_CASE(
+    "LogTable -- short-form key `l` + single-letter values {i,w,e,f} promote to Type::Level",
+    "[log_table][append_batch][level][short_form]"
+)
+{
+    // End-to-end coverage for the short-form alias additions:
+    //   - `l` is in `IsLogLevelKey` (Signal 1, name match).
+    //   - `i`/`w`/`e`/`f` are in `BUILTIN_ALIASES` (Signal 2, dict
+    //     content, all canonical -> trivially satisfies 1-in-4).
+    // The whole pipeline -- `PromoteColumnToEnum` ->
+    // `MaybePromoteToLevel` -> `RefreshLevelRankCache` -> rank lookup
+    // via `GetLevelForRow` -- must round-trip the single-letter input
+    // to the canonical severity ordinal.
+    const TestLogFile testFile("level_short_form.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "l", {"i", "w", "e", "f"}, 1, 8, true));
+
+    REQUIRE(table.RowCount() == 8);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    // BuildEnumBatch cycles values mod 4: row 0 = i, 1 = w, 2 = e, 3 = f.
+    CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
+    CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
+    CHECK(table.GetLevelForRow(2, 0) == LogLevel::Error);
+    CHECK(table.GetLevelForRow(3, 0) == LogLevel::Fatal);
+    // Raw single-letter bytes preserved verbatim.
+    CHECK(table.GetFormattedValue(0, 0) == "i");
+    CHECK(table.GetFormattedValue(3, 0) == "f");
+}
+
+TEST_CASE(
+    "LogTable -- short-form key `l` with non-level values stays Type::Enumeration (safety net)",
+    "[log_table][append_batch][level][short_form]"
+)
+{
+    // Single-letter keys are admitted into `IsLogLevelKey` despite
+    // their false-positive risk; the dictionary-content check inside
+    // `MaybePromoteToLevel` is the safety net. A column named `l`
+    // whose dictionary entries do not resolve to canonical levels
+    // must stop at `Type::Enumeration`, never reaching `Type::Level`.
+    const TestLogFile testFile("level_short_form_safety_net.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // None of these resolve via `ParseLevelName` / built-in aliases.
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "l", {"red", "green", "blue"}, 1, 6, true));
+
+    REQUIRE(table.RowCount() == 6);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    CHECK_FALSE(table.GetLevelForRow(0, 0).has_value());
+}

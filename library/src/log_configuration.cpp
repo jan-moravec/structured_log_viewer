@@ -48,8 +48,26 @@ bool IsLogLevelKey(const std::string &key)
     // before `LogTable::MaybePromoteToLevel` will flip the type from
     // `Type::Enumeration` to `Type::Level`. Allocation-free comparison
     // because this fires once per column per batch in the enum pass.
-    static constexpr std::array<std::string_view, 8> LEVEL_KEYS = {
-        "level", "severity", "loglevel", "log.level", "log_level", "lvl", "levelname", "priority"
+    //
+    // Buckets:
+    //   - Long-form / classic: `level`, `severity`, `loglevel`,
+    //     `log.level`, `log_level`, `lvl`, `levelname`, `priority`.
+    //   - Short forms used by compact loggers / embedded targets:
+    //     `l`, `lv`, `lev`, `sev`, `s`, `loglvl`. These have a real
+    //     false-positive risk (a `length` / `size` column could match
+    //     by name alone) -- the dictionary-content check inside
+    //     `MaybePromoteToLevel` is the safety net.
+    //   - OpenTelemetry / ECS / GCP: `severity_text`, `severity.text`,
+    //     `severitytext`, `log_severity`, `log.severity`, `logseverity`.
+    //   - Separator variants of `levelname`: `level_name`, `level.name`.
+    //   - Structured-JSON conventions (Serilog `@l`, Datadog @-fields,
+    //     etc.): `@level`.
+    static constexpr std::array<std::string_view, 23> LEVEL_KEYS = {
+        "level",        "severity",      "loglevel",     "log.level",   "log_level",
+        "lvl",          "levelname",     "priority",     "l",           "lv",
+        "lev",          "sev",           "s",            "loglvl",      "severity_text",
+        "severity.text", "severitytext", "log_severity", "log.severity", "logseverity",
+        "level_name",   "level.name",    "@level"
     };
     const std::string_view keyView(key);
     return std::ranges::any_of(LEVEL_KEYS, [keyView](std::string_view value) {

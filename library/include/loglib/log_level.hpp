@@ -35,12 +35,23 @@ inline constexpr size_t CANONICAL_LEVEL_COUNT = 6;
 /// Case-insensitive lookup against the built-in alias table.
 ///
 /// Recognised aliases (case-insensitive):
-///   - Trace: trace, trc
-///   - Debug: debug, dbg, verbose
-///   - Info:  info, information, informational, notice
-///   - Warn:  warn, warning
-///   - Error: error, err, severe
-///   - Fatal: fatal, critical, crit, emerg, emergency, panic, alert
+///   - Trace: trace, trc, t, finer, finest, silly
+///   - Debug: debug, dbg, d, verbose, vrb, v, fine
+///   - Info:  info, inf, i, information, informational, notice
+///   - Warn:  warn, wrn, w, warning
+///   - Error: error, err, e, severe
+///   - Fatal: fatal, ftl, f, critical, crit, emerg, emergency, panic, alert, fault
+///
+/// `verbose` / `vrb` / `v` map to `Debug` (not `Trace`) for back-compat
+/// with the original mapping; Serilog and Android treat their Verbose
+/// level as below Debug, but flipping this now would break saved
+/// configs that depend on the prior behaviour.
+///
+/// Numeric-string levels (e.g. Bunyan/Pino `10/20/30/40/50/60`, syslog
+/// `0..7`) are intentionally *not* in the built-in table -- the two
+/// conventions disagree and numeric JSON values usually arrive as
+/// `Int64`, which never enters the enum dictionary. Map them per-column
+/// via `levelMapping` if you need them.
 ///
 /// Returns `std::nullopt` if @p bytes does not match any recognised alias.
 [[nodiscard]] std::optional<LogLevel> ParseLevelName(std::string_view bytes) noexcept;

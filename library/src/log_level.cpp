@@ -24,14 +24,66 @@ struct LevelAlias
 /// map to `LogLevel::Unknown` (the sentinel) are intentionally absent --
 /// `ParseLevelName` already treats "no match" as `std::nullopt`, so
 /// including such an entry would be dead code.
-constexpr std::array<LevelAlias, 21> BUILTIN_ALIASES = {{
-    {"trace", LogLevel::Trace},      {"trc", LogLevel::Trace},          {"debug", LogLevel::Debug},
-    {"dbg", LogLevel::Debug},        {"verbose", LogLevel::Debug},      {"info", LogLevel::Info},
-    {"information", LogLevel::Info}, {"informational", LogLevel::Info}, {"notice", LogLevel::Info},
-    {"warn", LogLevel::Warn},        {"warning", LogLevel::Warn},       {"error", LogLevel::Error},
-    {"err", LogLevel::Error},        {"severe", LogLevel::Error},       {"fatal", LogLevel::Fatal},
-    {"critical", LogLevel::Fatal},   {"crit", LogLevel::Fatal},         {"emerg", LogLevel::Fatal},
-    {"emergency", LogLevel::Fatal},  {"panic", LogLevel::Fatal},        {"alert", LogLevel::Fatal},
+///
+/// Coverage notes:
+///   - Single-letter aliases (`t`/`d`/`v`/`i`/`w`/`e`/`f`) cover the
+///     Android logger / glog / many embedded logger conventions. They
+///     are safe to include here because dictionary-content matching
+///     runs only after `IsLogLevelKey` already gates the column.
+///   - `v` / `vrb` / `verbose` all map to `Debug` (not `Trace`) for
+///     back-compat with the existing `verbose -> Debug` entry; Serilog
+///     and Android treat their Verbose level as below Debug, but
+///     flipping it now would break saved configs that rely on the
+///     prior mapping.
+///   - Numeric levels (Bunyan/Pino `10/20/30/40/50/60`, syslog `0..7`)
+///     are intentionally absent: the two conventions disagree and
+///     numeric JSON values typically arrive as `Int64`, not strings,
+///     so they never enter the enum dictionary. Users who need them
+///     can map per-column via `levelMapping`.
+constexpr std::array<LevelAlias, 37> BUILTIN_ALIASES = {{
+    // Trace
+    {"trace", LogLevel::Trace},
+    {"trc", LogLevel::Trace},
+    {"t", LogLevel::Trace},
+    {"finer", LogLevel::Trace},
+    {"finest", LogLevel::Trace},
+    {"silly", LogLevel::Trace},
+    // Debug
+    {"debug", LogLevel::Debug},
+    {"dbg", LogLevel::Debug},
+    {"d", LogLevel::Debug},
+    {"verbose", LogLevel::Debug},
+    {"vrb", LogLevel::Debug},
+    {"v", LogLevel::Debug},
+    {"fine", LogLevel::Debug},
+    // Info
+    {"info", LogLevel::Info},
+    {"inf", LogLevel::Info},
+    {"i", LogLevel::Info},
+    {"information", LogLevel::Info},
+    {"informational", LogLevel::Info},
+    {"notice", LogLevel::Info},
+    // Warn
+    {"warn", LogLevel::Warn},
+    {"wrn", LogLevel::Warn},
+    {"w", LogLevel::Warn},
+    {"warning", LogLevel::Warn},
+    // Error
+    {"error", LogLevel::Error},
+    {"err", LogLevel::Error},
+    {"e", LogLevel::Error},
+    {"severe", LogLevel::Error},
+    // Fatal
+    {"fatal", LogLevel::Fatal},
+    {"ftl", LogLevel::Fatal},
+    {"f", LogLevel::Fatal},
+    {"critical", LogLevel::Fatal},
+    {"crit", LogLevel::Fatal},
+    {"emerg", LogLevel::Fatal},
+    {"emergency", LogLevel::Fatal},
+    {"panic", LogLevel::Fatal},
+    {"alert", LogLevel::Fatal},
+    {"fault", LogLevel::Fatal},
 }};
 
 } // namespace
