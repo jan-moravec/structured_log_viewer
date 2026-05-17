@@ -1,9 +1,19 @@
 // `loglib::RowPredicate` + `CompareRows` micro-benchmarks. Mirrors the
 // shape of the existing `[large]` JSON benchmarks: tagged
-// `[.][benchmark][log_filter][large]` so it lands under the `benchmark`
-// CTest label and is hidden from the default run. Numbers are reported
-// via `WARN` so they print on success and end up in the CI log lines
-// the comparison script scrapes.
+// `[.][benchmark][log_filter][large]` (with `[level]` added on the
+// `Type::Level` siblings) so they land under the `benchmark` CTest
+// label and are hidden from the default run. Numbers are reported via
+// `WARN` so they print on success and end up in the CI log lines the
+// comparison script scrapes.
+//
+// The `Type::Enumeration` cases pin the column to a non-level key
+// (`region`) so the auto-promotion heuristic in
+// `LogTable::AppendBatch` cannot flip the column to `Type::Level` mid-
+// fixture and silently change which `CompareRows` branch is under
+// test. The `Type::Level` cases use the `level` key with a fully
+// canonical six-alias vocabulary and pin the column type via the
+// saved configuration so the path is exercised regardless of how the
+// heuristic might evolve.
 
 #include "common.hpp"
 
@@ -14,6 +24,7 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_filter.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
@@ -24,6 +35,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <numeric>
 #include <random>
@@ -64,21 +76,29 @@ struct LargeTable
     std::unique_ptr<FileLineSource> sourceOwner; // keeps the file mmap alive
 };
 
-/// Build a `Type::Enumeration` `LogTable` with @p rowCount rows over the
-/// fixed `["info", "warn", "error", "debug"]` vocabulary. Used by both
-/// the filter and sort benchmarks below.
-LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount)
+/// Build a `Type::Enumeration` `LogTable` with @p rowCount rows over a
+/// fixed four-value vocabulary. The column key is taken from
+/// @p columnKey so callers can pick one that does *not* match the
+/// log-level field-name heuristic (e.g. `region`); otherwise the
+/// auto-promotion logic on `LogTable::AppendBatch` would flip the
+/// column to `Type::Level` once the dictionary fills with
+/// canonical-level aliases, silently changing both the storage path
+/// (`CompareEnum` -> `CompareLevel`) and the `EnumDictRank` semantics
+/// the benchmarks below rely on. Used by the filter and enum-sort
+/// benchmarks below.
+LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount, std::string_view columnKey)
 {
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = std::string(columnKey),
+         .keys = {std::string(columnKey)},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
-         .parseFormats = {}}
+         .parseFormats = {},
+         .levelMapping = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -95,6 +115,70 @@ LargeTable BuildLargeEnumTable(const TestLogFile &fixture, size_t rowCount)
     // layout. Reproducibility, not unpredictability, is the goal.
     // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp, bugprone-random-generator-seed)
     std::mt19937 rng{0xC0FFEEU};
+    std::uniform_int_distribution<size_t> pick{0, values.size() - 1};
+
+    const std::string columnKeyOwned(columnKey);
+    constexpr size_t BATCH = 50'000;
+    for (size_t base = 0; base < rowCount; base += BATCH)
+    {
+        const size_t batchSize = std::min(BATCH, rowCount - base);
+        StreamedBatch batch;
+        batch.firstLineNumber = base + 1;
+        batch.lines.reserve(batchSize);
+        for (size_t i = 0; i < batchSize; ++i)
+        {
+            batch.lines.push_back(MakeLine(keys, *sourcePtr, {{columnKeyOwned, std::string(values[pick(rng)])}}));
+        }
+        if (base == 0)
+        {
+            batch.newKeys.emplace_back(columnKeyOwned);
+        }
+        table.AppendBatch(std::move(batch));
+    }
+    return {.table = std::move(table), .sourceOwner = nullptr};
+}
+
+/// Build a `Type::Level` `LogTable` with @p rowCount rows over the
+/// canonical six-level vocabulary. The configuration pins the column
+/// to `Type::Level` so the table does *not* depend on the
+/// auto-promotion heuristic in `LogTable::AppendBatch`, which is
+/// content-sensitive and can flip the column type mid-fixture as the
+/// dictionary grows. The vocabulary deliberately covers all six
+/// canonical levels so the resulting `LevelRankCache` exercises every
+/// `LogLevel` ordinal -- otherwise a `tbb::parallel_sort` over
+/// near-identical ranks would understate the per-compare cost. Used
+/// by the level-sort benchmarks below.
+LargeTable BuildLargeLevelTable(const TestLogFile &fixture, size_t rowCount)
+{
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(fixture.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {},
+         .levelMapping = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    // All six canonical aliases so the `LevelRankCache` covers the
+    // full `Trace`..`Fatal` range. The order is deliberately not the
+    // canonical severity order so the parallel sort actually has
+    // permutation work to do.
+    const std::vector<std::string> values = {"info", "warn", "error", "debug", "trace", "fatal"};
+    KeyIndex &keys = table.Keys();
+
+    // NOLINTNEXTLINE(cert-msc32-c, cert-msc51-cpp, bugprone-random-generator-seed)
+    std::mt19937 rng{0xC0FFEE2U};
     std::uniform_int_distribution<size_t> pick{0, values.size() - 1};
 
     constexpr size_t BATCH = 50'000;
@@ -131,7 +215,8 @@ LargeTable BuildLargeStringTable(const TestLogFile &fixture, size_t rowCount)
          .keys = {"msg"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::String,
-         .parseFormats = {}}
+         .parseFormats = {},
+         .levelMapping = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -195,13 +280,16 @@ TEST_CASE("RowPredicate enum filter walks 1'000'000 rows under 100ms", "[.][benc
     constexpr size_t ROW_COUNT = 1'000'000;
     const TestLogFile fixture("benchmark_log_filter_enum.json");
     fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT);
+    // `region` is not in the log-level field-name heuristic, so the
+    // column stays `Type::Enumeration` regardless of dictionary content
+    // and the predicate exercises the `EnumRowPredicate` fast path.
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
 
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId regionKey = table.Keys().Find("region");
+    REQUIRE(regionKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
     REQUIRE(dict != nullptr);
 
     const std::vector<std::string> selectedOwned = {"warn", "error"};
@@ -332,13 +420,18 @@ TEST_CASE(
     constexpr size_t ROW_COUNT = 1'000'000;
     const TestLogFile fixture("benchmark_log_compare_enum.json");
     fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT);
+    // `region` keeps the column pinned at `Type::Enumeration`; with the
+    // historical `level` key the auto-promotion heuristic flips the
+    // column to `Type::Level` mid-build and `CompareRows` then ignores
+    // the precomputed `EnumDictRank`, both inflating the per-compare
+    // cost and breaking the rank-monotonic sanity check below.
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
 
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId regionKey = table.Keys().Find("region");
+    REQUIRE(regionKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
     REQUIRE(dict != nullptr);
     const EnumDictRank rank{*dict};
 
@@ -393,13 +486,13 @@ TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms
     constexpr size_t ROW_COUNT = 1'000'000;
     const TestLogFile fixture("benchmark_log_filter_parallel.json");
     fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT);
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
 
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId regionKey = table.Keys().Find("region");
+    REQUIRE(regionKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
     REQUIRE(dict != nullptr);
 
     const std::vector<std::string> selectedOwned = {"warn", "error"};
@@ -459,13 +552,13 @@ TEST_CASE(
     constexpr size_t ROW_COUNT = 1'000'000;
     const TestLogFile fixture("benchmark_log_sort_parallel.json");
     fixture.Write("");
-    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT);
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
 
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId regionKey = table.Keys().Find("region");
+    REQUIRE(regionKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(regionKey);
     REQUIRE(dict != nullptr);
     const EnumDictRank rank{*dict};
 
@@ -519,6 +612,166 @@ TEST_CASE(
             {
                 REQUIRE(permutation[i - 1] < permutation[i]);
             }
+        }
+    }
+}
+
+// --- `Type::Level` benchmarks --------------------------------------------
+//
+// The two cases below are the level-column siblings of the enum
+// benchmarks above. They guard against regressions in the level path
+// added by the log-level-detection feature: `SortPermutationByColumn`
+// now pre-materialises a `uint8_t` `LogLevel` ordinal per row in
+// parallel for `Type::Level` columns (mirroring the `Type::Enumeration`
+// `EnumDictRank` fast path), and `CompareRows` dispatches level
+// columns to `CompareLevel` which calls `LogTable::GetLevelForRow` per
+// side. The sanity check is `LogLevel`-based here rather than
+// alphabetic-rank-based so the canonical-severity ordering the level
+// path sorts by is what we actually verify.
+
+TEST_CASE(
+    "loglib::SortPermutationByColumn over 1'000'000 level rows stays under 500ms",
+    "[.][benchmark][log_filter][log_compare][large][level]"
+)
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_sort_level_parallel.json");
+    fixture.Write("");
+    LargeTable owned = BuildLargeLevelTable(fixture, ROW_COUNT);
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != INVALID_KEY_ID);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+
+    std::vector<size_t> logRows(ROW_COUNT);
+    std::iota(logRows.begin(), logRows.end(), size_t{0});
+
+    constexpr int SAMPLES = 3;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    std::vector<size_t> permutation;
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        elapsed.push_back(TimeOnce([&]() {
+            // Level columns ignore the rank parameter inside
+            // `SortPermutationByColumn` -- the function consults
+            // `LogTable::LevelRankCache(columnIndex)` directly. Pass
+            // `nullptr` so the call shape mirrors how the production
+            // proxy chain invokes the helper for level columns.
+            permutation =
+                SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, nullptr);
+        }));
+    }
+    REQUIRE(permutation.size() == ROW_COUNT);
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+
+    WARN(
+        "SortPermutationByColumn (parallel + pre-mat level rank) over " << ROW_COUNT
+                                                                        << " rows: mean=" << Ms(mean).count()
+                                                                        << " ms (low=" << Ms(low).count()
+                                                                        << ", high=" << Ms(high).count() << ")"
+    );
+
+    // The level fast path materialises `uint8_t` ordinals (vs
+    // `uint16_t` for the enum path), so the per-row work is slightly
+    // cheaper on its own; total wall-time is dominated by the
+    // `tbb::parallel_sort` over an 8-bit key, which has hit ~30 ms
+    // locally. Same 500 ms CI ceiling as the enum sibling so a
+    // regression that disables either parallelism or the rank cache
+    // surfaces immediately.
+    CHECK(Ms(low).count() < 500.0);
+
+    // Sanity: canonical severity is non-decreasing with input-index
+    // tie-break. Reading via `GetLevelForRow` rather than the rank
+    // cache directly so the check exercises the public read API the
+    // GUI uses too.
+    for (size_t i = 1; i < permutation.size(); ++i)
+    {
+        const auto lhs = table.GetLevelForRow(logRows[permutation[i - 1]], 0);
+        const auto rhs = table.GetLevelForRow(logRows[permutation[i]], 0);
+        if (lhs.has_value() && rhs.has_value())
+        {
+            const auto lhsRank = static_cast<uint8_t>(*lhs);
+            const auto rhsRank = static_cast<uint8_t>(*rhs);
+            REQUIRE(lhsRank <= rhsRank);
+            if (lhsRank == rhsRank)
+            {
+                REQUIRE(permutation[i - 1] < permutation[i]);
+            }
+        }
+    }
+}
+
+TEST_CASE(
+    "CompareRows sort over level column on 1'000'000 rows scales linearly",
+    "[.][benchmark][log_filter][log_compare][large][level]"
+)
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_compare_level.json");
+    fixture.Write("");
+    LargeTable owned = BuildLargeLevelTable(fixture, ROW_COUNT);
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+
+    std::vector<size_t> indices(ROW_COUNT);
+    std::iota(indices.begin(), indices.end(), size_t{0});
+
+    constexpr int SAMPLES = 3;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        std::iota(indices.begin(), indices.end(), size_t{0});
+        elapsed.push_back(TimeOnce([&]() {
+            // Level columns ignore the `EnumDictRank` argument of
+            // `CompareRows`; pass `nullptr` so the call shape matches
+            // how a non-Qt `loglib` consumer would sort a level
+            // column without first materialising a rank table.
+            std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, nullptr) < 0; });
+        }));
+    }
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+    WARN(
+        "CompareRows level sort over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                       << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count() << ")"
+    );
+
+    // `CompareLevel` is heavier per call than `CompareEnum` with a
+    // precomputed `EnumDictRank` (one `GetLevelForRow` lookup per side
+    // vs. an `EnumValueId`-indexed array read), so the ceiling is
+    // bumped to 2000 ms vs. the enum sibling's 1500 ms. A regression
+    // past 2000 ms typically means either `LevelRankCache` lookups
+    // collapsed back to a per-row `mLevelRankCache` walk inside
+    // `GetLevelForRow`, or the canonical-name resolve path stopped
+    // hitting the cache.
+    CHECK(Ms(low).count() < 2000.0);
+
+    // Sanity: ascending canonical-severity order via `GetLevelForRow`.
+    for (size_t i = 1; i < indices.size(); ++i)
+    {
+        const auto lhs = table.GetLevelForRow(indices[i - 1], 0);
+        const auto rhs = table.GetLevelForRow(indices[i], 0);
+        if (lhs.has_value() && rhs.has_value())
+        {
+            REQUIRE(static_cast<uint8_t>(*lhs) <= static_cast<uint8_t>(*rhs));
         }
     }
 }

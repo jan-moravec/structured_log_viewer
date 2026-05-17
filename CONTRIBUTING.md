@@ -581,7 +581,8 @@ Eleven `[.][benchmark]…` cases ship today:
 | `[stream_latency]`                 | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms.                                                                         |
 | `[log_filter][large]` (enum)       | `EnumRowPredicate` fast-path scan over 1'000'000 enum-column rows. Hard-fails above 100 ms; guards against a regression to the per-row allocation path.                                                           |
 | `[log_filter][large]` (string)     | `CallbackStringRowPredicate` substring scan over 1'000'000 string rows. Hard-fails above 200 ms; guards the `std::variant` access + table-lookup cost.                                                            |
-| `[log_filter][log_compare][large]` | `CompareRows` sort over 1'000'000 enum-column rows with an `EnumDictRank` cache. Reports mean / low / high; sanity-checks that the rank table keeps the sort linear-ish.                                          |
+| `[log_filter][log_compare][large]` | `CompareRows` and `SortPermutationByColumn` sorts over 1'000'000 `Type::Enumeration` rows with an `EnumDictRank` cache. Column key is `region` so the level-detection heuristic cannot flip the column type mid-fixture. Reports mean / low / high and sanity-checks rank-monotonic output. |
+| `[log_filter][log_compare][large][level]` | Sibling cases for `Type::Level` columns: `SortPermutationByColumn` exercising the parallel `LevelRankCache` fast path (≤ 500 ms ceiling) and `CompareRows` exercising the per-call `CompareLevel` path (≤ 2000 ms ceiling). Sanity check is canonical-severity-monotonic via `LogTable::GetLevelForRow`. |
 
 ### Running
 
@@ -624,6 +625,7 @@ The convention is to capture both **before** (clean-tree baseline) and **after**
 - `[cancellation]` — p95 latency within ±3 % of the prior commit's number.
 - `[stream_latency]` — median ≤ 250 ms and p95 ≤ 500 ms (the test fails on a regression rather than relying on a manual review compare). Stream-Mode PRs must also re-run `[large]` / `[wide]` / `[allocations]` / `[cancellation]` and record the numbers, since the static-path machinery and the Stream-Mode seam share the same parser and `LogTable` plumbing.
 - `[log_filter][large]` and `[log_filter][log_compare][large]` — each test hard-fails on a regression past its built-in ceiling (100 ms / 200 ms / linear-ish sort time). PRs touching `loglib::RowPredicate`, `EnumDictRank`, or `LogFilterModel::lessThan` should still paste the WARN lines so a within-bar regression is visible.
+- `[log_filter][log_compare][large][level]` — the level-typed siblings have their own ceilings (500 ms for the parallel `SortPermutationByColumn` path, 2000 ms for the per-compare `CompareRows`/`CompareLevel` path). PRs touching `LogTable::GetLevelForRow`, the `LevelRankCache` invalidation logic, or the `Type::Level` arm of `SortPermutationByColumn` should paste these WARN lines too.
 
 ## Code style and pre-commit
 
