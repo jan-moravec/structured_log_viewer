@@ -1,4 +1,5 @@
 #include "column_editor.hpp"
+#include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "log_filter_model.hpp"
@@ -5916,6 +5917,192 @@ private slots:
 
         QCOMPARE(editSpy.count(), 1);
         QCOMPARE(editSpy.takeFirst().at(0).toInt(), msgCol);
+    }
+
+    // The columns manager mirrors every `Column` row in the live
+    // configuration -- one table row per column, with the visible
+    // checkbox in the rightmost cell. This is the smoke test that
+    // the dialog is wired to the live model rather than a stale
+    // snapshot, and that the Visible cell carries an interactable
+    // check state.
+    void TestColumnsManagerListsEveryColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+
+        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        QVERIFY(table != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
+
+        // The Visible cell sits in column 4 (see COL_VISIBLE in
+        // columns_manager_dialog.cpp); a row whose underlying
+        // column is visible must surface as Qt::Checked.
+        constexpr int VISIBLE_COL = 4;
+        const QTableWidgetItem *msgVisible = table->item(msgCol, VISIBLE_COL);
+        QVERIFY(msgVisible != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QCOMPARE(msgVisible->checkState(), Qt::Checked);
+        QVERIFY2(
+            (msgVisible->flags() & Qt::ItemIsUserCheckable) != 0,
+            "Visible cell must be user-checkable so the in-place toggle works"
+        );
+    }
+
+    // Toggling the Visible checkbox in the manager must propagate
+    // all the way to the live `Column::visible` flag and to the
+    // header (i.e. go through `MainWindow::SetColumnVisible`, not
+    // straight to the lib mutator). Doing the round-trip in the
+    // test avoids the bug where the manager flipped only its own
+    // table-widget state while the underlying header still showed
+    // the column.
+    void TestColumnsManagerVisibilityToggleHidesColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        QVERIFY(table != nullptr);
+
+        constexpr int VISIBLE_COL = 4;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QTableWidgetItem *item = table->item(msgCol, VISIBLE_COL);
+        QVERIFY(item != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        item->setCheckState(Qt::Unchecked);
+
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(msgCol)].visible,
+            "Unchecking the Visible cell must flip Column::visible to false"
+        );
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QVERIFY2(
+            tableView->horizontalHeader()->isSectionHidden(msgCol),
+            "Toggle must reach the header (i.e. go via MainWindow::SetColumnVisible, not just the lib mutator)"
+        );
+    }
+
+    // `MoveSelectedDown` calls `LogModel::MoveColumn`, which both
+    // rotates `Configuration().columns` and re-emits header /
+    // visibility state to the view. The test verifies the order
+    // shift end-to-end: pick the first row, push it one slot down,
+    // and assert the two columns swap positions in both the model
+    // and the manager table itself.
+    void TestColumnsManagerMoveDownReordersColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
+
+        const std::string firstKeys =
+            model->Configuration().columns.front().keys.empty() ? std::string{}
+                                                                : model->Configuration().columns.front().keys.front();
+        const std::string secondKeys =
+            model->Configuration().columns[1].keys.empty() ? std::string{} : model->Configuration().columns[1].keys[0];
+        QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        QVERIFY(table != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        table->selectRow(0);
+
+        dialog.MoveSelectedDown();
+
+        const auto &columns = model->Configuration().columns;
+        QVERIFY2(columns.size() >= 2, "Move must not lose columns");
+        QCOMPARE(columns[0].keys.empty() ? std::string{} : columns[0].keys.front(), secondKeys);
+        QCOMPARE(columns[1].keys.empty() ? std::string{} : columns[1].keys.front(), firstKeys);
+        // The manager moves the selection along with the row so the
+        // user can drag the same column further down with repeated
+        // clicks. (Verifying the selection prevents a regression
+        // where a stable index lookup would re-pick the *new* top
+        // row by mistake.)
+        QCOMPARE(table->currentRow(), 1);
+    }
+
+    // Edge case: Move up on the top row, Move down on the bottom
+    // row. Either would push the index out of [0, columnCount());
+    // the dialog must clamp instead of asserting or wrapping.
+    void TestColumnsManagerMoveAtBoundariesIsNoOp()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const auto initialColumns = model->Configuration().columns;
+        QVERIFY2(initialColumns.size() >= 2, "fixture must yield at least two columns");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        QVERIFY(table != nullptr);
+
+        // Top row: Move up is a no-op.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        table->selectRow(0);
+        dialog.MoveSelectedUp();
+        for (size_t i = 0; i < initialColumns.size(); ++i)
+        {
+            QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
+        }
+
+        // Bottom row: Move down is a no-op.
+        const int lastRow = static_cast<int>(initialColumns.size()) - 1;
+        table->selectRow(lastRow);
+        dialog.MoveSelectedDown();
+        for (size_t i = 0; i < initialColumns.size(); ++i)
+        {
+            QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
+        }
+    }
+
+    // The View menu's "Manage columns\u2026" entry is the only
+    // production entry point into the manager. Verifying it both
+    // exists and triggers the dialog catches the case where a menu
+    // rebuild forgets to re-add the action after a column shape
+    // change.
+    void TestViewMenuManageColumnsActionOpensDialog()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        QMenu *viewMenu = mWindow->ViewMenu();
+        QVERIFY2(viewMenu != nullptr, "MainWindow must expose its View menu");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        emit viewMenu->aboutToShow();
+
+        QAction *manage = nullptr;
+        const auto actions = viewMenu->actions();
+        for (QAction *action : actions)
+        {
+            if (action->objectName() == QStringLiteral("actionManageColumns"))
+            {
+                manage = action;
+                break;
+            }
+        }
+        QVERIFY2(manage != nullptr, "View menu must carry the Manage columns... entry");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        manage->trigger();
+
+        auto *dialog = mWindow->findChild<ColumnsManagerDialog *>(QStringLiteral("ColumnsManagerDialog"));
+        QVERIFY2(dialog != nullptr, "Triggering Manage columns... must construct a ColumnsManagerDialog");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QVERIFY2(!dialog->isHidden(), "Manager dialog must be shown after triggering its action");
+        dialog->close();
     }
 
     // Find must skip hidden columns. The fixture has `level`

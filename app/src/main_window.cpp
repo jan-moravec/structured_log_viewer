@@ -3,6 +3,7 @@
 
 #include "appearance_control.hpp"
 #include "column_editor.hpp"
+#include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "network_stream_dialog.hpp"
@@ -1649,6 +1650,19 @@ void MainWindow::EditColumn(int columnIndex)
     }
 }
 
+void MainWindow::ShowColumnsManager()
+{
+    if (!mColumnsManagerDialog)
+    {
+        mColumnsManagerDialog = new ColumnsManagerDialog(mModel, this, this);
+        mColumnsManagerDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    }
+    mColumnsManagerDialog->Refresh();
+    mColumnsManagerDialog->show();
+    mColumnsManagerDialog->raise();
+    mColumnsManagerDialog->activateWindow();
+}
+
 void MainWindow::UpdateDiagnosticsStatus()
 {
     if (mDiagnosticsButton == nullptr)
@@ -3115,14 +3129,25 @@ void MainWindow::RebuildViewMenu()
         return;
     }
     viewMenu->clear();
+
+    // Manage Columns... is the always-reachable entry into the bulk
+    // editor (reorder, visibility, drill-down per column). It is the
+    // top entry so it stays a stable target even before any column
+    // has been streamed.
+    QAction *manageColumnsAction = viewMenu->addAction(tr("Manage columns\u2026"));
+    manageColumnsAction->setObjectName(QStringLiteral("actionManageColumns"));
+    connect(manageColumnsAction, &QAction::triggered, this, &MainWindow::ShowColumnsManager);
+
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())
     {
+        viewMenu->addSeparator();
         // Disabled placeholder so an empty View menu is not silent.
         QAction *placeholder = viewMenu->addAction(tr("(no columns yet)"));
         placeholder->setEnabled(false);
         return;
     }
+    viewMenu->addSeparator();
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
     for (size_t i = 0; i < columns.size(); ++i)
     {

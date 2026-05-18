@@ -41,6 +41,8 @@ set(PROJECT_SOURCES
     include/configuration_diagnostics_dialog.hpp
     src/column_editor.cpp
     include/column_editor.hpp
+    src/columns_manager_dialog.cpp
+    include/columns_manager_dialog.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})

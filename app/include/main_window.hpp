@@ -84,6 +84,22 @@ public:
     /// the View menu.
     void SetColumnVisible(int logicalIndex, bool visible);
 
+    /// Open the per-column editor dialog modally on @p columnIndex.
+    /// No-op when @p columnIndex is out of range. Reached from the
+    /// header right-click "Edit column \"X\"\u2026" entry, from
+    /// double-clicking a row in the diagnostics dialog, and from
+    /// the columns manager's Edit\u2026 button. Public so the
+    /// dialogs it spawns can route back through it without going
+    /// through `QMetaObject::invokeMethod`.
+    void EditColumn(int columnIndex);
+
+    /// Show the modeless `ColumnsManagerDialog`, constructing it
+    /// lazily. Re-entrancy-safe: a second call raises the existing
+    /// instance. Reached from the View menu's "Manage columns\u2026"
+    /// entry; public so tests can drive it without poking at the
+    /// menu.
+    void ShowColumnsManager();
+
     /// Push every `Column::visible` flag to the header. Idempotent;
     /// run after a load or reorder.
     void ApplyColumnVisibility();
@@ -194,15 +210,6 @@ private slots:
     /// instance. Driven by the status-bar diagnostics button and the
     /// header right-click "Configuration Diagnostics\u2026" entry.
     void ShowConfigurationDiagnostics();
-
-    /// Open the per-column editor dialog modally on @p columnIndex.
-    /// No-op when @p columnIndex is out of range. Reached from the
-    /// header right-click "Edit column \"X\"\u2026" entry and from
-    /// double-clicking a row in the diagnostics dialog. The editor
-    /// writes through `LogConfigurationManager`'s typed mutators on
-    /// accept; the model side picks the changes up through the
-    /// `headerDataChanged` and `columnHealthChanged` signals.
-    void EditColumn(int columnIndex);
 
     /// Refresh the status-bar mismatch summary from the current
     /// `LogModel::ColumnHealth` snapshot. Wired to
@@ -414,6 +421,12 @@ private:
     /// open reuses the same window. Auto-refreshes on
     /// `columnHealthChanged`.
     QPointer<class ConfigurationDiagnosticsDialog> mDiagnosticsDialog;
+
+    /// Lazy-owned bulk column manager dialog. Constructed on first
+    /// `ShowColumnsManager` call; survives close so a second open
+    /// reuses the same window. Auto-refreshes on `modelReset` /
+    /// `headerDataChanged` so out-of-band column moves stay visible.
+    QPointer<class ColumnsManagerDialog> mColumnsManagerDialog;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.
