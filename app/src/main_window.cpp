@@ -2,6 +2,7 @@
 #include "./ui_main_window.h"
 
 #include "appearance_control.hpp"
+#include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -22,6 +23,7 @@
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/udp_server_producer.hpp>
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDebug>
@@ -37,6 +39,7 @@
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QStringList>
+#include <QStyle>
 #include <QTableView>
 #include <QTimer>
 #include <QUuid>
@@ -446,6 +449,16 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
 
+    mDiagnosticsButton = new QPushButton(this);
+    mDiagnosticsButton->setObjectName(QStringLiteral("diagnosticsButton"));
+    mDiagnosticsButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    mDiagnosticsButton->setFlat(true);
+    mDiagnosticsButton->setCursor(Qt::PointingHandCursor);
+    mDiagnosticsButton->hide();
+    statusBar()->addPermanentWidget(mDiagnosticsButton);
+    connect(mDiagnosticsButton, &QPushButton::clicked, this, &MainWindow::ShowConfigurationDiagnostics);
+    connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
@@ -503,6 +516,11 @@ MainWindow::MainWindow(QWidget *parent)
         UpdateStreamToolbarVisibility();
         UpdateUi();
         UpdateStreamingStatus();
+        // Snapshot per-column type-health now that the table has
+        // settled. Triggers the warning glyph in the header and the
+        // status-bar mismatch summary via the `columnHealthChanged`
+        // signal. Idle/multi-file appends both reach here.
+        mModel->RefreshColumnHealth();
         // Only Success produces a post-parse error summary.
         if (result == StreamingResult::Success)
         {
@@ -1581,6 +1599,43 @@ void MainWindow::LoadConfiguration()
         return;
     }
     DoLoadConfiguration(file);
+}
+
+void MainWindow::ShowConfigurationDiagnostics()
+{
+    if (!mDiagnosticsDialog)
+    {
+        mDiagnosticsDialog = new ConfigurationDiagnosticsDialog(mModel, this);
+        mDiagnosticsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    }
+    mDiagnosticsDialog->Refresh();
+    mDiagnosticsDialog->show();
+    mDiagnosticsDialog->raise();
+    mDiagnosticsDialog->activateWindow();
+}
+
+void MainWindow::UpdateDiagnosticsStatus()
+{
+    if (mDiagnosticsButton == nullptr)
+    {
+        return;
+    }
+    const int mismatched = ConfigurationDiagnosticsDialog::MismatchedColumnCount(*mModel);
+    if (mismatched == 0)
+    {
+        mDiagnosticsButton->hide();
+        mDiagnosticsButton->setText(QString());
+        mDiagnosticsButton->setToolTip(QString());
+        return;
+    }
+    const QString text = tr("%n column mismatch(es)", nullptr, mismatched);
+    mDiagnosticsButton->setText(text);
+    mDiagnosticsButton->setToolTip(
+        tr("%1 column(s) have values that do not match the configured type. "
+           "Click to open Configuration Diagnostics.")
+            .arg(mismatched)
+    );
+    mDiagnosticsButton->show();
 }
 
 bool MainWindow::DoLoadConfiguration(const QString &path)

@@ -37,6 +37,8 @@ set(PROJECT_SOURCES
     include/streaming_control.hpp
     src/network_stream_dialog.cpp
     include/network_stream_dialog.hpp
+    src/configuration_diagnostics_dialog.cpp
+    include/configuration_diagnostics_dialog.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})

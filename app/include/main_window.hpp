@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QMimeData>
+#include <QPointer>
 #include <QPushButton>
 #include <QString>
 #include <QStringList>
@@ -187,6 +188,18 @@ private slots:
     /// Unified loader: detects whether the file carries session-only
     /// fields and applies whichever subset is present.
     void LoadConfiguration();
+
+    /// Show the `ConfigurationDiagnosticsDialog`, constructing it
+    /// lazily. Re-entrancy-safe: a second call raises the existing
+    /// instance. Driven by the status-bar diagnostics button and the
+    /// header right-click "Configuration Diagnostics\u2026" entry.
+    void ShowConfigurationDiagnostics();
+
+    /// Refresh the status-bar mismatch summary from the current
+    /// `LogModel::ColumnHealth` snapshot. Wired to
+    /// `LogModel::columnHealthChanged`; hides the button when no
+    /// mismatches are present.
+    void UpdateDiagnosticsStatus();
 
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
@@ -379,6 +392,19 @@ private:
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
+
+    /// Status-bar button that surfaces the per-column type-health
+    /// summary computed by `LogModel::ColumnHealth`. Hidden when zero
+    /// columns are mismatched; clicking it opens the diagnostics
+    /// dialog (created lazily). Updated by `UpdateDiagnosticsStatus`,
+    /// which is wired to `LogModel::columnHealthChanged`.
+    QPushButton *mDiagnosticsButton = nullptr;
+
+    /// Lazy-owned diagnostics dialog. Constructed on first
+    /// `ShowConfigurationDiagnostics` call; survives close so a second
+    /// open reuses the same window. Auto-refreshes on
+    /// `columnHealthChanged`.
+    QPointer<class ConfigurationDiagnosticsDialog> mDiagnosticsDialog;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.

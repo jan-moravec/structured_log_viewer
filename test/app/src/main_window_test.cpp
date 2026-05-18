@@ -1,3 +1,4 @@
+#include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -36,10 +37,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QIcon>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollBar>
@@ -50,6 +53,7 @@
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QWheelEvent>
@@ -5639,6 +5643,146 @@ private slots:
         QVERIFY2(header->isSortIndicatorShown(), "Load must restore the persisted sort indicator");
         QCOMPARE(header->sortIndicatorSection(), levelCol);
         QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
+    }
+
+    // Pinning a string-only column (`msg`) to `Integer` is the
+    // canonical "user misconfiguration" case: every present value is
+    // a string, no value is an integer, so `ColumnTypeHealth` reports
+    // presentSlots > matchingSlots and the header should advertise a
+    // mismatch via tooltip + decoration role.
+    void TestColumnHealthFlagsMismatchedType()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Streaming auto-detected `msg` to `String`; pin it to
+        // `Integer` to force a mismatch and re-snapshot health.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+
+        QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
+        model->RefreshColumnHealth();
+        // RefreshColumnHealth emits when health moves; the pin
+        // shifts matching from N to 0, which is always a delta.
+        QVERIFY2(healthSpy.count() >= 1, "RefreshColumnHealth must emit columnHealthChanged on a mismatch flip");
+
+        const auto health = model->ColumnHealth(msgCol);
+        QVERIFY2(health.has_value(), "ColumnHealth must yield a snapshot after Refresh");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access): asserted above.
+        QVERIFY2(health->presentSlots > 0, "msg column must have data after streaming");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QVERIFY2(health->matchingSlots < health->presentSlots, "Integer-pinned string column must report mismatches");
+
+        // Tooltip carries the human-readable diagnostics; decoration
+        // returns the standard warning icon. Both are wired through
+        // the same path so a downstream UI test exercising header
+        // rendering sees a consistent surface.
+        const QVariant tooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole);
+        QVERIFY(tooltip.canConvert<QString>());
+        QVERIFY2(
+            tooltip.toString().contains(QStringLiteral("do not match the configured type")),
+            "Mismatched column tooltip must explain the diagnostic"
+        );
+
+        const QVariant decoration = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
+        QVERIFY(decoration.canConvert<QIcon>());
+        QVERIFY2(!decoration.value<QIcon>().isNull(), "Mismatched column must surface a warning icon");
+
+        // Auto-detected columns (Type::Any + autoDetect=true) never
+        // mismatch by definition. Promoted enum columns (level) carry
+        // dictionary slots so their matching count equals presentSlots.
+        const auto levelHealth = model->ColumnHealth(levelCol);
+        QVERIFY(levelHealth.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QCOMPARE(levelHealth->matchingSlots, levelHealth->presentSlots);
+    }
+
+    // Status-bar diagnostics button + dialog summary are driven by
+    // `ConfigurationDiagnosticsDialog::MismatchedColumnCount`, so they
+    // both flip together. Verify the aggregate stays in lockstep with
+    // the per-column health (no double-counting, no stale reads).
+    void TestDiagnosticsButtonSurfacesMismatchCount()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Steady state after streamingFinished: every column either
+        // auto-detected to a matching type or stayed Any; zero
+        // mismatches.
+        QCOMPARE(ConfigurationDiagnosticsDialog::MismatchedColumnCount(*model), 0);
+        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("diagnosticsButton"));
+        QVERIFY2(button != nullptr, "MainWindow must own the diagnostics status-bar button");
+        // Offscreen-QPA leaves the parent window hidden, which would
+        // collapse `isVisible` to false regardless of the slot's
+        // intent; check `isHidden` so we exercise only the state the
+        // slot actually drives.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(button->isHidden(), "Diagnostics button must be hidden when no mismatches are present");
+
+        // Force a mismatch by pinning `msg` to Integer.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->RefreshColumnHealth();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(ConfigurationDiagnosticsDialog::MismatchedColumnCount(*model), 1);
+        // `isVisible` is gated by the parent window's visibility,
+        // which the offscreen-QPA test harness keeps hidden; check
+        // the inverse (`isHidden`) instead so the assertion exercises
+        // the only state the slot controls.
+        QVERIFY2(!button->isHidden(), "Diagnostics button must un-hide when a column mismatches");
+        QVERIFY2(button->text().contains(QStringLiteral("1")), "Button label must surface the mismatch count");
+    }
+
+    // The diagnostics dialog walks the same per-column snapshot as
+    // the status-bar aggregate; opening it must list exactly one
+    // mismatched row (matching the count surfaced by the button).
+    void TestDiagnosticsDialogListsMismatchedColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->RefreshColumnHealth();
+
+        ConfigurationDiagnosticsDialog dialog(model);
+        QTableWidget *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
+        QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
+
+        // Find the mismatched row by header text and assert the
+        // counter columns. Sorting is enabled, so look up by item
+        // rather than fixed row index.
+        int matchedRowIndex = -1;
+        for (int row = 0; row < table->rowCount(); ++row)
+        {
+            const QTableWidgetItem *headerItem = table->item(row, 0);
+            if (headerItem != nullptr && headerItem->text() == QStringLiteral("msg"))
+            {
+                matchedRowIndex = row;
+                break;
+            }
+        }
+        QVERIFY2(matchedRowIndex >= 0, "Dialog must include a row for the `msg` column");
+
+        // Column 6 is the "Mismatched" counter (see the header layout
+        // in `ConfigurationDiagnosticsDialog`'s constructor).
+        constexpr int MISMATCHED_COLUMN = 6;
+        const QTableWidgetItem *mismatchedItem = table->item(matchedRowIndex, MISMATCHED_COLUMN);
+        QVERIFY(mismatchedItem != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QVERIFY2(mismatchedItem->text().toInt() > 0, "Dialog must report a non-zero mismatch count for `msg`");
     }
 
     // Find must skip hidden columns. The fixture has `level`

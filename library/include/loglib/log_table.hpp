@@ -193,6 +193,7 @@ public:
     /// no hot-path bookkeeping).
     struct ColumnTypeHealth
     {
+        // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
         /// Total rows in the table at call time.
         size_t totalSlots = 0;
         /// Rows where this column has any slot (non-monostate).
@@ -206,6 +207,9 @@ public:
         /// matching, which is how user-pinned dict columns expose
         /// over-cap values.
         size_t matchingSlots = 0;
+        // NOLINTEND(misc-non-private-member-variables-in-classes)
+
+        [[nodiscard]] constexpr bool operator==(const ColumnTypeHealth &) const = default;
     };
     [[nodiscard]] ColumnTypeHealth ComputeColumnTypeHealth(size_t columnIndex) const;
 

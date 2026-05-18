@@ -186,6 +186,22 @@ public:
     /// untouched.
     void NotifyConfigurationReplaced();
 
+    /// Snapshot of the most recently computed
+    /// `LogTable::ColumnTypeHealth` for column @p section. Returns
+    /// `nullopt` when @p section is out of range or `RefreshColumnHealth`
+    /// has never produced a snapshot for it (no streaming session yet).
+    /// The snapshot is the source of truth for the per-column header
+    /// tooltip + warning icon and the status-bar diagnostics summary.
+    [[nodiscard]] std::optional<loglib::LogTable::ColumnTypeHealth> ColumnHealth(int section) const;
+
+    /// Walk every column and recompute its `ColumnTypeHealth` snapshot.
+    /// Emits `headerDataChanged` for the full range when at least one
+    /// section's snapshot moves, and `columnHealthChanged` so aggregate
+    /// UI (status-bar mismatch button, diagnostics dialog) can refresh.
+    /// Designed to run end-of-stream and after `Load`, not per-batch:
+    /// each call walks the whole table.
+    void RefreshColumnHealth();
+
     /// Canonical-level -> raw-dictionary-bytes mapping captured just
     /// before a `Type::Level` column lost its dictionary in the most
     /// recent `AppendBatch`. Lets the `enumColumnsChanged(Demoted)`
@@ -222,6 +238,12 @@ signals:
     /// "unscoped" (registry-wide sweep) -- treat as "any enum filter
     /// may need attention". See `EnumColumnsChangeReason`.
     void enumColumnsChanged(EnumColumnsChangeReason reason, int columnIndex);
+
+    /// At least one column's `ColumnTypeHealth` snapshot changed since
+    /// the previous `RefreshColumnHealth`. Receivers re-aggregate the
+    /// status-bar mismatch summary; an open Configuration Diagnostics
+    /// dialog refreshes its rows.
+    void columnHealthChanged();
 
 private:
     /// Shared `BeginStreaming` setup: install @p source, reset the
@@ -262,6 +284,11 @@ private:
     /// of every `AppendBatch`.
     std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
         mLastBatchLevelDemoteMapping;
+
+    /// Per-column `ColumnTypeHealth` cache; `RefreshColumnHealth`
+    /// is the only writer. Empty until the first refresh. Indexed
+    /// by source-table column, parallel to `Configuration().columns`.
+    std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

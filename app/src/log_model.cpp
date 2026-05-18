@@ -12,12 +12,16 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stream_line_source.hpp>
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QFutureWatcher>
+#include <QIcon>
 #include <QMetaObject>
 #include <QModelIndex>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
+#include <QStyle>
 #include <QThread>
 #include <QVariant>
 #include <QtConcurrent/QtConcurrent>
@@ -141,6 +145,12 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         // Drop the per-batch capture alongside the table's rank cache
         // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
+        // The cached health is keyed by row data that just went away;
+        // re-run the walk on the now-empty table so stale mismatch
+        // badges clear and `columnHealthChanged` lands before the
+        // model-reset settles. The refresh itself is O(columns) here
+        // because every column reports zero present slots.
+        RefreshColumnHealth();
 
         endResetModel();
 
@@ -773,19 +783,150 @@ int LogModel::columnCount(const QModelIndex &parent) const
     return static_cast<int>(mLogTable.ColumnCount());
 }
 
+namespace
+{
+QString FormatTypeName(loglib::LogConfiguration::Type type, bool autoDetect)
+{
+    using Type = loglib::LogConfiguration::Type;
+    QString base;
+    switch (type)
+    {
+    case Type::Any:
+        base = QStringLiteral("Any");
+        break;
+    case Type::String:
+        base = QStringLiteral("String");
+        break;
+    case Type::Boolean:
+        base = QStringLiteral("Boolean");
+        break;
+    case Type::Integer:
+        base = QStringLiteral("Integer");
+        break;
+    case Type::Floating:
+        base = QStringLiteral("Floating-point");
+        break;
+    case Type::Number:
+        base = QStringLiteral("Number");
+        break;
+    case Type::Time:
+        base = QStringLiteral("Time");
+        break;
+    case Type::Enumeration:
+        base = QStringLiteral("Enumeration");
+        break;
+    case Type::Level:
+        base = QStringLiteral("Level");
+        break;
+    }
+    if (autoDetect && type == Type::Any)
+    {
+        return QStringLiteral("Any (autodetect)");
+    }
+    return base;
+}
+
+QString BuildHeaderTooltip(
+    const loglib::LogConfiguration::Column &column, std::optional<loglib::LogTable::ColumnTypeHealth> health
+)
+{
+    QString tooltip;
+    if (!column.header.empty())
+    {
+        tooltip = QStringLiteral("<b>%1</b>").arg(QString::fromStdString(column.header).toHtmlEscaped());
+    }
+    if (!column.keys.empty())
+    {
+        QStringList keys;
+        keys.reserve(static_cast<int>(column.keys.size()));
+        for (const auto &k : column.keys)
+        {
+            keys.append(QString::fromStdString(k).toHtmlEscaped());
+        }
+        tooltip += QStringLiteral("<br/>keys: %1").arg(keys.join(QStringLiteral(", ")));
+    }
+    tooltip += QStringLiteral("<br/>type: %1").arg(FormatTypeName(column.type, column.autoDetect));
+
+    if (health.has_value())
+    {
+        const size_t mismatched =
+            health->presentSlots > health->matchingSlots ? health->presentSlots - health->matchingSlots : 0;
+        if (mismatched > 0)
+        {
+            tooltip += QStringLiteral(
+                "<br/><span style=\"color:#b04040;\"><b>"
+                "%1 of %2 values do not match the configured type.</b></span>"
+                "<br/>Open Configuration Diagnostics to inspect or change the type."
+            )
+                           .arg(static_cast<qulonglong>(mismatched))
+                           .arg(static_cast<qulonglong>(health->presentSlots));
+        }
+    }
+    return tooltip;
+}
+} // namespace
+
 QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (role != Qt::DisplayRole)
+    if (orientation != Qt::Horizontal || section < 0 || section >= columnCount())
     {
         return {};
     }
 
-    if (orientation == Qt::Horizontal && section >= 0 && section < columnCount())
+    if (role == Qt::DisplayRole)
     {
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
     }
-
+    if (role == Qt::ToolTipRole)
+    {
+        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        return BuildHeaderTooltip(columns[static_cast<size_t>(section)], ColumnHealth(section));
+    }
+    if (role == Qt::DecorationRole)
+    {
+        if (auto health = ColumnHealth(section); health.has_value())
+        {
+            const size_t mismatched =
+                health->presentSlots > health->matchingSlots ? health->presentSlots - health->matchingSlots : 0;
+            if (mismatched > 0)
+            {
+                return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+            }
+        }
+        return {};
+    }
     return {};
+}
+
+std::optional<loglib::LogTable::ColumnTypeHealth> LogModel::ColumnHealth(int section) const
+{
+    if (section < 0 || static_cast<size_t>(section) >= mColumnHealth.size())
+    {
+        return std::nullopt;
+    }
+    return mColumnHealth[static_cast<size_t>(section)];
+}
+
+void LogModel::RefreshColumnHealth()
+{
+    std::vector<loglib::LogTable::ColumnTypeHealth> next;
+    const size_t cols = mLogTable.ColumnCount();
+    next.reserve(cols);
+    for (size_t i = 0; i < cols; ++i)
+    {
+        next.push_back(mLogTable.ComputeColumnTypeHealth(i));
+    }
+
+    if (next == mColumnHealth)
+    {
+        return;
+    }
+    mColumnHealth = std::move(next);
+    if (cols > 0)
+    {
+        emit headerDataChanged(Qt::Horizontal, 0, static_cast<int>(cols) - 1);
+    }
+    emit columnHealthChanged();
 }
 
 QVariant LogModel::data(const QModelIndex &index, int role) const
