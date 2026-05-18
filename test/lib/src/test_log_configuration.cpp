@@ -512,6 +512,84 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     }
 }
 
+TEST_CASE(
+    "SaveScope::ColumnsOnly omits filters/sort/source so the file is portable across data sources",
+    "[log_configuration][save_scope][session]"
+)
+{
+    // A configuration-shape file is the wire-format strict subset of
+    // a session-shape file: same JSON schema, just with the
+    // session-only fields at their default values.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"timestamp", "msg"});
+    REQUIRE(manager.Configuration().columns.size() == 2);
+
+    // Populate session-only state (filter on row 0, sort by column 1
+    // descending, file-source).
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::String;
+    filter.row = 0;
+    filter.filterString = "boot";
+    filter.matchType = LogConfiguration::LogFilter::Match::Contains;
+    manager.SetFilters({filter});
+    manager.SetSort(LogConfiguration::Sort{.columnIndex = 1, .descending = true});
+    manager.SetSource(LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File, .locator = "C:/logs/app.json"
+    });
+
+    const TestLogConfiguration columnsOnlyFile;
+    manager.Save(columnsOnlyFile.GetFilePath(), SaveScope::ColumnsOnly);
+
+    // Re-load: only columns survive; filters/sort/source are absent
+    // and reload at their default (inert) values.
+    LogConfigurationManager reloadedFromColumns;
+    reloadedFromColumns.Load(columnsOnlyFile.GetFilePath());
+    REQUIRE(reloadedFromColumns.Configuration().columns.size() == 2);
+    CHECK(reloadedFromColumns.Configuration().filters.empty());
+    CHECK(reloadedFromColumns.Configuration().sort.columnIndex == -1);
+    CHECK_FALSE(reloadedFromColumns.Configuration().sort.descending);
+    CHECK_FALSE(reloadedFromColumns.Configuration().source.has_value());
+
+    // SaveScope::Full writes every field; session-only state
+    // round-trips intact.
+    const TestLogConfiguration fullFile;
+    manager.Save(fullFile.GetFilePath(), SaveScope::Full);
+
+    LogConfigurationManager reloadedFromFull;
+    reloadedFromFull.Load(fullFile.GetFilePath());
+    REQUIRE(reloadedFromFull.Configuration().columns.size() == 2);
+    REQUIRE(reloadedFromFull.Configuration().filters.size() == 1);
+    CHECK(reloadedFromFull.Configuration().filters[0].row == 0);
+    REQUIRE(reloadedFromFull.Configuration().filters[0].filterString.has_value());
+    CHECK(*reloadedFromFull.Configuration().filters[0].filterString == "boot");
+    CHECK(reloadedFromFull.Configuration().sort.columnIndex == 1);
+    CHECK(reloadedFromFull.Configuration().sort.descending);
+    REQUIRE(reloadedFromFull.Configuration().source.has_value());
+    CHECK(reloadedFromFull.Configuration().source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(reloadedFromFull.Configuration().source->locator == "C:/logs/app.json");
+}
+
+TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_configuration][session][source]")
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::NetworkStream, .locator = "tcp://127.0.0.1:5170"
+    };
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"networkStream\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.source.has_value());
+    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::NetworkStream);
+    CHECK(loaded.source->locator == "tcp://127.0.0.1:5170");
+}
+
 TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")
 {
     LogConfiguration original;

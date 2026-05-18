@@ -126,11 +126,34 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
 
 void LogConfigurationManager::Save(const std::filesystem::path &path) const
 {
+    Save(path, SaveScope::Full);
+}
+
+void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope scope) const
+{
     std::string json;
-    const auto error = glz::write<PRETTIFY_OPTS>(mConfiguration, json);
-    if (error)
+    if (scope == SaveScope::ColumnsOnly)
     {
-        throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+        // Build a transient struct with only `columns` populated;
+        // session-only members hold their default (absent) values.
+        // The wire schema is the same as `Full`, just with the
+        // session-only members at their defaults -- the resulting
+        // file is portable across data sources.
+        LogConfiguration columnsOnly;
+        columnsOnly.columns = mConfiguration.columns;
+        const auto error = glz::write<PRETTIFY_OPTS>(columnsOnly, json);
+        if (error)
+        {
+            throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+        }
+    }
+    else
+    {
+        const auto error = glz::write<PRETTIFY_OPTS>(mConfiguration, json);
+        if (error)
+        {
+            throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+        }
     }
 
     std::ofstream file(path);
@@ -314,6 +337,16 @@ void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
 void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)
 {
     mConfiguration.filters = std::move(filters);
+}
+
+void LogConfigurationManager::SetSort(LogConfiguration::Sort sort)
+{
+    mConfiguration.sort = sort;
+}
+
+void LogConfigurationManager::SetSource(std::optional<LogConfiguration::Source> source)
+{
+    mConfiguration.source = std::move(source);
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const

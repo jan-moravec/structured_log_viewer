@@ -40,4 +40,11 @@ template <> struct glz::meta<loglib::LogConfiguration::LogFilter::Match>
     static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
+
+template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
+{
+    using enum loglib::LogConfiguration::Source::Kind;
+    static constexpr std::array keys{"file", "networkStream"};
+    static constexpr std::array value{File, NetworkStream};
+};
 // NOLINTEND(readability-identifier-naming)

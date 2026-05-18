@@ -135,14 +135,63 @@ struct LogConfiguration
         std::vector<std::string> filterValues;
     };
 
+    /// Persisted sort state. `columnIndex = -1` is the inert default
+    /// ("no sort applied"); positive indices reference `columns` and
+    /// are remapped by `MoveColumn` alongside `filters[*].row`.
+    struct Sort
+    {
+        int columnIndex = -1;
+        bool descending = false;
+    };
+
+    /// Persisted source descriptor. `nullopt` means "no source bound"
+    /// (a configuration-shape file). For session-shape files the app
+    /// rebinds the source on load via this descriptor; rebind failure
+    /// is non-fatal -- columns and filters still apply.
+    struct Source
+    {
+        enum class Kind
+        {
+            File,
+            NetworkStream
+        };
+        Kind kind = Kind::File;
+        /// File path, network URI, or anything else the app can use
+        /// to (re)open the source. Format is opaque to `loglib`; the
+        /// app owns interpretation.
+        std::string locator;
+    };
+
+    // Required field. Drives the column layout for every consumer.
     std::vector<Column> columns;
+
+    // Session-only fields. Default-valued when absent on disk
+    // (configuration-shape file); populated when a session save
+    // includes them.
     std::vector<LogFilter> filters;
+    Sort sort;
+    std::optional<Source> source;
 };
 
 /// Case-insensitive match against known log-level field names (`level`,
 /// `severity`, ...). `LogTable` uses this to gate `Enumeration -> Level`
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
+
+/// Selects which `LogConfiguration` fields land on disk. Both kinds
+/// share the same JSON schema, so a `ColumnsOnly` file is just a
+/// `Full` file with the session-only members at their default values.
+enum class SaveScope
+{
+    /// "Save Configuration\u2026": writes only `columns`. Filters, sort
+    /// and source are omitted so the file is portable across data
+    /// sources.
+    ColumnsOnly,
+    /// "Save Session\u2026": writes the full struct including filters,
+    /// sort and (when present) source. Loaded session files
+    /// re-establish the user's view state.
+    Full
+};
 
 /// Loads, saves, and updates a `LogConfiguration` from observed data.
 class LogConfigurationManager
@@ -152,7 +201,12 @@ public:
 
     /// Throws `std::runtime_error` on open failure.
     void Load(const std::filesystem::path &path);
+    /// Writes the full struct (equivalent to `Save(path, SaveScope::Full)`).
     void Save(const std::filesystem::path &path) const;
+    /// Writes a subset of the struct selected by @p scope. Used by
+    /// the UI's two save actions ("Save Configuration\u2026" / "Save
+    /// Session\u2026").
+    void Save(const std::filesystem::path &path, SaveScope scope) const;
 
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);
@@ -188,6 +242,15 @@ public:
     /// this from its `mFilters` -> wire-format mirror so `Save` and
     /// `MoveColumn`'s row remap see the live runtime set.
     void SetFilters(std::vector<LogConfiguration::LogFilter> filters);
+
+    /// Replace `LogConfiguration::sort`. App calls this from its
+    /// session-state mirror before a `Full` save so the persisted
+    /// sort matches the user's current view.
+    void SetSort(LogConfiguration::Sort sort);
+
+    /// Replace `LogConfiguration::source`. App calls this from its
+    /// session-state mirror; `nullopt` clears the binding.
+    void SetSource(std::optional<LogConfiguration::Source> source);
 
     /// Apply the `(srcIndex -> destIndex)` single-column move to a
     /// stored column index. Out-of-range inputs pass through
