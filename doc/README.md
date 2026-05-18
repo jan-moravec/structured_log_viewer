@@ -165,9 +165,49 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
 
   > **Note:** the heuristic is **destructive** for streaming opens. If a key matching the heuristic appears mid-parse, the corresponding column is flipped from `any` to `time` in-place and every row already in the table is back-filled with the parsed `TimeStamp`. The original raw string variant is replaced by the parsed value, so disabling the column's `time` type later (via a saved configuration) does not bring the original textual value back without re-opening the file.
 
-- Columns drawn from a small, stable set of strings (e.g. `level`, `service`, `host`) are auto-promoted to **enumeration columns** once at least 256 rows have been seen and the column holds at most 64 distinct values. Enum columns are stored compactly as dictionary references and unlock the value-picker filter UI (see [Filtering an enumeration column](#filtering-an-enumeration-column)). A 5 % tolerance for over-long or wrong-type values (evaluated after 20 observations) governs both promotion and demotion; a column that breaches the budget or outgrows 64 distinct values is demoted to text and stays demoted for the session.
+- Columns drawn from a small, stable set of strings (e.g. `service`, `host`, `module`) are auto-promoted to **enumeration columns** once at least 4096 rows have been seen and the column holds at most 64 distinct values. Smaller files are caught by an end-of-parse sweep, and streaming opens promote the column eagerly after 2 rows. Enum columns are stored compactly as dictionary references and unlock the value-picker filter UI (see [Filtering an enumeration column](#filtering-an-enumeration-column)). A 1 % tolerance for over-long or wrong-type values (evaluated after 50 observations) governs both promotion and demotion; a column that breaches the budget or outgrows 64 distinct values is demoted to text and stays demoted for the session.
 
+- An enumeration column whose key matches a known log-level field name is further promoted to a **log-level column** when its dictionary holds at least one canonical level (`Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`) and at most one unrecognised entry per four canonical ones. A dictionary of size 4 or smaller must be 100 % canonical; size 5 tolerates one stray, size 10 tolerates two, and so on. The check is dict-weighted, so it re-evaluates only when the dictionary grows. Level columns sort by canonical severity rather than alphabetic order, and the filter dialog shows the six canonical levels. The raw bytes stay in the dictionary for display; only sort, filter, and styling use the canonical mapping. Per-column `levelMapping` overrides (see below) let you alias project-specific tags onto canonical levels.
+
+  Recognised **key names** (case-insensitive):
+
+  - Long-form: `level`, `severity`, `loglevel`, `log.level`, `log_level`, `lvl`, `levelname`, `priority`.
+  - Short forms (used by compact / embedded loggers): `l`, `lv`, `lev`, `sev`, `s`, `loglvl`.
+  - OpenTelemetry / ECS / GCP: `severity_text`, `severity.text`, `severitytext`, `log_severity`, `log.severity`, `logseverity`.
+  - Separator variants of `levelname`: `level_name`, `level.name`.
+  - Structured-JSON conventions (Serilog `@l`, Datadog @-fields, etc.): `@level`.
+
+  > **Single-letter keys carry false-positive risk.** A `length` or `size` column could match `l` / `s` by name alone. The dictionary-content check is the safety net: a column named `l` whose dictionary holds `red`/`green`/`blue` will not promote.
+
+  Recognised **value aliases** (case-insensitive):
+
+  - `Trace`: `trace`, `trc`, `t`, `finer`, `finest`, `silly`
+  - `Debug`: `debug`, `dbg`, `d`, `verbose`, `vrb`, `v`, `fine`
+  - `Info`: `info`, `inf`, `i`, `information`, `informational`, `notice`
+  - `Warn`: `warn`, `wrn`, `w`, `warning`
+  - `Error`: `error`, `err`, `e`, `severe`
+  - `Fatal`: `fatal`, `ftl`, `f`, `critical`, `crit`, `emerg`, `emergency`, `panic`, `alert`, `fault`
+
+  > **Why `verbose` / `vrb` / `v` map to `Debug`, not `Trace`.** The original mapping landed Verbose on Debug; flipping it now would change the canonical level (and the sort key) for any saved configuration relying on the prior behaviour. Serilog and Android treat Verbose as below Debug, but we keep the old mapping for backwards compatibility.
+  >
+  > **Numeric levels (Bunyan/Pino `10/20/30/40/50/60`, syslog `0..7`, ...) are *not* built in.** The two conventions disagree, so picking one would silently mis-classify the other. Map them per-column via `levelMapping` (e.g. `[["10","Trace"], ["20","Debug"], ["30","Info"], ["40","Warn"], ["50","Error"], ["60","Fatal"]]`). This only works when the producer emits the value as a JSON string (`"level": "30"`); a numeric JSON value (`"level": 30`) arrives as an integer and never reaches the dictionary.
+  >
+  > **Mapping unrecognised aliases.** Add a `levelMapping` array to the column in a saved configuration to extend the alias table per-column. Entries are `(alias, canonicalName)` pairs and override the built-in table:
+  >
+  > ```json
+  > {
+  >   "header": "severity",
+  >   "keys": ["severity"],
+  >   "printFormat": "{}",
+  >   "type": "level",
+  >   "parseFormats": [],
+  >   "levelMapping": [["NOTICE", "Info"], ["PANIC", "Fatal"]]
+  > }
+  > ```
+  >
   > **Note:** auto-promotion only happens for columns that are **not** explicitly typed by a loaded [configuration](#configurations). Save a column as `any` to lock it as text.
+  >
+  > **Note:** the canonical side must be `Trace`, `Debug`, `Info`, `Warn`, `Error`, or `Fatal`. Anything else (including `Unknown` or typos like `NotARealLevel`) is silently ignored and matching aliases fall through to the built-in table. To suppress an alias entirely, drop it from the data or pin the column type to `enumeration` instead of `level`.
 
 - All other keys become generic columns with the format `{}` (pass-through).
 
@@ -236,6 +276,8 @@ When the **Row to filter** dropdown points at an [enumeration column](#automatic
 
 If a column is demoted back to text mid-session, saved enum filters fall back to comparing the row's text value against the saved selection. A saved text filter on a column that later auto-promotes to enum continues to match by text; re-edit it to switch to the value picker.
 
+Saved filters on a **log-level column** that demotes back to text are translated automatically: each canonical name you ticked (`Info`, `Warn`, …) is expanded to every raw dictionary entry that resolved to it pre-demote (e.g. `Info` becomes `info` plus any `levelMapping` aliases like `NOTICE` or `30`). The rewritten filter then matches as a regular enum filter would. Values that arrive *after* the demote are not added retroactively — re-edit the filter once the column stabilises if a new alias should join the selection.
+
 ### Editing or Removing a Filter
 
 Each filter entry in the Filters menu has **Edit** and **Remove** sub-actions:
@@ -250,7 +292,7 @@ Filters are live: the table updates immediately when a filter is added, edited, 
 
 ## Configurations
 
-A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / …), **column order**, **per-column visibility** — and the **active filter set**. Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
+A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / `level` / …), per-column log-level alias overrides (`levelMapping`), **column order**, **per-column visibility** — and the **active filter set**. Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
 
 - **File → Save Configuration…** (`Ctrl+S`) — writes the current layout and filters to a `.json` file.
 - **File → Load Configuration…** — loads a configuration file and clears any open logs. Open logs again afterwards to apply the layout.

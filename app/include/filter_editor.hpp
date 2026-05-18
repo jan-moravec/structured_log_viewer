@@ -138,6 +138,10 @@ private:
     void SetBeginEnd(qint64 begin, qint64 end);
     /// Repopulate the enum picker from the column's current dictionary.
     void PopulateEnumValues(int columnIndex);
+    /// Populate the enum picker with the six canonical level names
+    /// (Trace..Fatal). Predicate construction later translates these
+    /// back to raw dictionary entries via the column's `LevelRankCache`.
+    void PopulateLevelValues(int columnIndex);
     /// Refresh the "N of M selected" label and OK gating.
     void UpdateEnumSelectionCount();
     /// Drop the red warning border from the empty-submit guard.

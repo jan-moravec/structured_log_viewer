@@ -769,8 +769,12 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
     auto levelColumn = std::ranges::find_if(columns, [](const auto &c) {
         return std::ranges::find(c.keys, std::string("level")) != c.keys.end();
     });
+    // The `level` column auto-promotes from Enumeration to the canonical
+    // Level type once enough dictionary entries map to a `LogLevel`; the
+    // benchmark checks that *either* terminal enum-like state was reached.
     const bool levelIsEnumeration =
-        levelColumn != columns.end() && levelColumn->type == LogConfiguration::Type::Enumeration;
+        levelColumn != columns.end() && (levelColumn->type == LogConfiguration::Type::Enumeration ||
+                                         levelColumn->type == LogConfiguration::Type::Level);
 
     size_t dictRefValues = 0;
     for (const LogLine &line : table.Data().Lines())
@@ -787,7 +791,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
         "Enum auto-detection over " << table.RowCount() << " lines: dict-ref values=" << dictRefValues << " ("
                                     << (100.0 * static_cast<double>(dictRefValues) /
                                         static_cast<double>(table.RowCount()))
-                                    << "%), level column is enumeration=" << (levelIsEnumeration ? "yes" : "no")
+                                    << "%), level column is enum or level=" << (levelIsEnumeration ? "yes" : "no")
                                     << ", dictionary heap bytes=" << bytes.enumDictionaries
                                     << ", lines+offsets+ownedStrings+keyIndex bytes=" << bytes.Total()
     );

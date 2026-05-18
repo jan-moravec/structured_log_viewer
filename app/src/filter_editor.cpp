@@ -1,18 +1,25 @@
 #include "filter_editor.hpp"
 
 #include <loglib/enum_dictionary.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 
+#include <QApplication>
 #include <QDoubleValidator>
+#include <QFont>
 #include <QLocale>
 #include <QMessageBox>
+#include <QPalette>
 #include <QStandardItem>
 #include <QTimeZone>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string_view>
+#include <unordered_set>
 
 using namespace loglib;
 
@@ -198,16 +205,58 @@ void FilterEditor::Load(int row, const qint64 begin, qint64 end)
 void FilterEditor::Load(int row, const QStringList &selectedValues)
 {
     mRowComboBox->setCurrentIndex(row);
-    PopulateEnumValues(row);
-    const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
-    for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
+    const auto &columns = mModel.Configuration().columns;
+    const bool isLevel = row >= 0 && static_cast<size_t>(row) < columns.size() &&
+                         columns[static_cast<size_t>(row)].type == LogConfiguration::Type::Level;
+    if (isLevel)
     {
-        QStandardItem *item = mEnumValuesModel->item(i);
-        if (item == nullptr)
+        PopulateLevelValues(row);
+
+        // The picker holds canonical names ("Info", "Warn", ...) while
+        // `selectedValues` may carry raw dictionary entries from a
+        // prior Enumeration session ("INFO", "WARNING", custom
+        // `levelMapping` aliases, ...). Resolve each saved value
+        // through the alias table and key the selection by `LogLevel`
+        // so a case-mismatch doesn't silently drop the tick.
+        const auto &column = columns[static_cast<size_t>(row)];
+        std::unordered_set<LogLevel> selectedLevels;
+        selectedLevels.reserve(static_cast<size_t>(selectedValues.size()));
+        for (const QString &value : selectedValues)
         {
-            continue;
+            const QByteArray utf8 = value.toUtf8();
+            const std::string_view bytes(utf8.constData(), static_cast<size_t>(utf8.size()));
+            if (auto level = ResolveLevel(bytes, column.levelMapping); level.has_value())
+            {
+                selectedLevels.insert(*level);
+            }
         }
-        item->setCheckState(selectionSet.contains(item->text()) ? Qt::Checked : Qt::Unchecked);
+        for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
+        {
+            QStandardItem *item = mEnumValuesModel->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            const QByteArray itemUtf8 = item->text().toUtf8();
+            const std::string_view itemBytes(itemUtf8.constData(), static_cast<size_t>(itemUtf8.size()));
+            const auto itemLevel = ParseLevelName(itemBytes);
+            const bool checked = itemLevel.has_value() && selectedLevels.contains(*itemLevel);
+            item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+        }
+    }
+    else
+    {
+        PopulateEnumValues(row);
+        const QSet<QString> selectionSet(selectedValues.cbegin(), selectedValues.cend());
+        for (int i = 0; i < mEnumValuesModel->rowCount(); ++i)
+        {
+            QStandardItem *item = mEnumValuesModel->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            item->setCheckState(selectionSet.contains(item->text()) ? Qt::Checked : Qt::Unchecked);
+        }
     }
     UpdateEnumSelectionCount();
 }
@@ -477,7 +526,7 @@ void FilterEditor::OnOkClicked()
             ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())
         );
     }
-    else if (column.type == LogConfiguration::Type::Enumeration)
+    else if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
     {
         const QStringList selected = GetSelectedEnumValues();
         if (selected.isEmpty())
@@ -486,6 +535,8 @@ void FilterEditor::OnOkClicked()
             mEnumValuesView->setStyleSheet("QListView { border: 1px solid red; }");
             return;
         }
+        // Level columns submit canonical level names; the predicate
+        // build expands them to raw dictionary entries via the rank cache.
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
     else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
@@ -594,6 +645,10 @@ void FilterEditor::UpdateSelectedColumn(int index)
         mStackedWidget->setCurrentIndex(PAGE_ENUM);
         PopulateEnumValues(index);
         break;
+    case LogConfiguration::Type::Level:
+        mStackedWidget->setCurrentIndex(PAGE_ENUM);
+        PopulateLevelValues(index);
+        break;
     case LogConfiguration::Type::Integer:
     case LogConfiguration::Type::Floating:
     case LogConfiguration::Type::Number:
@@ -667,6 +722,80 @@ void FilterEditor::PopulateEnumValues(int columnIndex)
         auto *item = new QStandardItem(value);
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Unchecked);
+        mEnumValuesModel->appendRow(item);
+    }
+    UpdateEnumSelectionCount();
+}
+
+void FilterEditor::PopulateLevelValues(int columnIndex)
+{
+    mEnumValuesModel->clear();
+    mEnumSearchEdit->clear();
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= mModel.Configuration().columns.size())
+    {
+        UpdateEnumSelectionCount();
+        return;
+    }
+    const auto &column = mModel.Configuration().columns[static_cast<size_t>(columnIndex)];
+    if (column.type != LogConfiguration::Type::Level)
+    {
+        UpdateEnumSelectionCount();
+        return;
+    }
+    // A level is "observed" iff its `LevelRankCache` slot is not
+    // `Unknown`. `nullptr` means the column is `Type::Level` but no
+    // batch has populated the cache yet -- surface every level as
+    // observed so saved selections still travel through and the next
+    // `Grew` rebuild can correct the picker.
+    const std::vector<LogLevel> *ranks = mModel.Table().LevelRankCache(static_cast<size_t>(columnIndex));
+    // Indexed by raw `LogLevel` ordinal (Unknown=0..Fatal=6), so the
+    // array is one larger than `CANONICAL_LEVEL_COUNT` (which excludes
+    // `Unknown`). Slot 0 is unused; Trace..Fatal occupy 1..6.
+    std::array<bool, CANONICAL_LEVEL_COUNT + 1> observed{};
+    if (ranks == nullptr)
+    {
+        observed.fill(true);
+    }
+    else
+    {
+        for (const LogLevel rank : *ranks)
+        {
+            if (rank == LogLevel::Unknown)
+            {
+                continue;
+            }
+            const auto ordinal = static_cast<size_t>(rank);
+            if (ordinal < observed.size())
+            {
+                observed[ordinal] = true;
+            }
+        }
+    }
+
+    // Show the six canonical levels in severity order. Items stay
+    // togglable so a saved filter on a level that just rotated out of
+    // view can still be unticked. Unobserved levels get an italic
+    // font + tooltip so the user knows picking them rejects every row.
+    constexpr std::array<LogLevel, CANONICAL_LEVEL_COUNT> CANONICAL_LEVELS = {
+        LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
+    };
+    for (const LogLevel level : CANONICAL_LEVELS)
+    {
+        const std::string_view name = CanonicalLevelName(level);
+        const QString display = QString::fromUtf8(name.data(), static_cast<int>(name.size()));
+        auto *item = new QStandardItem(display);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        if (!observed[static_cast<size_t>(level)])
+        {
+            item->setToolTip(tr("No %1 entries observed in this column yet.").arg(display));
+            QFont font = item->font();
+            font.setItalic(true);
+            item->setFont(font);
+            // Soften the foreground so unobserved rows are visually
+            // distinct but still legible across light/dark themes.
+            item->setForeground(QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+        }
         mEnumValuesModel->appendRow(item);
     }
     UpdateEnumSelectionCount();

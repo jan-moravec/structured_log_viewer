@@ -22,9 +22,11 @@ template <> struct glz::meta<loglib::LogConfiguration::Type>
 {
     using enum loglib::LogConfiguration::Type;
     static constexpr std::array keys{
-        "unknown", "any", "string", "boolean", "integer", "floating", "number", "time", "enumeration"
+        "unknown", "any", "string", "boolean", "integer", "floating", "number", "time", "enumeration", "level"
     };
-    static constexpr std::array value{Unknown, Any, String, Boolean, Integer, Floating, Number, Time, Enumeration};
+    static constexpr std::array value{
+        Unknown, Any, String, Boolean, Integer, Floating, Number, Time, Enumeration, Level
+    };
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::LogFilter::Type>

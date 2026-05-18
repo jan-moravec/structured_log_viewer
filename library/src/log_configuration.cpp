@@ -1,14 +1,17 @@
 #include "loglib/log_configuration.hpp"
 
+#include "loglib/internal/ascii_case.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/log_data.hpp"
 
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <string_view>
 
 namespace
 {
@@ -31,6 +34,59 @@ bool IsTimestampKey(const std::string &key)
         return (lowerKey == value);
     });
 }
+
+} // namespace
+
+namespace loglib
+{
+
+bool IsLogLevelKey(const std::string &key)
+{
+    // Known log-level field names. Matched case-insensitively and
+    // allocation-free because this fires once per column per batch.
+    // Advisory only -- false positives (e.g. a `length` column matching
+    // `l`) are caught by the dictionary-content check in
+    // `LogTable::MaybePromoteToLevel`.
+    static constexpr std::array<std::string_view, 23> LEVEL_KEYS = {
+        // Long-form / classic.
+        "level",
+        "severity",
+        "loglevel",
+        "log.level",
+        "log_level",
+        "lvl",
+        "levelname",
+        "priority",
+        // Short forms (compact / embedded loggers).
+        "l",
+        "lv",
+        "lev",
+        "sev",
+        "s",
+        "loglvl",
+        // OpenTelemetry / ECS / GCP.
+        "severity_text",
+        "severity.text",
+        "severitytext",
+        "log_severity",
+        "log.severity",
+        "logseverity",
+        // Separator variants of `levelname`.
+        "level_name",
+        "level.name",
+        // Serilog `@l`, Datadog @-fields, ...
+        "@level",
+    };
+    const std::string_view keyView(key);
+    return std::ranges::any_of(LEVEL_KEYS, [keyView](std::string_view value) {
+        return internal::EqualsIgnoreCaseAscii(keyView, value);
+    });
+}
+
+} // namespace loglib
+
+namespace
+{
 
 // Glaze 7.x: indentation_width is an inheritable option.
 struct PrettyOpts : glz::opts

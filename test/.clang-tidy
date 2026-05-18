@@ -13,6 +13,13 @@
 # `QVERIFY(opt.has_value()); QCOMPARE(opt.value(), ...)`) trip false
 # positives on every `*opt` / `opt.value()` access, so the check is
 # uniformly noise here.
+# `clang-analyzer-optin.core.EnumCastOutOfRange` fires inside Catch2's
+# own `ResultDisposition::Flags` bitwise-OR path (e.g. `CHECK_FALSE`
+# expands to `ContinueOnFailure | FalseTest` -> `6`, which isn't one
+# of the four named enumerators). The header-filter excludes
+# `_deps/catch2-src`, but the path-sensitive analyzer attributes the
+# warning to the test TU that triggered the trace, so the only way to
+# silence the Catch2 macro noise is to disable the check on tests.
 
 InheritParentConfig: true
 
@@ -23,4 +30,5 @@ Checks: >
   -misc-non-private-member-variables-in-classes,
   -cppcoreguidelines-non-private-member-variables-in-classes,
   -cppcoreguidelines-owning-memory,
-  -bugprone-unchecked-optional-access
+  -bugprone-unchecked-optional-access,
+  -clang-analyzer-optin.core.EnumCastOutOfRange

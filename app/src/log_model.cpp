@@ -138,6 +138,9 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mErrorCount = 0;
         mStreamingErrors.clear();
         mLastReportedShutdownDropCount = 0;
+        // Drop the per-batch capture alongside the table's rank cache
+        // so the next session doesn't see stale demote mappings.
+        mLastBatchLevelDemoteMapping.clear();
 
         endResetModel();
 
@@ -436,15 +439,34 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
-    // Snapshot pre-batch dict sizes for active enum columns. The
+    // Discard the previous batch's capture so a batch without a
+    // Demoted signal can't leak stale data through
+    // `LastBatchLevelDemoteMappingFor`.
+    mLastBatchLevelDemoteMapping.clear();
+
+    // Snapshot pre-batch dict sizes for active enum columns; the
     // post-batch diff drives one scoped `enumColumnsChanged` per
-    // affected column so receivers can skip rebuilds for columns
-    // they don't care about.
-    struct EnumSnapshotEntry
+    // affected column. For `Type::Level` columns we also capture the
+    // canonical-level -> raw-bytes mapping while the dictionary is
+    // still alive -- this is the only way a `Demoted` receiver can
+    // translate saved canonical-name filters back into the raw
+    // entries the now-string column carries.
+    //
+    // The NOLINT below silences `bugprone-exception-escape` on the
+    // implicit move-ctor: MSVC's STL leaves `std::unordered_map`'s
+    // move-ctor throwing (allocator may allocate), so the implicit
+    // move-ctor of this struct also can. The struct is local --
+    // emplaced into a vector and later moved-from once per column --
+    // and the strong-exception failure mode (terminate via
+    // bad_alloc) is the process's standard OOM behaviour, not
+    // something the caller can recover from anyway.
+    struct EnumSnapshotEntry // NOLINT(bugprone-exception-escape)
     {
         loglib::KeyId kid;
         int columnIndex;
         uint16_t sizeBefore;
+        loglib::LogConfiguration::Type typeBefore;
+        std::unordered_map<loglib::LogLevel, std::vector<std::string>> levelToRawBytes;
     };
     std::vector<EnumSnapshotEntry> enumSnapshotBefore;
     {
@@ -454,7 +476,12 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         for (size_t columnIndex = 0; columnIndex < columnsBefore.size(); ++columnIndex)
         {
             const auto &column = columnsBefore[columnIndex];
-            if (column.type != loglib::LogConfiguration::Type::Enumeration || column.keys.empty())
+            // Snapshot enum and level columns the same way: level is
+            // an enumeration subtype and shares the dictionary, so
+            // `Grew` / `Demoted` apply identically.
+            if ((column.type != loglib::LogConfiguration::Type::Enumeration &&
+                 column.type != loglib::LogConfiguration::Type::Level) ||
+                column.keys.empty())
             {
                 continue;
             }
@@ -463,12 +490,37 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 continue;
             }
-            if (const loglib::EnumDictionary *dict = registryBefore.Find(kid); dict != nullptr)
+            const loglib::EnumDictionary *dict = registryBefore.Find(kid);
+            if (dict == nullptr)
             {
-                enumSnapshotBefore.push_back(
-                    {.kid = kid, .columnIndex = static_cast<int>(columnIndex), .sizeBefore = dict->Size()}
-                );
+                continue;
             }
+            EnumSnapshotEntry entry{
+                .kid = kid,
+                .columnIndex = static_cast<int>(columnIndex),
+                .sizeBefore = dict->Size(),
+                .typeBefore = column.type,
+                .levelToRawBytes = {},
+            };
+            if (column.type == loglib::LogConfiguration::Type::Level)
+            {
+                const std::vector<loglib::LogLevel> *ranks = mLogTable.LevelRankCache(columnIndex);
+                if (ranks != nullptr)
+                {
+                    const size_t resolveCount = std::min<size_t>(ranks->size(), dict->Size());
+                    for (size_t valueId = 0; valueId < resolveCount; ++valueId)
+                    {
+                        const loglib::LogLevel level = (*ranks)[valueId];
+                        if (level == loglib::LogLevel::Unknown)
+                        {
+                            continue;
+                        }
+                        const std::string_view bytes = dict->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                        entry.levelToRawBytes[level].emplace_back(bytes);
+                    }
+                }
+            }
+            enumSnapshotBefore.push_back(std::move(entry));
         }
     }
 
@@ -510,20 +562,45 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         return -1;
     };
 
-    // Diff snapshot vs post-batch registry: `Grew` when the dict
-    // size changed, `Demoted` when the dict disappeared (registry
-    // erase). One signal per (column, reason).
+    // Diff snapshot vs post-batch registry, one signal per (column, reason):
+    //   - `Grew`: dictionary size changed.
+    //   - `Demoted`: dictionary disappeared (registry erase).
+    //   - `Promoted`: column flipped `Enumeration -> Level`. The two
+    //     share a dictionary so only `Grew` would otherwise fire, but
+    //     the filter UI needs to re-render against the level picker.
     std::vector<int> demotedColumnsThisBatch;
     if (!enumSnapshotBefore.empty())
     {
         const auto &registryAfter = mLogTable.EnumDictionaries();
-        for (const auto &entry : enumSnapshotBefore)
+        const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
+        for (auto &entry : enumSnapshotBefore)
         {
             const loglib::EnumDictionary *dict = registryAfter.Find(entry.kid);
             if (dict == nullptr)
             {
                 demotedColumnsThisBatch.push_back(entry.columnIndex);
+                // Stash the pre-demote level mapping so the Demoted
+                // receiver can rewrite canonical-name Level filters
+                // into raw dictionary entries before the post-demote
+                // rebuild. Plain enum demotes need no translation
+                // (`levelToRawBytes` is empty there).
+                if (entry.typeBefore == loglib::LogConfiguration::Type::Level && !entry.levelToRawBytes.empty())
+                {
+                    mLastBatchLevelDemoteMapping[entry.columnIndex] = std::move(entry.levelToRawBytes);
+                }
                 emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, entry.columnIndex);
+                continue;
+            }
+            const auto columnIndexSz = static_cast<size_t>(entry.columnIndex);
+            const auto typeAfter =
+                (columnIndexSz < columnsAfter.size()) ? columnsAfter[columnIndexSz].type : entry.typeBefore;
+            if (entry.typeBefore == loglib::LogConfiguration::Type::Enumeration &&
+                typeAfter == loglib::LogConfiguration::Type::Level)
+            {
+                // Sub-promotion supersedes `Grew`: receivers re-read
+                // the column type, so one signal covers both new
+                // entries and the type flip.
+                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, entry.columnIndex);
             }
             else if (dict->Size() != entry.sizeBefore)
             {
@@ -577,7 +654,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             {
                 continue;
             }
-            if (columns[static_cast<size_t>(columnIndex)].type != loglib::LogConfiguration::Type::Enumeration)
+            const auto colType = columns[static_cast<size_t>(columnIndex)].type;
+            if (colType != loglib::LogConfiguration::Type::Enumeration &&
+                colType != loglib::LogConfiguration::Type::Level)
             {
                 continue;
             }
@@ -657,8 +736,20 @@ void LogModel::EndStreaming(bool cancelled)
             const size_t commonCount = std::min(typesBefore.size(), columnsAfter.size());
             for (size_t i = 0; i < commonCount; ++i)
             {
-                if (typesBefore[i] != loglib::LogConfiguration::Type::Enumeration &&
-                    columnsAfter[i].type == loglib::LogConfiguration::Type::Enumeration)
+                const bool isEnumLikeAfter = columnsAfter[i].type == loglib::LogConfiguration::Type::Enumeration ||
+                                             columnsAfter[i].type == loglib::LogConfiguration::Type::Level;
+                const bool wasEnumLikeBefore = typesBefore[i] == loglib::LogConfiguration::Type::Enumeration ||
+                                               typesBefore[i] == loglib::LogConfiguration::Type::Level;
+                // Fresh promotion to any enum-like type.
+                if (!wasEnumLikeBefore && isEnumLikeAfter)
+                {
+                    emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
+                    continue;
+                }
+                // Sub-promotion `Enumeration -> Level`: same signal so
+                // the filter UI re-renders against the level picker.
+                if (typesBefore[i] == loglib::LogConfiguration::Type::Enumeration &&
+                    columnsAfter[i].type == loglib::LogConfiguration::Type::Level)
                 {
                     emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                 }
@@ -999,6 +1090,18 @@ void LogModel::NotifyConfigurationReplaced()
     // row store is unchanged.
     beginResetModel();
     endResetModel();
+}
+
+const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *LogModel::LastBatchLevelDemoteMappingFor(
+    int columnIndex
+) const noexcept
+{
+    const auto it = mLastBatchLevelDemoteMapping.find(columnIndex);
+    if (it == mLastBatchLevelDemoteMapping.end())
+    {
+        return nullptr;
+    }
+    return &it->second;
 }
 
 bool LogModel::MoveColumn(int srcIndex, int destIndex)

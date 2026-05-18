@@ -4,14 +4,18 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace loglib;
 
@@ -456,6 +460,7 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
         Type::Number,
         Type::Time,
         Type::Enumeration,
+        Type::Level,
     };
 
     LogConfiguration original;
@@ -482,6 +487,9 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     CHECK_FALSE(json.contains("\"double\""));
     CHECK(json.contains("\"number\""));
     CHECK(json.contains("\"enumeration\""));
+    // `Type::Level` shares storage with Enumeration at runtime but
+    // has its own wire key so a saved Level column reloads as Level.
+    CHECK(json.contains("\"level\""));
 
     LogConfiguration loaded;
     const auto readError = glz::read_json(loaded, json);
@@ -701,6 +709,57 @@ TEST_CASE(
 
     CHECK(loaded.filters[1].type == FilterType::Boolean);
     CHECK(loaded.filters[1].filterValues == std::vector<std::string>{"true", "false"});
+}
+
+TEST_CASE(
+    "Column::Type::Level survives a JSON round-trip alongside levelMapping",
+    "[log_configuration][wire_format_compat][level]"
+)
+{
+    // Pin the wire tokens (`"level"`, `"levelMapping"`). The actual
+    // pair encoding glaze uses is an internal default, so the test
+    // round-trips through `write_json` -> `read_json` instead of
+    // matching bytes.
+    LogConfiguration original;
+    LogConfiguration::Column column;
+    column.header = "severity";
+    column.keys = {"severity"};
+    column.printFormat = "{}";
+    column.type = LogConfiguration::Type::Level;
+    column.parseFormats = {};
+    column.levelMapping = {
+        {"NOTICE", "Info"},
+        {"30", "Info"},
+    };
+    original.columns.push_back(column);
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+
+    // Public wire tokens. `"level"` is locked by the glaze meta;
+    // the field name comes straight from the struct.
+    CHECK(json.contains("\"type\":\"level\""));
+    CHECK(json.contains("\"levelMapping\""));
+    CHECK(json.contains("\"NOTICE\""));
+    CHECK(json.contains("\"Info\""));
+    CHECK(json.contains("\"30\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.columns.size() == 1);
+    CHECK(loaded.columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(loaded.columns[0].levelMapping.size() == 2);
+    CHECK(loaded.columns[0].levelMapping[0].first == "NOTICE");
+    CHECK(loaded.columns[0].levelMapping[0].second == "Info");
+    CHECK(loaded.columns[0].levelMapping[1].first == "30");
+    CHECK(loaded.columns[0].levelMapping[1].second == "Info");
+
+    const auto &mapping = loaded.columns[0].levelMapping;
+    CHECK(ResolveLevel("NOTICE", mapping) == LogLevel::Info);
+    CHECK(ResolveLevel("30", mapping) == LogLevel::Info);
 }
 
 TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")
@@ -1016,4 +1075,240 @@ TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigura
     CHECK(manager.Configuration().columns[1].header == "good_b");
     CHECK(manager.Configuration().columns[0].visible);
     CHECK_FALSE(manager.Configuration().columns[1].visible);
+}
+
+TEST_CASE("IsLogLevelKey recognises canonical level aliases case-insensitively", "[log_configuration][log_level]")
+{
+    // Long-form / classic.
+    CHECK(IsLogLevelKey("level"));
+    CHECK(IsLogLevelKey("Level"));
+    CHECK(IsLogLevelKey("LEVEL"));
+    CHECK(IsLogLevelKey("severity"));
+    CHECK(IsLogLevelKey("Severity"));
+    CHECK(IsLogLevelKey("loglevel"));
+    CHECK(IsLogLevelKey("LogLevel"));
+    CHECK(IsLogLevelKey("log_level"));
+    CHECK(IsLogLevelKey("LOG_LEVEL"));
+    CHECK(IsLogLevelKey("log.level"));
+    CHECK(IsLogLevelKey("Log.Level"));
+    CHECK(IsLogLevelKey("lvl"));
+    CHECK(IsLogLevelKey("LVL"));
+    CHECK(IsLogLevelKey("levelname"));
+    CHECK(IsLogLevelKey("LevelName"));
+    CHECK(IsLogLevelKey("priority"));
+    CHECK(IsLogLevelKey("Priority"));
+
+    // Short forms. The dictionary-content check in
+    // `MaybePromoteToLevel` is the safety net against false positives.
+    CHECK(IsLogLevelKey("l"));
+    CHECK(IsLogLevelKey("L"));
+    CHECK(IsLogLevelKey("lv"));
+    CHECK(IsLogLevelKey("LV"));
+    CHECK(IsLogLevelKey("lev"));
+    CHECK(IsLogLevelKey("Lev"));
+    CHECK(IsLogLevelKey("sev"));
+    CHECK(IsLogLevelKey("SEV"));
+    CHECK(IsLogLevelKey("s"));
+    CHECK(IsLogLevelKey("S"));
+    CHECK(IsLogLevelKey("loglvl"));
+    CHECK(IsLogLevelKey("LogLvl"));
+
+    // OpenTelemetry / ECS / GCP.
+    CHECK(IsLogLevelKey("severity_text"));
+    CHECK(IsLogLevelKey("Severity_Text"));
+    CHECK(IsLogLevelKey("severity.text"));
+    CHECK(IsLogLevelKey("severitytext"));
+    CHECK(IsLogLevelKey("SeverityText"));
+    CHECK(IsLogLevelKey("log_severity"));
+    CHECK(IsLogLevelKey("log.severity"));
+    CHECK(IsLogLevelKey("logseverity"));
+    CHECK(IsLogLevelKey("LogSeverity"));
+
+    // Separator variants of `levelname`.
+    CHECK(IsLogLevelKey("level_name"));
+    CHECK(IsLogLevelKey("Level_Name"));
+    CHECK(IsLogLevelKey("level.name"));
+
+    // Structured-JSON convention.
+    CHECK(IsLogLevelKey("@level"));
+    CHECK(IsLogLevelKey("@LEVEL"));
+
+    // Non-matches: exact equality, not prefix / substring.
+    CHECK_FALSE(IsLogLevelKey("status"));
+    CHECK_FALSE(IsLogLevelKey("timestamp"));
+    CHECK_FALSE(IsLogLevelKey(""));
+    CHECK_FALSE(IsLogLevelKey("levelish"));
+    CHECK_FALSE(IsLogLevelKey("la"));
+    CHECK_FALSE(IsLogLevelKey("lengthy"));
+    CHECK_FALSE(IsLogLevelKey("severities"));
+    CHECK_FALSE(IsLogLevelKey("ll"));
+    CHECK_FALSE(IsLogLevelKey(" level"));
+    CHECK_FALSE(IsLogLevelKey("level "));
+}
+
+TEST_CASE(
+    "LogConfiguration serialises Type::Level and Column::levelMapping round-trip",
+    "[log_configuration][log_level][serialization]"
+)
+{
+    LogConfiguration cfg;
+    LogConfiguration::Column column;
+    column.header = "severity";
+    column.keys = {"severity"};
+    column.printFormat = "{}";
+    column.type = LogConfiguration::Type::Level;
+    column.parseFormats = {};
+    column.levelMapping = {
+        {"NOTICE", "Info"},
+        {"PANIC", "Fatal"},
+    };
+    cfg.columns.push_back(column);
+
+    const TestLogConfiguration file;
+    file.Write(cfg);
+
+    LogConfigurationManager loaded;
+    loaded.Load(file.GetFilePath());
+
+    REQUIRE(loaded.Configuration().columns.size() == 1);
+    const auto &restored = loaded.Configuration().columns[0];
+    CHECK(restored.header == "severity");
+    CHECK(restored.type == LogConfiguration::Type::Level);
+    REQUIRE(restored.levelMapping.size() == 2);
+    CHECK(restored.levelMapping[0].first == "NOTICE");
+    CHECK(restored.levelMapping[0].second == "Info");
+    CHECK(restored.levelMapping[1].first == "PANIC");
+    CHECK(restored.levelMapping[1].second == "Fatal");
+}
+
+TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
+{
+    // Every alias in `BUILTIN_ALIASES`, plus mixed-case spellings for
+    // each new short-form/library-specific entry. Keeps the table in
+    // sync with the header docstring.
+    using Expected = std::pair<std::string_view, LogLevel>;
+    constexpr std::array<Expected, 52> CASES = {{
+        // Trace
+        {"trace", LogLevel::Trace},
+        {"TRACE", LogLevel::Trace},
+        {"trc", LogLevel::Trace},
+        {"Trc", LogLevel::Trace},
+        {"t", LogLevel::Trace},
+        {"T", LogLevel::Trace},
+        {"finer", LogLevel::Trace},
+        {"Finer", LogLevel::Trace},
+        {"finest", LogLevel::Trace},
+        {"FINEST", LogLevel::Trace},
+        {"silly", LogLevel::Trace},
+        {"Silly", LogLevel::Trace},
+        // Debug
+        {"debug", LogLevel::Debug},
+        {"dbg", LogLevel::Debug},
+        {"d", LogLevel::Debug},
+        {"D", LogLevel::Debug},
+        {"verbose", LogLevel::Debug},
+        {"vrb", LogLevel::Debug},
+        {"VRB", LogLevel::Debug},
+        {"v", LogLevel::Debug},
+        {"V", LogLevel::Debug},
+        {"fine", LogLevel::Debug},
+        {"Fine", LogLevel::Debug},
+        // Info
+        {"info", LogLevel::Info},
+        {"inf", LogLevel::Info},
+        {"INF", LogLevel::Info},
+        {"i", LogLevel::Info},
+        {"I", LogLevel::Info},
+        {"Information", LogLevel::Info},
+        {"informational", LogLevel::Info},
+        {"notice", LogLevel::Info},
+        // Warn
+        {"warn", LogLevel::Warn},
+        {"WARNING", LogLevel::Warn},
+        {"wrn", LogLevel::Warn},
+        {"WRN", LogLevel::Warn},
+        {"w", LogLevel::Warn},
+        {"W", LogLevel::Warn},
+        // Error
+        {"error", LogLevel::Error},
+        {"ERR", LogLevel::Error},
+        {"severe", LogLevel::Error},
+        {"e", LogLevel::Error},
+        {"E", LogLevel::Error},
+        // Fatal
+        {"fatal", LogLevel::Fatal},
+        {"critical", LogLevel::Fatal},
+        {"crit", LogLevel::Fatal},
+        {"emerg", LogLevel::Fatal},
+        {"ftl", LogLevel::Fatal},
+        {"FTL", LogLevel::Fatal},
+        {"f", LogLevel::Fatal},
+        {"F", LogLevel::Fatal},
+        {"fault", LogLevel::Fatal},
+        {"Fault", LogLevel::Fatal},
+    }};
+    for (const auto &[input, expected] : CASES)
+    {
+        CAPTURE(input);
+        const auto actual = ParseLevelName(input);
+        REQUIRE(actual.has_value());
+        CHECK(*actual == expected);
+    }
+
+    CHECK_FALSE(ParseLevelName("").has_value());
+    CHECK_FALSE(ParseLevelName("INFOZ").has_value()); // near-miss of "info"; alias table is exact-match only
+    CHECK_FALSE(ParseLevelName("unknown").has_value());
+    CHECK_FALSE(ParseLevelName("\\t info").has_value());
+    // Deliberately *not* built-in (see header + README). Catches
+    // drift if they're added without updating the docs.
+    CHECK_FALSE(ParseLevelName("config").has_value());
+    CHECK_FALSE(ParseLevelName("default").has_value());
+    CHECK_FALSE(ParseLevelName("http").has_value());
+    // Numeric-string levels: handled via `levelMapping`, not built-in.
+    CHECK_FALSE(ParseLevelName("10").has_value());
+    CHECK_FALSE(ParseLevelName("30").has_value());
+    CHECK_FALSE(ParseLevelName("0").has_value());
+}
+
+TEST_CASE("CanonicalLevelName mirrors the LogLevel enum", "[log_level]")
+{
+    CHECK(CanonicalLevelName(LogLevel::Trace) == "Trace");
+    CHECK(CanonicalLevelName(LogLevel::Debug) == "Debug");
+    CHECK(CanonicalLevelName(LogLevel::Info) == "Info");
+    CHECK(CanonicalLevelName(LogLevel::Warn) == "Warn");
+    CHECK(CanonicalLevelName(LogLevel::Error) == "Error");
+    CHECK(CanonicalLevelName(LogLevel::Fatal) == "Fatal");
+    CHECK(CanonicalLevelName(LogLevel::Unknown) == "Unknown");
+}
+
+TEST_CASE("ResolveLevel honours per-column alias overrides", "[log_level]")
+{
+    const std::vector<std::pair<std::string, std::string>> overrides{
+        {"PANIC", "Fatal"},
+        // Bogus canonical name -- ignored.
+        {"WAT", "NotARealLevel"},
+        // Re-map a built-in alias to a different level.
+        {"warn", "Error"},
+        // Numeric mapping: numbers are deliberately *not* in the
+        // built-in table, but `levelMapping` makes them work when the
+        // producer emits them as JSON strings.
+        {"30", "Info"},
+        {"40", "Warn"},
+    };
+
+    CHECK(ResolveLevel("PANIC", overrides) == LogLevel::Fatal);
+    // Override takes precedence over built-in.
+    CHECK(ResolveLevel("warn", overrides) == LogLevel::Error);
+    // Invalid override falls through to built-in (no match here).
+    CHECK_FALSE(ResolveLevel("WAT", overrides).has_value());
+    // Built-in alias still works for entries not in overrides.
+    CHECK(ResolveLevel("info", overrides) == LogLevel::Info);
+    // Numeric strings only resolve through the per-column mapping.
+    CHECK(ResolveLevel("30", overrides) == LogLevel::Info);
+    CHECK(ResolveLevel("40", overrides) == LogLevel::Warn);
+    CHECK_FALSE(ResolveLevel("50", overrides).has_value());
+    // New short-form built-ins still resolve when no override matches.
+    CHECK(ResolveLevel("inf", overrides) == LogLevel::Info);
+    CHECK(ResolveLevel("i", overrides) == LogLevel::Info);
+    CHECK(ResolveLevel("ftl", overrides) == LogLevel::Fatal);
 }

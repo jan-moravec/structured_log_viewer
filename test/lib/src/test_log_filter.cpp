@@ -5,6 +5,7 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_filter.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
@@ -195,12 +196,15 @@ std::vector<std::string_view> ToViews(const std::vector<std::string> &values)
 
 TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log_filter][enum]")
 {
+    // Non-level key (`category`) keeps the column Enumeration; a
+    // `level`-named column with the same values would auto-promote
+    // to Level and break the REQUIRE below.
     const TestLogFile fixture("log_filter_enum_accept.json");
     fixture.Write("");
-    const std::vector<std::string> levels = {"info", "warn", "error"};
-    LogTable table = BuildEnumTable(fixture, "level", levels, 12);
+    const std::vector<std::string> values = {"info", "warn", "error"};
+    LogTable table = BuildEnumTable(fixture, "category", values, 12);
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const EnumDictionary *dict = FindDictionary(table, "level");
+    const EnumDictionary *dict = FindDictionary(table, "category");
     REQUIRE(dict != nullptr);
 
     const std::vector<std::string> selected = {"warn", "error"};
@@ -211,7 +215,7 @@ TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log
     // Rows cycle [info, warn, error, info, warn, error, ...].
     for (size_t row = 0; row < table.RowCount(); ++row)
     {
-        const std::string_view expected = levels[row % levels.size()];
+        const std::string_view expected = values[row % values.size()];
         const bool selectedRow = expected != "info";
         INFO("row=" << row << " value=" << expected);
         CHECK(predicate.MatchesRow(table, row) == selectedRow);
@@ -729,5 +733,105 @@ TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
         {
             CHECK_FALSE(predicate.MatchesRow(table, row));
         }
+    }
+}
+
+TEST_CASE(
+    "EnumRowPredicate reused for Type::Level columns matches expanded dictionary entries",
+    "[log_filter][enum_row_predicate][level]"
+)
+{
+    // Mirrors `MainWindow::BuildRowPredicates` for Level columns:
+    // canonical names ("Info", "Warn") on the UI side are translated
+    // to the raw dictionary entries, then fed into `EnumRowPredicate`.
+    const TestLogFile fixture("log_filter_level.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    const std::vector<std::string> rowValues = {"info", "WARN", "error", "qux", "Warning"};
+    for (const auto &v : rowValues)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+    }
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    const auto *ranks = table.LevelRankCache(0);
+    REQUIRE(ranks != nullptr);
+    const auto &registry = table.EnumDictionaries();
+    const KeyId kid = table.Keys().Find("level");
+    REQUIRE(kid != INVALID_KEY_ID);
+    const EnumDictionary *dict = registry.Find(kid);
+    REQUIRE(dict != nullptr);
+
+    // Expand canonical names to raw entries via the cache; same logic
+    // `MainWindow::BuildRowPredicates` uses.
+    auto expandSelection = [&](std::initializer_list<LogLevel> selectedLevels) {
+        std::vector<std::string> expanded;
+        for (size_t valueId = 0; valueId < ranks->size(); ++valueId)
+        {
+            for (const LogLevel level : selectedLevels)
+            {
+                if ((*ranks)[valueId] == level)
+                {
+                    expanded.emplace_back(dict->Resolve(static_cast<EnumValueId>(valueId)));
+                    break;
+                }
+            }
+        }
+        return expanded;
+    };
+
+    {
+        const auto expanded = expandSelection({LogLevel::Warn});
+        std::vector<std::string_view> selectedViews;
+        selectedViews.reserve(expanded.size());
+        for (const auto &s : expanded)
+        {
+            selectedViews.emplace_back(s);
+        }
+        const EnumRowPredicate predicate(0, std::span<const std::string_view>(selectedViews), dict);
+        CHECK_FALSE(predicate.MatchesRow(table, 0)); // info
+        CHECK(predicate.MatchesRow(table, 1));       // WARN
+        CHECK_FALSE(predicate.MatchesRow(table, 2)); // error
+        CHECK_FALSE(predicate.MatchesRow(table, 3)); // qux
+        CHECK(predicate.MatchesRow(table, 4));       // Warning -> Warn alias
+    }
+
+    {
+        const auto expanded = expandSelection({LogLevel::Info, LogLevel::Error});
+        std::vector<std::string_view> selectedViews;
+        selectedViews.reserve(expanded.size());
+        for (const auto &s : expanded)
+        {
+            selectedViews.emplace_back(s);
+        }
+        const EnumRowPredicate predicate(0, std::span<const std::string_view>(selectedViews), dict);
+        CHECK(predicate.MatchesRow(table, 0));       // info
+        CHECK_FALSE(predicate.MatchesRow(table, 1)); // WARN
+        CHECK(predicate.MatchesRow(table, 2));       // error
+        CHECK_FALSE(predicate.MatchesRow(table, 3)); // qux
+        CHECK_FALSE(predicate.MatchesRow(table, 4)); // Warning
     }
 }

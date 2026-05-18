@@ -2,6 +2,7 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 template <typename T> class QFutureWatcher;
@@ -184,6 +186,18 @@ public:
     /// untouched.
     void NotifyConfigurationReplaced();
 
+    /// Canonical-level -> raw-dictionary-bytes mapping captured just
+    /// before a `Type::Level` column lost its dictionary in the most
+    /// recent `AppendBatch`. Lets the `enumColumnsChanged(Demoted)`
+    /// receiver translate canonical-name filters (`"Info"`) into the
+    /// raw entries (`"info"`, `"INF"`, ...) the column actually
+    /// contained. Returns `nullptr` when no level demote happened for
+    /// @p columnIndex in the last batch. Cleared at the start of every
+    /// subsequent `AppendBatch`.
+    [[nodiscard]] const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *LastBatchLevelDemoteMappingFor(
+        int columnIndex
+    ) const noexcept;
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);
@@ -240,6 +254,14 @@ private:
 
     /// Retention cap; `0` means unbounded.
     size_t mRetentionCap = 0;
+
+    /// Per-batch capture: column -> (canonical level -> raw dictionary
+    /// bytes), recorded when a `Type::Level` column demotes during the
+    /// current `AppendBatch`. Consumed by
+    /// `MainWindow::enumColumnsChanged(Demoted)`; cleared at the top
+    /// of every `AppendBatch`.
+    std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
+        mLastBatchLevelDemoteMapping;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

@@ -13,6 +13,7 @@
 #include <loglib/internal/ascii_case.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
@@ -48,6 +49,7 @@
 #include <limits>
 #include <memory>
 #include <system_error>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -214,13 +216,13 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
 
     const bool isNumericColumn =
         column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number;
-    const bool typesMatch =
-        (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
-        (filter.type == LogFilter::Type::Enumeration && column.type == ColumnType::Enumeration) ||
-        (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
-        (filter.type == LogFilter::Type::Number && isNumericColumn) ||
-        (filter.type == LogFilter::Type::String && column.type != ColumnType::Time &&
-         column.type != ColumnType::Enumeration && column.type != ColumnType::Boolean && !isNumericColumn);
+    const bool isEnumLikeColumn = column.type == ColumnType::Enumeration || column.type == ColumnType::Level;
+    const bool typesMatch = (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
+                            (filter.type == LogFilter::Type::Enumeration && isEnumLikeColumn) ||
+                            (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
+                            (filter.type == LogFilter::Type::Number && isNumericColumn) ||
+                            (filter.type == LogFilter::Type::String && column.type != ColumnType::Time &&
+                             !isEnumLikeColumn && column.type != ColumnType::Boolean && !isNumericColumn);
     if (!typesMatch)
     {
         return FilterValidationFailure{
@@ -543,6 +545,81 @@ MainWindow::MainWindow(QWidget *parent)
             // Broad flush: rank cache keys alias across columns via
             // `EnumRankFor`, so invalidate everything to be safe.
             mSortFilterProxyModel->InvalidateEnumRanks();
+
+            // A `Type::Level -> Type::String` demote orphans any saved
+            // canonical-name filter (`"Info"`, ...) because those
+            // strings never appear in the column's raw data. Translate
+            // them to the raw entries `LogModel::AppendBatch` captured
+            // pre-demote so the filter keeps matching the same rows.
+            // Plain enum demotes need no translation;
+            // `LastBatchLevelDemoteMappingFor` returns nullptr there.
+            if (columnIndex >= 0)
+            {
+                if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex);
+                    levelMapping != nullptr)
+                {
+                    const auto &columnsCfg = mModel->Configuration().columns;
+                    const loglib::LogConfiguration::Column *demotedColumn =
+                        std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
+                                                                      : nullptr;
+                    for (auto &kv : mFilters)
+                    {
+                        loglib::LogConfiguration::LogFilter &filter = kv.second;
+                        if (filter.row != columnIndex)
+                        {
+                            continue;
+                        }
+                        if (filter.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+                        {
+                            continue;
+                        }
+                        // `ResolveLevel` still sees the column's saved
+                        // `levelMapping` (the demote only flips
+                        // `Column::type`), so user aliases like
+                        // `"NOTICE" -> Info` survive.
+                        std::vector<std::string> expanded;
+                        for (const std::string &name : filter.filterValues)
+                        {
+                            std::optional<loglib::LogLevel> level;
+                            if (demotedColumn != nullptr)
+                            {
+                                level = loglib::ResolveLevel(name, demotedColumn->levelMapping);
+                            }
+                            else
+                            {
+                                level = loglib::ParseLevelName(name);
+                            }
+                            if (!level.has_value())
+                            {
+                                continue;
+                            }
+                            const auto it = levelMapping->find(*level);
+                            if (it == levelMapping->end())
+                            {
+                                continue;
+                            }
+                            for (const std::string &raw : it->second)
+                            {
+                                expanded.push_back(raw);
+                            }
+                        }
+                        // Drop duplicates with a stable order.
+                        std::ranges::sort(expanded);
+                        const auto dupTail = std::ranges::unique(expanded);
+                        expanded.erase(dupTail.begin(), dupTail.end());
+                        // An empty `expanded` is a legitimate
+                        // "matches nothing" outcome -- keep it so the
+                        // rebuilt predicate rejects every row, matching
+                        // the plain enum branch's empty-selection
+                        // semantics.
+                        filter.filterValues = std::move(expanded);
+                    }
+                    // Mirror once after the loop; the wire vector is
+                    // snapshotted whole, so per-filter mirroring would
+                    // redo the same work.
+                    MirrorFiltersToConfiguration();
+                }
+            }
         }
         // `columnIndex == -1` means "scope unknown" -- treat as
         // matches-anything to keep the safe broad behaviour.
@@ -2122,6 +2199,16 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
         // Column not yet promoted: defer resolution until first growth.
         return false;
     }
+    // Level columns hold canonical names in `filter.filterValues` and
+    // expand them to raw entries at predicate-build time. Dictionary
+    // growth can surface entries matching a selected level, so treat
+    // these as never fully resolved and rebuild on every `Grew`.
+    const auto &columnsCfg = mModel->Configuration().columns;
+    if (filter.row >= 0 && static_cast<size_t>(filter.row) < columnsCfg.size() &&
+        columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level)
+    {
+        return false;
+    }
     return std::ranges::all_of(filter.filterValues, [dictionary](const std::string &value) {
         return dictionary->Find(value) != loglib::INVALID_ENUM_VALUE_ID;
     });
@@ -2318,7 +2405,71 @@ void MainWindow::UpdateFilters()
             // outlive the views. `EnumRowPredicate`'s constructor
             // copies/indexes them and keeps no reference back into the
             // span (pinned by the lifetime test in `test_log_filter.cpp`).
+            //
+            // Level columns reuse the same predicate: expand the saved
+            // canonical names (`"Info"`, ...) to every raw dictionary
+            // entry that maps to a selected level via the
+            // `LevelRankCache`. `expandedStorage` owns the strings
+            // because dictionary `Resolve` returns views.
             std::vector<std::string_view> selectedViews;
+            std::vector<std::string> expandedStorage;
+            const auto &columnsCfg = mModel->Configuration().columns;
+            const bool isLevelColumn =
+                static_cast<size_t>(filter.row) < columnsCfg.size() &&
+                columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level;
+            if (isLevelColumn)
+            {
+                const auto &lvlColumn = columnsCfg[static_cast<size_t>(filter.row)];
+                const std::vector<loglib::LogLevel> *ranks =
+                    mModel->Table().LevelRankCache(static_cast<size_t>(filter.row));
+                const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+                if (ranks == nullptr || dictionary == nullptr)
+                {
+                    // `Type::Level` column with no data yet: skip the
+                    // rule. `EnumFilterFullyResolved` returns false for
+                    // Level filters, so the next `Grew` rebuild will
+                    // install the predicate. Rejecting every row here
+                    // would hide unrelated rows.
+                    break;
+                }
+                // Use `ResolveLevel` (not `ParseLevelName`) so custom
+                // aliases saved while the column was Enumeration --
+                // and any `levelMapping` overrides -- still resolve.
+                // Matches `FilterEditor::Load`.
+                std::unordered_set<loglib::LogLevel> selectedLevels;
+                selectedLevels.reserve(filter.filterValues.size());
+                for (const std::string &name : filter.filterValues)
+                {
+                    if (auto level = loglib::ResolveLevel(name, lvlColumn.levelMapping); level.has_value())
+                    {
+                        selectedLevels.insert(*level);
+                    }
+                }
+                expandedStorage.reserve(ranks->size());
+                for (size_t valueId = 0; valueId < ranks->size(); ++valueId)
+                {
+                    if (selectedLevels.contains((*ranks)[valueId]))
+                    {
+                        const std::string_view bytes = dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                        expandedStorage.emplace_back(bytes);
+                    }
+                }
+                selectedViews.reserve(expandedStorage.size());
+                for (const std::string &v : expandedStorage)
+                {
+                    selectedViews.emplace_back(v);
+                }
+                // Empty `selectedViews` is legitimate (e.g. user
+                // picked `Trace` but only `Info`/`Warn` slots exist).
+                // Matches the enum branch: reject every row.
+                rules.emplace_back(
+                    std::in_place_type<loglib::EnumRowPredicate>,
+                    column,
+                    std::span<const std::string_view>(selectedViews),
+                    dictionary
+                );
+                break;
+            }
             selectedViews.reserve(filter.filterValues.size());
             for (const std::string &v : filter.filterValues)
             {

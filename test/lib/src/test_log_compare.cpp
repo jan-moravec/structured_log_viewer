@@ -317,6 +317,9 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
 
 TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_compare][enum]")
 {
+    // Non-level key (`category`) so the column stays Enumeration even
+    // though the dict happens to hold canonical level names. Pins the
+    // rank-table compare path against alphabetic order.
     const TestLogFile fixture("log_compare_enum.json");
     fixture.Write("");
 
@@ -324,8 +327,8 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -345,15 +348,15 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     const std::vector<std::string> rowValues = {"warn", "info", "error", "debug", "warn"};
     for (const auto &v : rowValues)
     {
-        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
-    batch.newKeys.emplace_back("level");
+    batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
 
     const EnumDictRank rank{*dict};
@@ -418,14 +421,16 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
 // disagreed with a bulk re-sort on where wrong-type slots landed.
 TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table", "[log_compare][enum][regression]")
 {
+    // Non-level key (`category`) so the column stays Enumeration and
+    // exercises `CompareEnum` rather than `CompareLevel`.
     const TestLogFile fixture("log_compare_enum_tail_bucket.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -441,21 +446,21 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     StreamedBatch batch;
     batch.firstLineNumber = 1;
     // Row 0: dict-resolved "info".
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("info")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("info")}}));
     // Row 1: dict-resolved "warn".
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string("warn")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("warn")}}));
     // Row 2: monostate (no field) -> non-DictRef.
     batch.lines.push_back(MakeLine(keys, *sourcePtr, {}));
     // Row 3: wrong-type slot (int instead of string) -> encode pass
     // refuses to dict-encode it, leaving the slot as Int64 -> non-DictRef.
-    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", LogValue(int64_t{42})}}));
-    batch.newKeys.emplace_back("level");
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", LogValue(int64_t{42})}}));
+    batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
     REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
-    const KeyId levelKey = keys.Find("level");
-    REQUIRE(levelKey != INVALID_KEY_ID);
-    const EnumDictionary *dict = table.EnumDictionaries().Find(levelKey);
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
     REQUIRE(dict != nullptr);
     const EnumDictRank rank{*dict};
 
@@ -497,14 +502,16 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
 
 TEST_CASE("CompareRows on enum column without rank falls back to string compare", "[log_compare][enum][fallback]")
 {
+    // Non-level key (`category`) keeps the column Enumeration so we
+    // hit the no-rank `CompareEnum` fallback (not `CompareLevel`).
     const TestLogFile fixture("log_compare_enum_no_rank.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
+        {.header = "category",
+         .keys = {"category"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Enumeration,
          .parseFormats = {}}
@@ -522,9 +529,9 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
     const std::vector<std::string> rowValues = {"warn", "info", "error"};
     for (const auto &v : rowValues)
     {
-        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string(v)}}));
     }
-    batch.newKeys.emplace_back("level");
+    batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
     // Compare resolved bytes directly. error < info < warn.
@@ -589,5 +596,129 @@ TEST_CASE("CompareRows is total: a<b iff b>a, and a=a", "[log_compare][propertie
             CHECK(forward == -reverse);
         }
         CHECK(CompareRows(table, a, a, 0) == 0);
+    }
+}
+
+TEST_CASE(
+    "CompareRows on Type::Level columns orders rows by canonical severity rank, not byte order", "[log_compare][level]"
+)
+{
+    const TestLogFile fixture("log_compare_level.json");
+    fixture.Write("");
+    // Pinned `Type::Level` with mixed-case aliases. Sort must use
+    // canonical rank (Info < Warn < Error < Fatal), not bytes
+    // ("ERROR" < "INFO" alphabetically).
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    const std::vector<std::string> rowValues = {"WARN", "INFO", "ERROR", "FATAL", "qux"};
+    for (const auto &v : rowValues)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+    }
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    // Info(1) < Warn(0) < Error(2) < Fatal(3); the qux row joins the tail.
+    CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // INFO < WARN
+    CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // WARN < ERROR
+    CHECK(SignOf(CompareRows(table, 2, 3, 0)) == -1); // ERROR < FATAL
+    // Unmapped value sinks to the tail.
+    CHECK(SignOf(CompareRows(table, 3, 4, 0)) == -1); // FATAL < qux (tail)
+    CHECK(SignOf(CompareRows(table, 4, 0, 0)) == 1);  // qux (tail) > WARN
+}
+
+TEST_CASE(
+    "SortPermutationByColumn fast path on Type::Level honours canonical rank in both directions",
+    "[log_compare][level][sort_permutation]"
+)
+{
+    // Regression: the `Type::Level` fast path in
+    // `SortPermutationByColumn` (pre-materialised `uint8_t` ranks +
+    // sentinel for unmapped slots) must agree with `CompareLevel` for
+    // both ascending and descending sorts.
+    const TestLogFile fixture("log_compare_level_sort_perm.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "level",
+         .keys = {"level"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Level,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    // Insertion order: info, warn, error, fatal, qux. Ranks come out
+    // `Info(3) < Warn(4) < Error(5) < Fatal(6) < sentinel(255)`, so:
+    //   ascending  -> [0, 1, 2, 3, 4]
+    //   descending -> [4, 3, 2, 1, 0]   (sentinel sorts FIRST in
+    //     descending because the primary key is `rankA > rankB`;
+    //     matches the enum fast-path convention.)
+    const std::vector<std::string> rowValues = {"info", "warn", "error", "fatal", "qux"};
+    for (const auto &v : rowValues)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"level", std::string(v)}}));
+    }
+    batch.newKeys.emplace_back("level");
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+
+    const std::vector<size_t> logRows = {0, 1, 2, 3, 4};
+    {
+        const std::vector<size_t> perm = SortPermutationByColumn(
+            table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, /*rankForEnumColumn=*/nullptr
+        );
+        REQUIRE(perm.size() == 5);
+        CHECK(perm[0] == 0); // info
+        CHECK(perm[1] == 1); // warn
+        CHECK(perm[2] == 2); // error
+        CHECK(perm[3] == 3); // fatal
+        CHECK(perm[4] == 4); // qux (tail / sentinel)
+    }
+    {
+        const std::vector<size_t> perm = SortPermutationByColumn(
+            table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/false, /*rankForEnumColumn=*/nullptr
+        );
+        REQUIRE(perm.size() == 5);
+        // Sentinel sorts first in descending: matches the generic
+        // path (`CompareLevel` returns +1 for an unresolved lhs and
+        // the generic descending comparator uses `cmp > 0`).
+        CHECK(perm[0] == 4); // qux (tail / sentinel)
+        CHECK(perm[1] == 3); // fatal
+        CHECK(perm[2] == 2); // error
+        CHECK(perm[3] == 1); // warn
+        CHECK(perm[4] == 0); // info
     }
 }

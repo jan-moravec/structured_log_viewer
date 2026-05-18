@@ -48,6 +48,7 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -210,18 +211,18 @@ private slots:
     {
         const ProxyChain chain = BuildLoadedChain();
         const auto &columns = chain.model->Configuration().columns;
-        int levelCol = -1;
-        for (size_t i = 0; i < columns.size(); ++i)
-        {
-            if (std::find(columns[i].keys.begin(), columns[i].keys.end(), std::string("level")) !=
-                columns[i].keys.end())
-            {
-                levelCol = static_cast<int>(i);
-                break;
-            }
-        }
+        const int levelCol = FindColumnByKey(columns, "level");
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        // The `level` column auto-promotes through Enumeration to the
+        // canonical Level type when the dictionary is dominated by
+        // canonical log-level names; both terminal enum-like states are
+        // valid here because the underlying storage stays as `DictRef`.
+        const auto levelType = columns[static_cast<size_t>(levelCol)].type;
+        QVERIFY2(
+            levelType == loglib::LogConfiguration::Type::Enumeration ||
+                levelType == loglib::LogConfiguration::Type::Level,
+            "level column must promote to Enumeration or Level"
+        );
 
         const loglib::EnumDictionary *dict = nullptr;
         const loglib::KeyId keyId =
@@ -309,67 +310,75 @@ private slots:
     }
 
     // Enum-column sort wall-clock under the production proxy chain.
+    // Sorts the `level` column (lands as `Type::Level` on this build,
+    // `Type::Enumeration` on older builds) and the `component` column
+    // (always `Type::Enumeration`, since `component` is not in the
+    // level field-name heuristic). The two columns gate the two
+    // `SortPermutationByColumn` fast paths -- level rank cache vs.
+    // `EnumDictRank` -- so a regression in either surfaces here.
     void BenchEnumColumnSort()
     {
         const ProxyChain chain = BuildLoadedChain();
         const auto &columns = chain.model->Configuration().columns;
-        int levelCol = -1;
-        for (size_t i = 0; i < columns.size(); ++i)
-        {
-            if (std::find(columns[i].keys.begin(), columns[i].keys.end(), std::string("level")) !=
-                columns[i].keys.end())
-            {
-                levelCol = static_cast<int>(i);
-                break;
-            }
-        }
+        const int levelCol = FindColumnByKey(columns, "level");
+        const int componentCol = FindColumnByKey(columns, "component");
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
-        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
+        QVERIFY2(componentCol >= 0, "fixture must produce a `component` column");
 
+        const auto levelType = columns[static_cast<size_t>(levelCol)].type;
+        QVERIFY2(
+            levelType == loglib::LogConfiguration::Type::Enumeration ||
+                levelType == loglib::LogConfiguration::Type::Level,
+            "level column must promote to Enumeration or Level"
+        );
+        // `component` is not a known level key, so it must stay
+        // Enumeration. Pin it so a broadening of the heuristic shows
+        // up here rather than silently losing the enum-rank gate.
+        QVERIFY2(
+            columns[static_cast<size_t>(componentCol)].type == loglib::LogConfiguration::Type::Enumeration,
+            "component column must remain Enumeration (no level promotion)"
+        );
+
+        // Lib-level gate on the level path. `CompareRows` for level
+        // columns ignores `EnumDictRank` and dispatches to
+        // `CompareLevel`, which calls `GetLevelForRow` per side --
+        // an extra `Keys().Find` + `unordered_map::find` per compare
+        // on top of the enum sibling's array-indexed rank read. The
+        // lib sibling in `benchmark_log_filter.cpp` (multi-sample
+        // `low` over 10 runs) measures ~1916 ms low / ~2201 ms high
+        // on this runner and asserts at 2000 ms; this single-sample
+        // app gate adds ~50% headroom on top of the lib `high` to
+        // absorb single-sample CI noise on the wider fixture.
+        BenchLibOnlySort(
+            chain,
+            levelCol,
+            QStringLiteral("Lib-only sort by level column over %1 rows: %2 ms"),
+            QStringLiteral("lib-only CompareRows level sort regressed: %1 ms"),
+            /*useEnumRank=*/false,
+            /*ceilingMs=*/3500.0
+        );
+
+        // Lib-level gate on the enum path. `CompareRows` for
+        // Enumeration consults the precomputed `EnumDictRank`
+        // (`CompareEnum`); catches a regression that drops the rank
+        // lookup or routes through a per-row string compare.
+        BenchLibOnlySort(
+            chain,
+            componentCol,
+            QStringLiteral("Lib-only sort by enum (component) column over %1 rows: %2 ms"),
+            QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms"),
+            /*useEnumRank=*/true,
+            /*ceilingMs=*/1500.0
+        );
+
+        // Proxy-roundtrip sort over the production
+        // `LogModel -> RowOrderProxyModel -> LogFilterModel` chain.
+        // `SortPermutationByColumn` has dedicated parallel fast paths
+        // for both Enumeration (uint16_t `EnumDictRank`) and Level
+        // (uint8_t `LevelRankCache`); we sort the level column here
+        // because that's the common user path -- the enum proxy path
+        // is covered implicitly by the lib gate above.
         using Ms = std::chrono::duration<double, std::milli>;
-
-        // Lib-level gate: time a pure `loglib::CompareRows`-driven
-        // `std::ranges::sort` over an `indices` vector so a regression
-        // in the lib's compare path can't hide behind Qt proxy overhead.
-        // Pattern mirrors `test/lib/src/benchmark_log_filter.cpp`'s
-        // `[log_filter][log_compare][large]` case, which ships with a
-        // 1500 ms ceiling. We give ourselves an extra ~30% margin here
-        // because the app-side fixture (`GenerateRandomJsonLogs` --
-        // `timestamp/level/message/component`) is wider than the lean
-        // `level`-only lib fixture, so per-row `FindCompact` does a
-        // touch more work per compare. On the GitHub Actions Linux
-        // runner the lib case measures ~750 ms and this case ~880 ms;
-        // a fast Apple Silicon laptop sees ~60 ms / ~80 ms respectively.
-        {
-            const loglib::LogTable &table = chain.model->Table();
-            const size_t rowCount = table.RowCount();
-            QCOMPARE(static_cast<std::size_t>(rowCount), LINE_COUNT);
-            std::vector<size_t> indices(rowCount);
-            // `std::iota` rather than `std::ranges::iota`: the latter is
-            // C++23 and AppleClang 17's libc++ still lacks it.
-            std::iota(indices.begin(), indices.end(), size_t{0});
-
-            const loglib::KeyId levelKey = table.Keys().Find(columns[static_cast<size_t>(levelCol)].keys.front());
-            QVERIFY2(levelKey != loglib::INVALID_KEY_ID, "level key must resolve in the table");
-            const loglib::EnumDictionary *dictionary = table.EnumDictionaries().Find(levelKey);
-            QVERIFY2(dictionary != nullptr, "level column must have a dictionary");
-            const loglib::EnumDictRank rank{*dictionary};
-
-            const auto libT0 = std::chrono::steady_clock::now();
-            std::ranges::sort(indices, [&](size_t a, size_t b) {
-                return loglib::CompareRows(table, a, b, static_cast<size_t>(levelCol), &rank) < 0;
-            });
-            const auto libElapsed = std::chrono::steady_clock::now() - libT0;
-
-            qDebug().noquote() << QStringLiteral("Lib-only sort by enum column over %1 rows: %2 ms")
-                                      .arg(static_cast<std::size_t>(indices.size()))
-                                      .arg(Ms(libElapsed).count(), 0, 'f', 2);
-            QVERIFY2(
-                Ms(libElapsed).count() < 2000.0,
-                qPrintable(QStringLiteral("lib-only CompareRows enum sort regressed: %1 ms").arg(Ms(libElapsed).count())
-                )
-            );
-        }
 
         // Drop any cached ranks so the very first `lessThan` triggers a
         // rebuild and the time below covers the cold-cache cost too.
@@ -382,19 +391,21 @@ private slots:
         const int rowCount = chain.filterProxy->rowCount();
         const auto elapsed = std::chrono::steady_clock::now() - t0;
 
-        qDebug().noquote() << QStringLiteral("Sort by enum column over %1 rows: %2 ms")
-                                  .arg(static_cast<std::size_t>(rowCount))
-                                  .arg(Ms(elapsed).count(), 0, 'f', 2);
+        const QString sortLabel = (levelType == loglib::LogConfiguration::Type::Level)
+                                      ? QStringLiteral("Sort by level column over %1 rows: %2 ms")
+                                      : QStringLiteral("Sort by enum column over %1 rows: %2 ms");
+        qDebug().noquote() << sortLabel.arg(static_cast<std::size_t>(rowCount)).arg(Ms(elapsed).count(), 0, 'f', 2);
 
         QCOMPARE(rowCount, static_cast<int>(LINE_COUNT));
         // Proxy-roundtrip sort gate. After the Phase 1 rewrite the
         // sort runs through `loglib::SortPermutationByColumn`: log
         // rows resolve once (no per-compare proxy walk), a uint16_t
         // rank is pre-materialised in parallel for enum columns, and
-        // `tbb::parallel_sort` permutes them. Dev-box wall-clock is
-        // ~68 ms; 1 s is the CI ceiling and the user-visible target
-        // from the perf plan. Breaking it means the comparator stopped
-        // being branch-free or the log-row pre-resolution disappeared.
+        // `tbb::parallel_sort` permutes them. Level columns use a
+        // uint8_t `LogLevel` rank instead. Dev-box ~68 ms; 1 s is the
+        // CI ceiling from the perf plan. A break here usually means
+        // the comparator stopped being branch-free or per-compare
+        // log-row pre-resolution regressed.
         QVERIFY2(
             Ms(elapsed).count() < 1000.0,
             qPrintable(QStringLiteral("sort proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
@@ -418,6 +429,74 @@ private:
         std::unique_ptr<RowOrderProxyModel> rowProxy;
         std::unique_ptr<LogFilterModel> filterProxy;
     };
+
+    /// Index of the column whose `keys` list contains @p key, or -1
+    /// when no column claims it. Case-sensitive.
+    static int FindColumnByKey(const std::vector<loglib::LogConfiguration::Column> &columns, const std::string &key)
+    {
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            if (std::find(columns[i].keys.begin(), columns[i].keys.end(), key) != columns[i].keys.end())
+            {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    /// Time a single-threaded `CompareRows` sort. When @p useEnumRank
+    /// is true the column must be Enumeration and a precomputed
+    /// `EnumDictRank` is passed; otherwise the rank pointer is null
+    /// (Level columns read the rank cache off the table directly).
+    static void BenchLibOnlySort(
+        const ProxyChain &chain,
+        int columnIndex,
+        const QString &outputLabel,
+        const QString &regressionLabel,
+        bool useEnumRank,
+        double ceilingMs
+    )
+    {
+        using Ms = std::chrono::duration<double, std::milli>;
+
+        const loglib::LogTable &table = chain.model->Table();
+        const size_t rowCount = table.RowCount();
+        QCOMPARE(static_cast<std::size_t>(rowCount), LINE_COUNT);
+        const auto &columns = chain.model->Configuration().columns;
+        const auto &column = columns[static_cast<size_t>(columnIndex)];
+
+        const loglib::EnumDictRank *rankPtr = nullptr;
+        std::optional<loglib::EnumDictRank> rankStorage;
+        if (useEnumRank)
+        {
+            QVERIFY2(
+                column.type == loglib::LogConfiguration::Type::Enumeration,
+                qPrintable(QStringLiteral("BenchLibOnlySort(useEnumRank=true) requires Type::Enumeration; got %1")
+                               .arg(static_cast<int>(column.type)))
+            );
+            const loglib::KeyId keyId = table.Keys().Find(column.keys.front());
+            QVERIFY2(keyId != loglib::INVALID_KEY_ID, "enum column key must resolve in the table");
+            const loglib::EnumDictionary *dictionary = table.EnumDictionaries().Find(keyId);
+            QVERIFY2(dictionary != nullptr, "enum column must have a dictionary");
+            rankStorage.emplace(*dictionary);
+            rankPtr = &rankStorage.value();
+        }
+
+        std::vector<size_t> indices(rowCount);
+        // `std::iota` rather than `std::ranges::iota`: the latter is
+        // C++23 and AppleClang 17's libc++ still lacks it.
+        std::iota(indices.begin(), indices.end(), size_t{0});
+
+        const auto libT0 = std::chrono::steady_clock::now();
+        std::ranges::sort(indices, [&](size_t a, size_t b) {
+            return loglib::CompareRows(table, a, b, static_cast<size_t>(columnIndex), rankPtr) < 0;
+        });
+        const auto libElapsed = std::chrono::steady_clock::now() - libT0;
+
+        qDebug().noquote(
+        ) << outputLabel.arg(static_cast<std::size_t>(indices.size())).arg(Ms(libElapsed).count(), 0, 'f', 2);
+        QVERIFY2(Ms(libElapsed).count() < ceilingMs, qPrintable(regressionLabel.arg(Ms(libElapsed).count())));
+    }
 
     /// Build a fresh proxy chain and drive a streaming parse of
     /// `mLogPath` to completion. Used by the filter / sort benchmarks

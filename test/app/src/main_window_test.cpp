@@ -16,6 +16,7 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_filter.hpp>
+#include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_value.hpp>
@@ -3089,7 +3090,7 @@ private slots:
         lines.reserve(300);
         for (int i = 0; i < 300; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+            lines.append(QStringLiteral(R"({"category": "%1"})").arg(levels[i % levels.size()]));
         }
         const TempJsonFile fixture(lines);
 
@@ -3098,7 +3099,7 @@ private slots:
         QCOMPARE(run.cancelled, false);
         QVERIFY(run.model->StreamingErrors().empty());
 
-        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "auto-promoted level column must exist");
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
@@ -3135,6 +3136,156 @@ private slots:
         QCOMPARE(proxy->rowCount(), 5);
     }
 
+    // End-to-end: a JSON `level` column with canonical names auto-
+    // promotes through `Type::Enumeration` to `Type::Level`, and
+    // `GetLevelForRow` then reports the canonical rank per row.
+    // (Tests that use `category` instead are pinning the enum path.)
+    void TestLevelColumnAutoPromotesFromCanonicalLevelKey()
+    {
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+            QStringLiteral("debug"),
+            QStringLiteral("trace"),
+            QStringLiteral("fatal"),
+        };
+        QStringList lines;
+        lines.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model->StreamingErrors().empty());
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+        const auto &columns = run.model->Configuration().columns;
+        QVERIFY(static_cast<size_t>(levelCol) < columns.size());
+        // Every dict entry is canonical, so the tolerance trivially
+        // holds and promotion must reach `Type::Level`.
+        QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level);
+
+        // Row-cycle pattern is `levels[i % 6]`; check the first few.
+        const auto col = static_cast<size_t>(levelCol);
+        QCOMPARE(run.model->Table().GetLevelForRow(0, col).value(), loglib::LogLevel::Info);
+        QCOMPARE(run.model->Table().GetLevelForRow(1, col).value(), loglib::LogLevel::Warn);
+        QCOMPARE(run.model->Table().GetLevelForRow(2, col).value(), loglib::LogLevel::Error);
+        QCOMPARE(run.model->Table().GetLevelForRow(3, col).value(), loglib::LogLevel::Debug);
+        QCOMPARE(run.model->Table().GetLevelForRow(4, col).value(), loglib::LogLevel::Trace);
+        QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
+    }
+
+    // End-to-end round-trip for `Column::levelMapping`. Saved config
+    // pins `Type::Level` with `NOTICE -> Info`, `PANIC -> Fatal`. A
+    // filter selecting `Info` expands via the rank cache to match
+    // both `NOTICE` (override) and `info` (built-in) while rejecting `PANIC`.
+    void TestLevelMappingRoundTripThroughFilterEditor()
+    {
+        // Step 1: build the saved configuration on disk.
+        loglib::LogConfiguration cfg;
+        loglib::LogConfiguration::Column column;
+        column.header = "lvl";
+        column.keys = {"lvl"};
+        column.printFormat = "{}";
+        column.type = loglib::LogConfiguration::Type::Level;
+        column.parseFormats = {};
+        column.levelMapping = {
+            {"NOTICE", "Info"},
+            {"PANIC", "Fatal"},
+        };
+        cfg.columns.push_back(column);
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString cfgPath = tempDir.filePath(QStringLiteral("level-mapping.json"));
+        {
+            std::string json;
+            QVERIFY(!glz::write_json(cfg, json));
+            QFile out(cfgPath);
+            QVERIFY(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            out.write(QByteArray::fromStdString(json));
+        }
+
+        // Step 2: load through MainWindow so the filter UI rebuilds.
+        QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
+        QCoreApplication::processEvents();
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("lvl"));
+        QVERIFY2(levelCol >= 0, "lvl column must exist after configuration load");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
+        );
+
+        // Step 3: drive a stream with mixed canonical / aliased values.
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("lvl"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.lines.push_back(makeLine("NOTICE")); // override -> Info
+            batch.lines.push_back(makeLine("PANIC"));  // override -> Fatal
+            batch.lines.push_back(makeLine("info"));   // built-in -> Info
+            batch.lines.push_back(makeLine("WARN"));   // built-in -> Warn
+            batch.lines.push_back(makeLine("qux"));    // unmapped (no level)
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        // Step 4: submit `Info` through the FilterEditor's slot.
+        // `MainWindow::UpdateFilters` expands `"Info"` to every raw
+        // dict entry resolving to `LogLevel::Info` via `LevelRankCache`.
+        const QString filterId = QStringLiteral("level-mapping-info-only");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("Info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        // Step 5: only `NOTICE` (override) and `info` (built-in)
+        // resolve to `Info` and survive. `PANIC`/`WARN`/`qux` drop out.
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        std::vector<QString> visible;
+        visible.reserve(static_cast<size_t>(filterModel->rowCount()));
+        for (int i = 0; i < filterModel->rowCount(); ++i)
+        {
+            visible.push_back(filterModel->index(i, levelCol).data(Qt::DisplayRole).toString());
+        }
+        std::ranges::sort(visible);
+        QCOMPARE(visible.size(), static_cast<size_t>(2));
+        QCOMPARE(visible[0], QStringLiteral("NOTICE"));
+        QCOMPARE(visible[1], QStringLiteral("info"));
+
+        model->EndStreaming(false);
+    }
+
     // A saved string filter against a now-enum column must be dropped at
     // `AddFilter` time, not silently retained as a type-mismatched rule.
     void TestSavedStringFilterDroppedOnNowEnumColumn()
@@ -3145,7 +3296,7 @@ private slots:
         lines.reserve(300);
         for (int i = 0; i < 300; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+            lines.append(QStringLiteral(R"({"category": "%1"})").arg(levels[i % levels.size()]));
         }
         const TempJsonFile fixture(lines);
 
@@ -3172,7 +3323,7 @@ private slots:
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(model->rowCount(), 300);
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = model->Configuration().columns;
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
@@ -3288,7 +3439,7 @@ private slots:
         lines.reserve(FIXTURE_LINES);
         for (int i = 0; i < FIXTURE_LINES; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1", "n": %2})").arg(levels[i % levels.size()]).arg(i));
+            lines.append(QStringLiteral(R"({"category": "%1", "n": %2})").arg(levels[i % levels.size()]).arg(i));
         }
         const TempJsonFile fixture(lines);
 
@@ -3297,7 +3448,7 @@ private slots:
         QCOMPARE(run.cancelled, false);
         QVERIFY(run.model->StreamingErrors().empty());
 
-        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = run.model->Configuration().columns;
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
@@ -3386,28 +3537,28 @@ private slots:
         loglib::KeyIndex &keys = model->Table().Keys();
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: 2x "info" promotes `level` (well-known key, stream
-        // threshold = 2). Dict size 0 -> 1.
+        // Batch 1: 2x "info" promotes `level` (stream threshold = 2).
+        // Dict size 0 -> 1.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("info"));
             model->AppendBatch(std::move(batch));
         }
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promoting batch");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type,
             loglib::LogConfiguration::Type::Enumeration
         );
-        const loglib::KeyId levelKey = keys.Find("level");
+        const loglib::KeyId levelKey = keys.Find("category");
         QVERIFY(levelKey != loglib::INVALID_KEY_ID);
         const loglib::EnumDictionary *dict = model->Table().EnumDictionaries().Find(levelKey);
         QVERIFY2(dict != nullptr, "promotion must create a dictionary entry");
@@ -3488,20 +3639,20 @@ private slots:
         loglib::KeyIndex &keys = model->Table().Keys();
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1 promotes "level" (well-known key; stream threshold = 2).
+        // Batch 1 promotes "category" (stream threshold = 2).
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("warn"));
             model->AppendBatch(std::move(batch));
         }
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
 
         // Warm the rank cache by sorting on the enum column.
@@ -3554,19 +3705,19 @@ private slots:
         loglib::KeyIndex &keys = model->Table().Keys();
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
         // One batch, five rows: the candidate scan early-bails after
-        // two "info" rows so well-known-key promotion fires. The
+        // two "info" rows so stream-mode promotion fires. The
         // `PromoteColumnToEnum` encode pass then trips the cap on the
         // third distinct value, demoting back to `Type::String` --
         // all inside a single `AppendBatch`.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("warn"));
@@ -3576,12 +3727,12 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist post-batch");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
         );
-        const loglib::KeyId levelKey = model->Table().Keys().Find("level");
+        const loglib::KeyId levelKey = model->Table().Keys().Find("category");
         QVERIFY2(
             model->Table().EnumDictionaries().Find(levelKey) == nullptr,
             "transient dictionary must have been erased by the in-batch demote"
@@ -3606,6 +3757,102 @@ private slots:
     // falls back to its string-set path. A cached
     // "fully-resolved" snapshot would let a stale armed predicate
     // hide every row (post-demote `GetEnumValueId` returns nullopt).
+    // Regression: a `Type::Level -> String` mid-session demote must
+    // keep matching the same rows. Filter values are canonical names
+    // (`"Info"`, ...), but the demoted column carries raw bytes --
+    // `LogModel::AppendBatch` snapshots the level -> raw-bytes
+    // mapping pre-demote and `MainWindow`'s `Demoted` handler
+    // rewrites `filterValues` to the raw bytes.
+    void TestLevelFilterTranslatesOnDemoteToString()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        const TempJsonFile emptyFixture(QStringList{});
+        auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *sourcePtr = fileSource.get();
+        (void)model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        // Cap of 3 lets batch 1 promote to Level (dict size 2). Batch 2
+        // adds three new distinct values, trips the cap, demotes to String.
+        constexpr uint16_t TEST_CAP = 3;
+        model->Table().SetEnumValueCap(TEST_CAP);
+
+        loglib::KeyIndex &keys = model->Table().Keys();
+        const auto makeLine = [&](const std::string &value) {
+            std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
+            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
+        };
+
+        // Batch 1: 2x `info` + 1x `warn` promotes through Enumeration
+        // to Level (`IsLogLevelKey` match + canonical dict entries).
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 1;
+            batch.newKeys.emplace_back("level");
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("info"));
+            batch.lines.push_back(makeLine("warn"));
+            model->AppendBatch(std::move(batch));
+        }
+
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after promotion");
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
+        );
+
+        // Submit `Info` through FilterEditor. Only the two `info`
+        // rows out of three should survive.
+        const QString filterId = QStringLiteral("level-demote-translation");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("Info")})
+            ),
+            "FilterEnumSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        // Batch 2: three new values overflow the cap, column demotes
+        // to String. The Demoted handler expands `["Info"]` to the
+        // raw entries pre-demote (`["info"]`).
+        {
+            loglib::StreamedBatch batch;
+            batch.firstLineNumber = 4;
+            batch.lines.push_back(makeLine("error"));
+            batch.lines.push_back(makeLine("debug"));
+            batch.lines.push_back(makeLine("trace"));
+            model->AppendBatch(std::move(batch));
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
+        );
+
+        // Translation succeeded iff the two `info` rows still match
+        // post-demote. Without it, `["Info"]` would byte-compare
+        // against `info` and reject every row.
+        QCOMPARE(filterModel->rowCount(), 2);
+        for (int i = 0; i < filterModel->rowCount(); ++i)
+        {
+            QCOMPARE(filterModel->index(i, levelCol).data(Qt::DisplayRole).toString(), QStringLiteral("info"));
+        }
+
+        model->EndStreaming(false);
+    }
+
     void TestEnumFilterRebuiltAfterDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -3625,7 +3872,7 @@ private slots:
         loglib::KeyIndex &keys = model->Table().Keys();
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
@@ -3634,13 +3881,13 @@ private slots:
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("info"));
             model->AppendBatch(std::move(batch));
         }
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type,
@@ -3708,7 +3955,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
 
-        // Two-column fixture where "level" promotes to enum (one
+        // Two-column fixture where "category" promotes to enum (one
         // batch -- 200 lines is below the streaming threshold).
         const QStringList levels{
             QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
@@ -3717,7 +3964,7 @@ private slots:
         lines.reserve(200);
         for (int i = 0; i < 200; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
+            lines.append(QStringLiteral(R"({"category": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
         }
         const TempJsonFile fixture(lines);
 
@@ -3737,7 +3984,7 @@ private slots:
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type,
@@ -3786,7 +4033,7 @@ private slots:
         // tracks the sort column in source-coords, so a reorder
         // shifts what that index points at -- we re-issue `sort()`.
         // The lookup hits the cache (KeyId match), no rebuild.
-        const int levelColAfter = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelColAfter = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelColAfter >= 0, "level column must still exist after the move");
         filterModel->sort(levelColAfter, Qt::AscendingOrder);
         QCoreApplication::processEvents();
@@ -3833,7 +4080,7 @@ private slots:
         lines.reserve(200);
         for (int i = 0; i < 200; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
+            lines.append(QStringLiteral(R"({"category": "%1", "msg": "m%2"})").arg(levels[i % levels.size()]).arg(i));
         }
         const TempJsonFile fixture(lines);
         // Let the parse finish before returning so it doesn't
@@ -3861,7 +4108,7 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        return ColumnByHeader(*model, QStringLiteral("level"));
+        return ColumnByHeader(*model, QStringLiteral("category"));
     }
 
     // `SetColumnVisible(idx, false)` flips `Column::visible` and
@@ -4004,7 +4251,7 @@ private slots:
         QVERIFY2(addFilterAction != nullptr, "menu must contain an `Add filter on ...` action");
         QVERIFY2(
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-            addFilterAction->text().contains(QStringLiteral("level")),
+            addFilterAction->text().contains(QStringLiteral("category")),
             "Add filter action title must reference the clicked column"
         );
     }
@@ -4297,7 +4544,7 @@ private slots:
             "OnHeaderSectionMoved slot must be invocable via meta-object"
         );
         QCoreApplication::processEvents();
-        QCOMPARE(ColumnByHeader(*model, QStringLiteral("level")), dest);
+        QCOMPARE(ColumnByHeader(*model, QStringLiteral("category")), dest);
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         addFilterAction->trigger();
@@ -4397,7 +4644,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(model->rowCount(), 0);
-        const int reloadedLevelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int reloadedLevelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(reloadedLevelCol >= 0, "level column must survive the config round-trip");
 
         // Inject a filter post-reload so the Edit/Remove submenus
@@ -4537,7 +4784,7 @@ private slots:
         mgr.Load(path.toStdString());
         QCoreApplication::processEvents();
 
-        const int levelAfterReload = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelAfterReload = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelAfterReload >= 0, "level column must reload");
         QCOMPARE(mgr.Configuration().filters.size(), static_cast<size_t>(1));
         QCOMPARE(mgr.Configuration().filters[0].row, levelAfterReload);
@@ -4927,7 +5174,7 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        const int levelColAfter = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelColAfter = ColumnByHeader(*model, QStringLiteral("category"));
         QCOMPARE(levelColAfter, dest);
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the reorder");
         QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
@@ -5226,7 +5473,7 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto &surviving = mWindow->Filters().begin()->second;
         QCOMPARE(surviving.type, loglib::LogConfiguration::LogFilter::Type::Enumeration);
-        const int levelColAfterLoad = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelColAfterLoad = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelColAfterLoad >= 0, "level column must reload");
         QCOMPARE(surviving.row, levelColAfterLoad);
     }
@@ -5503,7 +5750,7 @@ private slots:
         loglib::KeyIndex &keys = model.Table().Keys();
         const auto makeLine = [&](const std::string &value) {
             std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-            values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+            values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
@@ -5511,13 +5758,13 @@ private slots:
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("warn"));
             model.AppendBatch(std::move(batch));
         }
 
-        const int levelCol = ColumnByHeader(model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
         QCOMPARE(
             model.Configuration().columns[static_cast<size_t>(levelCol)].type,
@@ -5547,7 +5794,7 @@ private slots:
             batch.lines.push_back(makeLine("debug"));
             model.AppendBatch(std::move(batch));
         }
-        const loglib::KeyId levelKey = keys.Find("level");
+        const loglib::KeyId levelKey = keys.Find("category");
         QVERIFY(levelKey != loglib::INVALID_KEY_ID);
         const loglib::EnumDictionary *dict = model.Table().EnumDictionaries().Find(levelKey);
         QVERIFY2(dict != nullptr, "level dictionary must still exist after batch 2");
@@ -5597,13 +5844,13 @@ private slots:
             loglib::KeyIndex &keys = model.Table().Keys();
             const auto makeLine = [&](const std::string &value) {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+                values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
                 return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
             };
 
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             // Same shape on both sides; dictionary instances differ.
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("warn"));
@@ -5621,7 +5868,7 @@ private slots:
         proxy.setSourceModel(&modelA);
         proxy.SetLogModel(&modelA);
 
-        const int levelColA = ColumnByHeader(modelA, QStringLiteral("level"));
+        const int levelColA = ColumnByHeader(modelA, QStringLiteral("category"));
         QVERIFY(levelColA >= 0);
         const loglib::KeyId keyA =
             modelA.Table().Keys().Find(modelA.Configuration().columns[static_cast<size_t>(levelColA)].keys.front());
@@ -5660,7 +5907,7 @@ private slots:
 
         // Re-wire for `B`. Survivors come from `B`'s rows (2 "info").
         proxy.SetLogModel(&modelB);
-        const int levelColB = ColumnByHeader(modelB, QStringLiteral("level"));
+        const int levelColB = ColumnByHeader(modelB, QStringLiteral("category"));
         QVERIFY(levelColB >= 0);
         const loglib::KeyId keyB =
             modelB.Table().Keys().Find(modelB.Configuration().columns[static_cast<size_t>(levelColB)].keys.front());
@@ -5707,12 +5954,12 @@ private slots:
             loglib::KeyIndex &keys = model.Table().Keys();
             const auto makeLine = [&](const std::string &value) {
                 std::vector<std::pair<loglib::KeyId, loglib::LogValue>> values;
-                values.emplace_back(keys.GetOrInsert("level"), loglib::LogValue(value));
+                values.emplace_back(keys.GetOrInsert("category"), loglib::LogValue(value));
                 return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
             };
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
-            batch.newKeys.emplace_back("level");
+            batch.newKeys.emplace_back("category");
             batch.lines.push_back(makeLine("info"));
             batch.lines.push_back(makeLine("warn"));
             model.AppendBatch(std::move(batch));
@@ -5723,7 +5970,7 @@ private slots:
         proxy.setSourceModel(&model);
         // Skip `SetLogModel` on purpose: rule installation in this
         // state must be rejected at evaluation time.
-        const int levelCol = ColumnByHeader(model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(model, QStringLiteral("category"));
         QVERIFY(levelCol >= 0);
         const std::vector<std::string> selected = {"info"};
         std::vector<std::string_view> selectedViews;
@@ -5961,7 +6208,7 @@ private slots:
         lines.reserve(40);
         for (int i = 0; i < 40; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1", "msg": "row%2"})").arg(levels[i % levels.size()]).arg(i));
+            lines.append(QStringLiteral(R"({"category": "%1", "msg": "row%2"})").arg(levels[i % levels.size()]).arg(i));
         }
         const TempJsonFile fixture(lines);
 
@@ -6051,7 +6298,7 @@ private slots:
         lines.reserve(FIXTURE_LINES);
         for (int i = 0; i < FIXTURE_LINES; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1", "msg": "row%2"})").arg(levels[i % levels.size()]).arg(i));
+            lines.append(QStringLiteral(R"({"category": "%1", "msg": "row%2"})").arg(levels[i % levels.size()]).arg(i));
         }
         const TempJsonFile fixture(lines);
 
@@ -6075,7 +6322,7 @@ private slots:
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
 
         // Install an enum filter selecting only "info" -> 6 visible rows.
@@ -6175,7 +6422,7 @@ private slots:
         // then load it back into the model.
         {
             loglib::LogConfigurationManager scratch;
-            scratch.AppendKeys({"level"});
+            scratch.AppendKeys({"category"});
             scratch.SetColumnType(0, loglib::LogConfiguration::Type::Enumeration);
             scratch.Save(cfgPath.toStdString());
         }
@@ -6219,7 +6466,7 @@ private slots:
         lines.reserve(320);
         for (int i = 0; i < 320; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+            lines.append(QStringLiteral(R"({"category": "%1"})").arg(levels[i % levels.size()]));
         }
         const TempJsonFile fixture(lines);
 
@@ -6245,7 +6492,7 @@ private slots:
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(model->rowCount(), 320);
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type,
@@ -6316,7 +6563,7 @@ private slots:
         lines.reserve(320);
         for (int i = 0; i < 320; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+            lines.append(QStringLiteral(R"({"category": "%1"})").arg(levels[i % levels.size()]));
         }
         const TempJsonFile fixture(lines);
 
@@ -6344,7 +6591,7 @@ private slots:
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
         QCOMPARE(model->rowCount(), 320);
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = model->Configuration().columns;
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
@@ -6742,7 +6989,7 @@ private slots:
         lines.reserve(300);
         for (int i = 0; i < 300; ++i)
         {
-            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+            lines.append(QStringLiteral(R"({"category": "%1"})").arg(levels[i % levels.size()]));
         }
         const TempJsonFile fixture(lines);
 
@@ -6765,7 +7012,7 @@ private slots:
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
-        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(levelCol >= 0, "level column must exist");
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(levelCol)].type,
