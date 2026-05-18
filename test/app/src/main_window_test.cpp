@@ -1,3 +1,4 @@
+#include "column_editor.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "log_filter_model.hpp"
@@ -33,11 +34,15 @@
 
 #include <QAbstractItemModel>
 #include <QAction>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QIcon>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
@@ -4612,15 +4617,16 @@ private slots:
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QList<QAction *> topActions = built.menu->actions();
-        QCOMPARE(topActions.size(), 4);
+        QCOMPARE(topActions.size(), 5);
 
-        // Hide → separator → Add filter on ... → filter submenu.
+        // Hide → Edit column → separator → Add filter on ... → filter submenu.
         QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
-        QVERIFY2(topActions[1]->isSeparator(), "second action must be a separator");
-        QVERIFY2(topActions[2]->text().startsWith("Add filter on"), "third action must be Add filter on ...");
+        QVERIFY2(topActions[1]->text().startsWith("Edit column"), "second action must be Edit column ...");
+        QVERIFY2(topActions[2]->isSeparator(), "third action must be a separator");
+        QVERIFY2(topActions[3]->text().startsWith("Add filter on"), "fourth action must be Add filter on ...");
         // Last non-separator is the filter submenu; its title is the
         // filter's display value, not a fixed string.
-        QVERIFY2(!topActions[3]->isSeparator(), "fourth action must be the filter submenu");
+        QVERIFY2(!topActions[4]->isSeparator(), "fifth action must be the filter submenu");
     }
 
     // With zero rows, Add-filter and per-filter Edit must be
@@ -5783,6 +5789,133 @@ private slots:
         QVERIFY(mismatchedItem != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY2(mismatchedItem->text().toInt() > 0, "Dialog must report a non-zero mismatch count for `msg`");
+    }
+
+    // The Column Editor writes back every user-controllable Column
+    // field on Apply: header, type, autoDetect, visible. Verify each
+    // surface lands in the live configuration and the health cache
+    // re-snapshots so the diagnostics surfaces flip in lockstep.
+    void TestColumnEditorAppliesEveryField()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Baseline: msg auto-detected to String, visible, header "msg".
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(msgCol)].type,
+            loglib::LogConfiguration::Type::String
+        );
+
+        ColumnEditor editor(model, msgCol);
+
+        auto *headerEdit = editor.findChild<QLineEdit *>(QStringLiteral("headerEdit"));
+        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        auto *visibleCheck = editor.findChild<QCheckBox *>(QStringLiteral("visibleCheck"));
+        QVERIFY(headerEdit != nullptr);
+        QVERIFY(typeCombo != nullptr);
+        QVERIFY(visibleCheck != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFYs abort on null.
+        QCOMPARE(headerEdit->text(), QStringLiteral("msg"));
+
+        // Drive the form: rename, pin to Integer, and hide.
+        headerEdit->setText(QStringLiteral("message"));
+        // Index 4 in the combo is "Integer" (see TypeChoices() in
+        // column_editor.cpp); the choice list is the single source of
+        // truth and the order is documented inline.
+        constexpr int INTEGER_CHOICE_INDEX = 4;
+        typeCombo->setCurrentIndex(INTEGER_CHOICE_INDEX);
+        visibleCheck->setChecked(false);
+
+        QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
+        editor.Apply();
+
+        const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
+        QCOMPARE(QString::fromStdString(updated.header), QStringLiteral("message"));
+        QCOMPARE(updated.type, loglib::LogConfiguration::Type::Integer);
+        QVERIFY2(!updated.autoDetect, "Pinning a concrete type must flip autoDetect off");
+        QVERIFY2(!updated.visible, "Visible checkbox must round-trip to Column::visible");
+
+        // The diagnostics cache picked up the new type immediately;
+        // pinning a string column to Integer must reveal mismatches.
+        QVERIFY2(healthSpy.count() >= 1, "Apply must trigger RefreshColumnHealth and emit columnHealthChanged");
+        const auto health = model->ColumnHealth(msgCol);
+        QVERIFY(health.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QVERIFY2(health->matchingSlots < health->presentSlots, "Pinned-Integer string column must report mismatches");
+    }
+
+    // The Auto-detect choice at the top of the Type combo collapses
+    // the (Type::Any, autoDetect=true) pair into a single user-
+    // visible entry. Selecting it must restore both fields atomically
+    // -- otherwise the column ends up in the legacy "user-pinned Any"
+    // state that suppresses promotion.
+    void TestColumnEditorAutoDetectChoiceRestoresFlag()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Force the column into a user-pinned state first so picking
+        // Auto-detect is a real edit, not a no-op.
+        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+
+        ColumnEditor editor(model, msgCol);
+        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        QVERIFY(typeCombo != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        typeCombo->setCurrentIndex(0); // "Auto-detect"
+        editor.Apply();
+
+        const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
+        QCOMPARE(updated.type, loglib::LogConfiguration::Type::Any);
+        QVERIFY2(updated.autoDetect, "Auto-detect choice must restore autoDetect=true");
+    }
+
+    // Double-clicking a diagnostics row emits `editColumnRequested`
+    // with the source-table column index. Verifying the signal
+    // (rather than reaching into the editor it eventually pops) keeps
+    // the dialog test layer-agnostic and lets `MainWindow` own the
+    // editor wiring.
+    void TestDiagnosticsDialogDoubleClickEmitsEditRequest()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        ConfigurationDiagnosticsDialog dialog(model);
+        QSignalSpy editSpy(&dialog, &ConfigurationDiagnosticsDialog::editColumnRequested);
+
+        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
+        QVERIFY(table != nullptr);
+
+        // Find the row corresponding to `msg` (sorting may rearrange
+        // the table independently of source-column order) and
+        // simulate a double-click.
+        int msgRow = -1;
+        for (int row = 0; row < table->rowCount(); ++row)
+        {
+            const QTableWidgetItem *item = table->item(row, 0);
+            if (item != nullptr && item->text() == QStringLiteral("msg"))
+            {
+                msgRow = row;
+                break;
+            }
+        }
+        QVERIFY2(msgRow >= 0, "Dialog must surface a row for `msg`");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        emit table->cellDoubleClicked(msgRow, 0);
+
+        QCOMPARE(editSpy.count(), 1);
+        QCOMPARE(editSpy.takeFirst().at(0).toInt(), msgCol);
     }
 
     // Find must skip hidden columns. The fixture has `level`

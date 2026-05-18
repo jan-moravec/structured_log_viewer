@@ -334,6 +334,15 @@ void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
     mConfiguration.columns[columnIndex].visible = visible;
 }
 
+void LogConfigurationManager::SetColumnHeader(size_t columnIndex, std::string header)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].header = std::move(header);
+}
+
 void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)
 {
     mConfiguration.filters = std::move(filters);

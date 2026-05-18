@@ -238,6 +238,12 @@ public:
     /// of range.
     void SetColumnVisible(size_t columnIndex, bool visible);
 
+    /// Replace `Column::header` for @p columnIndex. The header is a
+    /// display-only string -- `Column::keys` remains the stable
+    /// identifier the parser keys off -- so renaming is safe at any
+    /// point in a session. No-op out of range.
+    void SetColumnHeader(size_t columnIndex, std::string header);
+
     /// Replace `LogConfiguration::filters` wholesale. The app calls
     /// this from its `mFilters` -> wire-format mirror so `Save` and
     /// `MoveColumn`'s row remap see the live runtime set.

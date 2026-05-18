@@ -39,6 +39,8 @@ set(PROJECT_SOURCES
     include/network_stream_dialog.hpp
     src/configuration_diagnostics_dialog.cpp
     include/configuration_diagnostics_dialog.hpp
+    src/column_editor.cpp
+    include/column_editor.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})

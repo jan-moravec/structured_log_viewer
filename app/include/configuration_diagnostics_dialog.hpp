@@ -35,6 +35,13 @@ public:
     /// without duplicating the aggregation.
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
+signals:
+    /// User double-clicked a row in the diagnostics table; the
+    /// receiving `MainWindow` opens the per-column editor for
+    /// @p columnIndex. Decoupled via a signal so the dialog can
+    /// stay layer-agnostic about how the edit lands.
+    void editColumnRequested(int columnIndex);
+
 private:
     QPointer<LogModel> mModel;
     QLabel *mSummaryLabel = nullptr;

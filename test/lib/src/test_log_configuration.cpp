@@ -848,6 +848,38 @@ TEST_CASE(
     CHECK(ResolveLevel("30", mapping) == LogLevel::Info);
 }
 
+TEST_CASE(
+    "LogConfigurationManager::SetColumnHeader renames the display label without touching keys",
+    "[LogConfigurationManager][column_header]"
+)
+{
+    // `header` is the display string the GUI shows; `keys` are the
+    // parser identifiers and must stay untouched so the existing
+    // column binding survives. The mutator is the only path the
+    // Column Editor takes to rename a column, so a hand-on-the-wheel
+    // test pins that one-way invariant.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"abc", "xyz"});
+    REQUIRE(manager.Configuration().columns.size() == 2);
+
+    manager.SetColumnHeader(0, "Alpha");
+    CHECK(manager.Configuration().columns[0].header == "Alpha");
+    CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"abc"});
+    CHECK(manager.Configuration().columns[1].header == "xyz");
+
+    // Empty rename is intentionally allowed -- users can clear the
+    // header without us second-guessing them; the table falls back
+    // to the keys via `LogTable::GetHeader`.
+    manager.SetColumnHeader(1, "");
+    CHECK(manager.Configuration().columns[1].header.empty());
+
+    // Out-of-range index must be a silent no-op (matches the rest of
+    // the SetColumn* family). The valid columns stay untouched.
+    manager.SetColumnHeader(99, "Bogus");
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].header == "Alpha");
+}
+
 TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")
 {
     // The hidden-column flag must survive Save / Load.

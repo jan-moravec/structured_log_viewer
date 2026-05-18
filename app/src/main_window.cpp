@@ -2,6 +2,7 @@
 #include "./ui_main_window.h"
 
 #include "appearance_control.hpp"
+#include "column_editor.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "network_stream_dialog.hpp"
@@ -1607,11 +1608,45 @@ void MainWindow::ShowConfigurationDiagnostics()
     {
         mDiagnosticsDialog = new ConfigurationDiagnosticsDialog(mModel, this);
         mDiagnosticsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+        // Double-click on a row drills into the per-column editor; we
+        // wire it up once and let the dialog stay alive across opens
+        // so the connection survives.
+        connect(
+            mDiagnosticsDialog,
+            &ConfigurationDiagnosticsDialog::editColumnRequested,
+            this,
+            &MainWindow::EditColumn
+        );
     }
     mDiagnosticsDialog->Refresh();
     mDiagnosticsDialog->show();
     mDiagnosticsDialog->raise();
     mDiagnosticsDialog->activateWindow();
+}
+
+void MainWindow::EditColumn(int columnIndex)
+{
+    if (mModel == nullptr)
+    {
+        return;
+    }
+    const auto &columns = mModel->Configuration().columns;
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= columns.size())
+    {
+        return;
+    }
+    ColumnEditor editor(mModel, columnIndex, this);
+    if (editor.exec() == QDialog::Accepted)
+    {
+        // The editor already flipped through the typed mutators and
+        // refreshed health; pull display side-effects that fall
+        // outside the model's normal data-changed surface. Column
+        // visibility may have flipped, so reapply it to the header
+        // and re-aggregate the diagnostics status bar.
+        ApplyColumnVisibility();
+        UpdateDiagnosticsStatus();
+        UpdateUi();
+    }
 }
 
 void MainWindow::UpdateDiagnosticsStatus()
@@ -2922,6 +2957,20 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
             }
         });
     }
+
+    // Edit Column... opens the per-column editor for header / type /
+    // visibility. Available regardless of visibility because the
+    // editor is the place to bring a hidden column back; the
+    // re-resolution by stable keys at trigger time mirrors the Hide
+    // path above.
+    QAction *editColumnAction = menu->addAction(tr("Edit column \"%1\"…").arg(thisLabel));
+    connect(editColumnAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+        const int idx = FindColumnIndexByKeys(keys);
+        if (idx >= 0)
+        {
+            EditColumn(idx);
+        }
+    });
 
     // Filter block: `Add filter on "<col>"` plus a submenu per
     // existing filter on this column. Lambdas capture stable keys /

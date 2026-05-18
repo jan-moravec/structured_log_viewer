@@ -151,6 +151,24 @@ ConfigurationDiagnosticsDialog::ConfigurationDiagnosticsDialog(LogModel *model, 
     });
     connect(mCloseButton, &QPushButton::clicked, this, &QDialog::close);
 
+    // Double-clicking any cell in a row drills into the per-column
+    // editor. We pull the source-table column index off the row's
+    // first item's `Qt::UserRole`, which `Refresh` stamps with the
+    // unsorted index so a user-sorted dialog still resolves to the
+    // right model column.
+    connect(mTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int /*col*/) {
+        if (auto *item = mTable->item(row, COL_HEADER); item != nullptr)
+        {
+            const QVariant payload = item->data(Qt::UserRole);
+            bool ok = false;
+            const int columnIndex = payload.toInt(&ok);
+            if (ok && columnIndex >= 0)
+            {
+                emit editColumnRequested(columnIndex);
+            }
+        }
+    });
+
     if (mModel)
     {
         connect(mModel, &LogModel::columnHealthChanged, this, &ConfigurationDiagnosticsDialog::Refresh);
@@ -195,6 +213,10 @@ void ConfigurationDiagnosticsDialog::Refresh()
         {
             headerItem->setIcon(QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
         }
+        // Stash the unsorted source-table column index on the row's
+        // first item so the double-click drill-down still resolves to
+        // the right model column even after the user sorts the table.
+        headerItem->setData(Qt::UserRole, i);
         mTable->setItem(i, COL_HEADER, headerItem);
         mTable->setItem(i, COL_TYPE, MakeReadOnlyItem(FormatType(column.type)));
         mTable->setItem(i, COL_AUTODETECT, MakeReadOnlyItem(column.autoDetect ? tr("Yes") : tr("No")));

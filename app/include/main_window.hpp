@@ -195,6 +195,15 @@ private slots:
     /// header right-click "Configuration Diagnostics\u2026" entry.
     void ShowConfigurationDiagnostics();
 
+    /// Open the per-column editor dialog modally on @p columnIndex.
+    /// No-op when @p columnIndex is out of range. Reached from the
+    /// header right-click "Edit column \"X\"\u2026" entry and from
+    /// double-clicking a row in the diagnostics dialog. The editor
+    /// writes through `LogConfigurationManager`'s typed mutators on
+    /// accept; the model side picks the changes up through the
+    /// `headerDataChanged` and `columnHealthChanged` signals.
+    void EditColumn(int columnIndex);
+
     /// Refresh the status-bar mismatch summary from the current
     /// `LogModel::ColumnHealth` snapshot. Wired to
     /// `LogModel::columnHealthChanged`; hides the button when no
