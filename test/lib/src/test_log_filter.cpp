@@ -89,8 +89,9 @@ LogTable BuildEnumTable(
     return table;
 }
 
-/// Single-column `Type::Any` `LogTable`; values land as strings (no
-/// auto-promotion) so the string-fallback path can be exercised.
+/// Single-column `Type::Any + autoDetect=false` `LogTable`; values
+/// land as strings (no auto-promotion) so the string-fallback path
+/// can be exercised.
 LogTable BuildStringTable(
     const TestLogFile &testFile, const std::string &columnKey, const std::vector<std::string> &perRowValues
 )
@@ -104,7 +105,10 @@ LogTable BuildStringTable(
          .keys = {columnKey},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Any,
-         .parseFormats = {}}
+         .parseFormats = {},
+         .visible = true,
+         .levelMapping = {},
+         .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);

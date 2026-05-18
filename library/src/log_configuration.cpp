@@ -176,7 +176,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .header = key,
                     .keys = {key},
                     .printFormat = "{}",
-                    .type = LogConfiguration::Type::Unknown,
+                    .type = LogConfiguration::Type::Any,
                     .parseFormats = {}
                 });
             }
@@ -211,7 +211,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 .header = key,
                 .keys = {key},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::Unknown,
+                .type = LogConfiguration::Type::Any,
                 .parseFormats = {}
             });
         }
@@ -291,6 +291,15 @@ void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration
         return;
     }
     mConfiguration.columns[columnIndex].type = type;
+}
+
+void LogConfigurationManager::SetColumnAutoDetect(size_t columnIndex, bool autoDetect)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].autoDetect = autoDetect;
 }
 
 void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)

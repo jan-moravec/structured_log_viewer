@@ -178,10 +178,12 @@ public:
     /// Returns a default-constructed lookup on any miss.
     [[nodiscard]] EnumColumnLookup ResolveEnumColumn(size_t columnIndex) const noexcept;
 
-    /// End-of-parse/end-of-stream auto-detection sweep: promote permissive
-    /// candidates and transition leftover `Type::Unknown` columns to a
-    /// terminal type. Idempotent. Returns true if at least one column was
-    /// promoted to `Type::Enumeration`.
+    /// End-of-parse/end-of-stream auto-detection sweep: promote
+    /// permissive candidates and transition leftover `Type::Any +
+    /// autoDetect` columns to a terminal type (or leave them as
+    /// `Type::Any + autoDetect` for a future re-load when there is
+    /// insufficient evidence). Idempotent. Returns true if at least
+    /// one column was promoted to `Type::Enumeration`.
     bool FinalizeAutoDetection();
 
     const LogConfigurationManager &Configuration() const;
@@ -317,8 +319,8 @@ private:
     /// Per-value byte-length cap (`0` disables).
     uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 
-    /// Promotion candidates keyed on `column.header`; live while
-    /// `Type::Unknown`.
+    /// Promotion candidates keyed on `column.header`; live while the
+    /// column is `Type::Any` with `autoDetect == true`.
     std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
 
     /// Cumulative health for active enum columns, keyed on `column.header`.

@@ -666,7 +666,14 @@ TEST_CASE(
          .parseFormats = {"%FT%T", "%F %T"}}
     );
     cfg.columns.push_back(
-        {.header = "msg", .keys = {"msg"}, .printFormat = "{}", .type = LogConfiguration::Type::Any, .parseFormats = {}}
+        {.header = "msg",
+         .keys = {"msg"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Any,
+         .parseFormats = {},
+         .visible = true,
+         .levelMapping = {},
+         .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1776,9 +1783,9 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
 
 TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[log_table][enum][get_value]")
 {
-    // Pin the column to `Type::Any` so the auto-detector skips it; pre-
-    // promotion / post-demote slots stay `OwnedString` for the filter's
-    // string-set fallback path.
+    // Pin the column to `Type::Any` with `autoDetect = false` so the
+    // auto-detector skips it; pre-promotion / post-demote slots stay
+    // `OwnedString` for the filter's string-set fallback path.
     const TestLogFile testFile("enum_get_value_owned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1790,7 +1797,10 @@ TEST_CASE("LogTable::GetEnumValueId returns nullopt for OwnedString slots", "[lo
          .keys = {"channel"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Any,
-         .parseFormats = {}}
+         .parseFormats = {},
+         .visible = true,
+         .levelMapping = {},
+         .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -2019,14 +2029,15 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Pre-register both keys so `feature` lands as a `Type::Unknown` column
-    // on the first batch, even though no row in batch 1 carries it.
+    // Pre-register both keys so `feature` lands as a candidate
+    // (`Type::Any + autoDetect = true`) column on the first batch,
+    // even though no row in batch 1 carries it.
     static_cast<void>(keys.GetOrInsert("unrelated"));
     static_cast<void>(keys.GetOrInsert("feature"));
 
     // Batch 1: 6 rows where `feature` is absent. The candidate scan walks
     // the first `scanCap = 4` rows, sees no presence, and resets
-    // `rowsObserved` instead of bailing to `Type::Any`.
+    // `rowsObserved` instead of routing to a terminal type.
     StreamedBatch batch1;
     batch1.firstLineNumber = 1;
     batch1.newKeys = {"unrelated", "feature"};
@@ -2040,8 +2051,9 @@ TEST_CASE(
         const auto &columns = table.Configuration().Configuration().columns;
         const auto featureCol = std::ranges::find_if(columns, [](const auto &c) { return c.header == "feature"; });
         REQUIRE(featureCol != columns.end());
-        // Stays a candidate -- no premature route to `Type::Any`.
-        CHECK(featureCol->type == LogConfiguration::Type::Unknown);
+        // Stays a candidate -- no premature route to a terminal type.
+        CHECK(featureCol->type == LogConfiguration::Type::Any);
+        CHECK(featureCol->autoDetect);
     }
 
     // Batch 2: the column finally appears; the candidate scan sees two
@@ -2069,13 +2081,13 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- a loaded Type::Any column opts the user out of auto-detection",
-    "[log_table][append_batch][enum][type_any_opt_out]"
+    "LogTable -- a loaded Type::Any column with autoDetect=false opts the user out of auto-detection",
+    "[log_table][append_batch][enum][auto_detect_opt_out]"
 )
 {
-    // To opt out of auto-detection per-column, save the column with a
-    // terminal type (e.g. `Type::Any`); only `Type::Unknown` columns are
-    // candidates.
+    // To opt out of auto-detection per-column, save the column with
+    // `autoDetect = false`. The candidate-scan gate
+    // (`IsEnumPassEligible`) requires `Type::Any + autoDetect == true`.
     const TestLogFile testFile("enum_loaded_any_opt_out.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2087,7 +2099,10 @@ TEST_CASE(
          .keys = {"level"},
          .printFormat = "{}",
          .type = LogConfiguration::Type::Any,
-         .parseFormats = {}}
+         .parseFormats = {},
+         .visible = true,
+         .levelMapping = {},
+         .autoDetect = false}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -2105,6 +2120,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == ROWS);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
+    CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
     const KeyId levelKey = keys.Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
     CHECK_FALSE(table.EnumDictionaries().Contains(levelKey));
@@ -2319,13 +2335,14 @@ TEST_CASE(
 namespace
 {
 
-/// Build a `LogConfigurationManager` pre-loaded with a `Type::Unknown`
-/// column for `key`, bypassing `Update`.
+/// Build a `LogConfigurationManager` pre-loaded with an auto-detect
+/// candidate column (`Type::Any + autoDetect = true`) for `key`,
+/// bypassing `Update`.
 LogConfigurationManager MakeUnknownColumnManager(const std::string &key)
 {
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = key, .keys = {key}, .printFormat = "{}", .type = LogConfiguration::Type::Unknown, .parseFormats = {}}
+        {.header = key, .keys = {key}, .printFormat = "{}", .type = LogConfiguration::Type::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -2406,12 +2423,13 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable::FinalizeAutoDetection -- single-row candidate stays Type::Unknown",
+    "LogTable::FinalizeAutoDetection -- single-row candidate stays a candidate",
     "[log_table][finalize][enum][small_file]"
 )
 {
-    // The permissive rule needs `rowsObserved >= 2`; a 1-row file leaves
-    // the column as `Type::Unknown` so a later re-load can decide.
+    // The permissive rule needs `rowsObserved >= 2`; a 1-row file
+    // leaves the column at `Type::Any + autoDetect = true` so a later
+    // re-load can decide.
     const TestLogFile testFile("enum_finalize_one_row.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2427,7 +2445,9 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 1);
     REQUIRE(table.ColumnCount() == 1);
-    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Unknown);
+    const auto &col = table.Configuration().Configuration().columns[0];
+    CHECK(col.type == LogConfiguration::Type::Any);
+    CHECK(col.autoDetect);
 }
 
 TEST_CASE(
@@ -2506,7 +2526,7 @@ TEST_CASE(
             {.header = "level",
              .keys = {"level"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::Unknown,
+             .type = LogConfiguration::Type::Any,
              .parseFormats = {}}
         );
         const TestLogConfiguration cfgFile;
@@ -2533,7 +2553,7 @@ TEST_CASE(
             {.header = "level",
              .keys = {"level"},
              .printFormat = "{}",
-             .type = LogConfiguration::Type::Unknown,
+             .type = LogConfiguration::Type::Any,
              .parseFormats = {}}
         );
         const TestLogConfiguration cfgFile;

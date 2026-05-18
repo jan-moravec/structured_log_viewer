@@ -657,7 +657,6 @@ void FilterEditor::UpdateSelectedColumn(int index)
     case LogConfiguration::Type::Boolean:
         mStackedWidget->setCurrentIndex(PAGE_BOOLEAN);
         break;
-    case LogConfiguration::Type::Unknown:
     case LogConfiguration::Type::Any:
     case LogConfiguration::Type::String:
     default:

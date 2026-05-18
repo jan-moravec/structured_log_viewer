@@ -16,15 +16,21 @@ class LogData;
 
 struct LogConfiguration
 {
-    /// Per-column rendering / detection type. `Unknown` is the only
-    /// state the auto-detector scans; every other variant is terminal.
+    /// Per-column rendering / detection type. Auto-detection is gated
+    /// by `Column::autoDetect`, not by `Type`: a column is an
+    /// auto-detector candidate iff `type == Any && autoDetect`. Once a
+    /// concrete type is set (by detection or the user), it is stable
+    /// unless the user changes it.
     /// JSON wire format keeps the original lowerCamelCase keys
-    /// (`"unknown"`, `"any"`, ...); see
+    /// (`"any"`, `"string"`, ...); see
     /// `internal/log_configuration_glaze_meta.hpp`.
-    ///   - `Unknown`     - new keys; auto-detector candidate.
-    ///   - `Any`         - user opt-out, or auto-detect bail for
-    ///                     unclassifiable values (no values, or bool
-    ///                     mixed with numeric). Sorts/filters as string.
+    ///   - `Any`         - default for fresh keys (combined with
+    ///                     `autoDetect = true`) and the auto-detect
+    ///                     bail bucket for unclassifiable values (no
+    ///                     values, or bool mixed with numeric). With
+    ///                     `autoDetect = false` it is the explicit
+    ///                     "treat as text, never auto-promote" opt-out.
+    ///                     Sorts/filters as string.
     ///   - `String`      - inferred string column (too varied to enumerate).
     ///   - `Boolean`     - JSON `true`/`false` slots; false < true.
     ///   - `Integer`     - only Int64/UInt64 observed.
@@ -39,7 +45,6 @@ struct LogConfiguration
     ///                     severity rank instead of alphabetic order.
     enum class Type
     {
-        Unknown,
         Any,
         String,
         Boolean,
@@ -56,10 +61,12 @@ struct LogConfiguration
         std::string header;
         std::vector<std::string> keys;
         std::string printFormat;
-        /// New keys default to `Type::Unknown`. Time promotion is
-        /// destructive (only `Reset()` reverts); enum promotion is
-        /// reversible via demote-to-string on overflow.
-        Type type = Type::Unknown;
+        /// New keys default to `Type::Any` with `autoDetect = true`,
+        /// which is the auto-detector candidate state. Time promotion
+        /// is destructive (only `Reset()` reverts); enum promotion is
+        /// reversible via demote-to-string on overflow (and only when
+        /// `autoDetect == true`).
+        Type type = Type::Any;
         std::vector<std::string> parseFormats;
         /// Hidden columns stay in the table (data, sort, and filters
         /// keep working); only the view toggles `setSectionHidden`.
@@ -71,6 +78,14 @@ struct LogConfiguration
         /// a `LogLevel` (`"Info"`, `"Warn"`, ...). Augments the
         /// built-in alias table. Ignored for non-Level columns.
         std::vector<std::pair<std::string, std::string>> levelMapping;
+        /// When `true`, the auto-detector owns this column: a fresh
+        /// `Type::Any` column will be scanned and promoted; an
+        /// already-promoted `Enumeration`/`Level` column may still
+        /// demote on overflow. When `false`, the user has pinned the
+        /// column: no automatic promotion or demotion fires. Toggle
+        /// via the UI's Column Editor; defaults to `true` so unedited
+        /// columns retain the legacy "detector in charge" behaviour.
+        bool autoDetect = true;
     };
 
     struct LogFilter
@@ -157,6 +172,12 @@ public:
     /// Flip the type of the column at @p columnIndex; caller
     /// back-fills row data. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
+
+    /// Toggle `Column::autoDetect` for @p columnIndex. No-op out of
+    /// range. `true` puts the auto-detector in charge of the column
+    /// (subject to the rules in the `Type` doc-comment); `false`
+    /// pins the column at its current `type`.
+    void SetColumnAutoDetect(size_t columnIndex, bool autoDetect);
 
     /// Toggle `Column::visible` for @p columnIndex. The column stays
     /// in the table; only the header section is hidden. No-op out

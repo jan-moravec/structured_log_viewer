@@ -26,7 +26,7 @@ namespace loglib
 namespace
 {
 
-/// Static-parse min rows before promoting `Type::Unknown` to enum.
+/// Static-parse min rows before promoting `Type::Any + autoDetect` to enum.
 /// Smaller files are caught at end-of-parse by `FinalizeAutoDetection`.
 constexpr size_t ENUM_PROMOTION_MIN_ROWS = 4096;
 
@@ -97,11 +97,16 @@ LogConfiguration::Type RouteNoStringBail(
     return LogConfiguration::Type::Any;
 }
 
-bool IsEnumPassEligible(LogConfiguration::Type type) noexcept
+bool IsEnumPassEligible(const LogConfiguration::Column &column) noexcept
 {
-    // `unknown` -> candidate scan; `enumeration` / `level` -> per-batch encode.
-    return type == LogConfiguration::Type::Unknown || type == LogConfiguration::Type::Enumeration ||
-           type == LogConfiguration::Type::Level;
+    // `Enumeration` / `Level` always need per-batch encoding so even
+    // user-pinned dict columns keep accumulating `DictRef`s. `Any` is
+    // a candidate scan only when the user hasn't disabled auto-detect.
+    if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
+    {
+        return true;
+    }
+    return column.type == LogConfiguration::Type::Any && column.autoDetect;
 }
 
 } // namespace
@@ -163,8 +168,9 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     RefreshSnapshotEnumKeys();
     RefreshColumnKeyIds();
     // Encode pre-configured enum columns and run auto-detection on
-    // `Type::Unknown` ones over the loaded data. The finalize sweep then
-    // promotes small-file candidates that missed the per-batch threshold.
+    // `Type::Any + autoDetect` candidates over the loaded data. The
+    // finalize sweep then promotes small-file candidates that missed
+    // the per-batch threshold.
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(0U, firstBackfilled, lastBackfilled);
@@ -885,8 +891,9 @@ void LogTable::RunEnumPassForAppendBatch(
         return;
     }
 
-    // Active (`Type::Enumeration`) and candidate (`Type::Unknown`) columns
-    // are handled inline in a single walk; every other type is skipped.
+    // Active (`Type::Enumeration`) and candidate (`Type::Any +
+    // autoDetect`) columns are handled inline in a single walk; every
+    // other type is skipped.
 
     auto recordBackfill = [&](size_t columnIndex) {
         if (!firstBackfilled.has_value() || columnIndex < *firstBackfilled)
@@ -916,7 +923,7 @@ void LogTable::RunEnumPassForAppendBatch(
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
-        if (!IsEnumPassEligible(column.type))
+        if (!IsEnumPassEligible(column))
         {
             continue;
         }
@@ -945,13 +952,21 @@ void LogTable::RunEnumPassForAppendBatch(
             const EnumDictionary *dictBefore = mEnumDictionaries.Find(resolvedKeys.front());
             const size_t oldDictSize = (dictBefore != nullptr) ? dictBefore->Size() : 0;
 
-            if (!EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, health))
+            const bool encodeOk = EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, health);
+            // User-pinned enum/level columns (`autoDetect == false`)
+            // degrade gracefully: dict cap and health-budget breaches
+            // leave the column at its declared type; mismatched slots
+            // simply stay un-encoded (visible as raw strings).
+            if (!encodeOk)
             {
-                DemoteColumnFromEnum(columnIndex);
-                recordBackfill(columnIndex);
+                if (column.autoDetect)
+                {
+                    DemoteColumnFromEnum(columnIndex);
+                    recordBackfill(columnIndex);
+                }
                 continue;
             }
-            if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, ENUM_HEALTH_MIN_SAMPLES))
+            if (column.autoDetect && health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, ENUM_HEALTH_MIN_SAMPLES))
             {
                 DemoteColumnFromEnum(columnIndex);
                 recordBackfill(columnIndex);
@@ -960,8 +975,10 @@ void LogTable::RunEnumPassForAppendBatch(
             // Level-promotion re-check: an Enumeration column whose
             // key matches `IsLogLevelKey` may finally satisfy the
             // dict tolerance once canonical entries arrive. Gated on
-            // dict growth + name match so unrelated columns pay nothing.
-            if (column.type == LogConfiguration::Type::Enumeration)
+            // dict growth + name match so unrelated columns pay
+            // nothing. Skipped entirely when the user pinned the
+            // column at `Enumeration` (autoDetect == false).
+            if (column.type == LogConfiguration::Type::Enumeration && column.autoDetect)
             {
                 const EnumDictionary *dictAfter = mEnumDictionaries.Find(resolvedKeys.front());
                 const size_t newDictSize = (dictAfter != nullptr) ? dictAfter->Size() : 0;
@@ -988,9 +1005,10 @@ void LogTable::RunEnumPassForAppendBatch(
         // Candidate scan. Tracker keyed on `column.header` so an
         // alias-list reorder can't orphan the running counters. On
         // bail / kill the column type flips to a terminal
-        // (`string` / `integer` / `floating` / `number` / `any`),
-        // which removes it from `IsEnumPassEligible` for the next
-        // batch -- the type itself enforces kill-once-stay-killed.
+        // (`string` / `integer` / `floating` / `number`) or stays at
+        // `any`, all of which remove it from `IsEnumPassEligible` for
+        // the next batch -- the type itself enforces
+        // kill-once-stay-killed.
         const std::string &trackerKey = column.header;
         const size_t promotionMinRows = mIsStreaming ? STREAM_PROMOTION_MIN_ROWS : ENUM_PROMOTION_MIN_ROWS;
 
@@ -1132,7 +1150,7 @@ bool LogTable::FinalizeAutoDetection()
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::Unknown || column.keys.empty())
+        if (column.type != LogConfiguration::Type::Any || !column.autoDetect || column.keys.empty())
         {
             continue;
         }
@@ -1166,7 +1184,8 @@ bool LogTable::FinalizeAutoDetection()
             );
             continue;
         }
-        // Insufficient evidence: leave `Type::Unknown` for a future re-load.
+        // Insufficient evidence: leave at `Type::Any + autoDetect` for
+        // a future re-load.
     }
 
     mEnumTrackers.clear();
@@ -1462,6 +1481,12 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return mConfiguration.Configuration().columns[columnIndex];
     };
     if (snapshotColumn().type != LogConfiguration::Type::Enumeration)
+    {
+        return;
+    }
+    // User-pinned `Enumeration` columns stay `Enumeration`; the user
+    // explicitly opted out of further auto-promotion.
+    if (!snapshotColumn().autoDetect)
     {
         return;
     }

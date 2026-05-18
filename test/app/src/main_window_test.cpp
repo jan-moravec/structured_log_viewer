@@ -6686,8 +6686,8 @@ private slots:
     }
 
     // Regression: an enum filter installed while the column is still
-    // `Type::Unknown` builds with `dictionary = nullptr` and runs the
-    // slow string-set fallback. On auto-promote,
+    // `Type::Any + autoDetect` builds with `dictionary = nullptr` and
+    // runs the slow string-set fallback. On auto-promote,
     // `MainWindow::enumColumnsChanged(Promoted)` must rebuild the
     // predicate so it picks up the bitset hot path. Pre-fix the slot
     // gated the rebuild on `!EnumFilterFullyResolved` -- which goes
@@ -7330,9 +7330,10 @@ private slots:
         };
 
         // Batch 1: one row keeps `mycol` below
-        // STREAM_PROMOTION_MIN_ROWS (== 2), so the column stays
-        // `Type::Unknown` and `ResolveEnumDictionary` returns nullptr
-        // at filter-install time.
+        // STREAM_PROMOTION_MIN_ROWS (== 2), so the column stays a
+        // candidate (`Type::Any + autoDetect`) and
+        // `ResolveEnumDictionary` returns nullptr at filter-install
+        // time.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -7344,11 +7345,10 @@ private slots:
 
         const int col = ColumnByHeader(*model, QStringLiteral("mycol"));
         QVERIFY2(col >= 0, "mycol column must exist after the first batch");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Unknown
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Any);
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(col)].autoDetect);
 
-        // Install an enum filter while the column is still Unknown:
+        // Install an enum filter while the column is still a candidate:
         // predicate built with `dictionary = nullptr`, only the slow
         // string-set fallback path is available.
         const QString filterId = QStringLiteral("upgrade-on-promote");
@@ -7445,7 +7445,8 @@ private slots:
 
         // Batch 1: promote colA to Enumeration via the streaming
         // threshold (`presenceCount >= 2`). colB doesn't appear so
-        // it stays `Type::Unknown` until batch 2 introduces it.
+        // it stays a candidate (`Type::Any + autoDetect`) until
+        // batch 2 introduces it.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -7527,7 +7528,8 @@ private slots:
     // double-triggering `MainWindow::UpdateFilters`.
     //
     // Setup:
-    //   * batch 1 leaves `colA` at `Unknown` and promotes `colB`.
+    //   * batch 1 leaves `colA` as a candidate (`Type::Any +
+    //     autoDetect`) and promotes `colB`.
     //   * batch 2 promotes `colA` (low index, back-filled), grows
     //     `colB`'s dict (no back-fill), and promotes a new `colC`
     //     (high index, back-filled). Range spans `[colA, colC]`
@@ -7554,10 +7556,11 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: `colA` gets exactly one presence (stays Unknown,
-        // tracker carries 1 presence forward). `colB` gets two
-        // identical presences and promotes to Enumeration with dict
-        // size 1. `colA` is appended first so it lands at column 0.
+        // Batch 1: `colA` gets exactly one presence (stays a
+        // candidate, tracker carries 1 presence forward). `colB`
+        // gets two identical presences and promotes to Enumeration
+        // with dict size 1. `colA` is appended first so it lands at
+        // column 0.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -7573,9 +7576,8 @@ private slots:
         const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
         QVERIFY2(colA == 0, "colA must land at column 0 (first appended new key)");
         QVERIFY2(colB == 1, "colB must land at column 1 (second appended new key)");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Unknown
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Any);
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(colA)].autoDetect);
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
         );

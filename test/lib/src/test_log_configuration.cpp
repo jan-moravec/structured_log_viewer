@@ -113,8 +113,8 @@ TEST_CASE(
     checkType("datetime", LogConfiguration::Type::Time);
     checkType("created_at", LogConfiguration::Type::Time);
 
-    checkType("t", LogConfiguration::Type::Unknown);
-    checkType("tag", LogConfiguration::Type::Unknown);
+    checkType("t", LogConfiguration::Type::Any);
+    checkType("tag", LogConfiguration::Type::Any);
 }
 
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
@@ -358,22 +358,24 @@ TEST_CASE("Save and load configuration with Type::Enumeration column", "[log_con
 }
 
 TEST_CASE(
-    "Newly-discovered keys default to Type::Unknown so the auto-detector scans them",
-    "[log_configuration][type_unknown]"
+    "Newly-discovered keys default to Type::Any with autoDetect=true so the auto-detector scans them",
+    "[log_configuration][auto_detect_default]"
 )
 {
-    // Provenance is carried by the column type itself, both in memory
-    // and on disk; `Type::Unknown` marks an auto-detector candidate.
+    // Provenance is carried by the `(type, autoDetect)` pair: a fresh
+    // key starts as `(Type::Any, autoDetect=true)`, i.e. the
+    // auto-detector candidate state.
 
-    SECTION("AppendKeys assigns Type::Unknown to fresh keys")
+    SECTION("AppendKeys assigns the candidate state to fresh keys")
     {
         LogConfigurationManager manager;
         manager.AppendKeys({"level"});
         REQUIRE(manager.Configuration().columns.size() == 1);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Unknown);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[0].autoDetect);
     }
 
-    SECTION("Update assigns Type::Unknown to every freshly-added non-time key")
+    SECTION("Update assigns the candidate state to every freshly-added non-time key")
     {
         const TestLogFile testLogFile;
         auto source = testLogFile.CreateFileLineSource();
@@ -388,11 +390,12 @@ TEST_CASE(
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
         {
-            CHECK(column.type == LogConfiguration::Type::Unknown);
+            CHECK(column.type == LogConfiguration::Type::Any);
+            CHECK(column.autoDetect);
         }
     }
 
-    SECTION("Loaded columns keep their stored Type and are not rewritten to unknown")
+    SECTION("Loaded columns keep their stored Type and autoDetect flag")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -401,7 +404,10 @@ TEST_CASE(
              .keys = {"level"},
              .printFormat = "{}",
              .type = LogConfiguration::Type::Any,
-             .parseFormats = {}}
+             .parseFormats = {},
+             .visible = true,
+             .levelMapping = {},
+             .autoDetect = false}
         );
         cfg.columns.push_back(
             {.header = "service",
@@ -417,10 +423,11 @@ TEST_CASE(
 
         REQUIRE(manager.Configuration().columns.size() == 2);
         CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK_FALSE(manager.Configuration().columns[0].autoDetect);
         CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::String);
     }
 
-    SECTION("Post-Load AppendKeys still assigns Type::Unknown to genuinely-new keys")
+    SECTION("Post-Load AppendKeys still assigns the candidate state to genuinely-new keys")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -429,7 +436,10 @@ TEST_CASE(
              .keys = {"level"},
              .printFormat = "{}",
              .type = LogConfiguration::Type::Any,
-             .parseFormats = {}}
+             .parseFormats = {},
+             .visible = true,
+             .levelMapping = {},
+             .autoDetect = false}
         );
         testCfg.Write(cfg);
 
@@ -439,7 +449,9 @@ TEST_CASE(
         manager.AppendKeys({"freshly_streamed"});
         REQUIRE(manager.Configuration().columns.size() == 2);
         CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
-        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::Unknown);
+        CHECK_FALSE(manager.Configuration().columns[0].autoDetect);
+        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[1].autoDetect);
     }
 }
 
@@ -451,7 +463,6 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     // sides spell it `floating`.
     using Type = LogConfiguration::Type;
     const std::vector<Type> variants = {
-        Type::Unknown,
         Type::Any,
         Type::String,
         Type::Boolean,
@@ -479,7 +490,6 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     const auto writeError = glz::write_json(original, json);
     REQUIRE_FALSE(writeError);
 
-    CHECK(json.contains("\"unknown\""));
     CHECK(json.contains("\"any\""));
     CHECK(json.contains("\"boolean\""));
     CHECK(json.contains("\"integer\""));
@@ -611,7 +621,6 @@ TEST_CASE(
     // variant is exercised so renaming any one would break the test.
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
-            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]},
             {"header":"b","keys":["b"],"printFormat":"{}","type":"any","parseFormats":[]},
             {"header":"c","keys":["c"],"printFormat":"{}","type":"string","parseFormats":[]},
             {"header":"d","keys":["d"],"printFormat":"{}","type":"integer","parseFormats":[]},
@@ -635,15 +644,14 @@ TEST_CASE(
     REQUIRE_FALSE(readError);
 
     using Type = LogConfiguration::Type;
-    REQUIRE(loaded.columns.size() == 8);
-    CHECK(loaded.columns[0].type == Type::Unknown);
-    CHECK(loaded.columns[1].type == Type::Any);
-    CHECK(loaded.columns[2].type == Type::String);
-    CHECK(loaded.columns[3].type == Type::Integer);
-    CHECK(loaded.columns[4].type == Type::Floating);
-    CHECK(loaded.columns[5].type == Type::Number);
-    CHECK(loaded.columns[6].type == Type::Time);
-    CHECK(loaded.columns[7].type == Type::Enumeration);
+    REQUIRE(loaded.columns.size() == 7);
+    CHECK(loaded.columns[0].type == Type::Any);
+    CHECK(loaded.columns[1].type == Type::String);
+    CHECK(loaded.columns[2].type == Type::Integer);
+    CHECK(loaded.columns[3].type == Type::Floating);
+    CHECK(loaded.columns[4].type == Type::Number);
+    CHECK(loaded.columns[5].type == Type::Time);
+    CHECK(loaded.columns[6].type == Type::Enumeration);
 
     using FilterType = LogConfiguration::LogFilter::Type;
     using Match = LogConfiguration::LogFilter::Match;
@@ -664,10 +672,10 @@ TEST_CASE(
     std::string roundTripJson;
     const auto writeError = glz::write_json(loaded, roundTripJson);
     REQUIRE_FALSE(writeError);
-    CHECK(roundTripJson.contains("\"unknown\""));
+    CHECK(roundTripJson.contains("\"any\""));
     CHECK(roundTripJson.contains("\"enumeration\""));
     CHECK(roundTripJson.contains("\"regularExpression\""));
-    CHECK_FALSE(roundTripJson.contains("\"Unknown\""));
+    CHECK_FALSE(roundTripJson.contains("\"Any\""));
     CHECK_FALSE(roundTripJson.contains("\"Enumeration\""));
     CHECK_FALSE(roundTripJson.contains("\"RegularExpression\""));
 }
@@ -814,7 +822,7 @@ TEST_CASE(
     // tolerates missing keys; the field defaults to `true`.
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
-            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]}
+            {"header":"a","keys":["a"],"printFormat":"{}","type":"any","parseFormats":[]}
         ],
         "filters": []
     })";
@@ -824,6 +832,7 @@ TEST_CASE(
     REQUIRE_FALSE(readError);
     REQUIRE(loaded.columns.size() == 1);
     CHECK(loaded.columns[0].visible);
+    CHECK(loaded.columns[0].autoDetect);
 }
 
 TEST_CASE(
