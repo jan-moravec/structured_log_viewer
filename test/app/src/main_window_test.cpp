@@ -5479,7 +5479,7 @@ private slots:
     }
 
     // Two consecutive `Save`s of the same filter set must produce
-    // byte-identical JSON. `MirrorFiltersToConfiguration` sorts the
+    // byte-identical JSON. `MirrorSessionStateToConfiguration` sorts the
     // snapshot so the output is independent of the `unordered_map`
     // iteration order. Without the sort, save -> reopen -> save
     // would change the file every round-trip.
@@ -5552,6 +5552,93 @@ private slots:
         QVERIFY(fileC.open(QFile::ReadOnly));
         const QByteArray bytesC = fileC.readAll();
         QCOMPARE(bytesC, bytesA);
+    }
+
+    // `Save Configuration...` (SaveScope::ColumnsOnly) writes a
+    // portable layout: columns survive, session-only state
+    // (filters, sort) is omitted from the file on purpose so the
+    // configuration can be applied to a different log source
+    // without dragging old filter rows / sort indices along.
+    void TestSaveScopeColumnsOnlyOmitsSession()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Engage filter + sort so the wire-format vector + sort field
+        // are non-default before saving.
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("columns-only-filter")),
+            Q_ARG(int, msgCol),
+            Q_ARG(QString, QStringLiteral("m1")),
+            Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+        );
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        tableView->sortByColumn(levelCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString columnsOnlyPath = savedDir.filePath(QStringLiteral("columns-only.json"));
+        mWindow->SaveConfigurationToPathForTest(columnsOnlyPath, loglib::SaveScope::ColumnsOnly);
+
+        // Reload into a fresh manager and confirm the on-disk file is
+        // a configuration-shape file: columns present, session-only
+        // fields back at their inert defaults.
+        loglib::LogConfigurationManager probe;
+        probe.Load(columnsOnlyPath.toStdString());
+        QVERIFY(!probe.Configuration().columns.empty());
+        QVERIFY2(probe.Configuration().filters.empty(), "SaveScope::ColumnsOnly must omit filters");
+        QCOMPARE(probe.Configuration().sort.columnIndex, -1);
+        QVERIFY2(!probe.Configuration().source.has_value(), "SaveScope::ColumnsOnly must omit source");
+    }
+
+    // `Save Session...` (SaveScope::Full) persists the live sort
+    // indicator and a Load restores it. This is the load-bearing
+    // promise of the session/configuration split: filters already
+    // round-trip; the sort indicator now travels with them.
+    void TestSaveScopeFullPersistsSortAndRestoresOnLoad()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const QHeaderView *header = tableView->horizontalHeader();
+        QVERIFY(header != nullptr);
+
+        tableView->sortByColumn(levelCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            header->isSortIndicatorShown() && header->sortIndicatorSection() == levelCol,
+            "precondition: sort indicator must be on the level column before save"
+        );
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("with-sort.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        // Drop the live sort so the load has to actually reapply it,
+        // not just look like it did.
+        tableView->sortByColumn(-1, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(sessionPath);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(header->isSortIndicatorShown(), "Load must restore the persisted sort indicator");
+        QCOMPARE(header->sortIndicatorSection(), levelCol);
+        QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
     }
 
     // Find must skip hidden columns. The fixture has `level`

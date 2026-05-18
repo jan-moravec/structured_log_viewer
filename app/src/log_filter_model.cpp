@@ -143,6 +143,16 @@ void LogFilterModel::InvalidateEnumRanks()
     mEnumRanks.clear();
 }
 
+void LogFilterModel::RestoreSort(int column, Qt::SortOrder order)
+{
+    // Single entry-point so `MainWindow`'s session loader can both
+    // re-permute the proxy and keep the `QHeaderView` sort indicator
+    // in sync via a follow-up `setSortIndicator`. `sort()` already
+    // emits `layoutAboutToBeChanged` / `layoutChanged`, so the view
+    // updates without further plumbing.
+    sort(column, order);
+}
+
 QModelIndex LogFilterModel::index(int row, int column, const QModelIndex &parent) const
 {
     if (parent.isValid())

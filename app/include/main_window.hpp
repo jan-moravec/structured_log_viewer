@@ -152,7 +152,11 @@ public:
 
     /// Test-only entries to `SaveConfiguration` / `LoadConfiguration`
     /// that bypass the file dialog and run the same private helpers.
-    void SaveConfigurationToPathForTest(const QString &path);
+    /// `scope` defaults to `Full` so existing tests (written against
+    /// the old single-action save that always wrote filters) keep
+    /// passing; new tests should pass `SaveScope::ColumnsOnly` to
+    /// exercise the "Save Configuration\u2026" path explicitly.
+    void SaveConfigurationToPathForTest(const QString &path, loglib::SaveScope scope = loglib::SaveScope::Full);
     void LoadConfigurationFromPathForTest(const QString &path);
 
     /// When true, `ShowDroppedFiltersDialog` skips the modal and
@@ -174,7 +178,14 @@ private slots:
     /// Pop the `NetworkStreamDialog`, build the matching producer, and
     /// call `LogModel::BeginStreaming`.
     void OpenNetworkStream();
+    /// "Save Configuration\u2026": writes only `columns` (the portable,
+    /// data-source-independent layout).
     void SaveConfiguration();
+    /// "Save Session\u2026": writes the full struct (columns + filters +
+    /// sort + source).
+    void SaveSession();
+    /// Unified loader: detects whether the file carries session-only
+    /// fields and applies whichever subset is present.
     void LoadConfiguration();
 
     void Find();
@@ -300,22 +311,24 @@ private:
     [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
-    /// Snapshot `mFilters` into the wire-format vector on the
-    /// configuration so `Save` and `MoveColumn`'s row-remap see the
-    /// live set. Output is sorted by `(row, type, payload)` so two
-    /// consecutive saves produce byte-identical JSON. O(N log N);
-    /// bulk callers should `deferSync = true` and mirror once at
-    /// the end.
-    void MirrorFiltersToConfiguration();
+    /// Snapshot the runtime session state (`mFilters`, the proxy's
+    /// sort column/order, and `mCurrentSource`) into the wire-format
+    /// fields on the configuration so `Save` and `MoveColumn`'s
+    /// row-remap see the live set. Filters are sorted by
+    /// `(row, type, payload)` so two consecutive saves of an
+    /// unchanged set produce byte-identical JSON. O(N log N) in
+    /// filter count; bulk callers should `deferSync = true` and
+    /// mirror once at the end.
+    void MirrorSessionStateToConfiguration();
 
     /// Path-based save / load helpers shared by the dialog-driven
     /// slots and the test seams. `DoSaveConfiguration` mirrors
-    /// filters then writes; throws on I/O / serialisation failure.
-    /// `DoLoadConfiguration` resets the model, validates each
-    /// saved filter, surfaces drops via
-    /// `ShowDroppedFiltersDialog`, and returns false on parse
-    /// error.
-    void DoSaveConfiguration(const QString &path);
+    /// session state then writes the slice selected by @p scope;
+    /// throws on I/O / serialisation failure. `DoLoadConfiguration`
+    /// resets the model, validates each saved filter, surfaces
+    /// drops via `ShowDroppedFiltersDialog`, restores any persisted
+    /// sort, and returns false on parse error.
+    void DoSaveConfiguration(const QString &path, loglib::SaveScope scope);
     bool DoLoadConfiguration(const QString &path);
 
     /// Re-validate every saved filter against the freshly-loaded
@@ -373,6 +386,17 @@ private:
 
     /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;
+
+    /// Descriptor of the source currently bound to the model:
+    ///   - `kind == File`: full path (`StartStreamingOpenQueue` /
+    ///     `OpenLogStream`).
+    ///   - `kind == NetworkStream`: producer display name
+    ///     (`OpenNetworkStream`).
+    /// `nullopt` when no session is active. Mirrored into
+    /// `LogConfiguration::source` by
+    /// `MirrorSessionStateToConfiguration` before a `SaveScope::Full`
+    /// save; reset by `ClearAllFilters`-style teardown paths.
+    std::optional<loglib::LogConfiguration::Source> mCurrentSource;
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;

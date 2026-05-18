@@ -373,6 +373,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionOpenNetworkStream, &QAction::triggered, this, &MainWindow::OpenNetworkStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
+    connect(ui->actionSaveSession, &QAction::triggered, this, &MainWindow::SaveSession);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
 
@@ -519,6 +520,7 @@ MainWindow::MainWindow(QWidget *parent)
             mPendingOpenErrors.clear();
         }
         mStreamingFileName.clear();
+        mCurrentSource.reset();
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
@@ -617,7 +619,7 @@ MainWindow::MainWindow(QWidget *parent)
                     // Mirror once after the loop; the wire vector is
                     // snapshotted whole, so per-filter mirroring would
                     // redo the same work.
-                    MirrorFiltersToConfiguration();
+                    MirrorSessionStateToConfiguration();
                 }
             }
         }
@@ -822,6 +824,21 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // pulls the loaded `visible` flags via the wired
         // `modelReset -> ApplyColumnVisibility` connect.
         mModel->NotifyConfigurationReplaced();
+
+        // Session-shape files re-apply the persisted sort; columns-
+        // only files default to `columnIndex == -1` and skip. The
+        // restore must run *before* `RebuildFiltersFromConfiguration`
+        // because that helper invokes `MirrorSessionStateToConfiguration`,
+        // which would otherwise snapshot the cleared proxy sort over
+        // the loaded `sort` field.
+        const auto loadedSort = mModel->Configuration().sort;
+        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        {
+            mTableView->sortByColumn(
+                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+            );
+        }
+
         RebuildFiltersFromConfiguration();
         return true;
     }
@@ -869,6 +886,17 @@ void MainWindow::StreamNextPendingFile()
         const bool isFirstFileInSession = !IsSessionActive();
 
         mStreamingFileName = QFileInfo(file).fileName();
+        // Static multi-file sessions record only the first file as
+        // the session source. Subsequent appends keep the original
+        // descriptor (the user opened a primary file and added
+        // others); persisting the whole list would over-specify the
+        // session and complicate the rebind UX.
+        if (isFirstFileInSession)
+        {
+            mCurrentSource = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locator = file.toStdString()
+            };
+        }
         if (isFirstFileInSession)
         {
             mSessionMode = SessionMode::Static;
@@ -952,6 +980,9 @@ void MainWindow::OpenLogStream()
     ClearAllFilters();
 
     mStreamingFileName = QFileInfo(file).fileName();
+    mCurrentSource = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::File, .locator = file.toStdString()
+    };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -1028,6 +1059,9 @@ void MainWindow::OpenNetworkStream()
     ClearAllFilters();
 
     mStreamingFileName = QString::fromStdString(displayName);
+    mCurrentSource = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locator = displayName
+    };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -1074,6 +1108,7 @@ void MainWindow::StopStream()
     // Tear down but keep visible rows so the user can keep working on them.
     mModel->StopAndKeepRows();
     mStreamingFileName.clear();
+    mCurrentSource.reset();
 }
 
 void MainWindow::OnRotationDetected()
@@ -1099,6 +1134,7 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     // Parser snapshot is immutable; gate config edits while streaming.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
+    ui->actionSaveSession->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
     // Reorder + right-click are gated mid-stream because
     // `LogModel::MoveColumn` rotates `columns` while the streaming
@@ -1245,6 +1281,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     {
         return ui->actionSaveConfiguration;
     }
+    if (name == QStringLiteral("actionSaveSession"))
+    {
+        return ui->actionSaveSession;
+    }
     if (name == QStringLiteral("actionLoadConfiguration"))
     {
         return ui->actionLoadConfiguration;
@@ -1335,9 +1375,9 @@ void MainWindow::SetConfigurationUiEnabledForTest(bool enabled)
     SetConfigurationUiEnabled(enabled);
 }
 
-void MainWindow::SaveConfigurationToPathForTest(const QString &path)
+void MainWindow::SaveConfigurationToPathForTest(const QString &path, loglib::SaveScope scope)
 {
-    DoSaveConfiguration(path);
+    DoSaveConfiguration(path, scope);
 }
 
 void MainWindow::LoadConfigurationFromPathForTest(const QString &path)
@@ -1414,7 +1454,7 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
     QMessageBox::warning(this, QStringLiteral("Filters Dropped on Load"), message);
 }
 
-void MainWindow::MirrorFiltersToConfiguration()
+void MainWindow::MirrorSessionStateToConfiguration()
 {
     // Snapshot the runtime map into the wire-format vector so
     // `Save` and the lib-side `MoveColumn` row-remap see the live
@@ -1468,6 +1508,18 @@ void MainWindow::MirrorFiltersToConfiguration()
         return a.filterValues < b.filterValues;
     });
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
+
+    // Sort: read the live state from the proxy (the header
+    // indicator and the proxy stay in lock-step via `sort()`), so
+    // the persisted value is exactly what the user sees.
+    loglib::LogConfiguration::Sort sort;
+    sort.columnIndex = mSortFilterProxyModel->SortColumn();
+    sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
+    mModel->ConfigurationManager().SetSort(sort);
+
+    // Source descriptor follows whichever opener last bound the
+    // model. `nullopt` when idle.
+    mModel->ConfigurationManager().SetSource(mCurrentSource);
 }
 
 void MainWindow::SaveConfiguration()
@@ -1480,7 +1532,7 @@ void MainWindow::SaveConfiguration()
     }
     try
     {
-        DoSaveConfiguration(file);
+        DoSaveConfiguration(file, loglib::SaveScope::ColumnsOnly);
     }
     catch (std::exception &e)
     {
@@ -1488,15 +1540,36 @@ void MainWindow::SaveConfiguration()
     }
 }
 
-void MainWindow::DoSaveConfiguration(const QString &path)
+void MainWindow::SaveSession()
+{
+    const QString file =
+        QFileDialog::getSaveFileName(this, "Save Session", QString(), "JSON (*.json);;All Files (*)");
+    if (file.isEmpty())
+    {
+        return;
+    }
+    try
+    {
+        DoSaveConfiguration(file, loglib::SaveScope::Full);
+    }
+    catch (std::exception &e)
+    {
+        QMessageBox::warning(this, "Error Saving Session", e.what());
+    }
+}
+
+void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scope)
 {
     // The eager mirror at every mutation point already keeps
-    // `mConfiguration.filters` current; the call here documents
-    // intent and survives a future mutation point that forgets to
-    // mirror. `Save` propagates `std::exception` on I/O failure;
-    // both production callers wrap this in a `try / catch`.
-    MirrorFiltersToConfiguration();
-    mModel->ConfigurationManager().Save(path.toStdString());
+    // session-state fields on `mConfiguration` current; the call
+    // here documents intent and survives a future mutation point
+    // that forgets to mirror. `Save` propagates `std::exception` on
+    // I/O failure; both production callers wrap this in a `try /
+    // catch`. The scope decides which subset (columns-only vs full)
+    // lands on disk; the mirror itself is unconditional so the
+    // configuration object always reflects the live state.
+    MirrorSessionStateToConfiguration();
+    mModel->ConfigurationManager().Save(path.toStdString(), scope);
 }
 
 void MainWindow::LoadConfiguration()
@@ -1529,7 +1602,30 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         mModel->NotifyConfigurationReplaced();
         UpdateUi();
 
+        // Session-shape files carry a sort indicator; restore it
+        // *before* `RebuildFiltersFromConfiguration`, because that
+        // helper -- and the `ClearAllFilters` it invokes -- both run
+        // `MirrorSessionStateToConfiguration` and would otherwise
+        // snapshot the freshly-cleared proxy sort back over the
+        // loaded `sort` field. Configuration-shape files default to
+        // `columnIndex == -1`, which is the no-op "no sort"
+        // sentinel.
+        const auto loadedSort = mModel->Configuration().sort;
+        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        {
+            mTableView->sortByColumn(
+                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+            );
+        }
+
         RebuildFiltersFromConfiguration();
+
+        // The source descriptor is loaded but not auto-bound: a
+        // session may have been authored against a different
+        // machine, and we don't want surprise-opens. The next
+        // `MirrorSessionStateToConfiguration` will preserve it for
+        // round-trip, and the source-rebind UX (a follow-up patch)
+        // surfaces it to the user.
         return true;
     }
     catch (std::exception &e)
@@ -1564,7 +1660,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
         // Defer mirror + rule rebuild; one trailing sync below.
         AddLogFilter(QUuid::createUuid().toString(), saved, /*deferSync=*/true);
     }
-    MirrorFiltersToConfiguration();
+    MirrorSessionStateToConfiguration();
     UpdateFilters();
 
     if (!dropped.empty())
@@ -1847,7 +1943,7 @@ void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
     mFilterSubMenus.clear();
-    MirrorFiltersToConfiguration();
+    MirrorSessionStateToConfiguration();
     mSortFilterProxyModel->SetFilterRules({});
 
     for (QAction *action : ui->menuFilters->actions())
@@ -1868,7 +1964,7 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
     mFilterSubMenus.erase(filterID.toStdString());
     if (!deferSync)
     {
-        MirrorFiltersToConfiguration();
+        MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
 
@@ -2118,7 +2214,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     mFilters[id.toStdString()] = filter;
     if (!deferSync)
     {
-        MirrorFiltersToConfiguration();
+        MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
 
