@@ -1282,8 +1282,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     }
     {
         const auto &snapshot = mConfiguration.Configuration().columns[columnIndex];
-        if (snapshot.type == LogConfiguration::Type::Enumeration ||
-            snapshot.type == LogConfiguration::Type::Level)
+        if (snapshot.type == LogConfiguration::Type::Enumeration || snapshot.type == LogConfiguration::Type::Level)
         {
             return;
         }
@@ -1327,9 +1326,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     // demotes immediately; the tolerance check catches an unscanned tail
     // whose shape does not actually match an enum.
     EnumColumnHealth &health = mEnumColumnHealth[headerKey];
-    if (!EncodeColumnRangeAsEnum(
-            mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health
-        ))
+    if (!EncodeColumnRangeAsEnum(mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health))
     {
         DemoteColumnFromEnum(columnIndex);
         return;

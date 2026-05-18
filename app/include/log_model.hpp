@@ -194,8 +194,9 @@ public:
     /// contained. Returns `nullptr` when no level demote happened for
     /// @p columnIndex in the last batch. Cleared at the start of every
     /// subsequent `AppendBatch`.
-    [[nodiscard]] const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *
-    LastBatchLevelDemoteMappingFor(int columnIndex) const noexcept;
+    [[nodiscard]] const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *LastBatchLevelDemoteMappingFor(
+        int columnIndex
+    ) const noexcept;
 
 signals:
     /// Cumulative error count, emitted when a batch carries errors.

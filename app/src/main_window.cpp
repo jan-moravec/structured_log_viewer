@@ -560,9 +560,8 @@ MainWindow::MainWindow(QWidget *parent)
                 {
                     const auto &columnsCfg = mModel->Configuration().columns;
                     const loglib::LogConfiguration::Column *demotedColumn =
-                        std::cmp_less(columnIndex, columnsCfg.size())
-                            ? &columnsCfg[static_cast<size_t>(columnIndex)]
-                            : nullptr;
+                        std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
+                                                                      : nullptr;
                     for (auto &kv : mFilters)
                     {
                         loglib::LogConfiguration::LogFilter &filter = kv.second;
@@ -2451,8 +2450,7 @@ void MainWindow::UpdateFilters()
                 {
                     if (selectedLevels.contains((*ranks)[valueId]))
                     {
-                        const std::string_view bytes =
-                            dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                        const std::string_view bytes = dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
                         expandedStorage.emplace_back(bytes);
                     }
                 }

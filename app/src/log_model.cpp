@@ -506,8 +506,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                         {
                             continue;
                         }
-                        const std::string_view bytes =
-                            dict->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                        const std::string_view bytes = dict->Resolve(static_cast<loglib::EnumValueId>(valueId));
                         entry.levelToRawBytes[level].emplace_back(bytes);
                     }
                 }
@@ -576,8 +575,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 // into raw dictionary entries before the post-demote
                 // rebuild. Plain enum demotes need no translation
                 // (`levelToRawBytes` is empty there).
-                if (entry.typeBefore == loglib::LogConfiguration::Type::Level &&
-                    !entry.levelToRawBytes.empty())
+                if (entry.typeBefore == loglib::LogConfiguration::Type::Level && !entry.levelToRawBytes.empty())
                 {
                     mLastBatchLevelDemoteMapping[entry.columnIndex] = std::move(entry.levelToRawBytes);
                 }
@@ -1085,8 +1083,9 @@ void LogModel::NotifyConfigurationReplaced()
     endResetModel();
 }
 
-const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *
-LogModel::LastBatchLevelDemoteMappingFor(int columnIndex) const noexcept
+const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *LogModel::LastBatchLevelDemoteMappingFor(
+    int columnIndex
+) const noexcept
 {
     const auto it = mLastBatchLevelDemoteMapping.find(columnIndex);
     if (it == mLastBatchLevelDemoteMapping.end())

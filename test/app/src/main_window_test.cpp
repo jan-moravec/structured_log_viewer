@@ -3801,8 +3801,7 @@ private slots:
         const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
         QVERIFY2(levelCol >= 0, "level column must exist after promotion");
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::Level
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
         );
 
         // Submit `Info` through FilterEditor. Only the two `info`
@@ -3839,8 +3838,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
-            loglib::LogConfiguration::Type::String
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::String
         );
 
         // Translation succeeded iff the two `info` rows still match
@@ -3849,9 +3847,7 @@ private slots:
         QCOMPARE(filterModel->rowCount(), 2);
         for (int i = 0; i < filterModel->rowCount(); ++i)
         {
-            QCOMPARE(
-                filterModel->index(i, levelCol).data(Qt::DisplayRole).toString(), QStringLiteral("info")
-            );
+            QCOMPARE(filterModel->index(i, levelCol).data(Qt::DisplayRole).toString(), QStringLiteral("info"));
         }
 
         model->EndStreaming(false);

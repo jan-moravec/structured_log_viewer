@@ -464,10 +464,8 @@ private:
         {
             QVERIFY2(
                 column.type == loglib::LogConfiguration::Type::Enumeration,
-                qPrintable(
-                    QStringLiteral("BenchLibOnlySort(useEnumRank=true) requires Type::Enumeration; got %1")
-                        .arg(static_cast<int>(column.type))
-                )
+                qPrintable(QStringLiteral("BenchLibOnlySort(useEnumRank=true) requires Type::Enumeration; got %1")
+                               .arg(static_cast<int>(column.type)))
             );
             const loglib::KeyId keyId = table.Keys().Find(column.keys.front());
             QVERIFY2(keyId != loglib::INVALID_KEY_ID, "enum column key must resolve in the table");
@@ -488,8 +486,8 @@ private:
         });
         const auto libElapsed = std::chrono::steady_clock::now() - libT0;
 
-        qDebug().noquote() << outputLabel.arg(static_cast<std::size_t>(indices.size()))
-                                  .arg(Ms(libElapsed).count(), 0, 'f', 2);
+        qDebug().noquote(
+        ) << outputLabel.arg(static_cast<std::size_t>(indices.size())).arg(Ms(libElapsed).count(), 0, 'f', 2);
         QVERIFY2(Ms(libElapsed).count() < ceilingMs, qPrintable(regressionLabel.arg(Ms(libElapsed).count())));
     }
 

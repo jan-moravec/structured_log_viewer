@@ -652,8 +652,9 @@ TEST_CASE(
             // Level columns read `LevelRankCache(columnIndex)` directly,
             // ignoring the rank arg. Pass `nullptr` to match how the
             // production proxy chain calls the helper.
-            permutation =
-                SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, nullptr);
+            permutation = SortPermutationByColumn(
+                table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, nullptr
+            );
         }));
     }
     REQUIRE(permutation.size() == ROW_COUNT);
@@ -665,10 +666,9 @@ TEST_CASE(
     const auto high = *std::ranges::max_element(elapsed);
 
     WARN(
-        "SortPermutationByColumn (parallel + pre-mat level rank) over " << ROW_COUNT
-                                                                        << " rows: mean=" << Ms(mean).count()
-                                                                        << " ms (low=" << Ms(low).count()
-                                                                        << ", high=" << Ms(high).count() << ")"
+        "SortPermutationByColumn (parallel + pre-mat level rank) over "
+        << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
+        << ", high=" << Ms(high).count() << ")"
     );
 
     // Level uses `uint8_t` ordinals (enum uses `uint16_t`); per-row

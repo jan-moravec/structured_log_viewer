@@ -170,6 +170,7 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
 - An enumeration column whose key matches a known log-level field name is further promoted to a **log-level column** when its dictionary holds at least one canonical level (`Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`) and at most one unrecognised entry per four canonical ones. A dictionary of size 4 or smaller must be 100 % canonical; size 5 tolerates one stray, size 10 tolerates two, and so on. The check is dict-weighted, so it re-evaluates only when the dictionary grows. Level columns sort by canonical severity rather than alphabetic order, and the filter dialog shows the six canonical levels. The raw bytes stay in the dictionary for display; only sort, filter, and styling use the canonical mapping. Per-column `levelMapping` overrides (see below) let you alias project-specific tags onto canonical levels.
 
   Recognised **key names** (case-insensitive):
+
   - Long-form: `level`, `severity`, `loglevel`, `log.level`, `log_level`, `lvl`, `levelname`, `priority`.
   - Short forms (used by compact / embedded loggers): `l`, `lv`, `lev`, `sev`, `s`, `loglvl`.
   - OpenTelemetry / ECS / GCP: `severity_text`, `severity.text`, `severitytext`, `log_severity`, `log.severity`, `logseverity`.
@@ -179,17 +180,18 @@ The first time you open a file (in either mode), Structured Log Viewer builds th
   > **Single-letter keys carry false-positive risk.** A `length` or `size` column could match `l` / `s` by name alone. The dictionary-content check is the safety net: a column named `l` whose dictionary holds `red`/`green`/`blue` will not promote.
 
   Recognised **value aliases** (case-insensitive):
+
   - `Trace`: `trace`, `trc`, `t`, `finer`, `finest`, `silly`
   - `Debug`: `debug`, `dbg`, `d`, `verbose`, `vrb`, `v`, `fine`
-  - `Info`:  `info`, `inf`, `i`, `information`, `informational`, `notice`
-  - `Warn`:  `warn`, `wrn`, `w`, `warning`
+  - `Info`: `info`, `inf`, `i`, `information`, `informational`, `notice`
+  - `Warn`: `warn`, `wrn`, `w`, `warning`
   - `Error`: `error`, `err`, `e`, `severe`
   - `Fatal`: `fatal`, `ftl`, `f`, `critical`, `crit`, `emerg`, `emergency`, `panic`, `alert`, `fault`
 
   > **Why `verbose` / `vrb` / `v` map to `Debug`, not `Trace`.** The original mapping landed Verbose on Debug; flipping it now would change the canonical level (and the sort key) for any saved configuration relying on the prior behaviour. Serilog and Android treat Verbose as below Debug, but we keep the old mapping for backwards compatibility.
-
+  >
   > **Numeric levels (Bunyan/Pino `10/20/30/40/50/60`, syslog `0..7`, ...) are *not* built in.** The two conventions disagree, so picking one would silently mis-classify the other. Map them per-column via `levelMapping` (e.g. `[["10","Trace"], ["20","Debug"], ["30","Info"], ["40","Warn"], ["50","Error"], ["60","Fatal"]]`). This only works when the producer emits the value as a JSON string (`"level": "30"`); a numeric JSON value (`"level": 30`) arrives as an integer and never reaches the dictionary.
-
+  >
   > **Mapping unrecognised aliases.** Add a `levelMapping` array to the column in a saved configuration to extend the alias table per-column. Entries are `(alias, canonicalName)` pairs and override the built-in table:
   >
   > ```json
