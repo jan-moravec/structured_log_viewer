@@ -202,6 +202,22 @@ public:
     /// each call walks the whole table.
     void RefreshColumnHealth();
 
+    /// Notify Qt views that the column at @p columnIndex was edited
+    /// out-of-band (header, type, or visibility). Emits a scoped
+    /// `headerDataChanged` and a column-wide `dataChanged`; signals
+    /// stay inside the model so external callers do not have to
+    /// reach across the abstraction. No-op for an out-of-range
+    /// index.
+    void NotifyColumnEdited(int columnIndex);
+
+    /// Reconcile already-loaded row data with a user-driven type
+    /// change at @p columnIndex (back-fill Time/Enumeration/Level,
+    /// drop dictionary state when leaving an enum-shaped type).
+    /// Delegates to `LogTable::OnUserChangedColumnType` and emits
+    /// `columnHealthChanged` afterwards because slot tags have
+    /// shifted. Out-of-range @p columnIndex is a silent no-op.
+    void NotifyColumnTypeEdited(int columnIndex);
+
     /// Canonical-level -> raw-dictionary-bytes mapping captured just
     /// before a `Type::Level` column lost its dictionary in the most
     /// recent `AppendBatch`. Lets the `enumColumnsChanged(Demoted)`

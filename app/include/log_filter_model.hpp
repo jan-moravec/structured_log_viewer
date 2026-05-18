@@ -68,13 +68,6 @@ public:
     /// `MainWindow` calls this on `enumColumnsChanged(Demoted)`.
     void InvalidateEnumRanks();
 
-    /// Re-apply a sort persisted in a session file. Equivalent to
-    /// `sort(column, order)`, with `column == -1` meaning "no user
-    /// sort" (revert to source-row order). Provided as a named entry
-    /// point so the session-load path is self-documenting and tests
-    /// don't have to discover `sort()` indirectly.
-    void RestoreSort(int column, Qt::SortOrder order);
-
     /// Active sort column (source coords); `-1` if no user sort is
     /// installed. Pairs with `SortOrder()` for the session-save
     /// mirror.

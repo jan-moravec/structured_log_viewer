@@ -898,6 +898,35 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
     return {};
 }
 
+void LogModel::NotifyColumnEdited(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= columnCount())
+    {
+        return;
+    }
+    emit headerDataChanged(Qt::Horizontal, columnIndex, columnIndex);
+    const int rows = rowCount();
+    if (rows > 0)
+    {
+        emit dataChanged(index(0, columnIndex), index(rows - 1, columnIndex), {Qt::DisplayRole});
+    }
+}
+
+void LogModel::NotifyColumnTypeEdited(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= columnCount())
+    {
+        return;
+    }
+    mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex));
+    // The encode/back-fill walks change slot tags, so the health
+    // cache is stale. Callers typically follow up with
+    // `NotifyColumnEdited` to push the view-side repaint; we keep
+    // those concerns separate so a caller that already plans a full
+    // model reset doesn't double-emit.
+    RefreshColumnHealth();
+}
+
 std::optional<loglib::LogTable::ColumnTypeHealth> LogModel::ColumnHealth(int section) const
 {
     if (section < 0 || static_cast<size_t>(section) >= mColumnHealth.size())

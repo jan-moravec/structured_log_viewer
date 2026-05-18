@@ -5652,6 +5652,71 @@ private slots:
         QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
     }
 
+    // Regression: `Save Session...` used to silently drop the
+    // `Source` descriptor for a static file because
+    // `streamingFinished` reset `mCurrentSource` unconditionally,
+    // and a follow-up `Save` mirrored the now-empty mirror into
+    // the configuration. The fix is to keep the descriptor alive
+    // for the lifetime of the loaded rows; this test exercises the
+    // full save -> wipe -> load round-trip.
+    //
+    // The shared streaming fixture bypasses `OpenFiles`, so we
+    // poke `mCurrentSource` directly: production sets it on every
+    // open path; the test fakes that to keep the fixture small.
+    void TestSaveScopeFullRoundTripsSourceDescriptor()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        // Stand in for the open-path `mCurrentSource` write that the
+        // sync fixture skips. `streamingFinished` already ran by now
+        // -- before the fix the reset there would have wiped this
+        // back to `nullopt` regardless.
+        const std::string syntheticSource = "/test/source/path.log";
+        mWindow->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locator = syntheticSource
+        });
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("with-source.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        // Read back through a fresh manager so we don't accidentally
+        // observe the still-live runtime mirror.
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY2(
+            probe.Configuration().source.has_value(),
+            "SaveScope::Full must persist the source descriptor for a streamed-then-finished file"
+        );
+        QCOMPARE(
+            static_cast<int>(probe.Configuration().source->kind),
+            static_cast<int>(loglib::LogConfiguration::Source::Kind::File)
+        );
+        QCOMPARE(QString::fromStdString(probe.Configuration().source->locator), QString::fromStdString(syntheticSource));
+
+        // Now load the freshly-saved session back into the running
+        // window and re-save: the descriptor must survive that round
+        // too (regression for the symmetric bug where Load -> Save
+        // dropped a loaded source because the runtime mirror was
+        // never seeded from disk).
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(sessionPath);
+        QCoreApplication::processEvents();
+
+        const QString resavePath = savedDir.filePath(QStringLiteral("with-source-resave.json"));
+        mWindow->SaveConfigurationToPathForTest(resavePath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager resaveProbe;
+        resaveProbe.Load(resavePath.toStdString());
+        QVERIFY2(
+            resaveProbe.Configuration().source.has_value(),
+            "Load -> Save round trip must preserve a loaded source descriptor"
+        );
+        QCOMPARE(resaveProbe.Configuration().source->locator, syntheticSource);
+    }
+
     // Pinning a string-only column (`msg`) to `Integer` is the
     // canonical "user misconfiguration" case: every present value is
     // a string, no value is an integer, so `ColumnTypeHealth` reports

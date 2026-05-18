@@ -78,10 +78,10 @@ public:
     /// `Type::Enumeration` during the most recent `AppendBatch` /
     /// `Update` / `BeginStreaming`. Includes the silent
     /// "promoted-and-demoted-in-the-same-batch" case
-    /// (`Unknown -> Enumeration -> String`) where the registry shows
-    /// no dict before or after, which the `LogModel`-side
-    /// `enumDictSizesBefore` snapshot can't see. Reset at the start
-    /// of every batch-style call. Empty when no column demoted.
+    /// (`Type::Any + autoDetect -> Enumeration -> String`) where the
+    /// registry shows no dict before or after, which the `LogModel`-
+    /// side `enumDictSizesBefore` snapshot can't see. Reset at the
+    /// start of every batch-style call. Empty when no column demoted.
     [[nodiscard]] const std::vector<KeyId> &LastBatchDemotedKeys() const noexcept;
 
     /// Reorder column @p srcIndex to @p destIndex. Callers must wrap with
@@ -185,6 +185,30 @@ public:
     /// insufficient evidence). Idempotent. Returns true if at least
     /// one column was promoted to `Type::Enumeration`.
     bool FinalizeAutoDetection();
+
+    /// Reconcile already-loaded row data with a user-driven type
+    /// flip at @p columnIndex. The caller (`ColumnEditor::Apply`)
+    /// has already written the new `(type, autoDetect)` into the
+    /// configuration; this method back-fills the existing rows so
+    /// the change is observable immediately, instead of waiting
+    /// for the next batch (which, for a fully-loaded static file,
+    /// never comes):
+    ///   - `Time`: seeds default `printFormat`/`parseFormats` when
+    ///     the column carries none, then runs
+    ///     `BackfillTimestampColumn` over every row.
+    ///   - `Enumeration` / `Level`: creates the canonical
+    ///     dictionary and encodes every existing slot as
+    ///     `DictRef`, then refreshes the level rank cache for
+    ///     `Level`.
+    ///   - Every other type: tears down the column's dictionary
+    ///     and rank cache (if they existed) and materialises any
+    ///     `DictRef` slots back to owned strings, mirroring
+    ///     `DemoteColumnFromEnum`'s effect for an automatic
+    ///     demotion.
+    /// Idempotent within a type (calling twice on the same Level
+    /// column re-runs the encode loop but produces the same
+    /// state). Out-of-range @p columnIndex is a silent no-op.
+    void OnUserChangedColumnType(size_t columnIndex);
 
     /// Snapshot of "how well does the column's data match its
     /// configured `Type`?", used by the diagnostics UI to surface
@@ -346,12 +370,19 @@ private:
     /// Per-value byte-length cap (`0` disables).
     uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 
-    /// Promotion candidates keyed on `column.header`; live while the
-    /// column is `Type::Any` with `autoDetect == true`.
-    std::unordered_map<std::string, EnumCandidateTracker> mEnumTrackers;
+    /// Promotion candidates keyed on the canonical `KeyId` of the
+    /// column (i.e. the id of `column.keys.front()`). Keyed by id
+    /// rather than `column.header` so a user-driven header rename
+    /// via `SetColumnHeader` cannot orphan the running tracker
+    /// (which would silently reset the `presenceCount`/`size` budget
+    /// the next time the column shows up in `RunEnumPassForAppendBatch`).
+    /// Live while the column is `Type::Any` with `autoDetect == true`.
+    std::unordered_map<KeyId, EnumCandidateTracker> mEnumTrackers;
 
-    /// Cumulative health for active enum columns, keyed on `column.header`.
-    std::unordered_map<std::string, EnumColumnHealth> mEnumColumnHealth;
+    /// Cumulative health for active enum columns, keyed on the
+    /// canonical `KeyId` of the column (see `mEnumTrackers` for
+    /// why -- a header rename mid-stream must not reset the budget).
+    std::unordered_map<KeyId, EnumColumnHealth> mEnumColumnHealth;
 
     /// True between `BeginStreaming` and `FinalizeAutoDetection`; switches
     /// to stream-mode thresholds and disables the cardinality bail.

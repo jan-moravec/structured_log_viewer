@@ -268,13 +268,18 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
         );
     }
     // Run every persisted `LogFilter::row` through the same
-    // permutation so each filter follows its column.
+    // permutation so each filter follows its column. The persisted
+    // sort column rides the same remap so callers that read
+    // `Configuration().sort` directly (without first re-mirroring
+    // from a runtime proxy) still see the right column.
     const int src = static_cast<int>(srcIndex);
     const int dest = static_cast<int>(destIndex);
     for (LogConfiguration::LogFilter &filter : mConfiguration.filters)
     {
         filter.row = LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
     }
+    mConfiguration.sort.columnIndex =
+        LogConfigurationManager::RemapColumnIndexAfterMove(mConfiguration.sort.columnIndex, src, dest);
     // Pure reorder; key cache is unchanged.
 }
 
@@ -341,6 +346,24 @@ void LogConfigurationManager::SetColumnHeader(size_t columnIndex, std::string he
         return;
     }
     mConfiguration.columns[columnIndex].header = std::move(header);
+}
+
+void LogConfigurationManager::SetColumnPrintFormat(size_t columnIndex, std::string printFormat)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].printFormat = std::move(printFormat);
+}
+
+void LogConfigurationManager::SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].parseFormats = std::move(parseFormats);
 }
 
 void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)

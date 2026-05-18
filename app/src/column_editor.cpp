@@ -96,7 +96,10 @@ QString FormatHealthLine(const std::optional<loglib::LogTable::ColumnTypeHealth>
     }
     if (mismatched == 0)
     {
-        return QStringLiteral("%1 of %1 values match the configured type.").arg(present);
+        // Translators-friendly: avoid the "%1 of %1" idiom that
+        // reads like a typo when the format string is bumped to
+        // ICU/plural rules.
+        return QStringLiteral("All %1 values match the configured type.").arg(present);
     }
     return QStringLiteral("<span style=\"color:#b04040;\">"
                           "%1 of %2 values do not match the configured type.</span>")
@@ -221,6 +224,13 @@ void ColumnEditor::WriteBack()
     auto &manager = mModel->ConfigurationManager();
     const size_t idx = static_cast<size_t>(mColumnIndex);
 
+    // Capture the original type before we mutate, so we can decide
+    // whether the back-fill walk is worth running. A no-op type
+    // change (the user clicked OK without touching the combo) skips
+    // the O(rows) reconcile.
+    const auto previousType = columns[idx].type;
+    const bool previousAutoDetect = columns[idx].autoDetect;
+
     // Header / visible are independent toggles; the type-pair has to
     // land together so an intermediate read by another component
     // never sees `Type::Any + autoDetect == false` paired with the
@@ -230,6 +240,20 @@ void ColumnEditor::WriteBack()
     manager.SetColumnType(idx, choice.type);
     manager.SetColumnAutoDetect(idx, choice.autoDetect);
 
+    // Reconcile already-loaded rows with the user's type pick:
+    //   - `Time`        -- run the backfill so existing strings
+    //                      parse into Timestamp slots.
+    //   - `Enumeration` / `Level` -- build the canonical dictionary
+    //                      and encode every existing slot.
+    //   - other types   -- materialise any leftover `DictRef` so
+    //                      sort/filter on the new type works.
+    // Skipped when neither field actually moved (no-op accept).
+    const bool typeChanged = previousType != choice.type || previousAutoDetect != choice.autoDetect;
+    if (typeChanged)
+    {
+        mModel->NotifyColumnTypeEdited(mColumnIndex);
+    }
+
     // The diagnostics cache is keyed by (type, data); the type just
     // moved, so re-snapshot before we hand control back. This is the
     // single seam that keeps the header tooltip / decoration / status
@@ -237,16 +261,9 @@ void ColumnEditor::WriteBack()
     // needs to know about column-editor edits.
     mModel->RefreshColumnHealth();
 
-    // Push the header/decoration/visibility refresh; `headerDataChanged`
-    // covers the displayed header + tooltip + warning icon, and
-    // `dataChanged` repaints any cell whose `Qt::DisplayRole`
+    // Push the header/decoration/visibility refresh; the model emits
+    // `headerDataChanged` + a column-wide `dataChanged` from
+    // `NotifyColumnEdited`, so the view repaints cells whose
     // formatting may have flipped with the new type.
-    emit mModel->headerDataChanged(Qt::Horizontal, mColumnIndex, mColumnIndex);
-    const int rows = mModel->rowCount();
-    if (rows > 0)
-    {
-        emit mModel->dataChanged(
-            mModel->index(0, mColumnIndex), mModel->index(rows - 1, mColumnIndex), {Qt::DisplayRole}
-        );
-    }
+    mModel->NotifyColumnEdited(mColumnIndex);
 }

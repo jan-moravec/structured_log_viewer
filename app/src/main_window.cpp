@@ -540,7 +540,16 @@ MainWindow::MainWindow(QWidget *parent)
             mPendingOpenErrors.clear();
         }
         mStreamingFileName.clear();
-        mCurrentSource.reset();
+        // `mCurrentSource` survives a successful or user-cancelled
+        // finish: the table still holds the parsed rows, so the
+        // descriptor is the right answer to "where did this data
+        // come from?" and stays available for a `Save Session...`
+        // round-trip. Only a `Failed` result tears it down, because
+        // there is no usable session state to describe.
+        if (result == StreamingResult::Failed)
+        {
+            mCurrentSource.reset();
+        }
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
@@ -859,6 +868,13 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
             );
         }
 
+        // Adopt the loaded `source` descriptor as the runtime mirror
+        // so the next `MirrorSessionStateToConfiguration` (invoked
+        // by `RebuildFiltersFromConfiguration` below) preserves it
+        // for a `Save Session...` round-trip. Without this the
+        // mirror would clobber the loaded field with `nullopt`.
+        mCurrentSource = mModel->Configuration().source;
+
         RebuildFiltersFromConfiguration();
         return true;
     }
@@ -1126,9 +1142,11 @@ void MainWindow::StopStream()
         return;
     }
     // Tear down but keep visible rows so the user can keep working on them.
+    // `mCurrentSource` deliberately survives because the kept rows are
+    // still those of that source -- a follow-up `Save Session...` would
+    // be wrong to mark them as sourceless.
     mModel->StopAndKeepRows();
     mStreamingFileName.clear();
-    mCurrentSource.reset();
 }
 
 void MainWindow::OnRotationDetected()
@@ -1413,6 +1431,11 @@ void MainWindow::SetSuppressDialogsForTest(bool suppress)
 int MainWindow::LastDroppedFilterCountForTest() const
 {
     return mLastDroppedFilterCountForTest;
+}
+
+void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source)
+{
+    mCurrentSource = std::move(source);
 }
 #endif
 
@@ -1722,14 +1745,16 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
             );
         }
 
-        RebuildFiltersFromConfiguration();
+        // Adopt the loaded `source` descriptor as the runtime mirror
+        // so the upcoming `MirrorSessionStateToConfiguration` (via
+        // `RebuildFiltersFromConfiguration`) preserves it for a
+        // `Save Session...` round-trip. The descriptor is loaded
+        // metadata only -- we deliberately do not auto-bind, since
+        // the session may have been authored on a different machine
+        // and surprise-opens would be hostile.
+        mCurrentSource = mModel->Configuration().source;
 
-        // The source descriptor is loaded but not auto-bound: a
-        // session may have been authored against a different
-        // machine, and we don't want surprise-opens. The next
-        // `MirrorSessionStateToConfiguration` will preserve it for
-        // round-trip, and the source-rebind UX (a follow-up patch)
-        // surfaces it to the user.
+        RebuildFiltersFromConfiguration();
         return true;
     }
     catch (std::exception &e)

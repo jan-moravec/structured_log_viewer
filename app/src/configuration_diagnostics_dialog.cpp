@@ -86,12 +86,43 @@ QTableWidgetItem *MakeReadOnlyItem(const QString &text)
     return item;
 }
 
+/// `QTableWidgetItem` subclass that orders rows by a numeric value
+/// stashed in `Qt::UserRole` rather than by the display string.
+/// The default `operator<` compares `Qt::DisplayRole` -- with a
+/// `QString` display that means "10" sorts before "2", which is
+/// wrong for every counter in this dialog. We keep the display
+/// string formatted (so `Mismatch %` can render "12.5") and lean
+/// on the user-role number for ordering.
+class NumericTableWidgetItem : public QTableWidgetItem
+{
+public:
+    NumericTableWidgetItem(const QString &display, double sortValue) : QTableWidgetItem(display)
+    {
+        setFlags(flags() & ~Qt::ItemIsEditable);
+        setData(Qt::UserRole, sortValue);
+        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    [[nodiscard]] bool operator<(const QTableWidgetItem &other) const override
+    {
+        const QVariant lhs = data(Qt::UserRole);
+        const QVariant rhs = other.data(Qt::UserRole);
+        if (lhs.isValid() && rhs.isValid())
+        {
+            return lhs.toDouble() < rhs.toDouble();
+        }
+        return QTableWidgetItem::operator<(other);
+    }
+};
+
 QTableWidgetItem *MakeNumericItem(qulonglong value)
 {
-    auto *item = MakeReadOnlyItem(QString::number(value));
-    item->setData(Qt::UserRole, value);
-    item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    return item;
+    return new NumericTableWidgetItem(QString::number(value), static_cast<double>(value));
+}
+
+QTableWidgetItem *MakePercentItem(double value)
+{
+    return new NumericTableWidgetItem(QStringLiteral("%1").arg(value, 0, 'f', 1), value);
 }
 } // namespace
 
@@ -225,10 +256,7 @@ void ConfigurationDiagnosticsDialog::Refresh()
         mTable->setItem(i, COL_MATCHING, MakeNumericItem(matching));
         mTable->setItem(i, COL_MISMATCHED, MakeNumericItem(mismatched));
 
-        auto *pctItem = MakeReadOnlyItem(QStringLiteral("%1").arg(mismatchPct, 0, 'f', 1));
-        pctItem->setData(Qt::UserRole, mismatchPct);
-        pctItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        mTable->setItem(i, COL_PERCENT, pctItem);
+        mTable->setItem(i, COL_PERCENT, MakePercentItem(mismatchPct));
 
         if (mismatched > 0)
         {

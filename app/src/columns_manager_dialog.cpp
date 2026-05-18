@@ -160,12 +160,22 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
         // Any out-of-band change to the column shape (header drag,
         // streaming-driven type promotion, configuration load) must
         // be reflected here so the manager never lies to the user.
+        // `headerDataChanged` is scoped to `[first, last]` so we
+        // only re-render those rows -- with a wide table and the
+        // per-column commit hitting the signal once per column,
+        // the previous full-rebuild was O(columns^2).
         connect(mModel, &LogModel::modelReset, this, &ColumnsManagerDialog::Refresh);
         connect(
             mModel,
             &LogModel::headerDataChanged,
             this,
-            [this](Qt::Orientation, int, int) { Refresh(); }
+            [this](Qt::Orientation orientation, int first, int last) {
+                if (orientation != Qt::Horizontal)
+                {
+                    return;
+                }
+                RefreshRange(first, last);
+            }
         );
         connect(mModel, &LogModel::columnHealthChanged, this, &ColumnsManagerDialog::Refresh);
     }
@@ -184,6 +194,38 @@ void ColumnsManagerDialog::Refresh()
     mTable->clearContents();
     mTable->setRowCount(static_cast<int>(columns.size()));
     for (int i = 0; i < static_cast<int>(columns.size()); ++i)
+    {
+        RebuildRow(i);
+    }
+    mUpdatingProgrammatically = false;
+}
+
+void ColumnsManagerDialog::RefreshRange(int firstColumn, int lastColumn)
+{
+    if (!mModel)
+    {
+        return;
+    }
+    const auto &columns = mModel->Configuration().columns;
+    const int rowCount = static_cast<int>(columns.size());
+    if (mTable->rowCount() != rowCount)
+    {
+        // Shape changed (column added / removed); fall back to a
+        // full rebuild so the row count stays in lock-step with
+        // the model. `headerDataChanged`'s `[first, last]` only
+        // covers updated columns, but a freshly-added one expands
+        // the layout too.
+        Refresh();
+        return;
+    }
+    const int first = std::max(0, firstColumn);
+    const int last = std::min(rowCount - 1, lastColumn);
+    if (first > last)
+    {
+        return;
+    }
+    mUpdatingProgrammatically = true;
+    for (int i = first; i <= last; ++i)
     {
         RebuildRow(i);
     }

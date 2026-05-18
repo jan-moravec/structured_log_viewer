@@ -244,6 +244,19 @@ public:
     /// point in a session. No-op out of range.
     void SetColumnHeader(size_t columnIndex, std::string header);
 
+    /// Replace `Column::printFormat` for @p columnIndex. Used by the
+    /// type-edit path to seed sensible defaults when the user pins
+    /// a column to `Type::Time` (an auto-detected Time column ships
+    /// with the format, a user-pinned one would otherwise be empty
+    /// and format every cell as the raw bytes). No-op out of range.
+    void SetColumnPrintFormat(size_t columnIndex, std::string printFormat);
+
+    /// Replace `Column::parseFormats` for @p columnIndex. See
+    /// `SetColumnPrintFormat` for the same Time-pinning motivation;
+    /// without parse formats the backfill walks the rows but
+    /// matches nothing. No-op out of range.
+    void SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats);
+
     /// Replace `LogConfiguration::filters` wholesale. The app calls
     /// this from its `mFilters` -> wire-format mirror so `Save` and
     /// `MoveColumn`'s row remap see the live runtime set.

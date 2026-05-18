@@ -1040,6 +1040,57 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "LogConfigurationManager::MoveColumn remaps Sort::columnIndex through the permutation",
+    "[LogConfigurationManager][move_column][sort_remap]"
+)
+{
+    // Filters and the persisted sort indicator share the same column
+    // identifier, so they must ride the same rotation. Without the
+    // sort remap, a `SaveScope::Full` round-trip after a column drag
+    // would land the indicator on the wrong column.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"a", "b", "c", "d"});
+    REQUIRE(manager.Configuration().columns.size() == 4);
+
+    SECTION("Sort on the dragged column travels with the move")
+    {
+        // Index 2 ("c") sorts descending; drag "c" to the front.
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = 2, .descending = true});
+
+        manager.MoveColumn(2, 0);
+        // "c" is now at index 0; the indicator must follow.
+        CHECK(manager.Configuration().sort.columnIndex == 0);
+        // Direction is preserved.
+        CHECK(manager.Configuration().sort.descending == true);
+    }
+
+    SECTION("Sort on a downstream column slides up when the drag crosses it")
+    {
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = 3, .descending = false});
+
+        // Move "a" (0) to position 3 -- "d" shifts left to index 2.
+        manager.MoveColumn(0, 3);
+        CHECK(manager.Configuration().sort.columnIndex == 2);
+    }
+
+    SECTION("Sort indicator outside the rotation window stays put")
+    {
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = 0, .descending = false});
+
+        manager.MoveColumn(2, 3);
+        CHECK(manager.Configuration().sort.columnIndex == 0);
+    }
+
+    SECTION("No-sort sentinel (-1) survives a move")
+    {
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = -1, .descending = false});
+
+        manager.MoveColumn(0, 2);
+        CHECK(manager.Configuration().sort.columnIndex == -1);
+    }
+}
+
+TEST_CASE(
     "RemapColumnIndexAfterMove permutation matches MoveColumn's internal logic",
     "[LogConfigurationManager][move_column]"
 )

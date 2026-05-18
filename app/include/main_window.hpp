@@ -184,6 +184,15 @@ public:
     /// Filters dropped on the most recent
     /// `LoadConfigurationFromPathForTest` call. Reset on each load.
     [[nodiscard]] int LastDroppedFilterCountForTest() const;
+
+    /// Test-only setter for `mCurrentSource`. Production code only
+    /// ever assigns this from inside an open path (`OpenFiles`,
+    /// `OpenLogStream`, `OpenNetworkStream`, `DoLoadConfiguration`),
+    /// none of which the fixture-driven tests want to run end-to-
+    /// end. Used to assert the descriptor round-trips through
+    /// `Save Session...` even when the test fixture bypasses the
+    /// real open machinery.
+    void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
 #endif
 
 protected:
@@ -440,10 +449,19 @@ private:
     ///     `OpenLogStream`).
     ///   - `kind == NetworkStream`: producer display name
     ///     (`OpenNetworkStream`).
-    /// `nullopt` when no session is active. Mirrored into
-    /// `LogConfiguration::source` by
+    /// Lifetime is "what the model's data describes":
+    ///   - Set when the user opens a file or stream.
+    ///   - Set from `Configuration().source` when a session file is
+    ///     loaded, so the next `Save Session...` round-trips it.
+    ///   - Survives `streamingFinished(Success|Cancelled)` and
+    ///     `StopStream`: the parsed rows are still there, so the
+    ///     descriptor remains the right answer to "what is this?".
+    ///   - Cleared only on `streamingFinished(Failed)` and by the
+    ///     next open path's `mModel->Reset()` (because the data
+    ///     it described is gone).
+    /// Mirrored into `LogConfiguration::source` by
     /// `MirrorSessionStateToConfiguration` before a `SaveScope::Full`
-    /// save; reset by `ClearAllFilters`-style teardown paths.
+    /// save.
     std::optional<loglib::LogConfiguration::Source> mCurrentSource;
 
     /// Files queued by `StartStreamingOpenQueue`.

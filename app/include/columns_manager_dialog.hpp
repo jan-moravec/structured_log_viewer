@@ -40,6 +40,13 @@ public:
     /// to assert the contents.
     void Refresh();
 
+    /// Refresh only rows in the inclusive `[firstColumn, lastColumn]`
+    /// range. Used as the `LogModel::headerDataChanged` slot so a
+    /// per-column edit doesn't rebuild every row. Falls back to a
+    /// full `Refresh()` when the row count disagrees with the
+    /// model (a shape change, not a content change).
+    void RefreshRange(int firstColumn, int lastColumn);
+
     /// Move the column at @p row up one slot via `LogModel::MoveColumn`.
     /// Public so the test seam can drive the path without resolving
     /// `QPushButton` children. No-op when the row is already the

@@ -2884,3 +2884,55 @@ TEST_CASE(
     CHECK(health.presentSlots == 2);
     CHECK(health.matchingSlots == 2);
 }
+
+TEST_CASE(
+    "LogTable -- renaming a column header mid-stream does not orphan the enum tracker",
+    "[log_table][append_batch][enum][rename_header][regression]"
+)
+{
+    // Regression: trackers and column health used to be keyed by
+    // `column.header`, so a `SetColumnHeader` mid-session reset the
+    // promotion budget and the column never promoted -- silently.
+    // The keying now rides the canonical `KeyId`, which is invariant
+    // under display-only renames.
+    //
+    // `STREAM_PROMOTION_MIN_ROWS == 2`, so promotion happens once
+    // the tracker has seen two present slots. We sandwich the
+    // rename between two single-row batches so neither side alone
+    // would promote -- before the fix that meant the column
+    // permanently stayed at `Type::Any` because batch-2 started
+    // with a fresh, empty tracker keyed on the new header.
+    const TestLogFile testFile("enum_rename_header.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+
+    // Batch 1: a single row -- enough to register the tracker but
+    // one short of the streaming promote threshold. The key is
+    // chosen so `IsLogLevelKey` does NOT match, otherwise the
+    // promote path routes to `Type::Level` and our assertion below
+    // has to special-case it.
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"first"}, /*firstLineNumber*/ 1, 1, true));
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
+    REQUIRE(table.Configuration().Configuration().columns[0].autoDetect == true);
+
+    // Rename the display header out from under the running tracker.
+    table.Configuration().SetColumnHeader(0, "Display Name");
+
+    // Batch 2: a second present row pushes `presenceCount` to 2 and
+    // promotion fires *only* if the tracker survived the rename.
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"second"}, 2, 1, false));
+
+    const auto &column = table.Configuration().Configuration().columns[0];
+    CHECK(column.type == LogConfiguration::Type::Enumeration);
+    CHECK(column.header == "Display Name"); // rename survives the promote
+    const KeyId categoryKey = keys.Find("category");
+    REQUIRE(categoryKey != INVALID_KEY_ID);
+    CHECK(table.EnumDictionaries().Contains(categoryKey));
+}
