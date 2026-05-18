@@ -2784,3 +2784,103 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
     CHECK_FALSE(table.GetLevelForRow(0, 0).has_value());
 }
+
+TEST_CASE(
+    "LogTable::ComputeColumnTypeHealth counts present and type-matching slots per column",
+    "[log_table][diagnostics][column_health]"
+)
+{
+    // User-pinned `Type::Integer` column over data that mixes ints
+    // and strings: the diagnostic should report all rows present and
+    // only the int rows as matching, so the UI can flag the mismatch.
+    const TestLogFile testFile("column_health_int_vs_string.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "value",
+         .keys = {"value"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Integer,
+         .parseFormats = {},
+         .visible = true,
+         .levelMapping = {},
+         .autoDetect = false}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // 5 rows total: 3 int slots, 1 string slot, 1 absent (monostate).
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys.emplace_back("value");
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(10)}}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(20)}}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(30)}}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("oops")}}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"other", LogValue{static_cast<int64_t>(99)}}}));
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.RowCount() == 5);
+
+    const auto health = table.ComputeColumnTypeHealth(0);
+    CHECK(health.totalSlots == 5);
+    CHECK(health.presentSlots == 4);  // 3 ints + 1 string; the absent row doesn't count
+    CHECK(health.matchingSlots == 3); // only the 3 ints match `Type::Integer`
+
+    // Out-of-range index yields a zero-initialised snapshot.
+    const auto empty = table.ComputeColumnTypeHealth(99);
+    CHECK(empty.totalSlots == 0);
+    CHECK(empty.presentSlots == 0);
+    CHECK(empty.matchingSlots == 0);
+}
+
+TEST_CASE(
+    "LogTable::ComputeColumnTypeHealth treats Type::Any as matching every present slot",
+    "[log_table][diagnostics][column_health][type_any]"
+)
+{
+    const TestLogFile testFile("column_health_any.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "value",
+         .keys = {"value"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Any,
+         .parseFormats = {},
+         .visible = true,
+         .levelMapping = {},
+         .autoDetect = false}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys.emplace_back("value");
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("x")}}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{static_cast<int64_t>(7)}}}));
+    table.AppendBatch(std::move(batch));
+
+    const auto health = table.ComputeColumnTypeHealth(0);
+    CHECK(health.totalSlots == 2);
+    CHECK(health.presentSlots == 2);
+    CHECK(health.matchingSlots == 2);
+}

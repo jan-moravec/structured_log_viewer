@@ -186,6 +186,29 @@ public:
     /// one column was promoted to `Type::Enumeration`.
     bool FinalizeAutoDetection();
 
+    /// Snapshot of "how well does the column's data match its
+    /// configured `Type`?", used by the diagnostics UI to surface
+    /// user-pinned columns whose declared type does not match the
+    /// values on disk. Computed on-demand (one column-walk per call,
+    /// no hot-path bookkeeping).
+    struct ColumnTypeHealth
+    {
+        /// Total rows in the table at call time.
+        size_t totalSlots = 0;
+        /// Rows where this column has any slot (non-monostate).
+        size_t presentSlots = 0;
+        /// Rows where the slot's variant matches the column's
+        /// configured `Type`. For `Type::Any` every present slot
+        /// matches (the type itself imposes no expectation). For
+        /// `Type::Enumeration`/`Type::Level`, slots are considered
+        /// matching once they have been encoded as `DictRef` --
+        /// unencoded slots (raw strings) count as present-but-not-
+        /// matching, which is how user-pinned dict columns expose
+        /// over-cap values.
+        size_t matchingSlots = 0;
+    };
+    [[nodiscard]] ColumnTypeHealth ComputeColumnTypeHealth(size_t columnIndex) const;
+
     const LogConfigurationManager &Configuration() const;
     /// Non-const access for `Load`/`Save`. Must not be mutated mid-streaming.
     LogConfigurationManager &Configuration();

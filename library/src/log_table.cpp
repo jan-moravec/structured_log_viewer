@@ -880,6 +880,113 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
     return {.canonicalKey = canonicalKey, .dictionary = mEnumDictionaries.Find(canonicalKey)};
 }
 
+namespace
+{
+
+/// `true` iff a slot tag is a valid representation of @p declaredType.
+/// Mirrors the variant alternatives accepted by the sort/filter
+/// comparators in `log_compare.cpp` / `log_filter.cpp`; keep the two
+/// sides in sync. `Type::Any` accepts every present tag (no
+/// expectation imposed).
+bool TagMatchesType(internal::CompactTag tag, LogConfiguration::Type declaredType) noexcept
+{
+    using Type = LogConfiguration::Type;
+    using Tag = internal::CompactTag;
+    if (tag == Tag::Monostate)
+    {
+        return false;
+    }
+    switch (declaredType)
+    {
+    case Type::Any:
+        return true;
+    case Type::String:
+        return tag == Tag::MmapSlice || tag == Tag::OwnedString || tag == Tag::DictRef;
+    case Type::Boolean:
+        return tag == Tag::Bool;
+    case Type::Integer:
+        return tag == Tag::Int64 || tag == Tag::Uint64;
+    case Type::Floating:
+        return tag == Tag::Double;
+    case Type::Number:
+        return tag == Tag::Int64 || tag == Tag::Uint64 || tag == Tag::Double;
+    case Type::Time:
+        // `Timestamp` is the natural tag; epoch integers ride the
+        // same comparator so they count as matching for the
+        // diagnostic.
+        return tag == Tag::Timestamp || tag == Tag::Int64 || tag == Tag::Uint64;
+    case Type::Enumeration:
+    case Type::Level:
+        // Encoded-as-dict is the only "matching" state. An OwnedString
+        // slot on a user-pinned enum column is the over-cap value the
+        // diagnostic exists to surface.
+        return tag == Tag::DictRef;
+    }
+    return false;
+}
+
+} // namespace
+
+LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex) const
+{
+    ColumnTypeHealth health;
+    const auto &columns = mConfiguration.Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return health;
+    }
+    const auto &column = columns[columnIndex];
+    const auto &lines = mData.Lines();
+    health.totalSlots = lines.size();
+    if (column.keys.empty())
+    {
+        return health;
+    }
+
+    // Resolve every alias `KeyId` once; absent ones drop out. The
+    // canonical alias is conventionally first, but all entries can
+    // carry slots (alias-list reorders preserve their `KeyId`s).
+    std::vector<KeyId> aliasKeys;
+    aliasKeys.reserve(column.keys.size());
+    for (const std::string &key : column.keys)
+    {
+        const KeyId id = mData.Keys().Find(key);
+        if (id != INVALID_KEY_ID)
+        {
+            aliasKeys.push_back(id);
+        }
+    }
+    if (aliasKeys.empty())
+    {
+        // No `KeyId`s interned yet (column from a config that hasn't
+        // seen any data): every row counts as absent.
+        return health;
+    }
+
+    for (const LogLine &line : lines)
+    {
+        const internal::CompactLogValue *slot = nullptr;
+        for (const KeyId id : aliasKeys)
+        {
+            slot = line.FindCompact(id);
+            if (slot != nullptr)
+            {
+                break;
+            }
+        }
+        if (slot == nullptr || slot->tag == internal::CompactTag::Monostate)
+        {
+            continue;
+        }
+        ++health.presentSlots;
+        if (TagMatchesType(slot->tag, column.type))
+        {
+            ++health.matchingSlots;
+        }
+    }
+    return health;
+}
+
 void LogTable::RunEnumPassForAppendBatch(
     size_t oldLineCount, std::optional<size_t> &firstBackfilled, std::optional<size_t> &lastBackfilled
 )
