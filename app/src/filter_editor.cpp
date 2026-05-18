@@ -748,7 +748,10 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
     // observed so saved selections still travel through and the next
     // `Grew` rebuild can correct the picker.
     const std::vector<LogLevel> *ranks = mModel.Table().LevelRankCache(static_cast<size_t>(columnIndex));
-    std::array<bool, CANONICAL_LEVEL_COUNT> observed{};
+    // Indexed by raw `LogLevel` ordinal (Unknown=0..Fatal=6), so the
+    // array is one larger than `CANONICAL_LEVEL_COUNT` (which excludes
+    // `Unknown`). Slot 0 is unused; Trace..Fatal occupy 1..6.
+    std::array<bool, CANONICAL_LEVEL_COUNT + 1> observed{};
     if (ranks == nullptr)
     {
         observed.fill(true);
