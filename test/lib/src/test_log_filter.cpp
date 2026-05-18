@@ -196,11 +196,9 @@ std::vector<std::string_view> ToViews(const std::vector<std::string> &values)
 
 TEST_CASE("EnumRowPredicate accepts rows whose value is in the selection", "[log_filter][enum]")
 {
-    // Non-level key (`category`) keeps the column as `Type::Enumeration`
-    // so the predicate is built against the enum dictionary. A
-    // `level`-named column with the same canonical values would
-    // auto-promote to `Type::Level` and break the explicit
-    // `type == Enumeration` REQUIRE below.
+    // Non-level key (`category`) keeps the column Enumeration; a
+    // `level`-named column with the same values would auto-promote
+    // to Level and break the REQUIRE below.
     const TestLogFile fixture("log_filter_enum_accept.json");
     fixture.Write("");
     const std::vector<std::string> values = {"info", "warn", "error"};
@@ -743,10 +741,9 @@ TEST_CASE(
     "[log_filter][enum_row_predicate][level]"
 )
 {
-    // Mirrors `MainWindow::BuildRowPredicates` for Level columns: the
+    // Mirrors `MainWindow::BuildRowPredicates` for Level columns:
     // canonical names ("Info", "Warn") on the UI side are translated
-    // to the raw dictionary entries the column actually carries, then
-    // fed into the existing `EnumRowPredicate`.
+    // to the raw dictionary entries, then fed into `EnumRowPredicate`.
     const TestLogFile fixture("log_filter_level.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
@@ -788,8 +785,8 @@ TEST_CASE(
     const EnumDictionary *dict = registry.Find(kid);
     REQUIRE(dict != nullptr);
 
-    // Expand canonical names to raw entries via the cache (same logic
-    // as `MainWindow::BuildRowPredicates`).
+    // Expand canonical names to raw entries via the cache; same logic
+    // `MainWindow::BuildRowPredicates` uses.
     auto expandSelection = [&](std::initializer_list<LogLevel> selectedLevels) {
         std::vector<std::string> expanded;
         for (size_t valueId = 0; valueId < ranks->size(); ++valueId)

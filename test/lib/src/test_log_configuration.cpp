@@ -487,9 +487,8 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     CHECK_FALSE(json.contains("\"double\""));
     CHECK(json.contains("\"number\""));
     CHECK(json.contains("\"enumeration\""));
-    // `Type::Level` rides on top of `Type::Enumeration` at runtime
-    // but has its own wire key so saved configurations distinguish a
-    // user-pinned Level column from a regular enum column on load.
+    // `Type::Level` shares storage with Enumeration at runtime but
+    // has its own wire key so a saved Level column reloads as Level.
     CHECK(json.contains("\"level\""));
 
     LogConfiguration loaded;
@@ -717,12 +716,10 @@ TEST_CASE(
     "[log_configuration][wire_format_compat][level]"
 )
 {
-    // Pins the lowerCamelCase `"level"` wire token for `Type::Level`
-    // and the `levelMapping` field name. The pair encoding glaze emits
-    // for `std::vector<std::pair<...>>` is an internal default; this
-    // test goes through `write_json` -> `read_json` so the shape stays
-    // self-consistent regardless of which pair-encoding glaze picks,
-    // while still asserting the public wire tokens.
+    // Pin the wire tokens (`"level"`, `"levelMapping"`). The actual
+    // pair encoding glaze uses is an internal default, so the test
+    // round-trips through `write_json` -> `read_json` instead of
+    // matching bytes.
     LogConfiguration original;
     LogConfiguration::Column column;
     column.header = "severity";
@@ -740,8 +737,8 @@ TEST_CASE(
     const auto writeError = glz::write_json(original, json);
     REQUIRE_FALSE(writeError);
 
-    // Public wire tokens. The glaze meta locks `"level"` to
-    // `Type::Level`; the field name is straight from the struct.
+    // Public wire tokens. `"level"` is locked by the glaze meta;
+    // the field name comes straight from the struct.
     CHECK(json.contains("\"type\":\"level\""));
     CHECK(json.contains("\"levelMapping\""));
     CHECK(json.contains("\"NOTICE\""));
@@ -1101,9 +1098,8 @@ TEST_CASE("IsLogLevelKey recognises canonical level aliases case-insensitively",
     CHECK(IsLogLevelKey("priority"));
     CHECK(IsLogLevelKey("Priority"));
 
-    // Short forms. False-positive risk is accepted by design; the
-    // dictionary-content check in `MaybePromoteToLevel` is the safety
-    // net for keys like `l` that happen to appear on non-level columns.
+    // Short forms. The dictionary-content check in
+    // `MaybePromoteToLevel` is the safety net against false positives.
     CHECK(IsLogLevelKey("l"));
     CHECK(IsLogLevelKey("L"));
     CHECK(IsLogLevelKey("lv"));
@@ -1187,9 +1183,9 @@ TEST_CASE(
 
 TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
 {
-    // Every alias in `BUILTIN_ALIASES`, plus at least one mixed-case
-    // spelling for each new short-form / library-specific entry. Pins
-    // the table contents end-to-end against the header docstring.
+    // Every alias in `BUILTIN_ALIASES`, plus mixed-case spellings for
+    // each new short-form/library-specific entry. Keeps the table in
+    // sync with the header docstring.
     using Expected = std::pair<std::string_view, LogLevel>;
     constexpr std::array<Expected, 52> CASES = {{
         // Trace
@@ -1263,9 +1259,8 @@ TEST_CASE("ParseLevelName matches the documented alias table", "[log_level]")
     CHECK_FALSE(ParseLevelName("INFOZ").has_value()); // near-miss of "info"; alias table is exact-match only
     CHECK_FALSE(ParseLevelName("unknown").has_value());
     CHECK_FALSE(ParseLevelName("\\t info").has_value());
-    // Deliberately *not* in the built-in table (see header docstring +
-    // README). Catches accidental drift if someone adds them later
-    // without updating the documentation.
+    // Deliberately *not* built-in (see header + README). Catches
+    // drift if they're added without updating the docs.
     CHECK_FALSE(ParseLevelName("config").has_value());
     CHECK_FALSE(ParseLevelName("default").has_value());
     CHECK_FALSE(ParseLevelName("http").has_value());

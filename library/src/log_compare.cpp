@@ -368,10 +368,9 @@ int CompareString(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t co
     return CompareLogValuesBytewise(table, lhsRow, rhsRow, column);
 }
 
-/// `Type::Level` rows compare by canonical `LogLevel` ordinal (Trace
-/// < Debug < ... < Fatal). Slots that don't resolve to a canonical
-/// level (monostate, unmapped string, missing cache) join the tail
-/// bucket -- same invariant `CompareEnum` enforces.
+/// Compare `Type::Level` rows by canonical `LogLevel` ordinal (Trace
+/// < Debug < ... < Fatal). Unresolved slots (monostate, unmapped
+/// string, missing cache) join the tail bucket, matching `CompareEnum`.
 int CompareLevel(const LogTable &table, size_t lhsRow, size_t rhsRow, size_t column)
 {
     const auto lhsLevel = table.GetLevelForRow(lhsRow, column);
@@ -511,12 +510,9 @@ std::vector<size_t> SortPermutationByColumn(
     }
 
     // Level fast path: pre-materialise canonical `LogLevel` ordinals
-    // per row in parallel. Unresolved slots get an out-of-range
-    // sentinel so they sort after every resolved level, matching the
-    // `CompareLevel` tail-bucket invariant. The rank cache is hoisted
-    // once outside the parallel loop -- inside the loop the canonical
-    // rank lookup collapses to an indexed `ranks[id]` read, skipping
-    // the per-row `mLevelRankCache` walk that `GetLevelForRow` would do.
+    // per row in parallel. Unresolved slots get a sentinel rank so
+    // they sort to the tail, matching `CompareLevel`. The rank cache
+    // is hoisted once so the loop body is a plain `ranks[id]` lookup.
     if (isLevel)
     {
         constexpr auto SENTINEL = static_cast<uint8_t>(std::numeric_limits<uint8_t>::max());
@@ -524,11 +520,9 @@ std::vector<size_t> SortPermutationByColumn(
         const std::vector<LogLevel> *ranks = table.LevelRankCache(columnIndex);
         if (ranks == nullptr)
         {
-            // Configured `Type::Level` column with no observations yet
-            // (e.g. a saved config loaded before any batches arrive):
-            // every row sorts to the sentinel tail bucket. Matches the
-            // tail-only output `CompareLevel` would produce in the same
-            // state.
+            // `Type::Level` column with no observations yet (e.g. saved
+            // config loaded before any batches). Sort every row to the
+            // tail bucket, matching `CompareLevel`.
             std::fill(rankForRow.begin(), rankForRow.end(), SENTINEL);
         }
         else
@@ -546,8 +540,7 @@ std::vector<size_t> SortPermutationByColumn(
                             continue;
                         }
                         const LogLevel lvl = ranksRef[static_cast<size_t>(*id)];
-                        // `Unknown` is the cache's "raw bytes did not
-                        // map" marker; treat it like a missing slot.
+                        // `Unknown` marks "raw bytes did not map"; treat as missing.
                         rankForRow[i] = (lvl == LogLevel::Unknown) ? SENTINEL : static_cast<uint8_t>(lvl);
                     }
                 }

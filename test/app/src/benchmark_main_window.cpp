@@ -310,14 +310,12 @@ private slots:
     }
 
     // Enum-column sort wall-clock under the production proxy chain.
-    // Sorts both the auto-detected `level` column (which on builds
-    // with the level-detection feature lands as `Type::Level`, and on
-    // older builds as `Type::Enumeration`) and the auto-detected
-    // `component` column (which always lands as `Type::Enumeration`
-    // because `component` is not in the level field-name heuristic).
-    // The two columns gate two separate `loglib::SortPermutationByColumn`
-    // fast paths -- the level rank cache vs. the `EnumDictRank` rank
-    // table -- so a regression in either surfaces here.
+    // Sorts the `level` column (lands as `Type::Level` on this build,
+    // `Type::Enumeration` on older builds) and the `component` column
+    // (always `Type::Enumeration`, since `component` is not in the
+    // level field-name heuristic). The two columns gate the two
+    // `SortPermutationByColumn` fast paths -- level rank cache vs.
+    // `EnumDictRank` -- so a regression in either surfaces here.
     void BenchEnumColumnSort()
     {
         const ProxyChain chain = BuildLoadedChain();
@@ -333,20 +331,17 @@ private slots:
                 levelType == loglib::LogConfiguration::Type::Level,
             "level column must promote to Enumeration or Level"
         );
-        // `component` is not in the log-level field-name heuristic, so
-        // it must stay as `Type::Enumeration`. Pinning the assertion
-        // here means that if the heuristic ever broadens we notice
-        // immediately rather than silently lose the enum-rank gate.
+        // `component` is not a known level key, so it must stay
+        // Enumeration. Pin it so a broadening of the heuristic shows
+        // up here rather than silently losing the enum-rank gate.
         QVERIFY2(
             columns[static_cast<size_t>(componentCol)].type == loglib::LogConfiguration::Type::Enumeration,
             "component column must remain Enumeration (no level promotion)"
         );
 
         // Lib-level gate on the level path. `CompareRows` for level
-        // columns ignores the `EnumDictRank` argument and dispatches
-        // to `CompareLevel`, which calls `LogTable::GetLevelForRow`
-        // per side. This sub-segment guards the per-compare cost on a
-        // fixture wider than the `level`-only lib benchmark.
+        // columns ignores `EnumDictRank` and dispatches to
+        // `CompareLevel`, which calls `GetLevelForRow` per side.
         BenchLibOnlySort(
             chain,
             levelCol,
@@ -357,10 +352,9 @@ private slots:
         );
 
         // Lib-level gate on the enum path. `CompareRows` for
-        // `Type::Enumeration` consults the precomputed `EnumDictRank`
-        // (`CompareEnum`); a regression that drops the rank lookup or
-        // re-routes through a per-row string compare is what this
-        // segment is here to catch.
+        // Enumeration consults the precomputed `EnumDictRank`
+        // (`CompareEnum`); catches a regression that drops the rank
+        // lookup or routes through a per-row string compare.
         BenchLibOnlySort(
             chain,
             componentCol,
@@ -370,15 +364,13 @@ private slots:
             /*ceilingMs=*/1500.0
         );
 
-        // Proxy-roundtrip sort. Drives the production
-        // `LogModel -> RowOrderProxyModel -> LogFilterModel` chain
-        // through `loglib::SortPermutationByColumn`, which has a
-        // dedicated parallel fast path for both `Type::Enumeration`
-        // (uint16_t `EnumDictRank`) and `Type::Level` (uint8_t
-        // `LevelRankCache`). We sort the level column here because
-        // that's the hot path users actually trigger most often, but
-        // the lib-side gate above still covers the enum proxy path
-        // implicitly: on a regression both sub-segments slow down.
+        // Proxy-roundtrip sort over the production
+        // `LogModel -> RowOrderProxyModel -> LogFilterModel` chain.
+        // `SortPermutationByColumn` has dedicated parallel fast paths
+        // for both Enumeration (uint16_t `EnumDictRank`) and Level
+        // (uint8_t `LevelRankCache`); we sort the level column here
+        // because that's the common user path -- the enum proxy path
+        // is covered implicitly by the lib gate above.
         using Ms = std::chrono::duration<double, std::milli>;
 
         // Drop any cached ranks so the very first `lessThan` triggers a
@@ -402,12 +394,11 @@ private slots:
         // sort runs through `loglib::SortPermutationByColumn`: log
         // rows resolve once (no per-compare proxy walk), a uint16_t
         // rank is pre-materialised in parallel for enum columns, and
-        // `tbb::parallel_sort` permutes them. Level columns get the
-        // same treatment with a uint8_t `LogLevel` rank instead.
-        // Dev-box wall-clock is ~68 ms; 1 s is the CI ceiling and the
-        // user-visible target from the perf plan. Breaking it means
-        // the comparator stopped being branch-free or the log-row
-        // pre-resolution disappeared.
+        // `tbb::parallel_sort` permutes them. Level columns use a
+        // uint8_t `LogLevel` rank instead. Dev-box ~68 ms; 1 s is the
+        // CI ceiling from the perf plan. A break here usually means
+        // the comparator stopped being branch-free or per-compare
+        // log-row pre-resolution regressed.
         QVERIFY2(
             Ms(elapsed).count() < 1000.0,
             qPrintable(QStringLiteral("sort proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
@@ -432,10 +423,8 @@ private:
         std::unique_ptr<LogFilterModel> filterProxy;
     };
 
-    /// Locate the configuration index of a column whose `keys` list
-    /// contains @p key (case-sensitive, matching the configuration
-    /// metadata exactly). Returns -1 if no column claims the key, so
-    /// callers can `QVERIFY2` with a descriptive failure message.
+    /// Index of the column whose `keys` list contains @p key, or -1
+    /// when no column claims it. Case-sensitive.
     static int FindColumnByKey(const std::vector<loglib::LogConfiguration::Column> &columns, const std::string &key)
     {
         for (size_t i = 0; i < columns.size(); ++i)
@@ -448,16 +437,10 @@ private:
         return -1;
     }
 
-    /// Time a single-threaded `loglib::CompareRows`-driven sort over
-    /// every row's index, branching on the column type so the rank
-    /// argument matches what the comparator will actually consume:
-    /// `Type::Enumeration` gets a precomputed `EnumDictRank`,
-    /// `Type::Level` (and any other type) gets `nullptr` because
-    /// `CompareLevel` reads the level rank cache off the table
-    /// directly. @p useEnumRank is the explicit caller intent --
-    /// passing `true` on a non-enum column fails the `QVERIFY2` so a
-    /// silently mistyped sub-segment can't masquerade as a different
-    /// path's measurement.
+    /// Time a single-threaded `CompareRows` sort. When @p useEnumRank
+    /// is true the column must be Enumeration and a precomputed
+    /// `EnumDictRank` is passed; otherwise the rank pointer is null
+    /// (Level columns read the rank cache off the table directly).
     static void BenchLibOnlySort(
         const ProxyChain &chain,
         int columnIndex,

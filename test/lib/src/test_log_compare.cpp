@@ -317,10 +317,9 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
 
 TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_compare][enum]")
 {
-    // Non-level key (`category`): `LogTable::MaybePromoteToLevel` is
-    // gated on `IsLogLevelKey`, so the column stays `Type::Enumeration`
-    // even though the dictionary content happens to be canonical level
-    // names. Pins the rank-table compare path against alphabetic order.
+    // Non-level key (`category`) so the column stays Enumeration even
+    // though the dict happens to hold canonical level names. Pins the
+    // rank-table compare path against alphabetic order.
     const TestLogFile fixture("log_compare_enum.json");
     fixture.Write("");
 
@@ -422,9 +421,8 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
 // disagreed with a bulk re-sort on where wrong-type slots landed.
 TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table", "[log_compare][enum][regression]")
 {
-    // Non-level key (`category`) so the column stays `Type::Enumeration`
-    // and exercises `CompareEnum` -- a level-named key would route the
-    // same dictionary content through `CompareLevel` instead.
+    // Non-level key (`category`) so the column stays Enumeration and
+    // exercises `CompareEnum` rather than `CompareLevel`.
     const TestLogFile fixture("log_compare_enum_tail_bucket.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
@@ -504,10 +502,8 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
 
 TEST_CASE("CompareRows on enum column without rank falls back to string compare", "[log_compare][enum][fallback]")
 {
-    // Non-level key (`category`) so the column stays
-    // `Type::Enumeration`; we want the no-rank `CompareEnum` fallback,
-    // not the `CompareLevel` path that a `level`-named column would
-    // take with these dictionary entries.
+    // Non-level key (`category`) keeps the column Enumeration so we
+    // hit the no-rank `CompareEnum` fallback (not `CompareLevel`).
     const TestLogFile fixture("log_compare_enum_no_rank.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
@@ -609,9 +605,9 @@ TEST_CASE(
 {
     const TestLogFile fixture("log_compare_level.json");
     fixture.Write("");
-    // User-pinned `Type::Level` column with mixed-case aliases. Sort
-    // must use canonical rank (Info < Warn < Error < Fatal), not
-    // alphabetic byte order ("ERROR" < "INFO" alphabetically).
+    // Pinned `Type::Level` with mixed-case aliases. Sort must use
+    // canonical rank (Info < Warn < Error < Fatal), not bytes
+    // ("ERROR" < "INFO" alphabetically).
     auto source = fixture.CreateFileLineSource();
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
@@ -656,10 +652,10 @@ TEST_CASE(
     "[log_compare][level][sort_permutation]"
 )
 {
-    // Regression for the dedicated `Type::Level` fast path in
-    // `SortPermutationByColumn`: pre-materialised `uint8_t` ranks +
-    // sentinel for unmapped slots must agree with `CompareLevel` on
-    // ordering for both ascending and descending sorts.
+    // Regression: the `Type::Level` fast path in
+    // `SortPermutationByColumn` (pre-materialised `uint8_t` ranks +
+    // sentinel for unmapped slots) must agree with `CompareLevel` for
+    // both ascending and descending sorts.
     const TestLogFile fixture("log_compare_level_sort_perm.json");
     fixture.Write("");
     auto source = fixture.CreateFileLineSource();
@@ -683,14 +679,12 @@ TEST_CASE(
 
     StreamedBatch batch;
     batch.firstLineNumber = 1;
-    // Insertion order: info, warn, error, fatal, qux. `LogLevel`
-    // ordinals are `Unknown=0, Trace=1, Debug=2, Info=3, Warn=4,
-    // Error=5, Fatal=6`, so the per-row ranks come out
-    // `3 < 4 < 5 < 6 < sentinel(255)`, giving:
+    // Insertion order: info, warn, error, fatal, qux. Ranks come out
+    // `Info(3) < Warn(4) < Error(5) < Fatal(6) < sentinel(255)`, so:
     //   ascending  -> [0, 1, 2, 3, 4]
-    //   descending -> [4, 3, 2, 1, 0]  (sentinel sorts FIRST in
-    //     descending because primary key is `rankA > rankB`; this
-    //     matches the existing enum fast-path convention).
+    //   descending -> [4, 3, 2, 1, 0]   (sentinel sorts FIRST in
+    //     descending because the primary key is `rankA > rankB`;
+    //     matches the enum fast-path convention.)
     const std::vector<std::string> rowValues = {"info", "warn", "error", "fatal", "qux"};
     for (const auto &v : rowValues)
     {
@@ -718,9 +712,9 @@ TEST_CASE(
             table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/false, /*rankForEnumColumn=*/nullptr
         );
         REQUIRE(perm.size() == 5);
-        // Sentinel comes first in descending: matches the generic path
-        // (`CompareLevel` returns +1 for an unresolved lhs, and the
-        // descending generic comparator uses `cmp > 0`).
+        // Sentinel sorts first in descending: matches the generic
+        // path (`CompareLevel` returns +1 for an unresolved lhs and
+        // the generic descending comparator uses `cmp > 0`).
         CHECK(perm[0] == 4); // qux (tail / sentinel)
         CHECK(perm[1] == 3); // fatal
         CHECK(perm[2] == 2); // error

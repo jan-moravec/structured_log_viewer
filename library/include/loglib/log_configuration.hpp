@@ -32,12 +32,11 @@ struct LogConfiguration
     ///   - `Number`      - mix of integer and floating.
     ///   - `Time`        - timestamp column.
     ///   - `Enumeration` - small fixed vocabulary stored as `DictRef`.
-    ///   - `Level`       - Enumeration subtype recognised as a log-level
-    ///                     column. Raw user strings are preserved verbatim
-    ///                     in the dictionary; a per-column cache maps
-    ///                     each dictionary id to a canonical `LogLevel`
-    ///                     so sort, filter, and styling use canonical
-    ///                     rank instead of alphabetic order.
+    ///   - `Level`       - Enumeration subtype for log-level columns.
+    ///                     Raw strings stay in the dictionary; a
+    ///                     per-column cache maps each id to a canonical
+    ///                     `LogLevel` so sort/filter/styling use
+    ///                     severity rank instead of alphabetic order.
     enum class Type
     {
         Unknown,
@@ -67,11 +66,10 @@ struct LogConfiguration
         /// Defaults to `true` so legacy JSON loads as visible.
         bool visible = true;
         /// Per-column alias overrides for `Type::Level` columns. Each
-        /// entry is `(alias, canonicalName)`; aliases are matched
-        /// case-insensitively against the raw user string, canonical
-        /// names must spell-match a canonical `LogLevel` (`"Info"`,
-        /// `"Warn"`, ...). Entries augment the built-in alias table.
-        /// Empty by default; ignored for non-Level columns.
+        /// entry is `(alias, canonicalName)`: aliases match the raw
+        /// user string case-insensitively, canonical names must spell
+        /// a `LogLevel` (`"Info"`, `"Warn"`, ...). Augments the
+        /// built-in alias table. Ignored for non-Level columns.
         std::vector<std::pair<std::string, std::string>> levelMapping;
     };
 
@@ -126,10 +124,9 @@ struct LogConfiguration
     std::vector<LogFilter> filters;
 };
 
-/// Case-insensitive match against the canonical level-key alias list
-/// (`level`, `severity`, `loglevel`, ...). Used by `LogTable` to decide
-/// whether an auto-detected `Type::Enumeration` column is eligible for
-/// promotion to `Type::Level`.
+/// Case-insensitive match against known log-level field names (`level`,
+/// `severity`, ...). `LogTable` uses this to gate `Enumeration -> Level`
+/// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
 /// Loads, saves, and updates a `LogConfiguration` from observed data.

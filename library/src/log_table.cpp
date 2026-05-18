@@ -27,18 +27,15 @@ namespace
 {
 
 /// Static-parse min rows before promoting `Type::Unknown` to enum.
-/// `FinalizeAutoDetection` catches smaller files at end-of-parse, so this
-/// threshold only governs in-batch promotion for large static files.
+/// Smaller files are caught at end-of-parse by `FinalizeAutoDetection`.
 constexpr size_t ENUM_PROMOTION_MIN_ROWS = 4096;
 
 /// Streaming promotion threshold; promote eagerly, dictionary/length caps guard.
 constexpr size_t STREAM_PROMOTION_MIN_ROWS = 2;
 
 /// Static-mode cardinality bail: distinct/observed ratio limit. Tight
-/// because, given the default `mEnumValueCap = 64`, the dictionary-cap
-/// kill in `EnumCandidateTracker::Observe` already catches truly
-/// high-cardinality columns first; this ratio only governs sparse-presence
-/// candidates that stay below cap.
+/// because the dictionary-cap kill catches high-cardinality columns
+/// first; this only governs sparse-presence candidates below cap.
 constexpr double ENUM_CARDINALITY_BAIL_RATIO = 0.05;
 
 /// Max fraction of over-cap-length or wrong-type observations before demotion.
@@ -47,18 +44,11 @@ constexpr double ENUM_HEALTH_TOLERANCE_RATIO = 0.01;
 /// Minimum samples before consulting the tolerance ratio.
 constexpr size_t ENUM_HEALTH_MIN_SAMPLES = 50;
 
-/// Dict-weighted tolerance for `MaybePromoteToLevel`: promote when
-/// `unrecognized * LEVEL_DICT_TOLERANCE_RATIO <= canonical`, i.e. at
-/// most one unrecognized entry is allowed per four canonical ones.
-/// Equivalent closed form: `unrecognized <= dictSize / 5` (`floor`).
-/// Concretely: dicts up to size 4 must be 100% canonical; size 5
-/// tolerates 1 weird value; size 10 tolerates 2; size 15 tolerates 3;
-/// size N tolerates `floor(N / 5)` weird values once at least one
-/// canonical entry is present. Trades false-positive risk (calling a
-/// status column "level" because it happens to share a string with
-/// one) against tolerance for occasional non-canonical values mixed
-/// into a real level column. Dict-weighted (not row-weighted) so a
-/// single dict pass suffices on every re-check.
+/// Dict-weighted tolerance for `MaybePromoteToLevel`. Allows at most one
+/// unrecognized entry per `LEVEL_DICT_TOLERANCE_RATIO` canonical ones --
+/// e.g. a 4-entry dict must be 100% canonical, a 5-entry dict tolerates
+/// one stray, a 10-entry dict tolerates two. Trades false-positive risk
+/// against tolerance for occasional non-canonical mixed-in values.
 constexpr size_t LEVEL_DICT_TOLERANCE_RATIO = 4;
 
 /// Microsecond threshold above which `DemoteColumnFromEnum` emits a
@@ -204,8 +194,7 @@ LogTable::LogTable(LogTable &&other) noexcept
 {
     other.mIsStreaming = false;
     other.mLastBatchDemotedKeys.clear();
-    // Each `LineSource` cached `&other.mEnumDictionaries` before the
-    // move; rebind every source we now own at `&this->mEnumDictionaries`.
+    // Each `LineSource` cached `&other.mEnumDictionaries`; rebind to ours.
     RewireSourceRegistries();
 }
 
@@ -231,8 +220,7 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mLastBatchDemotedKeys = std::move(other.mLastBatchDemotedKeys);
     other.mLastBatchDemotedKeys.clear();
     mLevelRankCache = std::move(other.mLevelRankCache);
-    // Each `LineSource` cached `&other.mEnumDictionaries` before the
-    // move; rebind every source we now own at `&this->mEnumDictionaries`.
+    // Each `LineSource` cached `&other.mEnumDictionaries`; rebind to ours.
     RewireSourceRegistries();
     return *this;
 }
@@ -271,19 +259,14 @@ void LogTable::Reset()
     mLevelRankCache.clear();
     mIsStreaming = false;
     mLastBackfillRange.reset();
-    // Sibling teardown paths (`BeginStreaming`, `Update`, `AppendBatch`,
-    // move-ops) all clear this -- keep `Reset` consistent so a reader
-    // that calls `LastBatchDemotedKeys()` between `Reset` and the next
-    // batch-style call doesn't see ids from the prior session.
+    // Match the sibling teardown paths so a reader between `Reset` and
+    // the next batch-style call doesn't see stale demote ids.
     mLastBatchDemotedKeys.clear();
     RefreshColumnKeyIds();
-    // Re-seed enum / level dictionaries from the configuration so callers
-    // that query `LevelRankCache` between `Reset` and the next
-    // `Update` / `BeginStreaming` see the configured Level columns
-    // instead of `nullptr`. `RefreshSnapshotEnumKeys` is the same
-    // entry point sibling state-transitions use, so any stale cache
-    // (e.g. a freshly-loaded configuration with a different
-    // `levelMapping`) is rebuilt against the live `Configuration()`.
+    // Re-seed dictionaries from the configuration so a `LevelRankCache`
+    // query made before the next batch sees configured Level columns
+    // instead of `nullptr`. Also rebuilds any cache invalidated by a
+    // freshly-loaded `levelMapping`.
     RefreshSnapshotEnumKeys();
 }
 
@@ -758,17 +741,12 @@ void LogTable::RefreshSnapshotEnumKeys()
 {
     // Pre-create dictionaries for every configured enum / level column.
     // Multi-key columns share one canonical dictionary via `Alias`.
-    // Idempotent. Level columns are an Enumeration subtype: storage stays
-    // as DictRef, so they wire the same dictionary plumbing.
+    // Idempotent. Level columns are an Enumeration subtype and share
+    // the same dictionary plumbing.
     //
-    // The level rank cache is dropped first so a freshly-loaded
-    // configuration with a different `levelMapping` is reflected: the
-    // self-healing growth path inside `RefreshLevelRankCache` only
-    // re-resolves dictionary entries it has not seen before, which
-    // would otherwise leave already-cached entries on the stale
-    // mapping. Cost is bounded by the number of Level columns and is
-    // negligible -- this is a state-transition entry point, not a
-    // hot-loop call site.
+    // Drop the level rank cache first so a freshly-loaded `levelMapping`
+    // is honoured: `RefreshLevelRankCache` is append-only on existing
+    // entries and would otherwise keep the stale mapping.
     mLevelRankCache.clear();
     const auto &columns = mConfiguration.Configuration().columns;
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
@@ -802,8 +780,8 @@ void LogTable::RefreshSnapshotEnumKeys()
                 }
             }
         }
-        // Saved configs that pin `Type::Level` get their rank cache
-        // seeded here so the cache is ready by the first encode pass.
+        // Seed the rank cache for saved `Type::Level` columns so it's
+        // ready by the time the first encode pass runs.
         if (column.type == LogConfiguration::Type::Level)
         {
             RefreshLevelRankCache(columnIndex);
@@ -947,11 +925,11 @@ void LogTable::RunEnumPassForAppendBatch(
             continue;
         }
 
-        // Active enum / level column: encode the appended slice. Length-cap
-        // and wrong-type hits accrue against the health budget; dictionary-cap
-        // overflow demotes immediately. Level columns reuse the encoding
-        // path; their per-column `mLevelRankCache` is refreshed below to
-        // pick up any dictionary entries the new slice introduced.
+        // Active enum / level column: encode the appended slice.
+        // Length / wrong-type hits accrue against the health budget;
+        // dictionary-cap overflow demotes immediately. Level columns
+        // share the encoding path; their rank cache is refreshed below
+        // to pick up any newly-added dictionary entries.
         if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
         {
             resolveKeys(columnIndex);
@@ -961,11 +939,9 @@ void LogTable::RunEnumPassForAppendBatch(
             }
             EnumColumnHealth &health = mEnumColumnHealth[column.header];
 
-            // Snapshot dictionary size before the encode pass so we
-            // can gate the `Enumeration -> Level` re-check on growth.
-            // The promotion rule is purely dict-weighted, so when no
-            // new entries appeared in this batch the answer is
-            // guaranteed unchanged.
+            // Snapshot dict size to gate the `Enumeration -> Level`
+            // re-check on growth: the promotion rule is dict-weighted,
+            // so without new entries the answer cannot change.
             const EnumDictionary *dictBefore = mEnumDictionaries.Find(resolvedKeys.front());
             const size_t oldDictSize = (dictBefore != nullptr) ? dictBefore->Size() : 0;
 
@@ -981,13 +957,10 @@ void LogTable::RunEnumPassForAppendBatch(
                 recordBackfill(columnIndex);
                 continue;
             }
-            // Level-promotion re-check: an `Enumeration` column whose
+            // Level-promotion re-check: an Enumeration column whose
             // key matches `IsLogLevelKey` may finally satisfy the
-            // 1-in-4 dict tolerance once enough canonical entries
-            // arrive (e.g., a batch that mints `error` after earlier
-            // batches only carried `info`/`warn`). Gated on dict
-            // growth + name match so non-level Enum columns pay no
-            // cost.
+            // dict tolerance once canonical entries arrive. Gated on
+            // dict growth + name match so unrelated columns pay nothing.
             if (column.type == LogConfiguration::Type::Enumeration)
             {
                 const EnumDictionary *dictAfter = mEnumDictionaries.Find(resolvedKeys.front());
@@ -999,10 +972,9 @@ void LogTable::RunEnumPassForAppendBatch(
             }
             if (column.type == LogConfiguration::Type::Level)
             {
-                // Idempotent: covers both the just-promoted case
-                // (`MaybePromoteToLevel` already populated the cache, so
-                // the inner loop appends zero entries) and the stable
-                // Level column (append the entries this batch added).
+                // Idempotent: a just-promoted column's cache is already
+                // populated, an existing one picks up this batch's new
+                // entries.
                 RefreshLevelRankCache(columnIndex);
             }
             continue;
@@ -1317,13 +1289,8 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
         }
     }
 
-    // Snapshot the fields we need across the mutation. `SetColumnType`
-    // doesn't resize the columns vector today, but the captured
-    // reference is only documented as valid up to the next mutating
-    // call, and a future refactor that grows the vector (re-allocates,
-    // reorders, etc.) would silently invalidate any captured ref. Take
-    // local copies of the small POD-ish bits so the rest of the
-    // function is independent of the live vector.
+    // Copy the small POD-ish fields we need so the rest of the function
+    // doesn't depend on the live columns vector across mutations.
     const std::vector<std::string> columnKeys = mConfiguration.Configuration().columns[columnIndex].keys;
     const std::string headerKey = mConfiguration.Configuration().columns[columnIndex].header;
 
@@ -1373,14 +1340,10 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
         return;
     }
 
-    // Two-signal level detection: key matches the level alias list AND
-    // the freshly-encoded dictionary satisfies the 1-in-4 tolerance
-    // (see `LEVEL_DICT_TOLERANCE_RATIO`). The check is dict-only, so
-    // running it here -- right after the encode pass that filled the
-    // dictionary -- gives a complete answer; subsequent batches
-    // re-evaluate only when the dictionary grows. Gate on the
-    // (cheap) key-name match so the dictionary walk inside
-    // `MaybePromoteToLevel` runs only for plausible level columns.
+    // Two-signal level detection: cheap key-name match first, then the
+    // dictionary check inside `MaybePromoteToLevel`. The dictionary is
+    // freshly filled here, so the check has all the data it needs;
+    // subsequent batches only re-evaluate when the dictionary grows.
     if (std::ranges::any_of(columnKeys, IsLogLevelKey))
     {
         MaybePromoteToLevel(columnIndex);
@@ -1468,10 +1431,8 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
 
     mEnumColumnHealth.erase(column.header);
-    // Level columns share the demote path with plain enums; drop any
-    // cached rank vector when the type leaves the level family. The
-    // cache is keyed by canonical `KeyId` (`keyIds.front()`), the same
-    // id `mEnumDictionaries.Erase` consumed above.
+    // Drop the rank cache when a Level column demotes. Keyed by the
+    // same canonical `KeyId` the registry uses.
     if (!keyIds.empty())
     {
         mLevelRankCache.erase(keyIds.front());
@@ -1498,9 +1459,8 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     {
         return;
     }
-    // Snapshot the column fields we need before the (possible)
-    // `SetColumnType` mutation so the rest of the function is
-    // independent of the live vector reference.
+    // Re-read the column on each access so the function tolerates the
+    // `SetColumnType` mutation below.
     const auto snapshotColumn = [this, columnIndex]() -> const LogConfiguration::Column & {
         return mConfiguration.Configuration().columns[columnIndex];
     };
@@ -1509,15 +1469,14 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return;
     }
 
-    // Signal 1: column name. At least one configured key must match
-    // the level alias list (`level`, `severity`, ...).
+    // Signal 1: at least one configured key must match the level alias list.
     if (!std::ranges::any_of(snapshotColumn().keys, IsLogLevelKey))
     {
         return;
     }
 
-    // Signal 2: dictionary content. Look up the canonical dictionary
-    // via the first resolved key (aliases share the entry).
+    // Signal 2: dictionary content. Aliases share the canonical entry,
+    // so the first resolved key is enough.
     KeyId canonical = INVALID_KEY_ID;
     for (const std::string &key : snapshotColumn().keys)
     {
@@ -1537,10 +1496,9 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return;
     }
 
-    // Dict-weighted 1-in-4 tolerance: at most one unrecognized entry
-    // per `LEVEL_DICT_TOLERANCE_RATIO` canonical ones, with at least
-    // one canonical entry required. Resolves via the alias table plus
-    // any per-column `levelMapping` overrides the user configured.
+    // Dict-weighted tolerance: at most one unrecognized entry per
+    // `LEVEL_DICT_TOLERANCE_RATIO` canonical ones, with at least one
+    // canonical entry. Honours any per-column `levelMapping` overrides.
     size_t canonicalEntries = 0;
     size_t unrecognizedEntries = 0;
     {
@@ -1591,9 +1549,9 @@ void LogTable::RefreshLevelRankCache(size_t columnIndex)
     }
     if (canonical == INVALID_KEY_ID)
     {
-        // Column is configured `Type::Level` but no key has been
-        // observed yet. No cache entry is created -- `LevelRankCache`
-        // returns nullptr until the canonical key is registered.
+        // Column is `Type::Level` but no key has been observed yet.
+        // Leave the cache empty; `LevelRankCache` returns nullptr until
+        // the canonical key is registered.
         return;
     }
     const EnumDictionary *dict = mEnumDictionaries.Find(canonical);
@@ -1604,12 +1562,10 @@ void LogTable::RefreshLevelRankCache(size_t columnIndex)
     }
 
     std::vector<LogLevel> &ranks = mLevelRankCache[canonical];
-    // Self-healing growth: rebuild from scratch when the dictionary has
-    // shrunk (only happens on `Reset`), append in place otherwise so we
-    // don't re-`ResolveLevel` for entries already cached. Callers that
-    // need the column's `levelMapping` re-read for already-cached
-    // entries (e.g. configuration reload mid-session) must clear the
-    // cache first; `RefreshSnapshotEnumKeys` does so wholesale.
+    // Append-only growth on existing entries; rebuild from scratch only
+    // if the dictionary shrank (happens only on `Reset`). Callers that
+    // need a re-read of cached entries against a new `levelMapping`
+    // must clear the cache first (see `RefreshSnapshotEnumKeys`).
     if (ranks.size() > dict->Size())
     {
         ranks.clear();

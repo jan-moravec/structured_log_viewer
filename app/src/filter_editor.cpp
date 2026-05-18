@@ -212,14 +212,12 @@ void FilterEditor::Load(int row, const QStringList &selectedValues)
     {
         PopulateLevelValues(row);
 
-        // For `Type::Level` columns the populated items carry the
-        // canonical names ("Info", "Warn", ...) while `selectedValues`
-        // may hold raw dictionary entries from a prior Enumeration
-        // session ("info", "INFO", "WARNING", custom `levelMapping`
-        // aliases, ...). A case-sensitive set lookup would silently
-        // drop those, so resolve each saved value through the same
-        // alias table the filter pipeline uses and key the selection
-        // by `LogLevel` instead.
+        // The picker holds canonical names ("Info", "Warn", ...) while
+        // `selectedValues` may carry raw dictionary entries from a
+        // prior Enumeration session ("INFO", "WARNING", custom
+        // `levelMapping` aliases, ...). Resolve each saved value
+        // through the alias table and key the selection by `LogLevel`
+        // so a case-mismatch doesn't silently drop the tick.
         const auto &column = columns[static_cast<size_t>(row)];
         std::unordered_set<LogLevel> selectedLevels;
         selectedLevels.reserve(static_cast<size_t>(selectedValues.size()));
@@ -537,9 +535,8 @@ void FilterEditor::OnOkClicked()
             mEnumValuesView->setStyleSheet("QListView { border: 1px solid red; }");
             return;
         }
-        // Level columns submit canonical level names verbatim; the
-        // predicate-build path expands them to matching dictionary
-        // entries via the per-column rank cache.
+        // Level columns submit canonical level names; the predicate
+        // build expands them to raw dictionary entries via the rank cache.
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
     else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
@@ -745,16 +742,11 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
         UpdateEnumSelectionCount();
         return;
     }
-    // Drive the per-level "observed?" check from the column's
-    // `LevelRankCache`. Each rank slot is a `LogLevel` (or
-    // `Unknown`); a level shows up here iff at least one raw
-    // dictionary entry resolved to it via the alias table or the
-    // column's `levelMapping`. `nullptr` means the column has been
-    // configured `Type::Level` but no batch has populated the cache
-    // yet (transient between `BeginStreaming` and the first batch),
-    // in which case we surface every canonical level as enabled --
-    // the saved selection still travels through `LogFilter::filterValues`,
-    // and the cache will catch up on the next `Grew` rebuild.
+    // A level is "observed" iff its `LevelRankCache` slot is not
+    // `Unknown`. `nullptr` means the column is `Type::Level` but no
+    // batch has populated the cache yet -- surface every level as
+    // observed so saved selections still travel through and the next
+    // `Grew` rebuild can correct the picker.
     const std::vector<LogLevel> *ranks = mModel.Table().LevelRankCache(static_cast<size_t>(columnIndex));
     std::array<bool, CANONICAL_LEVEL_COUNT> observed{};
     if (ranks == nullptr)
@@ -777,14 +769,10 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
         }
     }
 
-    // Show the six canonical levels in severity order. The filter UI
-    // is canonical regardless of the raw dictionary entries the
-    // column carries; the predicate translates back at build time.
-    // Items stay interactively togglable in every case so a saved
-    // filter pointing at a level that just rotated out of view can
-    // still be unticked; unobserved levels are annotated with a
-    // tooltip + italic font so the user sees that picking them
-    // would currently reject every row.
+    // Show the six canonical levels in severity order. Items stay
+    // togglable so a saved filter on a level that just rotated out of
+    // view can still be unticked. Unobserved levels get an italic
+    // font + tooltip so the user knows picking them rejects every row.
     constexpr std::array<LogLevel, CANONICAL_LEVEL_COUNT> CANONICAL_LEVELS = {
         LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
     };
@@ -801,12 +789,8 @@ void FilterEditor::PopulateLevelValues(int columnIndex)
             QFont font = item->font();
             font.setItalic(true);
             item->setFont(font);
-            // Soften the colour so unobserved rows are visually
-            // distinct from active levels but still legible. The
-            // hard-coded grey matches the placeholder text the
-            // empty-enum view uses; both dark and light Qt themes
-            // resolve it through `QPalette::PlaceholderText` if a
-            // custom style overrides it.
+            // Soften the foreground so unobserved rows are visually
+            // distinct but still legible across light/dark themes.
             item->setForeground(QApplication::palette().color(QPalette::Disabled, QPalette::Text));
         }
         mEnumValuesModel->appendRow(item);

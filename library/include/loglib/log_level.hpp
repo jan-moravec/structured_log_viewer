@@ -11,9 +11,9 @@
 namespace loglib
 {
 
-/// Canonical log level. The ordered values are the sort rank used for
-/// `Type::Level` columns (lower = less severe). `Unknown` is the sentinel
-/// for "no level information"; it sorts before `Trace` in ascending order.
+/// Canonical log level. Values are ordered by severity and used as the
+/// sort rank for `Type::Level` columns. `Unknown` means "no level
+/// information" and sorts before `Trace`.
 enum class LogLevel : uint8_t
 {
     Unknown = 0,
@@ -25,14 +25,13 @@ enum class LogLevel : uint8_t
     Fatal,
 };
 
-/// Number of canonical levels excluding `Unknown` (Trace..Fatal).
+/// Number of canonical levels (Trace..Fatal); excludes `Unknown`.
 inline constexpr size_t CANONICAL_LEVEL_COUNT = 6;
 
-/// Stable display name for @p level. Returns `"Unknown"` for the
-/// sentinel; otherwise one of `Trace`/`Debug`/`Info`/`Warn`/`Error`/`Fatal`.
+/// Display name for @p level, e.g. `"Info"`. Returns `"Unknown"` for the sentinel.
 [[nodiscard]] std::string_view CanonicalLevelName(LogLevel level) noexcept;
 
-/// Case-insensitive lookup against the built-in alias table.
+/// Map @p bytes to a canonical level via the built-in alias table.
 ///
 /// Recognised aliases (case-insensitive):
 ///   - Trace: trace, trc, t, finer, finest, silly
@@ -42,34 +41,28 @@ inline constexpr size_t CANONICAL_LEVEL_COUNT = 6;
 ///   - Error: error, err, e, severe
 ///   - Fatal: fatal, ftl, f, critical, crit, emerg, emergency, panic, alert, fault
 ///
-/// `verbose` / `vrb` / `v` map to `Debug` (not `Trace`) for back-compat
-/// with the original mapping; Serilog and Android treat their Verbose
-/// level as below Debug, but flipping this now would break saved
-/// configs that depend on the prior behaviour.
+/// `verbose`/`vrb`/`v` map to `Debug` (not `Trace`) for backwards
+/// compatibility with saved configs.
 ///
-/// Numeric-string levels (e.g. Bunyan/Pino `10/20/30/40/50/60`, syslog
-/// `0..7`) are intentionally *not* in the built-in table -- the two
-/// conventions disagree and numeric JSON values usually arrive as
-/// `Int64`, which never enters the enum dictionary. Map them per-column
-/// via `levelMapping` if you need them.
+/// Numeric levels (Bunyan/Pino, syslog) are not built in: conventions
+/// disagree, and numeric JSON values usually arrive as `Int64` and never
+/// reach the enum dictionary. Map them per-column via `levelMapping`.
 ///
-/// Returns `std::nullopt` if @p bytes does not match any recognised alias.
+/// Returns `std::nullopt` when no alias matches.
 [[nodiscard]] std::optional<LogLevel> ParseLevelName(std::string_view bytes) noexcept;
 
-/// Per-column alias overrides: `(alias, canonicalName)` pairs. Canonical
-/// names are matched against `CanonicalLevelName` (case-insensitive); a
-/// pair whose canonical side is not one of `Trace`, `Debug`, `Info`,
-/// `Warn`, `Error`, or `Fatal` (notably including `Unknown` and any
-/// misspelled name) is silently ignored, and the matching alias falls
-/// through to the built-in table. Aliases are matched case-
-/// insensitively. Overrides take precedence over the built-in table.
+/// Map @p bytes to a level, checking @p overrides before the built-in table.
 ///
-/// To suppress an alias entirely (rather than remap it) the caller
-/// should either remove it from the column's data or pin the column to
-/// `Type::Enumeration`; there is no sentinel for "treat as no level".
+/// Each override is `(alias, canonicalName)`; the canonical side must
+/// spell one of `Trace`/`Debug`/`Info`/`Warn`/`Error`/`Fatal`
+/// (case-insensitive). Overrides whose canonical side does not match
+/// (typos, `"Unknown"`, etc.) are silently ignored and the alias falls
+/// through to the built-in table.
 ///
-/// @p bytes is the raw user string to map. Returns `std::nullopt` if no
-/// override and no built-in alias matches.
+/// There is no sentinel for "treat as no level"; to suppress an alias,
+/// remove it from the column data or pin the column to `Type::Enumeration`.
+///
+/// Returns `std::nullopt` when neither overrides nor the built-in table match.
 [[nodiscard]] std::optional<LogLevel> ResolveLevel(
     std::string_view bytes, std::span<const std::pair<std::string, std::string>> overrides
 ) noexcept;

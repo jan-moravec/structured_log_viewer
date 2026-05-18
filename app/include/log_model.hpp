@@ -186,16 +186,13 @@ public:
     /// untouched.
     void NotifyConfigurationReplaced();
 
-    /// Canonical-level -> raw-dictionary-bytes mapping captured at the
-    /// most recent `AppendBatch` for any `Type::Level` column that
-    /// demoted to `Type::String` during that batch. Returns `nullptr`
-    /// when no such demote happened in the last batch for the given
-    /// @p columnIndex. The mapping reflects the dictionary contents
-    /// the moment before the demote, so callers consuming the
-    /// adjacent `enumColumnsChanged(Demoted)` signal can translate
-    /// canonical-name filters (e.g. `"Info"`) back into the raw
-    /// dictionary entries (`"info"`, `"INF"`, `"30"`, ...) that were
-    /// observed for that column. Cleared at the start of every
+    /// Canonical-level -> raw-dictionary-bytes mapping captured just
+    /// before a `Type::Level` column lost its dictionary in the most
+    /// recent `AppendBatch`. Lets the `enumColumnsChanged(Demoted)`
+    /// receiver translate canonical-name filters (`"Info"`) into the
+    /// raw entries (`"info"`, `"INF"`, ...) the column actually
+    /// contained. Returns `nullptr` when no level demote happened for
+    /// @p columnIndex in the last batch. Cleared at the start of every
     /// subsequent `AppendBatch`.
     [[nodiscard]] const std::unordered_map<loglib::LogLevel, std::vector<std::string>> *
     LastBatchLevelDemoteMappingFor(int columnIndex) const noexcept;
@@ -258,12 +255,10 @@ private:
     size_t mRetentionCap = 0;
 
     /// Per-batch capture: column -> (canonical level -> raw dictionary
-    /// bytes). Populated when a `Type::Level` column loses its
-    /// dictionary during the current `AppendBatch`. Consumed by
-    /// `MainWindow::enumColumnsChanged(Demoted)` to translate stored
-    /// canonical-name filter selections into the raw dictionary
-    /// entries that resolved to those levels at demote time. Cleared
-    /// at the top of every `AppendBatch`.
+    /// bytes), recorded when a `Type::Level` column demotes during the
+    /// current `AppendBatch`. Consumed by
+    /// `MainWindow::enumColumnsChanged(Demoted)`; cleared at the top
+    /// of every `AppendBatch`.
     std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
         mLastBatchLevelDemoteMapping;
 };

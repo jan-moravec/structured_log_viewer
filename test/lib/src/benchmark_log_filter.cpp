@@ -280,9 +280,8 @@ TEST_CASE("RowPredicate enum filter walks 1'000'000 rows under 100ms", "[.][benc
     constexpr size_t ROW_COUNT = 1'000'000;
     const TestLogFile fixture("benchmark_log_filter_enum.json");
     fixture.Write("");
-    // `region` is not in the log-level field-name heuristic, so the
-    // column stays `Type::Enumeration` regardless of dictionary content
-    // and the predicate exercises the `EnumRowPredicate` fast path.
+    // `region` is not a known level key, so the column stays
+    // `Type::Enumeration` and exercises `EnumRowPredicate`.
     LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
@@ -420,11 +419,9 @@ TEST_CASE(
     constexpr size_t ROW_COUNT = 1'000'000;
     const TestLogFile fixture("benchmark_log_compare_enum.json");
     fixture.Write("");
-    // `region` keeps the column pinned at `Type::Enumeration`; with the
-    // historical `level` key the auto-promotion heuristic flips the
-    // column to `Type::Level` mid-build and `CompareRows` then ignores
-    // the precomputed `EnumDictRank`, both inflating the per-compare
-    // cost and breaking the rank-monotonic sanity check below.
+    // `region` pins `Type::Enumeration`; a `level` key would auto-
+    // promote to `Type::Level` mid-build, making `CompareRows` ignore
+    // the `EnumDictRank` and breaking the sanity check below.
     LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
     LogTable &table = owned.table;
     REQUIRE(table.RowCount() == ROW_COUNT);
@@ -618,16 +615,11 @@ TEST_CASE(
 
 // --- `Type::Level` benchmarks --------------------------------------------
 //
-// The two cases below are the level-column siblings of the enum
-// benchmarks above. They guard against regressions in the level path
-// added by the log-level-detection feature: `SortPermutationByColumn`
-// now pre-materialises a `uint8_t` `LogLevel` ordinal per row in
-// parallel for `Type::Level` columns (mirroring the `Type::Enumeration`
-// `EnumDictRank` fast path), and `CompareRows` dispatches level
-// columns to `CompareLevel` which calls `LogTable::GetLevelForRow` per
-// side. The sanity check is `LogLevel`-based here rather than
-// alphabetic-rank-based so the canonical-severity ordering the level
-// path sorts by is what we actually verify.
+// Level-column siblings of the enum benchmarks. Guard the
+// pre-materialised `uint8_t` rank fast path in
+// `SortPermutationByColumn` and the `CompareLevel -> GetLevelForRow`
+// dispatch in `CompareRows`. Sanity checks use `LogLevel` (canonical
+// severity) rather than alphabetic rank.
 
 TEST_CASE(
     "loglib::SortPermutationByColumn over 1'000'000 level rows stays under 500ms",
@@ -657,11 +649,9 @@ TEST_CASE(
     for (int s = 0; s < SAMPLES; ++s)
     {
         elapsed.push_back(TimeOnce([&]() {
-            // Level columns ignore the rank parameter inside
-            // `SortPermutationByColumn` -- the function consults
-            // `LogTable::LevelRankCache(columnIndex)` directly. Pass
-            // `nullptr` so the call shape mirrors how the production
-            // proxy chain invokes the helper for level columns.
+            // Level columns read `LevelRankCache(columnIndex)` directly,
+            // ignoring the rank arg. Pass `nullptr` to match how the
+            // production proxy chain calls the helper.
             permutation =
                 SortPermutationByColumn(table, std::span<const size_t>{logRows}, size_t{0}, /*ascending=*/true, nullptr);
         }));
@@ -681,19 +671,15 @@ TEST_CASE(
                                                                         << ", high=" << Ms(high).count() << ")"
     );
 
-    // The level fast path materialises `uint8_t` ordinals (vs
-    // `uint16_t` for the enum path), so the per-row work is slightly
-    // cheaper on its own; total wall-time is dominated by the
-    // `tbb::parallel_sort` over an 8-bit key, which has hit ~30 ms
-    // locally. Same 500 ms CI ceiling as the enum sibling so a
-    // regression that disables either parallelism or the rank cache
-    // surfaces immediately.
+    // Level uses `uint8_t` ordinals (enum uses `uint16_t`); per-row
+    // work is slightly cheaper but `tbb::parallel_sort` dominates.
+    // Local ~30 ms; 500 ms CI ceiling matches the enum sibling and
+    // catches a loss of parallelism or rank caching.
     CHECK(Ms(low).count() < 500.0);
 
-    // Sanity: canonical severity is non-decreasing with input-index
-    // tie-break. Reading via `GetLevelForRow` rather than the rank
-    // cache directly so the check exercises the public read API the
-    // GUI uses too.
+    // Sanity: canonical severity non-decreasing with input-index
+    // tie-break. Go through `GetLevelForRow` (the public API the
+    // GUI uses) rather than the rank cache directly.
     for (size_t i = 1; i < permutation.size(); ++i)
     {
         const auto lhs = table.GetLevelForRow(logRows[permutation[i - 1]], 0);
@@ -736,10 +722,9 @@ TEST_CASE(
     {
         std::iota(indices.begin(), indices.end(), size_t{0});
         elapsed.push_back(TimeOnce([&]() {
-            // Level columns ignore the `EnumDictRank` argument of
-            // `CompareRows`; pass `nullptr` so the call shape matches
-            // how a non-Qt `loglib` consumer would sort a level
-            // column without first materialising a rank table.
+            // Level columns ignore the `EnumDictRank` arg; passing
+            // `nullptr` matches a non-Qt consumer that hasn't
+            // materialised any rank table.
             std::ranges::sort(indices, [&](size_t a, size_t b) { return CompareRows(table, a, b, 0, nullptr) < 0; });
         }));
     }
@@ -755,13 +740,10 @@ TEST_CASE(
     );
 
     // `CompareLevel` is heavier per call than `CompareEnum` with a
-    // precomputed `EnumDictRank` (one `GetLevelForRow` lookup per side
-    // vs. an `EnumValueId`-indexed array read), so the ceiling is
-    // bumped to 2000 ms vs. the enum sibling's 1500 ms. A regression
-    // past 2000 ms typically means either `LevelRankCache` lookups
-    // collapsed back to a per-row `mLevelRankCache` walk inside
-    // `GetLevelForRow`, or the canonical-name resolve path stopped
-    // hitting the cache.
+    // precomputed `EnumDictRank` (a `GetLevelForRow` per side vs. an
+    // indexed array read). Ceiling 2000 ms vs. the enum sibling's
+    // 1500 ms. Breaking it usually means `GetLevelForRow` fell off
+    // the cache or the canonical-name resolve regressed.
     CHECK(Ms(low).count() < 2000.0);
 
     // Sanity: ascending canonical-severity order via `GetLevelForRow`.

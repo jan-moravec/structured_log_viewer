@@ -42,26 +42,11 @@ namespace loglib
 
 bool IsLogLevelKey(const std::string &key)
 {
-    // Common JSON / structured-log log-level field names. Matched
-    // case-insensitively. Detection is purely advisory: a column needs
-    // to enum-shape (auto-promotion via `RunEnumPassForAppendBatch`)
-    // before `LogTable::MaybePromoteToLevel` will flip the type from
-    // `Type::Enumeration` to `Type::Level`. Allocation-free comparison
-    // because this fires once per column per batch in the enum pass.
-    //
-    // Buckets:
-    //   - Long-form / classic: `level`, `severity`, `loglevel`,
-    //     `log.level`, `log_level`, `lvl`, `levelname`, `priority`.
-    //   - Short forms used by compact loggers / embedded targets:
-    //     `l`, `lv`, `lev`, `sev`, `s`, `loglvl`. These have a real
-    //     false-positive risk (a `length` / `size` column could match
-    //     by name alone) -- the dictionary-content check inside
-    //     `MaybePromoteToLevel` is the safety net.
-    //   - OpenTelemetry / ECS / GCP: `severity_text`, `severity.text`,
-    //     `severitytext`, `log_severity`, `log.severity`, `logseverity`.
-    //   - Separator variants of `levelname`: `level_name`, `level.name`.
-    //   - Structured-JSON conventions (Serilog `@l`, Datadog @-fields,
-    //     etc.): `@level`.
+    // Known log-level field names. Matched case-insensitively and
+    // allocation-free because this fires once per column per batch.
+    // Advisory only -- false positives (e.g. a `length` column matching
+    // `l`) are caught by the dictionary-content check in
+    // `LogTable::MaybePromoteToLevel`.
     static constexpr std::array<std::string_view, 23> LEVEL_KEYS = {
         // Long-form / classic.
         "level",
@@ -72,7 +57,7 @@ bool IsLogLevelKey(const std::string &key)
         "lvl",
         "levelname",
         "priority",
-        // Short forms used by compact loggers / embedded targets.
+        // Short forms (compact / embedded loggers).
         "l",
         "lv",
         "lev",
@@ -89,7 +74,7 @@ bool IsLogLevelKey(const std::string &key)
         // Separator variants of `levelname`.
         "level_name",
         "level.name",
-        // Structured-JSON conventions (Serilog `@l`, Datadog @-fields, ...).
+        // Serilog `@l`, Datadog @-fields, ...
         "@level",
     };
     const std::string_view keyView(key);

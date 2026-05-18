@@ -1299,10 +1299,9 @@ TEST_CASE(
     "[log_table][append_batch][enum]"
 )
 {
-    // Non-level key (`category`) keeps the column at `Type::Enumeration`
-    // -- a `level`-named column with canonical values would auto-flip
-    // to `Type::Level` via `MaybePromoteToLevel`, which is the wrong
-    // path to exercise here.
+    // Non-level key (`category`) keeps the column Enumeration. A
+    // `level`-named column would flip to Level here, which is not
+    // what this test is exercising.
     const TestLogFile testFile("enum_preconfigured.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1526,10 +1525,9 @@ TEST_CASE(
 
 TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table][reset][enum]")
 {
-    // Non-level key (`category`) keeps the configured `Type::Enumeration`
-    // post-batch; the `Reset` contract that this test pins is "post-reset
-    // the configured type survives", which a `level`-named column would
-    // muddy by also flipping through `Type::Level`.
+    // Non-level key (`category`) so `Reset` doesn't have to walk the
+    // extra `Type::Level` transition; the contract under test is
+    // "configured type survives `Reset`".
     const TestLogFile testFile("enum_reset.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -1563,10 +1561,9 @@ TEST_CASE("LogTable::Reset wipes the enum dictionary and trackers", "[log_table]
     }
 
     table.Reset();
-    // Reset re-seeds empty dictionary slots for every configured enum /
-    // level column (sibling to `BeginStreaming`), so the registry is
-    // not strictly empty -- but every slot has zero observed values
-    // until the next batch.
+    // Reset re-seeds empty dictionary slots for every configured
+    // enum / level column, so the registry isn't strictly empty --
+    // each slot just has zero observed values until the next batch.
     CHECK(table.RowCount() == 0);
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
@@ -2118,11 +2115,9 @@ TEST_CASE(
     "[log_table][append_batch][enum][user_pinned]"
 )
 {
-    // A user-pinned `Type::Enumeration` column still encodes as `DictRef`
-    // regardless of what the auto-detector would do. Non-level key
-    // (`category`) so the dict-shaped data doesn't get auto-flipped
-    // to `Type::Level` -- that path is covered by the level-specific
-    // tests in this file.
+    // A user-pinned `Type::Enumeration` column still encodes as
+    // `DictRef`. Non-level key (`category`) so the data doesn't flip
+    // to `Type::Level` -- that path has its own tests.
     const TestLogFile testFile("enum_user_pinned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2346,11 +2341,10 @@ TEST_CASE(
     "[log_table][update][enum][routing][cardinality_bail][static_mode]"
 )
 {
-    // High-cardinality columns route to `Type::String` via the dict-cap
-    // kill in `EnumCandidateTracker::Observe` (cap = `DEFAULT_ENUM_VALUE_CAP`
-    // = 64). With the simplified threshold (scanCap = 8192) the cardinality
-    // ratio bail itself rarely fires under the default cap, but the cap kill
-    // catches truly-unique columns long before scanCap is reached.
+    // High-cardinality columns route to `Type::String` via the
+    // dict-cap kill in `EnumCandidateTracker::Observe` (cap = 64).
+    // The cardinality ratio bail rarely fires under the default cap;
+    // the cap kill catches unique columns first.
     const TestLogFile testFile("enum_cardinality_bail.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2358,8 +2352,8 @@ TEST_CASE(
 
     KeyIndex keys;
     std::vector<LogLine> lines;
-    // 600 distinct rows: tracker exceeds the 64-entry dict cap inside
-    // `Observe`, gets killed, and the column flips to `Type::String`.
+    // 600 distinct rows exceed the 64-entry dict cap inside `Observe`,
+    // kill the tracker, and flip the column to `Type::String`.
     lines.reserve(600);
     for (size_t i = 0; i < 600; ++i)
     {
@@ -2565,9 +2559,8 @@ TEST_CASE(
     "[log_table][append_batch][level]"
 )
 {
-    // Name-match (`level`) plus mostly-canonical dictionary entries
-    // ({info, warn, error}) trigger the `Enumeration -> Level`
-    // second-step promotion inside `PromoteColumnToEnum`.
+    // Key matches `IsLogLevelKey` + canonical dict entries trigger
+    // the `Enumeration -> Level` second-step promotion.
     const TestLogFile testFile("level_auto_promote.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2581,8 +2574,7 @@ TEST_CASE(
 
     REQUIRE(table.RowCount() == 6);
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
-    // GetLevelForRow drives sort/filter/style; cycle through rows
-    // matching the BuildEnumBatch cycle pattern.
+    // `BuildEnumBatch` cycles values, so row N % 3 picks the value.
     CHECK(table.GetLevelForRow(0, 0) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 0) == LogLevel::Warn);
     CHECK(table.GetLevelForRow(2, 0) == LogLevel::Error);
@@ -2593,9 +2585,8 @@ TEST_CASE(
     "[log_table][append_batch][level]"
 )
 {
-    // Same dictionary as the previous test but with a non-level key
-    // name: `tier`. The column should promote to `Type::Enumeration`
-    // but not further to `Type::Level`.
+    // Same dictionary as the previous test but key is `tier` (not a
+    // level key). Promotion stops at `Type::Enumeration`.
     const TestLogFile testFile("level_no_name_match.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2617,9 +2608,8 @@ TEST_CASE(
     "[log_table][append_batch][level]"
 )
 {
-    // Key name matches but most dictionary entries do not resolve to
-    // a canonical level -- the 1-in-4 dict tolerance is not satisfied,
-    // so the column stops at `Type::Enumeration`.
+    // Key matches but most dict entries don't resolve to canonical
+    // levels, so the tolerance fails and the column stays Enumeration.
     const TestLogFile testFile("level_threshold.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2629,9 +2619,8 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // 5 distinct entries; only 1 resolves to a canonical level (info).
-    // `unrecognized * LEVEL_DICT_TOLERANCE_RATIO (4) = 16` is well
-    // above `canonical = 1`, so promotion is blocked.
+    // 5 distinct entries, only `info` is canonical: `4 * 4 = 16` > 1,
+    // so promotion is blocked.
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "qux", "wat", "frob", "baz"}, 1, 10, true));
 
     REQUIRE(table.RowCount() == 10);
@@ -2643,9 +2632,9 @@ TEST_CASE(
     "[log_table][append_batch][level][user_pinned]"
 )
 {
-    // A configured `Type::Level` column with a `levelMapping`
-    // override still keeps the raw user strings in the dictionary --
-    // the rank cache holds the canonical mapping separately.
+    // A pinned `Type::Level` column with `levelMapping` overrides
+    // keeps raw user strings in the dictionary; the rank cache holds
+    // the canonical mapping separately.
     const TestLogFile testFile("level_user_pinned.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2688,12 +2677,10 @@ TEST_CASE(
     "[log_table][append_batch][level]"
 )
 {
-    // 4 canonical + 1 unrecognized dict entries: under the dict-weighted
-    // 1-in-4 tolerance (`unrecognized * LEVEL_DICT_TOLERANCE_RATIO <=
-    // canonical`, i.e. `1 * 4 <= 4`) the column still promotes to
-    // `Type::Level`. The non-canonical entry stays in the dictionary
-    // (display fidelity); `GetLevelForRow` returns nullopt for its
-    // rows so sort/filter/style treat them as "no level info".
+    // 4 canonical + 1 unrecognized entries: `1 * 4 <= 4` so the
+    // tolerance holds and the column promotes to `Type::Level`. The
+    // unrecognized entry stays in the dictionary (display fidelity);
+    // `GetLevelForRow` returns nullopt for its rows.
     const TestLogFile testFile("level_unmapped_value.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2724,14 +2711,12 @@ TEST_CASE(
     "[log_table][append_batch][level][short_form]"
 )
 {
-    // End-to-end coverage for the short-form alias additions:
-    //   - `l` is in `IsLogLevelKey` (Signal 1, name match).
-    //   - `i`/`w`/`e`/`f` are in `BUILTIN_ALIASES` (Signal 2, dict
-    //     content, all canonical -> trivially satisfies 1-in-4).
-    // The whole pipeline -- `PromoteColumnToEnum` ->
-    // `MaybePromoteToLevel` -> `RefreshLevelRankCache` -> rank lookup
-    // via `GetLevelForRow` -- must round-trip the single-letter input
-    // to the canonical severity ordinal.
+    // End-to-end coverage for the short-form aliases:
+    //   - `l` is a level key (name match).
+    //   - `i`/`w`/`e`/`f` are canonical level aliases (dict content).
+    // The full pipeline (`PromoteColumnToEnum -> MaybePromoteToLevel
+    // -> RefreshLevelRankCache -> GetLevelForRow`) must round-trip
+    // the single-letter input to the canonical severity ordinal.
     const TestLogFile testFile("level_short_form.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2760,11 +2745,9 @@ TEST_CASE(
     "[log_table][append_batch][level][short_form]"
 )
 {
-    // Single-letter keys are admitted into `IsLogLevelKey` despite
-    // their false-positive risk; the dictionary-content check inside
-    // `MaybePromoteToLevel` is the safety net. A column named `l`
-    // whose dictionary entries do not resolve to canonical levels
-    // must stop at `Type::Enumeration`, never reaching `Type::Level`.
+    // Single-letter keys are accepted by `IsLogLevelKey` despite
+    // false-positive risk; the dict-content check is the safety net.
+    // `l` with non-canonical values must stop at Enumeration.
     const TestLogFile testFile("level_short_form_safety_net.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));

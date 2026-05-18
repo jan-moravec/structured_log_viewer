@@ -145,23 +145,19 @@ public:
     /// else nullopt. Powers the `EnumValueRole` fast-filter path.
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(size_t row, size_t column) const noexcept;
 
-    /// Canonical `LogLevel` for the slot at (@p row, @p column) when the
-    /// column is `Type::Level` and the slot resolves to a known level via
-    /// the per-column cache. Returns `std::nullopt` for non-Level columns,
-    /// monostate slots, or slots whose dictionary entry doesn't map.
+    /// Canonical level for the slot at (@p row, @p columnIndex) on a
+    /// `Type::Level` column. Returns `std::nullopt` for non-Level
+    /// columns, monostate slots, or unmapped dictionary entries.
     [[nodiscard]] std::optional<LogLevel> GetLevelForRow(size_t row, size_t columnIndex) const noexcept;
 
-    /// Per-`Type::Level`-column cache mapping `EnumValueId` -> `LogLevel`.
-    /// Indexed by dictionary id; the value at `id` is the canonical level
-    /// for dictionary entry `id`, or `LogLevel::Unknown` if the raw string
-    /// did not resolve. Returns `nullptr` for columns that are not
-    /// `Type::Level`, that are out of range, or whose canonical key has
-    /// not been observed yet.
+    /// `EnumValueId -> LogLevel` cache for a `Type::Level` column.
+    /// `ranks[id]` is the canonical level for dictionary entry `id`, or
+    /// `LogLevel::Unknown` if the raw string did not resolve. Returns
+    /// `nullptr` when the column is not `Type::Level`, is out of range,
+    /// or its canonical key has not been observed yet.
     ///
-    /// Keyed internally by canonical `KeyId` (resolved from
-    /// `column.keys.front()`) -- not by `column.header` -- so two
-    /// `Type::Level` columns whose `Column::header` collides (allowed
-    /// when `keys` differ) keep separate rank vectors.
+    /// Keyed internally by canonical `KeyId` (not `column.header`), so
+    /// two Level columns whose headers collide keep separate caches.
     [[nodiscard]] const std::vector<LogLevel> *LevelRankCache(size_t columnIndex) const noexcept;
 
     /// Outcome of `ResolveEnumColumn`:
@@ -273,41 +269,24 @@ private:
     /// existing row's slot as `DictRef`.
     void PromoteColumnToEnum(size_t columnIndex);
 
-    /// If @p columnIndex is `Type::Enumeration` and (a) its key matches
-    /// `IsLogLevelKey` and (b) the dictionary satisfies
-    /// `unrecognized * LEVEL_DICT_TOLERANCE_RATIO <= canonical` (i.e.
-    /// at most one unrecognized entry per four canonical ones), flip
-    /// the type to `Type::Level` and populate the cache entry in
-    /// `mLevelRankCache`. The check is dict-weighted, not row-weighted:
-    /// re-evaluation only matters when the dictionary grows. No-op
-    /// otherwise. Cost is `O(dict size)`; dict size is bounded by
-    /// `mEnumValueCap`.
+    /// Promote @p columnIndex from `Type::Enumeration` to `Type::Level`
+    /// when (a) its key matches `IsLogLevelKey` and (b) the dictionary
+    /// has at most one unrecognized entry per `LEVEL_DICT_TOLERANCE_RATIO`
+    /// canonical ones. Dict-weighted, so re-evaluation only matters
+    /// when the dictionary grows. No-op otherwise. `O(dict size)`.
     void MaybePromoteToLevel(size_t columnIndex);
 
-    /// Rebuild / extend the cached `EnumValueId -> LogLevel` table for the
-    /// column at @p columnIndex. Idempotent; safe to call after dictionary
-    /// growth. No-op if the column is not `Type::Level`.
+    /// Rebuild / extend the `EnumValueId -> LogLevel` cache. Idempotent;
+    /// safe to call after dictionary growth. No-op for non-Level columns.
     void RefreshLevelRankCache(size_t columnIndex);
 
-    /// Demote @p columnIndex from enum to string, materialising every
-    /// `DictRef` into `OwnedString` and dropping the dictionary.
-    ///
-    /// Despite the name, this is also the demote path for
-    /// `Type::Level` columns -- a `Type::Level` column that breaches
-    /// the enum health budget (cap overflow or wrong-type ratio) drops
-    /// straight to `Type::String`, which is terminal (see
-    /// `IsEnumPassEligible`: `String` is not re-evaluated). The
-    /// reasoning: a Level column got there by passing the
-    /// dict-weighted 1-in-4 tolerance, so when its dictionary now
-    /// fails the enum invariants the data has *also* outgrown what
-    /// `Type::Enumeration` could support. Returning to Enum would
-    /// immediately cycle into another demote (kill-once-stay-killed
-    /// matches the candidate scanner's contract). Tear down the
-    /// `mLevelRankCache` entry here so the column doesn't carry stale
-    /// level metadata while sitting as `Type::String`. If a user
-    /// reloads the file with a different configuration (column pinned
-    /// back to `Type::Unknown`), the candidate scanner gets a fresh
-    /// shot at re-promoting.
+    /// Demote @p columnIndex to `Type::String`, materialising every
+    /// `DictRef` into `OwnedString` and dropping the dictionary. Also
+    /// handles the `Type::Level -> Type::String` path: a Level column
+    /// that breaches the enum health budget drops straight to terminal
+    /// String (kill-once-stay-killed -- bouncing back to Enumeration
+    /// would just cycle into another demote). The level rank cache is
+    /// torn down here so no stale metadata trails the column.
     void DemoteColumnFromEnum(size_t columnIndex);
 
     /// Encode column slots in `[rowBegin, rowEnd)` as `DictRef`. Returns
@@ -358,12 +337,10 @@ private:
     /// `enumColumnsChanged(Demoted)` emit.
     std::vector<KeyId> mLastBatchDemotedKeys;
 
-    /// Per-`Type::Level`-column `EnumValueId -> LogLevel` cache. Keyed
-    /// by canonical `KeyId` (the same id `mEnumDictionaries` registers
-    /// the dictionary under), so column reorder is automatic and two
-    /// columns sharing a `Column::header` but pointing at different
-    /// `keys` cannot alias each other's rank vector. Empty entries for
-    /// non-Level columns are filtered at `RefreshLevelRankCache`.
+    /// `EnumValueId -> LogLevel` cache, one entry per `Type::Level`
+    /// column. Keyed by canonical `KeyId` (matches the dictionary
+    /// registry), so column reorders are automatic and same-header
+    /// columns with different keys cannot alias each other.
     std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
 };
 

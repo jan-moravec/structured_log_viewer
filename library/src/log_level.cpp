@@ -19,27 +19,19 @@ struct LevelAlias
     LogLevel level;
 };
 
-/// Built-in alias table. Aliases are compared case-insensitively against
-/// the input byte sequence; ordering is informational only. Aliases that
-/// map to `LogLevel::Unknown` (the sentinel) are intentionally absent --
-/// `ParseLevelName` already treats "no match" as `std::nullopt`, so
-/// including such an entry would be dead code.
+/// Built-in alias table. Compared case-insensitively; ordering is
+/// informational only. Aliases for `Unknown` are omitted because
+/// `ParseLevelName` already returns `std::nullopt` on no match.
 ///
-/// Coverage notes:
-///   - Single-letter aliases (`t`/`d`/`v`/`i`/`w`/`e`/`f`) cover the
-///     Android logger / glog / many embedded logger conventions. They
-///     are safe to include here because dictionary-content matching
-///     runs only after `IsLogLevelKey` already gates the column.
-///   - `v` / `vrb` / `verbose` all map to `Debug` (not `Trace`) for
-///     back-compat with the existing `verbose -> Debug` entry; Serilog
-///     and Android treat their Verbose level as below Debug, but
-///     flipping it now would break saved configs that rely on the
-///     prior mapping.
-///   - Numeric levels (Bunyan/Pino `10/20/30/40/50/60`, syslog `0..7`)
-///     are intentionally absent: the two conventions disagree and
-///     numeric JSON values typically arrive as `Int64`, not strings,
-///     so they never enter the enum dictionary. Users who need them
-///     can map per-column via `levelMapping`.
+/// Notes:
+///   - Single-letter aliases (`t`/`d`/`v`/`i`/`w`/`e`/`f`) cover
+///     Android, glog, and many embedded loggers. False positives are
+///     guarded by `IsLogLevelKey` upstream.
+///   - `v`/`vrb`/`verbose` map to `Debug` for backwards compatibility,
+///     even though Serilog/Android treat Verbose as below Debug.
+///   - Numeric levels (Bunyan/Pino, syslog) are omitted: conventions
+///     disagree, and numeric JSON arrives as `Int64` and never reaches
+///     the dictionary. Use per-column `levelMapping` instead.
 constexpr std::array<LevelAlias, 37> BUILTIN_ALIASES = {{
     // Trace
     {"trace", LogLevel::Trace},
@@ -130,19 +122,16 @@ std::optional<LogLevel> ResolveLevel(
     std::string_view bytes, std::span<const std::pair<std::string, std::string>> overrides
 ) noexcept
 {
-    // Check overrides first so callers can re-map any alias (including a
-    // built-in one) without removing the built-in table.
+    // Overrides win over the built-in table so callers can remap any alias.
     for (const auto &[alias, canonicalName] : overrides)
     {
         if (!internal::EqualsIgnoreCaseAscii(bytes, alias))
         {
             continue;
         }
-        // Resolve the canonical side via the built-in alias table
-        // (so both `"Info"` and `"info"` work). Invalid canonical
-        // strings (typos, `"Unknown"`) silently fall through to the
-        // next override and ultimately to the built-in lookup below,
-        // matching the contract documented in the header.
+        // Resolve canonical side through the alias table (accepts any
+        // casing). Invalid canonical strings fall through to the next
+        // override and eventually to the built-in lookup, per header.
         if (const auto resolved = ParseLevelName(canonicalName); resolved.has_value())
         {
             return resolved;

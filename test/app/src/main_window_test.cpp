@@ -3138,10 +3138,8 @@ private slots:
 
     // End-to-end: a JSON `level` column with canonical names auto-
     // promotes through `Type::Enumeration` to `Type::Level`, and
-    // `LogTable::GetLevelForRow` then reports the canonical rank for
-    // each row. The peer `TestFilterEditorPickerSearchFiltersVisibleCount`
-    // uses `category` precisely to *avoid* this promotion path; this
-    // test pins the level path with its real key name.
+    // `GetLevelForRow` then reports the canonical rank per row.
+    // (Tests that use `category` instead are pinning the enum path.)
     void TestLevelColumnAutoPromotesFromCanonicalLevelKey()
     {
         const QStringList levels{
@@ -3169,10 +3167,8 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist");
         const auto &columns = run.model->Configuration().columns;
         QVERIFY(static_cast<size_t>(levelCol) < columns.size());
-        // Every dictionary entry resolves to a canonical level (0
-        // unrecognized), so the 1-in-4 dict tolerance trivially holds
-        // and promotion must reach `Type::Level`, not stop at
-        // `Type::Enumeration`.
+        // Every dict entry is canonical, so the tolerance trivially
+        // holds and promotion must reach `Type::Level`.
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level);
 
         // Row-cycle pattern is `levels[i % 6]`; check the first few.
@@ -3185,12 +3181,10 @@ private slots:
         QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
     }
 
-    // End-to-end round-trip for `Column::levelMapping`: a saved config
-    // pins a `Type::Level` column with custom alias overrides
-    // (`NOTICE -> Info`, `PANIC -> Fatal`); a filter selecting the
-    // canonical `Info` then expands through the per-column rank cache
-    // to match both `NOTICE` (mapped) and `info` (built-in alias) while
-    // rejecting `PANIC`.
+    // End-to-end round-trip for `Column::levelMapping`. Saved config
+    // pins `Type::Level` with `NOTICE -> Info`, `PANIC -> Fatal`. A
+    // filter selecting `Info` expands via the rank cache to match
+    // both `NOTICE` (override) and `info` (built-in) while rejecting `PANIC`.
     void TestLevelMappingRoundTripThroughFilterEditor()
     {
         // Step 1: build the saved configuration on disk.
@@ -3218,8 +3212,7 @@ private slots:
             out.write(QByteArray::fromStdString(json));
         }
 
-        // Step 2: load the configuration through MainWindow so the
-        // filter UI plumbing is rebuilt against the new layout.
+        // Step 2: load through MainWindow so the filter UI rebuilds.
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
         QCoreApplication::processEvents();
 
@@ -3256,11 +3249,9 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        // Step 4: submit a canonical-`Info` filter through the same
-        // slot the FilterEditor uses; the predicate-build path in
+        // Step 4: submit `Info` through the FilterEditor's slot.
         // `MainWindow::UpdateFilters` expands `"Info"` to every raw
-        // dictionary entry that resolves to `LogLevel::Info` via the
-        // per-column `LevelRankCache`.
+        // dict entry resolving to `LogLevel::Info` via `LevelRankCache`.
         const QString filterId = QStringLiteral("level-mapping-info-only");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -3275,10 +3266,8 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        // Step 5: only the two rows resolving to canonical `Info`
-        // (`NOTICE` via override, `info` via built-in alias) survive.
-        // `PANIC` (Fatal), `WARN` (Warn), and `qux` (unresolved) are
-        // filtered out.
+        // Step 5: only `NOTICE` (override) and `info` (built-in)
+        // resolve to `Info` and survive. `PANIC`/`WARN`/`qux` drop out.
         const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         QCOMPARE(filterModel->rowCount(), 2);
@@ -3768,18 +3757,12 @@ private slots:
     // falls back to its string-set path. A cached
     // "fully-resolved" snapshot would let a stale armed predicate
     // hide every row (post-demote `GetEnumValueId` returns nullopt).
-    // Regression: a `Type::Level` column whose dictionary overflows
-    // and demotes to `Type::String` mid-session must keep filtering
-    // the same rows. The persisted filter values are canonical names
-    // (`"Info"`, `"Warn"`, ...) populated by the level picker, but
-    // the demoted column carries raw bytes -- without translation
-    // every `info` row would silently fall out of the filter.
-    // `LogModel::AppendBatch` snapshots the canonical-level -> raw-bytes
-    // mapping pre-demote and exposes it via
-    // `LastBatchLevelDemoteMappingFor`; the `enumColumnsChanged(Demoted)`
-    // handler in `MainWindow` then rewrites
-    // `LogFilter::filterValues` to the raw bytes the column actually
-    // contains.
+    // Regression: a `Type::Level -> String` mid-session demote must
+    // keep matching the same rows. Filter values are canonical names
+    // (`"Info"`, ...), but the demoted column carries raw bytes --
+    // `LogModel::AppendBatch` snapshots the level -> raw-bytes
+    // mapping pre-demote and `MainWindow`'s `Demoted` handler
+    // rewrites `filterValues` to the raw bytes.
     void TestLevelFilterTranslatesOnDemoteToString()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -3791,9 +3774,8 @@ private slots:
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
-        // Cap of 3 lets batch 1 promote to `Type::Level` (dict size 2,
-        // both canonical). Batch 2 adds three new distinct values
-        // and trips the cap -> demote to `Type::String`.
+        // Cap of 3 lets batch 1 promote to Level (dict size 2). Batch 2
+        // adds three new distinct values, trips the cap, demotes to String.
         constexpr uint16_t TEST_CAP = 3;
         model->Table().SetEnumValueCap(TEST_CAP);
 
@@ -3804,9 +3786,8 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: two `info` rows + one `warn` row promote `level`
-        // through Enumeration to Level (key matches `IsLogLevelKey`,
-        // both dict entries resolve canonically).
+        // Batch 1: 2x `info` + 1x `warn` promotes through Enumeration
+        // to Level (`IsLogLevelKey` match + canonical dict entries).
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -3824,9 +3805,8 @@ private slots:
             loglib::LogConfiguration::Type::Level
         );
 
-        // Submit a canonical-`Info` filter through the FilterEditor
-        // slot. With three rows total, only the two `info` rows
-        // should survive.
+        // Submit `Info` through FilterEditor. Only the two `info`
+        // rows out of three should survive.
         const QString filterId = QStringLiteral("level-demote-translation");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -3845,10 +3825,9 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         QCOMPARE(filterModel->rowCount(), 2);
 
-        // Batch 2: three new distinct values overflow the cap. The
-        // column demotes to `Type::String`. The Demoted handler
-        // expands `filterValues` from `["Info"]` to the raw entries
-        // that resolved to `Info` pre-demote (`["info"]`).
+        // Batch 2: three new values overflow the cap, column demotes
+        // to String. The Demoted handler expands `["Info"]` to the
+        // raw entries pre-demote (`["info"]`).
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 4;
@@ -3864,11 +3843,9 @@ private slots:
             loglib::LogConfiguration::Type::String
         );
 
-        // Translation succeeded if the two `info` rows still match
-        // post-demote and the `warn` row stays excluded. Without the
-        // canonical-name translation, the saved `["Info"]` selection
-        // would byte-compare against `info` raw bytes and reject
-        // every row.
+        // Translation succeeded iff the two `info` rows still match
+        // post-demote. Without it, `["Info"]` would byte-compare
+        // against `info` and reject every row.
         QCOMPARE(filterModel->rowCount(), 2);
         for (int i = 0; i < filterModel->rowCount(); ++i)
         {

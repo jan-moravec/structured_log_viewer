@@ -138,9 +138,8 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mErrorCount = 0;
         mStreamingErrors.clear();
         mLastReportedShutdownDropCount = 0;
-        // The captured pre-demote mapping is per-batch state; clearing
-        // it on `Reset` matches `mLogTable.Reset()` wiping the rank
-        // cache and prevents a stale read between sessions.
+        // Drop the per-batch capture alongside the table's rank cache
+        // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
 
         endResetModel();
@@ -440,24 +439,18 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
-    // The level-demote mapping below is rebuilt at most once per
-    // batch. Drop the previous batch's contents now so a Demoted
-    // signal that doesn't fire this round can't surface stale data
-    // through `LastBatchLevelDemoteMappingFor`.
+    // Discard the previous batch's capture so a batch without a
+    // Demoted signal can't leak stale data through
+    // `LastBatchLevelDemoteMappingFor`.
     mLastBatchLevelDemoteMapping.clear();
 
-    // Snapshot pre-batch dict sizes for active enum columns. The
+    // Snapshot pre-batch dict sizes for active enum columns; the
     // post-batch diff drives one scoped `enumColumnsChanged` per
-    // affected column so receivers can skip rebuilds for columns
-    // they don't care about.
-    //
-    // For `Type::Level` columns we additionally snapshot the
-    // canonical-level -> raw-dictionary-bytes mapping while the
-    // dictionary is still alive. If the column demotes during this
-    // batch, that captured mapping is the only way for receivers to
-    // translate the saved canonical-name filters (`"Info"`,
-    // `"Warn"`, ...) back into the raw entries the demoted
-    // `Type::String` column actually contains.
+    // affected column. For `Type::Level` columns we also capture the
+    // canonical-level -> raw-bytes mapping while the dictionary is
+    // still alive -- this is the only way a `Demoted` receiver can
+    // translate saved canonical-name filters back into the raw
+    // entries the now-string column carries.
     struct EnumSnapshotEntry
     {
         loglib::KeyId kid;
@@ -474,10 +467,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         for (size_t columnIndex = 0; columnIndex < columnsBefore.size(); ++columnIndex)
         {
             const auto &column = columnsBefore[columnIndex];
-            // Snapshot both enum and level columns: a level column is
-            // an enumeration subtype and shares the same dictionary,
-            // so we must catch `Grew` / `Demoted` for level columns
-            // the same way we do for plain enums.
+            // Snapshot enum and level columns the same way: level is
+            // an enumeration subtype and shares the dictionary, so
+            // `Grew` / `Demoted` apply identically.
             if ((column.type != loglib::LogConfiguration::Type::Enumeration &&
                  column.type != loglib::LogConfiguration::Type::Level) ||
                 column.keys.empty())
@@ -562,13 +554,12 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         return -1;
     };
 
-    // Diff snapshot vs post-batch registry: `Grew` when the dict
-    // size changed, `Demoted` when the dict disappeared (registry
-    // erase), `Promoted` when a column flipped from `Enumeration` to
-    // `Level` (sub-promotion: shares the dictionary, so a `Grew` would
-    // otherwise be the only signal -- but the filter UI needs to
-    // re-render against the canonical-level picker). One signal per
-    // (column, reason).
+    // Diff snapshot vs post-batch registry, one signal per (column, reason):
+    //   - `Grew`: dictionary size changed.
+    //   - `Demoted`: dictionary disappeared (registry erase).
+    //   - `Promoted`: column flipped `Enumeration -> Level`. The two
+    //     share a dictionary so only `Grew` would otherwise fire, but
+    //     the filter UI needs to re-render against the level picker.
     std::vector<int> demotedColumnsThisBatch;
     if (!enumSnapshotBefore.empty())
     {
@@ -580,14 +571,11 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             if (dict == nullptr)
             {
                 demotedColumnsThisBatch.push_back(entry.columnIndex);
-                // Stash the pre-demote canonical-level -> raw-bytes
-                // mapping so `MainWindow::enumColumnsChanged(Demoted)`
-                // can translate stored canonical-name Level filters
-                // back into raw dictionary entries before the
-                // post-demote rebuild walks the column's now-string
-                // data. Skipped for plain enum demotes
-                // (`levelToRawBytes` stays empty there); the existing
-                // raw filter values still match without translation.
+                // Stash the pre-demote level mapping so the Demoted
+                // receiver can rewrite canonical-name Level filters
+                // into raw dictionary entries before the post-demote
+                // rebuild. Plain enum demotes need no translation
+                // (`levelToRawBytes` is empty there).
                 if (entry.typeBefore == loglib::LogConfiguration::Type::Level &&
                     !entry.levelToRawBytes.empty())
                 {
@@ -603,7 +591,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 typeAfter == loglib::LogConfiguration::Type::Level)
             {
                 // Sub-promotion supersedes `Grew`: receivers re-read
-                // the column type, so one event covers both the new
+                // the column type, so one signal covers both new
                 // entries and the type flip.
                 emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, entry.columnIndex);
             }
@@ -751,9 +739,8 @@ void LogModel::EndStreaming(bool cancelled)
                     emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                     continue;
                 }
-                // Sub-promotion `Enumeration -> Level`. Same signal so
-                // the filter UI re-renders against the canonical-level
-                // picker.
+                // Sub-promotion `Enumeration -> Level`: same signal so
+                // the filter UI re-renders against the level picker.
                 if (typesBefore[i] == loglib::LogConfiguration::Type::Enumeration &&
                     columnsAfter[i].type == loglib::LogConfiguration::Type::Level)
                 {

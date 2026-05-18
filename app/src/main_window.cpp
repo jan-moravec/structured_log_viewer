@@ -546,16 +546,12 @@ MainWindow::MainWindow(QWidget *parent)
             // `EnumRankFor`, so invalidate everything to be safe.
             mSortFilterProxyModel->InvalidateEnumRanks();
 
-            // A `Type::Level` column that loses its dictionary
-            // (`Level -> String` demote) leaves any saved
-            // canonical-name filter (`"Info"`, `"Warn"`, ...)
-            // pointing at strings that no longer exist in the
-            // column's data. Translate them to the raw dictionary
-            // entries observed pre-demote -- captured by
-            // `LogModel::AppendBatch` while the dictionary was still
-            // alive -- so the filter keeps matching the same rows.
-            // Other demote scenarios (`Enum -> String`) keep their
-            // raw filter values verbatim and need no translation;
+            // A `Type::Level -> Type::String` demote orphans any saved
+            // canonical-name filter (`"Info"`, ...) because those
+            // strings never appear in the column's raw data. Translate
+            // them to the raw entries `LogModel::AppendBatch` captured
+            // pre-demote so the filter keeps matching the same rows.
+            // Plain enum demotes need no translation;
             // `LastBatchLevelDemoteMappingFor` returns nullptr there.
             if (columnIndex >= 0)
             {
@@ -578,11 +574,10 @@ MainWindow::MainWindow(QWidget *parent)
                         {
                             continue;
                         }
-                        // `ResolveLevel` honours the column's saved
-                        // `levelMapping` (still intact post-demote
-                        // because the demote only flips
-                        // `Column::type`), so user-aliased entries
-                        // like `"NOTICE" -> Info` survive.
+                        // `ResolveLevel` still sees the column's saved
+                        // `levelMapping` (the demote only flips
+                        // `Column::type`), so user aliases like
+                        // `"NOTICE" -> Info` survive.
                         std::vector<std::string> expanded;
                         for (const std::string &name : filter.filterValues)
                         {
@@ -609,22 +604,20 @@ MainWindow::MainWindow(QWidget *parent)
                                 expanded.push_back(raw);
                             }
                         }
-                        // Drop duplicates while preserving an
-                        // order-stable view of the saved selection.
+                        // Drop duplicates with a stable order.
                         std::ranges::sort(expanded);
                         const auto dupTail = std::ranges::unique(expanded);
                         expanded.erase(dupTail.begin(), dupTail.end());
-                        // Empty `expanded` is the legitimate
-                        // "selection no longer matches anything"
-                        // case; keep the now-empty selection so the
-                        // `EnumRowPredicate` rebuild below rejects
-                        // every row, mirroring the empty-selection
-                        // semantics of the regular enum branch.
+                        // An empty `expanded` is a legitimate
+                        // "matches nothing" outcome -- keep it so the
+                        // rebuilt predicate rejects every row, matching
+                        // the plain enum branch's empty-selection
+                        // semantics.
                         filter.filterValues = std::move(expanded);
                     }
-                    // Mirror once after the per-filter walk: the
-                    // wire-format vector is snapshotted whole and a
-                    // per-filter call would do redundant work.
+                    // Mirror once after the loop; the wire vector is
+                    // snapshotted whole, so per-filter mirroring would
+                    // redo the same work.
                     MirrorFiltersToConfiguration();
                 }
             }
@@ -2207,11 +2200,10 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
         // Column not yet promoted: defer resolution until first growth.
         return false;
     }
-    // Level columns hold canonical names in `filter.filterValues`; the
-    // raw dictionary entries are derived from the cache at predicate-
-    // build time, so dictionary growth may surface entries that map to
-    // a selected canonical level. Treat them as never-fully-resolved
-    // so the `Grew` rebuild gate retranslates the predicate.
+    // Level columns hold canonical names in `filter.filterValues` and
+    // expand them to raw entries at predicate-build time. Dictionary
+    // growth can surface entries matching a selected level, so treat
+    // these as never fully resolved and rebuild on every `Grew`.
     const auto &columnsCfg = mModel->Configuration().columns;
     if (filter.row >= 0 && static_cast<size_t>(filter.row) < columnsCfg.size() &&
         columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level)
@@ -2415,15 +2407,11 @@ void MainWindow::UpdateFilters()
             // copies/indexes them and keeps no reference back into the
             // span (pinned by the lifetime test in `test_log_filter.cpp`).
             //
-            // Level columns route through the same predicate but with
-            // a canonical-name -> raw-dictionary-entry translation:
-            // the saved filter values are canonical level names
-            // (`"Info"`, `"Warn"`, ...) and we expand them to every
-            // raw dictionary entry that resolves to one of the
-            // selected canonical levels via the column's
-            // `LevelRankCache`. `expandedStorage` owns the expanded
-            // strings (dictionary `Resolve` returns views, so a copy
-            // is needed for lifetime).
+            // Level columns reuse the same predicate: expand the saved
+            // canonical names (`"Info"`, ...) to every raw dictionary
+            // entry that maps to a selected level via the
+            // `LevelRankCache`. `expandedStorage` owns the strings
+            // because dictionary `Resolve` returns views.
             std::vector<std::string_view> selectedViews;
             std::vector<std::string> expandedStorage;
             const auto &columnsCfg = mModel->Configuration().columns;
@@ -2438,23 +2426,17 @@ void MainWindow::UpdateFilters()
                 const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
                 if (ranks == nullptr || dictionary == nullptr)
                 {
-                    // Column configured `Type::Level` but no data yet:
-                    // skip the rule. `EnumFilterFullyResolved` returns
-                    // false for Level filters, so the next
-                    // `enumColumnsChanged(Grew)` fires a rebuild and
-                    // we'll install the predicate then. Rejecting every
-                    // row here would hide unrelated rows just because
-                    // the Level column hasn't been observed.
+                    // `Type::Level` column with no data yet: skip the
+                    // rule. `EnumFilterFullyResolved` returns false for
+                    // Level filters, so the next `Grew` rebuild will
+                    // install the predicate. Rejecting every row here
+                    // would hide unrelated rows.
                     break;
                 }
-                // `ResolveLevel`, not `ParseLevelName`: filter values
-                // are usually canonical names submitted by the picker,
-                // but a filter saved while the column was
-                // `Type::Enumeration` carries the raw user strings
-                // (`"NOTICE"`, `"INF"`, ...). Honouring the column's
-                // `levelMapping` here lets those custom aliases survive
-                // an `Enumeration -> Level` sub-promotion -- matches
-                // the resolution `FilterEditor::Load` uses.
+                // Use `ResolveLevel` (not `ParseLevelName`) so custom
+                // aliases saved while the column was Enumeration --
+                // and any `levelMapping` overrides -- still resolve.
+                // Matches `FilterEditor::Load`.
                 std::unordered_set<loglib::LogLevel> selectedLevels;
                 selectedLevels.reserve(filter.filterValues.size());
                 for (const std::string &name : filter.filterValues)
@@ -2479,11 +2461,9 @@ void MainWindow::UpdateFilters()
                 {
                     selectedViews.emplace_back(v);
                 }
-                // Empty `selectedViews` here is the legitimate
-                // "selection picks no dictionary entry" case (e.g. user
-                // chose `Trace` but only `Info`/`Warn` slots have been
-                // observed). Matches the Enum branch's empty-selection
-                // semantics: reject every row.
+                // Empty `selectedViews` is legitimate (e.g. user
+                // picked `Trace` but only `Info`/`Warn` slots exist).
+                // Matches the enum branch: reject every row.
                 rules.emplace_back(
                     std::in_place_type<loglib::EnumRowPredicate>,
                     column,
