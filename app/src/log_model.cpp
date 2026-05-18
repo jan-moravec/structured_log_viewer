@@ -451,7 +451,16 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // still alive -- this is the only way a `Demoted` receiver can
     // translate saved canonical-name filters back into the raw
     // entries the now-string column carries.
-    struct EnumSnapshotEntry
+    //
+    // The NOLINT below silences `bugprone-exception-escape` on the
+    // implicit move-ctor: MSVC's STL leaves `std::unordered_map`'s
+    // move-ctor throwing (allocator may allocate), so the implicit
+    // move-ctor of this struct also can. The struct is local --
+    // emplaced into a vector and later moved-from once per column --
+    // and the strong-exception failure mode (terminate via
+    // bad_alloc) is the process's standard OOM behaviour, not
+    // something the caller can recover from anyway.
+    struct EnumSnapshotEntry // NOLINT(bugprone-exception-escape)
     {
         loglib::KeyId kid;
         int columnIndex;
