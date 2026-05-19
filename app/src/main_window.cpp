@@ -2,6 +2,9 @@
 #include "./ui_main_window.h"
 
 #include "appearance_control.hpp"
+#include "column_editor.hpp"
+#include "columns_manager_dialog.hpp"
+#include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -22,6 +25,7 @@
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/udp_server_producer.hpp>
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDebug>
@@ -37,6 +41,7 @@
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QStringList>
+#include <QStyle>
 #include <QTableView>
 #include <QTimer>
 #include <QUuid>
@@ -373,6 +378,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionOpenNetworkStream, &QAction::triggered, this, &MainWindow::OpenNetworkStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
+    connect(ui->actionSaveSession, &QAction::triggered, this, &MainWindow::SaveSession);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
 
@@ -445,6 +451,16 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
 
+    mDiagnosticsButton = new QPushButton(this);
+    mDiagnosticsButton->setObjectName(QStringLiteral("diagnosticsButton"));
+    mDiagnosticsButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    mDiagnosticsButton->setFlat(true);
+    mDiagnosticsButton->setCursor(Qt::PointingHandCursor);
+    mDiagnosticsButton->hide();
+    statusBar()->addPermanentWidget(mDiagnosticsButton);
+    connect(mDiagnosticsButton, &QPushButton::clicked, this, &MainWindow::ShowConfigurationDiagnostics);
+    connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
         UpdateStreamingStatus();
@@ -502,6 +518,10 @@ MainWindow::MainWindow(QWidget *parent)
         UpdateStreamToolbarVisibility();
         UpdateUi();
         UpdateStreamingStatus();
+        // Refresh the column-health snapshot now that parsing has
+        // settled. Drives the header warning glyph and the status-bar
+        // mismatch summary via `columnHealthChanged`.
+        mModel->RefreshColumnHealth();
         // Only Success produces a post-parse error summary.
         if (result == StreamingResult::Success)
         {
@@ -519,6 +539,13 @@ MainWindow::MainWindow(QWidget *parent)
             mPendingOpenErrors.clear();
         }
         mStreamingFileName.clear();
+        // Keep `mCurrentSource` on Success / Cancelled (rows are
+        // still present, descriptor still describes them); drop it
+        // on Failed where there is nothing left to describe.
+        if (result == StreamingResult::Failed)
+        {
+            mCurrentSource.reset();
+        }
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
@@ -617,7 +644,7 @@ MainWindow::MainWindow(QWidget *parent)
                     // Mirror once after the loop; the wire vector is
                     // snapshotted whole, so per-filter mirroring would
                     // redo the same work.
-                    MirrorFiltersToConfiguration();
+                    MirrorSessionStateToConfiguration();
                 }
             }
         }
@@ -822,6 +849,23 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // pulls the loaded `visible` flags via the wired
         // `modelReset -> ApplyColumnVisibility` connect.
         mModel->NotifyConfigurationReplaced();
+
+        // Restore the persisted sort *before* RebuildFiltersFromConfiguration,
+        // because that helper re-mirrors session state and would
+        // otherwise overwrite the loaded sort with the cleared
+        // proxy sort. Columns-only files default to `-1` (no sort).
+        const auto loadedSort = mModel->Configuration().sort;
+        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        {
+            mTableView->sortByColumn(
+                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+            );
+        }
+
+        // Mirror the loaded source descriptor so the next session
+        // save round-trips it. We deliberately do not auto-bind.
+        mCurrentSource = mModel->Configuration().source;
+
         RebuildFiltersFromConfiguration();
         return true;
     }
@@ -869,6 +913,14 @@ void MainWindow::StreamNextPendingFile()
         const bool isFirstFileInSession = !IsSessionActive();
 
         mStreamingFileName = QFileInfo(file).fileName();
+        // Multi-file sessions record only the first file as the
+        // source descriptor; subsequent appends keep the original.
+        if (isFirstFileInSession)
+        {
+            mCurrentSource = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locator = file.toStdString()
+            };
+        }
         if (isFirstFileInSession)
         {
             mSessionMode = SessionMode::Static;
@@ -952,6 +1004,9 @@ void MainWindow::OpenLogStream()
     ClearAllFilters();
 
     mStreamingFileName = QFileInfo(file).fileName();
+    mCurrentSource = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::File, .locator = file.toStdString()
+    };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -1028,6 +1083,9 @@ void MainWindow::OpenNetworkStream()
     ClearAllFilters();
 
     mStreamingFileName = QString::fromStdString(displayName);
+    mCurrentSource = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locator = displayName
+    };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -1071,7 +1129,9 @@ void MainWindow::StopStream()
     {
         return;
     }
-    // Tear down but keep visible rows so the user can keep working on them.
+    // Tear down but keep visible rows so the user can keep working
+    // on them. `mCurrentSource` survives -- those rows still came
+    // from that source.
     mModel->StopAndKeepRows();
     mStreamingFileName.clear();
 }
@@ -1099,6 +1159,7 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     // Parser snapshot is immutable; gate config edits while streaming.
     ui->actionLoadConfiguration->setEnabled(enabled);
     ui->actionSaveConfiguration->setEnabled(enabled);
+    ui->actionSaveSession->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
     // Reorder + right-click are gated mid-stream because
     // `LogModel::MoveColumn` rotates `columns` while the streaming
@@ -1245,6 +1306,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     {
         return ui->actionSaveConfiguration;
     }
+    if (name == QStringLiteral("actionSaveSession"))
+    {
+        return ui->actionSaveSession;
+    }
     if (name == QStringLiteral("actionLoadConfiguration"))
     {
         return ui->actionLoadConfiguration;
@@ -1335,9 +1400,9 @@ void MainWindow::SetConfigurationUiEnabledForTest(bool enabled)
     SetConfigurationUiEnabled(enabled);
 }
 
-void MainWindow::SaveConfigurationToPathForTest(const QString &path)
+void MainWindow::SaveConfigurationToPathForTest(const QString &path, loglib::SaveScope scope)
 {
-    DoSaveConfiguration(path);
+    DoSaveConfiguration(path, scope);
 }
 
 void MainWindow::LoadConfigurationFromPathForTest(const QString &path)
@@ -1353,6 +1418,11 @@ void MainWindow::SetSuppressDialogsForTest(bool suppress)
 int MainWindow::LastDroppedFilterCountForTest() const
 {
     return mLastDroppedFilterCountForTest;
+}
+
+void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source)
+{
+    mCurrentSource = std::move(source);
 }
 #endif
 
@@ -1414,9 +1484,9 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
     QMessageBox::warning(this, QStringLiteral("Filters Dropped on Load"), message);
 }
 
-void MainWindow::MirrorFiltersToConfiguration()
+void MainWindow::MirrorSessionStateToConfiguration()
 {
-    // Snapshot the runtime map into the wire-format vector so
+    // Snapshot the runtime filter map into the wire-format vector so
     // `Save` and the lib-side `MoveColumn` row-remap see the live
     // set. UUIDs are GUI-internal and regenerated on load.
     //
@@ -1468,6 +1538,15 @@ void MainWindow::MirrorFiltersToConfiguration()
         return a.filterValues < b.filterValues;
     });
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
+
+    // Sort: read live from the proxy so the persisted value matches
+    // what the user sees in the header indicator.
+    loglib::LogConfiguration::Sort sort;
+    sort.columnIndex = mSortFilterProxyModel->SortColumn();
+    sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
+    mModel->ConfigurationManager().SetSort(sort);
+
+    mModel->ConfigurationManager().SetSource(mCurrentSource);
 }
 
 void MainWindow::SaveConfiguration()
@@ -1480,7 +1559,7 @@ void MainWindow::SaveConfiguration()
     }
     try
     {
-        DoSaveConfiguration(file);
+        DoSaveConfiguration(file, loglib::SaveScope::ColumnsOnly);
     }
     catch (std::exception &e)
     {
@@ -1488,15 +1567,32 @@ void MainWindow::SaveConfiguration()
     }
 }
 
-void MainWindow::DoSaveConfiguration(const QString &path)
+void MainWindow::SaveSession()
 {
-    // The eager mirror at every mutation point already keeps
-    // `mConfiguration.filters` current; the call here documents
-    // intent and survives a future mutation point that forgets to
-    // mirror. `Save` propagates `std::exception` on I/O failure;
-    // both production callers wrap this in a `try / catch`.
-    MirrorFiltersToConfiguration();
-    mModel->ConfigurationManager().Save(path.toStdString());
+    const QString file = QFileDialog::getSaveFileName(this, "Save Session", QString(), "JSON (*.json);;All Files (*)");
+    if (file.isEmpty())
+    {
+        return;
+    }
+    try
+    {
+        DoSaveConfiguration(file, loglib::SaveScope::Full);
+    }
+    catch (std::exception &e)
+    {
+        QMessageBox::warning(this, "Error Saving Session", e.what());
+    }
+}
+
+void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scope)
+{
+    // Mirror unconditionally even though every mutation point already
+    // keeps the configuration current -- documents intent and
+    // protects against a future mutator that forgets to mirror.
+    // `scope` selects which subset lands on disk; `Save` throws on
+    // I/O failure (callers catch).
+    MirrorSessionStateToConfiguration();
+    mModel->ConfigurationManager().Save(path.toStdString(), scope);
 }
 
 void MainWindow::LoadConfiguration()
@@ -1508,6 +1604,81 @@ void MainWindow::LoadConfiguration()
         return;
     }
     DoLoadConfiguration(file);
+}
+
+void MainWindow::ShowConfigurationDiagnostics()
+{
+    if (!mDiagnosticsDialog)
+    {
+        mDiagnosticsDialog = new ConfigurationDiagnosticsDialog(mModel, this);
+        mDiagnosticsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+        // Wire the row drill-down once; the dialog survives close.
+        connect(
+            mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
+        );
+    }
+    mDiagnosticsDialog->Refresh();
+    mDiagnosticsDialog->show();
+    mDiagnosticsDialog->raise();
+    mDiagnosticsDialog->activateWindow();
+}
+
+void MainWindow::EditColumn(int columnIndex)
+{
+    if (mModel == nullptr)
+    {
+        return;
+    }
+    const auto &columns = mModel->Configuration().columns;
+    if (columnIndex < 0 || static_cast<size_t>(columnIndex) >= columns.size())
+    {
+        return;
+    }
+    ColumnEditor editor(mModel, columnIndex, this);
+    if (editor.exec() == QDialog::Accepted)
+    {
+        // Re-push visibility to the header and refresh the
+        // diagnostics summary; the editor already handled the
+        // model-side state.
+        ApplyColumnVisibility();
+        UpdateDiagnosticsStatus();
+        UpdateUi();
+    }
+}
+
+void MainWindow::ShowColumnsManager()
+{
+    if (!mColumnsManagerDialog)
+    {
+        mColumnsManagerDialog = new ColumnsManagerDialog(mModel, this, this);
+        mColumnsManagerDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    }
+    mColumnsManagerDialog->Refresh();
+    mColumnsManagerDialog->show();
+    mColumnsManagerDialog->raise();
+    mColumnsManagerDialog->activateWindow();
+}
+
+void MainWindow::UpdateDiagnosticsStatus()
+{
+    if (mDiagnosticsButton == nullptr)
+    {
+        return;
+    }
+    const int mismatched = ConfigurationDiagnosticsDialog::MismatchedColumnCount(*mModel);
+    if (mismatched == 0)
+    {
+        mDiagnosticsButton->hide();
+        mDiagnosticsButton->setText(QString());
+        mDiagnosticsButton->setToolTip(QString());
+        return;
+    }
+    const QString text = tr("%n column mismatch(es)", nullptr, mismatched);
+    mDiagnosticsButton->setText(text);
+    mDiagnosticsButton->setToolTip(tr("%1 column(s) have values that do not match the configured type. "
+                                      "Click to open Configuration Diagnostics.")
+                                       .arg(mismatched));
+    mDiagnosticsButton->show();
 }
 
 bool MainWindow::DoLoadConfiguration(const QString &path)
@@ -1528,6 +1699,24 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         // pushes the freshly-loaded `visible` flags.
         mModel->NotifyConfigurationReplaced();
         UpdateUi();
+
+        // Restore the persisted sort *before*
+        // `RebuildFiltersFromConfiguration` -- that helper re-mirrors
+        // session state and would otherwise overwrite the loaded
+        // sort with the cleared proxy sort. Columns-only files
+        // default to the `-1` "no sort" sentinel.
+        const auto loadedSort = mModel->Configuration().sort;
+        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        {
+            mTableView->sortByColumn(
+                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+            );
+        }
+
+        // Mirror the loaded source descriptor so the next session
+        // save round-trips it. Metadata only -- we do not auto-bind
+        // the file (a foreign session would be hostile).
+        mCurrentSource = mModel->Configuration().source;
 
         RebuildFiltersFromConfiguration();
         return true;
@@ -1564,7 +1753,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
         // Defer mirror + rule rebuild; one trailing sync below.
         AddLogFilter(QUuid::createUuid().toString(), saved, /*deferSync=*/true);
     }
-    MirrorFiltersToConfiguration();
+    MirrorSessionStateToConfiguration();
     UpdateFilters();
 
     if (!dropped.empty())
@@ -1847,7 +2036,7 @@ void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
     mFilterSubMenus.clear();
-    MirrorFiltersToConfiguration();
+    MirrorSessionStateToConfiguration();
     mSortFilterProxyModel->SetFilterRules({});
 
     for (QAction *action : ui->menuFilters->actions())
@@ -1868,7 +2057,7 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
     mFilterSubMenus.erase(filterID.toStdString());
     if (!deferSync)
     {
-        MirrorFiltersToConfiguration();
+        MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
 
@@ -2118,7 +2307,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     mFilters[id.toStdString()] = filter;
     if (!deferSync)
     {
-        MirrorFiltersToConfiguration();
+        MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
 
@@ -2772,6 +2961,18 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         });
     }
 
+    // "Edit column..." is available even on hidden columns so the
+    // editor doubles as the way to bring one back. Re-resolution by
+    // stable keys mirrors the Hide path above.
+    const QAction *editColumnAction = menu->addAction(tr("Edit column \"%1\"…").arg(thisLabel));
+    connect(editColumnAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+        const int idx = FindColumnIndexByKeys(keys);
+        if (idx >= 0)
+        {
+            EditColumn(idx);
+        }
+    });
+
     // Filter block: `Add filter on "<col>"` plus a submenu per
     // existing filter on this column. Lambdas capture stable keys /
     // ids and re-resolve at trigger time, so a column reorder
@@ -2915,14 +3116,22 @@ void MainWindow::RebuildViewMenu()
         return;
     }
     viewMenu->clear();
+
+    // Top entry so it stays reachable even when no columns exist.
+    QAction *manageColumnsAction = viewMenu->addAction(tr("Manage columns\u2026"));
+    manageColumnsAction->setObjectName(QStringLiteral("actionManageColumns"));
+    connect(manageColumnsAction, &QAction::triggered, this, &MainWindow::ShowColumnsManager);
+
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())
     {
+        viewMenu->addSeparator();
         // Disabled placeholder so an empty View menu is not silent.
         QAction *placeholder = viewMenu->addAction(tr("(no columns yet)"));
         placeholder->setEnabled(false);
         return;
     }
+    viewMenu->addSeparator();
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
     for (size_t i = 0; i < columns.size(); ++i)
     {

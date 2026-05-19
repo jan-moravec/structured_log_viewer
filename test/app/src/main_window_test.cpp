@@ -1,3 +1,6 @@
+#include "column_editor.hpp"
+#include "columns_manager_dialog.hpp"
+#include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -32,14 +35,20 @@
 
 #include <QAbstractItemModel>
 #include <QAction>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QIcon>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollBar>
@@ -50,6 +59,7 @@
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QWheelEvent>
@@ -4608,15 +4618,16 @@ private slots:
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QList<QAction *> topActions = built.menu->actions();
-        QCOMPARE(topActions.size(), 4);
+        QCOMPARE(topActions.size(), 5);
 
-        // Hide → separator → Add filter on ... → filter submenu.
+        // Hide → Edit column → separator → Add filter on ... → filter submenu.
         QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
-        QVERIFY2(topActions[1]->isSeparator(), "second action must be a separator");
-        QVERIFY2(topActions[2]->text().startsWith("Add filter on"), "third action must be Add filter on ...");
+        QVERIFY2(topActions[1]->text().startsWith("Edit column"), "second action must be Edit column ...");
+        QVERIFY2(topActions[2]->isSeparator(), "third action must be a separator");
+        QVERIFY2(topActions[3]->text().startsWith("Add filter on"), "fourth action must be Add filter on ...");
         // Last non-separator is the filter submenu; its title is the
         // filter's display value, not a fixed string.
-        QVERIFY2(!topActions[3]->isSeparator(), "fourth action must be the filter submenu");
+        QVERIFY2(!topActions[4]->isSeparator(), "fifth action must be the filter submenu");
     }
 
     // With zero rows, Add-filter and per-filter Edit must be
@@ -5479,7 +5490,7 @@ private slots:
     }
 
     // Two consecutive `Save`s of the same filter set must produce
-    // byte-identical JSON. `MirrorFiltersToConfiguration` sorts the
+    // byte-identical JSON. `MirrorSessionStateToConfiguration` sorts the
     // snapshot so the output is independent of the `unordered_map`
     // iteration order. Without the sort, save -> reopen -> save
     // would change the file every round-trip.
@@ -5552,6 +5563,916 @@ private slots:
         QVERIFY(fileC.open(QFile::ReadOnly));
         const QByteArray bytesC = fileC.readAll();
         QCOMPARE(bytesC, bytesA);
+    }
+
+    // `Save Configuration...` (SaveScope::ColumnsOnly) writes a
+    // portable layout: columns survive, session-only state
+    // (filters, sort) is omitted from the file on purpose so the
+    // configuration can be applied to a different log source
+    // without dragging old filter rows / sort indices along.
+    void TestSaveScopeColumnsOnlyOmitsSession()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Engage filter + sort so the wire-format vector + sort field
+        // are non-default before saving.
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("columns-only-filter")),
+            Q_ARG(int, msgCol),
+            Q_ARG(QString, QStringLiteral("m1")),
+            Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+        );
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        tableView->sortByColumn(levelCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString columnsOnlyPath = savedDir.filePath(QStringLiteral("columns-only.json"));
+        mWindow->SaveConfigurationToPathForTest(columnsOnlyPath, loglib::SaveScope::ColumnsOnly);
+
+        // Reload into a fresh manager and confirm the on-disk file is
+        // a configuration-shape file: columns present, session-only
+        // fields back at their inert defaults.
+        loglib::LogConfigurationManager probe;
+        probe.Load(columnsOnlyPath.toStdString());
+        QVERIFY(!probe.Configuration().columns.empty());
+        QVERIFY2(probe.Configuration().filters.empty(), "SaveScope::ColumnsOnly must omit filters");
+        QCOMPARE(probe.Configuration().sort.columnIndex, -1);
+        QVERIFY2(!probe.Configuration().source.has_value(), "SaveScope::ColumnsOnly must omit source");
+    }
+
+    // `Save Session...` (SaveScope::Full) persists the live sort
+    // indicator and a Load restores it. This is the load-bearing
+    // promise of the session/configuration split: filters already
+    // round-trip; the sort indicator now travels with them.
+    void TestSaveScopeFullPersistsSortAndRestoresOnLoad()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const QHeaderView *header = tableView->horizontalHeader();
+        QVERIFY(header != nullptr);
+
+        tableView->sortByColumn(levelCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            header->isSortIndicatorShown() && header->sortIndicatorSection() == levelCol,
+            "precondition: sort indicator must be on the level column before save"
+        );
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("with-sort.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        // Drop the live sort so the load has to actually reapply it,
+        // not just look like it did.
+        tableView->sortByColumn(-1, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(sessionPath);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(header->isSortIndicatorShown(), "Load must restore the persisted sort indicator");
+        QCOMPARE(header->sortIndicatorSection(), levelCol);
+        QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
+    }
+
+    // Regression: `Save Session...` used to silently drop the
+    // `Source` descriptor for a static file because
+    // `streamingFinished` reset `mCurrentSource` unconditionally,
+    // and a follow-up `Save` mirrored the now-empty mirror into
+    // the configuration. The fix is to keep the descriptor alive
+    // for the lifetime of the loaded rows; this test exercises the
+    // full save -> wipe -> load round-trip.
+    //
+    // The shared streaming fixture bypasses `OpenFiles`, so we
+    // poke `mCurrentSource` directly: production sets it on every
+    // open path; the test fakes that to keep the fixture small.
+    void TestSaveScopeFullRoundTripsSourceDescriptor()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        // Stand in for the open-path `mCurrentSource` write that the
+        // sync fixture skips. `streamingFinished` already ran by now
+        // -- before the fix the reset there would have wiped this
+        // back to `nullopt` regardless.
+        const std::string syntheticSource = "/test/source/path.log";
+        mWindow->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locator = syntheticSource
+        });
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("with-source.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        // Read back through a fresh manager so we don't accidentally
+        // observe the still-live runtime mirror.
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY2(
+            probe.Configuration().source.has_value(),
+            "SaveScope::Full must persist the source descriptor for a streamed-then-finished file"
+        );
+        QCOMPARE(
+            static_cast<int>(probe.Configuration().source->kind),
+            static_cast<int>(loglib::LogConfiguration::Source::Kind::File)
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locator), QString::fromStdString(syntheticSource)
+        );
+
+        // Now load the freshly-saved session back into the running
+        // window and re-save: the descriptor must survive that round
+        // too (regression for the symmetric bug where Load -> Save
+        // dropped a loaded source because the runtime mirror was
+        // never seeded from disk).
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(sessionPath);
+        QCoreApplication::processEvents();
+
+        const QString resavePath = savedDir.filePath(QStringLiteral("with-source-resave.json"));
+        mWindow->SaveConfigurationToPathForTest(resavePath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager resaveProbe;
+        resaveProbe.Load(resavePath.toStdString());
+        QVERIFY2(
+            resaveProbe.Configuration().source.has_value(),
+            "Load -> Save round trip must preserve a loaded source descriptor"
+        );
+        QCOMPARE(resaveProbe.Configuration().source->locator, syntheticSource);
+    }
+
+    // Pinning a string-only column (`msg`) to `Integer` is the
+    // canonical "user misconfiguration" case: every present value is
+    // a string, no value is an integer, so `ColumnTypeHealth` reports
+    // presentSlots > matchingSlots and the header should advertise a
+    // mismatch via tooltip + decoration role.
+    void TestColumnHealthFlagsMismatchedType()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Streaming auto-detected `msg` to `String`; pin it to
+        // `Integer` to force a mismatch and re-snapshot health.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+
+        const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
+        model->RefreshColumnHealth();
+        // RefreshColumnHealth emits when health moves; the pin
+        // shifts matching from N to 0, which is always a delta.
+        QVERIFY2(healthSpy.count() >= 1, "RefreshColumnHealth must emit columnHealthChanged on a mismatch flip");
+
+        const auto health = model->ColumnHealth(msgCol);
+        QVERIFY2(health.has_value(), "ColumnHealth must yield a snapshot after Refresh");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access): asserted above.
+        QVERIFY2(health->presentSlots > 0, "msg column must have data after streaming");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QVERIFY2(health->matchingSlots < health->presentSlots, "Integer-pinned string column must report mismatches");
+
+        // Tooltip carries the human-readable diagnostics; decoration
+        // returns the standard warning icon. Both are wired through
+        // the same path so a downstream UI test exercising header
+        // rendering sees a consistent surface.
+        const QVariant tooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole);
+        QVERIFY(tooltip.canConvert<QString>());
+        QVERIFY2(
+            tooltip.toString().contains(QStringLiteral("do not match the configured type")),
+            "Mismatched column tooltip must explain the diagnostic"
+        );
+
+        const QVariant decoration = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
+        QVERIFY(decoration.canConvert<QIcon>());
+        QVERIFY2(!decoration.value<QIcon>().isNull(), "Mismatched column must surface a warning icon");
+
+        // Auto-detected columns (Type::Any + autoDetect=true) never
+        // mismatch by definition. Promoted enum columns (level) carry
+        // dictionary slots so their matching count equals presentSlots.
+        const auto levelHealth = model->ColumnHealth(levelCol);
+        QVERIFY(levelHealth.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QCOMPARE(levelHealth->matchingSlots, levelHealth->presentSlots);
+    }
+
+    // Status-bar diagnostics button + dialog summary are driven by
+    // `ConfigurationDiagnosticsDialog::MismatchedColumnCount`, so they
+    // both flip together. Verify the aggregate stays in lockstep with
+    // the per-column health (no double-counting, no stale reads).
+    void TestDiagnosticsButtonSurfacesMismatchCount()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Steady state after streamingFinished: every column either
+        // auto-detected to a matching type or stayed Any; zero
+        // mismatches.
+        QCOMPARE(ConfigurationDiagnosticsDialog::MismatchedColumnCount(*model), 0);
+        // `findChild<QPushButton*>("diagnosticsButton")` is unreliable
+        // on the GitHub-hosted Linux runner with Qt 6.8 + offscreen QPA
+        // (same traversal bug that strands `findChild<QMenu*>` and
+        // `findChild<QAction*>`; see `FindActionByObjectName` above).
+        // Use the direct test-only accessor so the lookup is bypassed.
+        auto *button = mWindow->DiagnosticsButtonForTest();
+        QVERIFY2(button != nullptr, "MainWindow must own the diagnostics status-bar button");
+        // Offscreen-QPA leaves the parent window hidden, which would
+        // collapse `isVisible` to false regardless of the slot's
+        // intent; check `isHidden` so we exercise only the state the
+        // slot actually drives.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(button->isHidden(), "Diagnostics button must be hidden when no mismatches are present");
+
+        // Force a mismatch by pinning `msg` to Integer.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->RefreshColumnHealth();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(ConfigurationDiagnosticsDialog::MismatchedColumnCount(*model), 1);
+        // `isVisible` is gated by the parent window's visibility,
+        // which the offscreen-QPA test harness keeps hidden; check
+        // the inverse (`isHidden`) instead so the assertion exercises
+        // the only state the slot controls.
+        QVERIFY2(!button->isHidden(), "Diagnostics button must un-hide when a column mismatches");
+        QVERIFY2(button->text().contains(QStringLiteral("1")), "Button label must surface the mismatch count");
+    }
+
+    // The diagnostics dialog walks the same per-column snapshot as
+    // the status-bar aggregate; opening it must list exactly one
+    // mismatched row (matching the count surfaced by the button).
+    void TestDiagnosticsDialogListsMismatchedColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->RefreshColumnHealth();
+
+        const ConfigurationDiagnosticsDialog dialog(model);
+        // Bypass `findChild` to dodge the Qt 6.8 + offscreen-QPA
+        // traversal bug on the Linux runner (see the diagnostics-button
+        // test for the same workaround applied to MainWindow).
+        const auto *table = dialog.TableForTest();
+        QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
+
+        // Find the mismatched row by header text and assert the
+        // counter columns. Sorting is enabled, so look up by item
+        // rather than fixed row index.
+        int matchedRowIndex = -1;
+        for (int row = 0; row < table->rowCount(); ++row)
+        {
+            const QTableWidgetItem *headerItem = table->item(row, 0);
+            if (headerItem != nullptr && headerItem->text() == QStringLiteral("msg"))
+            {
+                matchedRowIndex = row;
+                break;
+            }
+        }
+        QVERIFY2(matchedRowIndex >= 0, "Dialog must include a row for the `msg` column");
+
+        // Column 6 is the "Mismatched" counter (see the header layout
+        // in `ConfigurationDiagnosticsDialog`'s constructor).
+        constexpr int MISMATCHED_COLUMN = 6;
+        const QTableWidgetItem *mismatchedItem = table->item(matchedRowIndex, MISMATCHED_COLUMN);
+        QVERIFY(mismatchedItem != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QVERIFY2(mismatchedItem->text().toInt() > 0, "Dialog must report a non-zero mismatch count for `msg`");
+    }
+
+    // The Column Editor writes back every user-controllable Column
+    // field on Apply: header, type, autoDetect, visible. Verify each
+    // surface lands in the live configuration and the health cache
+    // re-snapshots so the diagnostics surfaces flip in lockstep.
+    void TestColumnEditorAppliesEveryField()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Baseline: msg auto-detected to String, visible, header "msg".
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(msgCol)].type, loglib::LogConfiguration::Type::String
+        );
+
+        ColumnEditor editor(model, msgCol);
+
+        // Direct accessors instead of `findChild` -- Linux Qt 6.8 +
+        // offscreen QPA strands the lookup for child widgets the same
+        // way it does for QActions (see `FindActionByObjectName`).
+        auto *headerEdit = editor.HeaderEditForTest();
+        auto *typeCombo = editor.TypeComboForTest();
+        auto *visibleCheck = editor.VisibleCheckForTest();
+        QVERIFY(headerEdit != nullptr);
+        QVERIFY(typeCombo != nullptr);
+        QVERIFY(visibleCheck != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFYs abort on null.
+        QCOMPARE(headerEdit->text(), QStringLiteral("msg"));
+
+        // Drive the form: rename, pin to Integer, and hide.
+        headerEdit->setText(QStringLiteral("message"));
+        // Index 4 in the combo is "Integer" (see TypeChoices() in
+        // column_editor.cpp); the choice list is the single source of
+        // truth and the order is documented inline.
+        constexpr int INTEGER_CHOICE_INDEX = 4;
+        typeCombo->setCurrentIndex(INTEGER_CHOICE_INDEX);
+        visibleCheck->setChecked(false);
+
+        const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
+        editor.Apply();
+
+        const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
+        QCOMPARE(QString::fromStdString(updated.header), QStringLiteral("message"));
+        QCOMPARE(updated.type, loglib::LogConfiguration::Type::Integer);
+        QVERIFY2(!updated.autoDetect, "Pinning a concrete type must flip autoDetect off");
+        QVERIFY2(!updated.visible, "Visible checkbox must round-trip to Column::visible");
+
+        // The diagnostics cache picked up the new type immediately;
+        // pinning a string column to Integer must reveal mismatches.
+        QVERIFY2(healthSpy.count() >= 1, "Apply must trigger RefreshColumnHealth and emit columnHealthChanged");
+        const auto health = model->ColumnHealth(msgCol);
+        QVERIFY(health.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QVERIFY2(health->matchingSlots < health->presentSlots, "Pinned-Integer string column must report mismatches");
+    }
+
+    // Regression: editor-driven type edits that cross the
+    // Enumeration/Level boundary must emit `enumColumnsChanged`. The
+    // streaming auto-detect path emits the signal from
+    // `LogModel::AppendBatch`'s snapshot diff; before
+    // `LogModel::ApplyColumnTypeEdit` was introduced the editor path
+    // silently skipped it, leaving any active enum filter on the
+    // column wired to a now-stale bitset and the proxy's
+    // `EnumDictRank` cache uninvalidated.
+    //
+    // We drive both directions on the `category` column (4 unique
+    // values, well within `DEFAULT_ENUM_VALUE_CAP`) returned by
+    // `StreamFixtureForColumnTests`:
+    //   1. Enumeration -> String: should emit `Demoted`.
+    //   2. String -> Enumeration: should emit `Promoted`.
+    void TestColumnEditorTypeEditEmitsEnumColumnsChanged()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+        // The streaming detector auto-promotes `category` to
+        // `Enumeration` (the key is not a recognized level name, so
+        // it stops short of `Type::Level`). Verify the precondition
+        // so a future detector change doesn't silently disarm the
+        // test.
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Enumeration
+        );
+
+        // (1) Enumeration -> String: editor demotes the column. The
+        // signal must fire so any active enum filter rebuilds onto
+        // the string-set fallback and the cached rank entry is dropped.
+        {
+            const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+            QVERIFY(enumSpy.isValid());
+            ColumnEditor editor(model, levelCol);
+            auto *typeCombo = editor.TypeComboForTest();
+            QVERIFY(typeCombo != nullptr);
+            // Index 2 is "String" -- mirrors TypeChoices() in
+            // column_editor.cpp; same convention as the other editor
+            // tests in this file.
+            constexpr int STRING_CHOICE_INDEX = 2;
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+            typeCombo->setCurrentIndex(STRING_CHOICE_INDEX);
+            editor.Apply();
+
+            QCOMPARE(
+                model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+                loglib::LogConfiguration::Type::String
+            );
+            bool sawDemote = false;
+            for (int i = 0; i < enumSpy.count(); ++i)
+            {
+                const QList<QVariant> &args = enumSpy.at(i);
+                const auto reason = args.at(0).value<EnumColumnsChangeReason>();
+                const int columnIndex = args.at(1).toInt();
+                if (reason == EnumColumnsChangeReason::Demoted && columnIndex == levelCol)
+                {
+                    sawDemote = true;
+                    break;
+                }
+            }
+            QVERIFY2(sawDemote, "Editor-driven Enumeration->String must emit enumColumnsChanged(Demoted, levelCol)");
+        }
+
+        // (2) String -> Enumeration: editor re-promotes the column.
+        // The signal must fire so any pre-existing string-fallback
+        // enum filter upgrades onto the new bitset fast path and the
+        // proxy refreshes its rank cache.
+        {
+            const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+            QVERIFY(enumSpy.isValid());
+            ColumnEditor editor(model, levelCol);
+            auto *typeCombo = editor.TypeComboForTest();
+            QVERIFY(typeCombo != nullptr);
+            constexpr int ENUMERATION_CHOICE_INDEX = 8;
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+            typeCombo->setCurrentIndex(ENUMERATION_CHOICE_INDEX);
+            editor.Apply();
+
+            QCOMPARE(
+                model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+                loglib::LogConfiguration::Type::Enumeration
+            );
+            bool sawPromote = false;
+            for (int i = 0; i < enumSpy.count(); ++i)
+            {
+                const QList<QVariant> &args = enumSpy.at(i);
+                const auto reason = args.at(0).value<EnumColumnsChangeReason>();
+                const int columnIndex = args.at(1).toInt();
+                if (reason == EnumColumnsChangeReason::Promoted && columnIndex == levelCol)
+                {
+                    sawPromote = true;
+                    break;
+                }
+            }
+            QVERIFY2(sawPromote, "Editor-driven String->Enumeration must emit enumColumnsChanged(Promoted, levelCol)");
+        }
+    }
+
+    // Regression: a no-op editor accept (user presses OK without
+    // touching the type combo) must not emit `enumColumnsChanged`.
+    // The signal triggers an O(n) filter rebuild downstream, so the
+    // editor path should short-circuit when nothing changed.
+    void TestColumnEditorNoTypeChangeIsSilent()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumSpy.isValid());
+        ColumnEditor editor(model, msgCol);
+        editor.Apply(); // Combo untouched -- still on the same choice.
+
+        QCOMPARE(enumSpy.count(), 0);
+    }
+
+    // Regression: an auto-promoted column (e.g. `category` ->
+    // `Enumeration` via the streaming detector) carries
+    // `(type=Enumeration, autoDetect=true)` because the pipeline
+    // flips only `type` through `SetColumnType`. The Type combo
+    // must therefore:
+    //   1. Surface the *resolved* type in the combo (the user must
+    //      see "Enumeration", not the misleading "Auto-detect"
+    //      entry that the pre-fix lookup fell back to).
+    //   2. Round-trip cleanly on accept-without-change: the column's
+    //      `(type, autoDetect)` pair must be preserved unmodified
+    //      (no silent `(Enumeration, false)` pin, no destructive
+    //      `(Any, true)` rewrite via the "Auto-detect" entry).
+    void TestColumnEditorPreservesAutoDetectFlagOnPromotedColumn()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        // Precondition: streaming auto-promoted `category` to
+        // `Enumeration` and left `autoDetect = true` (the detector
+        // never clears the flag). This is the exact (concrete-type,
+        // autoDetect=true) pair the pre-fix `FindTypeChoiceIndex`
+        // dropped to index 0 ("Auto-detect").
+        const auto &preEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
+        QCOMPARE(preEdit.type, loglib::LogConfiguration::Type::Enumeration);
+        QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
+
+        ColumnEditor editor(model, categoryCol);
+        auto *typeCombo = editor.TypeComboForTest();
+        QVERIFY(typeCombo != nullptr);
+        // (1) Combo must show the resolved type. Index 8 is
+        // "Enumeration" in `TypeChoices()` (same convention as the
+        // other editor tests in this file). Anything else (and
+        // especially index 0, the pre-fix fallback) would mislead
+        // the user into thinking the column is still in auto-detect
+        // mode.
+        constexpr int ENUMERATION_CHOICE_INDEX = 8;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QCOMPARE(typeCombo->currentIndex(), ENUMERATION_CHOICE_INDEX);
+
+        // (2) Accept-without-change must preserve both fields.
+        // No `enumColumnsChanged` either: the column did not cross
+        // the enum boundary, and downstream filter rebuilds are
+        // expensive.
+        const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumSpy.isValid());
+        editor.Apply();
+
+        const auto &postEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
+        QCOMPARE(postEdit.type, loglib::LogConfiguration::Type::Enumeration);
+        QVERIFY2(postEdit.autoDetect, "Accept-without-change must preserve the auto-detector's autoDetect=true flag");
+        QCOMPARE(enumSpy.count(), 0);
+    }
+
+    // The Auto-detect choice at the top of the Type combo collapses
+    // the (Type::Any, autoDetect=true) pair into a single user-
+    // visible entry. Selecting it must restore both fields atomically
+    // -- otherwise the column ends up in the legacy "user-pinned Any"
+    // state that suppresses promotion.
+    void TestColumnEditorAutoDetectChoiceRestoresFlag()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Pre-rescan: the streaming detector already promoted `msg`
+        // to `String` because its 200 unique values trip the
+        // cardinality bail. We need a column whose post-rescan type
+        // is observably different from its pre-edit type, so park
+        // `msg` at a deliberately-wrong terminal type first. Picking
+        // "Auto-detect" then exercises both the autoDetect flag
+        // restoration *and* the rescan that promotes the column
+        // back to the detector's preferred type.
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+
+        ColumnEditor editor(model, msgCol);
+        auto *typeCombo = editor.TypeComboForTest();
+        QVERIFY(typeCombo != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        typeCombo->setCurrentIndex(0); // "Auto-detect"
+        editor.Apply();
+
+        const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
+        // The rescan kicks in (bug 4 fix). `msg` carries 200 unique
+        // values, so the candidate tracker bails on cardinality and
+        // routes to `String`. The autoDetect flag survives the
+        // re-route -- consistent with the streaming detector's
+        // behaviour, and harmless because `Type::String` columns
+        // are not enum-pass-eligible.
+        QCOMPARE(updated.type, loglib::LogConfiguration::Type::String);
+        QVERIFY2(updated.autoDetect, "Auto-detect choice must restore autoDetect=true");
+    }
+
+    // Companion to the above for the *enum-promotion* branch of
+    // the rescan: pick a column whose data forms a small set of
+    // repeated values (`category` -> info/warn/error/debug). After
+    // pinning to a wrong terminal type and flipping to
+    // "Auto-detect", the rescan must promote the column to
+    // `Enumeration` (or `Level`, since the alias matches and the
+    // dictionary tolerance holds). Validates the integrated
+    // ApplyColumnTypeEdit -> RescanColumnForAutoDetection ->
+    // PromoteColumnToEnum chain through the actual GUI seam.
+    void TestColumnEditorAutoDetectPromotesEnumColumn()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        // `category` was already promoted by streaming. Demote it
+        // to Integer so picking Auto-detect is a real transition.
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(categoryCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(categoryCol), false);
+
+        // Pump the model through the same edit path the user would
+        // hit to make sure `OnUserChangedColumnType` is invoked
+        // (which clears dict state) before the rescan runs.
+        model->ApplyColumnTypeEdit(categoryCol, loglib::LogConfiguration::Type::Integer, false);
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(categoryCol)].type,
+            loglib::LogConfiguration::Type::Integer
+        );
+
+        ColumnEditor editor(model, categoryCol);
+        auto *typeCombo = editor.TypeComboForTest();
+        QVERIFY(typeCombo != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        typeCombo->setCurrentIndex(0); // "Auto-detect"
+        editor.Apply();
+
+        const auto promotedType = model->Configuration().columns[static_cast<size_t>(categoryCol)].type;
+        QVERIFY2(
+            promotedType == loglib::LogConfiguration::Type::Enumeration ||
+                promotedType == loglib::LogConfiguration::Type::Level,
+            "RescanColumnForAutoDetection must promote a small-cardinality column out of Any"
+        );
+    }
+
+    // Double-clicking a diagnostics row emits `editColumnRequested`
+    // with the source-table column index. Verifying the signal
+    // (rather than reaching into the editor it eventually pops) keeps
+    // the dialog test layer-agnostic and lets `MainWindow` own the
+    // editor wiring.
+    void TestDiagnosticsDialogDoubleClickEmitsEditRequest()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        const ConfigurationDiagnosticsDialog dialog(model);
+        QSignalSpy editSpy(&dialog, &ConfigurationDiagnosticsDialog::editColumnRequested);
+
+        auto *table = dialog.TableForTest();
+        QVERIFY(table != nullptr);
+
+        // Find the row corresponding to `msg` (sorting may rearrange
+        // the table independently of source-column order) and
+        // simulate a double-click.
+        int msgRow = -1;
+        for (int row = 0; row < table->rowCount(); ++row)
+        {
+            const QTableWidgetItem *item = table->item(row, 0);
+            if (item != nullptr && item->text() == QStringLiteral("msg"))
+            {
+                msgRow = row;
+                break;
+            }
+        }
+        QVERIFY2(msgRow >= 0, "Dialog must surface a row for `msg`");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        emit table->cellDoubleClicked(msgRow, 0);
+
+        QCOMPARE(editSpy.count(), 1);
+        QCOMPARE(editSpy.takeFirst().at(0).toInt(), msgCol);
+    }
+
+    // The columns manager mirrors every `Column` row in the live
+    // configuration -- one table row per column, with the visible
+    // checkbox in the rightmost cell. This is the smoke test that
+    // the dialog is wired to the live model rather than a stale
+    // snapshot, and that the Visible cell carries an interactable
+    // check state.
+    void TestColumnsManagerListsEveryColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        const ColumnsManagerDialog dialog(model, mWindow);
+
+        auto *table = dialog.TableForTest();
+        QVERIFY(table != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
+
+        // The Visible cell sits in column 4 (see COL_VISIBLE in
+        // columns_manager_dialog.cpp); a row whose underlying
+        // column is visible must surface as Qt::Checked.
+        constexpr int VISIBLE_COL = 4;
+        const QTableWidgetItem *msgVisible = table->item(msgCol, VISIBLE_COL);
+        QVERIFY(msgVisible != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QCOMPARE(msgVisible->checkState(), Qt::Checked);
+        QVERIFY2(
+            (msgVisible->flags() & Qt::ItemIsUserCheckable) != 0,
+            "Visible cell must be user-checkable so the in-place toggle works"
+        );
+    }
+
+    // Toggling the Visible checkbox in the manager must propagate
+    // all the way to the live `Column::visible` flag and to the
+    // header (i.e. go through `MainWindow::SetColumnVisible`, not
+    // straight to the lib mutator). Doing the round-trip in the
+    // test avoids the bug where the manager flipped only its own
+    // table-widget state while the underlying header still showed
+    // the column.
+    void TestColumnsManagerVisibilityToggleHidesColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
+
+        const ColumnsManagerDialog dialog(model, mWindow);
+        auto *table = dialog.TableForTest();
+        QVERIFY(table != nullptr);
+
+        constexpr int VISIBLE_COL = 4;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QTableWidgetItem *item = table->item(msgCol, VISIBLE_COL);
+        QVERIFY(item != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        item->setCheckState(Qt::Unchecked);
+
+        QVERIFY2(
+            !model->Configuration().columns[static_cast<size_t>(msgCol)].visible,
+            "Unchecking the Visible cell must flip Column::visible to false"
+        );
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QVERIFY2(
+            tableView->horizontalHeader()->isSectionHidden(msgCol),
+            "Toggle must reach the header (i.e. go via MainWindow::SetColumnVisible, not just the lib mutator)"
+        );
+    }
+
+    // `MoveSelectedDown` calls `LogModel::MoveColumn`, which both
+    // rotates `Configuration().columns` and re-emits header /
+    // visibility state to the view. The test verifies the order
+    // shift end-to-end: pick the first row, push it one slot down,
+    // and assert the two columns swap positions in both the model
+    // and the manager table itself.
+    void TestColumnsManagerMoveDownReordersColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
+
+        const std::string firstKeys = model->Configuration().columns.front().keys.empty()
+                                          ? std::string{}
+                                          : model->Configuration().columns.front().keys.front();
+        const std::string secondKeys =
+            model->Configuration().columns[1].keys.empty() ? std::string{} : model->Configuration().columns[1].keys[0];
+        QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        auto *table = dialog.TableForTest();
+        QVERIFY(table != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        table->selectRow(0);
+
+        dialog.MoveSelectedDown();
+
+        const auto &columns = model->Configuration().columns;
+        QVERIFY2(columns.size() >= 2, "Move must not lose columns");
+        QCOMPARE(columns[0].keys.empty() ? std::string{} : columns[0].keys.front(), secondKeys);
+        QCOMPARE(columns[1].keys.empty() ? std::string{} : columns[1].keys.front(), firstKeys);
+        // The manager moves the selection along with the row so the
+        // user can drag the same column further down with repeated
+        // clicks. (Verifying the selection prevents a regression
+        // where a stable index lookup would re-pick the *new* top
+        // row by mistake.)
+        QCOMPARE(table->currentRow(), 1);
+    }
+
+    // Edge case: Move up on the top row, Move down on the bottom
+    // row. Either would push the index out of [0, columnCount());
+    // the dialog must clamp instead of asserting or wrapping.
+    void TestColumnsManagerMoveAtBoundariesIsNoOp()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const auto initialColumns = model->Configuration().columns;
+        QVERIFY2(initialColumns.size() >= 2, "fixture must yield at least two columns");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        auto *table = dialog.TableForTest();
+        QVERIFY(table != nullptr);
+
+        // Top row: Move up is a no-op.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        table->selectRow(0);
+        dialog.MoveSelectedUp();
+        for (size_t i = 0; i < initialColumns.size(); ++i)
+        {
+            QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
+        }
+
+        // Bottom row: Move down is a no-op.
+        const int lastRow = static_cast<int>(initialColumns.size()) - 1;
+        table->selectRow(lastRow);
+        dialog.MoveSelectedDown();
+        for (size_t i = 0; i < initialColumns.size(); ++i)
+        {
+            QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
+        }
+    }
+
+    // Regression for bug 1: the manager only listened to
+    // `modelReset`, `headerDataChanged`, and `columnHealthChanged`.
+    // A header-drag (or the streaming timestamp-bubble) reorders
+    // columns via `MoveColumn`, which emits
+    // `beginMoveColumns`/`endMoveColumns` only -- no
+    // `headerDataChanged` follows because the column data is
+    // unchanged. Before the fix, the manager's table widget kept
+    // its pre-move row order until something else (e.g. a sort
+    // toggle) happened to trigger a refresh.
+    void TestColumnsManagerRefreshesAfterExternalColumnsMoved()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        dialog.show();
+        auto *table = dialog.TableForTest();
+        QVERIFY(table != nullptr);
+
+        // Snapshot the pre-move dialog row 0 / row 1 headers so the
+        // assertion below sees the actual swap rather than any
+        // canonical ordering.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QTableWidgetItem *row0Before = table->item(0, 0);
+        const QTableWidgetItem *row1Before = table->item(1, 0);
+        QVERIFY(row0Before != nullptr && row1Before != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QString headerAt0Before = row0Before->text();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QString headerAt1Before = row1Before->text();
+        QVERIFY(headerAt0Before != headerAt1Before);
+
+        // Reorder via the model layer -- the same seam a header drag
+        // (`OnSourceColumnsMoved`) goes through. The fix adds a
+        // `columnsMoved` -> `Refresh` connection in the dialog, so
+        // the manager's rows must now follow this move without any
+        // intervening UI event.
+        QVERIFY2(model->MoveColumn(0, 1), "MoveColumn must succeed for a 2+ column model");
+
+        // Pump the event loop so the queued-connection (if any) fires
+        // before we sample the table widget.
+        QCoreApplication::processEvents();
+
+        const QTableWidgetItem *row0After = table->item(0, 0);
+        const QTableWidgetItem *row1After = table->item(1, 0);
+        QVERIFY(row0After != nullptr && row1After != nullptr);
+        QCOMPARE(row0After->text(), headerAt1Before);
+        QCOMPARE(row1After->text(), headerAt0Before);
+        dialog.close();
+    }
+
+    // The View menu's "Manage columns\u2026" entry is the only
+    // production entry point into the manager. Verifying it both
+    // exists and triggers the dialog catches the case where a menu
+    // rebuild forgets to re-add the action after a column shape
+    // change.
+    void TestViewMenuManageColumnsActionOpensDialog()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        QMenu *viewMenu = mWindow->ViewMenu();
+        QVERIFY2(viewMenu != nullptr, "MainWindow must expose its View menu");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        emit viewMenu->aboutToShow();
+
+        QAction *manage = nullptr;
+        const auto actions = viewMenu->actions();
+        for (QAction *action : actions)
+        {
+            if (action->objectName() == QStringLiteral("actionManageColumns"))
+            {
+                manage = action;
+                break;
+            }
+        }
+        QVERIFY2(manage != nullptr, "View menu must carry the Manage columns... entry");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        manage->trigger();
+
+        auto *dialog = mWindow->findChild<ColumnsManagerDialog *>(QStringLiteral("ColumnsManagerDialog"));
+        QVERIFY2(dialog != nullptr, "Triggering Manage columns... must construct a ColumnsManagerDialog");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QVERIFY2(!dialog->isHidden(), "Manager dialog must be shown after triggering its action");
+        dialog->close();
     }
 
     // Find must skip hidden columns. The fixture has `level`
@@ -6686,8 +7607,8 @@ private slots:
     }
 
     // Regression: an enum filter installed while the column is still
-    // `Type::Unknown` builds with `dictionary = nullptr` and runs the
-    // slow string-set fallback. On auto-promote,
+    // `Type::Any + autoDetect` builds with `dictionary = nullptr` and
+    // runs the slow string-set fallback. On auto-promote,
     // `MainWindow::enumColumnsChanged(Promoted)` must rebuild the
     // predicate so it picks up the bitset hot path. Pre-fix the slot
     // gated the rebuild on `!EnumFilterFullyResolved` -- which goes
@@ -7330,9 +8251,10 @@ private slots:
         };
 
         // Batch 1: one row keeps `mycol` below
-        // STREAM_PROMOTION_MIN_ROWS (== 2), so the column stays
-        // `Type::Unknown` and `ResolveEnumDictionary` returns nullptr
-        // at filter-install time.
+        // STREAM_PROMOTION_MIN_ROWS (== 2), so the column stays a
+        // candidate (`Type::Any + autoDetect`) and
+        // `ResolveEnumDictionary` returns nullptr at filter-install
+        // time.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -7344,11 +8266,10 @@ private slots:
 
         const int col = ColumnByHeader(*model, QStringLiteral("mycol"));
         QVERIFY2(col >= 0, "mycol column must exist after the first batch");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Unknown
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(col)].type, loglib::LogConfiguration::Type::Any);
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(col)].autoDetect);
 
-        // Install an enum filter while the column is still Unknown:
+        // Install an enum filter while the column is still a candidate:
         // predicate built with `dictionary = nullptr`, only the slow
         // string-set fallback path is available.
         const QString filterId = QStringLiteral("upgrade-on-promote");
@@ -7445,7 +8366,8 @@ private slots:
 
         // Batch 1: promote colA to Enumeration via the streaming
         // threshold (`presenceCount >= 2`). colB doesn't appear so
-        // it stays `Type::Unknown` until batch 2 introduces it.
+        // it stays a candidate (`Type::Any + autoDetect`) until
+        // batch 2 introduces it.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -7527,7 +8449,8 @@ private slots:
     // double-triggering `MainWindow::UpdateFilters`.
     //
     // Setup:
-    //   * batch 1 leaves `colA` at `Unknown` and promotes `colB`.
+    //   * batch 1 leaves `colA` as a candidate (`Type::Any +
+    //     autoDetect`) and promotes `colB`.
     //   * batch 2 promotes `colA` (low index, back-filled), grows
     //     `colB`'s dict (no back-fill), and promotes a new `colC`
     //     (high index, back-filled). Range spans `[colA, colC]`
@@ -7554,10 +8477,11 @@ private slots:
             return loglib::LogLine{std::move(values), keys, *sourcePtr, 0};
         };
 
-        // Batch 1: `colA` gets exactly one presence (stays Unknown,
-        // tracker carries 1 presence forward). `colB` gets two
-        // identical presences and promotes to Enumeration with dict
-        // size 1. `colA` is appended first so it lands at column 0.
+        // Batch 1: `colA` gets exactly one presence (stays a
+        // candidate, tracker carries 1 presence forward). `colB`
+        // gets two identical presences and promotes to Enumeration
+        // with dict size 1. `colA` is appended first so it lands at
+        // column 0.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 1;
@@ -7573,9 +8497,8 @@ private slots:
         const int colB = ColumnByHeader(*model, QStringLiteral("colB"));
         QVERIFY2(colA == 0, "colA must land at column 0 (first appended new key)");
         QVERIFY2(colB == 1, "colB must land at column 1 (second appended new key)");
-        QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Unknown
-        );
+        QCOMPARE(model->Configuration().columns[static_cast<size_t>(colA)].type, loglib::LogConfiguration::Type::Any);
+        QVERIFY(model->Configuration().columns[static_cast<size_t>(colA)].autoDetect);
         QCOMPARE(
             model->Configuration().columns[static_cast<size_t>(colB)].type, loglib::LogConfiguration::Type::Enumeration
         );

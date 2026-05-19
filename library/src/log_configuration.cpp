@@ -95,7 +95,32 @@ struct PrettyOpts : glz::opts
 };
 constexpr PrettyOpts PRETTIFY_OPTS{{.prettify = true}};
 
+/// Wire-format shim for `SaveScope::ColumnsOnly`: emits only the
+/// `columns` array, skipping the default `filters` / `sort` blocks a
+/// transient `LogConfiguration` would still serialise. Files written
+/// from this shim still parse cleanly through
+/// `glz::read_json<LogConfiguration>` -- missing members default.
+struct ColumnsOnlyDocument
+{
+    // Reference (not pointer) so the type is never default-
+    // constructible and the glaze accessor can't deref null. `Save`
+    // is the only construction site and holds the source vector for
+    // the synchronous `glz::write` call.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
+    const std::vector<loglib::LogConfiguration::Column> &columns;
+};
+
 } // namespace
+
+// `value` is glaze's required slot name (same exemption as the
+// canonical meta block in `log_configuration_glaze_meta.hpp`).
+// NOLINTBEGIN(readability-identifier-naming)
+template <> struct glz::meta<ColumnsOnlyDocument>
+{
+    using T = ColumnsOnlyDocument;
+    static constexpr auto value = object("columns", [](auto &self) -> const auto & { return self.columns; });
+};
+// NOLINTEND(readability-identifier-naming)
 
 namespace loglib
 {
@@ -126,11 +151,31 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
 
 void LogConfigurationManager::Save(const std::filesystem::path &path) const
 {
+    Save(path, SaveScope::Full);
+}
+
+void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope scope) const
+{
     std::string json;
-    const auto error = glz::write<PRETTIFY_OPTS>(mConfiguration, json);
-    if (error)
+    if (scope == SaveScope::ColumnsOnly)
     {
-        throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+        // Use the glaze shim so the written JSON has only `columns`,
+        // not the default `filters` / `sort` blocks the full struct
+        // would emit.
+        const ColumnsOnlyDocument document{.columns = mConfiguration.columns};
+        const auto error = glz::write<PRETTIFY_OPTS>(document, json);
+        if (error)
+        {
+            throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+        }
+    }
+    else
+    {
+        const auto error = glz::write<PRETTIFY_OPTS>(mConfiguration, json);
+        if (error)
+        {
+            throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
+        }
     }
 
     std::ofstream file(path);
@@ -176,7 +221,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                     .header = key,
                     .keys = {key},
                     .printFormat = "{}",
-                    .type = LogConfiguration::Type::Unknown,
+                    .type = LogConfiguration::Type::Any,
                     .parseFormats = {}
                 });
             }
@@ -211,7 +256,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                 .header = key,
                 .keys = {key},
                 .printFormat = "{}",
-                .type = LogConfiguration::Type::Unknown,
+                .type = LogConfiguration::Type::Any,
                 .parseFormats = {}
             });
         }
@@ -244,14 +289,18 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // Run every persisted `LogFilter::row` through the same
-    // permutation so each filter follows its column.
+    // Run every persisted `LogFilter::row` and `sort.columnIndex`
+    // through the same permutation so they follow their column even
+    // when callers read `Configuration()` directly without first
+    // re-mirroring from a runtime proxy.
     const int src = static_cast<int>(srcIndex);
     const int dest = static_cast<int>(destIndex);
     for (LogConfiguration::LogFilter &filter : mConfiguration.filters)
     {
         filter.row = LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
     }
+    mConfiguration.sort.columnIndex =
+        LogConfigurationManager::RemapColumnIndexAfterMove(mConfiguration.sort.columnIndex, src, dest);
     // Pure reorder; key cache is unchanged.
 }
 
@@ -293,6 +342,26 @@ void LogConfigurationManager::SetColumnType(size_t columnIndex, LogConfiguration
     mConfiguration.columns[columnIndex].type = type;
 }
 
+void LogConfigurationManager::SetColumnAutoDetect(size_t columnIndex, bool autoDetect)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].autoDetect = autoDetect;
+}
+
+void LogConfigurationManager::SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    auto &column = mConfiguration.columns[columnIndex];
+    column.type = type;
+    column.autoDetect = autoDetect;
+}
+
 void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
 {
     if (columnIndex >= mConfiguration.columns.size())
@@ -302,9 +371,46 @@ void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)
     mConfiguration.columns[columnIndex].visible = visible;
 }
 
+void LogConfigurationManager::SetColumnHeader(size_t columnIndex, std::string header)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].header = std::move(header);
+}
+
+void LogConfigurationManager::SetColumnPrintFormat(size_t columnIndex, std::string printFormat)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].printFormat = std::move(printFormat);
+}
+
+void LogConfigurationManager::SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    mConfiguration.columns[columnIndex].parseFormats = std::move(parseFormats);
+}
+
 void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)
 {
     mConfiguration.filters = std::move(filters);
+}
+
+void LogConfigurationManager::SetSort(LogConfiguration::Sort sort)
+{
+    mConfiguration.sort = sort;
+}
+
+void LogConfigurationManager::SetSource(std::optional<LogConfiguration::Source> source)
+{
+    mConfiguration.source = std::move(source);
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const

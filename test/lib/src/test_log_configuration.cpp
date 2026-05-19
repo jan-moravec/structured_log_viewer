@@ -113,8 +113,8 @@ TEST_CASE(
     checkType("datetime", LogConfiguration::Type::Time);
     checkType("created_at", LogConfiguration::Type::Time);
 
-    checkType("t", LogConfiguration::Type::Unknown);
-    checkType("tag", LogConfiguration::Type::Unknown);
+    checkType("t", LogConfiguration::Type::Any);
+    checkType("tag", LogConfiguration::Type::Any);
 }
 
 TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfigurationManager]")
@@ -358,22 +358,24 @@ TEST_CASE("Save and load configuration with Type::Enumeration column", "[log_con
 }
 
 TEST_CASE(
-    "Newly-discovered keys default to Type::Unknown so the auto-detector scans them",
-    "[log_configuration][type_unknown]"
+    "Newly-discovered keys default to Type::Any with autoDetect=true so the auto-detector scans them",
+    "[log_configuration][auto_detect_default]"
 )
 {
-    // Provenance is carried by the column type itself, both in memory
-    // and on disk; `Type::Unknown` marks an auto-detector candidate.
+    // Provenance is carried by the `(type, autoDetect)` pair: a fresh
+    // key starts as `(Type::Any, autoDetect=true)`, i.e. the
+    // auto-detector candidate state.
 
-    SECTION("AppendKeys assigns Type::Unknown to fresh keys")
+    SECTION("AppendKeys assigns the candidate state to fresh keys")
     {
         LogConfigurationManager manager;
         manager.AppendKeys({"level"});
         REQUIRE(manager.Configuration().columns.size() == 1);
-        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Unknown);
+        CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[0].autoDetect);
     }
 
-    SECTION("Update assigns Type::Unknown to every freshly-added non-time key")
+    SECTION("Update assigns the candidate state to every freshly-added non-time key")
     {
         const TestLogFile testLogFile;
         auto source = testLogFile.CreateFileLineSource();
@@ -388,11 +390,12 @@ TEST_CASE(
         REQUIRE(manager.Configuration().columns.size() == 2);
         for (const auto &column : manager.Configuration().columns)
         {
-            CHECK(column.type == LogConfiguration::Type::Unknown);
+            CHECK(column.type == LogConfiguration::Type::Any);
+            CHECK(column.autoDetect);
         }
     }
 
-    SECTION("Loaded columns keep their stored Type and are not rewritten to unknown")
+    SECTION("Loaded columns keep their stored Type and autoDetect flag")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -401,7 +404,10 @@ TEST_CASE(
              .keys = {"level"},
              .printFormat = "{}",
              .type = LogConfiguration::Type::Any,
-             .parseFormats = {}}
+             .parseFormats = {},
+             .visible = true,
+             .levelMapping = {},
+             .autoDetect = false}
         );
         cfg.columns.push_back(
             {.header = "service",
@@ -417,10 +423,11 @@ TEST_CASE(
 
         REQUIRE(manager.Configuration().columns.size() == 2);
         CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
+        CHECK_FALSE(manager.Configuration().columns[0].autoDetect);
         CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::String);
     }
 
-    SECTION("Post-Load AppendKeys still assigns Type::Unknown to genuinely-new keys")
+    SECTION("Post-Load AppendKeys still assigns the candidate state to genuinely-new keys")
     {
         const TestLogConfiguration testCfg;
         LogConfiguration cfg;
@@ -429,7 +436,10 @@ TEST_CASE(
              .keys = {"level"},
              .printFormat = "{}",
              .type = LogConfiguration::Type::Any,
-             .parseFormats = {}}
+             .parseFormats = {},
+             .visible = true,
+             .levelMapping = {},
+             .autoDetect = false}
         );
         testCfg.Write(cfg);
 
@@ -439,7 +449,9 @@ TEST_CASE(
         manager.AppendKeys({"freshly_streamed"});
         REQUIRE(manager.Configuration().columns.size() == 2);
         CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Any);
-        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::Unknown);
+        CHECK_FALSE(manager.Configuration().columns[0].autoDetect);
+        CHECK(manager.Configuration().columns[1].type == LogConfiguration::Type::Any);
+        CHECK(manager.Configuration().columns[1].autoDetect);
     }
 }
 
@@ -451,7 +463,6 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     // sides spell it `floating`.
     using Type = LogConfiguration::Type;
     const std::vector<Type> variants = {
-        Type::Unknown,
         Type::Any,
         Type::String,
         Type::Boolean,
@@ -479,7 +490,6 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     const auto writeError = glz::write_json(original, json);
     REQUIRE_FALSE(writeError);
 
-    CHECK(json.contains("\"unknown\""));
     CHECK(json.contains("\"any\""));
     CHECK(json.contains("\"boolean\""));
     CHECK(json.contains("\"integer\""));
@@ -500,6 +510,100 @@ TEST_CASE("Round-trip preserves every LogConfiguration::Type variant", "[log_con
     {
         CHECK(loaded.columns[i].type == variants[i]);
     }
+}
+
+TEST_CASE(
+    "SaveScope::ColumnsOnly omits filters/sort/source so the file is portable across data sources",
+    "[log_configuration][save_scope][session]"
+)
+{
+    // A configuration-shape file is the wire-format strict subset of
+    // a session-shape file: same JSON schema, just with the
+    // session-only fields at their default values.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"timestamp", "msg"});
+    REQUIRE(manager.Configuration().columns.size() == 2);
+
+    // Populate session-only state (filter on row 0, sort by column 1
+    // descending, file-source).
+    LogConfiguration::LogFilter filter;
+    filter.type = LogConfiguration::LogFilter::Type::String;
+    filter.row = 0;
+    filter.filterString = "boot";
+    filter.matchType = LogConfiguration::LogFilter::Match::Contains;
+    manager.SetFilters({filter});
+    manager.SetSort(LogConfiguration::Sort{.columnIndex = 1, .descending = true});
+    manager.SetSource(
+        LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locator = "C:/logs/app.json"}
+    );
+
+    const TestLogConfiguration columnsOnlyFile;
+    manager.Save(columnsOnlyFile.GetFilePath(), SaveScope::ColumnsOnly);
+
+    // The on-disk JSON must not even mention the session-only
+    // fields: a transient `LogConfiguration` would still serialise
+    // empty `"filters"` / a default `"sort"` because those members
+    // are not optional. The `ColumnsOnlyDocument` shim in
+    // `log_configuration.cpp` exists exactly to keep the wire output
+    // clean for users who inspect saved configs by hand.
+    {
+        std::ifstream readBack(columnsOnlyFile.GetFilePath());
+        REQUIRE(readBack.is_open());
+        const std::string raw((std::istreambuf_iterator<char>(readBack)), std::istreambuf_iterator<char>());
+        CHECK(raw.contains("\"columns\""));
+        CHECK_FALSE(raw.contains("\"filters\""));
+        CHECK_FALSE(raw.contains("\"sort\""));
+        CHECK_FALSE(raw.contains("\"source\""));
+    }
+
+    // Re-load: only columns survive; filters/sort/source are absent
+    // and reload at their default (inert) values.
+    LogConfigurationManager reloadedFromColumns;
+    reloadedFromColumns.Load(columnsOnlyFile.GetFilePath());
+    REQUIRE(reloadedFromColumns.Configuration().columns.size() == 2);
+    CHECK(reloadedFromColumns.Configuration().filters.empty());
+    CHECK(reloadedFromColumns.Configuration().sort.columnIndex == -1);
+    CHECK_FALSE(reloadedFromColumns.Configuration().sort.descending);
+    CHECK_FALSE(reloadedFromColumns.Configuration().source.has_value());
+
+    // SaveScope::Full writes every field; session-only state
+    // round-trips intact.
+    const TestLogConfiguration fullFile;
+    manager.Save(fullFile.GetFilePath(), SaveScope::Full);
+
+    LogConfigurationManager reloadedFromFull;
+    reloadedFromFull.Load(fullFile.GetFilePath());
+    REQUIRE(reloadedFromFull.Configuration().columns.size() == 2);
+    REQUIRE(reloadedFromFull.Configuration().filters.size() == 1);
+    CHECK(reloadedFromFull.Configuration().filters[0].row == 0);
+    REQUIRE(reloadedFromFull.Configuration().filters[0].filterString.has_value());
+    CHECK(*reloadedFromFull.Configuration().filters[0].filterString == "boot");
+    CHECK(reloadedFromFull.Configuration().sort.columnIndex == 1);
+    CHECK(reloadedFromFull.Configuration().sort.descending);
+    REQUIRE(reloadedFromFull.Configuration().source.has_value());
+    CHECK(reloadedFromFull.Configuration().source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(reloadedFromFull.Configuration().source->locator == "C:/logs/app.json");
+}
+
+TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_configuration][session][source]")
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::NetworkStream, .locator = "tcp://127.0.0.1:5170"
+    };
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"networkStream\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.source.has_value());
+    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::NetworkStream);
+    CHECK(loaded.source->locator == "tcp://127.0.0.1:5170");
 }
 
 TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")
@@ -611,7 +715,6 @@ TEST_CASE(
     // variant is exercised so renaming any one would break the test.
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
-            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]},
             {"header":"b","keys":["b"],"printFormat":"{}","type":"any","parseFormats":[]},
             {"header":"c","keys":["c"],"printFormat":"{}","type":"string","parseFormats":[]},
             {"header":"d","keys":["d"],"printFormat":"{}","type":"integer","parseFormats":[]},
@@ -635,15 +738,14 @@ TEST_CASE(
     REQUIRE_FALSE(readError);
 
     using Type = LogConfiguration::Type;
-    REQUIRE(loaded.columns.size() == 8);
-    CHECK(loaded.columns[0].type == Type::Unknown);
-    CHECK(loaded.columns[1].type == Type::Any);
-    CHECK(loaded.columns[2].type == Type::String);
-    CHECK(loaded.columns[3].type == Type::Integer);
-    CHECK(loaded.columns[4].type == Type::Floating);
-    CHECK(loaded.columns[5].type == Type::Number);
-    CHECK(loaded.columns[6].type == Type::Time);
-    CHECK(loaded.columns[7].type == Type::Enumeration);
+    REQUIRE(loaded.columns.size() == 7);
+    CHECK(loaded.columns[0].type == Type::Any);
+    CHECK(loaded.columns[1].type == Type::String);
+    CHECK(loaded.columns[2].type == Type::Integer);
+    CHECK(loaded.columns[3].type == Type::Floating);
+    CHECK(loaded.columns[4].type == Type::Number);
+    CHECK(loaded.columns[5].type == Type::Time);
+    CHECK(loaded.columns[6].type == Type::Enumeration);
 
     using FilterType = LogConfiguration::LogFilter::Type;
     using Match = LogConfiguration::LogFilter::Match;
@@ -664,10 +766,10 @@ TEST_CASE(
     std::string roundTripJson;
     const auto writeError = glz::write_json(loaded, roundTripJson);
     REQUIRE_FALSE(writeError);
-    CHECK(roundTripJson.contains("\"unknown\""));
+    CHECK(roundTripJson.contains("\"any\""));
     CHECK(roundTripJson.contains("\"enumeration\""));
     CHECK(roundTripJson.contains("\"regularExpression\""));
-    CHECK_FALSE(roundTripJson.contains("\"Unknown\""));
+    CHECK_FALSE(roundTripJson.contains("\"Any\""));
     CHECK_FALSE(roundTripJson.contains("\"Enumeration\""));
     CHECK_FALSE(roundTripJson.contains("\"RegularExpression\""));
 }
@@ -762,6 +864,38 @@ TEST_CASE(
     CHECK(ResolveLevel("30", mapping) == LogLevel::Info);
 }
 
+TEST_CASE(
+    "LogConfigurationManager::SetColumnHeader renames the display label without touching keys",
+    "[LogConfigurationManager][column_header]"
+)
+{
+    // `header` is the display string the GUI shows; `keys` are the
+    // parser identifiers and must stay untouched so the existing
+    // column binding survives. The mutator is the only path the
+    // Column Editor takes to rename a column, so a hand-on-the-wheel
+    // test pins that one-way invariant.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"abc", "xyz"});
+    REQUIRE(manager.Configuration().columns.size() == 2);
+
+    manager.SetColumnHeader(0, "Alpha");
+    CHECK(manager.Configuration().columns[0].header == "Alpha");
+    CHECK(manager.Configuration().columns[0].keys == std::vector<std::string>{"abc"});
+    CHECK(manager.Configuration().columns[1].header == "xyz");
+
+    // Empty rename is intentionally allowed -- users can clear the
+    // header without us second-guessing them; the table falls back
+    // to the keys via `LogTable::GetHeader`.
+    manager.SetColumnHeader(1, "");
+    CHECK(manager.Configuration().columns[1].header.empty());
+
+    // Out-of-range index must be a silent no-op (matches the rest of
+    // the SetColumn* family). The valid columns stay untouched.
+    manager.SetColumnHeader(99, "Bogus");
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].header == "Alpha");
+}
+
 TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationManager][column_visibility]")
 {
     // The hidden-column flag must survive Save / Load.
@@ -814,7 +948,7 @@ TEST_CASE(
     // tolerates missing keys; the field defaults to `true`.
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
-            {"header":"a","keys":["a"],"printFormat":"{}","type":"unknown","parseFormats":[]}
+            {"header":"a","keys":["a"],"printFormat":"{}","type":"any","parseFormats":[]}
         ],
         "filters": []
     })";
@@ -824,6 +958,7 @@ TEST_CASE(
     REQUIRE_FALSE(readError);
     REQUIRE(loaded.columns.size() == 1);
     CHECK(loaded.columns[0].visible);
+    CHECK(loaded.columns[0].autoDetect);
 }
 
 TEST_CASE(
@@ -917,6 +1052,57 @@ TEST_CASE(
         CHECK(filters[1].row == 1);
         CHECK(filters[2].row == 2);
         CHECK(filters[3].row == 3);
+    }
+}
+
+TEST_CASE(
+    "LogConfigurationManager::MoveColumn remaps Sort::columnIndex through the permutation",
+    "[LogConfigurationManager][move_column][sort_remap]"
+)
+{
+    // Filters and the persisted sort indicator share the same column
+    // identifier, so they must ride the same rotation. Without the
+    // sort remap, a `SaveScope::Full` round-trip after a column drag
+    // would land the indicator on the wrong column.
+    LogConfigurationManager manager;
+    manager.AppendKeys({"a", "b", "c", "d"});
+    REQUIRE(manager.Configuration().columns.size() == 4);
+
+    SECTION("Sort on the dragged column travels with the move")
+    {
+        // Index 2 ("c") sorts descending; drag "c" to the front.
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = 2, .descending = true});
+
+        manager.MoveColumn(2, 0);
+        // "c" is now at index 0; the indicator must follow.
+        CHECK(manager.Configuration().sort.columnIndex == 0);
+        // Direction is preserved.
+        CHECK(manager.Configuration().sort.descending == true);
+    }
+
+    SECTION("Sort on a downstream column slides up when the drag crosses it")
+    {
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = 3, .descending = false});
+
+        // Move "a" (0) to position 3 -- "d" shifts left to index 2.
+        manager.MoveColumn(0, 3);
+        CHECK(manager.Configuration().sort.columnIndex == 2);
+    }
+
+    SECTION("Sort indicator outside the rotation window stays put")
+    {
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = 0, .descending = false});
+
+        manager.MoveColumn(2, 3);
+        CHECK(manager.Configuration().sort.columnIndex == 0);
+    }
+
+    SECTION("No-sort sentinel (-1) survives a move")
+    {
+        manager.SetSort(LogConfiguration::Sort{.columnIndex = -1, .descending = false});
+
+        manager.MoveColumn(0, 2);
+        CHECK(manager.Configuration().sort.columnIndex == -1);
     }
 }
 

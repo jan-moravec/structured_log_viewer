@@ -424,7 +424,6 @@ int CompareRows(
         return CompareLevel(table, lhsRow, rhsRow, columnIndex);
     case LogConfiguration::Type::String:
     case LogConfiguration::Type::Any:
-    case LogConfiguration::Type::Unknown:
     default:
         return CompareString(table, lhsRow, rhsRow, columnIndex);
     }

@@ -186,6 +186,30 @@ public:
     /// untouched.
     void NotifyConfigurationReplaced();
 
+    /// Most recent `ColumnTypeHealth` snapshot for @p section, or
+    /// `nullopt` if out of range or no snapshot exists yet. Drives
+    /// the header tooltip / warning icon and the status-bar summary.
+    [[nodiscard]] std::optional<loglib::LogTable::ColumnTypeHealth> ColumnHealth(int section) const;
+
+    /// Recompute every column's `ColumnTypeHealth` snapshot. Emits
+    /// `headerDataChanged` and `columnHealthChanged` when something
+    /// moved. Walks the whole table; meant for end-of-stream and
+    /// post-`Load`, not per-batch.
+    void RefreshColumnHealth();
+
+    /// Emit `headerDataChanged` + a column-wide `dataChanged` after
+    /// an out-of-band column edit (header / type / visibility).
+    /// No-op for an out-of-range index.
+    void NotifyColumnEdited(int columnIndex);
+
+    /// Apply a `(type, autoDetect)` edit at @p columnIndex as one
+    /// transaction: write the pair through the manager, reconcile
+    /// loaded rows (back-fill, drop dictionaries / time formats as
+    /// needed), emit `enumColumnsChanged` when the edit crosses the
+    /// enum/level boundary, and refresh `ColumnHealth`. Out-of-range
+    /// index is a silent no-op.
+    void ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect);
+
     /// Canonical-level -> raw-dictionary-bytes mapping captured just
     /// before a `Type::Level` column lost its dictionary in the most
     /// recent `AppendBatch`. Lets the `enumColumnsChanged(Demoted)`
@@ -222,6 +246,11 @@ signals:
     /// "unscoped" (registry-wide sweep) -- treat as "any enum filter
     /// may need attention". See `EnumColumnsChangeReason`.
     void enumColumnsChanged(EnumColumnsChangeReason reason, int columnIndex);
+
+    /// Emitted from `RefreshColumnHealth` when at least one column's
+    /// snapshot changed. Drives the status-bar mismatch summary and
+    /// the Configuration Diagnostics dialog.
+    void columnHealthChanged();
 
 private:
     /// Shared `BeginStreaming` setup: install @p source, reset the
@@ -262,6 +291,10 @@ private:
     /// of every `AppendBatch`.
     std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
         mLastBatchLevelDemoteMapping;
+
+    /// Per-column health cache, parallel to `Configuration().columns`.
+    /// Written only by `RefreshColumnHealth`; empty until first refresh.
+    std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

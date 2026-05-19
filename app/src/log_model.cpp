@@ -12,12 +12,16 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stream_line_source.hpp>
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QFutureWatcher>
+#include <QIcon>
 #include <QMetaObject>
 #include <QModelIndex>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
+#include <QStyle>
 #include <QThread>
 #include <QVariant>
 #include <QtConcurrent/QtConcurrent>
@@ -141,6 +145,8 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         // Drop the per-batch capture alongside the table's rank cache
         // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
+        // Drop stale mismatch badges before the reset settles.
+        RefreshColumnHealth();
 
         endResetModel();
 
@@ -773,19 +779,220 @@ int LogModel::columnCount(const QModelIndex &parent) const
     return static_cast<int>(mLogTable.ColumnCount());
 }
 
+namespace
+{
+QString FormatTypeName(loglib::LogConfiguration::Type type, bool autoDetect)
+{
+    using Type = loglib::LogConfiguration::Type;
+    QString base;
+    switch (type)
+    {
+    case Type::Any:
+        base = QStringLiteral("Any");
+        break;
+    case Type::String:
+        base = QStringLiteral("String");
+        break;
+    case Type::Boolean:
+        base = QStringLiteral("Boolean");
+        break;
+    case Type::Integer:
+        base = QStringLiteral("Integer");
+        break;
+    case Type::Floating:
+        base = QStringLiteral("Floating-point");
+        break;
+    case Type::Number:
+        base = QStringLiteral("Number");
+        break;
+    case Type::Time:
+        base = QStringLiteral("Time");
+        break;
+    case Type::Enumeration:
+        base = QStringLiteral("Enumeration");
+        break;
+    case Type::Level:
+        base = QStringLiteral("Level");
+        break;
+    }
+    if (autoDetect && type == Type::Any)
+    {
+        return QStringLiteral("Any (autodetect)");
+    }
+    return base;
+}
+
+QString BuildHeaderTooltip(
+    const loglib::LogConfiguration::Column &column, std::optional<loglib::LogTable::ColumnTypeHealth> health
+)
+{
+    // Join with `<br/>` so missing sections don't produce blank lines.
+    QStringList lines;
+    if (!column.header.empty())
+    {
+        lines.append(QStringLiteral("<b>%1</b>").arg(QString::fromStdString(column.header).toHtmlEscaped()));
+    }
+    if (!column.keys.empty())
+    {
+        QStringList keys;
+        keys.reserve(static_cast<int>(column.keys.size()));
+        for (const auto &k : column.keys)
+        {
+            keys.append(QString::fromStdString(k).toHtmlEscaped());
+        }
+        lines.append(QStringLiteral("keys: %1").arg(keys.join(QStringLiteral(", "))));
+    }
+    lines.append(QStringLiteral("type: %1").arg(FormatTypeName(column.type, column.autoDetect)));
+    QString tooltip = lines.join(QStringLiteral("<br/>"));
+
+    if (health.has_value())
+    {
+        const size_t mismatched =
+            health->presentSlots > health->matchingSlots ? health->presentSlots - health->matchingSlots : 0;
+        if (mismatched > 0)
+        {
+            tooltip += QStringLiteral("<br/><span style=\"color:#b04040;\"><b>"
+                                      "%1 of %2 values do not match the configured type.</b></span>"
+                                      "<br/>Open Configuration Diagnostics to inspect or change the type.")
+                           .arg(static_cast<qulonglong>(mismatched))
+                           .arg(static_cast<qulonglong>(health->presentSlots));
+        }
+    }
+    return tooltip;
+}
+} // namespace
+
 QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (role != Qt::DisplayRole)
+    if (orientation != Qt::Horizontal || section < 0 || section >= columnCount())
     {
         return {};
     }
 
-    if (orientation == Qt::Horizontal && section >= 0 && section < columnCount())
+    if (role == Qt::DisplayRole)
     {
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
     }
-
+    if (role == Qt::ToolTipRole)
+    {
+        const auto &columns = mLogTable.Configuration().Configuration().columns;
+        return BuildHeaderTooltip(columns[static_cast<size_t>(section)], ColumnHealth(section));
+    }
+    if (role == Qt::DecorationRole)
+    {
+        if (auto health = ColumnHealth(section); health.has_value())
+        {
+            const size_t mismatched =
+                health->presentSlots > health->matchingSlots ? health->presentSlots - health->matchingSlots : 0;
+            if (mismatched > 0)
+            {
+                return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+            }
+        }
+        return {};
+    }
     return {};
+}
+
+void LogModel::NotifyColumnEdited(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= columnCount())
+    {
+        return;
+    }
+    emit headerDataChanged(Qt::Horizontal, columnIndex, columnIndex);
+    const int rows = rowCount();
+    if (rows > 0)
+    {
+        emit dataChanged(index(0, columnIndex), index(rows - 1, columnIndex), {Qt::DisplayRole});
+    }
+}
+
+void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect)
+{
+    if (columnIndex < 0 || columnIndex >= columnCount())
+    {
+        return;
+    }
+    // Snapshot the pre-edit pair so the transition classification
+    // below is correct, and so `SetColumnTypePair` is the only
+    // observer to see the atomic write.
+    const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+    const auto previousType = columnsBefore[static_cast<size_t>(columnIndex)].type;
+    const bool previousAutoDetect = columnsBefore[static_cast<size_t>(columnIndex)].autoDetect;
+
+    if (previousType == newType && previousAutoDetect == newAutoDetect)
+    {
+        return;
+    }
+
+    mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
+    mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
+
+    // Picking "Auto-detect" on already-loaded rows parks at
+    // `(Any, autoDetect)`; rescan so the column actually resolves
+    // instead of rendering as raw `any` forever.
+    if (newType == loglib::LogConfiguration::Type::Any && newAutoDetect)
+    {
+        mLogTable.RescanColumnForAutoDetection(static_cast<size_t>(columnIndex));
+    }
+
+    // Read back the *effective* type -- the encode/rescan above may
+    // route to a different terminal type than `newType`.
+    const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
+    const auto effectiveType = columnsAfter[static_cast<size_t>(columnIndex)].type;
+    using Type = loglib::LogConfiguration::Type;
+    const bool wasEnumLike = previousType == Type::Enumeration || previousType == Type::Level;
+    const bool isEnumLike = effectiveType == Type::Enumeration || effectiveType == Type::Level;
+    // Promote: entering the enum family, or sub-promote
+    // `Enumeration -> Level`. Demote: leaving it, or sub-demote
+    // `Level -> Enumeration` (same rebuild gate as a real demote).
+    const bool isPromote =
+        (!wasEnumLike && isEnumLike) || (previousType == Type::Enumeration && effectiveType == Type::Level);
+    const bool isDemote =
+        (wasEnumLike && !isEnumLike) || (previousType == Type::Level && effectiveType == Type::Enumeration);
+    if (isPromote)
+    {
+        emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, columnIndex);
+    }
+    else if (isDemote)
+    {
+        emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, columnIndex);
+    }
+
+    // Encode / back-fill changed slot tags -- health cache is stale.
+    RefreshColumnHealth();
+}
+
+std::optional<loglib::LogTable::ColumnTypeHealth> LogModel::ColumnHealth(int section) const
+{
+    if (section < 0 || static_cast<size_t>(section) >= mColumnHealth.size())
+    {
+        return std::nullopt;
+    }
+    return mColumnHealth[static_cast<size_t>(section)];
+}
+
+void LogModel::RefreshColumnHealth()
+{
+    std::vector<loglib::LogTable::ColumnTypeHealth> next;
+    const size_t cols = mLogTable.ColumnCount();
+    next.reserve(cols);
+    for (size_t i = 0; i < cols; ++i)
+    {
+        next.push_back(mLogTable.ComputeColumnTypeHealth(i));
+    }
+
+    if (next == mColumnHealth)
+    {
+        return;
+    }
+    mColumnHealth = std::move(next);
+    if (cols > 0)
+    {
+        emit headerDataChanged(Qt::Horizontal, 0, static_cast<int>(cols) - 1);
+    }
+    emit columnHealthChanged();
 }
 
 QVariant LogModel::data(const QModelIndex &index, int role) const
@@ -1085,10 +1292,11 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 void LogModel::NotifyConfigurationReplaced()
 {
     // `LogConfigurationManager::Load` rewrites the configuration
-    // without emitting any model signal. Bracket a reset so the view
-    // re-queries column count, header data, and section flags. The
-    // row store is unchanged.
+    // without emitting any model signal. Re-sync the per-column
+    // caches before the reset so mid-reset queries see consistent
+    // state. The row store is unchanged here.
     beginResetModel();
+    mLogTable.OnConfigurationReloaded();
     endResetModel();
 }
 

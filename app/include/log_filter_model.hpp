@@ -68,6 +68,18 @@ public:
     /// `MainWindow` calls this on `enumColumnsChanged(Demoted)`.
     void InvalidateEnumRanks();
 
+    /// Active sort column (source coords); `-1` if no user sort is
+    /// installed. Pairs with `SortOrder()` for the session-save
+    /// mirror.
+    [[nodiscard]] int SortColumn() const noexcept
+    {
+        return mSortColumn;
+    }
+    [[nodiscard]] Qt::SortOrder SortOrder() const noexcept
+    {
+        return mSortOrder;
+    }
+
     /// Deprecated no-op. The proxy reads slot types directly via
     /// `loglib::CompareRows`, so the sort role is ignored. Kept so
     /// existing tests / benchmarks compile.

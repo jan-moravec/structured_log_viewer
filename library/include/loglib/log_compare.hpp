@@ -57,7 +57,7 @@ private:
 ///   - `Enumeration`          -- `EnumDictRank` lookup, byte-wise
 ///                               string fallback when @p rankForEnumColumn
 ///                               is null.
-///   - `String` / `Any` / `Unknown` -- byte-wise string compare.
+///   - `String` / `Any` -- byte-wise string compare.
 ///
 /// Tail-bucket invariant (ascending): every slot unrepresentable in
 /// the column's logical type sorts strictly greater than every
