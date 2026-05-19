@@ -145,11 +145,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         // Drop the per-batch capture alongside the table's rank cache
         // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
-        // The cached health is keyed by row data that just went away;
-        // re-run the walk on the now-empty table so stale mismatch
-        // badges clear and `columnHealthChanged` lands before the
-        // model-reset settles. The refresh itself is O(columns) here
-        // because every column reports zero present slots.
+        // Drop stale mismatch badges before the reset settles.
         RefreshColumnHealth();
 
         endResetModel();
@@ -830,10 +826,7 @@ QString BuildHeaderTooltip(
     const loglib::LogConfiguration::Column &column, std::optional<loglib::LogTable::ColumnTypeHealth> health
 )
 {
-    // Build the lines in order and join with `<br/>` so a missing
-    // section (empty header, no keys) never produces a leading blank
-    // line. Tooltip is rendered as rich text by Qt by default when
-    // it contains HTML tags.
+    // Join with `<br/>` so missing sections don't produce blank lines.
     QStringList lines;
     if (!column.header.empty())
     {
@@ -921,59 +914,39 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
     {
         return;
     }
-    // Capture the pre-edit type *before* writing the new pair so the
-    // signal-decision below sees the real transition. Two separate
-    // setters would briefly expose `(newType, oldAutoDetect)` to any
-    // observer; `SetColumnTypePair` writes both atomically.
+    // Snapshot the pre-edit pair so the transition classification
+    // below is correct, and so `SetColumnTypePair` is the only
+    // observer to see the atomic write.
     const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
     const auto previousType = columnsBefore[static_cast<size_t>(columnIndex)].type;
     const bool previousAutoDetect = columnsBefore[static_cast<size_t>(columnIndex)].autoDetect;
 
     if (previousType == newType && previousAutoDetect == newAutoDetect)
     {
-        // No-op accept: avoid the encode/back-fill walks and the
-        // O(columns) health refresh entirely.
         return;
     }
 
     mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
     mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
 
-    // The "Auto-detect" pick on a column that already has data
-    // (e.g. a fully-loaded static file) parks the column at
-    // `Type::Any + autoDetect`. `OnUserChangedColumnType`'s `Any`
-    // branch only tears down stateful tags (dict refs, Time
-    // formats); without a follow-up scan the column would render
-    // as raw `any` forever even when the data trivially identifies
-    // it. Re-run detection over the existing rows now, mirroring
-    // what a fresh `LogTable(LogData, LogConfigurationManager)`
-    // load would do.
+    // Picking "Auto-detect" on already-loaded rows parks at
+    // `(Any, autoDetect)`; rescan so the column actually resolves
+    // instead of rendering as raw `any` forever.
     if (newType == loglib::LogConfiguration::Type::Any && newAutoDetect)
     {
         mLogTable.RescanColumnForAutoDetection(static_cast<size_t>(columnIndex));
     }
 
-    // Re-read the *effective* type: `OnUserChangedColumnType` may
-    // bail to `Type::String` on hard-cap overflow during enum
-    // encoding, *and* `RescanColumnForAutoDetection` may promote
-    // to `Enumeration`/`Level` or route to a numeric type. Trust the
-    // post-walk column, not `newType`.
+    // Read back the *effective* type -- the encode/rescan above may
+    // route to a different terminal type than `newType`.
     const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
     const auto effectiveType = columnsAfter[static_cast<size_t>(columnIndex)].type;
     using Type = loglib::LogConfiguration::Type;
     const bool wasEnumLike = previousType == Type::Enumeration || previousType == Type::Level;
     const bool isEnumLike = effectiveType == Type::Enumeration || effectiveType == Type::Level;
-    // Classify the transition across the enum/level boundary. Same
-    // signal vocabulary as `LogModel::AppendBatch`'s snapshot diff so
-    // the GUI's `enumColumnsChanged` handler doesn't need to know
-    // whether the change came from streaming or from the editor.
-    //   - Promoted: fresh entry into the enum family, OR sub-promotion
-    //     `Enumeration -> Level` (filter UI re-renders against the
-    //     level picker).
-    //   - Demoted: full exit from the enum family, OR sub-demotion
-    //     `Level -> Enumeration` (drops the level rank cache and
-    //     reshapes the filter picker, same rebuild gate as a real
-    //     demote).
+    // Promote: entering the enum family, or sub-promote
+    // `Enumeration -> Level`. Demote: leaving it, or sub-demote
+    // `Level -> Enumeration` (same rebuild gate as a real demote).
     const bool isPromote =
         (!wasEnumLike && isEnumLike) || (previousType == Type::Enumeration && effectiveType == Type::Level);
     const bool isDemote =
@@ -987,8 +960,7 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
         emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, columnIndex);
     }
 
-    // The encode/back-fill walks change slot tags, so the health
-    // cache is stale.
+    // Encode / back-fill changed slot tags -- health cache is stale.
     RefreshColumnHealth();
 }
 
@@ -1320,15 +1292,9 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 void LogModel::NotifyConfigurationReplaced()
 {
     // `LogConfigurationManager::Load` rewrites the configuration
-    // without emitting any model signal. Bring the per-column caches
-    // back in sync with the new column layout *before* the reset so
-    // anyone querying through `index(...)` / `headerData(...)` mid-
-    // reset sees consistent state (the column key id cache, the
-    // snapshot enum dictionaries). The row store is unchanged here;
-    // the GUI path (`DoLoadConfiguration`) calls `Reset()` first
-    // when the data is gone, and the in-place config-swap path
-    // (`TryLoadAsConfiguration`) is reached only when there is no
-    // streamed data to invalidate.
+    // without emitting any model signal. Re-sync the per-column
+    // caches before the reset so mid-reset queries see consistent
+    // state. The row store is unchanged here.
     beginResetModel();
     mLogTable.OnConfigurationReloaded();
     endResetModel();

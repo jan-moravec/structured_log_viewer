@@ -17,32 +17,23 @@ class LogData;
 struct LogConfiguration
 {
     /// Per-column rendering / detection type. Auto-detection is gated
-    /// by `Column::autoDetect`, not by `Type`: a column is an
-    /// auto-detector candidate iff `type == Any && autoDetect`. Once a
-    /// concrete type is set (by detection or the user), it is stable
-    /// unless the user changes it.
-    /// JSON wire format keeps the original lowerCamelCase keys
-    /// (`"any"`, `"string"`, ...); see
-    /// `internal/log_configuration_glaze_meta.hpp`.
-    ///   - `Any`         - default for fresh keys (combined with
-    ///                     `autoDetect = true`) and the auto-detect
-    ///                     bail bucket for unclassifiable values (no
-    ///                     values, or bool mixed with numeric). With
-    ///                     `autoDetect = false` it is the explicit
-    ///                     "treat as text, never auto-promote" opt-out.
-    ///                     Sorts/filters as string.
-    ///   - `String`      - inferred string column (too varied to enumerate).
-    ///   - `Boolean`     - JSON `true`/`false` slots; false < true.
+    /// by `Column::autoDetect`: a column is a detector candidate iff
+    /// `type == Any && autoDetect`. JSON wire format uses lowerCamelCase
+    /// keys; see `internal/log_configuration_glaze_meta.hpp`.
+    ///   - `Any`         - default for fresh keys (with `autoDetect`)
+    ///                     and the bail bucket for unclassifiable
+    ///                     values. With `autoDetect=false`, the
+    ///                     explicit "treat as text" opt-out. Sorts /
+    ///                     filters as string.
+    ///   - `String`      - inferred string column.
+    ///   - `Boolean`     - JSON `true`/`false`; false < true.
     ///   - `Integer`     - only Int64/UInt64 observed.
     ///   - `Floating`    - only Double observed.
     ///   - `Number`      - mix of integer and floating.
     ///   - `Time`        - timestamp column.
     ///   - `Enumeration` - small fixed vocabulary stored as `DictRef`.
-    ///   - `Level`       - Enumeration subtype for log-level columns.
-    ///                     Raw strings stay in the dictionary; a
-    ///                     per-column cache maps each id to a canonical
-    ///                     `LogLevel` so sort/filter/styling use
-    ///                     severity rank instead of alphabetic order.
+    ///   - `Level`       - Enumeration subtype for log-level columns;
+    ///                     sorts / filters / styles by severity rank.
     enum class Type
     {
         Any,
@@ -61,11 +52,10 @@ struct LogConfiguration
         std::string header;
         std::vector<std::string> keys;
         std::string printFormat;
-        /// New keys default to `Type::Any` with `autoDetect = true`,
-        /// which is the auto-detector candidate state. Time promotion
-        /// is destructive (only `Reset()` reverts); enum promotion is
-        /// reversible via demote-to-string on overflow (and only when
-        /// `autoDetect == true`).
+        /// Defaults to the detector-candidate state (paired with
+        /// `autoDetect=true` below). Time promotion is destructive
+        /// (only `Reset()` reverts); enum promotion can demote on
+        /// overflow, but only while `autoDetect` is on.
         Type type = Type::Any;
         std::vector<std::string> parseFormats;
         /// Hidden columns stay in the table (data, sort, and filters
@@ -78,13 +68,11 @@ struct LogConfiguration
         /// a `LogLevel` (`"Info"`, `"Warn"`, ...). Augments the
         /// built-in alias table. Ignored for non-Level columns.
         std::vector<std::pair<std::string, std::string>> levelMapping;
-        /// When `true`, the auto-detector owns this column: a fresh
-        /// `Type::Any` column will be scanned and promoted; an
-        /// already-promoted `Enumeration`/`Level` column may still
-        /// demote on overflow. When `false`, the user has pinned the
-        /// column: no automatic promotion or demotion fires. Toggle
-        /// via the UI's Column Editor; defaults to `true` so unedited
-        /// columns retain the legacy "detector in charge" behaviour.
+        /// `true`: the auto-detector owns the column (scans `Any`
+        /// candidates, demotes overflowing enums). `false`: the user
+        /// has pinned the column; no automatic promotion or demotion.
+        /// Defaults to `true` so unedited columns keep the legacy
+        /// behaviour.
         bool autoDetect = true;
     };
 
@@ -135,19 +123,18 @@ struct LogConfiguration
         std::vector<std::string> filterValues;
     };
 
-    /// Persisted sort state. `columnIndex = -1` is the inert default
-    /// ("no sort applied"); positive indices reference `columns` and
-    /// are remapped by `MoveColumn` alongside `filters[*].row`.
+    /// Persisted sort. `columnIndex == -1` means "no sort applied";
+    /// positive indices index `columns` and are remapped by
+    /// `MoveColumn` alongside `filters[*].row`.
     struct Sort
     {
         int columnIndex = -1;
         bool descending = false;
     };
 
-    /// Persisted source descriptor. `nullopt` means "no source bound"
-    /// (a configuration-shape file). For session-shape files the app
-    /// rebinds the source on load via this descriptor; rebind failure
-    /// is non-fatal -- columns and filters still apply.
+    /// Persisted source descriptor. `nullopt` means "no source bound".
+    /// On load the app may re-open this; rebind failure is non-fatal
+    /// (columns and filters still apply).
     struct Source
     {
         enum class Kind
@@ -156,18 +143,15 @@ struct LogConfiguration
             NetworkStream
         };
         Kind kind = Kind::File;
-        /// File path, network URI, or anything else the app can use
-        /// to (re)open the source. Format is opaque to `loglib`; the
-        /// app owns interpretation.
+        /// File path, network URI, etc. Opaque to `loglib`.
         std::string locator;
     };
 
-    // Required field. Drives the column layout for every consumer.
+    /// Required: drives the column layout for every consumer.
     std::vector<Column> columns;
 
-    // Session-only fields. Default-valued when absent on disk
-    // (configuration-shape file); populated when a session save
-    // includes them.
+    /// Session-only fields; default-valued when the file on disk is a
+    /// columns-only configuration.
     std::vector<LogFilter> filters;
     Sort sort;
     std::optional<Source> source;
@@ -178,18 +162,14 @@ struct LogConfiguration
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
-/// Selects which `LogConfiguration` fields land on disk. Both kinds
-/// share the same JSON schema, so a `ColumnsOnly` file is just a
-/// `Full` file with the session-only members at their default values.
+/// Selects which fields `Save` writes. Both shapes share one JSON
+/// schema -- a `ColumnsOnly` file is a `Full` file with the
+/// session-only members defaulted.
 enum class SaveScope
 {
-    /// "Save Configuration\u2026": writes only `columns`. Filters, sort
-    /// and source are omitted so the file is portable across data
-    /// sources.
+    /// Writes only `columns`; portable across data sources.
     ColumnsOnly,
-    /// "Save Session\u2026": writes the full struct including filters,
-    /// sort and (when present) source. Loaded session files
-    /// re-establish the user's view state.
+    /// Writes the full struct (columns + filters + sort + source).
     Full
 };
 
@@ -201,11 +181,9 @@ public:
 
     /// Throws `std::runtime_error` on open failure.
     void Load(const std::filesystem::path &path);
-    /// Writes the full struct (equivalent to `Save(path, SaveScope::Full)`).
+    /// Writes the full struct (equivalent to `SaveScope::Full`).
     void Save(const std::filesystem::path &path) const;
-    /// Writes a subset of the struct selected by @p scope. Used by
-    /// the UI's two save actions ("Save Configuration\u2026" / "Save
-    /// Session\u2026").
+    /// Writes the subset selected by @p scope.
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
@@ -227,64 +205,52 @@ public:
     /// back-fills row data. No-op out of range.
     void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
 
-    /// Toggle `Column::autoDetect` for @p columnIndex. No-op out of
-    /// range. `true` puts the auto-detector in charge of the column
-    /// (subject to the rules in the `Type` doc-comment); `false`
-    /// pins the column at its current `type`.
+    /// Toggle `Column::autoDetect`. `true` hands the column to the
+    /// auto-detector; `false` pins it at the current `type`. No-op
+    /// out of range.
     void SetColumnAutoDetect(size_t columnIndex, bool autoDetect);
 
-    /// Write `Column::type` and `Column::autoDetect` as a single
-    /// pair, avoiding the intermediate state another reader could
-    /// see between two separate setter calls (e.g. `Type::Enumeration`
-    /// paired with the stale `autoDetect=true` from a `Type::Any`
-    /// column). The editor path uses this so the typed mutators land
-    /// together. No-op out of range.
+    /// Write `type` and `autoDetect` atomically. Editor path uses
+    /// this so observers never see an intermediate `(newType,
+    /// staleAutoDetect)` pair. No-op out of range.
     void SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect);
 
-    /// Toggle `Column::visible` for @p columnIndex. The column stays
-    /// in the table; only the header section is hidden. No-op out
-    /// of range.
+    /// Toggle `Column::visible`. The column stays in the table; only
+    /// the header section is hidden. No-op out of range.
     void SetColumnVisible(size_t columnIndex, bool visible);
 
-    /// Replace `Column::header` for @p columnIndex. The header is a
-    /// display-only string -- `Column::keys` remains the stable
-    /// identifier the parser keys off -- so renaming is safe at any
-    /// point in a session. No-op out of range.
+    /// Replace `Column::header`. Display-only -- `keys` remains the
+    /// stable identifier -- so renaming is safe at any point. No-op
+    /// out of range.
     void SetColumnHeader(size_t columnIndex, std::string header);
 
-    /// Replace `Column::printFormat` for @p columnIndex. Used by the
-    /// type-edit path to seed sensible defaults when the user pins
-    /// a column to `Type::Time` (an auto-detected Time column ships
-    /// with the format, a user-pinned one would otherwise be empty
-    /// and format every cell as the raw bytes). No-op out of range.
+    /// Replace `Column::printFormat`. Used by the editor when pinning
+    /// a column to `Type::Time` so the cell formatting actually
+    /// shows a date instead of the raw bytes. No-op out of range.
     void SetColumnPrintFormat(size_t columnIndex, std::string printFormat);
 
-    /// Replace `Column::parseFormats` for @p columnIndex. See
-    /// `SetColumnPrintFormat` for the same Time-pinning motivation;
-    /// without parse formats the backfill walks the rows but
-    /// matches nothing. No-op out of range.
+    /// Replace `Column::parseFormats`. Companion to
+    /// `SetColumnPrintFormat`; without parse formats the Time
+    /// back-fill walks the rows but matches nothing. No-op out of range.
     void SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats);
 
-    /// Replace `LogConfiguration::filters` wholesale. The app calls
-    /// this from its `mFilters` -> wire-format mirror so `Save` and
-    /// `MoveColumn`'s row remap see the live runtime set.
+    /// Replace `LogConfiguration::filters` wholesale. The app
+    /// mirrors its runtime filter map through this before `Save` and
+    /// before `MoveColumn`'s row remap.
     void SetFilters(std::vector<LogConfiguration::LogFilter> filters);
 
-    /// Replace `LogConfiguration::sort`. App calls this from its
-    /// session-state mirror before a `Full` save so the persisted
-    /// sort matches the user's current view.
+    /// Replace `LogConfiguration::sort`. Called by the session-state
+    /// mirror before a `Full` save.
     void SetSort(LogConfiguration::Sort sort);
 
-    /// Replace `LogConfiguration::source`. App calls this from its
-    /// session-state mirror; `nullopt` clears the binding.
+    /// Replace `LogConfiguration::source`. `nullopt` clears the binding.
     void SetSource(std::optional<LogConfiguration::Source> source);
 
-    /// Apply the `(srcIndex -> destIndex)` single-column move to a
-    /// stored column index. Out-of-range inputs pass through
-    /// unchanged (this includes negative sentinels: `-1` for
-    /// `Sort::columnIndex` "no sort", or any other value below 0
-    /// that callers use to mean "not bound"). Exposed so the app
-    /// can remap its runtime filter map with the same logic.
+    /// Apply `(srcIndex -> destIndex)` to a stored column index.
+    /// Out-of-range inputs (including negative sentinels like
+    /// `Sort::columnIndex == -1`) pass through unchanged. Exposed
+    /// so the app can remap its runtime filter map with the same
+    /// logic.
     [[nodiscard]] static int RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex);
 
     const LogConfiguration &Configuration() const;

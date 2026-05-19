@@ -10,13 +10,11 @@ class QLabel;
 class QPushButton;
 class QTableWidget;
 
-/// Modeless dialog that surfaces per-column type-health diagnostics
-/// computed by `LogTable::ComputeColumnTypeHealth`. Each row maps to
-/// one source-table column and reports total / present / matching /
-/// mismatched slot counts plus the configured type. The dialog is a
-/// passive viewer; column-type edits happen through the Column
-/// Editor (separate dialog) and are reflected here on the next
-/// `LogModel::columnHealthChanged` emission.
+/// Modeless dialog showing per-column type-health diagnostics from
+/// `LogTable::ComputeColumnTypeHealth`. One row per column, with
+/// total / present / matching / mismatched slot counts and the
+/// configured type. Read-only; edits go through the column editor
+/// and refresh here on the next `LogModel::columnHealthChanged`.
 class ConfigurationDiagnosticsDialog : public QDialog
 {
     Q_OBJECT
@@ -24,22 +22,17 @@ class ConfigurationDiagnosticsDialog : public QDialog
 public:
     explicit ConfigurationDiagnosticsDialog(LogModel *model, QWidget *parent = nullptr);
 
-    /// Repopulate the table from the model's current configuration +
-    /// `LogModel::ColumnHealth` snapshot. Auto-invoked when the model
-    /// emits `columnHealthChanged`.
+    /// Repopulate from `LogModel::ColumnHealth`. Auto-invoked on
+    /// `columnHealthChanged`.
     void Refresh();
 
-    /// Number of columns whose configured type does not match the
-    /// data, aggregated from `LogModel::ColumnHealth`. Public so
-    /// `MainWindow` and tests can derive the status-bar summary text
-    /// without duplicating the aggregation.
+    /// Count of columns whose configured type does not match the
+    /// data. Shared between the status-bar summary and the dialog.
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
 signals:
-    /// User double-clicked a row in the diagnostics table; the
-    /// receiving `MainWindow` opens the per-column editor for
-    /// @p columnIndex. Decoupled via a signal so the dialog can
-    /// stay layer-agnostic about how the edit lands.
+    /// Emitted when the user double-clicks a row. `MainWindow` opens
+    /// the column editor in response.
     void editColumnRequested(int columnIndex);
 
 private:

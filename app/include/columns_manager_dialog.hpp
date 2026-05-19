@@ -9,63 +9,46 @@ class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
 
-/// Modeless dialog that lets the user manage every column at once:
-/// reorder rows (Move up / Move down), toggle visibility in-place,
-/// or drill into the per-column `ColumnEditor` for the full type /
-/// autoDetect / header edit. Edits land immediately through the
-/// model -- the manager has a single **Close** button rather than an
-/// OK/Cancel split, matching the in-place feel of header drag-reorder
-/// and the View menu's per-column toggles.
+/// Modeless dialog that lists every column with Move up / Move down,
+/// an in-place Visible checkbox, and an Edit... button that opens the
+/// per-column `ColumnEditor`. All edits land immediately through the
+/// model, so the dialog has a single Close button instead of OK/Cancel.
 ///
-/// Wired to `LogModel::headerDataChanged`, `LogModel::modelReset`,
-/// and `LogModel::columnHealthChanged` so the table re-renders when
-/// anything outside the manager (column reorder via header drag,
-/// streaming-driven type promotion, configuration load) shifts the
-/// underlying columns.
+/// Auto-refreshes on `LogModel::headerDataChanged`, `modelReset`, and
+/// `columnHealthChanged` so out-of-band column changes (header drag,
+/// streaming type promotion, configuration load) stay reflected.
 class ColumnsManagerDialog : public QDialog
 {
     Q_OBJECT
 
 public:
-    /// Construct a manager bound to @p model. The parent should be
-    /// the owning `MainWindow` so the dialog can delegate the
-    /// per-column drill-down through `MainWindow::EditColumn` (which
-    /// repaints visibility + status bar after the editor commits).
-    /// `mainWindow` can be `nullptr` in tests; in that case the
-    /// Edit... button writes through `ColumnEditor` directly.
+    /// Bind to @p model. @p mainWindow lets the Edit... button route
+    /// through `MainWindow::EditColumn` (which also repaints the
+    /// header and status bar). `nullptr` is allowed for tests; the
+    /// dialog then drives `ColumnEditor` directly.
     ColumnsManagerDialog(LogModel *model, MainWindow *mainWindow, QWidget *parent = nullptr);
 
-    /// Repopulate every row from the model. Auto-invoked when the
-    /// model signals shape / header changes; tests call it directly
-    /// to assert the contents.
+    /// Repopulate every row from the model.
     void Refresh();
 
-    /// Refresh only rows in the inclusive `[firstColumn, lastColumn]`
-    /// range. Used as the `LogModel::headerDataChanged` slot so a
-    /// per-column edit doesn't rebuild every row. Falls back to a
-    /// full `Refresh()` when the row count disagrees with the
-    /// model (a shape change, not a content change).
+    /// Refresh rows in the inclusive `[firstColumn, lastColumn]`
+    /// range. Falls back to a full `Refresh()` when the row count
+    /// no longer matches the model (i.e. a shape change).
     void RefreshRange(int firstColumn, int lastColumn);
 
-    /// Move the column at @p row up one slot via `LogModel::MoveColumn`.
-    /// Public so the test seam can drive the path without resolving
-    /// `QPushButton` children. No-op when the row is already the
-    /// first one.
+    /// Move the selected column up one slot. No-op at the top edge.
     void MoveSelectedUp();
 
-    /// Symmetric to `MoveSelectedUp`. No-op when the row is already
-    /// the last one.
+    /// Move the selected column down one slot. No-op at the bottom edge.
     void MoveSelectedDown();
 
-    /// Open the `ColumnEditor` for the currently selected row.
-    /// Tests can drive this without poking at the button. No-op when
-    /// nothing is selected.
+    /// Open the `ColumnEditor` for the selected row. No-op if no
+    /// selection.
     void EditSelected();
 
 private slots:
-    /// Quick visibility toggle in the table itself. The checkbox
-    /// state is the only mutable widget on a row; everything else is
-    /// read-only and routes through `EditSelected`.
+    /// Slot for the in-row visibility checkbox; everything else on
+    /// the row is read-only.
     void OnItemChanged(QTableWidgetItem *item);
 
 private:
@@ -80,9 +63,7 @@ private:
     QPushButton *mEditButton = nullptr;
     QPushButton *mCloseButton = nullptr;
 
-    /// Re-entrancy guard for `OnItemChanged`. `Refresh` and
-    /// `RebuildRow` programmatically set check states; without the
-    /// guard, every refresh would echo back through the slot and
-    /// re-invoke `SetColumnVisible` on every cell.
+    /// Suppresses `OnItemChanged` while `Refresh` / `RebuildRow` are
+    /// programmatically setting check states.
     bool mUpdatingProgrammatically = false;
 };

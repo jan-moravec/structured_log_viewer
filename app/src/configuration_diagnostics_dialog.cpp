@@ -88,13 +88,8 @@ QTableWidgetItem *MakeReadOnlyItem(const QString &text)
     return item;
 }
 
-/// `QTableWidgetItem` subclass that orders rows by a numeric value
-/// stashed in `Qt::UserRole` rather than by the display string.
-/// The default `operator<` compares `Qt::DisplayRole` -- with a
-/// `QString` display that means "10" sorts before "2", which is
-/// wrong for every counter in this dialog. We keep the display
-/// string formatted (so `Mismatch %` can render "12.5") and lean
-/// on the user-role number for ordering.
+/// Item that sorts numerically (using `Qt::UserRole`) so "10" beats
+/// "2" instead of losing on string comparison.
 class NumericTableWidgetItem : public QTableWidgetItem
 {
 public:
@@ -177,31 +172,23 @@ ConfigurationDiagnosticsDialog::ConfigurationDiagnosticsDialog(LogModel *model, 
     layout->addLayout(buttonRow);
 
     connect(mRefreshButton, &QPushButton::clicked, this, [this]() {
-        // `RefreshColumnHealth` recomputes the cache and emits
-        // `columnHealthChanged` on any change, which the connection
-        // below already wires to `Refresh()`. Avoid double-running the
-        // table rebuild on the common "no change" path by relying on
-        // that signal exclusively when the model is connected.
+        // The cache recompute below emits `columnHealthChanged`,
+        // which is already wired to `Refresh()` -- avoids a double
+        // rebuild on the common "no change" path.
         if (mModel)
         {
             mModel->RefreshColumnHealth();
         }
         else
         {
-            // Detached test seam or post-destruction guard -- nothing
-            // to recompute, but still rebuild the visible rows from
-            // whatever stale snapshot is in hand so the click feels
-            // responsive.
             Refresh();
         }
     });
     connect(mCloseButton, &QPushButton::clicked, this, &QDialog::close);
 
-    // Double-clicking any cell in a row drills into the per-column
-    // editor. We pull the source-table column index off the row's
-    // first item's `Qt::UserRole`, which `Refresh` stamps with the
-    // unsorted index so a user-sorted dialog still resolves to the
-    // right model column.
+    // Double-click drills into the column editor. The source column
+    // index lives in the row's first item's `Qt::UserRole` so it
+    // survives user-driven sorting.
     connect(mTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int /*col*/) {
         if (auto *item = mTable->item(row, COL_HEADER); item != nullptr)
         {
@@ -217,11 +204,9 @@ ConfigurationDiagnosticsDialog::ConfigurationDiagnosticsDialog(LogModel *model, 
 
     if (mModel)
     {
-        // Skip the row repopulate when the dialog is hidden: the user
-        // can't see it anyway, and a streaming session with frequent
-        // promotes/demotes would otherwise spend O(columns) per batch
-        // rebuilding a hidden widget. The dialog refreshes once when
-        // it's reopened via `MainWindow::ShowConfigurationDiagnostics`.
+        // Skip rebuilds while hidden -- frequent streaming
+        // promote/demote events would otherwise churn O(columns)
+        // per batch on a widget the user can't see.
         connect(mModel, &LogModel::columnHealthChanged, this, [this]() {
             if (isVisible())
             {
@@ -270,9 +255,8 @@ void ConfigurationDiagnosticsDialog::Refresh()
         {
             headerItem->setIcon(QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
         }
-        // Stash the unsorted source-table column index on the row's
-        // first item so the double-click drill-down still resolves to
-        // the right model column even after the user sorts the table.
+        // Stash the source-table index so the double-click drill-down
+        // works after user sorting.
         headerItem->setData(Qt::UserRole, i);
         mTable->setItem(i, COL_HEADER, headerItem);
         mTable->setItem(i, COL_TYPE, MakeReadOnlyItem(FormatType(column.type)));

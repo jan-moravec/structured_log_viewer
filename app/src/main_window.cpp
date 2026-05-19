@@ -518,10 +518,9 @@ MainWindow::MainWindow(QWidget *parent)
         UpdateStreamToolbarVisibility();
         UpdateUi();
         UpdateStreamingStatus();
-        // Snapshot per-column type-health now that the table has
-        // settled. Triggers the warning glyph in the header and the
-        // status-bar mismatch summary via the `columnHealthChanged`
-        // signal. Idle/multi-file appends both reach here.
+        // Refresh the column-health snapshot now that parsing has
+        // settled. Drives the header warning glyph and the status-bar
+        // mismatch summary via `columnHealthChanged`.
         mModel->RefreshColumnHealth();
         // Only Success produces a post-parse error summary.
         if (result == StreamingResult::Success)
@@ -540,12 +539,9 @@ MainWindow::MainWindow(QWidget *parent)
             mPendingOpenErrors.clear();
         }
         mStreamingFileName.clear();
-        // `mCurrentSource` survives a successful or user-cancelled
-        // finish: the table still holds the parsed rows, so the
-        // descriptor is the right answer to "where did this data
-        // come from?" and stays available for a `Save Session...`
-        // round-trip. Only a `Failed` result tears it down, because
-        // there is no usable session state to describe.
+        // Keep `mCurrentSource` on Success / Cancelled (rows are
+        // still present, descriptor still describes them); drop it
+        // on Failed where there is nothing left to describe.
         if (result == StreamingResult::Failed)
         {
             mCurrentSource.reset();
@@ -854,12 +850,10 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // `modelReset -> ApplyColumnVisibility` connect.
         mModel->NotifyConfigurationReplaced();
 
-        // Session-shape files re-apply the persisted sort; columns-
-        // only files default to `columnIndex == -1` and skip. The
-        // restore must run *before* `RebuildFiltersFromConfiguration`
-        // because that helper invokes `MirrorSessionStateToConfiguration`,
-        // which would otherwise snapshot the cleared proxy sort over
-        // the loaded `sort` field.
+        // Restore the persisted sort *before* RebuildFiltersFromConfiguration,
+        // because that helper re-mirrors session state and would
+        // otherwise overwrite the loaded sort with the cleared
+        // proxy sort. Columns-only files default to `-1` (no sort).
         const auto loadedSort = mModel->Configuration().sort;
         if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
         {
@@ -868,11 +862,8 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
             );
         }
 
-        // Adopt the loaded `source` descriptor as the runtime mirror
-        // so the next `MirrorSessionStateToConfiguration` (invoked
-        // by `RebuildFiltersFromConfiguration` below) preserves it
-        // for a `Save Session...` round-trip. Without this the
-        // mirror would clobber the loaded field with `nullopt`.
+        // Mirror the loaded source descriptor so the next session
+        // save round-trips it. We deliberately do not auto-bind.
         mCurrentSource = mModel->Configuration().source;
 
         RebuildFiltersFromConfiguration();
@@ -922,11 +913,8 @@ void MainWindow::StreamNextPendingFile()
         const bool isFirstFileInSession = !IsSessionActive();
 
         mStreamingFileName = QFileInfo(file).fileName();
-        // Static multi-file sessions record only the first file as
-        // the session source. Subsequent appends keep the original
-        // descriptor (the user opened a primary file and added
-        // others); persisting the whole list would over-specify the
-        // session and complicate the rebind UX.
+        // Multi-file sessions record only the first file as the
+        // source descriptor; subsequent appends keep the original.
         if (isFirstFileInSession)
         {
             mCurrentSource = loglib::LogConfiguration::Source{
@@ -1141,10 +1129,9 @@ void MainWindow::StopStream()
     {
         return;
     }
-    // Tear down but keep visible rows so the user can keep working on them.
-    // `mCurrentSource` deliberately survives because the kept rows are
-    // still those of that source -- a follow-up `Save Session...` would
-    // be wrong to mark them as sourceless.
+    // Tear down but keep visible rows so the user can keep working
+    // on them. `mCurrentSource` survives -- those rows still came
+    // from that source.
     mModel->StopAndKeepRows();
     mStreamingFileName.clear();
 }
@@ -1499,7 +1486,7 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
 
 void MainWindow::MirrorSessionStateToConfiguration()
 {
-    // Snapshot the runtime map into the wire-format vector so
+    // Snapshot the runtime filter map into the wire-format vector so
     // `Save` and the lib-side `MoveColumn` row-remap see the live
     // set. UUIDs are GUI-internal and regenerated on load.
     //
@@ -1552,16 +1539,13 @@ void MainWindow::MirrorSessionStateToConfiguration()
     });
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
 
-    // Sort: read the live state from the proxy (the header
-    // indicator and the proxy stay in lock-step via `sort()`), so
-    // the persisted value is exactly what the user sees.
+    // Sort: read live from the proxy so the persisted value matches
+    // what the user sees in the header indicator.
     loglib::LogConfiguration::Sort sort;
     sort.columnIndex = mSortFilterProxyModel->SortColumn();
     sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
     mModel->ConfigurationManager().SetSort(sort);
 
-    // Source descriptor follows whichever opener last bound the
-    // model. `nullopt` when idle.
     mModel->ConfigurationManager().SetSource(mCurrentSource);
 }
 
@@ -1602,14 +1586,11 @@ void MainWindow::SaveSession()
 
 void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scope)
 {
-    // The eager mirror at every mutation point already keeps
-    // session-state fields on `mConfiguration` current; the call
-    // here documents intent and survives a future mutation point
-    // that forgets to mirror. `Save` propagates `std::exception` on
-    // I/O failure; both production callers wrap this in a `try /
-    // catch`. The scope decides which subset (columns-only vs full)
-    // lands on disk; the mirror itself is unconditional so the
-    // configuration object always reflects the live state.
+    // Mirror unconditionally even though every mutation point already
+    // keeps the configuration current -- documents intent and
+    // protects against a future mutator that forgets to mirror.
+    // `scope` selects which subset lands on disk; `Save` throws on
+    // I/O failure (callers catch).
     MirrorSessionStateToConfiguration();
     mModel->ConfigurationManager().Save(path.toStdString(), scope);
 }
@@ -1631,9 +1612,7 @@ void MainWindow::ShowConfigurationDiagnostics()
     {
         mDiagnosticsDialog = new ConfigurationDiagnosticsDialog(mModel, this);
         mDiagnosticsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
-        // Double-click on a row drills into the per-column editor; we
-        // wire it up once and let the dialog stay alive across opens
-        // so the connection survives.
+        // Wire the row drill-down once; the dialog survives close.
         connect(
             mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
         );
@@ -1658,11 +1637,9 @@ void MainWindow::EditColumn(int columnIndex)
     ColumnEditor editor(mModel, columnIndex, this);
     if (editor.exec() == QDialog::Accepted)
     {
-        // The editor already flipped through the typed mutators and
-        // refreshed health; pull display side-effects that fall
-        // outside the model's normal data-changed surface. Column
-        // visibility may have flipped, so reapply it to the header
-        // and re-aggregate the diagnostics status bar.
+        // Re-push visibility to the header and refresh the
+        // diagnostics summary; the editor already handled the
+        // model-side state.
         ApplyColumnVisibility();
         UpdateDiagnosticsStatus();
         UpdateUi();
@@ -1723,14 +1700,11 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         mModel->NotifyConfigurationReplaced();
         UpdateUi();
 
-        // Session-shape files carry a sort indicator; restore it
-        // *before* `RebuildFiltersFromConfiguration`, because that
-        // helper -- and the `ClearAllFilters` it invokes -- both run
-        // `MirrorSessionStateToConfiguration` and would otherwise
-        // snapshot the freshly-cleared proxy sort back over the
-        // loaded `sort` field. Configuration-shape files default to
-        // `columnIndex == -1`, which is the no-op "no sort"
-        // sentinel.
+        // Restore the persisted sort *before*
+        // `RebuildFiltersFromConfiguration` -- that helper re-mirrors
+        // session state and would otherwise overwrite the loaded
+        // sort with the cleared proxy sort. Columns-only files
+        // default to the `-1` "no sort" sentinel.
         const auto loadedSort = mModel->Configuration().sort;
         if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
         {
@@ -1739,13 +1713,9 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
             );
         }
 
-        // Adopt the loaded `source` descriptor as the runtime mirror
-        // so the upcoming `MirrorSessionStateToConfiguration` (via
-        // `RebuildFiltersFromConfiguration`) preserves it for a
-        // `Save Session...` round-trip. The descriptor is loaded
-        // metadata only -- we deliberately do not auto-bind, since
-        // the session may have been authored on a different machine
-        // and surprise-opens would be hostile.
+        // Mirror the loaded source descriptor so the next session
+        // save round-trips it. Metadata only -- we do not auto-bind
+        // the file (a foreign session would be hostile).
         mCurrentSource = mModel->Configuration().source;
 
         RebuildFiltersFromConfiguration();
@@ -2991,11 +2961,9 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         });
     }
 
-    // Edit Column... opens the per-column editor for header / type /
-    // visibility. Available regardless of visibility because the
-    // editor is the place to bring a hidden column back; the
-    // re-resolution by stable keys at trigger time mirrors the Hide
-    // path above.
+    // "Edit column..." is available even on hidden columns so the
+    // editor doubles as the way to bring one back. Re-resolution by
+    // stable keys mirrors the Hide path above.
     const QAction *editColumnAction = menu->addAction(tr("Edit column \"%1\"…").arg(thisLabel));
     connect(editColumnAction, &QAction::triggered, this, [this, keys = thisKeys]() {
         const int idx = FindColumnIndexByKeys(keys);
@@ -3149,10 +3117,7 @@ void MainWindow::RebuildViewMenu()
     }
     viewMenu->clear();
 
-    // Manage Columns... is the always-reachable entry into the bulk
-    // editor (reorder, visibility, drill-down per column). It is the
-    // top entry so it stays a stable target even before any column
-    // has been streamed.
+    // Top entry so it stays reachable even when no columns exist.
     QAction *manageColumnsAction = viewMenu->addAction(tr("Manage columns\u2026"));
     manageColumnsAction->setObjectName(QStringLiteral("actionManageColumns"));
     connect(manageColumnsAction, &QAction::triggered, this, &MainWindow::ShowColumnsManager);

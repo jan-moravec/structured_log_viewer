@@ -95,31 +95,25 @@ struct PrettyOpts : glz::opts
 };
 constexpr PrettyOpts PRETTIFY_OPTS{{.prettify = true}};
 
-/// Wire-format shim for `SaveScope::ColumnsOnly`: a struct that holds
-/// only the `columns` array, so glaze does not emit the default
-/// `filters` / `sort` blocks that a transient `LogConfiguration`
-/// would (those fields are not optional in `LogConfiguration` and a
-/// fresh value still serialises with `"filters": []` and a default
-/// `sort`). Loading a file produced from this struct still parses
-/// cleanly through `glz::read_json<LogConfiguration>` because the
-/// missing members default to their inert values.
+/// Wire-format shim for `SaveScope::ColumnsOnly`: emits only the
+/// `columns` array, skipping the default `filters` / `sort` blocks a
+/// transient `LogConfiguration` would still serialise. Files written
+/// from this shim still parse cleanly through
+/// `glz::read_json<LogConfiguration>` -- missing members default.
 struct ColumnsOnlyDocument
 {
     // Reference (not pointer) so the type is never default-
-    // constructible and the glaze accessor cannot deref a null. The
-    // only construction site (`Save`) holds the source vector by
-    // reference for the duration of the `glz::write` call, which is
-    // strictly synchronous and confined to one stack frame -- the
-    // usual lifetime hazards of a reference member do not apply.
+    // constructible and the glaze accessor can't deref null. `Save`
+    // is the only construction site and holds the source vector for
+    // the synchronous `glz::write` call.
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::vector<loglib::LogConfiguration::Column> &columns;
 };
 
 } // namespace
 
-// `value` is a glaze-mandated slot name; the same suppression that
-// covers the canonical meta block in `log_configuration_glaze_meta.hpp`
-// applies here.
+// `value` is glaze's required slot name (same exemption as the
+// canonical meta block in `log_configuration_glaze_meta.hpp`).
 // NOLINTBEGIN(readability-identifier-naming)
 template <> struct glz::meta<ColumnsOnlyDocument>
 {
@@ -165,14 +159,9 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
     std::string json;
     if (scope == SaveScope::ColumnsOnly)
     {
-        // `ColumnsOnlyDocument` is a glaze meta shim that emits ONLY
-        // the `columns` array. Serialising a transient `LogConfiguration`
-        // would still write `"filters": []` and a default `sort` block
-        // because those fields are not `optional`; a user inspecting a
-        // "configuration" file should not see session-only debris.
-        // The resulting JSON loads cleanly through
-        // `glz::read_json<LogConfiguration>` because missing members
-        // default to their inert values.
+        // Use the glaze shim so the written JSON has only `columns`,
+        // not the default `filters` / `sort` blocks the full struct
+        // would emit.
         const ColumnsOnlyDocument document{.columns = mConfiguration.columns};
         const auto error = glz::write<PRETTIFY_OPTS>(document, json);
         if (error)
@@ -300,11 +289,10 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // Run every persisted `LogFilter::row` through the same
-    // permutation so each filter follows its column. The persisted
-    // sort column rides the same remap so callers that read
-    // `Configuration().sort` directly (without first re-mirroring
-    // from a runtime proxy) still see the right column.
+    // Run every persisted `LogFilter::row` and `sort.columnIndex`
+    // through the same permutation so they follow their column even
+    // when callers read `Configuration()` directly without first
+    // re-mirroring from a runtime proxy.
     const int src = static_cast<int>(srcIndex);
     const int dest = static_cast<int>(destIndex);
     for (LogConfiguration::LogFilter &filter : mConfiguration.filters)

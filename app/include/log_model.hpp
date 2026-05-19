@@ -186,46 +186,28 @@ public:
     /// untouched.
     void NotifyConfigurationReplaced();
 
-    /// Snapshot of the most recently computed
-    /// `LogTable::ColumnTypeHealth` for column @p section. Returns
-    /// `nullopt` when @p section is out of range or `RefreshColumnHealth`
-    /// has never produced a snapshot for it (no streaming session yet).
-    /// The snapshot is the source of truth for the per-column header
-    /// tooltip + warning icon and the status-bar diagnostics summary.
+    /// Most recent `ColumnTypeHealth` snapshot for @p section, or
+    /// `nullopt` if out of range or no snapshot exists yet. Drives
+    /// the header tooltip / warning icon and the status-bar summary.
     [[nodiscard]] std::optional<loglib::LogTable::ColumnTypeHealth> ColumnHealth(int section) const;
 
-    /// Walk every column and recompute its `ColumnTypeHealth` snapshot.
-    /// Emits `headerDataChanged` for the full range when at least one
-    /// section's snapshot moves, and `columnHealthChanged` so aggregate
-    /// UI (status-bar mismatch button, diagnostics dialog) can refresh.
-    /// Designed to run end-of-stream and after `Load`, not per-batch:
-    /// each call walks the whole table.
+    /// Recompute every column's `ColumnTypeHealth` snapshot. Emits
+    /// `headerDataChanged` and `columnHealthChanged` when something
+    /// moved. Walks the whole table; meant for end-of-stream and
+    /// post-`Load`, not per-batch.
     void RefreshColumnHealth();
 
-    /// Notify Qt views that the column at @p columnIndex was edited
-    /// out-of-band (header, type, or visibility). Emits a scoped
-    /// `headerDataChanged` and a column-wide `dataChanged`; signals
-    /// stay inside the model so external callers do not have to
-    /// reach across the abstraction. No-op for an out-of-range
-    /// index.
+    /// Emit `headerDataChanged` + a column-wide `dataChanged` after
+    /// an out-of-band column edit (header / type / visibility).
+    /// No-op for an out-of-range index.
     void NotifyColumnEdited(int columnIndex);
 
-    /// Apply a user-driven `(type, autoDetect)` edit at @p columnIndex
-    /// as a single transaction:
-    ///   1. Write the new pair atomically through the configuration
-    ///      manager (no intermediate `(type, autoDetect)` mismatch is
-    ///      visible to other code).
-    ///   2. Reconcile already-loaded rows with the new type
-    ///      (back-fill Time/Enumeration/Level, drop dictionary state
-    ///      when leaving an enum-shaped type, clear leftover Time
-    ///      format strings when leaving `Type::Time`).
-    ///   3. Emit `enumColumnsChanged` when the edit crosses the
-    ///      enum/level boundary so `LogFilterModel::InvalidateEnumRanks`
-    ///      and `MainWindow::UpdateFilters` learn about the change.
-    ///      The auto-detect streaming path emits the same signal from
-    ///      `AppendBatch`; this method is the editor-path equivalent.
-    ///   4. Refresh `ColumnHealth` and emit `columnHealthChanged`.
-    /// Out-of-range @p columnIndex is a silent no-op.
+    /// Apply a `(type, autoDetect)` edit at @p columnIndex as one
+    /// transaction: write the pair through the manager, reconcile
+    /// loaded rows (back-fill, drop dictionaries / time formats as
+    /// needed), emit `enumColumnsChanged` when the edit crosses the
+    /// enum/level boundary, and refresh `ColumnHealth`. Out-of-range
+    /// index is a silent no-op.
     void ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect);
 
     /// Canonical-level -> raw-dictionary-bytes mapping captured just
@@ -265,10 +247,9 @@ signals:
     /// may need attention". See `EnumColumnsChangeReason`.
     void enumColumnsChanged(EnumColumnsChangeReason reason, int columnIndex);
 
-    /// At least one column's `ColumnTypeHealth` snapshot changed since
-    /// the previous `RefreshColumnHealth`. Receivers re-aggregate the
-    /// status-bar mismatch summary; an open Configuration Diagnostics
-    /// dialog refreshes its rows.
+    /// Emitted from `RefreshColumnHealth` when at least one column's
+    /// snapshot changed. Drives the status-bar mismatch summary and
+    /// the Configuration Diagnostics dialog.
     void columnHealthChanged();
 
 private:
@@ -311,9 +292,8 @@ private:
     std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>>
         mLastBatchLevelDemoteMapping;
 
-    /// Per-column `ColumnTypeHealth` cache; `RefreshColumnHealth`
-    /// is the only writer. Empty until the first refresh. Indexed
-    /// by source-table column, parallel to `Configuration().columns`.
+    /// Per-column health cache, parallel to `Configuration().columns`.
+    /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
 };
 

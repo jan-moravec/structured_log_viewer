@@ -13,40 +13,26 @@ class QDialogButtonBox;
 class QLabel;
 class QLineEdit;
 
-/// Modal dialog that edits every user-controllable field of a
-/// `loglib::LogConfiguration::Column`: the display header, the
-/// configured `Type` (collapsed onto a single combo that folds the
-/// `Type::Any + autoDetect` pair into an "Auto-detect" entry at the
-/// top), and the `visible` flag. `keys` are surfaced read-only -- the
-/// parser owns the key->column binding -- but the user can still
-/// rename the header that drives the GUI label.
-///
-/// On `accept()`, the dialog writes the changes through
-/// `LogConfigurationManager`'s typed mutators, then calls
-/// `LogModel::RefreshColumnHealth()` so the diagnostics cache picks
-/// up the new type immediately. Header / decoration / visibility
-/// changes ride the existing `dataChanged` / `headerDataChanged`
-/// signals.
+/// Modal dialog for editing one column's `header`, `type`,
+/// `autoDetect`, and `visible` fields. `keys` are shown read-only
+/// (owned by the parser). The type combo folds `Type::Any +
+/// autoDetect` into a single "Auto-detect" entry at the top. On
+/// accept, writes through `LogConfigurationManager` and refreshes
+/// the diagnostics health cache.
 class ColumnEditor : public QDialog
 {
     Q_OBJECT
 
 public:
-    /// Construct an editor bound to @p columnIndex of @p model. If
-    /// @p columnIndex is out of range the dialog rejects on first
-    /// show; production callers always pass a valid index from the
-    /// header context menu or the diagnostics dialog row.
+    /// Bind the editor to @p columnIndex of @p model. Rejects on
+    /// first show if the index is out of range.
     ColumnEditor(LogModel *model, int columnIndex, QWidget *parent = nullptr);
 
-    /// Apply the form's current state to the model and emit
-    /// `accept()`. Public so the test seam can drive the apply path
-    /// without having to fish out the QDialogButtonBox.
+    /// Write the form back to the model and accept. Public so tests
+    /// can drive the apply path without poking at the button box.
     void Apply();
 
-    /// Inspector for the column index this editor is currently
-    /// bound to. -1 once a future `Rebind(...)` call swaps the
-    /// instance to a different column (not yet wired -- reserved
-    /// for the `Columns Manager` dialog).
+    /// Column this editor is bound to, or -1 if unbound.
     [[nodiscard]] int ColumnIndex() const noexcept
     {
         return mColumnIndex;
@@ -66,21 +52,11 @@ private:
     QLabel *mHealthLabel = nullptr;
     QDialogButtonBox *mButtonBox = nullptr;
 
-    /// Snapshot of the type combo's selection right after `Populate()`
-    /// seeded it. `WriteBack()` only commits a type / autoDetect edit
-    /// when the current selection differs from this baseline.
-    ///
-    /// The streaming auto-detector promotes columns via
-    /// `SetColumnType` only -- `Column::autoDetect` stays `true`. So
-    /// an auto-promoted column lands at e.g. `(Enumeration, true)`,
-    /// a pair the `TypeChoices` table does not list (every concrete
-    /// entry pairs with `autoDetect == false`). The combo therefore
-    /// resolves to the concrete-type entry via the type-only fallback
-    /// in `FindTypeChoiceIndex`, but that entry's `autoDetect == false`
-    /// would silently pin the column on accept -- losing the
-    /// auto-detector's overflow-demotion ownership. Gating the write
-    /// on a deliberate combo change preserves the original
-    /// `(type, autoDetect)` pair when the user accepts without
-    /// touching the combo.
+    /// Combo selection captured at `Populate()` time. `WriteBack()`
+    /// only commits a type / autoDetect change when the user actually
+    /// picked a different entry -- otherwise an auto-promoted column
+    /// (e.g. `(Enumeration, autoDetect=true)`, a pair the combo lacks
+    /// an exact entry for) would be silently pinned to
+    /// `autoDetect=false` on accept.
     int mInitialTypeChoiceIndex = -1;
 };

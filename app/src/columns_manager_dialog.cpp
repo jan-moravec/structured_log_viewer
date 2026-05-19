@@ -32,11 +32,7 @@ constexpr int COL_TYPE = 2;
 constexpr int COL_AUTODETECT = 3;
 constexpr int COL_VISIBLE = 4;
 constexpr int COL_COUNT = 5;
-// Visual spacing tokens. Pulled into named constants so a future
-// theme tweak only touches one place. The values are picked to
-// match the rest of Qt's stock dialog dressing (`QMessageBox`,
-// `QFileDialog`) -- roughly half a row height of padding on every
-// edge and one row height between major sections.
+// Visual spacing tokens; matches Qt's stock dialog dressing.
 constexpr int OUTER_MARGIN = 16;
 constexpr int SECTION_SPACING = 12;
 constexpr int BUTTON_SPACING = 8;
@@ -104,10 +100,6 @@ QTableWidgetItem *MakeReadOnlyItem(const QString &text)
 
 QTableWidgetItem *MakeReadOnlyCenteredItem(const QString &text)
 {
-    // Same as `MakeReadOnlyItem` but with a centered text
-    // alignment. Used for categorical Yes/No cells so they line up
-    // visually with the centered Visible checkbox column rather
-    // than left-running like the text columns.
     auto *item = MakeReadOnlyItem(text);
     item->setTextAlignment(Qt::AlignCenter);
     return item;
@@ -122,11 +114,6 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     resize(DIALOG_INITIAL_WIDTH, DIALOG_INITIAL_HEIGHT);
 
     auto *layout = new QVBoxLayout(this);
-    // Generous margins + spacing so the dialog reads as three
-    // distinct sections (helper text / table+actions / Close)
-    // rather than a wall of widgets crammed against the frame.
-    // Sizes are theme-neutral pixel constants -- Qt scales them
-    // through `QHighDpiScaling` like every other layout dimension.
     layout->setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN);
     layout->setSpacing(SECTION_SPACING);
 
@@ -137,11 +124,8 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     );
     intro->setObjectName(QStringLiteral("introLabel"));
     intro->setWordWrap(true);
-    // Demote the intro to "helper text" weight: use the palette's
-    // PlaceholderText role so it picks up whichever muted tone the
-    // active theme defines (works in both light and dark schemes
-    // without us hardcoding RGB values). The widget is still a
-    // first-class `QLabel`, just visually de-emphasised.
+    // Use the palette's PlaceholderText role so the helper text picks
+    // up the muted tone of the active theme (light or dark).
     {
         QPalette introPalette = intro->palette();
         introPalette.setColor(intro->foregroundRole(), introPalette.color(QPalette::PlaceholderText));
@@ -171,10 +155,8 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     mTable->setShowGrid(false);
     mTable->verticalHeader()->setVisible(false);
 
-    // Bold + left-aligned header labels. Default Qt headers render
-    // with regular weight, which on a dark theme makes them blend
-    // with the data rows. Bumping to bold + an explicit alignment
-    // turns the header into a proper visual anchor.
+    // Bold + left-aligned header labels so they don't blend with
+    // the data rows on dark themes.
     QHeaderView *hHeader = mTable->horizontalHeader();
     QFont headerFont = hHeader->font();
     headerFont.setBold(true);
@@ -182,13 +164,8 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     hHeader->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     hHeader->setHighlightSections(false);
 
-    // Per-section resize policy. The previous single-mode
-    // `ResizeToContents` made every column as narrow as its widest
-    // cell, leaving a slab of dead space to the right of the table.
-    // The new layout pins the categorical columns to their content
-    // and stretches `Keys` (typically the widest text payload) to
-    // soak up the leftover width. Result: the table fills the
-    // dialog width regardless of how the user resizes it.
+    // Stretch the wide `Keys` column to fill leftover width; pin
+    // the categorical columns to their content.
     hHeader->setSectionResizeMode(COL_HEADER, QHeaderView::Interactive);
     hHeader->setSectionResizeMode(COL_KEYS, QHeaderView::Stretch);
     hHeader->setSectionResizeMode(COL_TYPE, QHeaderView::ResizeToContents);
@@ -196,9 +173,8 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     hHeader->setSectionResizeMode(COL_VISIBLE, QHeaderView::ResizeToContents);
     hHeader->setStretchLastSection(false);
 
-    // Slightly taller rows so the bold header doesn't tower over
-    // cramped data lines. Derive from the current font metrics so
-    // a DPI / font-size change scales the row height with it.
+    // Row height derived from font metrics so DPI / font-size
+    // changes scale with it.
     const int derivedRowHeight = mTable->fontMetrics().height() + (ROW_VERTICAL_PADDING * 2);
     mTable->verticalHeader()->setDefaultSectionSize(derivedRowHeight);
 
@@ -212,8 +188,7 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     mMoveDownButton->setObjectName(QStringLiteral("moveDownButton"));
     mEditButton = new QPushButton(tr("Edit\u2026"), this);
     mEditButton->setObjectName(QStringLiteral("editButton"));
-    // Same minimum width for every right-rail action so they form
-    // a tidy column instead of three buttons of different sizes.
+    // Uniform minimum width so the right-rail buttons line up.
     for (QPushButton *button : {mMoveUpButton, mMoveDownButton, mEditButton})
     {
         button->setMinimumWidth(BUTTON_MIN_WIDTH);
@@ -224,11 +199,8 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     buttons->addStretch(1);
     body->addLayout(buttons);
 
-    // Thin separator above the Close row to visually anchor the
-    // footer. Standard Qt dialog pattern (used by the Diagnostics
-    // dialog and most QDialogButtonBox layouts), and matters more
-    // here because the Close button sits alone -- without the rule,
-    // it floats in dead space.
+    // Separator above the footer so the lone Close button is
+    // visually anchored rather than floating.
     auto *separator = new QFrame(this);
     separator->setObjectName(QStringLiteral("footerSeparator"));
     separator->setFrameShape(QFrame::HLine);
@@ -249,23 +221,17 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     connect(mEditButton, &QPushButton::clicked, this, &ColumnsManagerDialog::EditSelected);
     connect(mCloseButton, &QPushButton::clicked, this, &QDialog::close);
 
-    // Double-click any row to open the editor; mirrors the
-    // diagnostics dialog drill-down so users have a single mental
-    // model for "drill into this column".
+    // Double-click a row to open the editor (mirrors the
+    // diagnostics dialog drill-down).
     connect(mTable, &QTableWidget::cellDoubleClicked, this, [this](int, int) { EditSelected(); });
 
     connect(mTable, &QTableWidget::itemChanged, this, &ColumnsManagerDialog::OnItemChanged);
 
     if (mModel)
     {
-        // Any out-of-band change to the column shape (header drag,
-        // streaming-driven type promotion, configuration load) must
-        // be reflected here so the manager never lies to the user.
-        // `headerDataChanged` is scoped to `[first, last]` so we
-        // only re-render those rows -- with a wide table and the
-        // per-column commit hitting the signal once per column,
-        // the previous full-rebuild was O(columns^2).
         connect(mModel, &LogModel::modelReset, this, &ColumnsManagerDialog::Refresh);
+        // Per-column re-render so a single column edit doesn't
+        // rebuild every row.
         connect(mModel, &LogModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
             if (orientation != Qt::Horizontal)
             {
@@ -273,13 +239,11 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
             }
             RefreshRange(first, last);
         });
-        // Column reorders (header drag, streaming timestamp bubble) fire
-        // `columnsMoved` only -- `headerDataChanged` does not follow. Without
-        // this hook the manager keeps showing the pre-move row order.
+        // Reorders only fire `columnsMoved`; without this hook the
+        // manager would keep showing the pre-move order.
         connect(mModel, &QAbstractItemModel::columnsMoved, this, [this]() { Refresh(); });
-        // Health changes are O(columns) -- skip the rebuild while the
-        // dialog is hidden so a streaming session with frequent
-        // promotes/demotes doesn't keep walking a widget no one can see.
+        // Skip rebuilds while hidden so frequent promote/demote
+        // events during streaming don't churn an invisible widget.
         connect(mModel, &LogModel::columnHealthChanged, this, [this]() {
             if (isVisible())
             {
@@ -318,11 +282,8 @@ void ColumnsManagerDialog::RefreshRange(int firstColumn, int lastColumn)
     const int rowCount = static_cast<int>(columns.size());
     if (mTable->rowCount() != rowCount)
     {
-        // Shape changed (column added / removed); fall back to a
-        // full rebuild so the row count stays in lock-step with
-        // the model. `headerDataChanged`'s `[first, last]` only
-        // covers updated columns, but a freshly-added one expands
-        // the layout too.
+        // Shape changed (column added / removed) -- the range
+        // signal alone can't grow / shrink the layout.
         Refresh();
         return;
     }
@@ -380,11 +341,9 @@ void ColumnsManagerDialog::OnItemChanged(QTableWidgetItem *item)
     const bool visible = item->checkState() == Qt::Checked;
     if (mMainWindow)
     {
-        // Going through `MainWindow::SetColumnVisible` keeps the
-        // header `setSectionHidden` flag, the View menu's checked
-        // state, and the sort-on-hidden-column reset in lockstep
-        // with the lib mutation. Calling the lib mutator directly
-        // would skip those side-effects.
+        // Route through `MainWindow::SetColumnVisible` so the header
+        // hide-flag, View-menu state, and sort-on-hidden-column
+        // reset stay coherent with the lib mutation.
         mMainWindow->SetColumnVisible(row, visible);
     }
     else
@@ -463,10 +422,9 @@ void ColumnsManagerDialog::EditSelected()
     if (mMainWindow)
     {
         // Route through `MainWindow::EditColumn` so the post-accept
-        // visibility / status-bar refresh fires identically to the
-        // header context-menu path. The dialog itself observes the
-        // resulting `headerDataChanged` and refreshes its rows
-        // through the connected lambda.
+        // visibility + status-bar refresh matches the header
+        // context-menu path. Our own rows refresh via the connected
+        // `headerDataChanged` lambda.
         mMainWindow->EditColumn(row);
     }
     else

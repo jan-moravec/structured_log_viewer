@@ -186,86 +186,62 @@ public:
     /// one column was promoted to `Type::Enumeration`.
     bool FinalizeAutoDetection();
 
-    /// Reconcile already-loaded row data with a user-driven type
-    /// flip at @p columnIndex. The caller (`ColumnEditor::Apply`)
-    /// has already written the new `(type, autoDetect)` into the
-    /// configuration; this method back-fills the existing rows so
-    /// the change is observable immediately, instead of waiting
-    /// for the next batch (which, for a fully-loaded static file,
-    /// never comes):
-    ///   - `Time`: seeds default `printFormat`/`parseFormats` when
-    ///     the column carries none, then runs
+    /// Reconcile loaded rows with a user-driven type flip at
+    /// @p columnIndex. The caller (`ColumnEditor::Apply`) has already
+    /// written the new `(type, autoDetect)` into the configuration;
+    /// this method back-fills existing rows so the change applies
+    /// immediately rather than waiting for the next batch (which a
+    /// fully-loaded static file never gets):
+    ///   - `Time`: seeds default formats if missing, runs
     ///     `BackfillTimestampColumn` over every row.
-    ///   - `Enumeration` / `Level`: creates the canonical
-    ///     dictionary and encodes every existing slot as
-    ///     `DictRef`, then refreshes the level rank cache for
-    ///     `Level`.
-    ///   - Every other type: tears down the column's dictionary
-    ///     and rank cache (if they existed) and materialises any
-    ///     `DictRef` slots back to owned strings, mirroring
-    ///     `DemoteColumnFromEnum`'s effect for an automatic
-    ///     demotion. When @p previousType is `Time`, also clears
-    ///     `Column::printFormat` and `Column::parseFormats` so a
-    ///     stale strftime format does not leak into the new
-    ///     `fmt::vformat`-backed rendering path.
-    /// @p previousType is the type the column carried before the
-    /// caller wrote the new pair; the function uses it for the
-    /// Time-format reset and to short-circuit no-op transitions
-    /// (e.g. an `Enumeration -> Enumeration` autoDetect toggle does
-    /// not blow away the accumulated `EnumColumnHealth` budget).
-    /// Idempotent within a type (calling twice on the same Level
-    /// column re-runs the encode loop but produces the same
-    /// state). Out-of-range @p columnIndex is a silent no-op.
+    ///   - `Enumeration` / `Level`: creates the dictionary, encodes
+    ///     every slot as `DictRef`, refreshes the level rank cache.
+    ///   - Anything else: tears down the dictionary / rank cache,
+    ///     materialises `DictRef` slots back to owned strings
+    ///     (same effect as `DemoteColumnFromEnum`). When
+    ///     @p previousType is `Time`, also clears `printFormat` /
+    ///     `parseFormats` so a stale strftime string does not leak
+    ///     into the new rendering path.
+    /// @p previousType is used for the Time-format reset and to
+    /// short-circuit no-op transitions (e.g. an
+    /// `Enumeration -> Enumeration` autoDetect toggle preserves the
+    /// accumulated health budget). Idempotent within a type.
+    /// Out-of-range @p columnIndex is a silent no-op.
     void OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType);
 
-    /// Bring the per-column caches back in sync with
-    /// `mConfiguration` after an out-of-band rewrite (the GUI's
-    /// `LogConfigurationManager::Load` path). `Reset()` already runs
-    /// these refreshes against the *pre-load* configuration; this
-    /// re-runs them after the new columns have landed so that
-    /// `mColumnKeyIds.size()` matches the new column count and any
-    /// freshly-loaded `Type::Enumeration`/`Type::Level` columns have
-    /// their canonical dictionaries seeded. Safe to call on an empty
-    /// table (the cached ids resolve to `INVALID_KEY_ID` until data
-    /// arrives).
+    /// Re-sync per-column caches with `mConfiguration` after an
+    /// out-of-band rewrite (the GUI's `LogConfigurationManager::Load`
+    /// path). `Reset()` only refreshes against the pre-load
+    /// configuration; this runs after the new columns have landed.
+    /// Safe to call on an empty table.
     void OnConfigurationReloaded();
 
-    /// Re-run the enum auto-detector over every existing row for
+    /// Re-run the auto-detector over every existing row of
     /// @p columnIndex as if the column had just been freshly streamed.
-    /// Mirrors what the `LogTable(LogData, LogConfigurationManager)`
-    /// constructor does at load time: the column's tracker is rebuilt
-    /// from scratch over the whole table and resolved through
-    /// `FinalizeAutoDetection`'s permissive rules. Used by the Column
-    /// Editor when the user flips a static-file column to
-    /// `Type::Any + autoDetect`, so the pick takes immediate effect
-    /// instead of waiting for a (never-arriving) next batch.
+    /// Used by the Column Editor when the user flips a static-file
+    /// column to `(Any, autoDetect)`, so the pick takes effect
+    /// immediately rather than waiting for a never-arriving batch.
     ///
-    /// No-op when the column is not currently `Type::Any + autoDetect`,
-    /// when the table is empty, or when @p columnIndex is out of
-    /// range. Returns the post-rescan column type so the caller can
-    /// signal `enumColumnsChanged(Promoted)` etc. on a transition.
+    /// No-op when the column is not currently `(Any, autoDetect)`,
+    /// the table is empty, or @p columnIndex is out of range.
+    /// Returns the post-rescan column type for transition signalling.
     LogConfiguration::Type RescanColumnForAutoDetection(size_t columnIndex);
 
-    /// Snapshot of "how well does the column's data match its
-    /// configured `Type`?", used by the diagnostics UI to surface
-    /// user-pinned columns whose declared type does not match the
-    /// values on disk. Computed on-demand (one column-walk per call,
-    /// no hot-path bookkeeping).
+    /// "Does this column's data match its configured `Type`?"
+    /// Computed on demand for the diagnostics UI; one column-walk
+    /// per call, no hot-path bookkeeping.
     struct ColumnTypeHealth
     {
         // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-        /// Total rows in the table at call time.
+        /// Total rows in the table.
         size_t totalSlots = 0;
-        /// Rows where this column has any slot (non-monostate).
+        /// Rows where this column carries any (non-monostate) value.
         size_t presentSlots = 0;
-        /// Rows where the slot's variant matches the column's
-        /// configured `Type`. For `Type::Any` every present slot
-        /// matches (the type itself imposes no expectation). For
-        /// `Type::Enumeration`/`Type::Level`, slots are considered
-        /// matching once they have been encoded as `DictRef` --
-        /// unencoded slots (raw strings) count as present-but-not-
-        /// matching, which is how user-pinned dict columns expose
-        /// over-cap values.
+        /// Present slots whose variant matches the configured `Type`.
+        /// `Type::Any` matches every present slot. For
+        /// `Enumeration` / `Level`, `DictRef` slots match; unencoded
+        /// raw-string slots count as present-but-not-matching (this
+        /// is how user-pinned dict columns expose over-cap values).
         size_t matchingSlots = 0;
         // NOLINTEND(misc-non-private-member-variables-in-classes)
 
@@ -377,15 +353,11 @@ private:
     /// would just cycle into another demote). The level rank cache is
     /// torn down here so no stale metadata trails the column.
     ///
-    /// @p recordForBatch defaults to `true` for the streaming auto-detect
-    /// path: the canonical `KeyId` lands in `mLastBatchDemotedKeys` so
-    /// `LogModel::AppendBatch`'s snapshot diff can emit the matching
-    /// `enumColumnsChanged(Demoted)` after `LogTable::AppendBatch`
-    /// returns. Set to `false` from `OnUserChangedColumnType`: the
-    /// editor path emits its own signal (`LogModel::ApplyColumnTypeEdit`),
-    /// so adding to the batch-scoped vector would double-emit if a
-    /// `LastBatchDemotedKeys()` consumer reads between the edit and
-    /// the next `AppendBatch` (which clears the vector at its head).
+    /// @p recordForBatch (default `true`): record the demoted column
+    /// in `mLastBatchDemotedKeys` for the streaming auto-detect
+    /// path. The editor path passes `false` because it emits its own
+    /// `enumColumnsChanged(Demoted)` signal -- adding to the batch
+    /// vector would double-signal.
     void DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch = true);
 
     /// Encode column slots in `[rowBegin, rowEnd)` as `DictRef`. Returns
@@ -416,18 +388,14 @@ private:
     /// Per-value byte-length cap (`0` disables).
     uint32_t mEnumValueMaxLen = MAX_ENUM_CANDIDATE_LEN;
 
-    /// Promotion candidates keyed on the canonical `KeyId` of the
-    /// column (i.e. the id of `column.keys.front()`). Keyed by id
-    /// rather than `column.header` so a user-driven header rename
-    /// via `SetColumnHeader` cannot orphan the running tracker
-    /// (which would silently reset the `presenceCount`/`size` budget
-    /// the next time the column shows up in `RunEnumPassForAppendBatch`).
-    /// Live while the column is `Type::Any` with `autoDetect == true`.
+    /// Promotion candidates, keyed by canonical `KeyId` of the
+    /// column. Keying by id (not `column.header`) so a user-driven
+    /// header rename cannot orphan the running tracker and reset
+    /// the budget. Live while the column is `(Any, autoDetect)`.
     std::unordered_map<KeyId, EnumCandidateTracker> mEnumTrackers;
 
-    /// Cumulative health for active enum columns, keyed on the
-    /// canonical `KeyId` of the column (see `mEnumTrackers` for
-    /// why -- a header rename mid-stream must not reset the budget).
+    /// Cumulative health for active enum columns, keyed by canonical
+    /// `KeyId` for the same rename-safety reason as `mEnumTrackers`.
     std::unordered_map<KeyId, EnumColumnHealth> mEnumColumnHealth;
 
     /// True between `BeginStreaming` and `FinalizeAutoDetection`; switches

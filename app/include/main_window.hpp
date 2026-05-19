@@ -85,19 +85,13 @@ public:
     void SetColumnVisible(int logicalIndex, bool visible);
 
     /// Open the per-column editor dialog modally on @p columnIndex.
-    /// No-op when @p columnIndex is out of range. Reached from the
-    /// header right-click "Edit column \"X\"\u2026" entry, from
-    /// double-clicking a row in the diagnostics dialog, and from
-    /// the columns manager's Edit\u2026 button. Public so the
-    /// dialogs it spawns can route back through it without going
-    /// through `QMetaObject::invokeMethod`.
+    /// Reached from the header right-click menu, the diagnostics
+    /// dialog (row double-click), and the columns manager's
+    /// Edit\u2026 button. No-op for out-of-range indices.
     void EditColumn(int columnIndex);
 
-    /// Show the modeless `ColumnsManagerDialog`, constructing it
-    /// lazily. Re-entrancy-safe: a second call raises the existing
-    /// instance. Reached from the View menu's "Manage columns\u2026"
-    /// entry; public so tests can drive it without poking at the
-    /// menu.
+    /// Show the modeless `ColumnsManagerDialog` (constructed lazily).
+    /// A second call raises the existing instance.
     void ShowColumnsManager();
 
     /// Push every `Column::visible` flag to the header. Idempotent;
@@ -168,11 +162,10 @@ public:
     void SetConfigurationUiEnabledForTest(bool enabled);
 
     /// Test-only entries to `SaveConfiguration` / `LoadConfiguration`
-    /// that bypass the file dialog and run the same private helpers.
-    /// `scope` defaults to `Full` so existing tests (written against
-    /// the old single-action save that always wrote filters) keep
-    /// passing; new tests should pass `SaveScope::ColumnsOnly` to
-    /// exercise the "Save Configuration\u2026" path explicitly.
+    /// that bypass the file dialog. `scope` defaults to `Full` so
+    /// existing tests (written against the old single-action save)
+    /// keep passing; pass `SaveScope::ColumnsOnly` for the
+    /// "Save Configuration\u2026" path.
     void SaveConfigurationToPathForTest(const QString &path, loglib::SaveScope scope = loglib::SaveScope::Full);
     void LoadConfigurationFromPathForTest(const QString &path);
 
@@ -185,13 +178,9 @@ public:
     /// `LoadConfigurationFromPathForTest` call. Reset on each load.
     [[nodiscard]] int LastDroppedFilterCountForTest() const;
 
-    /// Test-only setter for `mCurrentSource`. Production code only
-    /// ever assigns this from inside an open path (`OpenFiles`,
-    /// `OpenLogStream`, `OpenNetworkStream`, `DoLoadConfiguration`),
-    /// none of which the fixture-driven tests want to run end-to-
-    /// end. Used to assert the descriptor round-trips through
-    /// `Save Session...` even when the test fixture bypasses the
-    /// real open machinery.
+    /// Test-only setter for `mCurrentSource`. Lets fixture-driven
+    /// tests assert the descriptor round-trips through Save Session
+    /// without running a real open path.
     void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
 #endif
 
@@ -204,25 +193,21 @@ private slots:
     /// Pop the `NetworkStreamDialog`, build the matching producer, and
     /// call `LogModel::BeginStreaming`.
     void OpenNetworkStream();
-    /// "Save Configuration\u2026": writes only `columns` (the portable,
-    /// data-source-independent layout).
+    /// "Save Configuration\u2026" -- writes the portable
+    /// columns-only slice.
     void SaveConfiguration();
-    /// "Save Session\u2026": writes the full struct (columns + filters +
-    /// sort + source).
+    /// "Save Session\u2026" -- writes columns + filters + sort + source.
     void SaveSession();
-    /// Unified loader: detects whether the file carries session-only
-    /// fields and applies whichever subset is present.
+    /// Loads either shape; missing session fields default to inert
+    /// values.
     void LoadConfiguration();
 
-    /// Show the `ConfigurationDiagnosticsDialog`, constructing it
-    /// lazily. Re-entrancy-safe: a second call raises the existing
-    /// instance. Driven by the status-bar diagnostics button and the
-    /// header right-click "Configuration Diagnostics\u2026" entry.
+    /// Show the `ConfigurationDiagnosticsDialog` (constructed lazily).
+    /// A second call raises the existing instance.
     void ShowConfigurationDiagnostics();
 
-    /// Refresh the status-bar mismatch summary from the current
-    /// `LogModel::ColumnHealth` snapshot. Wired to
-    /// `LogModel::columnHealthChanged`; hides the button when no
+    /// Refresh the status-bar mismatch summary. Wired to
+    /// `LogModel::columnHealthChanged`; hides the button when zero
     /// mismatches are present.
     void UpdateDiagnosticsStatus();
 
@@ -349,23 +334,18 @@ private:
     [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
-    /// Snapshot the runtime session state (`mFilters`, the proxy's
-    /// sort column/order, and `mCurrentSource`) into the wire-format
-    /// fields on the configuration so `Save` and `MoveColumn`'s
-    /// row-remap see the live set. Filters are sorted by
-    /// `(row, type, payload)` so two consecutive saves of an
-    /// unchanged set produce byte-identical JSON. O(N log N) in
-    /// filter count; bulk callers should `deferSync = true` and
-    /// mirror once at the end.
+    /// Snapshot `mFilters`, the proxy's sort, and `mCurrentSource`
+    /// into the wire-format fields on the configuration. Filters
+    /// are sorted by `(row, type, payload)` so two saves of an
+    /// unchanged set produce byte-identical JSON. Bulk callers
+    /// should `deferSync = true` and mirror once at the end.
     void MirrorSessionStateToConfiguration();
 
-    /// Path-based save / load helpers shared by the dialog-driven
-    /// slots and the test seams. `DoSaveConfiguration` mirrors
-    /// session state then writes the slice selected by @p scope;
-    /// throws on I/O / serialisation failure. `DoLoadConfiguration`
-    /// resets the model, validates each saved filter, surfaces
-    /// drops via `ShowDroppedFiltersDialog`, restores any persisted
-    /// sort, and returns false on parse error.
+    /// Path-based save / load shared by the dialog slots and the
+    /// test seams. `DoSaveConfiguration` mirrors session state and
+    /// writes the slice selected by @p scope; throws on failure.
+    /// `DoLoadConfiguration` resets the model, validates saved
+    /// filters, restores sort, and returns false on parse error.
     void DoSaveConfiguration(const QString &path, loglib::SaveScope scope);
     bool DoLoadConfiguration(const QString &path);
 
@@ -418,23 +398,17 @@ private:
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
 
-    /// Status-bar button that surfaces the per-column type-health
-    /// summary computed by `LogModel::ColumnHealth`. Hidden when zero
-    /// columns are mismatched; clicking it opens the diagnostics
-    /// dialog (created lazily). Updated by `UpdateDiagnosticsStatus`,
-    /// which is wired to `LogModel::columnHealthChanged`.
+    /// Status-bar button showing the per-column type-mismatch
+    /// summary. Hidden when zero columns are mismatched; opens the
+    /// diagnostics dialog on click.
     QPushButton *mDiagnosticsButton = nullptr;
 
-    /// Lazy-owned diagnostics dialog. Constructed on first
-    /// `ShowConfigurationDiagnostics` call; survives close so a second
-    /// open reuses the same window. Auto-refreshes on
-    /// `columnHealthChanged`.
+    /// Lazy-owned diagnostics dialog; survives close so a second
+    /// open reuses the same window.
     QPointer<class ConfigurationDiagnosticsDialog> mDiagnosticsDialog;
 
-    /// Lazy-owned bulk column manager dialog. Constructed on first
-    /// `ShowColumnsManager` call; survives close so a second open
-    /// reuses the same window. Auto-refreshes on `modelReset` /
-    /// `headerDataChanged` so out-of-band column moves stay visible.
+    /// Lazy-owned bulk column manager dialog; survives close so a
+    /// second open reuses the same window.
     QPointer<class ColumnsManagerDialog> mColumnsManagerDialog;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
@@ -444,24 +418,12 @@ private:
     /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;
 
-    /// Descriptor of the source currently bound to the model:
-    ///   - `kind == File`: full path (`StartStreamingOpenQueue` /
-    ///     `OpenLogStream`).
-    ///   - `kind == NetworkStream`: producer display name
-    ///     (`OpenNetworkStream`).
-    /// Lifetime is "what the model's data describes":
-    ///   - Set when the user opens a file or stream.
-    ///   - Set from `Configuration().source` when a session file is
-    ///     loaded, so the next `Save Session...` round-trips it.
-    ///   - Survives `streamingFinished(Success|Cancelled)` and
-    ///     `StopStream`: the parsed rows are still there, so the
-    ///     descriptor remains the right answer to "what is this?".
-    ///   - Cleared only on `streamingFinished(Failed)` and by the
-    ///     next open path's `mModel->Reset()` (because the data
-    ///     it described is gone).
-    /// Mirrored into `LogConfiguration::source` by
-    /// `MirrorSessionStateToConfiguration` before a `SaveScope::Full`
-    /// save.
+    /// Source descriptor that matches what the model currently holds:
+    /// file path for `File`, producer name for `NetworkStream`. Set
+    /// on open and on session load; survives `Success` / `Cancelled`
+    /// streaming finish (the rows are still there); cleared on
+    /// `Failed` or by the next open's `Reset()`. Mirrored into
+    /// `LogConfiguration::source` before a `SaveScope::Full` save.
     std::optional<loglib::LogConfiguration::Source> mCurrentSource;
 
     /// Files queued by `StartStreamingOpenQueue`.

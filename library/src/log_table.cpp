@@ -99,9 +99,9 @@ LogConfiguration::Type RouteNoStringBail(
 
 bool IsEnumPassEligible(const LogConfiguration::Column &column) noexcept
 {
-    // `Enumeration` / `Level` always need per-batch encoding so even
-    // user-pinned dict columns keep accumulating `DictRef`s. `Any` is
-    // a candidate scan only when the user hasn't disabled auto-detect.
+    // `Enumeration` / `Level` always need per-batch encoding (even
+    // user-pinned dict columns keep accumulating `DictRef`s). `Any`
+    // only enters the candidate scan when `autoDetect` is on.
     if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
     {
         return true;
@@ -278,23 +278,13 @@ void LogTable::Reset()
 
 void LogTable::OnConfigurationReloaded()
 {
-    // Caller (`LogModel::NotifyConfigurationReplaced`) has just
-    // overwritten `mConfiguration` via
-    // `LogConfigurationManager::Load`. `Reset()` (called before
-    // `Load` on the GUI path) already cleared the snapshot caches
-    // against the *previous* configuration, so re-run the same
-    // rebuilds with the new columns in place. Idempotent and cheap
-    // on an empty table (the keys cache is at most O(columns)).
-    //
-    // Per-column registries that survive a reload (`mEnumDictionaries`,
-    // `mEnumColumnHealth`, `mLevelRankCache`) are left alone: they
-    // are keyed by canonical `KeyId` which is invariant under column
-    // reorder, so re-seeding them from `RefreshSnapshotEnumKeys`
-    // simply makes the registry entries for the new enum columns
-    // exist alongside any that were already there. The data side
-    // was cleared by `Reset()` before this method runs (on the
-    // standard path), so there is no live `DictRef` slot to
-    // misalign.
+    // Rebuild the snapshot caches against the new `mConfiguration`
+    // that `LogConfigurationManager::Load` just wrote. `Reset()`
+    // already cleared them against the previous configuration; this
+    // re-runs the same rebuild with the new columns in place.
+    // Registries keyed by canonical `KeyId` (`mEnumDictionaries`,
+    // `mEnumColumnHealth`, `mLevelRankCache`) are left as-is -- their
+    // keys are invariant under reorder.
     RefreshColumnKeyIds();
     RefreshSnapshotEnumKeys();
 }
@@ -710,11 +700,9 @@ void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKey
     }
 
     const auto &columns = mConfiguration.Configuration().columns;
-    // Always resize -- the cache must track `columns.size()` in both
-    // directions. Without the down-shrink, a subsequent
-    // `RefreshColumnKeyIds`-less code path (e.g. an
-    // out-of-band `Load` that landed a smaller column count) would
-    // leave orphan entries past the last valid column index.
+    // Resize in both directions so an out-of-band `Load` that
+    // shrinks the column count doesn't leave orphan entries past
+    // the last valid column.
     mColumnKeyIds.resize(columns.size());
 
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
@@ -908,11 +896,9 @@ LogTable::EnumColumnLookup LogTable::ResolveEnumColumn(size_t columnIndex) const
 namespace
 {
 
-/// `true` iff a slot tag is a valid representation of @p declaredType.
-/// Mirrors the variant alternatives accepted by the sort/filter
-/// comparators in `log_compare.cpp` / `log_filter.cpp`; keep the two
-/// sides in sync. `Type::Any` accepts every present tag (no
-/// expectation imposed).
+/// `true` iff @p tag is a valid representation of @p declaredType.
+/// Mirrors the variants accepted by the sort / filter comparators in
+/// `log_compare.cpp` / `log_filter.cpp`; keep the two in sync.
 bool TagMatchesType(internal::CompactTag tag, LogConfiguration::Type declaredType) noexcept
 {
     using Type = LogConfiguration::Type;
@@ -937,14 +923,12 @@ bool TagMatchesType(internal::CompactTag tag, LogConfiguration::Type declaredTyp
         return tag == Tag::Int64 || tag == Tag::Uint64 || tag == Tag::Double;
     case Type::Time:
         // `Timestamp` is the natural tag; epoch integers ride the
-        // same comparator so they count as matching for the
-        // diagnostic.
+        // same comparator so they also count as matching.
         return tag == Tag::Timestamp || tag == Tag::Int64 || tag == Tag::Uint64;
     case Type::Enumeration:
     case Type::Level:
-        // Encoded-as-dict is the only "matching" state. An OwnedString
-        // slot on a user-pinned enum column is the over-cap value the
-        // diagnostic exists to surface.
+        // Only `DictRef` matches. Unencoded `OwnedString` slots are
+        // the over-cap values the diagnostic surfaces.
         return tag == Tag::DictRef;
     }
     return false;
@@ -983,8 +967,7 @@ LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex)
     }
     if (aliasKeys.empty())
     {
-        // No `KeyId`s interned yet (column from a config that hasn't
-        // seen any data): every row counts as absent.
+        // No KeyIds interned yet: every row counts as absent.
         return health;
     }
 
@@ -1085,10 +1068,9 @@ void LogTable::RunEnumPassForAppendBatch(
             const size_t oldDictSize = (dictBefore != nullptr) ? dictBefore->Size() : 0;
 
             const bool encodeOk = EncodeColumnRange(resolvedKeys, oldLineCount, totalRows, health);
-            // User-pinned enum/level columns (`autoDetect == false`)
-            // degrade gracefully: dict cap and health-budget breaches
-            // leave the column at its declared type; mismatched slots
-            // simply stay un-encoded (visible as raw strings).
+            // User-pinned enum/level columns (autoDetect off) keep
+            // their declared type on overflow; mismatched slots stay
+            // un-encoded (visible as raw strings).
             if (!encodeOk)
             {
                 if (column.autoDetect)
@@ -1104,12 +1086,9 @@ void LogTable::RunEnumPassForAppendBatch(
                 recordBackfill(columnIndex);
                 continue;
             }
-            // Level-promotion re-check: an Enumeration column whose
-            // key matches `IsLogLevelKey` may finally satisfy the
-            // dict tolerance once canonical entries arrive. Gated on
-            // dict growth + name match so unrelated columns pay
-            // nothing. Skipped entirely when the user pinned the
-            // column at `Enumeration` (autoDetect == false).
+            // Level-promotion re-check: re-run only on dict growth
+            // plus name match so unrelated columns pay nothing.
+            // Skipped on user-pinned Enumeration columns.
             if (column.type == LogConfiguration::Type::Enumeration && column.autoDetect)
             {
                 const EnumDictionary *dictAfter = mEnumDictionaries.Find(resolvedKeys.front());
@@ -1135,14 +1114,11 @@ void LogTable::RunEnumPassForAppendBatch(
         }
 
         // Candidate scan. Tracker keyed on the canonical `KeyId` so
-        // a header rename via `LogConfigurationManager::SetColumnHeader`
-        // cannot orphan the running counters (an alias-list reorder
-        // is already safe because we always key on `keys.front()` ->
-        // canonical id). On bail / kill the column type flips to a
-        // terminal (`string` / `integer` / `floating` / `number`) or
-        // stays at `any`, all of which remove it from
-        // `IsEnumPassEligible` for the next batch -- the type itself
-        // enforces kill-once-stay-killed.
+        // a header rename cannot orphan the running counters. On
+        // bail / kill the column type flips to a terminal type (or
+        // stays at `Any`), removing it from `IsEnumPassEligible` for
+        // the next batch -- the type itself enforces
+        // kill-once-stay-killed.
         const size_t promotionMinRows = mIsStreaming ? STREAM_PROMOTION_MIN_ROWS : ENUM_PROMOTION_MIN_ROWS;
 
         resolveKeys(columnIndex);
@@ -1271,24 +1247,16 @@ void LogTable::RunEnumPassForAppendBatch(
 
 LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex)
 {
-    // Static-file Auto-detect path: the user just flipped the column
-    // to `Type::Any + autoDetect` via the Column Editor. The
-    // streaming detector relies on a future `AppendBatch` to actually
-    // scan the rows, but for a fully-loaded static file no such
-    // batch is coming. Rebuild a fresh tracker from scratch and
-    // walk every existing row, then apply `FinalizeAutoDetection`'s
-    // permissive thresholds (presence >= 2 rather than the streaming
-    // min-rows constant), mirroring what the
-    // `LogTable(LogData, LogConfigurationManager)` constructor does
-    // at load time but restricted to one column.
+    // Static-file Auto-detect path. Builds a fresh tracker, walks
+    // every existing row, then applies `FinalizeAutoDetection`'s
+    // permissive thresholds. Mirrors what the constructor does at
+    // load time but scoped to a single column.
     //
-    // Limitation: slots that were previously committed to
-    // `Type::Time` carry the `Timestamp` tag, which the candidate
-    // scan can neither read as bytes nor count as numeric. Such
-    // columns end up at `Type::Any` with the autoDetect flag still
-    // on; re-opening the source is required to recover a Time
-    // column, matching the behaviour of any other destructive
-    // promotion.
+    // Limitation: slots already committed to `Type::Time` carry the
+    // `Timestamp` tag, which the candidate scan can neither read as
+    // bytes nor count as numeric -- such columns stay at `Any`. A
+    // re-open is required to recover Time (same as any other
+    // destructive promotion).
     const auto &columns = mConfiguration.Configuration().columns;
     if (columnIndex >= columns.size())
     {
@@ -1304,9 +1272,8 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
     const size_t totalRows = mData.Lines().size();
     if (totalRows == 0 || columnIndex >= mColumnKeyIds.size())
     {
-        // No data to scan or key ids not yet built; leave the column
-        // in candidate state so the next batch / re-stream picks it
-        // up via the normal path.
+        // Nothing to scan: stay in candidate state for the next
+        // batch / re-stream.
         return LogConfiguration::Type::Any;
     }
 
@@ -1324,8 +1291,8 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
         return LogConfiguration::Type::Any;
     }
 
-    // Drop any stale tracker before rebuilding so an earlier
-    // streaming kill doesn't pre-set `killed = true`.
+    // Drop any stale tracker so an earlier streaming kill doesn't
+    // leave `killed = true` pre-set.
     const KeyId trackerKey = resolvedKeys.front();
     mEnumTrackers.erase(trackerKey);
 
@@ -1380,10 +1347,8 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
     }
     else if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
     {
-        // PromoteColumnToEnum encodes every existing row, refreshes
-        // the level rank cache, and (when the key matches an alias
-        // and the dict tolerance holds) sub-promotes to
-        // `Type::Level`. Same path the streaming detector uses.
+        // Same path the streaming detector uses: encode rows,
+        // refresh level rank cache, optionally sub-promote to Level.
         PromoteColumnToEnum(columnIndex);
     }
     else if (tracker.size == 0 && tracker.presenceCount > 0)
@@ -1419,8 +1384,7 @@ bool LogTable::FinalizeAutoDetection()
         {
             continue;
         }
-        // Trackers are keyed by canonical `KeyId` (see
-        // `mEnumTrackers` doc); look up via the column's first key.
+        // Trackers are keyed by canonical `KeyId`.
         const KeyId trackerKey = mData.Keys().Find(column.keys.front());
         if (trackerKey == INVALID_KEY_ID)
         {
@@ -1472,16 +1436,14 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
     {
         return;
     }
-    // Re-resolve through a fresh snapshot at each access so the type
-    // mutation below cannot expose a stale-reference window.
+    // Re-resolve via a fresh snapshot at each access -- the type
+    // mutations below would otherwise risk a stale reference.
     const auto snapshot = [this, columnIndex]() -> LogConfiguration::Column {
         return mConfiguration.Configuration().columns[columnIndex];
     };
 
-    // Drop any stale candidate state so a subsequent flip back to
-    // `Type::Any + autoDetect` starts the auto-detector clean; the
-    // existing entries were keyed off a different `(type, autoDetect)`
-    // contract.
+    // Drop stale candidate state so a later flip back to
+    // `(Any, autoDetect)` starts the detector clean.
     {
         const auto col = snapshot();
         if (!col.keys.empty())
@@ -1494,10 +1456,8 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         }
     }
 
-    // Refresh column key ids first: a column whose canonical key
-    // hasn't been observed yet still resolves correctly through
-    // `GetOrInsert` below for the Time/Enum paths, but the cached
-    // ids matter for the encoding/back-fill walks.
+    // Refresh column key ids first; the encode / back-fill walks
+    // below depend on the cached ids.
     RefreshColumnKeyIds();
 
     const auto column = snapshot();
@@ -1505,10 +1465,8 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
     {
     case LogConfiguration::Type::Time:
     {
-        // Seed sensible defaults when the column wasn't already a
-        // Time column. Auto-detected Time columns ship with these;
-        // user-pinned ones from the editor would otherwise carry
-        // empty vectors and silently fail to parse anything.
+        // Seed default formats so an editor-pinned Time column
+        // actually parses (auto-detected ones already ship with them).
         if (column.printFormat.empty())
         {
             mConfiguration.SetColumnPrintFormat(columnIndex, "%F %H:%M:%S");
@@ -1527,12 +1485,9 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
     case LogConfiguration::Type::Enumeration:
     case LogConfiguration::Type::Level:
     {
-        // Seed the canonical dictionary and any aliases; idempotent
-        // on a column that was already promoted by the streaming
-        // detector. Walks every existing row, encoding string-typed
-        // slots as `DictRef` and accruing length / wrong-type
-        // observations against the health budget so a subsequent
-        // batch sees the same shape the detector would have.
+        // Seed the dictionary, encode every existing slot as DictRef,
+        // and accrue length / wrong-type observations against the
+        // health budget. Idempotent on already-promoted columns.
         RefreshSnapshotEnumKeys();
         RefreshColumnKeyIds();
         if (column.keys.empty())
@@ -1542,19 +1497,15 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         const KeyId canonical = mData.Keys().Find(column.keys.front());
         if (canonical == INVALID_KEY_ID)
         {
-            // No data yet for this key: nothing to encode. The next
-            // batch will populate the dictionary through the normal
-            // streaming path.
+            // No data yet for this key -- the streaming path will
+            // populate the dictionary on the next batch.
             break;
         }
         EnumColumnHealth &health = mEnumColumnHealth[canonical];
-        // Health survives across user edits, but a re-promote on a
-        // previously-demoted column should start with a clean budget
-        // so an old breach doesn't immediately re-demote. A no-op
-        // transition within the enum family (e.g. toggling autoDetect
-        // on an already-Enumeration column, or sub-promoting
-        // Enumeration <-> Level) keeps the accumulated budget so the
-        // user doesn't lose hard-won evidence on a cosmetic edit.
+        // Reset the budget on a fresh promotion so an old breach
+        // doesn't immediately re-demote, but keep it on no-op
+        // within-family edits so the user doesn't lose evidence on
+        // a cosmetic toggle.
         const bool previousWasEnumLike =
             previousType == LogConfiguration::Type::Enumeration || previousType == LogConfiguration::Type::Level;
         if (!previousWasEnumLike)
@@ -1565,11 +1516,9 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
                 mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health
             ))
         {
-            // Hard cap overflow: bail back to the user's pin would
-            // contradict the explicit choice. Fall back to String so
-            // sort/filter remain sane; the diagnostic surface will
-            // explain why. Editor-driven, so don't record into the
-            // batch-scoped demote list (see DemoteColumnFromEnum doc).
+            // Hard cap overflow: fall back to String so sort/filter
+            // stay sane; the diagnostic surface explains why.
+            // Editor-driven, so skip the batch demote-record.
             DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
             return;
         }
@@ -1586,27 +1535,20 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
     case LogConfiguration::Type::Floating:
     case LogConfiguration::Type::Number:
     {
-        // When leaving `Type::Time` we have to drop the strftime-style
-        // `printFormat`/`parseFormats` we seeded on entry. Leaving them
-        // in place breaks rendering for fresh rows: the new type's
-        // formatter (`fmt::vformat`) treats `"%F %H:%M:%S"` as a
-        // literal, so integer / float columns would render the format
-        // string for every row. Existing `Timestamp` slots remain --
-        // they keep formatting via `date::format` until the column is
-        // rewritten -- so the user still sees their old timestamps,
-        // just no longer auto-formatted into the new type's grammar.
+        // Leaving `Type::Time` -- drop the strftime formats we
+        // seeded on entry so the new type's `fmt::vformat` doesn't
+        // render them as literal text on every row. Existing
+        // `Timestamp` slots stay (they format via `date::format`)
+        // until something rewrites them.
         if (previousType == LogConfiguration::Type::Time)
         {
             mConfiguration.SetColumnPrintFormat(columnIndex, "{}");
             mConfiguration.SetColumnParseFormats(columnIndex, {});
         }
 
-        // Transition away from a dict-backed type. If the column
-        // currently has dictionary state, materialise every
-        // `DictRef` back to an `OwnedString` exactly like
-        // `DemoteColumnFromEnum` does -- but skip the
-        // SetColumnType-to-String it bakes in, because the user
-        // already chose the destination type.
+        // Materialise dict slots back to `OwnedString` if the column
+        // had dictionary state; skip the type-flip-to-String that
+        // `DemoteColumnFromEnum` bakes in.
         if (column.keys.empty())
         {
             break;
@@ -1618,12 +1560,9 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         }
         if (mEnumDictionaries.Find(canonical) != nullptr)
         {
-            // Mark as Enumeration so `DemoteColumnFromEnum`'s
-            // type-guard accepts the call, then restore the user's
-            // pick. The intermediate write is invisible to anyone
-            // outside this function; no `dataChanged` is emitted
-            // here either way. Editor-driven, so don't record into
-            // the batch-scoped demote list.
+            // Temporarily mark as Enumeration so `DemoteColumnFromEnum`
+            // accepts the call, then restore the user's pick.
+            // Editor-driven, so skip the batch demote-record.
             const auto targetType = column.type;
             mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Enumeration);
             DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
@@ -1840,11 +1779,10 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
 
     // Record the canonical KeyId before the registry erase below so
     // `LogModel`'s post-batch detector can scope its `Demoted` emit
-    // even on the silent `Type::Any + autoDetect -> Enumeration ->
-    // String` transition (no dict survives on either side of the
-    // batch). Skipped for editor-driven demotes (see header doc): the
-    // editor signals via `LogModel::ApplyColumnTypeEdit`, so adding
-    // here would risk a double-emit on the next `AppendBatch`.
+    // even on the silent `(Any, autoDetect) -> Enumeration -> String`
+    // transition. Skipped for editor-driven demotes: the editor
+    // signals via `LogModel::ApplyColumnTypeEdit`, so adding here
+    // would risk a double-emit on the next `AppendBatch`.
     if (recordForBatch && !keyIds.empty())
     {
         mLastBatchDemotedKeys.push_back(keyIds.front());
@@ -1897,14 +1835,11 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
     // "we don't know".
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
 
-    // Health is keyed on the canonical `KeyId` (same key the
-    // registry and rank cache use), so the erase doesn't have to
-    // round-trip through `column.header`.
+    // Health and rank cache are keyed on the canonical `KeyId`, same
+    // as the dict registry.
     if (!keyIds.empty())
     {
         mEnumColumnHealth.erase(keyIds.front());
-        // Drop the rank cache when a Level column demotes. Keyed by
-        // the same canonical `KeyId` the registry uses.
         mLevelRankCache.erase(keyIds.front());
     }
 
@@ -1938,8 +1873,7 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     {
         return;
     }
-    // User-pinned `Enumeration` columns stay `Enumeration`; the user
-    // explicitly opted out of further auto-promotion.
+    // User-pinned columns opt out of further auto-promotion.
     if (!snapshotColumn().autoDetect)
     {
         return;
