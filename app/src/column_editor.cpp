@@ -60,6 +60,8 @@ const std::vector<TypeChoice> &TypeChoices()
 int FindTypeChoiceIndex(loglib::LogConfiguration::Type type, bool autoDetect)
 {
     const auto &choices = TypeChoices();
+    // (1) Exact `(type, autoDetect)` match. Covers the two `Type::Any`
+    // pairs and the user-pinned `(ConcreteType, false)` cases.
     for (size_t i = 0; i < choices.size(); ++i)
     {
         if (choices[i].type == type && choices[i].autoDetect == autoDetect)
@@ -67,9 +69,27 @@ int FindTypeChoiceIndex(loglib::LogConfiguration::Type type, bool autoDetect)
             return static_cast<int>(i);
         }
     }
-    // Defensive: any unexpected combination collapses to the
-    // top "Auto-detect" entry rather than leaving the combo on a
-    // stale index that disagrees with the live column.
+    // (2) Auto-detector-promoted column: the streaming pipeline
+    // flips `type` via `SetColumnType` but leaves `Column::autoDetect`
+    // on, so a promoted column carries e.g. `(Enumeration, true)`,
+    // `(String, true)`, `(Time, true)`. None of those pairs exist in
+    // the table (each concrete entry is `autoDetect == false`).
+    // Surface the concrete type so the combo doesn't mislead the user
+    // into thinking the column is still in "Auto-detect" mode.
+    // `WriteBack()`'s combo-change gate preserves the original
+    // `autoDetect` flag if the user accepts without picking a
+    // different entry; an explicit re-pick of the same concrete entry
+    // is treated as the user-pinned intent that the entry models.
+    for (size_t i = 0; i < choices.size(); ++i)
+    {
+        if (choices[i].type == type)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    // (3) Defensive: any otherwise-unrepresentable type falls back
+    // to "Auto-detect" rather than leaving the combo on a stale
+    // index that disagrees with the live column.
     return 0;
 }
 
@@ -185,7 +205,16 @@ void ColumnEditor::Populate()
 
     mHeaderEdit->setText(QString::fromStdString(column.header));
     mKeysLabel->setText(FormatKeys(column.keys));
-    mTypeCombo->setCurrentIndex(FindTypeChoiceIndex(column.type, column.autoDetect));
+    const int initialIndex = FindTypeChoiceIndex(column.type, column.autoDetect);
+    mTypeCombo->setCurrentIndex(initialIndex);
+    // Capture the seeded selection so `WriteBack()` can distinguish
+    // "user left the combo alone" from "user re-picked the same
+    // entry that happened to be displayed". The former preserves
+    // the column's existing `(type, autoDetect)` pair (critical for
+    // auto-promoted columns where the combo lands on a concrete
+    // entry via the type-only fallback); the latter is a deliberate
+    // pin and writes through normally.
+    mInitialTypeChoiceIndex = initialIndex;
     mVisibleCheck->setChecked(column.visible);
     mHealthLabel->setText(FormatHealthLine(mModel->ColumnHealth(mColumnIndex)));
 }
@@ -231,10 +260,23 @@ void ColumnEditor::WriteBack()
     //   - the `enumColumnsChanged` signal across the enum/level
     //     boundary,
     //   - the `columnHealthChanged` refresh.
-    // A no-op (`previousType == newType && previousAutoDetect ==
-    // newAutoDetect`) returns immediately, so we don't need a
-    // typeChanged gate here.
-    mModel->ApplyColumnTypeEdit(mColumnIndex, choice.type, choice.autoDetect);
+    //
+    // Only fire it when the user actually changed the combo. The
+    // bare `(previousType == newType && previousAutoDetect ==
+    // newAutoDetect)` short-circuit in `ApplyColumnTypeEdit` is
+    // insufficient because the combo can resolve to a concrete entry
+    // via `FindTypeChoiceIndex`'s type-only fallback for
+    // auto-promoted columns (e.g. `(Enumeration, autoDetect=true)`
+    // resolves to the "Enumeration" entry whose `autoDetect ==
+    // false`). Without this gate, an accept-without-change would
+    // write `(Enumeration, false)` -- silently disabling the
+    // auto-detector's overflow demotion -- or, worse, route through
+    // the "Auto-detect" entry and write `(Any, true)`, destroying
+    // the resolved type and re-triggering detection.
+    if (comboIndex != mInitialTypeChoiceIndex)
+    {
+        mModel->ApplyColumnTypeEdit(mColumnIndex, choice.type, choice.autoDetect);
+    }
 
     // Push the header/decoration/visibility refresh; the model emits
     // `headerDataChanged` + a column-wide `dataChanged` from

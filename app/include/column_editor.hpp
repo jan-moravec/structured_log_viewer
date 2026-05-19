@@ -65,4 +65,22 @@ private:
     QCheckBox *mVisibleCheck = nullptr;
     QLabel *mHealthLabel = nullptr;
     QDialogButtonBox *mButtonBox = nullptr;
+
+    /// Snapshot of the type combo's selection right after `Populate()`
+    /// seeded it. `WriteBack()` only commits a type / autoDetect edit
+    /// when the current selection differs from this baseline.
+    ///
+    /// The streaming auto-detector promotes columns via
+    /// `SetColumnType` only -- `Column::autoDetect` stays `true`. So
+    /// an auto-promoted column lands at e.g. `(Enumeration, true)`,
+    /// a pair the `TypeChoices` table does not list (every concrete
+    /// entry pairs with `autoDetect == false`). The combo therefore
+    /// resolves to the concrete-type entry via the type-only fallback
+    /// in `FindTypeChoiceIndex`, but that entry's `autoDetect == false`
+    /// would silently pin the column on accept -- losing the
+    /// auto-detector's overflow-demotion ownership. Gating the write
+    /// on a deliberate combo change preserves the original
+    /// `(type, autoDetect)` pair when the user accepts without
+    /// touching the combo.
+    int mInitialTypeChoiceIndex = -1;
 };

@@ -6041,6 +6041,62 @@ private slots:
         QCOMPARE(enumSpy.count(), 0);
     }
 
+    // Regression: an auto-promoted column (e.g. `category` ->
+    // `Enumeration` via the streaming detector) carries
+    // `(type=Enumeration, autoDetect=true)` because the pipeline
+    // flips only `type` through `SetColumnType`. The Type combo
+    // must therefore:
+    //   1. Surface the *resolved* type in the combo (the user must
+    //      see "Enumeration", not the misleading "Auto-detect"
+    //      entry that the pre-fix lookup fell back to).
+    //   2. Round-trip cleanly on accept-without-change: the column's
+    //      `(type, autoDetect)` pair must be preserved unmodified
+    //      (no silent `(Enumeration, false)` pin, no destructive
+    //      `(Any, true)` rewrite via the "Auto-detect" entry).
+    void TestColumnEditorPreservesAutoDetectFlagOnPromotedColumn()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        // Precondition: streaming auto-promoted `category` to
+        // `Enumeration` and left `autoDetect = true` (the detector
+        // never clears the flag). This is the exact (concrete-type,
+        // autoDetect=true) pair the pre-fix `FindTypeChoiceIndex`
+        // dropped to index 0 ("Auto-detect").
+        const auto &preEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
+        QCOMPARE(preEdit.type, loglib::LogConfiguration::Type::Enumeration);
+        QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
+
+        ColumnEditor editor(model, categoryCol);
+        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        QVERIFY(typeCombo != nullptr);
+        // (1) Combo must show the resolved type. Index 8 is
+        // "Enumeration" in `TypeChoices()` (same convention as the
+        // other editor tests in this file). Anything else (and
+        // especially index 0, the pre-fix fallback) would mislead
+        // the user into thinking the column is still in auto-detect
+        // mode.
+        constexpr int ENUMERATION_CHOICE_INDEX = 8;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        QCOMPARE(typeCombo->currentIndex(), ENUMERATION_CHOICE_INDEX);
+
+        // (2) Accept-without-change must preserve both fields.
+        // No `enumColumnsChanged` either: the column did not cross
+        // the enum boundary, and downstream filter rebuilds are
+        // expensive.
+        const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumSpy.isValid());
+        editor.Apply();
+
+        const auto &postEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
+        QCOMPARE(postEdit.type, loglib::LogConfiguration::Type::Enumeration);
+        QVERIFY2(
+            postEdit.autoDetect, "Accept-without-change must preserve the auto-detector's autoDetect=true flag"
+        );
+        QCOMPARE(enumSpy.count(), 0);
+    }
+
     // The Auto-detect choice at the top of the Type combo collapses
     // the (Type::Any, autoDetect=true) pair into a single user-
     // visible entry. Selecting it must restore both fields atomically
