@@ -540,6 +540,22 @@ TEST_CASE(
     const TestLogConfiguration columnsOnlyFile;
     manager.Save(columnsOnlyFile.GetFilePath(), SaveScope::ColumnsOnly);
 
+    // The on-disk JSON must not even mention the session-only
+    // fields: a transient `LogConfiguration` would still serialise
+    // empty `"filters"` / a default `"sort"` because those members
+    // are not optional. The `ColumnsOnlyDocument` shim in
+    // `log_configuration.cpp` exists exactly to keep the wire output
+    // clean for users who inspect saved configs by hand.
+    {
+        std::ifstream readBack(columnsOnlyFile.GetFilePath());
+        REQUIRE(readBack.is_open());
+        const std::string raw((std::istreambuf_iterator<char>(readBack)), std::istreambuf_iterator<char>());
+        CHECK(raw.contains("\"columns\""));
+        CHECK_FALSE(raw.contains("\"filters\""));
+        CHECK_FALSE(raw.contains("\"sort\""));
+        CHECK_FALSE(raw.contains("\"source\""));
+    }
+
     // Re-load: only columns survive; filters/sort/source are absent
     // and reload at their default (inert) values.
     LogConfigurationManager reloadedFromColumns;

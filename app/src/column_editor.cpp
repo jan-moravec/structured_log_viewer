@@ -224,42 +224,23 @@ void ColumnEditor::WriteBack()
     auto &manager = mModel->ConfigurationManager();
     const size_t idx = static_cast<size_t>(mColumnIndex);
 
-    // Capture the original type before we mutate, so we can decide
-    // whether the back-fill walk is worth running. A no-op type
-    // change (the user clicked OK without touching the combo) skips
-    // the O(rows) reconcile.
-    const auto previousType = columns[idx].type;
-    const bool previousAutoDetect = columns[idx].autoDetect;
-
-    // Header / visible are independent toggles; the type-pair has to
-    // land together so an intermediate read by another component
-    // never sees `Type::Any + autoDetect == false` paired with the
-    // wrong sibling field.
+    // Header / visible are independent toggles; write them first so
+    // a same-batch type change still sees the new header in any
+    // diagnostic surfaces. `ApplyColumnTypeEdit` (below) writes the
+    // `(type, autoDetect)` pair atomically and reconciles the rows.
     manager.SetColumnHeader(idx, mHeaderEdit->text().toStdString());
     manager.SetColumnVisible(idx, mVisibleCheck->isChecked());
-    manager.SetColumnType(idx, choice.type);
-    manager.SetColumnAutoDetect(idx, choice.autoDetect);
 
-    // Reconcile already-loaded rows with the user's type pick:
-    //   - `Time`        -- run the backfill so existing strings
-    //                      parse into Timestamp slots.
-    //   - `Enumeration` / `Level` -- build the canonical dictionary
-    //                      and encode every existing slot.
-    //   - other types   -- materialise any leftover `DictRef` so
-    //                      sort/filter on the new type works.
-    // Skipped when neither field actually moved (no-op accept).
-    const bool typeChanged = previousType != choice.type || previousAutoDetect != choice.autoDetect;
-    if (typeChanged)
-    {
-        mModel->NotifyColumnTypeEdited(mColumnIndex);
-    }
-
-    // The diagnostics cache is keyed by (type, data); the type just
-    // moved, so re-snapshot before we hand control back. This is the
-    // single seam that keeps the header tooltip / decoration / status
-    // bar coherent after a column-editor commit -- no other slot
-    // needs to know about column-editor edits.
-    mModel->RefreshColumnHealth();
+    // The type/autoDetect edit is the single seam responsible for:
+    //   - the atomic typed write,
+    //   - the encode/back-fill / dictionary teardown,
+    //   - the `enumColumnsChanged` signal across the enum/level
+    //     boundary,
+    //   - the `columnHealthChanged` refresh.
+    // A no-op (`previousType == newType && previousAutoDetect ==
+    // newAutoDetect`) returns immediately, so we don't need a
+    // typeChanged gate here.
+    mModel->ApplyColumnTypeEdit(mColumnIndex, choice.type, choice.autoDetect);
 
     // Push the header/decoration/visibility refresh; the model emits
     // `headerDataChanged` + a column-wide `dataChanged` from

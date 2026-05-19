@@ -95,7 +95,31 @@ struct PrettyOpts : glz::opts
 };
 constexpr PrettyOpts PRETTIFY_OPTS{{.prettify = true}};
 
+/// Wire-format shim for `SaveScope::ColumnsOnly`: a struct that holds
+/// only the `columns` array, so glaze does not emit the default
+/// `filters` / `sort` blocks that a transient `LogConfiguration`
+/// would (those fields are not optional in `LogConfiguration` and a
+/// fresh value still serialises with `"filters": []` and a default
+/// `sort`). Loading a file produced from this struct still parses
+/// cleanly through `glz::read_json<LogConfiguration>` because the
+/// missing members default to their inert values.
+struct ColumnsOnlyDocument
+{
+    const std::vector<loglib::LogConfiguration::Column> *columns = nullptr;
+};
+
 } // namespace
+
+// `value` is a glaze-mandated slot name; the same suppression that
+// covers the canonical meta block in `log_configuration_glaze_meta.hpp`
+// applies here.
+// NOLINTBEGIN(readability-identifier-naming)
+template <> struct glz::meta<ColumnsOnlyDocument>
+{
+    using T = ColumnsOnlyDocument;
+    static constexpr auto value = object("columns", [](auto &self) -> const auto & { return *self.columns; });
+};
+// NOLINTEND(readability-identifier-naming)
 
 namespace loglib
 {
@@ -134,14 +158,16 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
     std::string json;
     if (scope == SaveScope::ColumnsOnly)
     {
-        // Build a transient struct with only `columns` populated;
-        // session-only members hold their default (absent) values.
-        // The wire schema is the same as `Full`, just with the
-        // session-only members at their defaults -- the resulting
-        // file is portable across data sources.
-        LogConfiguration columnsOnly;
-        columnsOnly.columns = mConfiguration.columns;
-        const auto error = glz::write<PRETTIFY_OPTS>(columnsOnly, json);
+        // `ColumnsOnlyDocument` is a glaze meta shim that emits ONLY
+        // the `columns` array. Serialising a transient `LogConfiguration`
+        // would still write `"filters": []` and a default `sort` block
+        // because those fields are not `optional`; a user inspecting a
+        // "configuration" file should not see session-only debris.
+        // The resulting JSON loads cleanly through
+        // `glz::read_json<LogConfiguration>` because missing members
+        // default to their inert values.
+        const ColumnsOnlyDocument document{.columns = &mConfiguration.columns};
+        const auto error = glz::write<PRETTIFY_OPTS>(document, json);
         if (error)
         {
             throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
@@ -328,6 +354,17 @@ void LogConfigurationManager::SetColumnAutoDetect(size_t columnIndex, bool autoD
         return;
     }
     mConfiguration.columns[columnIndex].autoDetect = autoDetect;
+}
+
+void LogConfigurationManager::SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect)
+{
+    if (columnIndex >= mConfiguration.columns.size())
+    {
+        return;
+    }
+    auto &column = mConfiguration.columns[columnIndex];
+    column.type = type;
+    column.autoDetect = autoDetect;
 }
 
 void LogConfigurationManager::SetColumnVisible(size_t columnIndex, bool visible)

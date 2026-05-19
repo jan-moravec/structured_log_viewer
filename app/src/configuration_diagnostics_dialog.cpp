@@ -202,7 +202,17 @@ ConfigurationDiagnosticsDialog::ConfigurationDiagnosticsDialog(LogModel *model, 
 
     if (mModel)
     {
-        connect(mModel, &LogModel::columnHealthChanged, this, &ConfigurationDiagnosticsDialog::Refresh);
+        // Skip the row repopulate when the dialog is hidden: the user
+        // can't see it anyway, and a streaming session with frequent
+        // promotes/demotes would otherwise spend O(columns) per batch
+        // rebuilding a hidden widget. The dialog refreshes once when
+        // it's reopened via `MainWindow::ShowConfigurationDiagnostics`.
+        connect(mModel, &LogModel::columnHealthChanged, this, [this]() {
+            if (isVisible())
+            {
+                Refresh();
+            }
+        });
     }
 
     Refresh();

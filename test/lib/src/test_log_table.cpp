@@ -2936,3 +2936,96 @@ TEST_CASE(
     REQUIRE(categoryKey != INVALID_KEY_ID);
     CHECK(table.EnumDictionaries().Contains(categoryKey));
 }
+
+TEST_CASE(
+    "LogTable::OnUserChangedColumnType -- leaving Type::Time clears the strftime format strings",
+    "[log_table][on_user_changed_column_type][time][regression]"
+)
+{
+    // Regression: a user who pins a column to `Type::Time` and then
+    // changes their mind (Time -> Integer / Number / String / ...)
+    // used to leave `Column::printFormat = "%F %H:%M:%S"` behind.
+    // The new type's formatter is `fmt::vformat`, which treats `%F`
+    // as a literal -- every freshly-arriving row then renders the
+    // raw format string instead of its value. Clearing the format
+    // pair on the way out keeps rendering sane.
+    const TestLogFile testFile("on_user_changed_time_format_reset.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // Bootstrap a single-column session and pin it to Time so the
+    // back-fill seeds the default strftime formats.
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys.emplace_back("value");
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"value", LogValue{std::string("not a timestamp")}}}));
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    const auto originalType = table.Configuration().Configuration().columns[0].type;
+
+    table.Configuration().SetColumnTypePair(0, LogConfiguration::Type::Time, false);
+    table.OnUserChangedColumnType(0, originalType);
+    {
+        const auto &col = table.Configuration().Configuration().columns[0];
+        CHECK(col.type == LogConfiguration::Type::Time);
+        CHECK_FALSE(col.printFormat.empty()); // seeded default
+        CHECK_FALSE(col.parseFormats.empty()); // seeded default
+    }
+
+    // Time -> Integer: the format strings must NOT survive into the
+    // new type or `fmt::vformat` will print the literal format on
+    // every row.
+    table.Configuration().SetColumnTypePair(0, LogConfiguration::Type::Integer, false);
+    table.OnUserChangedColumnType(0, LogConfiguration::Type::Time);
+    {
+        const auto &col = table.Configuration().Configuration().columns[0];
+        CHECK(col.type == LogConfiguration::Type::Integer);
+        CHECK(col.printFormat == "{}");
+        CHECK(col.parseFormats.empty());
+    }
+}
+
+TEST_CASE(
+    "LogTable::DemoteColumnFromEnum -- recordForBatch=false keeps the user-edit demote out of the batch vector",
+    "[log_table][demote][on_user_changed_column_type][regression]"
+)
+{
+    // Regression: `LastBatchDemotedKeys()` is documented as
+    // "demotions during the *most recent batch*". `OnUserChangedColumnType`
+    // demotes outside a batch when the user picks a non-enum type
+    // from the editor; the GUI emits its own `enumColumnsChanged`
+    // signal from `LogModel::ApplyColumnTypeEdit`, so leaving the
+    // canonical KeyId in `mLastBatchDemotedKeys` would risk a
+    // double-emit if a consumer queried it before the next batch
+    // cleared the vector. The fix passes `recordForBatch=false`
+    // from `OnUserChangedColumnType`.
+    const TestLogFile testFile("demote_record_for_batch.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    // Promote `category` to Enumeration via the streaming detector.
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "category", {"a", "b"}, 1, 2, true));
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+
+    // The streaming detector left the demote vector clean.
+    CHECK(table.LastBatchDemotedKeys().empty());
+
+    // User picks Type::String -- `OnUserChangedColumnType` runs the
+    // demote walk but must NOT touch `mLastBatchDemotedKeys`.
+    table.Configuration().SetColumnTypePair(0, LogConfiguration::Type::String, false);
+    table.OnUserChangedColumnType(0, LogConfiguration::Type::Enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
+    CHECK(table.LastBatchDemotedKeys().empty());
+}

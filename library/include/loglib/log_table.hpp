@@ -204,11 +204,19 @@ public:
     ///     and rank cache (if they existed) and materialises any
     ///     `DictRef` slots back to owned strings, mirroring
     ///     `DemoteColumnFromEnum`'s effect for an automatic
-    ///     demotion.
+    ///     demotion. When @p previousType is `Time`, also clears
+    ///     `Column::printFormat` and `Column::parseFormats` so a
+    ///     stale strftime format does not leak into the new
+    ///     `fmt::vformat`-backed rendering path.
+    /// @p previousType is the type the column carried before the
+    /// caller wrote the new pair; the function uses it for the
+    /// Time-format reset and to short-circuit no-op transitions
+    /// (e.g. an `Enumeration -> Enumeration` autoDetect toggle does
+    /// not blow away the accumulated `EnumColumnHealth` budget).
     /// Idempotent within a type (calling twice on the same Level
     /// column re-runs the encode loop but produces the same
     /// state). Out-of-range @p columnIndex is a silent no-op.
-    void OnUserChangedColumnType(size_t columnIndex);
+    void OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType);
 
     /// Snapshot of "how well does the column's data match its
     /// configured `Type`?", used by the diagnostics UI to surface
@@ -340,7 +348,17 @@ private:
     /// String (kill-once-stay-killed -- bouncing back to Enumeration
     /// would just cycle into another demote). The level rank cache is
     /// torn down here so no stale metadata trails the column.
-    void DemoteColumnFromEnum(size_t columnIndex);
+    ///
+    /// @p recordForBatch defaults to `true` for the streaming auto-detect
+    /// path: the canonical `KeyId` lands in `mLastBatchDemotedKeys` so
+    /// `LogModel::AppendBatch`'s snapshot diff can emit the matching
+    /// `enumColumnsChanged(Demoted)` after `LogTable::AppendBatch`
+    /// returns. Set to `false` from `OnUserChangedColumnType`: the
+    /// editor path emits its own signal (`LogModel::ApplyColumnTypeEdit`),
+    /// so adding to the batch-scoped vector would double-emit if a
+    /// `LastBatchDemotedKeys()` consumer reads between the edit and
+    /// the next `AppendBatch` (which clears the vector at its head).
+    void DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch = true);
 
     /// Encode column slots in `[rowBegin, rowEnd)` as `DictRef`. Returns
     /// false on hard cap overflow; long/wrong-type slots accrue in @p health.

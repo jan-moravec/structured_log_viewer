@@ -233,6 +233,14 @@ public:
     /// pins the column at its current `type`.
     void SetColumnAutoDetect(size_t columnIndex, bool autoDetect);
 
+    /// Write `Column::type` and `Column::autoDetect` as a single
+    /// pair, avoiding the intermediate state another reader could
+    /// see between two separate setter calls (e.g. `Type::Enumeration`
+    /// paired with the stale `autoDetect=true` from a `Type::Any`
+    /// column). The editor path uses this so the typed mutators land
+    /// together. No-op out of range.
+    void SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect);
+
     /// Toggle `Column::visible` for @p columnIndex. The column stays
     /// in the table; only the header section is hidden. No-op out
     /// of range.
@@ -273,8 +281,10 @@ public:
 
     /// Apply the `(srcIndex -> destIndex)` single-column move to a
     /// stored column index. Out-of-range inputs pass through
-    /// unchanged. Exposed so the app can remap its runtime filter
-    /// map with the same logic.
+    /// unchanged (this includes negative sentinels: `-1` for
+    /// `Sort::columnIndex` "no sort", or any other value below 0
+    /// that callers use to mean "not bound"). Exposed so the app
+    /// can remap its runtime filter map with the same logic.
     [[nodiscard]] static int RemapColumnIndexAfterMove(int columnIndex, int srcIndex, int destIndex);
 
     const LogConfiguration &Configuration() const;

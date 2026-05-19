@@ -1309,7 +1309,7 @@ bool LogTable::FinalizeAutoDetection()
     return promoted;
 }
 
-void LogTable::OnUserChangedColumnType(size_t columnIndex)
+void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType)
 {
     const auto &columns = mConfiguration.Configuration().columns;
     if (columnIndex >= columns.size())
@@ -1394,9 +1394,17 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex)
         EnumColumnHealth &health = mEnumColumnHealth[canonical];
         // Health survives across user edits, but a re-promote on a
         // previously-demoted column should start with a clean budget
-        // so an old breach doesn't immediately re-demote. Reset and
-        // let the encode pass below re-populate it.
-        health = EnumColumnHealth{};
+        // so an old breach doesn't immediately re-demote. A no-op
+        // transition within the enum family (e.g. toggling autoDetect
+        // on an already-Enumeration column, or sub-promoting
+        // Enumeration <-> Level) keeps the accumulated budget so the
+        // user doesn't lose hard-won evidence on a cosmetic edit.
+        const bool previousWasEnumLike = previousType == LogConfiguration::Type::Enumeration ||
+                                         previousType == LogConfiguration::Type::Level;
+        if (!previousWasEnumLike)
+        {
+            health = EnumColumnHealth{};
+        }
         if (!EncodeColumnRangeAsEnum(
                 mConfiguration.Configuration().columns[columnIndex], 0U, mData.Lines().size(), health
             ))
@@ -1404,8 +1412,9 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex)
             // Hard cap overflow: bail back to the user's pin would
             // contradict the explicit choice. Fall back to String so
             // sort/filter remain sane; the diagnostic surface will
-            // explain why.
-            DemoteColumnFromEnum(columnIndex);
+            // explain why. Editor-driven, so don't record into the
+            // batch-scoped demote list (see DemoteColumnFromEnum doc).
+            DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
             return;
         }
         if (column.type == LogConfiguration::Type::Level)
@@ -1421,6 +1430,21 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex)
     case LogConfiguration::Type::Floating:
     case LogConfiguration::Type::Number:
     {
+        // When leaving `Type::Time` we have to drop the strftime-style
+        // `printFormat`/`parseFormats` we seeded on entry. Leaving them
+        // in place breaks rendering for fresh rows: the new type's
+        // formatter (`fmt::vformat`) treats `"%F %H:%M:%S"` as a
+        // literal, so integer / float columns would render the format
+        // string for every row. Existing `Timestamp` slots remain --
+        // they keep formatting via `date::format` until the column is
+        // rewritten -- so the user still sees their old timestamps,
+        // just no longer auto-formatted into the new type's grammar.
+        if (previousType == LogConfiguration::Type::Time)
+        {
+            mConfiguration.SetColumnPrintFormat(columnIndex, "{}");
+            mConfiguration.SetColumnParseFormats(columnIndex, {});
+        }
+
         // Transition away from a dict-backed type. If the column
         // currently has dictionary state, materialise every
         // `DictRef` back to an `OwnedString` exactly like
@@ -1442,10 +1466,11 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex)
             // type-guard accepts the call, then restore the user's
             // pick. The intermediate write is invisible to anyone
             // outside this function; no `dataChanged` is emitted
-            // here either way.
+            // here either way. Editor-driven, so don't record into
+            // the batch-scoped demote list.
             const auto targetType = column.type;
             mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Enumeration);
-            DemoteColumnFromEnum(columnIndex);
+            DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
             mConfiguration.SetColumnType(columnIndex, targetType);
         }
         mEnumColumnHealth.erase(canonical);
@@ -1633,7 +1658,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     }
 }
 
-void LogTable::DemoteColumnFromEnum(size_t columnIndex)
+void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
 {
     const auto &columns = mConfiguration.Configuration().columns;
     if (columnIndex >= columns.size())
@@ -1661,8 +1686,10 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex)
     // `LogModel`'s post-batch detector can scope its `Demoted` emit
     // even on the silent `Type::Any + autoDetect -> Enumeration ->
     // String` transition (no dict survives on either side of the
-    // batch).
-    if (!keyIds.empty())
+    // batch). Skipped for editor-driven demotes (see header doc): the
+    // editor signals via `LogModel::ApplyColumnTypeEdit`, so adding
+    // here would risk a double-emit on the next `AppendBatch`.
+    if (recordForBatch && !keyIds.empty())
     {
         mLastBatchDemotedKeys.push_back(keyIds.front());
     }

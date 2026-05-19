@@ -5914,6 +5914,128 @@ private slots:
         QVERIFY2(health->matchingSlots < health->presentSlots, "Pinned-Integer string column must report mismatches");
     }
 
+    // Regression: editor-driven type edits that cross the
+    // Enumeration/Level boundary must emit `enumColumnsChanged`. The
+    // streaming auto-detect path emits the signal from
+    // `LogModel::AppendBatch`'s snapshot diff; before
+    // `LogModel::ApplyColumnTypeEdit` was introduced the editor path
+    // silently skipped it, leaving any active enum filter on the
+    // column wired to a now-stale bitset and the proxy's
+    // `EnumDictRank` cache uninvalidated.
+    //
+    // We drive both directions on the `category` column (4 unique
+    // values, well within `DEFAULT_ENUM_VALUE_CAP`) returned by
+    // `StreamFixtureForColumnTests`:
+    //   1. Enumeration -> String: should emit `Demoted`.
+    //   2. String -> Enumeration: should emit `Promoted`.
+    void TestColumnEditorTypeEditEmitsEnumColumnsChanged()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+        // The streaming detector auto-promotes `category` to
+        // `Enumeration` (the key is not a recognized level name, so
+        // it stops short of `Type::Level`). Verify the precondition
+        // so a future detector change doesn't silently disarm the
+        // test.
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+            loglib::LogConfiguration::Type::Enumeration
+        );
+
+        // (1) Enumeration -> String: editor demotes the column. The
+        // signal must fire so any active enum filter rebuilds onto
+        // the string-set fallback and the cached rank entry is dropped.
+        {
+            QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+            QVERIFY(enumSpy.isValid());
+            ColumnEditor editor(model, levelCol);
+            auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+            QVERIFY(typeCombo != nullptr);
+            // Index 2 is "String" -- mirrors TypeChoices() in
+            // column_editor.cpp; same convention as the other editor
+            // tests in this file.
+            constexpr int STRING_CHOICE_INDEX = 2;
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+            typeCombo->setCurrentIndex(STRING_CHOICE_INDEX);
+            editor.Apply();
+
+            QCOMPARE(
+                model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+                loglib::LogConfiguration::Type::String
+            );
+            bool sawDemote = false;
+            for (int i = 0; i < enumSpy.count(); ++i)
+            {
+                const QList<QVariant> args = enumSpy.at(i);
+                const auto reason = args.at(0).value<EnumColumnsChangeReason>();
+                const int columnIndex = args.at(1).toInt();
+                if (reason == EnumColumnsChangeReason::Demoted && columnIndex == levelCol)
+                {
+                    sawDemote = true;
+                    break;
+                }
+            }
+            QVERIFY2(
+                sawDemote, "Editor-driven Enumeration->String must emit enumColumnsChanged(Demoted, levelCol)"
+            );
+        }
+
+        // (2) String -> Enumeration: editor re-promotes the column.
+        // The signal must fire so any pre-existing string-fallback
+        // enum filter upgrades onto the new bitset fast path and the
+        // proxy refreshes its rank cache.
+        {
+            QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+            QVERIFY(enumSpy.isValid());
+            ColumnEditor editor(model, levelCol);
+            auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+            QVERIFY(typeCombo != nullptr);
+            constexpr int ENUMERATION_CHOICE_INDEX = 8;
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+            typeCombo->setCurrentIndex(ENUMERATION_CHOICE_INDEX);
+            editor.Apply();
+
+            QCOMPARE(
+                model->Configuration().columns[static_cast<size_t>(levelCol)].type,
+                loglib::LogConfiguration::Type::Enumeration
+            );
+            bool sawPromote = false;
+            for (int i = 0; i < enumSpy.count(); ++i)
+            {
+                const QList<QVariant> args = enumSpy.at(i);
+                const auto reason = args.at(0).value<EnumColumnsChangeReason>();
+                const int columnIndex = args.at(1).toInt();
+                if (reason == EnumColumnsChangeReason::Promoted && columnIndex == levelCol)
+                {
+                    sawPromote = true;
+                    break;
+                }
+            }
+            QVERIFY2(sawPromote, "Editor-driven String->Enumeration must emit enumColumnsChanged(Promoted, levelCol)");
+        }
+    }
+
+    // Regression: a no-op editor accept (user presses OK without
+    // touching the type combo) must not emit `enumColumnsChanged`.
+    // The signal triggers an O(n) filter rebuild downstream, so the
+    // editor path should short-circuit when nothing changed.
+    void TestColumnEditorNoTypeChangeIsSilent()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+        QVERIFY(enumSpy.isValid());
+        ColumnEditor editor(model, msgCol);
+        editor.Apply(); // Combo untouched -- still on the same choice.
+
+        QCOMPARE(enumSpy.count(), 0);
+    }
+
     // The Auto-detect choice at the top of the Type combo collapses
     // the (Type::Any, autoDetect=true) pair into a single user-
     // visible entry. Selecting it must restore both fields atomically

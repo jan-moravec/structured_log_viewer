@@ -210,13 +210,23 @@ public:
     /// index.
     void NotifyColumnEdited(int columnIndex);
 
-    /// Reconcile already-loaded row data with a user-driven type
-    /// change at @p columnIndex (back-fill Time/Enumeration/Level,
-    /// drop dictionary state when leaving an enum-shaped type).
-    /// Delegates to `LogTable::OnUserChangedColumnType` and emits
-    /// `columnHealthChanged` afterwards because slot tags have
-    /// shifted. Out-of-range @p columnIndex is a silent no-op.
-    void NotifyColumnTypeEdited(int columnIndex);
+    /// Apply a user-driven `(type, autoDetect)` edit at @p columnIndex
+    /// as a single transaction:
+    ///   1. Write the new pair atomically through the configuration
+    ///      manager (no intermediate `(type, autoDetect)` mismatch is
+    ///      visible to other code).
+    ///   2. Reconcile already-loaded rows with the new type
+    ///      (back-fill Time/Enumeration/Level, drop dictionary state
+    ///      when leaving an enum-shaped type, clear leftover Time
+    ///      format strings when leaving `Type::Time`).
+    ///   3. Emit `enumColumnsChanged` when the edit crosses the
+    ///      enum/level boundary so `LogFilterModel::InvalidateEnumRanks`
+    ///      and `MainWindow::UpdateFilters` learn about the change.
+    ///      The auto-detect streaming path emits the same signal from
+    ///      `AppendBatch`; this method is the editor-path equivalent.
+    ///   4. Refresh `ColumnHealth` and emit `columnHealthChanged`.
+    /// Out-of-range @p columnIndex is a silent no-op.
+    void ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect);
 
     /// Canonical-level -> raw-dictionary-bytes mapping captured just
     /// before a `Type::Level` column lost its dictionary in the most

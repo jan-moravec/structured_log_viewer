@@ -830,10 +830,14 @@ QString BuildHeaderTooltip(
     const loglib::LogConfiguration::Column &column, std::optional<loglib::LogTable::ColumnTypeHealth> health
 )
 {
-    QString tooltip;
+    // Build the lines in order and join with `<br/>` so a missing
+    // section (empty header, no keys) never produces a leading blank
+    // line. Tooltip is rendered as rich text by Qt by default when
+    // it contains HTML tags.
+    QStringList lines;
     if (!column.header.empty())
     {
-        tooltip = QStringLiteral("<b>%1</b>").arg(QString::fromStdString(column.header).toHtmlEscaped());
+        lines.append(QStringLiteral("<b>%1</b>").arg(QString::fromStdString(column.header).toHtmlEscaped()));
     }
     if (!column.keys.empty())
     {
@@ -843,9 +847,10 @@ QString BuildHeaderTooltip(
         {
             keys.append(QString::fromStdString(k).toHtmlEscaped());
         }
-        tooltip += QStringLiteral("<br/>keys: %1").arg(keys.join(QStringLiteral(", ")));
+        lines.append(QStringLiteral("keys: %1").arg(keys.join(QStringLiteral(", "))));
     }
-    tooltip += QStringLiteral("<br/>type: %1").arg(FormatTypeName(column.type, column.autoDetect));
+    lines.append(QStringLiteral("type: %1").arg(FormatTypeName(column.type, column.autoDetect)));
+    QString tooltip = lines.join(QStringLiteral("<br/>"));
 
     if (health.has_value())
     {
@@ -912,18 +917,64 @@ void LogModel::NotifyColumnEdited(int columnIndex)
     }
 }
 
-void LogModel::NotifyColumnTypeEdited(int columnIndex)
+void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Type newType, bool newAutoDetect)
 {
     if (columnIndex < 0 || columnIndex >= columnCount())
     {
         return;
     }
-    mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex));
+    // Capture the pre-edit type *before* writing the new pair so the
+    // signal-decision below sees the real transition. Two separate
+    // setters would briefly expose `(newType, oldAutoDetect)` to any
+    // observer; `SetColumnTypePair` writes both atomically.
+    const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+    const auto previousType = columnsBefore[static_cast<size_t>(columnIndex)].type;
+    const bool previousAutoDetect = columnsBefore[static_cast<size_t>(columnIndex)].autoDetect;
+
+    if (previousType == newType && previousAutoDetect == newAutoDetect)
+    {
+        // No-op accept: avoid the encode/back-fill walks and the
+        // O(columns) health refresh entirely.
+        return;
+    }
+
+    mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
+    mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
+
+    // Re-read the *effective* type: `OnUserChangedColumnType` may
+    // bail to `Type::String` on hard-cap overflow during enum
+    // encoding, so trust the post-walk column, not `newType`.
+    const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
+    const auto effectiveType = columnsAfter[static_cast<size_t>(columnIndex)].type;
+    using Type = loglib::LogConfiguration::Type;
+    const bool wasEnumLike = previousType == Type::Enumeration || previousType == Type::Level;
+    const bool isEnumLike = effectiveType == Type::Enumeration || effectiveType == Type::Level;
+    // Classify the transition across the enum/level boundary. Same
+    // signal vocabulary as `LogModel::AppendBatch`'s snapshot diff so
+    // the GUI's `enumColumnsChanged` handler doesn't need to know
+    // whether the change came from streaming or from the editor.
+    //   - Promoted: fresh entry into the enum family, OR sub-promotion
+    //     `Enumeration -> Level` (filter UI re-renders against the
+    //     level picker).
+    //   - Demoted: full exit from the enum family, OR sub-demotion
+    //     `Level -> Enumeration` (drops the level rank cache and
+    //     reshapes the filter picker, same rebuild gate as a real
+    //     demote).
+    const bool isPromote =
+        (!wasEnumLike && isEnumLike) || (previousType == Type::Enumeration && effectiveType == Type::Level);
+    const bool isDemote =
+        (wasEnumLike && !isEnumLike) || (previousType == Type::Level && effectiveType == Type::Enumeration);
+    if (isPromote)
+    {
+        emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, columnIndex);
+    }
+    else if (isDemote)
+    {
+        emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, columnIndex);
+    }
+
     // The encode/back-fill walks change slot tags, so the health
-    // cache is stale. Callers typically follow up with
-    // `NotifyColumnEdited` to push the view-side repaint; we keep
-    // those concerns separate so a caller that already plans a full
-    // model reset doesn't double-emit.
+    // cache is stale.
     RefreshColumnHealth();
 }
 
