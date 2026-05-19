@@ -437,12 +437,14 @@ MainWindow::MainWindow(QWidget *parent)
     mRecordDetailDock->hide();
     // Re-target the UI action's checkable state at the dock's own
     // `toggleViewAction`: we keep `actionToggleRecordDetails` for the
-    // menu+shortcut wiring and forward through.
+    // menu+shortcut wiring and forward through. The
+    // `visibilityChanged` hook below covers the actual pinning logic
+    // for both this path AND the title-bar X reopen, so the lambda
+    // here is intentionally lean.
     connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
         mRecordDetailDock->setVisible(on);
         if (on)
         {
-            UpdateRecordDetailsFromSelection();
             mRecordDetailDock->raise();
         }
     });
@@ -1803,11 +1805,14 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
     {
         return;
     }
-    // Sweep `nullptr` entries first so the list does not grow
-    // unbounded across a long session of open/close cycles.
-    mRecordDetailWindows.removeAll(QPointer<RecordDetailWindow>(nullptr));
     auto *window = new RecordDetailWindow(snapshot, this);
     mRecordDetailWindows.append(QPointer<RecordDetailWindow>(window));
+    // Self-clean the tracker as soon as the user closes the
+    // snapshot (`Qt::WA_DeleteOnClose` -> destroyed) so the list
+    // doesn't accumulate null `QPointer`s across a long session.
+    connect(window, &QObject::destroyed, this, [this]() {
+        mRecordDetailWindows.removeAll(QPointer<RecordDetailWindow>(nullptr));
+    });
     window->show();
     window->raise();
     window->activateWindow();

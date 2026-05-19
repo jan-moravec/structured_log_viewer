@@ -3,12 +3,18 @@
 #include "log_model.hpp"
 #include "record_detail_widget.hpp"
 
+#include <QAbstractItemModel>
+#include <QModelIndex>
 #include <QObject>
 
 namespace
 {
-constexpr int DOCK_INITIAL_WIDTH = 400;
-}
+/// Floor for the dock's width. Picked so the field/value table
+/// stays readable without forcing the central log view too narrow
+/// on small displays. `addDockWidget` still picks a larger initial
+/// size if the dock's `sizeHint()` is bigger.
+constexpr int DOCK_MIN_WIDTH = 280;
+} // namespace
 
 RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
     : QDockWidget(QObject::tr("Record Details"), parent), mModel(model)
@@ -22,11 +28,37 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
 
     mWidget = new RecordDetailWidget(this);
     setWidget(mWidget);
-    setMinimumWidth(DOCK_INITIAL_WIDTH);
+    setMinimumWidth(DOCK_MIN_WIDTH);
 
     connect(mWidget, &RecordDetailWidget::openInNewWindowRequested, this, &RecordDetailDock::OnOpenInNewWindowRequested);
 
+    // Refresh after FIFO eviction so the summary's "Row N" label
+    // tracks the row's new position, and so the placeholder kicks
+    // in when the pinned row was evicted itself
+    // (`QPersistentModelIndex::isValid()` flips to false). Qt fires
+    // `rowsRemoved` on the source model after the removal commits.
+    if (mModel != nullptr)
+    {
+        connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int, int) {
+            if (mCurrentSourceIndex.isValid())
+            {
+                RefreshFromModel();
+            }
+            else
+            {
+                // Pinned row was inside the evicted range: show the
+                // placeholder explaining that the record is gone.
+                Clear();
+            }
+        });
+    }
+
     Clear();
+}
+
+int RecordDetailDock::CurrentSourceRow() const noexcept
+{
+    return mCurrentSourceIndex.isValid() ? mCurrentSourceIndex.row() : -1;
 }
 
 void RecordDetailDock::ShowSourceRow(int sourceRow)
@@ -41,13 +73,13 @@ void RecordDetailDock::ShowSourceRow(int sourceRow)
         Clear();
         return;
     }
-    mCurrentSourceRow = sourceRow;
+    mCurrentSourceIndex = QPersistentModelIndex(mModel->index(sourceRow, 0));
     RefreshFromModel();
 }
 
 void RecordDetailDock::Clear()
 {
-    mCurrentSourceRow = -1;
+    mCurrentSourceIndex = QPersistentModelIndex();
     RecordDetailContent placeholder;
     placeholder.valid = false;
     placeholder.placeholderText =
@@ -57,18 +89,18 @@ void RecordDetailDock::Clear()
 
 void RecordDetailDock::RefreshFromModel()
 {
-    if (!mModel || mCurrentSourceRow < 0)
+    if (!mModel || !mCurrentSourceIndex.isValid())
     {
         Clear();
         return;
     }
-    mWidget->SetContent(BuildRecordDetailContent(*mModel, mCurrentSourceRow));
+    mWidget->SetContent(BuildRecordDetailContent(*mModel, mCurrentSourceIndex.row()));
 }
 
 void RecordDetailDock::OnOpenInNewWindowRequested()
 {
-    // Owner handles the actual window creation; we relay with the
-    // current row so the owner can build a frozen snapshot tied to
-    // that record.
-    emit openInNewWindowRequested(mCurrentSourceRow);
+    // Relay the live row through the persistent index so the owner
+    // builds a snapshot of the actual record (post-eviction shifts
+    // and all) rather than a possibly-stale integer.
+    emit openInNewWindowRequested(CurrentSourceRow());
 }

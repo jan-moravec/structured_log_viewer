@@ -10,13 +10,21 @@ class QGroupBox;
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
+class QResizeEvent;
 class QTableWidget;
 
 /// Plain data carried by a single record-detail view: the row summary,
-/// the (header, formatted value) pairs for every configured column, and
-/// the pretty-printed original JSON bytes. `valid == false` means the
-/// detail view is a placeholder (no row selected, evicted by retention,
-/// etc.) and `placeholderText` is the explanation.
+/// the (header, formatted value) pairs for every configured column,
+/// the original on-disk bytes (`rawJson`) and a pretty-printed
+/// rendering of those bytes (`formattedJson`). `valid == false` means
+/// the detail view is a placeholder (no row selected, evicted by
+/// retention, etc.) and `placeholderText` is the explanation.
+///
+/// `rawJson` is what the "Copy raw JSON" button writes to the
+/// clipboard -- exactly the byte sequence the parser ingested. The
+/// QPlainTextEdit in the widget displays `formattedJson` so users
+/// can read deeply-nested objects; users wanting to copy that
+/// formatted view can select+Ctrl+C inside the edit directly.
 ///
 /// The struct deliberately owns all its strings so a snapshot copy
 /// captured at one point in time keeps rendering after the underlying
@@ -26,6 +34,7 @@ struct RecordDetailContent
     QString summary;
     QList<QPair<QString, QString>> fields;
     QString rawJson;
+    QString formattedJson;
     bool valid = false;
     QString placeholderText;
 };
@@ -94,9 +103,21 @@ signals:
     /// `RecordDetailWindow`.
     void openInNewWindowRequested();
 
+protected:
+    /// Re-flow row heights when our value column resizes. Word-wrap
+    /// is on so the wrapped height of a long single-line value
+    /// depends on the available column width; recomputing on resize
+    /// keeps long messages from being clipped to a single row.
+    void resizeEvent(QResizeEvent *event) override;
+
 private slots:
     void CopyAsJsonClicked() const;
     void CopyAsKeyValueClicked() const;
+    /// Ctrl+C inside the fields table. Writes the selected cells
+    /// to the clipboard as TSV (one row per line, tab between
+    /// key/value columns), reading the underlying field text so
+    /// the `<empty>` decoration isn't copied verbatim.
+    void CopyFieldsSelectionToClipboard() const;
 
 private:
     void PopulateUi();

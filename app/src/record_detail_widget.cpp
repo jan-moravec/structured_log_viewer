@@ -18,17 +18,21 @@
 #include <QHeaderView>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QKeySequence>
 #include <QLabel>
+#include <QList>
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QShortcut>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTableWidgetSelectionRange>
 #include <QVBoxLayout>
 
 #include <cstddef>
-#include <stdexcept>
+#include <exception>
 #include <string>
 #include <utility>
 
@@ -36,7 +40,6 @@ namespace
 {
 constexpr int OUTER_MARGIN = 12;
 constexpr int SECTION_SPACING = 8;
-constexpr int ROW_VERTICAL_PADDING = 4;
 constexpr int RAW_MIN_HEIGHT = 120;
 constexpr int RAW_MAX_HEIGHT = 320;
 constexpr int FIELDS_KEY_COLUMN = 0;
@@ -88,8 +91,9 @@ QTableWidgetItem *MakeReadOnlyKeyItem(const QString &text)
 QTableWidgetItem *MakeReadOnlyValueItem(const QString &text)
 {
     auto *item = new QTableWidgetItem(text);
-    // Selectable so the user can copy a single value with Ctrl+C
-    // inside the table, but not editable.
+    // Selectable so the user can copy values with Ctrl+C inside
+    // the table (handled by the widget-scope `QShortcut` wired in
+    // `RecordDetailWidget`), but not editable.
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
     if (text.isEmpty())
     {
@@ -151,14 +155,16 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
         {
             rawLineBytes = source->RawLine(line.LineId());
         }
-        catch (const std::out_of_range &)
+        catch (const std::exception &)
         {
-            // Evicted from a streaming source: keep the parsed fields
-            // visible but mark the raw section empty.
+            // Evicted from a streaming source or any other failure
+            // path the line source documents -- keep the parsed
+            // fields visible but mark the raw section empty.
             rawLineBytes.clear();
         }
     }
-    content.rawJson = PrettyPrintJson(rawLineBytes);
+    content.rawJson = QString::fromUtf8(QByteArray::fromStdString(rawLineBytes));
+    content.formattedJson = PrettyPrintJson(rawLineBytes);
 
     QString summary = QObject::tr("Row %1").arg(sourceRow + 1);
     if (const int timeCol = FindTimeColumn(configuration); timeCol >= 0)
@@ -270,6 +276,14 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     connect(mCopyKvButton, &QPushButton::clicked, this, &RecordDetailWidget::CopyAsKeyValueClicked);
     connect(mOpenInNewWindowButton, &QPushButton::clicked, this, &RecordDetailWidget::openInNewWindowRequested);
 
+    // Ctrl+C on a selection inside the fields table copies the
+    // selected cells as TSV. QTableWidget has no built-in copy
+    // shortcut, so we wire one explicitly; the scope is the table
+    // itself so it doesn't shadow the host window's Ctrl+C.
+    auto *copyShortcut = new QShortcut(QKeySequence::Copy, mFieldsTable);
+    copyShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(copyShortcut, &QShortcut::activated, this, &RecordDetailWidget::CopyFieldsSelectionToClipboard);
+
     PopulateUi();
 }
 
@@ -314,24 +328,36 @@ void RecordDetailWidget::PopulateUi()
     mSummaryLabel->setText(mContent.summary);
 
     mFieldsTable->setRowCount(static_cast<int>(mContent.fields.size()));
-    const int derivedRowHeight = mFieldsTable->fontMetrics().height() + (ROW_VERTICAL_PADDING * 2);
     for (int i = 0; i < static_cast<int>(mContent.fields.size()); ++i)
     {
         const auto &pair = mContent.fields[i];
         mFieldsTable->setItem(i, FIELDS_KEY_COLUMN, MakeReadOnlyKeyItem(pair.first));
         mFieldsTable->setItem(i, FIELDS_VALUE_COLUMN, MakeReadOnlyValueItem(pair.second));
-        // Grow row height for multi-line values so the cell shows
-        // everything without scrolling internally.
-        const int newlines = static_cast<int>(pair.second.count(QLatin1Char('\n')));
-        const int rowHeight = newlines > 0 ? derivedRowHeight * (newlines + 1) : derivedRowHeight;
-        mFieldsTable->setRowHeight(i, rowHeight);
     }
+    // `resizeRowsToContents` honours both explicit newlines AND
+    // word-wrap (since the table has `setWordWrap(true)`), so long
+    // single-line values no longer get clipped at one row tall.
+    // Run again on `resizeEvent` so a column-width change reflows
+    // the row heights too.
+    mFieldsTable->resizeRowsToContents();
 
-    mRawEdit->setPlainText(mContent.rawJson);
-    // Empty raw JSON (eviction / parse failure with empty bytes)
+    mRawEdit->setPlainText(mContent.formattedJson);
+    // Empty raw bytes (eviction / parse failure with empty bytes)
     // collapses the group implicitly because the toggle below
     // hides the edit; we leave the group visible so the user can
     // see that there is no raw text available.
+}
+
+void RecordDetailWidget::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0)
+    {
+        // Re-flow wrapped cells when the value column changes width.
+        // Cheap for typical column counts (~20-50) and avoids the
+        // "long value clipped to one line" failure mode.
+        mFieldsTable->resizeRowsToContents();
+    }
 }
 
 void RecordDetailWidget::CopyAsJsonClicked() const
@@ -340,6 +366,10 @@ void RecordDetailWidget::CopyAsJsonClicked() const
     {
         return;
     }
+    // Copy the original on-disk bytes, not the pretty-printed
+    // display form -- pasting into another tool should round-trip
+    // the JSON the parser saw. Users who want the formatted text
+    // can select + Ctrl+C inside the raw-JSON edit directly.
     QApplication::clipboard()->setText(mContent.rawJson);
 }
 
@@ -356,4 +386,51 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
         lines.append(QStringLiteral("%1: %2").arg(pair.first, pair.second));
     }
     QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+}
+
+void RecordDetailWidget::CopyFieldsSelectionToClipboard() const
+{
+    if (mFieldsTable == nullptr)
+    {
+        return;
+    }
+    const QList<QTableWidgetSelectionRange> ranges = mFieldsTable->selectedRanges();
+    if (ranges.isEmpty())
+    {
+        return;
+    }
+    // Read the underlying field text rather than the table-item
+    // display text so the placeholder "<empty>" decoration in
+    // `MakeReadOnlyValueItem` doesn't leak into the clipboard
+    // copy. Use the model `Content().fields` as the source of
+    // truth.
+    QStringList rowLines;
+    for (const QTableWidgetSelectionRange &range : ranges)
+    {
+        for (int row = range.topRow(); row <= range.bottomRow(); ++row)
+        {
+            if (row < 0 || row >= static_cast<int>(mContent.fields.size()))
+            {
+                continue;
+            }
+            QStringList cells;
+            for (int col = range.leftColumn(); col <= range.rightColumn(); ++col)
+            {
+                if (col == FIELDS_KEY_COLUMN)
+                {
+                    cells.append(mContent.fields[row].first);
+                }
+                else if (col == FIELDS_VALUE_COLUMN)
+                {
+                    cells.append(mContent.fields[row].second);
+                }
+            }
+            rowLines.append(cells.join(QLatin1Char('\t')));
+        }
+    }
+    if (rowLines.isEmpty())
+    {
+        return;
+    }
+    QApplication::clipboard()->setText(rowLines.join(QLatin1Char('\n')));
 }

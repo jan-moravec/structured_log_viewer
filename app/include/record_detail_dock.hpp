@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDockWidget>
+#include <QPersistentModelIndex>
 #include <QPointer>
 
 class LogModel;
@@ -14,6 +15,20 @@ class RecordDetailWidget;
 /// `Clear()` on `modelReset`. The widget always reads through
 /// `BuildRecordDetailContent` from the live `LogModel`, so streaming
 /// FIFO eviction is reflected the next time the selection updates.
+///
+/// The pinned row is tracked as a `QPersistentModelIndex` against the
+/// source model, not as a raw int. Qt keeps the index in lockstep
+/// with `rowsInserted` / `rowsRemoved` (FIFO eviction in streaming
+/// mode), so:
+///   - if the pinned row is evicted, the index goes invalid and
+///     `CurrentSourceRow()` returns -1 -- "Open in new window" then
+///     bails instead of snapshotting a different record;
+///   - if rows are evicted from the front while the pinned row
+///     survives, the persistent index follows the shift, so the
+///     content stays bound to the same logical record.
+/// The dock also listens to `rowsRemoved` to refresh its display
+/// when the pinned row is still alive but its position changed (the
+/// summary label uses the row number).
 class RecordDetailDock : public QDockWidget
 {
     Q_OBJECT
@@ -31,11 +46,10 @@ public:
     /// `LogModel::modelReset`.
     void Clear();
 
-    /// Current source row, or -1 if the dock holds a placeholder.
-    [[nodiscard]] int CurrentSourceRow() const noexcept
-    {
-        return mCurrentSourceRow;
-    }
+    /// Current source row, or -1 if the dock holds a placeholder
+    /// (or the persistent index went invalid because the pinned row
+    /// was evicted).
+    [[nodiscard]] int CurrentSourceRow() const noexcept;
 
     [[nodiscard]] RecordDetailWidget *Widget() const noexcept
     {
@@ -55,9 +69,10 @@ private:
 
     QPointer<LogModel> mModel;
     RecordDetailWidget *mWidget = nullptr;
-    /// Source-model row currently being displayed; -1 means
-    /// placeholder. Owners are expected to push every selection
-    /// change through `ShowSourceRow`, so this stays in sync without
-    /// the dock subscribing to model signals directly.
-    int mCurrentSourceRow = -1;
+    /// Pinned row as a persistent index against the source model.
+    /// Invalid means "no row pinned" or "the pinned row was
+    /// evicted". `Qt::DisplayRole` etc. are read through
+    /// `BuildRecordDetailContent` so we always reflect the latest
+    /// table state when refreshing.
+    QPersistentModelIndex mCurrentSourceIndex;
 };

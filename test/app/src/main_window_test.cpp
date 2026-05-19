@@ -39,6 +39,7 @@
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
@@ -8888,12 +8889,19 @@ private slots:
         QVERIFY(sawLevel);
         QVERIFY(sawMessage);
 
-        // Pretty-printed JSON contains a literal newline so the user
-        // sees one key per line. Also verify that the original keys
-        // round-tripped through `QJsonDocument`.
-        QVERIFY2(row1.rawJson.contains(QLatin1Char('\n')), "raw JSON must be indented");
+        // `rawJson` is the on-disk byte sequence -- single line for
+        // the fixture above, no inserted indentation.
+        QVERIFY2(
+            !row1.rawJson.contains(QLatin1Char('\n')),
+            "raw JSON must reflect on-disk bytes (no inserted indentation)"
+        );
         QVERIFY(row1.rawJson.contains(QStringLiteral("\"message\"")));
         QVERIFY(row1.rawJson.contains(QStringLiteral("\"boom\"")));
+        // `formattedJson` is the pretty-printed rendering -- multiple
+        // lines, same keys.
+        QVERIFY2(row1.formattedJson.contains(QLatin1Char('\n')), "formatted JSON must be indented");
+        QVERIFY(row1.formattedJson.contains(QStringLiteral("\"message\"")));
+        QVERIFY(row1.formattedJson.contains(QStringLiteral("\"boom\"")));
     }
 
     // Negative / out-of-range source rows must produce an invalid
@@ -8930,7 +8938,8 @@ private slots:
         content.summary = QStringLiteral("Row 1");
         content.fields.append({QStringLiteral("level"), QStringLiteral("info")});
         content.fields.append({QStringLiteral("message"), QStringLiteral("hello")});
-        content.rawJson = QStringLiteral("{\n  \"level\": \"info\"\n}");
+        content.rawJson = QStringLiteral(R"({"level": "info", "message": "hello"})");
+        content.formattedJson = QStringLiteral("{\n  \"level\": \"info\",\n  \"message\": \"hello\"\n}");
         widget.SetContent(content);
 
         QTableWidget *table = widget.FieldsTableForTest();
@@ -8942,9 +8951,11 @@ private slots:
         QCOMPARE(table->item(1, 1)->text(), QStringLiteral("hello"));
         QVERIFY(table->isVisible() || !widget.isVisible()); // visible flag set, even if widget hidden
 
+        // The on-screen edit shows the *formatted* JSON, not the
+        // compact raw bytes.
         QPlainTextEdit *rawEdit = widget.RawEditForTest();
         QVERIFY(rawEdit != nullptr);
-        QCOMPARE(rawEdit->toPlainText(), content.rawJson);
+        QCOMPARE(rawEdit->toPlainText(), content.formattedJson);
 
         // Flip to placeholder content: the fields table should be
         // hidden and the placeholder text should be set to the
@@ -8963,6 +8974,39 @@ private slots:
         QVERIFY(popOutButton->isVisibleTo(&widget));
         widget.SetOpenInNewWindowVisible(false);
         QVERIFY(!popOutButton->isVisibleTo(&widget));
+    }
+
+    // Verify the "Copy raw JSON" button writes the on-disk byte form
+    // (compact) to the clipboard, not the pretty-printed display
+    // text. Regression for the contract documented on
+    // `RecordDetailContent`.
+    static void TestRecordDetailWidgetCopyRawJsonPushesRawBytes()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("k"), QStringLiteral("v")});
+        content.rawJson = QStringLiteral(R"({"k": "v"})");
+        content.formattedJson = QStringLiteral("{\n  \"k\": \"v\"\n}");
+        widget.SetContent(content);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        QPushButton *copyButton = widget.CopyJsonButtonForTest();
+        QVERIFY(copyButton != nullptr);
+        copyButton->click();
+        QCoreApplication::processEvents();
+
+        const QString pasted = clipboard->text();
+        QCOMPARE(pasted, content.rawJson);
+        QVERIFY2(
+            !pasted.contains(QLatin1Char('\n')),
+            "Copy raw JSON must push the compact on-disk bytes, not the formatted display text"
+        );
     }
 
     // The dock pins to a source row via `ShowSourceRow` and resets to
@@ -9206,6 +9250,181 @@ private slots:
         {
             window->close();
         }
+    }
+
+    // The `QAbstractItemView::doubleClicked` -> `ShowRecordDetailsForProxyIndex`
+    // connection lives in `MainWindow`'s constructor; this test
+    // exercises it end-to-end by emitting the signal through the
+    // meta-object system. Without this, removing the `connect()` line
+    // would silently disable the double-click flow.
+    void TestRecordDetailDockOpensViaDoubleClickedSignal()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+            QStringLiteral(R"({"k": "gamma"})"),
+        });
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(model != nullptr);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *table = mWindow->findChild<LogTableView *>();
+        QVERIFY(dock != nullptr);
+        QVERIFY(table != nullptr);
+        QVERIFY(dock->isHidden());
+
+        // Emit `doubleClicked` via the meta-object so the
+        // `connect(...)` in MainWindow gets exercised. Picking proxy
+        // row 2 (source row 2 too, after the default no-op sort).
+        const QModelIndex proxyIndex = table->model()->index(2, 0);
+        QVERIFY(proxyIndex.isValid());
+        const bool emitted = QMetaObject::invokeMethod(
+            table, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, proxyIndex)
+        );
+        QVERIFY2(emitted, "doubleClicked signal must be invokable via the meta-object");
+
+        QVERIFY2(!dock->isHidden(), "double-click on a row must surface the dock");
+        QCOMPARE(dock->CurrentSourceRow(), 2);
+        bool sawGamma = false;
+        for (const auto &pair : dock->Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("k") && pair.second == QStringLiteral("gamma"))
+            {
+                sawGamma = true;
+            }
+        }
+        QVERIFY(sawGamma);
+
+        model->Reset();
+    }
+
+    // FIFO eviction shifts the source-row index of every surviving
+    // row. With `QPersistentModelIndex` powering the pin, the dock
+    // must keep displaying the same logical record (now at a lower
+    // row index) and never expose a stale row number through
+    // `CurrentSourceRow()` -- so "Open in new window" snapshots the
+    // right record after eviction.
+    static void TestRecordDetailDockTracksFifoEviction()
+    {
+        LogModel model;
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        model.SetRetentionCap(100);
+
+        loglib::KeyIndex &keys = model.Sink()->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Seed exactly the cap (no eviction yet) and pin row 50.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 100, /*declareNewKey=*/true));
+        QCOMPARE(model.rowCount(), 100);
+
+        RecordDetailDock dock(&model);
+        dock.ShowSourceRow(50);
+        QCOMPARE(dock.CurrentSourceRow(), 50);
+        // The pinned record has `value == 51` (1-indexed line ids,
+        // batch started at firstLineId=1 so row 50 holds line 51).
+        QString pinnedValue;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("value"))
+            {
+                pinnedValue = pair.second;
+            }
+        }
+        QCOMPARE(pinnedValue, QStringLiteral("51"));
+
+        // Append another batch of 50 -> rowCount = 150 -> 50 evicted
+        // from the front. Surviving lines are 51..150 i.e. proxy
+        // rows 0..99. The pinned record (line 51) now sits at row 0.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 101, 50, /*declareNewKey=*/false));
+        QCOMPARE(model.rowCount(), 100);
+        QCOMPARE(dock.CurrentSourceRow(), 0);
+        // Dock refreshes via `rowsRemoved`; content must reflect the
+        // same record (line 51), not whatever new row is now at the
+        // *old* index.
+        QString shiftedValue;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("value"))
+            {
+                shiftedValue = pair.second;
+            }
+        }
+        QCOMPARE(shiftedValue, QStringLiteral("51"));
+
+        // Evict the pinned record itself: append 100 more lines so
+        // lines 51..150 get evicted and only 151..250 survive. The
+        // persistent index goes invalid; the dock must fall back to
+        // the placeholder and `CurrentSourceRow()` must return -1.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 151, 100, /*declareNewKey=*/false));
+        QCOMPARE(model.rowCount(), 100);
+        QCOMPARE(dock.CurrentSourceRow(), -1);
+        QVERIFY(!dock.Widget()->Content().valid);
+
+        model.EndStreaming(false);
+    }
+
+    // Closing a snapshot window must drop its `QPointer` from the
+    // tracker immediately (via `QObject::destroyed`), not just at the
+    // next pop-out. Regression for the "list grows with stale null
+    // QPointers" sweep behaviour.
+    void TestOpenRecordDetailWindowClearsTrackerOnClose()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "one"})"),
+        });
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(model != nullptr);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+
+        // Baseline: no live snapshots.
+        QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
+
+        // Open + immediately close two snapshots; the tracker should
+        // be empty by the time we look (the `destroyed` slot runs
+        // after `WA_DeleteOnClose` deletes the widget).
+        mWindow->OpenRecordDetailWindow(0);
+        mWindow->OpenRecordDetailWindow(0);
+        auto windows = mWindow->findChildren<RecordDetailWindow *>();
+        QCOMPARE(windows.size(), 2);
+        for (RecordDetailWindow *window : windows)
+        {
+            window->close();
+        }
+        // `deleteLater` from `WA_DeleteOnClose` runs on the event
+        // loop; flush it before sampling the tracker.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            mWindow->findChildren<RecordDetailWindow *>().isEmpty(),
+            "closed snapshots must have been deleted, no live children remain"
+        );
+
+        model->Reset();
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`

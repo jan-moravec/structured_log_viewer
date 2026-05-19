@@ -252,7 +252,9 @@ Inside the pane:
 - A bold header summarises the row (`Row N` plus the formatted timestamp when a `Time` column exists).
 - A two-column **Field / Value** table lists every configured column, including columns hidden from the main view, using the same formatted output the table cells show but without single-line compaction so nested objects stay readable.
 - A collapsible **Raw JSON** section reveals the on-disk line, pretty-printed via `QJsonDocument` (with a fall-back to the original bytes for non-JSON lines).
-- **Copy raw JSON** copies the pretty-printed JSON; **Copy as key/value** copies the field table as `header: value` lines.
+- **Copy raw JSON** copies the **original on-disk bytes** of the line (compact, exactly as the parser ingested) so the clipboard text round-trips back into another tool unchanged. To copy the pretty-printed text instead, select inside the Raw JSON edit and press `Ctrl+C`.
+- **Copy as key/value** copies the field table as `header: value` lines.
+- Inside the Field/Value table, `Ctrl+C` copies the selected cells as tab-separated values.
 
 To pin a record for side-by-side comparison, click **Open in new window** inside the pane. That spawns a top-level snapshot window with a frozen copy of the displayed content — you can open as many as you like, and each one survives streaming-mode FIFO eviction, sort, filter, or even a full `File → Open…` reset because its strings are deep-copied at creation. Close each snapshot with the window's normal close button when you're done.
 
