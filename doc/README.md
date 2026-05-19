@@ -237,6 +237,25 @@ Duplicate header names are disambiguated as `header [key]` in both menus so colu
 - Click a row to select it. Hold `Ctrl`/`Shift` to extend the selection.
 - **Edit → Copy** (`Ctrl+C`) copies the selected rows as the **original JSON text** (one line per row), so you can paste them back into another tool. Cell-level copy is not performed — rows are always copied whole.
 
+### Inspecting a Record
+
+For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field on its own row plus the pretty-printed original JSON. Open it any of three ways:
+
+- **Double-click** any row in the table.
+- **View → Record Details** (`Ctrl+I`).
+- Click the dock back open if you had closed it via its title-bar `X`.
+
+The pane is a Qt dock widget: drag the title bar to snap it to the left, right, or bottom of the window, or drop it outside the window to float it as an independent top-level window. Once visible, the pane follows the table's current row — arrow-key navigation updates it live.
+
+Inside the pane:
+
+- A bold header summarises the row (`Row N` plus the formatted timestamp when a `Time` column exists).
+- A two-column **Field / Value** table lists every configured column, including columns hidden from the main view, using the same formatted output the table cells show but without single-line compaction so nested objects stay readable.
+- A collapsible **Raw JSON** section reveals the on-disk line, pretty-printed via `QJsonDocument` (with a fall-back to the original bytes for non-JSON lines).
+- **Copy raw JSON** copies the pretty-printed JSON; **Copy as key/value** copies the field table as `header: value` lines.
+
+To pin a record for side-by-side comparison, click **Open in new window** inside the pane. That spawns a top-level snapshot window with a frozen copy of the displayed content — you can open as many as you like, and each one survives streaming-mode FIFO eviction, sort, filter, or even a full `File → Open…` reset because its strings are deep-copied at creation. Close each snapshot with the window's normal close button when you're done.
+
 ## Searching
 
 Open the Find bar with **Edit → Find** (`Ctrl+F`). It appears at the bottom of the window with:
@@ -334,6 +353,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Save configuration         | `Ctrl+S`       |
 | Find                       | `Ctrl+F`       |
 | Copy selected rows as JSON | `Ctrl+C`       |
+| Toggle Record Details pane | `Ctrl+I`       |
 | Pause / Resume stream      | `Ctrl+Shift+P` |
 | Toggle Follow newest       | `Ctrl+Shift+T` |
 | Stop stream                | `Ctrl+Shift+S` |
