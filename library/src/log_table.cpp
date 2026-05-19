@@ -276,6 +276,29 @@ void LogTable::Reset()
     RefreshSnapshotEnumKeys();
 }
 
+void LogTable::OnConfigurationReloaded()
+{
+    // Caller (`LogModel::NotifyConfigurationReplaced`) has just
+    // overwritten `mConfiguration` via
+    // `LogConfigurationManager::Load`. `Reset()` (called before
+    // `Load` on the GUI path) already cleared the snapshot caches
+    // against the *previous* configuration, so re-run the same
+    // rebuilds with the new columns in place. Idempotent and cheap
+    // on an empty table (the keys cache is at most O(columns)).
+    //
+    // Per-column registries that survive a reload (`mEnumDictionaries`,
+    // `mEnumColumnHealth`, `mLevelRankCache`) are left alone: they
+    // are keyed by canonical `KeyId` which is invariant under column
+    // reorder, so re-seeding them from `RefreshSnapshotEnumKeys`
+    // simply makes the registry entries for the new enum columns
+    // exist alongside any that were already there. The data side
+    // was cleared by `Reset()` before this method runs (on the
+    // standard path), so there is no live `DictRef` slot to
+    // misalign.
+    RefreshColumnKeyIds();
+    RefreshSnapshotEnumKeys();
+}
+
 void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mLastBackfillRange.reset();
@@ -687,10 +710,12 @@ void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKey
     }
 
     const auto &columns = mConfiguration.Configuration().columns;
-    if (mColumnKeyIds.size() < columns.size())
-    {
-        mColumnKeyIds.resize(columns.size());
-    }
+    // Always resize -- the cache must track `columns.size()` in both
+    // directions. Without the down-shrink, a subsequent
+    // `RefreshColumnKeyIds`-less code path (e.g. an
+    // out-of-band `Load` that landed a smaller column count) would
+    // leave orphan entries past the last valid column index.
+    mColumnKeyIds.resize(columns.size());
 
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
@@ -1242,6 +1267,140 @@ void LogTable::RunEnumPassForAppendBatch(
             }
         }
     }
+}
+
+LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex)
+{
+    // Static-file Auto-detect path: the user just flipped the column
+    // to `Type::Any + autoDetect` via the Column Editor. The
+    // streaming detector relies on a future `AppendBatch` to actually
+    // scan the rows, but for a fully-loaded static file no such
+    // batch is coming. Rebuild a fresh tracker from scratch and
+    // walk every existing row, then apply `FinalizeAutoDetection`'s
+    // permissive thresholds (presence >= 2 rather than the streaming
+    // min-rows constant), mirroring what the
+    // `LogTable(LogData, LogConfigurationManager)` constructor does
+    // at load time but restricted to one column.
+    //
+    // Limitation: slots that were previously committed to
+    // `Type::Time` carry the `Timestamp` tag, which the candidate
+    // scan can neither read as bytes nor count as numeric. Such
+    // columns end up at `Type::Any` with the autoDetect flag still
+    // on; re-opening the source is required to recover a Time
+    // column, matching the behaviour of any other destructive
+    // promotion.
+    const auto &columns = mConfiguration.Configuration().columns;
+    if (columnIndex >= columns.size())
+    {
+        return LogConfiguration::Type::Any;
+    }
+    {
+        const auto &column = columns[columnIndex];
+        if (column.type != LogConfiguration::Type::Any || !column.autoDetect || column.keys.empty())
+        {
+            return column.type;
+        }
+    }
+    const size_t totalRows = mData.Lines().size();
+    if (totalRows == 0 || columnIndex >= mColumnKeyIds.size())
+    {
+        // No data to scan or key ids not yet built; leave the column
+        // in candidate state so the next batch / re-stream picks it
+        // up via the normal path.
+        return LogConfiguration::Type::Any;
+    }
+
+    std::vector<KeyId> resolvedKeys;
+    resolvedKeys.reserve(mColumnKeyIds[columnIndex].size());
+    for (const KeyId id : mColumnKeyIds[columnIndex])
+    {
+        if (id != INVALID_KEY_ID)
+        {
+            resolvedKeys.push_back(id);
+        }
+    }
+    if (resolvedKeys.empty())
+    {
+        return LogConfiguration::Type::Any;
+    }
+
+    // Drop any stale tracker before rebuilding so an earlier
+    // streaming kill doesn't pre-set `killed = true`.
+    const KeyId trackerKey = resolvedKeys.front();
+    mEnumTrackers.erase(trackerKey);
+
+    EnumCandidateTracker tracker{mEnumValueCap, mEnumValueMaxLen};
+    for (size_t row = 0; row < totalRows; ++row)
+    {
+        const LogLine &line = mData.Lines()[row];
+        const internal::CompactLogValue *slot = nullptr;
+        for (const KeyId id : resolvedKeys)
+        {
+            slot = line.FindCompact(id);
+            if (slot != nullptr)
+            {
+                break;
+            }
+        }
+        ++tracker.rowsObserved;
+        if (slot != nullptr)
+        {
+            ++tracker.presenceCount;
+            std::optional<std::string_view> bytes = line.PeekStringView(*slot);
+            if (bytes.has_value())
+            {
+                tracker.Observe(*bytes);
+            }
+            else if (slot->tag == internal::CompactTag::Int64)
+            {
+                ++tracker.intObservations;
+            }
+            else if (slot->tag == internal::CompactTag::Uint64)
+            {
+                ++tracker.uintObservations;
+            }
+            else if (slot->tag == internal::CompactTag::Double)
+            {
+                ++tracker.doubleObservations;
+            }
+            else if (slot->tag == internal::CompactTag::Bool)
+            {
+                ++tracker.boolObservations;
+            }
+        }
+        if (tracker.killed)
+        {
+            break;
+        }
+    }
+
+    if (tracker.killed)
+    {
+        mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+    }
+    else if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
+    {
+        // PromoteColumnToEnum encodes every existing row, refreshes
+        // the level rank cache, and (when the key matches an alias
+        // and the dict tolerance holds) sub-promotes to
+        // `Type::Level`. Same path the streaming detector uses.
+        PromoteColumnToEnum(columnIndex);
+    }
+    else if (tracker.size == 0 && tracker.presenceCount > 0)
+    {
+        mConfiguration.SetColumnType(
+            columnIndex,
+            RouteNoStringBail(
+                tracker.intObservations,
+                tracker.uintObservations,
+                tracker.doubleObservations,
+                tracker.boolObservations
+            )
+        );
+    }
+    // Else: no slots present at all -- leave at `Type::Any + autoDetect`
+    // so a later batch (or re-open) can finalise.
+    return mConfiguration.Configuration().columns[columnIndex].type;
 }
 
 bool LogTable::FinalizeAutoDetection()

@@ -105,7 +105,14 @@ constexpr PrettyOpts PRETTIFY_OPTS{{.prettify = true}};
 /// missing members default to their inert values.
 struct ColumnsOnlyDocument
 {
-    const std::vector<loglib::LogConfiguration::Column> *columns = nullptr;
+    // Reference (not pointer) so the type is never default-
+    // constructible and the glaze accessor cannot deref a null. The
+    // only construction site (`Save`) holds the source vector by
+    // reference for the duration of the `glz::write` call, which is
+    // strictly synchronous and confined to one stack frame -- the
+    // usual lifetime hazards of a reference member do not apply.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
+    const std::vector<loglib::LogConfiguration::Column> &columns;
 };
 
 } // namespace
@@ -117,7 +124,7 @@ struct ColumnsOnlyDocument
 template <> struct glz::meta<ColumnsOnlyDocument>
 {
     using T = ColumnsOnlyDocument;
-    static constexpr auto value = object("columns", [](auto &self) -> const auto & { return *self.columns; });
+    static constexpr auto value = object("columns", [](auto &self) -> const auto & { return self.columns; });
 };
 // NOLINTEND(readability-identifier-naming)
 
@@ -166,7 +173,7 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
         // The resulting JSON loads cleanly through
         // `glz::read_json<LogConfiguration>` because missing members
         // default to their inert values.
-        const ColumnsOnlyDocument document{.columns = &mConfiguration.columns};
+        const ColumnsOnlyDocument document{.columns = mConfiguration.columns};
         const auto error = glz::write<PRETTIFY_OPTS>(document, json);
         if (error)
         {

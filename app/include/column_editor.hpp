@@ -52,9 +52,6 @@ public:
         return mColumnIndex;
     }
 
-private slots:
-    void OnTypeChanged(int comboIndex);
-
 private:
     void Populate();
     void WriteBack();

@@ -174,11 +174,23 @@ ConfigurationDiagnosticsDialog::ConfigurationDiagnosticsDialog(LogModel *model, 
     layout->addLayout(buttonRow);
 
     connect(mRefreshButton, &QPushButton::clicked, this, [this]() {
+        // `RefreshColumnHealth` recomputes the cache and emits
+        // `columnHealthChanged` on any change, which the connection
+        // below already wires to `Refresh()`. Avoid double-running the
+        // table rebuild on the common "no change" path by relying on
+        // that signal exclusively when the model is connected.
         if (mModel)
         {
             mModel->RefreshColumnHealth();
         }
-        Refresh();
+        else
+        {
+            // Detached test seam or post-destruction guard -- nothing
+            // to recompute, but still rebuild the visible rows from
+            // whatever stale snapshot is in hand so the click feels
+            // responsive.
+            Refresh();
+        }
     });
     connect(mCloseButton, &QPushButton::clicked, this, &QDialog::close);
 

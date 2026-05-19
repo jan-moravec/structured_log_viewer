@@ -3029,3 +3029,230 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
     CHECK(table.LastBatchDemotedKeys().empty());
 }
+
+TEST_CASE(
+    "LogTable::RescanColumnForAutoDetection -- promotes a pinned-Integer column with enum data back to Enumeration",
+    "[log_table][rescan][auto_detect][regression]"
+)
+{
+    // Regression for bug 4 ("Auto-detect choice on a fully-loaded
+    // static file does nothing visible"): a user who pinned a column
+    // to a wrong type, then picks "Auto-detect" via the Column Editor,
+    // expects the detector to re-run over the existing rows. The
+    // streaming path can't help (no more batches arrive), so
+    // `RescanColumnForAutoDetection` walks every row for the single
+    // column and applies the finalize-style thresholds.
+    const TestLogFile testFile;
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    KeyIndex testKeys;
+    std::vector<LogLine> testLines;
+    const std::vector<std::string> values = {"alpha", "beta", "alpha", "gamma", "beta", "alpha"};
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        testLines.emplace_back(LogMap{{"tier", values[i]}}, testKeys, *sourcePtr, i);
+    }
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "tier",
+         .keys = {"tier"},
+         .printFormat = "{}",
+         // Pin to a wrong terminal type so the auto-detector is OFF.
+         .type = LogConfiguration::Type::Integer,
+         .parseFormats = {},
+         .autoDetect = false}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager manager;
+    manager.Load(cfgFile.GetFilePath());
+
+    LogTable table(std::move(logData), std::move(manager));
+    REQUIRE(table.RowCount() == values.size());
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Integer);
+
+    // User picks "Auto-detect" -- combo's first entry. The model
+    // writes the (Type::Any, autoDetect=true) pair atomically. Before
+    // the fix, `OnUserChangedColumnType` would leave the column at
+    // `Any` with no detection ever running.
+    table.Configuration().SetColumnTypePair(0, LogConfiguration::Type::Any, true);
+    table.OnUserChangedColumnType(0, LogConfiguration::Type::Integer);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
+    REQUIRE(table.Configuration().Configuration().columns[0].autoDetect);
+
+    const auto resolved = table.RescanColumnForAutoDetection(0);
+
+    CHECK(resolved == LogConfiguration::Type::Enumeration);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    // PromoteColumnToEnum encodes every existing row -- the data side
+    // must reflect the new type for the GUI's column-wide
+    // `dataChanged` to actually paint encoded values.
+    const KeyId tierKey = table.Keys().Find("tier");
+    REQUIRE(tierKey != INVALID_KEY_ID);
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(table.Data().Lines()[row].IsDictRef(tierKey));
+    }
+}
+
+TEST_CASE(
+    "LogTable::RescanColumnForAutoDetection -- routes a numeric-tagged column to Integer",
+    "[log_table][rescan][auto_detect][regression]"
+)
+{
+    // Numeric branch of bug 4: after a pinned-String -> Auto-detect
+    // flip on integer data, the rescan should fall through the
+    // `RouteNoStringBail` path (no strings observed, only Int64
+    // slots) and resolve to `Type::Integer`. Exercising this branch
+    // distinct from the enum-promote branch above prevents a
+    // regression where someone reorders the decision ladder and
+    // accidentally drops the numeric route.
+    const TestLogFile testFile;
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    KeyIndex testKeys;
+    std::vector<LogLine> testLines;
+    for (int64_t i = 0; i < 32; ++i)
+    {
+        testLines.emplace_back(LogMap{{"count", i}}, testKeys, *sourcePtr, static_cast<size_t>(i));
+    }
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "count",
+         .keys = {"count"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::String,
+         .parseFormats = {},
+         .autoDetect = false}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager manager;
+    manager.Load(cfgFile.GetFilePath());
+
+    LogTable table(std::move(logData), std::move(manager));
+    REQUIRE(table.RowCount() == 32);
+
+    table.Configuration().SetColumnTypePair(0, LogConfiguration::Type::Any, true);
+    table.OnUserChangedColumnType(0, LogConfiguration::Type::String);
+    const auto resolved = table.RescanColumnForAutoDetection(0);
+
+    CHECK(resolved == LogConfiguration::Type::Integer);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Integer);
+}
+
+TEST_CASE(
+    "LogTable::RescanColumnForAutoDetection -- empty table leaves the column at Any+autoDetect",
+    "[log_table][rescan][auto_detect][regression]"
+)
+{
+    // Edge case: no data yet means no slots to scan. The method must
+    // not synthesise a type out of thin air; the next batch (or a
+    // re-open) handles detection through the normal streaming path.
+    LogTable table;
+    table.Configuration().AppendKeys({"only_key"});
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    table.Configuration().SetColumnTypePair(0, LogConfiguration::Type::Any, true);
+
+    const auto resolved = table.RescanColumnForAutoDetection(0);
+
+    CHECK(resolved == LogConfiguration::Type::Any);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Any);
+    CHECK(table.Configuration().Configuration().columns[0].autoDetect);
+}
+
+TEST_CASE(
+    "LogTable::RescanColumnForAutoDetection -- no-op when column is not Any+autoDetect",
+    "[log_table][rescan][auto_detect]"
+)
+{
+    // Guard rails: the method should refuse to mutate a column that
+    // isn't currently in candidate state. Otherwise a stray call
+    // from a future code path could clobber a deliberately-pinned
+    // type.
+    const TestLogFile testFile;
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    KeyIndex testKeys;
+    std::vector<LogLine> testLines;
+    for (size_t i = 0; i < 4; ++i)
+    {
+        testLines.emplace_back(LogMap{{"tier", std::string("alpha")}}, testKeys, *sourcePtr, i);
+    }
+    LogData logData(std::move(source), std::move(testLines), std::move(testKeys));
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "tier",
+         .keys = {"tier"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::String,
+         .parseFormats = {},
+         .autoDetect = false}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager manager;
+    manager.Load(cfgFile.GetFilePath());
+
+    LogTable table(std::move(logData), std::move(manager));
+    const auto resolved = table.RescanColumnForAutoDetection(0);
+
+    CHECK(resolved == LogConfiguration::Type::String);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
+    CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
+}
+
+TEST_CASE(
+    "LogTable::OnConfigurationReloaded -- mColumnKeyIds shrinks when the loaded config has fewer columns",
+    "[log_table][load][regression]"
+)
+{
+    // Regression for bug 2/5: `LogConfigurationManager::Load` rewrites
+    // the configuration without notifying `LogTable`, leaving the
+    // per-column key id cache out of sync with the new column count.
+    // The GUI seam `LogModel::NotifyConfigurationReplaced` now calls
+    // `OnConfigurationReloaded`, which (a) rebuilds the cache against
+    // the new columns and (b) shrinks it when the new layout has
+    // fewer columns than before.
+    LogTable table;
+
+    // Seed with a 3-column configuration so the cache holds three
+    // entries with resolved key ids.
+    LogConfiguration big;
+    big.columns.push_back({.header = "A", .keys = {"a"}, .printFormat = "{}", .type = LogConfiguration::Type::Any});
+    big.columns.push_back({.header = "B", .keys = {"b"}, .printFormat = "{}", .type = LogConfiguration::Type::Any});
+    big.columns.push_back({.header = "C", .keys = {"c"}, .printFormat = "{}", .type = LogConfiguration::Type::Any});
+    const TestLogConfiguration cfgFileBig("test_reload_big.json");
+    cfgFileBig.Write(big);
+    table.Configuration().Load(cfgFileBig.GetFilePath());
+    table.OnConfigurationReloaded();
+    REQUIRE(table.Configuration().Configuration().columns.size() == 3);
+
+    // Reload a SMALLER configuration through the same manager. Without
+    // the fix the cache would keep its size-3 backing storage with
+    // stale tail entries past `columns.size()`.
+    LogConfiguration small;
+    small.columns.push_back({.header = "Z", .keys = {"z"}, .printFormat = "{}", .type = LogConfiguration::Type::Any});
+    const TestLogConfiguration cfgFileSmall("test_reload_small.json");
+    cfgFileSmall.Write(small);
+    table.Configuration().Load(cfgFileSmall.GetFilePath());
+    table.OnConfigurationReloaded();
+
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    CHECK(table.Configuration().Configuration().columns[0].header == "Z");
+    // Behavioural assertion: the next operation that touches the
+    // cache (e.g. `AppendBatch` queries) must see exactly one column.
+    // `ColumnCount` is the closest observable proxy.
+    CHECK(table.ColumnCount() == 1);
+}

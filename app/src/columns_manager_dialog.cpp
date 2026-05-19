@@ -177,7 +177,19 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
                 RefreshRange(first, last);
             }
         );
-        connect(mModel, &LogModel::columnHealthChanged, this, &ColumnsManagerDialog::Refresh);
+        // Column reorders (header drag, streaming timestamp bubble) fire
+        // `columnsMoved` only -- `headerDataChanged` does not follow. Without
+        // this hook the manager keeps showing the pre-move row order.
+        connect(mModel, &QAbstractItemModel::columnsMoved, this, [this]() { Refresh(); });
+        // Health changes are O(columns) -- skip the rebuild while the
+        // dialog is hidden so a streaming session with frequent
+        // promotes/demotes doesn't keep walking a widget no one can see.
+        connect(mModel, &LogModel::columnHealthChanged, this, [this]() {
+            if (isVisible())
+            {
+                Refresh();
+            }
+        });
     }
 
     Refresh();

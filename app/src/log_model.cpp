@@ -941,9 +941,25 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
     mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
     mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
 
+    // The "Auto-detect" pick on a column that already has data
+    // (e.g. a fully-loaded static file) parks the column at
+    // `Type::Any + autoDetect`. `OnUserChangedColumnType`'s `Any`
+    // branch only tears down stateful tags (dict refs, Time
+    // formats); without a follow-up scan the column would render
+    // as raw `any` forever even when the data trivially identifies
+    // it. Re-run detection over the existing rows now, mirroring
+    // what a fresh `LogTable(LogData, LogConfigurationManager)`
+    // load would do.
+    if (newType == loglib::LogConfiguration::Type::Any && newAutoDetect)
+    {
+        mLogTable.RescanColumnForAutoDetection(static_cast<size_t>(columnIndex));
+    }
+
     // Re-read the *effective* type: `OnUserChangedColumnType` may
     // bail to `Type::String` on hard-cap overflow during enum
-    // encoding, so trust the post-walk column, not `newType`.
+    // encoding, *and* `RescanColumnForAutoDetection` may promote
+    // to `Enumeration`/`Level` or route to a numeric type. Trust the
+    // post-walk column, not `newType`.
     const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
     const auto effectiveType = columnsAfter[static_cast<size_t>(columnIndex)].type;
     using Type = loglib::LogConfiguration::Type;
@@ -1306,10 +1322,17 @@ bool LogModel::IsSingleLineAsciiTrim(std::string_view bytes) noexcept
 void LogModel::NotifyConfigurationReplaced()
 {
     // `LogConfigurationManager::Load` rewrites the configuration
-    // without emitting any model signal. Bracket a reset so the view
-    // re-queries column count, header data, and section flags. The
-    // row store is unchanged.
+    // without emitting any model signal. Bring the per-column caches
+    // back in sync with the new column layout *before* the reset so
+    // anyone querying through `index(...)` / `headerData(...)` mid-
+    // reset sees consistent state (the column key id cache, the
+    // snapshot enum dictionaries). The row store is unchanged here;
+    // the GUI path (`DoLoadConfiguration`) calls `Reset()` first
+    // when the data is gone, and the in-place config-swap path
+    // (`TryLoadAsConfiguration`) is reached only when there is no
+    // streamed data to invalidate.
     beginResetModel();
+    mLogTable.OnConfigurationReloaded();
     endResetModel();
 }
 

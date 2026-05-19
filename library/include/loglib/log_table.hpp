@@ -218,6 +218,34 @@ public:
     /// state). Out-of-range @p columnIndex is a silent no-op.
     void OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType);
 
+    /// Bring the per-column caches back in sync with
+    /// `mConfiguration` after an out-of-band rewrite (the GUI's
+    /// `LogConfigurationManager::Load` path). `Reset()` already runs
+    /// these refreshes against the *pre-load* configuration; this
+    /// re-runs them after the new columns have landed so that
+    /// `mColumnKeyIds.size()` matches the new column count and any
+    /// freshly-loaded `Type::Enumeration`/`Type::Level` columns have
+    /// their canonical dictionaries seeded. Safe to call on an empty
+    /// table (the cached ids resolve to `INVALID_KEY_ID` until data
+    /// arrives).
+    void OnConfigurationReloaded();
+
+    /// Re-run the enum auto-detector over every existing row for
+    /// @p columnIndex as if the column had just been freshly streamed.
+    /// Mirrors what the `LogTable(LogData, LogConfigurationManager)`
+    /// constructor does at load time: the column's tracker is rebuilt
+    /// from scratch over the whole table and resolved through
+    /// `FinalizeAutoDetection`'s permissive rules. Used by the Column
+    /// Editor when the user flips a static-file column to
+    /// `Type::Any + autoDetect`, so the pick takes immediate effect
+    /// instead of waiting for a (never-arriving) next batch.
+    ///
+    /// No-op when the column is not currently `Type::Any + autoDetect`,
+    /// when the table is empty, or when @p columnIndex is out of
+    /// range. Returns the post-rescan column type so the caller can
+    /// signal `enumColumnsChanged(Promoted)` etc. on a transition.
+    LogConfiguration::Type RescanColumnForAutoDetection(size_t columnIndex);
+
     /// Snapshot of "how well does the column's data match its
     /// configured `Type`?", used by the diagnostics UI to surface
     /// user-pinned columns whose declared type does not match the

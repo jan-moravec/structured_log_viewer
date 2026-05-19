@@ -157,7 +157,6 @@ ColumnEditor::ColumnEditor(LogModel *model, int columnIndex, QWidget *parent)
 
     connect(mButtonBox, &QDialogButtonBox::accepted, this, &ColumnEditor::Apply);
     connect(mButtonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    connect(mTypeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &ColumnEditor::OnTypeChanged);
 
     Populate();
 }
@@ -182,18 +181,6 @@ void ColumnEditor::Populate()
     mTypeCombo->setCurrentIndex(FindTypeChoiceIndex(column.type, column.autoDetect));
     mVisibleCheck->setChecked(column.visible);
     mHealthLabel->setText(FormatHealthLine(mModel->ColumnHealth(mColumnIndex)));
-}
-
-void ColumnEditor::OnTypeChanged(int /*comboIndex*/)
-{
-    // Reactive preview: re-render the health line as if the new type
-    // were already in effect. We do *not* compute a fresh health pass
-    // here (it requires walking the table); the snapshot we hold is
-    // for the *old* type, so the preview just labels it as "current"
-    // until Apply runs. Keeping the label live, even at the cost of
-    // a one-step-stale percentage, matches the "edit in place"
-    // expectation users have from QSpinBox / QSlider previews.
-    mHealthLabel->setText(FormatHealthLine(mModel ? mModel->ColumnHealth(mColumnIndex) : std::nullopt));
 }
 
 void ColumnEditor::Apply()

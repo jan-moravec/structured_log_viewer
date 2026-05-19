@@ -6049,8 +6049,14 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Force the column into a user-pinned state first so picking
-        // Auto-detect is a real edit, not a no-op.
+        // Pre-rescan: the streaming detector already promoted `msg`
+        // to `String` because its 200 unique values trip the
+        // cardinality bail. We need a column whose post-rescan type
+        // is observably different from its pre-edit type, so park
+        // `msg` at a deliberately-wrong terminal type first. Picking
+        // "Auto-detect" then exercises both the autoDetect flag
+        // restoration *and* the rescan that promotes the column
+        // back to the detector's preferred type.
         model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
@@ -6062,8 +6068,60 @@ private slots:
         editor.Apply();
 
         const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
-        QCOMPARE(updated.type, loglib::LogConfiguration::Type::Any);
+        // The rescan kicks in (bug 4 fix). `msg` carries 200 unique
+        // values, so the candidate tracker bails on cardinality and
+        // routes to `String`. The autoDetect flag survives the
+        // re-route -- consistent with the streaming detector's
+        // behaviour, and harmless because `Type::String` columns
+        // are not enum-pass-eligible.
+        QCOMPARE(updated.type, loglib::LogConfiguration::Type::String);
         QVERIFY2(updated.autoDetect, "Auto-detect choice must restore autoDetect=true");
+    }
+
+    // Companion to the above for the *enum-promotion* branch of
+    // the rescan: pick a column whose data forms a small set of
+    // repeated values (`category` -> info/warn/error/debug). After
+    // pinning to a wrong terminal type and flipping to
+    // "Auto-detect", the rescan must promote the column to
+    // `Enumeration` (or `Level`, since the alias matches and the
+    // dictionary tolerance holds). Validates the integrated
+    // ApplyColumnTypeEdit -> RescanColumnForAutoDetection ->
+    // PromoteColumnToEnum chain through the actual GUI seam.
+    void TestColumnEditorAutoDetectPromotesEnumColumn()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+
+        // `category` was already promoted by streaming. Demote it
+        // to Integer so picking Auto-detect is a real transition.
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(categoryCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(categoryCol), false);
+
+        // Pump the model through the same edit path the user would
+        // hit to make sure `OnUserChangedColumnType` is invoked
+        // (which clears dict state) before the rescan runs.
+        model->ApplyColumnTypeEdit(categoryCol, loglib::LogConfiguration::Type::Integer, false);
+        QCOMPARE(
+            model->Configuration().columns[static_cast<size_t>(categoryCol)].type,
+            loglib::LogConfiguration::Type::Integer
+        );
+
+        ColumnEditor editor(model, categoryCol);
+        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        QVERIFY(typeCombo != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        typeCombo->setCurrentIndex(0); // "Auto-detect"
+        editor.Apply();
+
+        const auto promotedType = model->Configuration().columns[static_cast<size_t>(categoryCol)].type;
+        QVERIFY2(
+            promotedType == loglib::LogConfiguration::Type::Enumeration ||
+                promotedType == loglib::LogConfiguration::Type::Level,
+            "RescanColumnForAutoDetection must promote a small-cardinality column out of Any"
+        );
     }
 
     // Double-clicking a diagnostics row emits `editColumnRequested`
@@ -6254,6 +6312,59 @@ private slots:
         {
             QCOMPARE(model->Configuration().columns[i].keys, initialColumns[i].keys);
         }
+    }
+
+    // Regression for bug 1: the manager only listened to
+    // `modelReset`, `headerDataChanged`, and `columnHealthChanged`.
+    // A header-drag (or the streaming timestamp-bubble) reorders
+    // columns via `MoveColumn`, which emits
+    // `beginMoveColumns`/`endMoveColumns` only -- no
+    // `headerDataChanged` follows because the column data is
+    // unchanged. Before the fix, the manager's table widget kept
+    // its pre-move row order until something else (e.g. a sort
+    // toggle) happened to trigger a refresh.
+    void TestColumnsManagerRefreshesAfterExternalColumnsMoved()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
+
+        ColumnsManagerDialog dialog(model, mWindow);
+        dialog.show();
+        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        QVERIFY(table != nullptr);
+
+        // Snapshot the pre-move dialog row 0 / row 1 headers so the
+        // assertion below sees the actual swap rather than any
+        // canonical ordering.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QTableWidgetItem *row0Before = table->item(0, 0);
+        const QTableWidgetItem *row1Before = table->item(1, 0);
+        QVERIFY(row0Before != nullptr && row1Before != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QString headerAt0Before = row0Before->text();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QString headerAt1Before = row1Before->text();
+        QVERIFY(headerAt0Before != headerAt1Before);
+
+        // Reorder via the model layer -- the same seam a header drag
+        // (`OnSourceColumnsMoved`) goes through. The fix adds a
+        // `columnsMoved` -> `Refresh` connection in the dialog, so
+        // the manager's rows must now follow this move without any
+        // intervening UI event.
+        QVERIFY2(model->MoveColumn(0, 1), "MoveColumn must succeed for a 2+ column model");
+
+        // Pump the event loop so the queued-connection (if any) fires
+        // before we sample the table widget.
+        QCoreApplication::processEvents();
+
+        const QTableWidgetItem *row0After = table->item(0, 0);
+        const QTableWidgetItem *row1After = table->item(1, 0);
+        QVERIFY(row0After != nullptr && row1After != nullptr);
+        QCOMPARE(row0After->text(), headerAt1Before);
+        QCOMPARE(row1After->text(), headerAt0Before);
+        dialog.close();
     }
 
     // The View menu's "Manage columns\u2026" entry is the only
