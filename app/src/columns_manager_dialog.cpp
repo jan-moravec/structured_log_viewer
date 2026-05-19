@@ -7,9 +7,13 @@
 #include <loglib/log_configuration.hpp>
 
 #include <QDialog>
+#include <QFont>
+#include <QFontMetrics>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPalette>
 #include <QPushButton>
 #include <QStringList>
 #include <QTableWidget>
@@ -18,14 +22,24 @@
 
 namespace
 {
-constexpr int DIALOG_INITIAL_WIDTH = 640;
-constexpr int DIALOG_INITIAL_HEIGHT = 420;
+constexpr int DIALOG_INITIAL_WIDTH = 720;
+constexpr int DIALOG_INITIAL_HEIGHT = 440;
 constexpr int COL_HEADER = 0;
 constexpr int COL_KEYS = 1;
 constexpr int COL_TYPE = 2;
 constexpr int COL_AUTODETECT = 3;
 constexpr int COL_VISIBLE = 4;
 constexpr int COL_COUNT = 5;
+// Visual spacing tokens. Pulled into named constants so a future
+// theme tweak only touches one place. The values are picked to
+// match the rest of Qt's stock dialog dressing (`QMessageBox`,
+// `QFileDialog`) -- roughly half a row height of padding on every
+// edge and one row height between major sections.
+constexpr int OUTER_MARGIN = 16;
+constexpr int SECTION_SPACING = 12;
+constexpr int BUTTON_SPACING = 8;
+constexpr int BUTTON_MIN_WIDTH = 96;
+constexpr int ROW_VERTICAL_PADDING = 8;
 
 QString FormatType(loglib::LogConfiguration::Type type, bool autoDetect)
 {
@@ -85,6 +99,17 @@ QTableWidgetItem *MakeReadOnlyItem(const QString &text)
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
     return item;
 }
+
+QTableWidgetItem *MakeReadOnlyCenteredItem(const QString &text)
+{
+    // Same as `MakeReadOnlyItem` but with a centered text
+    // alignment. Used for categorical Yes/No cells so they line up
+    // visually with the centered Visible checkbox column rather
+    // than left-running like the text columns.
+    auto *item = MakeReadOnlyItem(text);
+    item->setTextAlignment(Qt::AlignCenter);
+    return item;
+}
 } // namespace
 
 ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWindow, QWidget *parent)
@@ -95,16 +120,35 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     resize(DIALOG_INITIAL_WIDTH, DIALOG_INITIAL_HEIGHT);
 
     auto *layout = new QVBoxLayout(this);
+    // Generous margins + spacing so the dialog reads as three
+    // distinct sections (helper text / table+actions / Close)
+    // rather than a wall of widgets crammed against the frame.
+    // Sizes are theme-neutral pixel constants -- Qt scales them
+    // through `QHighDpiScaling` like every other layout dimension.
+    layout->setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN);
+    layout->setSpacing(SECTION_SPACING);
 
     auto *intro = new QLabel(
         tr("Reorder columns with Move up / Move down, toggle visibility in the "
            "Visible column, or use Edit\u2026 for the full per-column editor."),
         this
     );
+    intro->setObjectName(QStringLiteral("introLabel"));
     intro->setWordWrap(true);
+    // Demote the intro to "helper text" weight: use the palette's
+    // PlaceholderText role so it picks up whichever muted tone the
+    // active theme defines (works in both light and dark schemes
+    // without us hardcoding RGB values). The widget is still a
+    // first-class `QLabel`, just visually de-emphasised.
+    {
+        QPalette introPalette = intro->palette();
+        introPalette.setColor(intro->foregroundRole(), introPalette.color(QPalette::PlaceholderText));
+        intro->setPalette(introPalette);
+    }
     layout->addWidget(intro);
 
     auto *body = new QHBoxLayout();
+    body->setSpacing(SECTION_SPACING);
     layout->addLayout(body, 1);
 
     mTable = new QTableWidget(this);
@@ -117,29 +161,80 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     mTable->setSelectionMode(QAbstractItemView::SingleSelection);
     mTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mTable->setAlternatingRowColors(true);
+    mTable->setShowGrid(false);
     mTable->verticalHeader()->setVisible(false);
-    mTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    mTable->horizontalHeader()->setStretchLastSection(false);
+
+    // Bold + left-aligned header labels. Default Qt headers render
+    // with regular weight, which on a dark theme makes them blend
+    // with the data rows. Bumping to bold + an explicit alignment
+    // turns the header into a proper visual anchor.
+    QHeaderView *hHeader = mTable->horizontalHeader();
+    QFont headerFont = hHeader->font();
+    headerFont.setBold(true);
+    hHeader->setFont(headerFont);
+    hHeader->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    hHeader->setHighlightSections(false);
+
+    // Per-section resize policy. The previous single-mode
+    // `ResizeToContents` made every column as narrow as its widest
+    // cell, leaving a slab of dead space to the right of the table.
+    // The new layout pins the categorical columns to their content
+    // and stretches `Keys` (typically the widest text payload) to
+    // soak up the leftover width. Result: the table fills the
+    // dialog width regardless of how the user resizes it.
+    hHeader->setSectionResizeMode(COL_HEADER, QHeaderView::Interactive);
+    hHeader->setSectionResizeMode(COL_KEYS, QHeaderView::Stretch);
+    hHeader->setSectionResizeMode(COL_TYPE, QHeaderView::ResizeToContents);
+    hHeader->setSectionResizeMode(COL_AUTODETECT, QHeaderView::ResizeToContents);
+    hHeader->setSectionResizeMode(COL_VISIBLE, QHeaderView::ResizeToContents);
+    hHeader->setStretchLastSection(false);
+
+    // Slightly taller rows so the bold header doesn't tower over
+    // cramped data lines. Derive from the current font metrics so
+    // a DPI / font-size change scales the row height with it.
+    const int derivedRowHeight = mTable->fontMetrics().height() + (ROW_VERTICAL_PADDING * 2);
+    mTable->verticalHeader()->setDefaultSectionSize(derivedRowHeight);
+
     body->addWidget(mTable, 1);
 
     auto *buttons = new QVBoxLayout();
+    buttons->setSpacing(BUTTON_SPACING);
     mMoveUpButton = new QPushButton(tr("Move up"), this);
     mMoveUpButton->setObjectName(QStringLiteral("moveUpButton"));
     mMoveDownButton = new QPushButton(tr("Move down"), this);
     mMoveDownButton->setObjectName(QStringLiteral("moveDownButton"));
     mEditButton = new QPushButton(tr("Edit\u2026"), this);
     mEditButton->setObjectName(QStringLiteral("editButton"));
+    // Same minimum width for every right-rail action so they form
+    // a tidy column instead of three buttons of different sizes.
+    for (QPushButton *button : {mMoveUpButton, mMoveDownButton, mEditButton})
+    {
+        button->setMinimumWidth(BUTTON_MIN_WIDTH);
+    }
     buttons->addWidget(mMoveUpButton);
     buttons->addWidget(mMoveDownButton);
     buttons->addWidget(mEditButton);
     buttons->addStretch(1);
     body->addLayout(buttons);
 
+    // Thin separator above the Close row to visually anchor the
+    // footer. Standard Qt dialog pattern (used by the Diagnostics
+    // dialog and most QDialogButtonBox layouts), and matters more
+    // here because the Close button sits alone -- without the rule,
+    // it floats in dead space.
+    auto *separator = new QFrame(this);
+    separator->setObjectName(QStringLiteral("footerSeparator"));
+    separator->setFrameShape(QFrame::HLine);
+    separator->setFrameShadow(QFrame::Sunken);
+    layout->addWidget(separator);
+
     auto *closeRow = new QHBoxLayout();
     closeRow->addStretch(1);
     mCloseButton = new QPushButton(tr("Close"), this);
     mCloseButton->setObjectName(QStringLiteral("closeButton"));
     mCloseButton->setDefault(true);
+    mCloseButton->setMinimumWidth(BUTTON_MIN_WIDTH);
     closeRow->addWidget(mCloseButton);
     layout->addLayout(closeRow);
 
@@ -260,7 +355,7 @@ void ColumnsManagerDialog::RebuildRow(int row)
     mTable->setItem(row, COL_HEADER, MakeReadOnlyItem(QString::fromStdString(column.header)));
     mTable->setItem(row, COL_KEYS, MakeReadOnlyItem(FormatKeys(column.keys)));
     mTable->setItem(row, COL_TYPE, MakeReadOnlyItem(FormatType(column.type, column.autoDetect)));
-    mTable->setItem(row, COL_AUTODETECT, MakeReadOnlyItem(column.autoDetect ? tr("Yes") : tr("No")));
+    mTable->setItem(row, COL_AUTODETECT, MakeReadOnlyCenteredItem(column.autoDetect ? tr("Yes") : tr("No")));
 
     auto *visibleItem = new QTableWidgetItem();
     visibleItem->setFlags((visibleItem->flags() & ~Qt::ItemIsEditable) | Qt::ItemIsUserCheckable);
