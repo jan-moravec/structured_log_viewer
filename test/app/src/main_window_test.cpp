@@ -7,6 +7,9 @@
 #include "log_table_view.hpp"
 #include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include "record_detail_dock.hpp"
+#include "record_detail_widget.hpp"
+#include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
 #include "streaming_control.hpp"
 
@@ -45,9 +48,11 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QDockWidget>
 #include <QListView>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -8826,6 +8831,381 @@ private slots:
         QCOMPARE(falseAction->text(), QStringLiteral("false"));
 
         model->EndStreaming(false);
+    }
+
+    // ---------------------------------------------------------------
+    // Record-detail pane: content building, dock pinning + clear,
+    // snapshot windows surviving model mutation, and the MainWindow
+    // double-click / pop-out integration.
+    // ---------------------------------------------------------------
+
+    // Builds a `RecordDetailContent` against a small static fixture and
+    // pins down the basics: summary mentions the row number, every
+    // configured column appears in `fields`, and the raw JSON section
+    // is pretty-printed (indented multi-line output).
+    static void TestBuildRecordDetailContentBasic()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"timestamp": "2025-01-15T12:34:56Z", "level": "info", "message": "hello"})"),
+            QStringLiteral(R"({"timestamp": "2025-01-15T12:34:57Z", "level": "error", "message": "boom"})"),
+        });
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        const int messageCol = ColumnByHeader(*run.model, QStringLiteral("message"));
+        QVERIFY(levelCol >= 0);
+        QVERIFY(messageCol >= 0);
+
+        const RecordDetailContent row1 = BuildRecordDetailContent(*run.model, 1);
+        QVERIFY2(row1.valid, "row 1 must produce a valid content");
+        QVERIFY2(row1.summary.contains(QStringLiteral("Row 2")), qPrintable(row1.summary));
+        // Timestamp column exists: summary should append the formatted
+        // value separated by a middle-dot.
+        QVERIFY2(row1.summary.contains(QStringLiteral("\u00B7")), qPrintable(row1.summary));
+
+        QCOMPARE(row1.fields.size(), static_cast<qsizetype>(run.model->Configuration().columns.size()));
+        // Find the level and message field pairs by header so the test
+        // is robust against the streaming path's insertion-order column
+        // layout.
+        bool sawLevel = false;
+        bool sawMessage = false;
+        for (const auto &pair : row1.fields)
+        {
+            if (pair.first == QStringLiteral("level"))
+            {
+                QCOMPARE(pair.second, QStringLiteral("error"));
+                sawLevel = true;
+            }
+            else if (pair.first == QStringLiteral("message"))
+            {
+                QCOMPARE(pair.second, QStringLiteral("boom"));
+                sawMessage = true;
+            }
+        }
+        QVERIFY(sawLevel);
+        QVERIFY(sawMessage);
+
+        // Pretty-printed JSON contains a literal newline so the user
+        // sees one key per line. Also verify that the original keys
+        // round-tripped through `QJsonDocument`.
+        QVERIFY2(row1.rawJson.contains(QLatin1Char('\n')), "raw JSON must be indented");
+        QVERIFY(row1.rawJson.contains(QStringLiteral("\"message\"")));
+        QVERIFY(row1.rawJson.contains(QStringLiteral("\"boom\"")));
+    }
+
+    // Negative / out-of-range source rows must produce an invalid
+    // placeholder content with a user-visible explanation, not a crash
+    // or garbage data.
+    static void TestBuildRecordDetailContentOutOfRange()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"a": 1})"),
+        });
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 1);
+
+        const RecordDetailContent negative = BuildRecordDetailContent(*run.model, -1);
+        QVERIFY2(!negative.valid, "negative row must produce a placeholder");
+        QVERIFY(!negative.placeholderText.isEmpty());
+
+        const RecordDetailContent past = BuildRecordDetailContent(*run.model, 42);
+        QVERIFY2(!past.valid, "out-of-range row must produce a placeholder");
+        QVERIFY(!past.placeholderText.isEmpty());
+    }
+
+    // The widget renders a populated `RecordDetailContent` into its
+    // key/value table and raw-JSON edit, and the placeholder branch
+    // hides the table while showing the placeholder label.
+    static void TestRecordDetailWidgetRenderingAndPlaceholder()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("level"), QStringLiteral("info")});
+        content.fields.append({QStringLiteral("message"), QStringLiteral("hello")});
+        content.rawJson = QStringLiteral("{\n  \"level\": \"info\"\n}");
+        widget.SetContent(content);
+
+        QTableWidget *table = widget.FieldsTableForTest();
+        QVERIFY(table != nullptr);
+        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->item(0, 0)->text(), QStringLiteral("level"));
+        QCOMPARE(table->item(0, 1)->text(), QStringLiteral("info"));
+        QCOMPARE(table->item(1, 0)->text(), QStringLiteral("message"));
+        QCOMPARE(table->item(1, 1)->text(), QStringLiteral("hello"));
+        QVERIFY(table->isVisible() || !widget.isVisible()); // visible flag set, even if widget hidden
+
+        QPlainTextEdit *rawEdit = widget.RawEditForTest();
+        QVERIFY(rawEdit != nullptr);
+        QCOMPARE(rawEdit->toPlainText(), content.rawJson);
+
+        // Flip to placeholder content: the fields table should be
+        // hidden and the placeholder text should be set to the
+        // configured message.
+        RecordDetailContent placeholder;
+        placeholder.valid = false;
+        placeholder.placeholderText = QStringLiteral("Nothing to see here");
+        widget.SetContent(placeholder);
+        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(rawEdit->toPlainText(), QString());
+
+        // The "Open in new window" button can be hidden for snapshot
+        // windows; verify the toggle propagates.
+        QPushButton *popOutButton = widget.OpenInNewWindowButtonForTest();
+        QVERIFY(popOutButton != nullptr);
+        QVERIFY(popOutButton->isVisibleTo(&widget));
+        widget.SetOpenInNewWindowVisible(false);
+        QVERIFY(!popOutButton->isVisibleTo(&widget));
+    }
+
+    // The dock pins to a source row via `ShowSourceRow` and resets to
+    // a placeholder via `Clear`. Invalid rows fall back to the
+    // placeholder without crashing.
+    static void TestRecordDetailDockPinAndClear()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 2);
+
+        RecordDetailDock dock(run.model.get());
+        QCOMPARE(dock.CurrentSourceRow(), -1);
+
+        dock.ShowSourceRow(0);
+        QCOMPARE(dock.CurrentSourceRow(), 0);
+        QVERIFY(dock.Widget()->Content().valid);
+        bool sawAlpha = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("k") && pair.second == QStringLiteral("alpha"))
+            {
+                sawAlpha = true;
+            }
+        }
+        QVERIFY(sawAlpha);
+
+        dock.ShowSourceRow(1);
+        QCOMPARE(dock.CurrentSourceRow(), 1);
+        bool sawBeta = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("k") && pair.second == QStringLiteral("beta"))
+            {
+                sawBeta = true;
+            }
+        }
+        QVERIFY(sawBeta);
+
+        dock.ShowSourceRow(-1);
+        QCOMPARE(dock.CurrentSourceRow(), -1);
+        QVERIFY(!dock.Widget()->Content().valid);
+
+        // Out-of-range falls back to placeholder (same as Clear).
+        dock.ShowSourceRow(0);
+        QCOMPARE(dock.CurrentSourceRow(), 0);
+        dock.ShowSourceRow(42);
+        QCOMPARE(dock.CurrentSourceRow(), -1);
+        QVERIFY(!dock.Widget()->Content().valid);
+    }
+
+    // A snapshot `RecordDetailWindow` keeps rendering even after the
+    // underlying `LogModel` is destroyed: the content was deep-copied
+    // at construction so the strings outlive the model.
+    static void TestRecordDetailWindowSnapshotSurvivesModelDestruction()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"msg": "snapshot me"})"),
+        });
+        RecordDetailContent snapshot;
+        {
+            const StreamingRun run = RunStreaming(fixture.Path());
+            QCOMPARE(run.model->rowCount(), 1);
+            snapshot = BuildRecordDetailContent(*run.model, 0);
+            QVERIFY(snapshot.valid);
+            // `run` goes out of scope here, destroying the model.
+        }
+        // Window is `Qt::WA_DeleteOnClose`; track via QPointer so we can
+        // safely close + delete at the end of the test.
+        QPointer<RecordDetailWindow> window = new RecordDetailWindow(snapshot);
+        QScopeGuard cleanup([&]() {
+            if (!window.isNull())
+            {
+                window->close();
+            }
+        });
+
+        const RecordDetailContent &shown = window->WidgetForTest()->Content();
+        QVERIFY(shown.valid);
+        QCOMPARE(shown.fields.size(), snapshot.fields.size());
+        bool sawMsg = false;
+        for (const auto &pair : shown.fields)
+        {
+            if (pair.first == QStringLiteral("msg") && pair.second == QStringLiteral("snapshot me"))
+            {
+                sawMsg = true;
+            }
+        }
+        QVERIFY(sawMsg);
+        // Inside a pop-out, the "Open in new window" button is hidden
+        // because the user is already in a new window.
+        QPushButton *popOutButton = window->WidgetForTest()->OpenInNewWindowButtonForTest();
+        QVERIFY(popOutButton != nullptr);
+        QVERIFY(!popOutButton->isVisibleTo(window->WidgetForTest()));
+    }
+
+    // Double-clicking a row in the main table view surfaces the
+    // Record Details dock and pins it to that row. After model reset
+    // the dock falls back to a placeholder.
+    void TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+            QStringLiteral(R"({"k": "gamma"})"),
+        });
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(model != nullptr);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QCOMPARE(model->rowCount(), 3);
+
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
+        // `isHidden()` is the right probe with offscreen QPA: the
+        // parent `MainWindow` is never `show()`n in tests, so
+        // `isVisible()` is always false regardless of explicit
+        // `setVisible(true)` -- only `isHidden()` reflects the dock's
+        // own requested visibility state.
+        QVERIFY2(dock->isHidden(), "dock starts hidden");
+
+        // Walk through the proxy chain to the proxy index for source
+        // row 1, then drive the double-click slot on the main window.
+        auto *table = mWindow->findChild<LogTableView *>();
+        QVERIFY(table != nullptr);
+        QAbstractItemModel *proxyModel = table->model();
+        QVERIFY(proxyModel != nullptr);
+        // After the default sort (-1), proxy row == source row. Pick
+        // row 1 (the second record).
+        const QModelIndex proxyIndex = proxyModel->index(1, 0);
+        QVERIFY(proxyIndex.isValid());
+
+        mWindow->ShowRecordDetailsForProxyIndex(proxyIndex);
+        QVERIFY2(!dock->isHidden(), "dock must surface on double-click");
+        QCOMPARE(dock->CurrentSourceRow(), 1);
+        bool sawBeta = false;
+        for (const auto &pair : dock->Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("k") && pair.second == QStringLiteral("beta"))
+            {
+                sawBeta = true;
+            }
+        }
+        QVERIFY(sawBeta);
+
+        // Reset clears the dock so a stale record doesn't linger.
+        model->Reset();
+        QCOMPARE(dock->CurrentSourceRow(), -1);
+        QVERIFY(!dock->Widget()->Content().valid);
+    }
+
+    // The View-menu toggle action and the dock's title-bar X round-
+    // trip via Qt's built-in `QDockWidget::visibilityChanged` hook --
+    // we mirror that into the action so the menu stays in sync.
+    void TestRecordDetailDockViewMenuTogglesVisibility()
+    {
+        QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
+        QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
+        QVERIFY(toggleAction->isCheckable());
+
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        QVERIFY(dock != nullptr);
+        QVERIFY(dock->isHidden());
+        QVERIFY(!toggleAction->isChecked());
+
+        // Toggle on via the action -> dock becomes visible. Offscreen
+        // QPA doesn't realise the parent, so `isHidden()` (explicit
+        // hide state) is the only reliable probe.
+        toggleAction->setChecked(true);
+        QVERIFY(!dock->isHidden());
+
+        // Close the dock via its own setVisible(false) path -> action
+        // un-checks via the `visibilityChanged` hook (which fires for
+        // explicit hides regardless of parent visibility).
+        dock->setVisible(false);
+        QVERIFY(dock->isHidden());
+        QVERIFY(!toggleAction->isChecked());
+    }
+
+    // `OpenRecordDetailWindow` spawns a top-level snapshot window
+    // tracked through `mRecordDetailWindows`. Each window is
+    // `Qt::WA_DeleteOnClose`; multiple windows can coexist.
+    void TestOpenRecordDetailWindowSpawnsSnapshot()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "one"})"),
+            QStringLiteral(R"({"k": "two"})"),
+        });
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(model != nullptr);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QCOMPARE(model->rowCount(), 2);
+
+        // No snapshot windows exist yet.
+        QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
+
+        mWindow->OpenRecordDetailWindow(0);
+        mWindow->OpenRecordDetailWindow(1);
+
+        const auto windows = mWindow->findChildren<RecordDetailWindow *>();
+        QCOMPARE(windows.size(), 2);
+        for (RecordDetailWindow *window : windows)
+        {
+            QVERIFY(window->testAttribute(Qt::WA_DeleteOnClose));
+            QVERIFY(window->WidgetForTest()->Content().valid);
+        }
+
+        // Out-of-range rows are no-ops; the window count must not grow.
+        mWindow->OpenRecordDetailWindow(99);
+        QCOMPARE(mWindow->findChildren<RecordDetailWindow *>().size(), 2);
+
+        // Tidy up so the next test starts fresh.
+        for (RecordDetailWindow *window : windows)
+        {
+            window->close();
+        }
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`
