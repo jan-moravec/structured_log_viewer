@@ -6091,9 +6091,7 @@ private slots:
 
         const auto &postEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
         QCOMPARE(postEdit.type, loglib::LogConfiguration::Type::Enumeration);
-        QVERIFY2(
-            postEdit.autoDetect, "Accept-without-change must preserve the auto-detector's autoDetect=true flag"
-        );
+        QVERIFY2(postEdit.autoDetect, "Accept-without-change must preserve the auto-detector's autoDetect=true flag");
         QCOMPARE(enumSpy.count(), 0);
     }
 
