@@ -5,6 +5,8 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "preferences_editor.hpp"
+#include "record_detail_dock.hpp"
+#include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
@@ -16,6 +18,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QLabel>
+#include <QList>
 #include <QMainWindow>
 #include <QMimeData>
 #include <QPointer>
@@ -93,6 +96,21 @@ public:
     /// Show the modeless `ColumnsManagerDialog` (constructed lazily).
     /// A second call raises the existing instance.
     void ShowColumnsManager();
+
+    /// Show + raise the Record Details dock and pin it to the
+    /// proxy index @p proxyIndex (typically the row the user just
+    /// double-clicked). Maps to the source model row internally; an
+    /// invalid index is a silent no-op.
+    void ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex);
+
+    /// Update the dock's content to match the table's current row
+    /// selection. No-op when the dock is hidden so streaming
+    /// selection-change traffic isn't paid for on an invisible widget.
+    void UpdateRecordDetailsFromSelection();
+
+    /// Open a new standalone `RecordDetailWindow` snapshot of source
+    /// row @p sourceRow. Negative or out-of-range rows are a no-op.
+    void OpenRecordDetailWindow(int sourceRow);
 
     /// Push every `Column::visible` flag to the header. Idempotent;
     /// run after a load or reorder.
@@ -420,6 +438,18 @@ private:
     /// Lazy-owned bulk column manager dialog; survives close so a
     /// second open reuses the same window.
     QPointer<class ColumnsManagerDialog> mColumnsManagerDialog;
+
+    /// Dock pane that follows the currently-selected row. Hidden
+    /// until the user opens it via the View menu or by double-
+    /// clicking a row. Floating / docking / closing is provided by
+    /// `QDockWidget`'s own chrome.
+    RecordDetailDock *mRecordDetailDock = nullptr;
+
+    /// Open snapshot windows opened from the dock's "Open in new
+    /// window" action. `QPointer` self-clears when the user closes
+    /// a window (`Qt::WA_DeleteOnClose`); we sweep the null entries
+    /// before each new pop-out.
+    QList<QPointer<RecordDetailWindow>> mRecordDetailWindows;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.

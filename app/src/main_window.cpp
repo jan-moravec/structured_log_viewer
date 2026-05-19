@@ -25,6 +25,7 @@
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/udp_server_producer.hpp>
 
+#include <QAbstractProxyModel>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -427,6 +428,67 @@ MainWindow::MainWindow(QWidget *parent)
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
     mLayout->addWidget(mFindRecord);
     mFindRecord->hide();
+
+    // Record-detail dock: hidden by default, surfaces on double-click
+    // or via the View menu's Ctrl+I toggle. `QDockWidget` provides the
+    // float / dock / close chrome; we only own the row-pinning logic.
+    mRecordDetailDock = new RecordDetailDock(mModel, this);
+    addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
+    mRecordDetailDock->hide();
+    // Re-target the UI action's checkable state at the dock's own
+    // `toggleViewAction`: we keep `actionToggleRecordDetails` for the
+    // menu+shortcut wiring and forward through.
+    connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
+        mRecordDetailDock->setVisible(on);
+        if (on)
+        {
+            UpdateRecordDetailsFromSelection();
+            mRecordDetailDock->raise();
+        }
+    });
+    // Keep menu entry checked state in sync with the dock's actual
+    // visibility -- the user can also close the dock via its title-
+    // bar X, and we need the menu to reflect that.
+    connect(mRecordDetailDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (ui->actionToggleRecordDetails->isChecked() != visible)
+        {
+            const QSignalBlocker blocker(ui->actionToggleRecordDetails);
+            ui->actionToggleRecordDetails->setChecked(visible);
+        }
+        if (visible)
+        {
+            UpdateRecordDetailsFromSelection();
+        }
+    });
+    connect(mRecordDetailDock, &RecordDetailDock::openInNewWindowRequested, this, &MainWindow::OpenRecordDetailWindow);
+
+    // Double-click on a row opens / pins the dock to that row.
+    connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
+
+    // Track selection changes so the dock follows arrow-key /
+    // single-click navigation. Connected through the selection model
+    // because Qt re-creates it on each `setModel` call -- the model
+    // is already set above so this points at the live one.
+    if (QItemSelectionModel *selectionModel = mTableView->selectionModel(); selectionModel != nullptr)
+    {
+        connect(
+            selectionModel,
+            &QItemSelectionModel::currentRowChanged,
+            this,
+            [this](const QModelIndex & /*current*/, const QModelIndex & /*previous*/) {
+                UpdateRecordDetailsFromSelection();
+            }
+        );
+    }
+
+    // Reset clears the dock so a stale record doesn't linger after a
+    // new file is opened.
+    connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
+        if (mRecordDetailDock != nullptr)
+        {
+            mRecordDetailDock->Clear();
+        }
+    });
 
     mPreferencesEditor = new PreferencesEditor(this);
     connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
@@ -1657,6 +1719,98 @@ void MainWindow::ShowColumnsManager()
     mColumnsManagerDialog->show();
     mColumnsManagerDialog->raise();
     mColumnsManagerDialog->activateWindow();
+}
+
+namespace
+{
+/// Map a proxy index from the table view (filter + row-order proxy
+/// chain) down to a source-model row, or -1 if the chain breaks.
+/// Both proxies inherit `QAbstractProxyModel`, so `mapToSource` is
+/// the right entry point.
+[[nodiscard]] int MapProxyIndexToSourceRow(
+    const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
+)
+{
+    if (!proxyIndex.isValid() || filter == nullptr || rowOrder == nullptr)
+    {
+        return -1;
+    }
+    const QModelIndex midIndex = filter->mapToSource(proxyIndex);
+    if (!midIndex.isValid())
+    {
+        return -1;
+    }
+    const QModelIndex sourceIndex = rowOrder->mapToSource(midIndex);
+    if (!sourceIndex.isValid())
+    {
+        return -1;
+    }
+    return sourceIndex.row();
+}
+} // namespace
+
+void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
+{
+    if (mRecordDetailDock == nullptr)
+    {
+        return;
+    }
+    const int sourceRow = MapProxyIndexToSourceRow(proxyIndex, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        return;
+    }
+    mRecordDetailDock->ShowSourceRow(sourceRow);
+    // Surface the dock if it was hidden. `setVisible(true)` toggles
+    // the View-menu action through our visibilityChanged hook.
+    if (!mRecordDetailDock->isVisible())
+    {
+        mRecordDetailDock->setVisible(true);
+    }
+    mRecordDetailDock->raise();
+}
+
+void MainWindow::UpdateRecordDetailsFromSelection()
+{
+    if (mRecordDetailDock == nullptr || !mRecordDetailDock->isVisible())
+    {
+        return;
+    }
+    QItemSelectionModel *selectionModel = mTableView->selectionModel();
+    if (selectionModel == nullptr)
+    {
+        mRecordDetailDock->Clear();
+        return;
+    }
+    const QModelIndex current = selectionModel->currentIndex();
+    const int sourceRow = MapProxyIndexToSourceRow(current, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        mRecordDetailDock->Clear();
+        return;
+    }
+    mRecordDetailDock->ShowSourceRow(sourceRow);
+}
+
+void MainWindow::OpenRecordDetailWindow(int sourceRow)
+{
+    if (mModel == nullptr || sourceRow < 0 || sourceRow >= mModel->rowCount())
+    {
+        return;
+    }
+    RecordDetailContent snapshot = BuildRecordDetailContent(*mModel, sourceRow);
+    if (!snapshot.valid)
+    {
+        return;
+    }
+    // Sweep `nullptr` entries first so the list does not grow
+    // unbounded across a long session of open/close cycles.
+    mRecordDetailWindows.removeAll(QPointer<RecordDetailWindow>(nullptr));
+    auto *window = new RecordDetailWindow(snapshot, this);
+    mRecordDetailWindows.append(QPointer<RecordDetailWindow>(window));
+    window->show();
+    window->raise();
+    window->activateWindow();
 }
 
 void MainWindow::UpdateDiagnosticsStatus()
@@ -3121,6 +3275,11 @@ void MainWindow::RebuildViewMenu()
     QAction *manageColumnsAction = viewMenu->addAction(tr("Manage columns\u2026"));
     manageColumnsAction->setObjectName(QStringLiteral("actionManageColumns"));
     connect(manageColumnsAction, &QAction::triggered, this, &MainWindow::ShowColumnsManager);
+
+    // Record-detail toggle: always reachable from the View menu, both
+    // to open the dock from cold and to bring it back after the user
+    // closed it via the title-bar X.
+    viewMenu->addAction(ui->actionToggleRecordDetails);
 
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())
