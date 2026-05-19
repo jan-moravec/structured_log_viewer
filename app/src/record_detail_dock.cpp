@@ -4,6 +4,7 @@
 #include "record_detail_widget.hpp"
 
 #include <QAbstractItemModel>
+#include <QList>
 #include <QModelIndex>
 #include <QObject>
 
@@ -51,6 +52,28 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
                 Clear();
             }
         });
+        // Refresh when the pinned row's data changes underneath us.
+        // Streaming back-fill, an out-of-band column edit, or an
+        // enum-column promotion all emit `dataChanged` covering the
+        // affected row range; without this connection the pane would
+        // keep showing pre-change values until the user re-selected
+        // the row.
+        connect(
+            mModel,
+            &QAbstractItemModel::dataChanged,
+            this,
+            [this](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> & /*roles*/) {
+                if (!mCurrentSourceIndex.isValid())
+                {
+                    return;
+                }
+                const int pinnedRow = mCurrentSourceIndex.row();
+                if (pinnedRow >= topLeft.row() && pinnedRow <= bottomRight.row())
+                {
+                    RefreshFromModel();
+                }
+            }
+        );
     }
 
     Clear();
@@ -82,8 +105,7 @@ void RecordDetailDock::Clear()
     mCurrentSourceIndex = QPersistentModelIndex();
     RecordDetailContent placeholder;
     placeholder.valid = false;
-    placeholder.placeholderText =
-        QObject::tr("Select a row in the table to inspect it here, or double-click any row to open this pane.");
+    placeholder.placeholderText = DefaultRecordDetailPlaceholder();
     mWidget->SetContent(placeholder);
 }
 

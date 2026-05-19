@@ -249,12 +249,13 @@ The pane is a Qt dock widget: drag the title bar to snap it to the left, right, 
 
 Inside the pane:
 
-- A bold header summarises the row (`Row N` plus the formatted timestamp when a `Time` column exists).
-- A two-column **Field / Value** table lists every configured column, including columns hidden from the main view, using the same formatted output the table cells show but without single-line compaction so nested objects stay readable.
+- A bold header summarises the row (`Row N` plus the formatted timestamp when a `Time` column exists). `Row N` is the **source-model row** — the underlying record's stable position — and may not match the row number shown in the main table when a sort or filter is active.
+- A two-column **Field / Value** table lists every configured column, in the **source-model column order** (i.e. the order columns were first observed by the parser, ignoring any reordering or hide/show toggles you have applied to the main table). Hidden columns still appear here, so the pane stays a complete record view even when you've stripped the main table down to a few summary columns. The values are the same formatted output the table cells show, but without single-line compaction so nested objects stay readable.
 - A collapsible **Raw JSON** section reveals the on-disk line, pretty-printed via `QJsonDocument` (with a fall-back to the original bytes for non-JSON lines).
-- **Copy raw JSON** copies the **original on-disk bytes** of the line (compact, exactly as the parser ingested) so the clipboard text round-trips back into another tool unchanged. To copy the pretty-printed text instead, select inside the Raw JSON edit and press `Ctrl+C`.
+- The pane refreshes automatically when the pinned record's data changes underneath you — for example when a streaming back-fill arrives, a column is renamed via the columns manager, or an enum column gets promoted.
+- **Copy raw JSON** copies the **original on-disk bytes** of the line (compact, exactly as the parser ingested) so the clipboard text round-trips back into another tool unchanged. To copy the pretty-printed text instead, select inside the Raw JSON edit and press `Ctrl+C`. The button is disabled when the raw bytes aren't available (e.g. the line was evicted in a streaming session after you pinned it).
 - **Copy as key/value** copies the field table as `header: value` lines.
-- Inside the Field/Value table, `Ctrl+C` copies the selected cells as tab-separated values.
+- Inside the Field/Value table, `Ctrl+C` copies the selected cells as tab-separated values. Selection is extended (Ctrl-click to toggle individual cells, Shift-click for a range), matching standard spreadsheet behaviour.
 
 To pin a record for side-by-side comparison, click **Open in new window** inside the pane. That spawns a top-level snapshot window with a frozen copy of the displayed content — you can open as many as you like, and each one survives streaming-mode FIFO eviction, sort, filter, or even a full `File → Open…` reset because its strings are deep-copied at creation. Close each snapshot with the window's normal close button when you're done.
 

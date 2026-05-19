@@ -44,6 +44,12 @@ struct RecordDetailContent
 /// produce an invalid content with `placeholderText` set.
 [[nodiscard]] RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRow);
 
+/// Default placeholder shown when no row is pinned. Single source of
+/// truth so the dock, the snapshot window, and `BuildRecordDetailContent`
+/// agree -- otherwise the three call sites drift and translators see
+/// the same sentence three times.
+[[nodiscard]] QString DefaultRecordDetailPlaceholder();
+
 /// Reusable display widget for one log record. Renders a
 /// `RecordDetailContent` as a header summary, a two-column key/value
 /// table, and a collapsible pretty-printed raw-JSON section.

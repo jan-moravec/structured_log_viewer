@@ -42,6 +42,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -49,7 +50,6 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
-#include <QDockWidget>
 #include <QListView>
 #include <QMenu>
 #include <QMenuBar>
@@ -9009,6 +9009,61 @@ private slots:
         );
     }
 
+    // "Copy as key/value" writes one `header: value` line per field,
+    // joined by `\n`. Drives the second copy button and the underlying
+    // `CopyAsKeyValueClicked` slot end-to-end through the clipboard.
+    static void TestRecordDetailWidgetCopyAsKeyValuePushesPairs()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("level"), QStringLiteral("info")});
+        content.fields.append({QStringLiteral("message"), QStringLiteral("hello world")});
+        content.fields.append({QStringLiteral("count"), QStringLiteral("42")});
+        widget.SetContent(content);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        QPushButton *copyButton = widget.CopyKeyValueButtonForTest();
+        QVERIFY(copyButton != nullptr);
+        QVERIFY(copyButton->isEnabled());
+        copyButton->click();
+        QCoreApplication::processEvents();
+
+        const QString pasted = clipboard->text();
+        const QString expected = QStringLiteral("level: info\nmessage: hello world\ncount: 42");
+        QCOMPARE(pasted, expected);
+    }
+
+    // "Copy raw JSON" is gated on having raw bytes -- a pinned-but-
+    // evicted line produces a valid content with an empty `rawJson`,
+    // and the button stays disabled so a click can't silently no-op.
+    // Mirror of the gating in `RecordDetailWidget::PopulateUi`.
+    static void TestRecordDetailWidgetCopyRawJsonDisabledForEmptyRaw()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("k"), QStringLiteral("v")});
+        // Empty `rawJson` (eviction / parse failure with empty bytes).
+        content.rawJson = QString();
+        content.formattedJson = QString();
+        widget.SetContent(content);
+
+        QPushButton *rawButton = widget.CopyJsonButtonForTest();
+        QPushButton *kvButton = widget.CopyKeyValueButtonForTest();
+        QVERIFY(rawButton != nullptr);
+        QVERIFY(kvButton != nullptr);
+        QVERIFY2(!rawButton->isEnabled(), "Copy raw JSON must be disabled when there's no raw text");
+        QVERIFY2(kvButton->isEnabled(), "Copy as key/value stays enabled -- it reads from the fields, not raw bytes");
+    }
+
     // The dock pins to a source row via `ShowSourceRow` and resets to
     // a placeholder via `Clear`. Invalid rows fall back to the
     // placeholder without crashing.
@@ -9202,6 +9257,37 @@ private slots:
         QVERIFY(!toggleAction->isChecked());
     }
 
+    // Regression: `actionToggleRecordDetails` is declared at the top
+    // of `main_window.ui` but not placed in any `<addaction>`, so
+    // `uic` doesn't wire it into any menu in `setupUi`. A QAction's
+    // shortcut only fires once it is associated with at least one
+    // widget; `RebuildViewMenu` adds it to `menuView` lazily on
+    // first show, which would leave Ctrl+I dead from cold launch.
+    // `MainWindow`'s constructor compensates with an explicit
+    // `addAction(ui->actionToggleRecordDetails)`; this test pins that
+    // contract by checking the action sits in MainWindow's
+    // associated-objects list before the user has interacted with
+    // the View menu at all.
+    void TestRecordDetailToggleShortcutIsLiveFromColdLaunch()
+    {
+        QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
+        QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
+        QCOMPARE(toggleAction->shortcut(), QKeySequence(QStringLiteral("Ctrl+I")));
+
+        // `QWidget::actions()` is the canonical list of QActions that
+        // `addAction()` has put on the widget; the shortcut machinery
+        // walks the same list when deciding whether to dispatch.
+        QVERIFY2(
+            mWindow->actions().contains(toggleAction),
+            "MainWindow must own the toggle action so Ctrl+I fires before the View menu is ever opened"
+        );
+        // Cross-check via the action's own associated-objects view.
+        QVERIFY2(
+            toggleAction->associatedObjects().contains(mWindow),
+            "actionToggleRecordDetails must list MainWindow among its associated objects"
+        );
+    }
+
     // `OpenRecordDetailWindow` spawns a top-level snapshot window
     // tracked through `mRecordDetailWindows`. Each window is
     // `Qt::WA_DeleteOnClose`; multiple windows can coexist.
@@ -9374,6 +9460,77 @@ private slots:
         QVERIFY(!dock.Widget()->Content().valid);
 
         model.EndStreaming(false);
+    }
+
+    // `dataChanged` covering the pinned row must trigger a refresh so
+    // out-of-band edits (column rename via the columns manager,
+    // streaming back-fill, enum-column promotion) reflect in the pane
+    // without forcing the user to re-select the row. The fixture
+    // here is a column header rename: `SetColumnHeader` mutates the
+    // configuration silently, then `NotifyColumnEdited` emits the
+    // model-level `dataChanged` that the dock listens for.
+    static void TestRecordDetailDockRefreshesOnDataChanged()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 2);
+
+        const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
+        QVERIFY(kColumn >= 0);
+
+        RecordDetailDock dock(run.model.get());
+        dock.ShowSourceRow(0);
+        QVERIFY(dock.Widget()->Content().valid);
+
+        // Sanity: the pinned content reflects the on-disk header.
+        bool sawOriginalHeader = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("k"))
+            {
+                sawOriginalHeader = true;
+                QCOMPARE(pair.second, QStringLiteral("alpha"));
+            }
+        }
+        QVERIFY(sawOriginalHeader);
+
+        // Rename the column silently -- without the dock's
+        // `dataChanged` listener this change would not surface until
+        // the user re-selected the row.
+        run.model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
+        run.model->NotifyColumnEdited(kColumn);
+        QCoreApplication::processEvents();
+
+        bool sawRenamedHeader = false;
+        bool sawOldHeaderStill = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("renamed"))
+            {
+                sawRenamedHeader = true;
+                QCOMPARE(pair.second, QStringLiteral("alpha"));
+            }
+            else if (pair.first == QStringLiteral("k"))
+            {
+                sawOldHeaderStill = true;
+            }
+        }
+        QVERIFY2(sawRenamedHeader, "dock must refresh from the model after dataChanged on the pinned row");
+        QVERIFY2(!sawOldHeaderStill, "stale pre-rename content must not survive the refresh");
+
+        // Edits outside the pinned row do *not* trigger a refresh
+        // payload-wise (the model still emits, but content stays
+        // identical because the same source row was rebuilt). Pin
+        // row 1 and confirm a no-op edit on row 1's range is still
+        // safe and idempotent.
+        dock.ShowSourceRow(1);
+        QVERIFY(dock.Widget()->Content().valid);
+        run.model->NotifyColumnEdited(kColumn);
+        QCoreApplication::processEvents();
+        QVERIFY(dock.Widget()->Content().valid);
     }
 
     // Closing a snapshot window must drop its `QPointer` from the

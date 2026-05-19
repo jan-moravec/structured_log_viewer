@@ -446,9 +446,10 @@ private:
     RecordDetailDock *mRecordDetailDock = nullptr;
 
     /// Open snapshot windows opened from the dock's "Open in new
-    /// window" action. `QPointer` self-clears when the user closes
-    /// a window (`Qt::WA_DeleteOnClose`); we sweep the null entries
-    /// before each new pop-out.
+    /// window" action. Each window is `Qt::WA_DeleteOnClose`; we
+    /// drop its entry from this list via a `QObject::destroyed`
+    /// connection in `OpenRecordDetailWindow`, so the list stays
+    /// compact across a long session without an explicit sweep.
     QList<QPointer<RecordDetailWindow>> mRecordDetailWindows;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a

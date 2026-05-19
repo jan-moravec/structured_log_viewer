@@ -111,14 +111,18 @@ QTableWidgetItem *MakeReadOnlyValueItem(const QString &text)
 }
 } // namespace
 
+QString DefaultRecordDetailPlaceholder()
+{
+    return QObject::tr("Select a row in the table to inspect it here, or double-click any row to open this pane.");
+}
+
 RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRow)
 {
     RecordDetailContent content;
 
     if (sourceRow < 0 || sourceRow >= model.rowCount())
     {
-        content.placeholderText =
-            QObject::tr("Select a row in the table to inspect it here, or double-click any row to open this pane.");
+        content.placeholderText = DefaultRecordDetailPlaceholder();
         return content;
     }
 
@@ -126,12 +130,13 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     const auto &table = model.Table();
     const auto &configuration = model.Configuration();
     const auto &lines = table.Data().Lines();
+    // Belt-and-braces. Today `LogModel::rowCount()` equals
+    // `Lines().size()` so this branch is dead, but keeping the
+    // bounds check means a future divergence (e.g. a phantom row
+    // exposed by a proxy at the model boundary) degrades to a
+    // friendly placeholder rather than an out-of-bounds read.
     if (row >= lines.size())
     {
-        // Row index ahead of the line store -- happens transiently
-        // during a streaming append between `beginInsertRows` and
-        // the model emitting `dataChanged`. Treat as evicted /
-        // unavailable so the placeholder is friendly.
         content.placeholderText = QObject::tr("This record is no longer available.");
         return content;
     }
@@ -216,7 +221,11 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     mFieldsTable->setHorizontalHeaderLabels({tr("Field"), tr("Value")});
     mFieldsTable->verticalHeader()->setVisible(false);
     mFieldsTable->setSelectionBehavior(QAbstractItemView::SelectItems);
-    mFieldsTable->setSelectionMode(QAbstractItemView::ContiguousSelection);
+    // Spreadsheet-style: Ctrl-click extends the selection one cell at
+    // a time, Shift-click extends a range. `CopyFieldsSelectionToClipboard`
+    // already iterates every `QTableWidgetSelectionRange`, so the wider
+    // mode adds no copy-path work.
+    mFieldsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     mFieldsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mFieldsTable->setAlternatingRowColors(true);
     mFieldsTable->setShowGrid(false);
@@ -307,7 +316,11 @@ void RecordDetailWidget::PopulateUi()
     mSummaryLabel->setVisible(hasContent);
     mFieldsTable->setVisible(hasContent);
     mRawGroup->setVisible(hasContent);
-    mCopyJsonButton->setEnabled(hasContent);
+    // `Copy raw JSON` is gated on having raw bytes to copy, not just
+    // a valid record. A pinned-but-evicted line (line source threw)
+    // produces a valid content with empty `rawJson`; the button stays
+    // disabled so a click can't silently no-op.
+    mCopyJsonButton->setEnabled(hasContent && !mContent.rawJson.isEmpty());
     mCopyKvButton->setEnabled(hasContent);
     mOpenInNewWindowButton->setEnabled(hasContent);
     mPlaceholderLabel->setVisible(!hasContent);
@@ -315,9 +328,7 @@ void RecordDetailWidget::PopulateUi()
     if (!hasContent)
     {
         mPlaceholderLabel->setText(
-            mContent.placeholderText.isEmpty()
-                ? tr("Select a row in the table to inspect it here, or double-click any row to open this pane.")
-                : mContent.placeholderText
+            mContent.placeholderText.isEmpty() ? DefaultRecordDetailPlaceholder() : mContent.placeholderText
         );
         mFieldsTable->setRowCount(0);
         mRawEdit->clear();

@@ -435,6 +435,15 @@ MainWindow::MainWindow(QWidget *parent)
     mRecordDetailDock = new RecordDetailDock(mModel, this);
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
+    // `actionToggleRecordDetails` is declared at the top of
+    // `main_window.ui` but not placed in any `<addaction>`, so uic
+    // creates it as a child of `MainWindow` without adding it to any
+    // widget's `actions()` list. A QAction's shortcut only fires once
+    // it is associated with at least one widget; we add it to the
+    // main window explicitly so `Ctrl+I` works from a cold launch,
+    // not just after the user has opened the View menu once (which
+    // is when `RebuildViewMenu` would otherwise associate it).
+    addAction(ui->actionToggleRecordDetails);
     // Re-target the UI action's checkable state at the dock's own
     // `toggleViewAction`: we keep `actionToggleRecordDetails` for the
     // menu+shortcut wiring and forward through. The
@@ -1806,12 +1815,17 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
         return;
     }
     auto *window = new RecordDetailWindow(snapshot, this);
-    mRecordDetailWindows.append(QPointer<RecordDetailWindow>(window));
+    const QPointer<RecordDetailWindow> tracked(window);
+    mRecordDetailWindows.append(tracked);
     // Self-clean the tracker as soon as the user closes the
     // snapshot (`Qt::WA_DeleteOnClose` -> destroyed) so the list
     // doesn't accumulate null `QPointer`s across a long session.
-    connect(window, &QObject::destroyed, this, [this]() {
-        mRecordDetailWindows.removeAll(QPointer<RecordDetailWindow>(nullptr));
+    // `tracked` becomes null at the time `destroyed` fires (that's
+    // what QPointer does), so we capture the value the entry had
+    // when it was inserted and `removeOne` strictly that entry --
+    // O(n) per close, but only the one entry, not a full scan.
+    connect(window, &QObject::destroyed, this, [this, tracked]() {
+        mRecordDetailWindows.removeOne(tracked);
     });
     window->show();
     window->raise();
