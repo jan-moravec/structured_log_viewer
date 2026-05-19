@@ -1585,8 +1585,7 @@ void MainWindow::SaveConfiguration()
 
 void MainWindow::SaveSession()
 {
-    const QString file =
-        QFileDialog::getSaveFileName(this, "Save Session", QString(), "JSON (*.json);;All Files (*)");
+    const QString file = QFileDialog::getSaveFileName(this, "Save Session", QString(), "JSON (*.json);;All Files (*)");
     if (file.isEmpty())
     {
         return;
@@ -1636,10 +1635,7 @@ void MainWindow::ShowConfigurationDiagnostics()
         // wire it up once and let the dialog stay alive across opens
         // so the connection survives.
         connect(
-            mDiagnosticsDialog,
-            &ConfigurationDiagnosticsDialog::editColumnRequested,
-            this,
-            &MainWindow::EditColumn
+            mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
         );
     }
     mDiagnosticsDialog->Refresh();
@@ -1702,11 +1698,9 @@ void MainWindow::UpdateDiagnosticsStatus()
     }
     const QString text = tr("%n column mismatch(es)", nullptr, mismatched);
     mDiagnosticsButton->setText(text);
-    mDiagnosticsButton->setToolTip(
-        tr("%1 column(s) have values that do not match the configured type. "
-           "Click to open Configuration Diagnostics.")
-            .arg(mismatched)
-    );
+    mDiagnosticsButton->setToolTip(tr("%1 column(s) have values that do not match the configured type. "
+                                      "Click to open Configuration Diagnostics.")
+                                       .arg(mismatched));
     mDiagnosticsButton->show();
 }
 

@@ -155,7 +155,11 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     mTable->setObjectName(QStringLiteral("columnsTable"));
     mTable->setColumnCount(COL_COUNT);
     const QStringList headers{
-        tr("Header"), tr("Keys"), tr("Type"), tr("Auto-detect"), tr("Visible"),
+        tr("Header"),
+        tr("Keys"),
+        tr("Type"),
+        tr("Auto-detect"),
+        tr("Visible"),
     };
     mTable->setHorizontalHeaderLabels(headers);
     mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -260,18 +264,13 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
         // per-column commit hitting the signal once per column,
         // the previous full-rebuild was O(columns^2).
         connect(mModel, &LogModel::modelReset, this, &ColumnsManagerDialog::Refresh);
-        connect(
-            mModel,
-            &LogModel::headerDataChanged,
-            this,
-            [this](Qt::Orientation orientation, int first, int last) {
-                if (orientation != Qt::Horizontal)
-                {
-                    return;
-                }
-                RefreshRange(first, last);
+        connect(mModel, &LogModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
+            if (orientation != Qt::Horizontal)
+            {
+                return;
             }
-        );
+            RefreshRange(first, last);
+        });
         // Column reorders (header drag, streaming timestamp bubble) fire
         // `columnsMoved` only -- `headerDataChanged` does not follow. Without
         // this hook the manager keeps showing the pre-move row order.

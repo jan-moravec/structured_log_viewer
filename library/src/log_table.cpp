@@ -1391,10 +1391,7 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
         mConfiguration.SetColumnType(
             columnIndex,
             RouteNoStringBail(
-                tracker.intObservations,
-                tracker.uintObservations,
-                tracker.doubleObservations,
-                tracker.boolObservations
+                tracker.intObservations, tracker.uintObservations, tracker.doubleObservations, tracker.boolObservations
             )
         );
     }
@@ -1558,8 +1555,8 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         // on an already-Enumeration column, or sub-promoting
         // Enumeration <-> Level) keeps the accumulated budget so the
         // user doesn't lose hard-won evidence on a cosmetic edit.
-        const bool previousWasEnumLike = previousType == LogConfiguration::Type::Enumeration ||
-                                         previousType == LogConfiguration::Type::Level;
+        const bool previousWasEnumLike =
+            previousType == LogConfiguration::Type::Enumeration || previousType == LogConfiguration::Type::Level;
         if (!previousWasEnumLike)
         {
             health = EnumColumnHealth{};

@@ -96,7 +96,8 @@ QTableWidgetItem *MakeReadOnlyItem(const QString &text)
 class NumericTableWidgetItem : public QTableWidgetItem
 {
 public:
-    NumericTableWidgetItem(const QString &display, double sortValue) : QTableWidgetItem(display)
+    NumericTableWidgetItem(const QString &display, double sortValue)
+        : QTableWidgetItem(display)
     {
         setFlags(flags() & ~Qt::ItemIsEditable);
         setData(Qt::UserRole, sortValue);
@@ -254,7 +255,8 @@ void ConfigurationDiagnosticsDialog::Refresh()
         const qulonglong present = health.presentSlots;
         const qulonglong matching = health.matchingSlots;
         const qulonglong mismatched = present > matching ? present - matching : 0;
-        const double mismatchPct = present == 0 ? 0.0 : 100.0 * static_cast<double>(mismatched) / static_cast<double>(present);
+        const double mismatchPct =
+            present == 0 ? 0.0 : 100.0 * static_cast<double>(mismatched) / static_cast<double>(present);
 
         if (mismatched > 0)
         {
@@ -297,7 +299,9 @@ void ConfigurationDiagnosticsDialog::Refresh()
 
     if (mismatchedColumns == 0)
     {
-        mSummaryLabel->setText(tr("No configuration mismatches detected. Every column's values match its configured type."));
+        mSummaryLabel->setText(
+            tr("No configuration mismatches detected. Every column's values match its configured type.")
+        );
     }
     else
     {

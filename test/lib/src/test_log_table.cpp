@@ -2974,7 +2974,7 @@ TEST_CASE(
     {
         const auto &col = table.Configuration().Configuration().columns[0];
         CHECK(col.type == LogConfiguration::Type::Time);
-        CHECK_FALSE(col.printFormat.empty()); // seeded default
+        CHECK_FALSE(col.printFormat.empty());  // seeded default
         CHECK_FALSE(col.parseFormats.empty()); // seeded default
     }
 

@@ -858,11 +858,9 @@ QString BuildHeaderTooltip(
             health->presentSlots > health->matchingSlots ? health->presentSlots - health->matchingSlots : 0;
         if (mismatched > 0)
         {
-            tooltip += QStringLiteral(
-                "<br/><span style=\"color:#b04040;\"><b>"
-                "%1 of %2 values do not match the configured type.</b></span>"
-                "<br/>Open Configuration Diagnostics to inspect or change the type."
-            )
+            tooltip += QStringLiteral("<br/><span style=\"color:#b04040;\"><b>"
+                                      "%1 of %2 values do not match the configured type.</b></span>"
+                                      "<br/>Open Configuration Diagnostics to inspect or change the type.")
                            .arg(static_cast<qulonglong>(mismatched))
                            .arg(static_cast<qulonglong>(health->presentSlots));
         }

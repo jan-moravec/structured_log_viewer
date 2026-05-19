@@ -5694,7 +5694,9 @@ private slots:
             static_cast<int>(probe.Configuration().source->kind),
             static_cast<int>(loglib::LogConfiguration::Source::Kind::File)
         );
-        QCOMPARE(QString::fromStdString(probe.Configuration().source->locator), QString::fromStdString(syntheticSource));
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locator), QString::fromStdString(syntheticSource)
+        );
 
         // Now load the freshly-saved session back into the running
         // window and re-save: the descriptor must survive that round
@@ -5733,7 +5735,9 @@ private slots:
         // Streaming auto-detected `msg` to `String`; pin it to
         // `Integer` to force a mismatch and re-snapshot health.
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
 
         QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
         model->RefreshColumnHealth();
@@ -5799,7 +5803,9 @@ private slots:
 
         // Force a mismatch by pinning `msg` to Integer.
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
         model->RefreshColumnHealth();
         QCoreApplication::processEvents();
 
@@ -5824,7 +5830,9 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
         model->RefreshColumnHealth();
 
         ConfigurationDiagnosticsDialog dialog(model);
@@ -5872,8 +5880,7 @@ private slots:
         // Baseline: msg auto-detected to String, visible, header "msg".
         QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
         QCOMPARE(
-            model->Configuration().columns[static_cast<size_t>(msgCol)].type,
-            loglib::LogConfiguration::Type::String
+            model->Configuration().columns[static_cast<size_t>(msgCol)].type, loglib::LogConfiguration::Type::String
         );
 
         ColumnEditor editor(model, msgCol);
@@ -5976,9 +5983,7 @@ private slots:
                     break;
                 }
             }
-            QVERIFY2(
-                sawDemote, "Editor-driven Enumeration->String must emit enumColumnsChanged(Demoted, levelCol)"
-            );
+            QVERIFY2(sawDemote, "Editor-driven Enumeration->String must emit enumColumnsChanged(Demoted, levelCol)");
         }
 
         // (2) String -> Enumeration: editor re-promotes the column.
@@ -6057,7 +6062,9 @@ private slots:
         // "Auto-detect" then exercises both the autoDetect flag
         // restoration *and* the rescan that promotes the column
         // back to the detector's preferred type.
-        model->ConfigurationManager().SetColumnType(static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
         ColumnEditor editor(model, msgCol);
@@ -6253,9 +6260,9 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY2(model->Configuration().columns.size() >= 2, "fixture must yield at least two columns");
 
-        const std::string firstKeys =
-            model->Configuration().columns.front().keys.empty() ? std::string{}
-                                                                : model->Configuration().columns.front().keys.front();
+        const std::string firstKeys = model->Configuration().columns.front().keys.empty()
+                                          ? std::string{}
+                                          : model->Configuration().columns.front().keys.front();
         const std::string secondKeys =
             model->Configuration().columns[1].keys.empty() ? std::string{} : model->Configuration().columns[1].keys[0];
         QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");

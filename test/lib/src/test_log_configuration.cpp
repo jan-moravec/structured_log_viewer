@@ -533,9 +533,9 @@ TEST_CASE(
     filter.matchType = LogConfiguration::LogFilter::Match::Contains;
     manager.SetFilters({filter});
     manager.SetSort(LogConfiguration::Sort{.columnIndex = 1, .descending = true});
-    manager.SetSource(LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File, .locator = "C:/logs/app.json"
-    });
+    manager.SetSource(
+        LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locator = "C:/logs/app.json"}
+    );
 
     const TestLogConfiguration columnsOnlyFile;
     manager.Save(columnsOnlyFile.GetFilePath(), SaveScope::ColumnsOnly);
