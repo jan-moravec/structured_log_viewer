@@ -182,6 +182,16 @@ public:
     /// tests assert the descriptor round-trips through Save Session
     /// without running a real open path.
     void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
+
+    /// Test-only direct accessor for the diagnostics status-bar
+    /// button. `QObject::findChild<QPushButton*>("diagnosticsButton")`
+    /// is unreliable on the GitHub-hosted Linux runner with Qt 6.8 +
+    /// offscreen QPA (see `FindActionByObjectName` for the same
+    /// workaround applied to QActions); this bypasses the lookup.
+    [[nodiscard]] QPushButton *DiagnosticsButtonForTest() const noexcept
+    {
+        return mDiagnosticsButton;
+    }
 #endif
 
 protected:

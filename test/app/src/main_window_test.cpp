@@ -5792,7 +5792,12 @@ private slots:
         // auto-detected to a matching type or stayed Any; zero
         // mismatches.
         QCOMPARE(ConfigurationDiagnosticsDialog::MismatchedColumnCount(*model), 0);
-        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("diagnosticsButton"));
+        // `findChild<QPushButton*>("diagnosticsButton")` is unreliable
+        // on the GitHub-hosted Linux runner with Qt 6.8 + offscreen QPA
+        // (same traversal bug that strands `findChild<QMenu*>` and
+        // `findChild<QAction*>`; see `FindActionByObjectName` above).
+        // Use the direct test-only accessor so the lookup is bypassed.
+        auto *button = mWindow->DiagnosticsButtonForTest();
         QVERIFY2(button != nullptr, "MainWindow must own the diagnostics status-bar button");
         // Offscreen-QPA leaves the parent window hidden, which would
         // collapse `isVisible` to false regardless of the slot's
@@ -5836,7 +5841,10 @@ private slots:
         model->RefreshColumnHealth();
 
         const ConfigurationDiagnosticsDialog dialog(model);
-        const auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
+        // Bypass `findChild` to dodge the Qt 6.8 + offscreen-QPA
+        // traversal bug on the Linux runner (see the diagnostics-button
+        // test for the same workaround applied to MainWindow).
+        const auto *table = dialog.TableForTest();
         QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -5885,9 +5893,12 @@ private slots:
 
         ColumnEditor editor(model, msgCol);
 
-        auto *headerEdit = editor.findChild<QLineEdit *>(QStringLiteral("headerEdit"));
-        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
-        auto *visibleCheck = editor.findChild<QCheckBox *>(QStringLiteral("visibleCheck"));
+        // Direct accessors instead of `findChild` -- Linux Qt 6.8 +
+        // offscreen QPA strands the lookup for child widgets the same
+        // way it does for QActions (see `FindActionByObjectName`).
+        auto *headerEdit = editor.HeaderEditForTest();
+        auto *typeCombo = editor.TypeComboForTest();
+        auto *visibleCheck = editor.VisibleCheckForTest();
         QVERIFY(headerEdit != nullptr);
         QVERIFY(typeCombo != nullptr);
         QVERIFY(visibleCheck != nullptr);
@@ -5957,7 +5968,7 @@ private slots:
             const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
-            auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+            auto *typeCombo = editor.TypeComboForTest();
             QVERIFY(typeCombo != nullptr);
             // Index 2 is "String" -- mirrors TypeChoices() in
             // column_editor.cpp; same convention as the other editor
@@ -5994,7 +6005,7 @@ private slots:
             const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
-            auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+            auto *typeCombo = editor.TypeComboForTest();
             QVERIFY(typeCombo != nullptr);
             constexpr int ENUMERATION_CHOICE_INDEX = 8;
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
@@ -6069,7 +6080,7 @@ private slots:
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
 
         ColumnEditor editor(model, categoryCol);
-        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        auto *typeCombo = editor.TypeComboForTest();
         QVERIFY(typeCombo != nullptr);
         // (1) Combo must show the resolved type. Index 8 is
         // "Enumeration" in `TypeChoices()` (same convention as the
@@ -6122,7 +6133,7 @@ private slots:
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
         ColumnEditor editor(model, msgCol);
-        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        auto *typeCombo = editor.TypeComboForTest();
         QVERIFY(typeCombo != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         typeCombo->setCurrentIndex(0); // "Auto-detect"
@@ -6171,7 +6182,7 @@ private slots:
         );
 
         ColumnEditor editor(model, categoryCol);
-        auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
+        auto *typeCombo = editor.TypeComboForTest();
         QVERIFY(typeCombo != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         typeCombo->setCurrentIndex(0); // "Auto-detect"
@@ -6201,7 +6212,7 @@ private slots:
         const ConfigurationDiagnosticsDialog dialog(model);
         QSignalSpy editSpy(&dialog, &ConfigurationDiagnosticsDialog::editColumnRequested);
 
-        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
+        auto *table = dialog.TableForTest();
         QVERIFY(table != nullptr);
 
         // Find the row corresponding to `msg` (sorting may rearrange
@@ -6241,7 +6252,7 @@ private slots:
 
         const ColumnsManagerDialog dialog(model, mWindow);
 
-        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        auto *table = dialog.TableForTest();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -6277,7 +6288,7 @@ private slots:
         QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
 
         const ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        auto *table = dialog.TableForTest();
         QVERIFY(table != nullptr);
 
         constexpr int VISIBLE_COL = 4;
@@ -6322,7 +6333,7 @@ private slots:
         QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");
 
         ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        auto *table = dialog.TableForTest();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         table->selectRow(0);
@@ -6353,7 +6364,7 @@ private slots:
         QVERIFY2(initialColumns.size() >= 2, "fixture must yield at least two columns");
 
         ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        auto *table = dialog.TableForTest();
         QVERIFY(table != nullptr);
 
         // Top row: Move up is a no-op.
@@ -6393,7 +6404,7 @@ private slots:
 
         ColumnsManagerDialog dialog(model, mWindow);
         dialog.show();
-        auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
+        auto *table = dialog.TableForTest();
         QVERIFY(table != nullptr);
 
         // Snapshot the pre-move dialog row 0 / row 1 headers so the
