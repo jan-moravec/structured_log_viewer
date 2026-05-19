@@ -16,6 +16,7 @@
 #include <QVBoxLayout>
 
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -36,16 +37,22 @@ struct TypeChoice
 const std::vector<TypeChoice> &TypeChoices()
 {
     static const std::vector<TypeChoice> TYPE_CHOICES = {
-        {QStringLiteral("Auto-detect"), loglib::LogConfiguration::Type::Any, true},
-        {QStringLiteral("Any (treat as string)"), loglib::LogConfiguration::Type::Any, false},
-        {QStringLiteral("String"), loglib::LogConfiguration::Type::String, false},
-        {QStringLiteral("Boolean"), loglib::LogConfiguration::Type::Boolean, false},
-        {QStringLiteral("Integer"), loglib::LogConfiguration::Type::Integer, false},
-        {QStringLiteral("Floating-point"), loglib::LogConfiguration::Type::Floating, false},
-        {QStringLiteral("Number"), loglib::LogConfiguration::Type::Number, false},
-        {QStringLiteral("Time"), loglib::LogConfiguration::Type::Time, false},
-        {QStringLiteral("Enumeration"), loglib::LogConfiguration::Type::Enumeration, false},
-        {QStringLiteral("Level"), loglib::LogConfiguration::Type::Level, false},
+        {.label = QStringLiteral("Auto-detect"), .type = loglib::LogConfiguration::Type::Any, .autoDetect = true},
+        {.label = QStringLiteral("Any (treat as string)"),
+         .type = loglib::LogConfiguration::Type::Any,
+         .autoDetect = false},
+        {.label = QStringLiteral("String"), .type = loglib::LogConfiguration::Type::String, .autoDetect = false},
+        {.label = QStringLiteral("Boolean"), .type = loglib::LogConfiguration::Type::Boolean, .autoDetect = false},
+        {.label = QStringLiteral("Integer"), .type = loglib::LogConfiguration::Type::Integer, .autoDetect = false},
+        {.label = QStringLiteral("Floating-point"),
+         .type = loglib::LogConfiguration::Type::Floating,
+         .autoDetect = false},
+        {.label = QStringLiteral("Number"), .type = loglib::LogConfiguration::Type::Number, .autoDetect = false},
+        {.label = QStringLiteral("Time"), .type = loglib::LogConfiguration::Type::Time, .autoDetect = false},
+        {.label = QStringLiteral("Enumeration"),
+         .type = loglib::LogConfiguration::Type::Enumeration,
+         .autoDetect = false},
+        {.label = QStringLiteral("Level"), .type = loglib::LogConfiguration::Type::Level, .autoDetect = false},
     };
     return TYPE_CHOICES;
 }
@@ -169,7 +176,7 @@ void ColumnEditor::Populate()
         return;
     }
     const auto &columns = mModel->Configuration().columns;
-    if (mColumnIndex < 0 || mColumnIndex >= static_cast<int>(columns.size()))
+    if (mColumnIndex < 0 || std::cmp_greater_equal(mColumnIndex, columns.size()))
     {
         reject();
         return;
@@ -196,20 +203,20 @@ void ColumnEditor::WriteBack()
         return;
     }
     const auto &columns = mModel->Configuration().columns;
-    if (mColumnIndex < 0 || mColumnIndex >= static_cast<int>(columns.size()))
+    if (mColumnIndex < 0 || std::cmp_greater_equal(mColumnIndex, columns.size()))
     {
         return;
     }
     const int comboIndex = mTypeCombo->currentIndex();
     const auto &choices = TypeChoices();
-    if (comboIndex < 0 || comboIndex >= static_cast<int>(choices.size()))
+    if (comboIndex < 0 || std::cmp_greater_equal(comboIndex, choices.size()))
     {
         return;
     }
     const auto &choice = choices[static_cast<size_t>(comboIndex)];
 
     auto &manager = mModel->ConfigurationManager();
-    const size_t idx = static_cast<size_t>(mColumnIndex);
+    const auto idx = static_cast<size_t>(mColumnIndex);
 
     // Header / visible are independent toggles; write them first so
     // a same-batch type change still sees the new header in any

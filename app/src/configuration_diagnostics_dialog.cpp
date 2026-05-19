@@ -19,6 +19,8 @@
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace
 {
 constexpr int DIALOG_INITIAL_WIDTH = 720;
@@ -245,7 +247,7 @@ void ConfigurationDiagnosticsDialog::Refresh()
     mTable->setRowCount(static_cast<int>(columns.size()));
 
     int mismatchedColumns = 0;
-    for (int i = 0; i < static_cast<int>(columns.size()); ++i)
+    for (int i = 0; std::cmp_less(i, columns.size()); ++i)
     {
         const auto &column = columns[static_cast<size_t>(i)];
         const auto healthOpt = mModel->ColumnHealth(i);
@@ -318,7 +320,7 @@ int ConfigurationDiagnosticsDialog::MismatchedColumnCount(const LogModel &model)
 {
     const auto &columns = model.Configuration().columns;
     int mismatched = 0;
-    for (int i = 0; i < static_cast<int>(columns.size()); ++i)
+    for (int i = 0; std::cmp_less(i, columns.size()); ++i)
     {
         const auto health = model.ColumnHealth(i);
         if (!health.has_value())

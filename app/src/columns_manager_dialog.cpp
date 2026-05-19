@@ -20,6 +20,8 @@
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace
 {
 constexpr int DIALOG_INITIAL_WIDTH = 720;
@@ -299,7 +301,7 @@ void ColumnsManagerDialog::Refresh()
     mUpdatingProgrammatically = true;
     mTable->clearContents();
     mTable->setRowCount(static_cast<int>(columns.size()));
-    for (int i = 0; i < static_cast<int>(columns.size()); ++i)
+    for (int i = 0; std::cmp_less(i, columns.size()); ++i)
     {
         RebuildRow(i);
     }
@@ -345,7 +347,7 @@ void ColumnsManagerDialog::RebuildRow(int row)
         return;
     }
     const auto &columns = mModel->Configuration().columns;
-    if (row < 0 || row >= static_cast<int>(columns.size()))
+    if (row < 0 || std::cmp_greater_equal(row, columns.size()))
     {
         return;
     }
@@ -371,7 +373,7 @@ void ColumnsManagerDialog::OnItemChanged(QTableWidgetItem *item)
     }
     const int row = item->row();
     const auto &columns = mModel->Configuration().columns;
-    if (row < 0 || row >= static_cast<int>(columns.size()))
+    if (row < 0 || std::cmp_greater_equal(row, columns.size()))
     {
         return;
     }

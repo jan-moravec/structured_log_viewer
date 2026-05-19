@@ -2996,7 +2996,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     // editor is the place to bring a hidden column back; the
     // re-resolution by stable keys at trigger time mirrors the Hide
     // path above.
-    QAction *editColumnAction = menu->addAction(tr("Edit column \"%1\"…").arg(thisLabel));
+    const QAction *editColumnAction = menu->addAction(tr("Edit column \"%1\"…").arg(thisLabel));
     connect(editColumnAction, &QAction::triggered, this, [this, keys = thisKeys]() {
         const int idx = FindColumnIndexByKeys(keys);
         if (idx >= 0)

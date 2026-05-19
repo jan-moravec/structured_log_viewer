@@ -3050,6 +3050,7 @@ TEST_CASE(
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
     const std::vector<std::string> values = {"alpha", "beta", "alpha", "gamma", "beta", "alpha"};
+    testLines.reserve(values.size());
     for (size_t i = 0; i < values.size(); ++i)
     {
         testLines.emplace_back(LogMap{{"tier", values[i]}}, testKeys, *sourcePtr, i);
@@ -3118,6 +3119,7 @@ TEST_CASE(
 
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
+    testLines.reserve(32);
     for (int64_t i = 0; i < 32; ++i)
     {
         testLines.emplace_back(LogMap{{"count", i}}, testKeys, *sourcePtr, static_cast<size_t>(i));
@@ -3185,6 +3187,7 @@ TEST_CASE(
 
     KeyIndex testKeys;
     std::vector<LogLine> testLines;
+    testLines.reserve(4);
     for (size_t i = 0; i < 4; ++i)
     {
         testLines.emplace_back(LogMap{{"tier", std::string("alpha")}}, testKeys, *sourcePtr, i);

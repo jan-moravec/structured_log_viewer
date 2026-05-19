@@ -5739,7 +5739,7 @@ private slots:
             static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
         );
 
-        QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
+        const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
         model->RefreshColumnHealth();
         // RefreshColumnHealth emits when health moves; the pin
         // shifts matching from N to 0, which is always a delta.
@@ -5835,8 +5835,8 @@ private slots:
         );
         model->RefreshColumnHealth();
 
-        ConfigurationDiagnosticsDialog dialog(model);
-        QTableWidget *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
+        const ConfigurationDiagnosticsDialog dialog(model);
+        const auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
         QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -5903,7 +5903,7 @@ private slots:
         typeCombo->setCurrentIndex(INTEGER_CHOICE_INDEX);
         visibleCheck->setChecked(false);
 
-        QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
+        const QSignalSpy healthSpy(model, &LogModel::columnHealthChanged);
         editor.Apply();
 
         const auto &updated = model->Configuration().columns[static_cast<size_t>(msgCol)];
@@ -5954,7 +5954,7 @@ private slots:
         // signal must fire so any active enum filter rebuilds onto
         // the string-set fallback and the cached rank entry is dropped.
         {
-            QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+            const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
             auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
@@ -5974,7 +5974,7 @@ private slots:
             bool sawDemote = false;
             for (int i = 0; i < enumSpy.count(); ++i)
             {
-                const QList<QVariant> args = enumSpy.at(i);
+                const QList<QVariant> &args = enumSpy.at(i);
                 const auto reason = args.at(0).value<EnumColumnsChangeReason>();
                 const int columnIndex = args.at(1).toInt();
                 if (reason == EnumColumnsChangeReason::Demoted && columnIndex == levelCol)
@@ -5991,7 +5991,7 @@ private slots:
         // enum filter upgrades onto the new bitset fast path and the
         // proxy refreshes its rank cache.
         {
-            QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+            const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
             auto *typeCombo = editor.findChild<QComboBox *>(QStringLiteral("typeCombo"));
@@ -6008,7 +6008,7 @@ private slots:
             bool sawPromote = false;
             for (int i = 0; i < enumSpy.count(); ++i)
             {
-                const QList<QVariant> args = enumSpy.at(i);
+                const QList<QVariant> &args = enumSpy.at(i);
                 const auto reason = args.at(0).value<EnumColumnsChangeReason>();
                 const int columnIndex = args.at(1).toInt();
                 if (reason == EnumColumnsChangeReason::Promoted && columnIndex == levelCol)
@@ -6033,7 +6033,7 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
+        const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
         QVERIFY(enumSpy.isValid());
         ColumnEditor editor(model, msgCol);
         editor.Apply(); // Combo untouched -- still on the same choice.
@@ -6144,7 +6144,7 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        ConfigurationDiagnosticsDialog dialog(model);
+        const ConfigurationDiagnosticsDialog dialog(model);
         QSignalSpy editSpy(&dialog, &ConfigurationDiagnosticsDialog::editColumnRequested);
 
         auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("diagnosticsTable"));
@@ -6185,7 +6185,7 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        ColumnsManagerDialog dialog(model, mWindow);
+        const ColumnsManagerDialog dialog(model, mWindow);
 
         auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
         QVERIFY(table != nullptr);
@@ -6222,7 +6222,7 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
         QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
 
-        ColumnsManagerDialog dialog(model, mWindow);
+        const ColumnsManagerDialog dialog(model, mWindow);
         auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("columnsTable"));
         QVERIFY(table != nullptr);
 
