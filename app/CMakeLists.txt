@@ -43,6 +43,8 @@ set(PROJECT_SOURCES
     include/column_editor.hpp
     src/columns_manager_dialog.cpp
     include/columns_manager_dialog.hpp
+    src/record_detail_widget.cpp
+    include/record_detail_widget.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})
