@@ -22,13 +22,26 @@ class RecordDetailWidget;
 /// mode), so:
 ///   - if the pinned row is evicted, the index goes invalid and
 ///     `CurrentSourceRow()` returns -1 -- "Open in new window" then
-///     bails instead of snapshotting a different record;
+///     bails instead of snapshotting a different record. The dock
+///     also swaps to `EvictedRecordPlaceholder()` so the user can
+///     tell "I never picked a record" apart from "what I picked is
+///     gone";
 ///   - if rows are evicted from the front while the pinned row
 ///     survives, the persistent index follows the shift, so the
 ///     content stays bound to the same logical record.
 /// The dock also listens to `rowsRemoved` to refresh its display
 /// when the pinned row is still alive but its position changed (the
-/// summary label uses the row number).
+/// summary label uses the row number). Refresh work is gated on
+/// `isHidden()`: a closed dock skips the rebuild, and
+/// `MainWindow::UpdateRecordDetailsFromSelection` re-pins us from
+/// the table's current selection the next time the dock is shown.
+/// The eviction placeholder swap stays unconditional so the next
+/// show surfaces the correct state without further plumbing.
+///
+/// Pinning column 0 in the persistent index assumes `LogModel`
+/// never removes columns. Today only `beginInsertColumns` is
+/// emitted (see `app/src/log_model.cpp`); a future column-removal
+/// path would need to rework the column part of the pin.
 class RecordDetailDock : public QDockWidget
 {
     Q_OBJECT
@@ -42,8 +55,9 @@ public:
     /// the content. Negative or out-of-range rows clear the view.
     void ShowSourceRow(int sourceRow);
 
-    /// Reset to the "no row" placeholder. Called from
-    /// `LogModel::modelReset`.
+    /// Reset to the "no row" placeholder and forget any prior pin.
+    /// Called from `LogModel::modelReset`; also from `ShowSourceRow`
+    /// when the requested row is out of range.
     void Clear();
 
     /// Current source row, or -1 if the dock holds a placeholder
@@ -67,6 +81,13 @@ private:
     void RefreshFromModel();
     void OnOpenInNewWindowRequested();
 
+    /// Swap to `EvictedRecordPlaceholder()` without touching
+    /// `mEverPinned`. We stay in the "was pinned, then evicted"
+    /// state until something else (`Clear`, a fresh `ShowSourceRow`)
+    /// transitions us out, so consecutive `rowsRemoved` events
+    /// don't ping-pong placeholder text.
+    void ShowEvictedPlaceholder();
+
     QPointer<LogModel> mModel;
     RecordDetailWidget *mWidget = nullptr;
     /// Pinned row as a persistent index against the source model.
@@ -75,4 +96,11 @@ private:
     /// `BuildRecordDetailContent` so we always reflect the latest
     /// table state when refreshing.
     QPersistentModelIndex mCurrentSourceIndex;
+    /// True from the first successful `ShowSourceRow` until the
+    /// next `Clear`. Lets the `rowsRemoved` handler distinguish
+    /// "no pin to begin with" (no-op) from "the pinned record was
+    /// just evicted" (swap to `EvictedRecordPlaceholder`). Without
+    /// this flag both states are observationally identical because
+    /// `mCurrentSourceIndex.isValid()` is false in both.
+    bool mEverPinned = false;
 };

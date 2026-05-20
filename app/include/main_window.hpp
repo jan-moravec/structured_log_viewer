@@ -413,9 +413,11 @@ private:
     /// fresh one, severing any direct `connect()` made against the
     /// previous instance; future call sites that swap the table's
     /// model MUST invoke this helper afterwards to keep the dock
-    /// following arrow-key navigation. Today `setModel` is only
-    /// called in the constructor, so this also serves as the one-
-    /// shot initial wiring.
+    /// following arrow-key navigation. Today `setModel` is called
+    /// twice in MainWindow's constructor (source model, then the
+    /// proxy chain) and the helper is invoked once afterwards to
+    /// bind to the final selection model; the body uses
+    /// `Qt::UniqueConnection` so repeat calls are idempotent.
     void RebindRecordDetailSelectionTracking();
 
     Ui::MainWindow *ui;
@@ -469,6 +471,16 @@ private:
     /// goes null on destruction the same way the raw pointer would
     /// dangle.
     QHash<quintptr, QPointer<RecordDetailWindow>> mRecordDetailWindows;
+
+    /// `QMetaObject::Connection` for each window's `destroyed`
+    /// hook, keyed by the same `trackerId` as `mRecordDetailWindows`.
+    /// `~MainWindow` `disconnect()`s these specifically rather than
+    /// using `disconnect(sender, signal, this, nullptr)`, which would
+    /// also tear down any other unrelated `destroyed` connection a
+    /// future change might wire from a snapshot window to MainWindow.
+    /// Lambdas remove themselves from the map alongside their entry
+    /// in `mRecordDetailWindows`.
+    QHash<quintptr, QMetaObject::Connection> mRecordDetailWindowDestroyedConnections;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.

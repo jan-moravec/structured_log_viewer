@@ -43,14 +43,32 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
         connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int, int) {
             if (mCurrentSourceIndex.isValid())
             {
+                // Pinned row survives -- only its index shifted. Skip
+                // the rebuild on a hidden dock since the user isn't
+                // looking; `MainWindow::UpdateRecordDetailsFromSelection`
+                // re-pins us from the table's current selection when
+                // the dock becomes visible again.
+                if (isHidden())
+                {
+                    return;
+                }
                 RefreshFromModel();
             }
-            else
+            else if (mEverPinned)
             {
-                // Pinned row was inside the evicted range: show the
-                // placeholder explaining that the record is gone.
-                Clear();
+                // The persistent index went invalid this tick -- the
+                // pinned record was inside the evicted range. Always
+                // swap to the dedicated placeholder (cheap text
+                // update, no field-table rebuild) so the next show
+                // surfaces "your record is gone" rather than the
+                // default "select a row" prompt. `mEverPinned` stays
+                // true so subsequent removals are an idempotent no-op
+                // until the next `Clear` / `ShowSourceRow`.
+                ShowEvictedPlaceholder();
             }
+            // else: no pin to begin with -- a fresh dock that never
+            // had a row selected. Streaming eviction shouldn't pay
+            // for a placeholder rebuild that has no visible effect.
         });
         // Refresh when the pinned row's data changes underneath us.
         // Streaming back-fill, an out-of-band column edit, or an
@@ -64,6 +82,13 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
             this,
             [this](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> & /*roles*/) {
                 if (!mCurrentSourceIndex.isValid())
+                {
+                    return;
+                }
+                // Same visibility gate as the `rowsRemoved` handler:
+                // a hidden dock has nothing to display, and we
+                // refresh on next show via the selection re-pin.
+                if (isHidden())
                 {
                     return;
                 }
@@ -97,15 +122,30 @@ void RecordDetailDock::ShowSourceRow(int sourceRow)
         return;
     }
     mCurrentSourceIndex = QPersistentModelIndex(mModel->index(sourceRow, 0));
+    mEverPinned = true;
     RefreshFromModel();
 }
 
 void RecordDetailDock::Clear()
 {
     mCurrentSourceIndex = QPersistentModelIndex();
+    mEverPinned = false;
     RecordDetailContent placeholder;
     placeholder.valid = false;
     placeholder.placeholderText = DefaultRecordDetailPlaceholder();
+    mWidget->SetContent(placeholder);
+}
+
+void RecordDetailDock::ShowEvictedPlaceholder()
+{
+    // The persistent index is already invalid by the time we get
+    // here (Qt invalidated it during `rowsRemoved`); explicitly
+    // drop it anyway so future `CurrentSourceRow()` reads are
+    // deterministic without depending on Qt's invariant.
+    mCurrentSourceIndex = QPersistentModelIndex();
+    RecordDetailContent placeholder;
+    placeholder.valid = false;
+    placeholder.placeholderText = EvictedRecordPlaceholder();
     mWidget->SetContent(placeholder);
 }
 

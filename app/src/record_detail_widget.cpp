@@ -12,7 +12,6 @@
 #include <QClipboard>
 #include <QFont>
 #include <QFontDatabase>
-#include <QFontMetrics>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -21,9 +20,11 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QList>
+#include <QMap>
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSet>
 #include <QShortcut>
 #include <QStringList>
 #include <QTableWidget>
@@ -133,7 +134,7 @@ QTableWidgetItem *MakeReadOnlyKeyItem(const QString &text)
     return item;
 }
 
-QTableWidgetItem *MakeReadOnlyValueItem(const QString &text)
+QTableWidgetItem *MakeReadOnlyValueItem(const QString &text, const QPalette &palette)
 {
     auto *item = new QTableWidgetItem(text);
     // Selectable so the user can copy values with Ctrl+C inside
@@ -146,13 +147,19 @@ QTableWidgetItem *MakeReadOnlyValueItem(const QString &text)
         // em-dash is unlikely to collide with a real value, and a
         // dedicated `IS_EMPTY_PLACEHOLDER_ROLE` flag below removes the
         // last shred of ambiguity for tests and future consumers.
+        //
+        // The palette is taken from the host table (passed in by the
+        // caller) rather than a default-constructed `QPalette()` so a
+        // parent-overridden theme (stylesheet, dark-mode toggle,
+        // accessibility colour scheme) drives the muted-placeholder
+        // colour and stays consistent with the "no row selected"
+        // label below.
         item->setText(QStringLiteral("\u2014"));
         item->setToolTip(QObject::tr("This field is present but has an empty value."));
         item->setData(IS_EMPTY_PLACEHOLDER_ROLE, true);
         QFont font = item->font();
         font.setItalic(true);
         item->setFont(font);
-        QPalette palette;
         item->setForeground(palette.color(QPalette::PlaceholderText));
     }
     return item;
@@ -162,6 +169,11 @@ QTableWidgetItem *MakeReadOnlyValueItem(const QString &text)
 QString DefaultRecordDetailPlaceholder()
 {
     return QObject::tr("Select a row in the table to inspect it here, or double-click any row to open this pane.");
+}
+
+QString EvictedRecordPlaceholder()
+{
+    return QObject::tr("The pinned record is no longer available (evicted from a streaming buffer or a model reset).");
 }
 
 RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRow)
@@ -185,7 +197,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     // friendly placeholder rather than an out-of-bounds read.
     if (row >= lines.size())
     {
-        content.placeholderText = QObject::tr("This record is no longer available.");
+        content.placeholderText = EvictedRecordPlaceholder();
         return content;
     }
 
@@ -392,11 +404,16 @@ void RecordDetailWidget::PopulateUi()
     mSummaryLabel->setText(mContent.summary);
 
     mFieldsTable->setRowCount(static_cast<int>(mContent.fields.size()));
+    // Snapshot the host palette once; passing it into every value
+    // cell beats either (a) reading the application palette inside
+    // each cell builder (which misses parent-widget overrides) or
+    // (b) re-fetching from the table per cell (same value N times).
+    const QPalette tablePalette = mFieldsTable->palette();
     for (int i = 0; i < static_cast<int>(mContent.fields.size()); ++i)
     {
         const auto &pair = mContent.fields[i];
         mFieldsTable->setItem(i, FIELDS_KEY_COLUMN, MakeReadOnlyKeyItem(pair.first));
-        mFieldsTable->setItem(i, FIELDS_VALUE_COLUMN, MakeReadOnlyValueItem(pair.second));
+        mFieldsTable->setItem(i, FIELDS_VALUE_COLUMN, MakeReadOnlyValueItem(pair.second, tablePalette));
     }
     // `resizeRowsToContents` honours both explicit newlines AND
     // word-wrap (since the table has `setWordWrap(true)`), so long
@@ -479,12 +496,22 @@ void RecordDetailWidget::CopyFieldsSelectionToClipboard() const
     {
         return;
     }
-    // Read the underlying field text rather than the table-item
-    // display text so the muted em-dash placeholder in
-    // `MakeReadOnlyValueItem` doesn't leak into the clipboard
-    // copy. Use the model `Content().fields` as the source of
-    // truth.
-    QStringList rowLines;
+    // Coalesce all selection rectangles into a per-row column set
+    // before emitting. Under `ExtendedSelection` Qt returns one
+    // `QTableWidgetSelectionRange` per Ctrl-click and does NOT merge
+    // overlapping or adjacent rectangles, so a naive iteration emits
+    // the same row twice (once per range it appears in) and can
+    // interleave cells in a non-spreadsheet order (e.g. picking
+    // value before key when the user Ctrl-clicked the value cell
+    // first). `QMap<int, QSet<int>>` orders rows ascending and
+    // dedupes cells; the per-row emit then forces (key, value)
+    // column order regardless of click sequence.
+    //
+    // Reading from `mContent.fields` keeps the muted em-dash
+    // placeholder for present-but-empty values out of the clipboard
+    // -- we copy the underlying field text, not the visible
+    // placeholder glyph.
+    QMap<int, QSet<int>> selectedCells;
     for (const QTableWidgetSelectionRange &range : ranges)
     {
         for (int row = range.topRow(); row <= range.bottomRow(); ++row)
@@ -493,24 +520,35 @@ void RecordDetailWidget::CopyFieldsSelectionToClipboard() const
             {
                 continue;
             }
-            QStringList cells;
             for (int col = range.leftColumn(); col <= range.rightColumn(); ++col)
             {
-                if (col == FIELDS_KEY_COLUMN)
+                if (col != FIELDS_KEY_COLUMN && col != FIELDS_VALUE_COLUMN)
                 {
-                    cells.append(mContent.fields[row].first);
+                    continue;
                 }
-                else if (col == FIELDS_VALUE_COLUMN)
-                {
-                    cells.append(mContent.fields[row].second);
-                }
+                selectedCells[row].insert(col);
             }
-            rowLines.append(cells.join(QLatin1Char('\t')));
         }
     }
-    if (rowLines.isEmpty())
+    if (selectedCells.isEmpty())
     {
         return;
+    }
+    QStringList rowLines;
+    rowLines.reserve(static_cast<int>(selectedCells.size()));
+    for (auto it = selectedCells.cbegin(); it != selectedCells.cend(); ++it)
+    {
+        const int row = it.key();
+        QStringList cells;
+        if (it.value().contains(FIELDS_KEY_COLUMN))
+        {
+            cells.append(mContent.fields[row].first);
+        }
+        if (it.value().contains(FIELDS_VALUE_COLUMN))
+        {
+            cells.append(mContent.fields[row].second);
+        }
+        rowLines.append(cells.join(QLatin1Char('\t')));
     }
     QApplication::clipboard()->setText(rowLines.join(QLatin1Char('\n')));
 }

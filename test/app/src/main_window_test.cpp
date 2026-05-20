@@ -9194,6 +9194,70 @@ private slots:
         );
     }
 
+    // `Ctrl+C` inside the fields table copies the underlying field
+    // text as TSV. With `ExtendedSelection`, Qt returns one rectangle
+    // per Ctrl-click and does NOT merge them, so a naive implementation
+    // would duplicate rows and emit cells in click-order rather than
+    // visual (key-then-value) order. The coalescing pass in
+    // `CopyFieldsSelectionToClipboard` flattens that into one
+    // ordered line per row.
+    static void TestRecordDetailWidgetFieldsTableCopyCoalescesMultiRanges()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("alpha"), QStringLiteral("1")});
+        content.fields.append({QStringLiteral("beta"), QStringLiteral("2")});
+        content.fields.append({QStringLiteral("gamma"), QStringLiteral("3")});
+        widget.SetContent(content);
+
+        QTableWidget *table = widget.FieldsTableForTest();
+        QVERIFY(table != nullptr);
+        QCOMPARE(table->rowCount(), 3);
+
+        // Simulate three discontiguous Ctrl-clicks in a click order
+        // that would mis-shape the output under a naive emit:
+        //   (row 0, value) - value cell first within row 0
+        //   (row 2, key)   - skip row 1 entirely
+        //   (row 0, key)   - back to row 0; the coalescer must merge
+        //                    this with the earlier value pick instead
+        //                    of emitting row 0 a second time.
+        // `setSelected(true)` calls `selectionModel()->select(idx,
+        // Select)`, which accumulates regardless of the widget's
+        // ExtendedSelection mode -- so we don't need to drive real
+        // clicks (unreliable under offscreen QPA) to reproduce the
+        // multi-range scenario `selectedRanges()` returns.
+        table->clearSelection();
+        table->item(0, 1)->setSelected(true);
+        table->item(2, 0)->setSelected(true);
+        table->item(0, 0)->setSelected(true);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        // Call the private slot via the meta-object: real Ctrl+C
+        // dispatch goes through a `QShortcut` whose activation under
+        // offscreen QPA depends on focus state we can't reliably set
+        // in tests. Same code path either way.
+        const bool emitted = QMetaObject::invokeMethod(&widget, "CopyFieldsSelectionToClipboard", Qt::DirectConnection);
+        QVERIFY2(emitted, "CopyFieldsSelectionToClipboard must be reachable via the meta-object");
+        QCoreApplication::processEvents();
+
+        const QString pasted = clipboard->text();
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        // Exactly two rows in the output (row 0 once, row 2 once);
+        // row 1 wasn't selected.
+        QCOMPARE(lines.size(), 2);
+        // Row 0 has both columns; key emitted before value regardless
+        // of which one was clicked first.
+        QCOMPARE(lines[0], QStringLiteral("alpha\t1"));
+        // Row 2 has only the key column.
+        QCOMPARE(lines[1], QStringLiteral("gamma"));
+    }
+
     // The dock pins to a source row via `ShowSourceRow` and resets to
     // a placeholder via `Clear`. Invalid rows fall back to the
     // placeholder without crashing.
@@ -9547,6 +9611,11 @@ private slots:
         QCOMPARE(model.rowCount(), 100);
 
         RecordDetailDock dock(&model);
+        // Refresh-on-`rowsRemoved` is gated on `isHidden()` so the
+        // user doesn't pay for invisible-pane work during streaming.
+        // Show the dock under offscreen QPA so the gating sees us as
+        // visible and reproduces the user-facing flow.
+        dock.show();
         dock.ShowSourceRow(50);
         QCOMPARE(dock.CurrentSourceRow(), 50);
         // The pinned record has `value == 51` (1-indexed line ids,
@@ -9588,6 +9657,52 @@ private slots:
         QCOMPARE(model.rowCount(), 100);
         QCOMPARE(dock.CurrentSourceRow(), -1);
         QVERIFY(!dock.Widget()->Content().valid);
+        // The placeholder must be the dedicated "record evicted"
+        // text, not the default "select a row" text. This is the
+        // signal that distinguishes "I never picked anything" from
+        // "what I picked is gone".
+        QCOMPARE(dock.Widget()->Content().placeholderText, EvictedRecordPlaceholder());
+        QVERIFY2(
+            dock.Widget()->Content().placeholderText != DefaultRecordDetailPlaceholder(),
+            "Evicted-pin placeholder must not collide with the default 'select a row' text"
+        );
+
+        model.EndStreaming(false);
+    }
+
+    // Regression for the visibility gate on the `rowsRemoved`
+    // handler: when the dock has never been pinned, a streaming
+    // eviction event must NOT cause a placeholder rebuild (no
+    // `mEverPinned` flag means there's nothing to invalidate).
+    // The user-visible state stays at the default placeholder
+    // either way; this test pins the cheap-no-op semantics so a
+    // future change can't reintroduce the per-tick `Clear()` cost.
+    static void TestRecordDetailDockNoPinSkipsEvictionWork()
+    {
+        LogModel model;
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        model.SetRetentionCap(50);
+
+        loglib::KeyIndex &keys = model.Sink()->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 50, /*declareNewKey=*/true));
+        QCOMPARE(model.rowCount(), 50);
+
+        RecordDetailDock dock(&model);
+        dock.show();
+        // No `ShowSourceRow` -> `mEverPinned` stays false.
+        const QString initialPlaceholder = dock.Widget()->Content().placeholderText;
+        QCOMPARE(initialPlaceholder, DefaultRecordDetailPlaceholder());
+
+        // Trigger eviction; the placeholder must NOT swap to the
+        // "record evicted" text because nothing was ever pinned.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 51, 50, /*declareNewKey=*/false));
+        QCOMPARE(model.rowCount(), 50);
+        QCOMPARE(dock.Widget()->Content().placeholderText, DefaultRecordDetailPlaceholder());
+        QVERIFY2(
+            dock.Widget()->Content().placeholderText != EvictedRecordPlaceholder(),
+            "Dock with no pin history must not surface the eviction placeholder"
+        );
 
         model.EndStreaming(false);
     }
@@ -9612,6 +9727,11 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
+        // Refresh-on-`dataChanged` is gated on `isHidden()`; show the
+        // dock so the gate lets the refresh through (mirrors the
+        // real flow where the dock is visible when the user notices
+        // out-of-band edits).
+        dock.show();
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
 

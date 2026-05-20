@@ -50,6 +50,15 @@ struct RecordDetailContent
 /// the same sentence three times.
 [[nodiscard]] QString DefaultRecordDetailPlaceholder();
 
+/// Placeholder shown when the previously-pinned record has been
+/// removed from the model (e.g. evicted from a streaming FIFO).
+/// Distinct from `DefaultRecordDetailPlaceholder` so the user can
+/// tell "I never picked anything" apart from "what I picked is
+/// gone". Single source of truth, reused by the dock's
+/// `rowsRemoved` handler and `BuildRecordDetailContent`'s
+/// belt-and-braces bounds branch.
+[[nodiscard]] QString EvictedRecordPlaceholder();
+
 /// Reusable display widget for one log record. Renders a
 /// `RecordDetailContent` as a header summary, a two-column key/value
 /// table, and a collapsible pretty-printed raw-JSON section.

@@ -791,13 +791,17 @@ MainWindow::~MainWindow()
     // Disconnecting up-front leaves the snapshots to clean
     // themselves up via Qt's normal child-destruction path; nothing
     // else relies on the tracker entries surviving the destructor.
-    for (const QPointer<RecordDetailWindow> &ptr : std::as_const(mRecordDetailWindows))
+    //
+    // We `disconnect(QMetaObject::Connection)` (scoped) rather than
+    // `disconnect(sender, signal, this, nullptr)` (blanket) so a
+    // future code change that adds a separate `destroyed` hook on
+    // these windows can't be silently torn down by this teardown
+    // loop.
+    for (const QMetaObject::Connection &connection : std::as_const(mRecordDetailWindowDestroyedConnections))
     {
-        if (!ptr.isNull())
-        {
-            disconnect(ptr.data(), &QObject::destroyed, this, nullptr);
-        }
+        disconnect(connection);
     }
+    mRecordDetailWindowDestroyedConnections.clear();
     delete ui;
 }
 
@@ -1875,9 +1879,16 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
     // whichever null entry happened to come first in the container.
     const auto trackerId = reinterpret_cast<quintptr>(window);
     mRecordDetailWindows.insert(trackerId, window);
-    connect(window, &QObject::destroyed, this, [this, trackerId]() {
+    // Store the connection so `~MainWindow` can `disconnect()` this
+    // exact lambda before our member containers go away. A blanket
+    // `disconnect(sender, signal, this, nullptr)` would also kill
+    // any unrelated future hook on the same `destroyed` signal --
+    // scoping by the returned connection keeps the teardown local.
+    const QMetaObject::Connection connection = connect(window, &QObject::destroyed, this, [this, trackerId]() {
         mRecordDetailWindows.remove(trackerId);
+        mRecordDetailWindowDestroyedConnections.remove(trackerId);
     });
+    mRecordDetailWindowDestroyedConnections.insert(trackerId, connection);
     window->show();
     window->raise();
     window->activateWindow();
