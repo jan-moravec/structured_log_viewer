@@ -178,8 +178,7 @@ void RecordDetailDock::ShowEvictedPlaceholder()
 void RecordDetailDock::RefreshFromModel()
 {
     qDebug() << "[DOCK-DBG] RefreshFromModel enter model=" << static_cast<void *>(mModel.data())
-             << " currentValid=" << mCurrentSourceIndex.isValid()
-             << " widget=" << static_cast<void *>(mWidget);
+             << " currentValid=" << mCurrentSourceIndex.isValid() << " widget=" << static_cast<void *>(mWidget);
     if (!mModel || !mCurrentSourceIndex.isValid())
     {
         Clear();
