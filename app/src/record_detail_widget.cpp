@@ -45,11 +45,6 @@ constexpr int RAW_MIN_HEIGHT = 120;
 constexpr int RAW_MAX_HEIGHT = 600;
 constexpr int FIELDS_KEY_COLUMN = 0;
 constexpr int FIELDS_VALUE_COLUMN = 1;
-/// Marks the value-column item as the muted "empty value" em-dash
-/// placeholder so downstream consumers (tests, future copy paths)
-/// can distinguish it from a real value that happens to look like
-/// the placeholder text.
-constexpr int IS_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 
 /// Pretty-print @p raw as indented JSON when it parses cleanly; fall
 /// back to the original bytes (UTF-8 decoded) otherwise so non-JSON
@@ -57,13 +52,19 @@ constexpr int IS_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 /// yields an empty string -- the caller is expected to gate the UI
 /// on `RecordDetailContent::rawJson.isEmpty()` and explain the
 /// missing bytes (e.g. evicted streaming line).
+///
+/// Uses `QByteArray::fromRawData` to view the `std::string` bytes
+/// without copying. `QJsonDocument::fromJson` only reads the input
+/// during parse and does not retain the pointer past the call, and
+/// the fallback `QString::fromUtf8` path also doesn't keep the
+/// `QByteArray`, so the zero-copy view is safe here.
 QString FormatRawLineForDisplay(const std::string &raw)
 {
     if (raw.empty())
     {
         return QString();
     }
-    const QByteArray bytes = QByteArray::fromStdString(raw);
+    const QByteArray bytes = QByteArray::fromRawData(raw.data(), static_cast<qsizetype>(raw.size()));
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error == QJsonParseError::NoError && (doc.isObject() || doc.isArray()))
@@ -124,29 +125,42 @@ QString EscapeForKeyValueCopy(const QString &text)
     return out;
 }
 
-QTableWidgetItem *MakeReadOnlyKeyItem(const QString &text)
+/// Initialise @p item as a read-only, bold key cell. Used by both
+/// the fresh-allocation path (`new QTableWidgetItem`) and the
+/// in-place reuse path that keeps a cached item across `SetContent`
+/// calls when the row count is unchanged -- the typical case for
+/// arrow-key navigation through rows of the same shape.
+void ConfigureKeyItem(QTableWidgetItem *item, const QString &text)
 {
-    auto *item = new QTableWidgetItem(text);
+    item->setText(text);
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    item->setData(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE, QVariant());
+    item->setToolTip(QString());
+    item->setForeground(QBrush());
     QFont font = item->font();
     font.setBold(true);
+    font.setItalic(false);
     item->setFont(font);
-    return item;
 }
 
-QTableWidgetItem *MakeReadOnlyValueItem(const QString &text, const QPalette &palette)
+/// Initialise @p item as a read-only value cell. Empty input yields
+/// the muted em-dash placeholder. See `ConfigureKeyItem` for why
+/// this is split out from the constructor.
+void ConfigureValueItem(QTableWidgetItem *item, const QString &text, const QPalette &palette)
 {
-    auto *item = new QTableWidgetItem(text);
     // Selectable so the user can copy values with Ctrl+C inside
     // the table (handled by the widget-scope `QShortcut` wired in
     // `RecordDetailWidget`), but not editable.
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    QFont font = item->font();
+    font.setBold(false);
     if (text.isEmpty())
     {
         // Muted em-dash placeholder for present-but-empty values. The
         // em-dash is unlikely to collide with a real value, and a
-        // dedicated `IS_EMPTY_PLACEHOLDER_ROLE` flag below removes the
-        // last shred of ambiguity for tests and future consumers.
+        // dedicated `RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE` flag
+        // removes the last shred of ambiguity for tests and future
+        // consumers.
         //
         // The palette is taken from the host table (passed in by the
         // caller) rather than a default-constructed `QPalette()` so a
@@ -156,24 +170,42 @@ QTableWidgetItem *MakeReadOnlyValueItem(const QString &text, const QPalette &pal
         // label below.
         item->setText(QStringLiteral("\u2014"));
         item->setToolTip(QObject::tr("This field is present but has an empty value."));
-        item->setData(IS_EMPTY_PLACEHOLDER_ROLE, true);
-        QFont font = item->font();
+        item->setData(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE, true);
         font.setItalic(true);
-        item->setFont(font);
         item->setForeground(palette.color(QPalette::PlaceholderText));
     }
-    return item;
+    else
+    {
+        item->setText(text);
+        item->setToolTip(QString());
+        item->setData(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE, QVariant());
+        font.setItalic(false);
+        // Reset to the default foreground so an item that was
+        // previously rendered as a placeholder (muted colour) and is
+        // now reused for a real value picks up the regular palette.
+        item->setForeground(QBrush());
+    }
+    item->setFont(font);
 }
 } // namespace
 
 QString DefaultRecordDetailPlaceholder()
 {
-    return QObject::tr("Select a row in the table to inspect it here, or double-click any row to open this pane.");
+    // Translation context is `RecordDetailWidget` so translators see
+    // all of this screen's strings grouped together (the
+    // `QObject::tr` default context would scatter them under a
+    // namespaceless catch-all). Same rationale for
+    // `EvictedRecordPlaceholder` below.
+    return RecordDetailWidget::tr(
+        "Select a row in the table to inspect it here, or double-click any row to open this pane."
+    );
 }
 
 QString EvictedRecordPlaceholder()
 {
-    return QObject::tr("The pinned record is no longer available (evicted from a streaming buffer or a model reset).");
+    return RecordDetailWidget::tr(
+        "The pinned record is no longer available (evicted from a streaming buffer or a model reset)."
+    );
 }
 
 RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRow)
@@ -228,7 +260,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
             rawLineBytes.clear();
         }
     }
-    content.rawJson = QString::fromUtf8(QByteArray::fromStdString(rawLineBytes));
+    content.rawJson = QString::fromUtf8(rawLineBytes.data(), static_cast<qsizetype>(rawLineBytes.size()));
     content.formattedJson = FormatRawLineForDisplay(rawLineBytes);
 
     QString summary = QObject::tr("Row %1").arg(sourceRow + 1);
@@ -329,6 +361,17 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     // to hide the QPlainTextEdit on demand without messing with the
     // outer layout.
     connect(mRawGroup, &QGroupBox::toggled, mRawEdit, &QWidget::setVisible);
+    // Remember the user's expand/collapse intent so a follow-up
+    // record with no raw bytes (which we force-collapse below)
+    // can be reverted on the next record that DOES have raw bytes.
+    // `mSuppressRawToggleHandler` gates the programmatic toggles
+    // so they don't overwrite the remembered user choice.
+    connect(mRawGroup, &QGroupBox::toggled, this, [this](bool on) {
+        if (!mSuppressRawToggleHandler)
+        {
+            mUserPrefersRawExpanded = on;
+        }
+    });
     mRawEdit->setVisible(false);
     layout->addWidget(mRawGroup);
 
@@ -403,17 +446,44 @@ void RecordDetailWidget::PopulateUi()
 
     mSummaryLabel->setText(mContent.summary);
 
-    mFieldsTable->setRowCount(static_cast<int>(mContent.fields.size()));
+    // Reuse existing items in place when the row count is
+    // unchanged. The common case is arrow-key navigation through
+    // rows that share the same column layout: tearing down N pairs
+    // of `QTableWidgetItem`s and rebuilding them on every selection
+    // step shows up as a visible stutter for wide schemas, where
+    // `setRowCount` + N * `setItem` allocates 2N items per row
+    // change. `ConfigureKeyItem` / `ConfigureValueItem` reset every
+    // mutable property the placeholder path could have touched, so
+    // a recycled item never carries stale state (foreground, font
+    // italics, tooltip, role flag) from its previous tenant.
+    const int newRowCount = static_cast<int>(mContent.fields.size());
+    const int oldRowCount = mFieldsTable->rowCount();
+    if (newRowCount != oldRowCount)
+    {
+        mFieldsTable->setRowCount(newRowCount);
+    }
     // Snapshot the host palette once; passing it into every value
     // cell beats either (a) reading the application palette inside
     // each cell builder (which misses parent-widget overrides) or
     // (b) re-fetching from the table per cell (same value N times).
     const QPalette tablePalette = mFieldsTable->palette();
-    for (int i = 0; i < static_cast<int>(mContent.fields.size()); ++i)
+    for (int i = 0; i < newRowCount; ++i)
     {
         const auto &pair = mContent.fields[i];
-        mFieldsTable->setItem(i, FIELDS_KEY_COLUMN, MakeReadOnlyKeyItem(pair.first));
-        mFieldsTable->setItem(i, FIELDS_VALUE_COLUMN, MakeReadOnlyValueItem(pair.second, tablePalette));
+        QTableWidgetItem *keyItem = mFieldsTable->item(i, FIELDS_KEY_COLUMN);
+        if (keyItem == nullptr)
+        {
+            keyItem = new QTableWidgetItem();
+            mFieldsTable->setItem(i, FIELDS_KEY_COLUMN, keyItem);
+        }
+        ConfigureKeyItem(keyItem, pair.first);
+        QTableWidgetItem *valueItem = mFieldsTable->item(i, FIELDS_VALUE_COLUMN);
+        if (valueItem == nullptr)
+        {
+            valueItem = new QTableWidgetItem();
+            mFieldsTable->setItem(i, FIELDS_VALUE_COLUMN, valueItem);
+        }
+        ConfigureValueItem(valueItem, pair.second, tablePalette);
     }
     // `resizeRowsToContents` honours both explicit newlines AND
     // word-wrap (since the table has `setWordWrap(true)`), so long
@@ -424,31 +494,48 @@ void RecordDetailWidget::PopulateUi()
 
     mRawEdit->setPlainText(mContent.formattedJson);
     // Empty raw bytes (FIFO eviction, line source threw, file
-    // truncated mid-line, ...): disable the group AND retitle it so
-    // the user knows there's nothing behind the toggle, instead of
-    // expanding to find an empty edit. The group stays visible so
-    // the absence is observable rather than silent.
+    // truncated mid-line, ...): disable the group AND retitle it
+    // so the user knows there's nothing behind the toggle, instead
+    // of expanding to find an empty edit. The group stays visible
+    // so the absence is observable rather than silent.
+    //
+    // Force-collapse on `!hasRaw` so the title swap to
+    // "Raw JSON (unavailable)" is the only thing the user sees,
+    // not a stale empty expansion. The user's expansion preference
+    // is stored separately in `mUserPrefersRawExpanded`, so when
+    // the next record DOES carry raw bytes, the expansion is
+    // restored. `mSuppressRawToggleHandler` gates the toggled
+    // listener so this programmatic flip doesn't overwrite the
+    // remembered user state.
     const bool hasRaw = !mContent.rawJson.isEmpty();
+    const bool desiredChecked = hasRaw && mUserPrefersRawExpanded;
+    if (mRawGroup->isChecked() != desiredChecked)
+    {
+        mSuppressRawToggleHandler = true;
+        mRawGroup->setChecked(desiredChecked);
+        mSuppressRawToggleHandler = false;
+    }
+    mRawEdit->setVisible(desiredChecked);
     mRawGroup->setEnabled(hasRaw);
     mRawGroup->setTitle(hasRaw ? tr("Raw JSON") : tr("Raw JSON (unavailable)"));
-    if (!hasRaw)
-    {
-        mRawGroup->setToolTip(tr("The original line bytes are no longer available for this record."));
-    }
-    else
-    {
-        mRawGroup->setToolTip(QString());
-    }
+    mRawGroup->setToolTip(
+        hasRaw ? QString() : tr("The original line bytes are no longer available for this record.")
+    );
 }
 
 void RecordDetailWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0)
+    // Re-flow wrapped cells only when the **width** changed -- the
+    // wrap point depends on the value column's width, not the
+    // widget's height. Skipping height-only resizes (vertical drag,
+    // scrollbar appear/disappear, parent layout reflow) avoids
+    // O(rows) measure work on every pixel of a vertical drag when
+    // the record has many fields. For records with hundreds of
+    // keys this is the difference between a smooth resize and a
+    // visible stutter.
+    if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0 && event->oldSize().width() != event->size().width())
     {
-        // Re-flow wrapped cells when the value column changes width.
-        // Cheap for typical column counts (~20-50) and avoids the
-        // "long value clipped to one line" failure mode.
         mFieldsTable->resizeRowsToContents();
     }
 }

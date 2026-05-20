@@ -459,28 +459,32 @@ private:
     /// `QDockWidget`'s own chrome.
     RecordDetailDock *mRecordDetailDock = nullptr;
 
-    /// Open snapshot windows opened from the dock's "Open in new
-    /// window" action, keyed by the window's original heap address
-    /// (cast to `quintptr` for stable identity). Each window is
-    /// `Qt::WA_DeleteOnClose`; a `QObject::destroyed` connection in
-    /// `OpenRecordDetailWindow` removes the entry by id, so the
-    /// map stays compact across a long session without an explicit
-    /// sweep and removal is unambiguous even when several windows
-    /// are torn down concurrently. The `QPointer` value is here for
-    /// safety if future code ever iterates and dereferences -- it
-    /// goes null on destruction the same way the raw pointer would
-    /// dangle.
-    QHash<quintptr, QPointer<RecordDetailWindow>> mRecordDetailWindows;
+    /// One row of bookkeeping per open snapshot window opened from
+    /// the dock's "Open in new window" action. `destroyedConnection`
+    /// is the scoped hook installed in `OpenRecordDetailWindow` so
+    /// `~MainWindow` can sever only the connections we own (a
+    /// blanket `disconnect(sender, signal, this, nullptr)` would
+    /// also tear down any unrelated `destroyed` connection a future
+    /// change might wire from a snapshot window to MainWindow). The
+    /// `QPointer` value lets future iterators dereference safely --
+    /// it goes null on destruction the same way the raw pointer
+    /// would dangle. Insert and remove always touch both fields
+    /// atomically, eliminating the drift hazard of the previous
+    /// two-parallel-map layout.
+    struct TrackedSnapshotWindow
+    {
+        QPointer<RecordDetailWindow> window;
+        QMetaObject::Connection destroyedConnection;
+    };
 
-    /// `QMetaObject::Connection` for each window's `destroyed`
-    /// hook, keyed by the same `trackerId` as `mRecordDetailWindows`.
-    /// `~MainWindow` `disconnect()`s these specifically rather than
-    /// using `disconnect(sender, signal, this, nullptr)`, which would
-    /// also tear down any other unrelated `destroyed` connection a
-    /// future change might wire from a snapshot window to MainWindow.
-    /// Lambdas remove themselves from the map alongside their entry
-    /// in `mRecordDetailWindows`.
-    QHash<quintptr, QMetaObject::Connection> mRecordDetailWindowDestroyedConnections;
+    /// Open snapshot windows keyed by the window's original heap
+    /// address (cast to `quintptr` for stable identity). Each window
+    /// is `Qt::WA_DeleteOnClose`; the `destroyedConnection` lambda
+    /// removes the entry by id so the map stays compact across a
+    /// long session without an explicit sweep, and removal is
+    /// unambiguous even when several windows are torn down
+    /// concurrently.
+    QHash<quintptr, TrackedSnapshotWindow> mRecordDetailWindows;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.

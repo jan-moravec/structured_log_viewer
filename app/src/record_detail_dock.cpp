@@ -31,6 +31,15 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
     setWidget(mWidget);
     setMinimumWidth(DOCK_MIN_WIDTH);
 
+    // Floor for side-dock width only -- when the user drops the
+    // dock at the bottom the field/value table can wrap freely, so
+    // a narrow horizontal slot (short history under a wide log
+    // table) is the more useful default. Toggle the min-width to
+    // 0 on bottom-area transitions.
+    connect(this, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea area) {
+        setMinimumWidth(area == Qt::BottomDockWidgetArea ? 0 : DOCK_MIN_WIDTH);
+    });
+
     connect(mWidget, &RecordDetailWidget::openInNewWindowRequested, this, &RecordDetailDock::OnOpenInNewWindowRequested);
 
     // Refresh after FIFO eviction so the summary's "Row N" label

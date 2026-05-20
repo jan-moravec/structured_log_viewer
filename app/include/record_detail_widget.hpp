@@ -3,6 +3,7 @@
 #include <QList>
 #include <QPair>
 #include <QString>
+#include <Qt>
 #include <QWidget>
 
 class LogModel;
@@ -12,6 +13,15 @@ class QPlainTextEdit;
 class QPushButton;
 class QResizeEvent;
 class QTableWidget;
+
+/// Marks the value-column item as the muted "empty value" em-dash
+/// placeholder so downstream consumers (tests, future copy paths)
+/// can distinguish a synthetic placeholder from a real value that
+/// happens to look like the placeholder text (literal em-dash).
+/// Exported so tests don't have to spell `Qt::UserRole + 1` -- a
+/// regression that re-numbers user roles would otherwise silently
+/// keep passing while checking the wrong role.
+constexpr int RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 
 /// Plain data carried by a single record-detail view: the row summary,
 /// the (header, formatted value) pairs for every configured column,
@@ -147,4 +157,16 @@ private:
     QPushButton *mCopyJsonButton = nullptr;
     QPushButton *mCopyKvButton = nullptr;
     QPushButton *mOpenInNewWindowButton = nullptr;
+
+    /// User's preferred raw-JSON expand/collapse state, decoupled
+    /// from `mRawGroup->isChecked()`. We track this separately so a
+    /// record with no raw bytes (which forces the group closed and
+    /// disabled) doesn't overwrite the user's intent. When the
+    /// next record DOES have raw bytes, `PopulateUi` restores the
+    /// remembered state instead of leaving the group collapsed.
+    /// Updated by the `toggled` handler only when the change is
+    /// user-initiated (i.e. not the programmatic auto-collapse
+    /// path); `mSuppressRawToggleHandler` is the sentinel.
+    bool mUserPrefersRawExpanded = false;
+    bool mSuppressRawToggleHandler = false;
 };

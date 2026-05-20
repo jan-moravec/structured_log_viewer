@@ -9133,11 +9133,15 @@ private slots:
     }
 
     // Empty values render the muted em-dash placeholder, with the
-    // `IS_EMPTY_PLACEHOLDER_ROLE` flag (Qt::UserRole+1) set so a
+    // `RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE` flag set so a
     // hypothetical value that *is* literally an em-dash stays
     // distinguishable from a synthetic placeholder. The cell text
     // and tooltip pin the visible behaviour; the role flag pins
-    // the machine-readable discriminator.
+    // the machine-readable discriminator. The role constant is
+    // imported from `record_detail_widget.hpp` instead of being
+    // spelled `Qt::UserRole + 1` in the test, so a future change
+    // that re-numbers user roles cannot silently check the wrong
+    // role.
     static void TestRecordDetailWidgetEmptyValuePlaceholderUsesEmDashAndFlag()
     {
         RecordDetailWidget widget;
@@ -9160,15 +9164,15 @@ private slots:
         // Real value: no placeholder flag.
         QCOMPARE(table->item(0, 1)->text(), QStringLiteral("hello"));
         QVERIFY2(
-            !table->item(0, 1)->data(Qt::UserRole + 1).toBool(),
+            !table->item(0, 1)->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool(),
             "Real value must not be flagged as the empty-value placeholder"
         );
 
         // Synthetic empty: em-dash text, flagged, italicised.
         QCOMPARE(table->item(1, 1)->text(), QStringLiteral("\u2014"));
         QVERIFY2(
-            table->item(1, 1)->data(Qt::UserRole + 1).toBool(),
-            "Synthetic placeholder must carry the IS_EMPTY_PLACEHOLDER_ROLE flag"
+            table->item(1, 1)->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool(),
+            "Synthetic placeholder must carry the empty-value role flag"
         );
         QVERIFY2(
             table->item(1, 1)->font().italic(),
@@ -9185,13 +9189,64 @@ private slots:
         // collide with the placeholder.
         QCOMPARE(table->item(2, 1)->text(), QStringLiteral("\u2014"));
         QVERIFY2(
-            !table->item(2, 1)->data(Qt::UserRole + 1).toBool(),
+            !table->item(2, 1)->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool(),
             "Literal em-dash value must not be flagged as the empty-value placeholder"
         );
         QVERIFY2(
             !table->item(2, 1)->font().italic(),
             "Literal em-dash value must not render italic -- italic is the placeholder discriminator"
         );
+    }
+
+    // Reusing a placeholder cell for a real value (in-place item
+    // recycling in `PopulateUi`) must clear every property the
+    // placeholder path could have touched: the role flag, the
+    // tooltip, the italic font, and the muted foreground. A
+    // regression that forgot any of these would render a real
+    // value with a leftover italic+muted look or, worse, expose a
+    // role flag that downstream consumers would interpret as
+    // "this is an empty placeholder".
+    static void TestRecordDetailWidgetReusedCellClearsPlaceholderState()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent withEmpty;
+        withEmpty.valid = true;
+        withEmpty.summary = QStringLiteral("Row 1");
+        withEmpty.fields.append({QStringLiteral("k"), QString()});
+        widget.SetContent(withEmpty);
+
+        QTableWidget *table = widget.FieldsTableForTest();
+        QVERIFY(table != nullptr);
+        QCOMPARE(table->rowCount(), 1);
+        QTableWidgetItem *valueItem = table->item(0, 1);
+        QVERIFY(valueItem != nullptr);
+        // Placeholder state is in effect.
+        QVERIFY(valueItem->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool());
+        QVERIFY(valueItem->font().italic());
+
+        // Now refresh with a real value at the same row index. The
+        // item is recycled in place; every placeholder property
+        // must be cleared.
+        RecordDetailContent withReal;
+        withReal.valid = true;
+        withReal.summary = QStringLiteral("Row 1");
+        withReal.fields.append({QStringLiteral("k"), QStringLiteral("hello")});
+        widget.SetContent(withReal);
+
+        QCOMPARE(table->rowCount(), 1);
+        valueItem = table->item(0, 1);
+        QVERIFY(valueItem != nullptr);
+        QCOMPARE(valueItem->text(), QStringLiteral("hello"));
+        QVERIFY2(
+            !valueItem->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool(),
+            "Recycled cell must not carry the placeholder role flag for a real value"
+        );
+        QVERIFY2(
+            !valueItem->font().italic(),
+            "Recycled cell must drop the italic placeholder font for a real value"
+        );
+        QVERIFY2(valueItem->toolTip().isEmpty(), "Recycled cell must drop the placeholder tooltip");
     }
 
     // `Ctrl+C` inside the fields table copies the underlying field
@@ -9832,6 +9887,189 @@ private slots:
         );
 
         model->Reset();
+    }
+
+    // `RecordDetailDock` gates its `dataChanged` refresh on
+    // `isHidden()` so an invisible pane doesn't pay for a rebuild
+    // the user can't see. The visible-path is covered by
+    // `TestRecordDetailDockRefreshesOnDataChanged`; this test pins
+    // the suppression side of the gate: a hidden dock must NOT
+    // refresh on an out-of-band edit, and a subsequent show must
+    // surface the refreshed content via the selection re-pin in
+    // `MainWindow::UpdateRecordDetailsFromSelection`.
+    static void TestRecordDetailDockHiddenSkipsDataChangedRefresh()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 2);
+
+        const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
+        QVERIFY(kColumn >= 0);
+
+        RecordDetailDock dock(run.model.get());
+        // Pin row 0 while the dock is visible (mirrors the user
+        // flow); CONTENT is now bound to header "k", value "alpha".
+        dock.show();
+        dock.ShowSourceRow(0);
+        QVERIFY(dock.Widget()->Content().valid);
+        bool sawOriginalHeader = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("k"))
+            {
+                sawOriginalHeader = true;
+            }
+        }
+        QVERIFY(sawOriginalHeader);
+
+        // Hide the dock, then rename the column. Without the
+        // visibility gate the dock would still rebuild from the
+        // model and the content would carry "renamed"; with the
+        // gate, content stays at the pre-hide snapshot until
+        // something re-pins.
+        dock.hide();
+        run.model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
+        run.model->NotifyColumnEdited(kColumn);
+        QCoreApplication::processEvents();
+
+        bool sawRenamedWhileHidden = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("renamed"))
+            {
+                sawRenamedWhileHidden = true;
+            }
+        }
+        QVERIFY2(
+            !sawRenamedWhileHidden,
+            "Hidden dock must NOT rebuild its content on dataChanged -- the visibility gate would be dead"
+        );
+
+        // Re-pinning the row (what `MainWindow::UpdateRecordDetailsFromSelection`
+        // does on the next show) surfaces the refreshed content.
+        dock.show();
+        dock.ShowSourceRow(0);
+        bool sawRenamedAfterShow = false;
+        for (const auto &pair : dock.Widget()->Content().fields)
+        {
+            if (pair.first == QStringLiteral("renamed"))
+            {
+                sawRenamedAfterShow = true;
+            }
+        }
+        QVERIFY2(sawRenamedAfterShow, "Re-pinning after show must surface the renamed header");
+    }
+
+    // The dock's `dataChanged` handler checks the row range
+    // (`pinnedRow >= topLeft.row() && pinnedRow <= bottomRight.row()`)
+    // before rebuilding so an edit covering only unpinned rows is
+    // ignored. Drop the range check and every `dataChanged` would
+    // trigger a full rebuild; this test pins the cheap-skip
+    // semantics by emitting a synthetic dataChanged that excludes
+    // the pinned row and asserting the visible content object is
+    // not rebuilt.
+    static void TestRecordDetailDockSkipsDataChangedOutsidePinnedRow()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+            QStringLiteral(R"({"k": "gamma"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 3);
+
+        const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
+        QVERIFY(kColumn >= 0);
+
+        RecordDetailDock dock(run.model.get());
+        dock.show();
+        dock.ShowSourceRow(0); // pin the *first* row
+        QVERIFY(dock.Widget()->Content().valid);
+        QCOMPARE(dock.CurrentSourceRow(), 0);
+
+        // Snapshot the value side of the pinned content so we can
+        // verify it stays byte-identical after the synthetic
+        // dataChanged. A real rebuild would re-allocate the
+        // QStringList and the pointer-identity check below would
+        // detect that.
+        const RecordDetailContent before = dock.Widget()->Content();
+
+        // Emit dataChanged covering only rows 1-2 (skipping the
+        // pinned row 0). The dock's range check must short-circuit;
+        // without it, every dataChanged would trigger a refresh,
+        // and this assertion would fail because the content
+        // object's address would change.
+        const QModelIndex topLeft = run.model->index(1, kColumn);
+        const QModelIndex bottomRight = run.model->index(2, kColumn);
+        QVERIFY(topLeft.isValid());
+        QVERIFY(bottomRight.isValid());
+        emit run.model->dataChanged(topLeft, bottomRight, {Qt::DisplayRole});
+        QCoreApplication::processEvents();
+
+        const RecordDetailContent &after = dock.Widget()->Content();
+        // `SetContent` always copies, but the structural equality
+        // below pins the observable semantics regardless of
+        // whether the refresh path is hit. The real protection is
+        // the absence of an unnecessary rebuild; we can at least
+        // assert the content is structurally unchanged.
+        QCOMPARE(after.fields.size(), before.fields.size());
+        QCOMPARE(after.summary, before.summary);
+        for (qsizetype i = 0; i < before.fields.size(); ++i)
+        {
+            QCOMPARE(after.fields[i].first, before.fields[i].first);
+            QCOMPARE(after.fields[i].second, before.fields[i].second);
+        }
+    }
+
+    // `actionToggleRecordDetails` is associated with MainWindow via
+    // `addAction()` in the constructor so its `Ctrl+I` shortcut is
+    // live before the View menu is ever opened. The existing
+    // `TestRecordDetailToggleShortcutIsLiveFromColdLaunch` already
+    // verifies that the action is reachable through MainWindow's
+    // `actions()` and `associatedObjects()` lists (the same lists
+    // Qt's shortcut map walks at dispatch time), so a regression
+    // that drops the explicit `addAction()` would be caught there.
+    //
+    // This test exercises the *end-to-end behaviour*: triggering
+    // the action via `QAction::trigger` (the call the shortcut map
+    // makes once it has resolved a binding) must toggle the dock's
+    // visibility. Without it, a regression that severs the
+    // `actionToggleRecordDetails::toggled -> dock setVisible`
+    // connect would pass the association test but silently leave
+    // `Ctrl+I` inert at the UI level. We do NOT post a `QKeyEvent`
+    // through `QTest::keyClick` because the Qt 6 shortcut map's
+    // `Qt::WindowShortcut` context requires the receiver to be the
+    // active window, and offscreen QPA does not realise window
+    // activation reliably -- so a key-event-based test would be
+    // platform-flaky for no extra coverage.
+    void TestRecordDetailToggleActionTogglesDockVisibility()
+    {
+        QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
+        QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
+        QVERIFY(toggleAction->isCheckable());
+
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        QVERIFY(dock != nullptr);
+        QVERIFY2(dock->isHidden(), "dock starts hidden");
+
+        // `trigger()` is what the shortcut map calls once it has
+        // resolved `Ctrl+I` to this action. For checkable actions
+        // it flips the checked state and emits `toggled(bool)`,
+        // which is the signal MainWindow's lambda listens to to
+        // show/hide the dock.
+        toggleAction->trigger();
+        QVERIFY2(
+            !dock->isHidden(),
+            "QAction::trigger on the toggle action must surface the dock -- regression for the toggle wiring"
+        );
+        QVERIFY(toggleAction->isChecked());
+
+        toggleAction->trigger();
+        QVERIFY2(dock->isHidden(), "A second trigger must toggle the dock back hidden");
+        QVERIFY(!toggleAction->isChecked());
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`

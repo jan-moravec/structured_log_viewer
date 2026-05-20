@@ -797,11 +797,11 @@ MainWindow::~MainWindow()
     // future code change that adds a separate `destroyed` hook on
     // these windows can't be silently torn down by this teardown
     // loop.
-    for (const QMetaObject::Connection &connection : std::as_const(mRecordDetailWindowDestroyedConnections))
+    for (const auto &entry : std::as_const(mRecordDetailWindows))
     {
-        disconnect(connection);
+        disconnect(entry.destroyedConnection);
     }
-    mRecordDetailWindowDestroyedConnections.clear();
+    mRecordDetailWindows.clear();
     delete ui;
 }
 
@@ -1878,17 +1878,17 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
     // window, and a naive `removeOne(nullPointer)` would just remove
     // whichever null entry happened to come first in the container.
     const auto trackerId = reinterpret_cast<quintptr>(window);
-    mRecordDetailWindows.insert(trackerId, window);
+    TrackedSnapshotWindow entry;
+    entry.window = window;
     // Store the connection so `~MainWindow` can `disconnect()` this
     // exact lambda before our member containers go away. A blanket
     // `disconnect(sender, signal, this, nullptr)` would also kill
     // any unrelated future hook on the same `destroyed` signal --
     // scoping by the returned connection keeps the teardown local.
-    const QMetaObject::Connection connection = connect(window, &QObject::destroyed, this, [this, trackerId]() {
+    entry.destroyedConnection = connect(window, &QObject::destroyed, this, [this, trackerId]() {
         mRecordDetailWindows.remove(trackerId);
-        mRecordDetailWindowDestroyedConnections.remove(trackerId);
     });
-    mRecordDetailWindowDestroyedConnections.insert(trackerId, connection);
+    mRecordDetailWindows.insert(trackerId, entry);
     window->show();
     window->raise();
     window->activateWindow();
