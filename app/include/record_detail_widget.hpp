@@ -89,6 +89,10 @@ public:
     {
         return mRawEdit;
     }
+    [[nodiscard]] QGroupBox *RawGroupForTest() const noexcept
+    {
+        return mRawGroup;
+    }
     [[nodiscard]] QPushButton *CopyJsonButtonForTest() const noexcept
     {
         return mCopyJsonButton;

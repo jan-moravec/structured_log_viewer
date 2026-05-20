@@ -9142,7 +9142,9 @@ private slots:
 
         // Raw group is disabled + retitled when there are no bytes;
         // a follow-up `SetContent` with bytes must restore both.
-        const auto *rawGroup = widget.findChild<QGroupBox *>(QStringLiteral("rawJsonGroup"));
+        // Direct accessor (not `findChild`) -- the latter is unreliable
+        // under Qt 6.8 + offscreen QPA on the Linux runner.
+        const auto *rawGroup = widget.RawGroupForTest();
         QVERIFY(rawGroup != nullptr);
         QVERIFY2(!rawGroup->isEnabled(), "Raw JSON group must be disabled when no raw bytes are available");
         QVERIFY2(
