@@ -66,7 +66,7 @@ QString FormatRawLineForDisplay(const std::string &raw)
 {
     if (raw.empty())
     {
-        return QString();
+        return {};
     }
     const auto rawSize = static_cast<qsizetype>(raw.size());
     if (rawSize > RAW_FORMAT_INPUT_CAP_BYTES)
@@ -238,7 +238,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     }
 
     std::string rawLineBytes;
-    if (loglib::LineSource *source = line.Source(); source != nullptr)
+    if (const loglib::LineSource *source = line.Source(); source != nullptr)
     {
         try
         {

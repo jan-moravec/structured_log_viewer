@@ -8880,7 +8880,7 @@ private slots:
             const bool invoked = QMetaObject::invokeMethod(target, member, Qt::DirectConnection);
             if (!invoked)
             {
-                return QString();
+                return {};
             }
             QCoreApplication::processEvents();
             QTest::qWait(sleepMs);
@@ -9030,7 +9030,7 @@ private slots:
         content.formattedJson = QStringLiteral("{\n  \"level\": \"info\",\n  \"message\": \"hello\"\n}");
         widget.SetContent(content);
 
-        QTableWidget *table = widget.FieldsTableForTest();
+        const QTableWidget *table = widget.FieldsTableForTest();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 2);
         QCOMPARE(table->item(0, 0)->text(), QStringLiteral("level"));
@@ -9042,7 +9042,7 @@ private slots:
         QVERIFY2(!table->isHidden(), "fields table must be explicitly shown when content is valid");
 
         // The edit shows the *formatted* JSON, not the compact bytes.
-        QPlainTextEdit *rawEdit = widget.RawEditForTest();
+        const QPlainTextEdit *rawEdit = widget.RawEditForTest();
         QVERIFY(rawEdit != nullptr);
         QCOMPARE(rawEdit->toPlainText(), content.formattedJson);
 
@@ -9055,7 +9055,7 @@ private slots:
         QCOMPARE(rawEdit->toPlainText(), QString());
 
         // Snapshot windows hide the "Open in new window" button.
-        QPushButton *popOutButton = widget.OpenInNewWindowButtonForTest();
+        const QPushButton *popOutButton = widget.OpenInNewWindowButtonForTest();
         QVERIFY(popOutButton != nullptr);
         QVERIFY(popOutButton->isVisibleTo(&widget));
         widget.SetOpenInNewWindowVisible(false);
@@ -9110,6 +9110,7 @@ private slots:
 
         QPushButton *copyButton = widget.CopyKeyValueButtonForTest();
         QVERIFY(copyButton != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY(copyButton->isEnabled());
 
         const QString expected = QStringLiteral("level: info\nmessage: hello world\ncount: 42");
@@ -9132,8 +9133,8 @@ private slots:
         content.formattedJson = QString();
         widget.SetContent(content);
 
-        QPushButton *rawButton = widget.CopyJsonButtonForTest();
-        QPushButton *kvButton = widget.CopyKeyValueButtonForTest();
+        const QPushButton *rawButton = widget.CopyJsonButtonForTest();
+        const QPushButton *kvButton = widget.CopyKeyValueButtonForTest();
         QVERIFY(rawButton != nullptr);
         QVERIFY(kvButton != nullptr);
         QVERIFY2(!rawButton->isEnabled(), "Copy raw JSON must be disabled when there's no raw text");
@@ -9141,7 +9142,7 @@ private slots:
 
         // Raw group is disabled + retitled when there are no bytes;
         // a follow-up `SetContent` with bytes must restore both.
-        QGroupBox *rawGroup = widget.findChild<QGroupBox *>(QStringLiteral("rawJsonGroup"));
+        const auto *rawGroup = widget.findChild<QGroupBox *>(QStringLiteral("rawJsonGroup"));
         QVERIFY(rawGroup != nullptr);
         QVERIFY2(!rawGroup->isEnabled(), "Raw JSON group must be disabled when no raw bytes are available");
         QVERIFY2(
@@ -9244,7 +9245,7 @@ private slots:
         content.fields.append({QStringLiteral("dashy"), QStringLiteral("\u2014")});
         widget.SetContent(content);
 
-        QTableWidget *table = widget.FieldsTableForTest();
+        const QTableWidget *table = widget.FieldsTableForTest();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 3);
 
@@ -9293,14 +9294,16 @@ private slots:
         withEmpty.fields.append({QStringLiteral("k"), QString()});
         widget.SetContent(withEmpty);
 
-        QTableWidget *table = widget.FieldsTableForTest();
+        const QTableWidget *table = widget.FieldsTableForTest();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 1);
-        QTableWidgetItem *valueItem = table->item(0, 1);
+        const QTableWidgetItem *valueItem = table->item(0, 1);
         QVERIFY(valueItem != nullptr);
         // Placeholder state is in effect.
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
         QVERIFY(valueItem->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool());
         QVERIFY(valueItem->font().italic());
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
 
         // Refresh with a real value at the same row index. Item is
         // recycled; every placeholder property must be cleared.
@@ -9378,7 +9381,7 @@ private slots:
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
         RecordDetailDock dock(run.model.get());
@@ -9437,8 +9440,9 @@ private slots:
             // `run` goes out of scope here, destroying the model.
         }
         // `Qt::WA_DeleteOnClose`; QPointer lets us safely close at end.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks): WA_DeleteOnClose owns the window.
         QPointer<RecordDetailWindow> window = new RecordDetailWindow(snapshot);
-        QScopeGuard cleanup([&]() {
+        const QScopeGuard cleanup([&]() {
             if (!window.isNull())
             {
                 window->close();
@@ -9458,7 +9462,7 @@ private slots:
         }
         QVERIFY(sawMsg);
         // Pop-outs hide their own "Open in new window" button.
-        QPushButton *popOutButton = window->WidgetForTest()->OpenInNewWindowButtonForTest();
+        const QPushButton *popOutButton = window->WidgetForTest()->OpenInNewWindowButtonForTest();
         QVERIFY(popOutButton != nullptr);
         QVERIFY(!popOutButton->isVisibleTo(window->WidgetForTest()));
     }
@@ -9500,7 +9504,7 @@ private slots:
         // Default sort (-1) -> proxy row == source row. Pick row 1.
         auto *table = mWindow->findChild<LogTableView *>();
         QVERIFY(table != nullptr);
-        QAbstractItemModel *proxyModel = table->model();
+        const QAbstractItemModel *proxyModel = table->model();
         QVERIFY(proxyModel != nullptr);
         const QModelIndex proxyIndex = proxyModel->index(1, 0);
         QVERIFY(proxyIndex.isValid());
@@ -9534,6 +9538,7 @@ private slots:
 
         auto *dock = mWindow->findChild<RecordDetailDock *>();
         QVERIFY(dock != nullptr);
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
         QVERIFY(dock->isHidden());
         QVERIFY(!toggleAction->isChecked());
 
@@ -9547,6 +9552,7 @@ private slots:
         dock->setVisible(false);
         QVERIFY(dock->isHidden());
         QVERIFY(!toggleAction->isChecked());
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
     // `actionToggleRecordDetails` isn't placed in any `<addaction>` in
@@ -9555,7 +9561,7 @@ private slots:
     // compensates; this test pins that wiring.
     void TestRecordDetailToggleShortcutIsLiveFromColdLaunch()
     {
-        QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
+        const QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QCOMPARE(toggleAction->shortcut(), QKeySequence(QStringLiteral("Ctrl+I")));
 
@@ -9602,7 +9608,7 @@ private slots:
 
         const auto windows = mWindow->findChildren<RecordDetailWindow *>();
         QCOMPARE(windows.size(), 2);
-        for (RecordDetailWindow *window : windows)
+        for (const RecordDetailWindow *window : windows)
         {
             QVERIFY(window->testAttribute(Qt::WA_DeleteOnClose));
             QVERIFY(window->WidgetForTest()->Content().valid);
@@ -9781,7 +9787,7 @@ private slots:
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
         const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
@@ -9887,7 +9893,7 @@ private slots:
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
         const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
@@ -9953,7 +9959,7 @@ private slots:
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 3);
 
         const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
@@ -10064,7 +10070,7 @@ private slots:
             QStringLiteral(R"({"a": "alpha", "b": "1", "c": "x"})"),
             QStringLiteral(R"({"a": "beta",  "b": "2", "c": "y"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
         QVERIFY(run.model->columnCount() >= 3);
 
@@ -10086,6 +10092,7 @@ private slots:
         // Hidden gate applies here too -- invisible dock skips the rebuild.
         dock.hide();
         const int refreshesAfterHide = dock.RefreshCountForTest();
+        // NOLINTNEXTLINE(readability-suspicious-call-argument): intentional swap to restore the original column order.
         QVERIFY(run.model->MoveColumn(dest, src));
         QCoreApplication::processEvents();
         QCOMPARE(dock.RefreshCountForTest(), refreshesAfterHide);
@@ -10099,7 +10106,7 @@ private slots:
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
         const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
@@ -10135,7 +10142,7 @@ private slots:
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
         });
-        StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
         RecordDetailDock dock(run.model.get());

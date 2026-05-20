@@ -1766,7 +1766,7 @@ void MainWindow::RebindRecordDetailSelectionTracking()
     {
         return;
     }
-    QItemSelectionModel *selectionModel = mTableView->selectionModel();
+    const QItemSelectionModel *selectionModel = mTableView->selectionModel();
     if (selectionModel == nullptr)
     {
         return;
@@ -1791,7 +1791,7 @@ void MainWindow::UpdateRecordDetailsFromSelection()
     {
         return;
     }
-    QItemSelectionModel *selectionModel = mTableView->selectionModel();
+    const QItemSelectionModel *selectionModel = mTableView->selectionModel();
     if (selectionModel == nullptr)
     {
         mRecordDetailDock->Clear();
@@ -1820,7 +1820,7 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
     {
         return;
     }
-    RecordDetailContent snapshot = BuildRecordDetailContent(*mModel, sourceRow);
+    const RecordDetailContent snapshot = BuildRecordDetailContent(*mModel, sourceRow);
     if (!snapshot.valid)
     {
         return;
