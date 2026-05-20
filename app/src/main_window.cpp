@@ -1410,6 +1410,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     {
         return ui->actionPreferences;
     }
+    if (name == QStringLiteral("actionToggleRecordDetails"))
+    {
+        return ui->actionToggleRecordDetails;
+    }
     return nullptr;
 }
 

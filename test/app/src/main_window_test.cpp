@@ -9734,9 +9734,13 @@ private slots:
         QCOMPARE(model.rowCount(), 100);
 
         RecordDetailDock dock(&model);
-        // `show()` so the visibility gate lets refreshes through under
-        // offscreen QPA (refresh-on-`rowsRemoved` is gated on hidden).
-        dock.show();
+        // Drive the visibility gate (`mPerceivedVisible`) via the
+        // signal that production listeners observe. Calling
+        // `dock.show()` here goes through `QDockWidget::setVisible`,
+        // which SIGSEGVs on the Linux Qt 6.8.3 / offscreen QPA runner
+        // (the dock-area-layout walk hits uninitialised state when
+        // there's no realised QMainWindow host).
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(50);
         QCOMPARE(dock.CurrentSourceRow(), 50);
         // 1-indexed line ids, batch from firstLineId=1, so row 50 ==
@@ -9798,7 +9802,9 @@ private slots:
         QCOMPARE(model.rowCount(), 50);
 
         RecordDetailDock dock(&model);
-        dock.show();
+        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
+        // visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         // No `ShowSourceRow` -> `mEverPinned` stays false.
         const QString initialPlaceholder = dock.Widget()->Content().placeholderText;
         QCOMPARE(initialPlaceholder, DefaultRecordDetailPlaceholder());
@@ -9831,8 +9837,9 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        // `show()` so the visibility gate lets the refresh through.
-        dock.show();
+        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
+        // visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
 
@@ -9937,8 +9944,9 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        // Pin row 0 while visible.
-        dock.show();
+        // Pin row 0 while visible. See `TestRecordDetailDockTracksFifoEviction`
+        // for why we drive visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
         bool sawOriginalHeader = false;
@@ -9953,7 +9961,7 @@ private slots:
 
         // Hide, then rename. With the visibility gate, content stays
         // pre-hide until something re-pins.
-        dock.hide();
+        emit dock.visibilityChanged(false);
         run.model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(kColumn), std::string("renamed"));
         run.model->NotifyColumnEdited(kColumn);
         QCoreApplication::processEvents();
@@ -9973,7 +9981,7 @@ private slots:
 
         // Show + re-pin (what `UpdateRecordDetailsFromSelection`
         // would do on the next show) surfaces the refreshed content.
-        dock.show();
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         bool sawRenamedAfterShow = false;
         for (const auto &pair : dock.Widget()->Content().fields)
@@ -10003,7 +10011,9 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        dock.show();
+        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
+        // visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0); // pin row 0
         QVERIFY(dock.Widget()->Content().valid);
         QCOMPARE(dock.CurrentSourceRow(), 0);
@@ -10113,7 +10123,9 @@ private slots:
         QVERIFY(run.model->columnCount() >= 3);
 
         RecordDetailDock dock(run.model.get());
-        dock.show();
+        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
+        // visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
         const int refreshesAfterPin = dock.RefreshCountForTest();
@@ -10128,7 +10140,7 @@ private slots:
         QCOMPARE(dock.RefreshCountForTest(), refreshesAfterPin + 1);
 
         // Hidden gate applies here too -- invisible dock skips the rebuild.
-        dock.hide();
+        emit dock.visibilityChanged(false);
         const int refreshesAfterHide = dock.RefreshCountForTest();
         // NOLINTNEXTLINE(readability-suspicious-call-argument): intentional swap to restore the original column order.
         QVERIFY(run.model->MoveColumn(dest, src));
@@ -10151,15 +10163,17 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        dock.show();
+        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
+        // visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
 
         // Synthesise the buried-tab transition: emit
-        // `visibilityChanged(false)` without `hide()`. `isHidden()`
-        // stays false; only `mPerceivedVisible` flips.
+        // `visibilityChanged(false)` without `hide()`. Only
+        // `mPerceivedVisible` flips; the dock's explicit hidden flag
+        // is unchanged.
         emit dock.visibilityChanged(false);
-        QVERIFY(!dock.isHidden());
 
         const int refreshesBefore = dock.RefreshCountForTest();
         const QModelIndex pinnedIdx = run.model->index(0, kColumn);
@@ -10184,7 +10198,9 @@ private slots:
         QCOMPARE(run.model->rowCount(), 2);
 
         RecordDetailDock dock(run.model.get());
-        dock.show();
+        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
+        // visibility via the signal instead of `dock.show()`.
+        emit dock.visibilityChanged(true);
         dock.ShowSourceRow(1);
         QCOMPARE(dock.CurrentSourceRow(), 1);
         QVERIFY(dock.Widget()->Content().valid);
