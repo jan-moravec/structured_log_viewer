@@ -9442,12 +9442,17 @@ private slots:
             // `run` goes out of scope here, destroying the model.
         }
         // `Qt::WA_DeleteOnClose`; QPointer lets us safely close at end.
-        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks): WA_DeleteOnClose owns the window.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks): explicit
+        // `delete` below; the WA_DeleteOnClose-via-close() path leaves the
+        // orphan top-level widget alive across the next test's MainWindow
+        // construction on the ubuntu-22.04 / Qt 6.8.3 release runner, and
+        // a still-alive sibling top-level (no parent) trips Qt's internal
+        // QWidget-list traversal inside the next test's setup.
         QPointer<RecordDetailWindow> window = new RecordDetailWindow(snapshot);
         const QScopeGuard cleanup([&]() {
             if (!window.isNull())
             {
-                window->close();
+                delete window.data();
             }
         });
 
