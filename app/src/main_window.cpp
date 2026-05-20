@@ -1738,16 +1738,23 @@ namespace
     const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
 )
 {
+    qDebug() << "[DOCK-DBG] MapProxyIndexToSourceRow enter";
     if (!proxyIndex.isValid() || filter == nullptr || rowOrder == nullptr)
     {
+        qDebug() << "[DOCK-DBG] MapProxyIndexToSourceRow early return -1";
         return -1;
     }
+    qDebug() << "[DOCK-DBG] calling filter->mapToSource";
     const QModelIndex midIndex = filter->mapToSource(proxyIndex);
+    qDebug() << "[DOCK-DBG] midIndex.valid=" << midIndex.isValid() << " midIndex.row=" << midIndex.row()
+             << " midIndex.model=" << static_cast<const void *>(midIndex.model());
     if (!midIndex.isValid())
     {
         return -1;
     }
+    qDebug() << "[DOCK-DBG] calling rowOrder->mapToSource";
     const QModelIndex sourceIndex = rowOrder->mapToSource(midIndex);
+    qDebug() << "[DOCK-DBG] sourceIndex.valid=" << sourceIndex.isValid() << " sourceIndex.row=" << sourceIndex.row();
     if (!sourceIndex.isValid())
     {
         return -1;
@@ -1758,16 +1765,24 @@ namespace
 
 void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
 {
+    qDebug() << "[DOCK-DBG] ShowRecordDetailsForProxyIndex enter, dock=" << static_cast<void *>(mRecordDetailDock)
+             << " filter=" << static_cast<void *>(mSortFilterProxyModel)
+             << " rowOrder=" << static_cast<void *>(mRowOrderProxyModel) << " idx.valid=" << proxyIndex.isValid()
+             << " idx.row=" << proxyIndex.row() << " idx.model=" << static_cast<const void *>(proxyIndex.model());
     if (mRecordDetailDock == nullptr)
     {
         return;
     }
+    qDebug() << "[DOCK-DBG] before MapProxyIndexToSourceRow";
     const int sourceRow = MapProxyIndexToSourceRow(proxyIndex, mSortFilterProxyModel, mRowOrderProxyModel);
+    qDebug() << "[DOCK-DBG] sourceRow=" << sourceRow;
     if (sourceRow < 0)
     {
         return;
     }
+    qDebug() << "[DOCK-DBG] before ShowSourceRow";
     mRecordDetailDock->ShowSourceRow(sourceRow);
+    qDebug() << "[DOCK-DBG] after ShowSourceRow, dock hidden=" << mRecordDetailDock->isHidden();
     // Probe `isHidden()` (the dock's own state) rather than
     // `isVisible()`, which is also false when an ancestor isn't yet
     // realised (delayed `show()` on startup, offscreen QPA).
