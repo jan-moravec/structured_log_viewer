@@ -9479,11 +9479,17 @@ private slots:
     // clears it back to the placeholder.
     void TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset()
     {
+        // TEMP debug breadcrumbs to localise the Linux build-linux
+        // SIGSEGV. Pinned across the early test body so the CI log
+        // shows the last reached checkpoint before the crash. Remove
+        // once the underlying cause is fixed.
+        qDebug() << "[DOCK-DBG] enter test";
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
+        qDebug() << "[DOCK-DBG] after fixture";
         // Direct accessors (not `findChild<...>()`). `findChild` walks
         // the QObject child tree and that traversal is the path that
         // segfaults inside Qt on the ubuntu-22.04 / Qt 6.8.3 release
@@ -9491,21 +9497,27 @@ private slots:
         // accessors hit the same toolchain bug for `QMenu`.
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
+        qDebug() << "[DOCK-DBG] got model";
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
+        qDebug() << "[DOCK-DBG] spy ready";
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        qDebug() << "[DOCK-DBG] before begin-streaming";
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        qDebug() << "[DOCK-DBG] after begin-streaming";
         loglib::ParserOptions options;
         options.stopToken = stopToken;
         loglib::internal::AdvancedParserOptions advanced;
         advanced.threads = 1;
         const loglib::JsonParser parser;
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        qDebug() << "[DOCK-DBG] after parse-streaming";
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        qDebug() << "[DOCK-DBG] streaming finished";
         QCOMPARE(model->rowCount(), 3);
 
         auto *dock = mWindow->RecordDetailDockForTest();
@@ -9513,6 +9525,7 @@ private slots:
         // `isHidden()` is the right probe under offscreen QPA -- the
         // parent isn't `show()`n so `isVisible()` is always false.
         QVERIFY2(dock->isHidden(), "dock starts hidden");
+        qDebug() << "[DOCK-DBG] dock hidden ok";
 
         // Default sort (-1) -> proxy row == source row. Pick row 1.
         auto *table = mWindow->TableViewForTest();
@@ -9521,8 +9534,10 @@ private slots:
         QVERIFY(proxyModel != nullptr);
         const QModelIndex proxyIndex = proxyModel->index(1, 0);
         QVERIFY(proxyIndex.isValid());
+        qDebug() << "[DOCK-DBG] got proxy index";
 
         mWindow->ShowRecordDetailsForProxyIndex(proxyIndex);
+        qDebug() << "[DOCK-DBG] after ShowRecordDetailsForProxyIndex";
         QVERIFY2(!dock->isHidden(), "dock must surface on double-click");
         QCOMPARE(dock->CurrentSourceRow(), 1);
         bool sawBeta = false;
@@ -9534,11 +9549,13 @@ private slots:
             }
         }
         QVERIFY(sawBeta);
+        qDebug() << "[DOCK-DBG] saw beta";
 
         // Reset clears the dock so a stale record doesn't linger.
         model->Reset();
         QCOMPARE(dock->CurrentSourceRow(), -1);
         QVERIFY(!dock->Widget()->Content().valid);
+        qDebug() << "[DOCK-DBG] exit test";
     }
 
     // The View-menu action and the dock's title-bar X stay in sync via
