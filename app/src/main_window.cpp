@@ -1788,9 +1788,13 @@ void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
     // realised (delayed `show()` on startup, offscreen QPA).
     if (mRecordDetailDock->isHidden())
     {
+        qDebug() << "[DOCK-DBG] before setVisible(true)";
         mRecordDetailDock->setVisible(true);
+        qDebug() << "[DOCK-DBG] after setVisible(true)";
     }
+    qDebug() << "[DOCK-DBG] before raise";
     mRecordDetailDock->raise();
+    qDebug() << "[DOCK-DBG] after raise";
 }
 
 void MainWindow::RebindRecordDetailSelectionTracking()
@@ -1817,13 +1821,17 @@ void MainWindow::RebindRecordDetailSelectionTracking()
 
 void MainWindow::UpdateRecordDetailsFromSelection()
 {
+    qDebug() << "[DOCK-DBG] UpdateRecordDetailsFromSelection enter dock=" << static_cast<void *>(mRecordDetailDock)
+             << " tableView=" << static_cast<void *>(mTableView);
     // Skip the refresh when the dock can't be seen. The dock's own
     // `visibilityChanged` hook re-pins from the selection on resume,
     // so navigation history isn't lost.
     if (mRecordDetailDock == nullptr || !mRecordDetailDock->IsVisibleForRefresh())
     {
+        qDebug() << "[DOCK-DBG] UpdateRecordDetailsFromSelection early return (dock not visible)";
         return;
     }
+    qDebug() << "[DOCK-DBG] UpdateRecordDetailsFromSelection getting selection";
     const QItemSelectionModel *selectionModel = mTableView->selectionModel();
     if (selectionModel == nullptr)
     {

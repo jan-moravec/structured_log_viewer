@@ -4,6 +4,7 @@
 #include "record_detail_widget.hpp"
 
 #include <QAbstractItemModel>
+#include <QDebug>
 #include <QList>
 #include <QModelIndex>
 #include <QObject>
@@ -42,12 +43,17 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
     // the explicit-hide flag is still false. On resume, refresh once
     // to catch up on changes we ignored while invisible.
     connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        qDebug() << "[DOCK-DBG] dock visibilityChanged enter visible=" << visible
+                 << " perceivedWas=" << mPerceivedVisible << " currentValid=" << mCurrentSourceIndex.isValid();
         const bool wasVisible = mPerceivedVisible;
         mPerceivedVisible = visible;
         if (visible && !wasVisible && mCurrentSourceIndex.isValid())
         {
+            qDebug() << "[DOCK-DBG] dock visibilityChanged calling RefreshFromModel";
             RefreshFromModel();
+            qDebug() << "[DOCK-DBG] dock visibilityChanged after RefreshFromModel";
         }
+        qDebug() << "[DOCK-DBG] dock visibilityChanged exit";
     });
 
     if (mModel != nullptr)
@@ -171,12 +177,19 @@ void RecordDetailDock::ShowEvictedPlaceholder()
 
 void RecordDetailDock::RefreshFromModel()
 {
+    qDebug() << "[DOCK-DBG] RefreshFromModel enter model=" << static_cast<void *>(mModel.data())
+             << " currentValid=" << mCurrentSourceIndex.isValid()
+             << " widget=" << static_cast<void *>(mWidget);
     if (!mModel || !mCurrentSourceIndex.isValid())
     {
         Clear();
         return;
     }
-    mWidget->SetContent(BuildRecordDetailContent(*mModel, mCurrentSourceIndex.row()));
+    qDebug() << "[DOCK-DBG] RefreshFromModel calling BuildRecordDetailContent row=" << mCurrentSourceIndex.row();
+    auto content = BuildRecordDetailContent(*mModel, mCurrentSourceIndex.row());
+    qDebug() << "[DOCK-DBG] RefreshFromModel calling SetContent valid=" << content.valid;
+    mWidget->SetContent(content);
+    qDebug() << "[DOCK-DBG] RefreshFromModel after SetContent";
 #ifdef LOGAPP_BUILD_TESTING
     ++mRefreshCount;
 #endif
