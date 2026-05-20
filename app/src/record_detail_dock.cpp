@@ -178,6 +178,16 @@ void RecordDetailDock::ShowSourceRow(int sourceRow)
         return;
     }
     mCurrentSourceIndex = QPersistentModelIndex(mModel->index(sourceRow, 0));
+    if (!mCurrentSourceIndex.isValid())
+    {
+        // Defensive: `mModel->index(row, 0)` would only return invalid if the
+        // model has zero columns despite a positive `rowCount`. `LogModel`
+        // never enters that state today (columns always precede rows), but
+        // keeping the guard local prevents `mEverPinned` from latching against
+        // a useless pin if a future model layout breaks that invariant.
+        Clear();
+        return;
+    }
     mEverPinned = true;
     RefreshFromModel();
 }

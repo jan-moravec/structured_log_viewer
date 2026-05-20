@@ -1851,6 +1851,16 @@ void MainWindow::UpdateRecordDetailsFromSelection()
         mRecordDetailDock->Clear();
         return;
     }
+    // Short-circuit a no-op re-pin. `visibilityChanged(true)` runs the dock's
+    // own refresh (against its still-valid persistent index) BEFORE this slot,
+    // so when the selection still points at the same source row the dock has
+    // already shown it and an extra `ShowSourceRow` would just re-build the
+    // same content. The steady-state arrow-key path never matches here -- the
+    // current/previous rows differ by construction.
+    if (mRecordDetailDock->CurrentSourceRow() == sourceRow)
+    {
+        return;
+    }
     mRecordDetailDock->ShowSourceRow(sourceRow);
 }
 

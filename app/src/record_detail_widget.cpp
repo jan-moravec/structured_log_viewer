@@ -47,6 +47,16 @@ constexpr int RAW_MIN_HEIGHT = 120;
 constexpr int RAW_MAX_HEIGHT = 600;
 constexpr int FIELDS_KEY_COLUMN = 0;
 constexpr int FIELDS_VALUE_COLUMN = 1;
+/// Upper bound on bytes fed through `QJsonDocument::fromJson` +
+/// `QPlainTextEdit::setPlainText` for the Raw JSON section. A
+/// multi-megabyte log line (e.g. an HTTP body logged inline) would
+/// otherwise spend hundreds of ms parsing and indenting and another
+/// second laying out the edit, locking the UI for the entire
+/// double-click-to-inspect flow. The raw bytes stay full-fidelity on
+/// `RecordDetailContent::rawJson`, so "Copy raw JSON" still pushes
+/// every on-disk byte to the clipboard -- this cap only bounds the
+/// in-pane *render*.
+constexpr qsizetype RAW_FORMAT_INPUT_CAP_BYTES = 256 * 1024;
 /// Coalesce window for the post-resize row-height re-flow. 16 ms is
 /// roughly one 60 Hz frame -- short enough that the wrap appears
 /// "live" to the user, long enough to collapse a fast horizontal drag
@@ -72,7 +82,26 @@ QString FormatRawLineForDisplay(const std::string &raw)
     {
         return QString();
     }
-    const QByteArray bytes = QByteArray::fromRawData(raw.data(), static_cast<qsizetype>(raw.size()));
+    const auto rawSize = static_cast<qsizetype>(raw.size());
+    if (rawSize > RAW_FORMAT_INPUT_CAP_BYTES)
+    {
+        // Skip the JSON parse + indent for over-cap inputs: both are linear in
+        // size with a large constant, and `setPlainText` of the resulting
+        // (potentially 2x larger) indented string layouts the entire edit
+        // synchronously. Render a UTF-8 truncated view with a footer notice so
+        // the user sees that there's data and how to access it in full. The
+        // truncation may split a multi-byte UTF-8 sequence; `fromUtf8`
+        // substitutes U+FFFD at the boundary, which is acceptable for a
+        // human-readable preview and matches what the rest of the widget does
+        // for invalid bytes.
+        QString truncated = QString::fromUtf8(raw.data(), RAW_FORMAT_INPUT_CAP_BYTES);
+        truncated += QStringLiteral("\n\n");
+        truncated += RecordDetailWidget::tr(
+            "... (%1 bytes truncated; use Copy raw JSON to retrieve the full content)"
+        ).arg(static_cast<qulonglong>(rawSize - RAW_FORMAT_INPUT_CAP_BYTES));
+        return truncated;
+    }
+    const QByteArray bytes = QByteArray::fromRawData(raw.data(), rawSize);
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error == QJsonParseError::NoError && (doc.isObject() || doc.isArray()))
@@ -211,9 +240,13 @@ QString DefaultRecordDetailPlaceholder()
 
 QString EvictedRecordPlaceholder()
 {
-    return RecordDetailWidget::tr(
-        "The pinned record is no longer available (evicted from a streaming buffer or a model reset)."
-    );
+    // Reserved for the FIFO-eviction path in `RecordDetailDock::rowsRemoved`
+    // and the belt-and-braces bounds branch in `BuildRecordDetailContent`.
+    // A `modelReset` (file open / replace) routes through `Clear()` and
+    // shows the default "select a row" prompt instead -- the user just
+    // changed sources, so prompting them to interact with the fresh data
+    // is friendlier than reporting an eviction that didn't really happen.
+    return RecordDetailWidget::tr("The pinned record is no longer available (evicted from a streaming buffer).");
 }
 
 RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRow)
@@ -422,7 +455,7 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     mResizeReflowTimer->setSingleShot(true);
     mResizeReflowTimer->setInterval(RESIZE_REFLOW_DEBOUNCE_MS);
     connect(mResizeReflowTimer, &QTimer::timeout, this, [this]() {
-        if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0)
+        if (mFieldsTable->rowCount() > 0)
         {
             mFieldsTable->resizeRowsToContents();
         }
@@ -439,10 +472,9 @@ void RecordDetailWidget::SetContent(const RecordDetailContent &content)
 
 void RecordDetailWidget::SetOpenInNewWindowVisible(bool visible)
 {
-    if (mOpenInNewWindowButton != nullptr)
-    {
-        mOpenInNewWindowButton->setVisible(visible);
-    }
+    // `mOpenInNewWindowButton` is constructed unconditionally in the ctor and
+    // never re-nulled, so no nullable guard is needed here.
+    mOpenInNewWindowButton->setVisible(visible);
 }
 
 void RecordDetailWidget::PopulateUi()
@@ -577,8 +609,10 @@ void RecordDetailWidget::resizeEvent(QResizeEvent *event)
     // keys this is the difference between a smooth resize and a
     // visible stutter; the human eye sees one final layout pass
     // either way.
-    if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0 && event->oldSize().width() != event->size().width() &&
-        mResizeReflowTimer != nullptr)
+    // `mFieldsTable` and `mResizeReflowTimer` are wired unconditionally in the
+    // ctor and never re-nulled, so only the rowCount and width-actually-changed
+    // gates matter here.
+    if (mFieldsTable->rowCount() > 0 && event->oldSize().width() != event->size().width())
     {
         mResizeReflowTimer->start();
     }
@@ -618,10 +652,6 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
 
 void RecordDetailWidget::CopyFieldsSelectionToClipboard() const
 {
-    if (mFieldsTable == nullptr)
-    {
-        return;
-    }
     const QList<QTableWidgetSelectionRange> ranges = mFieldsTable->selectedRanges();
     if (ranges.isEmpty())
     {

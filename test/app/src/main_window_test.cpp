@@ -8998,6 +8998,62 @@ private slots:
         QVERIFY(!past.placeholderText.isEmpty());
     }
 
+    // A multi-hundred-KB log line (e.g. an HTTP body logged inline) would lock
+    // the UI for hundreds of ms in `QJsonDocument::fromJson` +
+    // `QPlainTextEdit::setPlainText` if passed through unbounded. The widget
+    // caps the input to `FormatRawLineForDisplay` and appends a footer notice
+    // so the user knows there's more data behind "Copy raw JSON" -- and the
+    // `rawJson` byte string stays full-fidelity so the clipboard copy is
+    // still complete. This test pins both halves of the contract.
+    void TestBuildRecordDetailContentFormattedJsonTruncatesHugeInput()
+    {
+        // 300 KB filler value: enough to exceed the 256 KB display cap with
+        // headroom for the JSON envelope. ASCII-only so the byte size of the
+        // serialised line equals the character count.
+        constexpr int FILLER_BYTES = 300 * 1024;
+        const QString filler(FILLER_BYTES, QLatin1Char('A'));
+        const QString hugeLine = QStringLiteral("{\"k\": \"") + filler + QStringLiteral("\"}");
+        const TempJsonFile fixture(QStringList{hugeLine});
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 1);
+
+        const RecordDetailContent content = BuildRecordDetailContent(*run.model, 0);
+        QVERIFY2(content.valid, "huge-but-valid line must still produce a valid content");
+
+        // `rawJson` is the clipboard payload -- must NOT be truncated. The
+        // full on-disk byte count includes the JSON envelope (`{"k": "..."}`)
+        // so we lower-bound check against the filler size rather than equality.
+        QVERIFY2(
+            content.rawJson.size() >= FILLER_BYTES,
+            qPrintable(QStringLiteral("rawJson must keep the full on-disk bytes; got %1 chars, expected >= %2")
+                           .arg(content.rawJson.size())
+                           .arg(FILLER_BYTES))
+        );
+
+        // `formattedJson` is what the QPlainTextEdit renders -- must be bounded.
+        // The cap lives in the widget translation unit so we don't import the
+        // constant directly; bound the rendered text to "noticeably smaller
+        // than the full input" -- 90% of the input still beats the actual
+        // 256 KB cap + footer by a wide margin while staying robust to the
+        // footer text length and any future small cap adjustments. The lower
+        // bound on the truncation footer below pins the "use Copy raw JSON"
+        // breadcrumb separately.
+        QVERIFY2(
+            content.formattedJson.size() < FILLER_BYTES * 9 / 10,
+            qPrintable(QStringLiteral("formattedJson must be capped; got %1 chars").arg(content.formattedJson.size()))
+        );
+        QVERIFY2(
+            content.formattedJson.contains(QStringLiteral("truncated")),
+            "formattedJson must carry a truncation footer so users know about Copy raw JSON"
+        );
+        QVERIFY2(
+            content.formattedJson.contains(QStringLiteral("Copy raw JSON")),
+            "truncation footer must mention the Copy raw JSON button so users have a clear next step"
+        );
+    }
+
     // The widget renders a populated `RecordDetailContent` into its
     // key/value table and raw-JSON edit, and the placeholder branch
     // hides the table while showing the placeholder label.
@@ -10123,6 +10179,90 @@ private slots:
         emit run.model->dataChanged(pinnedTopLeft, pinnedBottomRight, {Qt::DisplayRole});
         QCoreApplication::processEvents();
         QCOMPARE(dock.RefreshCountForTest(), refreshesBefore + 1);
+    }
+
+    // `MainWindow::UpdateRecordDetailsFromSelection` is invoked both on
+    // arrow-key navigation (real selection change) AND on dock re-show via
+    // the host's `visibilityChanged` lambda. On re-show the dock's own
+    // `visibilityChanged` handler has already refreshed against the still-
+    // valid persistent index FIRST -- so when the table selection still
+    // points at the same source row, the host's follow-up call would
+    // otherwise rebuild identical content for the second time. The skip
+    // path in `UpdateRecordDetailsFromSelection` short-circuits when
+    // `dock.CurrentSourceRow()` already matches the resolved source row,
+    // and `RefreshCountForTest` is the right surface to assert against
+    // -- a regression that drops the guard re-enters `RefreshFromModel`
+    // and ticks the counter, even though `SetContent` itself is idempotent.
+    void TestUpdateRecordDetailsFromSelectionSkipsWhenAlreadyPinned()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+            QStringLiteral(R"({"k": "gamma"})"),
+        });
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(model != nullptr);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
+        QCOMPARE(model->rowCount(), 3);
+
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *table = mWindow->findChild<LogTableView *>();
+        QVERIFY(dock != nullptr);
+        QVERIFY(table != nullptr);
+
+        // Drive the table selection AND the dock's pin to source row 1 via
+        // the same proxy index that the production double-click path would
+        // produce. The default sort is identity (-1), so proxy row == source
+        // row here.
+        const QModelIndex proxyIndex = table->model()->index(1, 0);
+        QVERIFY(proxyIndex.isValid());
+        table->selectionModel()->setCurrentIndex(proxyIndex, QItemSelectionModel::ClearAndSelect);
+        mWindow->ShowRecordDetailsForProxyIndex(proxyIndex);
+        QCOMPARE(dock->CurrentSourceRow(), 1);
+        QVERIFY(!dock->isHidden());
+
+        // Restore the dock's `mPerceivedVisible` flag for the
+        // `IsVisibleForRefresh()` gate in `UpdateRecordDetailsFromSelection`.
+        // Under offscreen QPA, the initial `hide()` in `MainWindow`'s ctor
+        // fires `visibilityChanged(false)` but the follow-up `setVisible(true)`
+        // does NOT fire the matching `(true)` signal (the parent `MainWindow`
+        // isn't realised, so effective visibility never changes). Explicit
+        // re-emission mirrors what the same offscreen workaround does in
+        // `TestRecordDetailDockSkipsRefreshWhileTabInactiveAndCatchesUpOnResume`.
+        emit dock->visibilityChanged(true);
+        QVERIFY(dock->IsVisibleForRefresh());
+
+        // Selection is already at source row 1, dock is already pinned to
+        // source row 1. The host's `UpdateRecordDetailsFromSelection` must
+        // short-circuit instead of re-running the rebuild. We sample
+        // `RefreshCountForTest` AFTER the visibility-changed re-emission
+        // because the dock's own visibility lambda performs one refresh as
+        // part of the resume path -- that refresh is what the skip in the
+        // host is supposed to dedup against, so we want it counted in the
+        // baseline.
+        const int refreshesBefore = dock->RefreshCountForTest();
+        mWindow->UpdateRecordDetailsFromSelection();
+        QCOMPARE(dock->RefreshCountForTest(), refreshesBefore);
+
+        // Sanity: when the selection MOVES the host re-pins as expected,
+        // proving the skip isn't accidentally dropping every call.
+        const QModelIndex otherProxyIndex = table->model()->index(2, 0);
+        QVERIFY(otherProxyIndex.isValid());
+        table->selectionModel()->setCurrentIndex(otherProxyIndex, QItemSelectionModel::ClearAndSelect);
+        mWindow->UpdateRecordDetailsFromSelection();
+        QCOMPARE(dock->CurrentSourceRow(), 2);
+        QVERIFY(dock->RefreshCountForTest() > refreshesBefore);
     }
 
     // `RecordDetailDock` refreshes on `columnsMoved` (header drag,
