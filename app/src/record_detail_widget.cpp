@@ -77,9 +77,8 @@ QString FormatRawLineForDisplay(const std::string &raw)
         // U+FFFD, which is fine for a human-readable preview.
         QString truncated = QString::fromUtf8(raw.data(), RAW_FORMAT_INPUT_CAP_BYTES);
         truncated += QStringLiteral("\n\n");
-        truncated += RecordDetailWidget::tr(
-            "... (%1 bytes truncated; use Copy raw JSON to retrieve the full content)"
-        ).arg(static_cast<qulonglong>(rawSize - RAW_FORMAT_INPUT_CAP_BYTES));
+        truncated += RecordDetailWidget::tr("... (%1 bytes truncated; use Copy raw JSON to retrieve the full content)")
+                         .arg(static_cast<qulonglong>(rawSize - RAW_FORMAT_INPUT_CAP_BYTES));
         return truncated;
     }
     const QByteArray bytes = QByteArray::fromRawData(raw.data(), rawSize);
@@ -250,8 +249,8 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
             // Line source threw (streaming eviction or other failure).
             // Keep the parsed fields visible; log so unexpected
             // failure modes are observable.
-            qWarning() << "BuildRecordDetailContent: line source threw for row" << sourceRow
-                       << "line id" << static_cast<qulonglong>(line.LineId()) << ":" << e.what();
+            qWarning() << "BuildRecordDetailContent: line source threw for row" << sourceRow << "line id"
+                       << static_cast<qulonglong>(line.LineId()) << ":" << e.what();
             rawLineBytes.clear();
         }
     }
@@ -493,9 +492,7 @@ void RecordDetailWidget::PopulateUi()
     }
     mRawGroup->setEnabled(hasRaw);
     mRawGroup->setTitle(hasRaw ? tr("Raw JSON") : tr("Raw JSON (unavailable)"));
-    mRawGroup->setToolTip(
-        hasRaw ? QString() : tr("The original line bytes are no longer available for this record.")
-    );
+    mRawGroup->setToolTip(hasRaw ? QString() : tr("The original line bytes are no longer available for this record."));
 }
 
 void RecordDetailWidget::resizeEvent(QResizeEvent *event)
@@ -533,7 +530,8 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
     {
         // Escape both sides so embedded newlines / tabs don't break
         // the one-line-per-field structure on the receiver.
-        lines.append(QStringLiteral("%1: %2").arg(EscapeForKeyValueCopy(pair.first), EscapeForKeyValueCopy(pair.second)));
+        lines.append(QStringLiteral("%1: %2").arg(EscapeForKeyValueCopy(pair.first), EscapeForKeyValueCopy(pair.second))
+        );
     }
     QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
 }

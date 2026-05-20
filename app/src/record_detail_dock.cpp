@@ -33,7 +33,9 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
         setMinimumWidth(area == Qt::BottomDockWidgetArea ? 0 : DOCK_MIN_WIDTH);
     });
 
-    connect(mWidget, &RecordDetailWidget::openInNewWindowRequested, this, &RecordDetailDock::OnOpenInNewWindowRequested);
+    connect(
+        mWidget, &RecordDetailWidget::openInNewWindowRequested, this, &RecordDetailDock::OnOpenInNewWindowRequested
+    );
 
     // Track "is the user actually seeing this pane". `isHidden()`
     // alone misses tabified-dock cases where our tab is buried but

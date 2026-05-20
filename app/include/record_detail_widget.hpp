@@ -3,8 +3,8 @@
 #include <QList>
 #include <QPair>
 #include <QString>
-#include <Qt>
 #include <QWidget>
+#include <Qt>
 
 class LogModel;
 class QGroupBox;

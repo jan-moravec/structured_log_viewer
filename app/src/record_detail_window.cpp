@@ -8,7 +8,7 @@ namespace
 {
 constexpr int WINDOW_INITIAL_WIDTH = 520;
 constexpr int WINDOW_INITIAL_HEIGHT = 600;
-}
+} // namespace
 
 RecordDetailWindow::RecordDetailWindow(const RecordDetailContent &content, QWidget *parent)
     : QWidget(parent, Qt::Window)

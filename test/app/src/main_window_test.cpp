@@ -8845,11 +8845,7 @@ private slots:
     // outright when other tests hammer the marshaller. The retry
     // re-clicks each iteration so lost OLE handshakes also resolve.
     static QString ClickAndReadClipboardWithRetry(
-        QClipboard *clipboard,
-        QPushButton *button,
-        const QString &marker,
-        int maxAttempts = 20,
-        int sleepMs = 25
+        QClipboard *clipboard, QPushButton *button, const QString &marker, int maxAttempts = 20, int sleepMs = 25
     )
     {
         QString text;
@@ -8945,8 +8941,7 @@ private slots:
 
         // `rawJson` is the on-disk bytes -- single line, no indenting.
         QVERIFY2(
-            !row1.rawJson.contains(QLatin1Char('\n')),
-            "raw JSON must reflect on-disk bytes (no inserted indentation)"
+            !row1.rawJson.contains(QLatin1Char('\n')), "raw JSON must reflect on-disk bytes (no inserted indentation)"
         );
         QVERIFY(row1.rawJson.contains(QStringLiteral("\"message\"")));
         QVERIFY(row1.rawJson.contains(QStringLiteral("\"boom\"")));
@@ -9151,7 +9146,9 @@ private slots:
         QVERIFY2(!rawGroup->isEnabled(), "Raw JSON group must be disabled when no raw bytes are available");
         QVERIFY2(
             rawGroup->title().contains(QStringLiteral("unavailable")),
-            qPrintable(QStringLiteral("Raw JSON group title must explain why it's empty; got '%1'").arg(rawGroup->title()))
+            qPrintable(
+                QStringLiteral("Raw JSON group title must explain why it's empty; got '%1'").arg(rawGroup->title())
+            )
         );
 
         RecordDetailContent withRaw;
@@ -9164,7 +9161,10 @@ private slots:
         QVERIFY2(rawGroup->isEnabled(), "Raw JSON group must re-enable when raw bytes arrive");
         QVERIFY2(
             !rawGroup->title().contains(QStringLiteral("unavailable")),
-            qPrintable(QStringLiteral("Raw JSON group title must drop the 'unavailable' suffix when bytes arrive; got '%1'").arg(rawGroup->title()))
+            qPrintable(
+                QStringLiteral("Raw JSON group title must drop the 'unavailable' suffix when bytes arrive; got '%1'")
+                    .arg(rawGroup->title())
+            )
         );
     }
 
@@ -9188,9 +9188,7 @@ private slots:
         clipboard->clear();
 
         const QString pasted = ClickAndReadClipboardWithRetry(
-            clipboard,
-            widget.CopyKeyValueButtonForTest(),
-            QStringLiteral("multiline: line1\\nline2")
+            clipboard, widget.CopyKeyValueButtonForTest(), QStringLiteral("multiline: line1\\nline2")
         );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         // One line per field; no real newline mid-entry.
@@ -9221,9 +9219,7 @@ private slots:
         clipboard->clear();
 
         const QString pasted = ClickAndReadClipboardWithRetry(
-            clipboard,
-            widget.CopyKeyValueButtonForTest(),
-            QStringLiteral("key\\nwith\\nnewlines: v")
+            clipboard, widget.CopyKeyValueButtonForTest(), QStringLiteral("key\\nwith\\nnewlines: v")
         );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         QCOMPARE(lines.size(), content.fields.size());
@@ -9266,8 +9262,7 @@ private slots:
             "Synthetic placeholder must carry the empty-value role flag"
         );
         QVERIFY2(
-            table->item(1, 1)->font().italic(),
-            "Synthetic placeholder must render italic so it reads as 'no value'"
+            table->item(1, 1)->font().italic(), "Synthetic placeholder must render italic so it reads as 'no value'"
         );
         QVERIFY2(
             !table->item(1, 1)->toolTip().isEmpty(),
@@ -9323,10 +9318,7 @@ private slots:
             !valueItem->data(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE).toBool(),
             "Recycled cell must not carry the placeholder role flag for a real value"
         );
-        QVERIFY2(
-            !valueItem->font().italic(),
-            "Recycled cell must drop the italic placeholder font for a real value"
-        );
+        QVERIFY2(!valueItem->font().italic(), "Recycled cell must drop the italic placeholder font for a real value");
         QVERIFY2(valueItem->toolTip().isEmpty(), "Recycled cell must drop the placeholder tooltip");
     }
 
@@ -9368,10 +9360,7 @@ private slots:
         // through a `QShortcut` whose activation under offscreen QPA
         // depends on focus state we can't set reliably.
         const QString pasted = InvokeAndReadClipboardWithRetry(
-            clipboard,
-            &widget,
-            "CopyFieldsSelectionToClipboard",
-            QStringLiteral("alpha\t1")
+            clipboard, &widget, "CopyFieldsSelectionToClipboard", QStringLiteral("alpha\t1")
         );
         QVERIFY2(!pasted.isEmpty(), "CopyFieldsSelectionToClipboard must be reachable via the meta-object");
         const QStringList lines = pasted.split(QLatin1Char('\n'));
@@ -9665,10 +9654,9 @@ private slots:
         // proxy row 2 == source row 2.
         const QModelIndex proxyIndex = table->model()->index(2, 0);
         QVERIFY(proxyIndex.isValid());
-        const bool emitted = QMetaObject::invokeMethod(
-            table, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, proxyIndex)
-        );
-        QVERIFY2(emitted, "doubleClicked signal must be invokable via the meta-object");
+        const bool emitted =
+            QMetaObject::invokeMethod(table, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, proxyIndex));
+        QVERIFY2(emitted, "doubleClicked signal must be invocable via the meta-object");
 
         QVERIFY2(!dock->isHidden(), "double-click on a row must surface the dock");
         QCOMPARE(dock->CurrentSourceRow(), 2);

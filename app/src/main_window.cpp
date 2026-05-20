@@ -1835,9 +1835,8 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
     entry.window = window;
     // Save the connection so `~MainWindow` can disconnect just this
     // lambda before member containers go away.
-    entry.destroyedConnection = connect(window, &QObject::destroyed, this, [this, trackerId]() {
-        mRecordDetailWindows.remove(trackerId);
-    });
+    entry.destroyedConnection =
+        connect(window, &QObject::destroyed, this, [this, trackerId]() { mRecordDetailWindows.remove(trackerId); });
     mRecordDetailWindows.insert(trackerId, entry);
     window->show();
     window->raise();
