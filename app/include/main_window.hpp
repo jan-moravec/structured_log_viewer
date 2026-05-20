@@ -98,19 +98,16 @@ public:
     /// A second call raises the existing instance.
     void ShowColumnsManager();
 
-    /// Show + raise the Record Details dock and pin it to the
-    /// proxy index @p proxyIndex (typically the row the user just
-    /// double-clicked). Maps to the source model row internally; an
-    /// invalid index is a silent no-op.
+    /// Show + raise the Record Details dock and pin it to @p proxyIndex
+    /// (mapped to a source row internally). Invalid index: no-op.
     void ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex);
 
-    /// Update the dock's content to match the table's current row
-    /// selection. No-op when the dock is hidden so streaming
-    /// selection-change traffic isn't paid for on an invisible widget.
+    /// Sync the dock to the table's current selection. No-op when the
+    /// dock is hidden (avoids work on an invisible widget).
     void UpdateRecordDetailsFromSelection();
 
-    /// Open a new standalone `RecordDetailWindow` snapshot of source
-    /// row @p sourceRow. Negative or out-of-range rows are a no-op.
+    /// Open a standalone `RecordDetailWindow` snapshot of source row
+    /// @p sourceRow. Out-of-range rows are a no-op.
     void OpenRecordDetailWindow(int sourceRow);
 
     /// Push every `Column::visible` flag to the header. Idempotent;
@@ -407,17 +404,10 @@ private:
     /// Re-apply the persisted retention cap to the model.
     void ApplyStreamingRetention();
 
-    /// (Re)bind the table view's current selection model to the
-    /// Record Details refresh slot. `QAbstractItemView::setModel`
-    /// silently destroys the old selection model and creates a
-    /// fresh one, severing any direct `connect()` made against the
-    /// previous instance; future call sites that swap the table's
-    /// model MUST invoke this helper afterwards to keep the dock
-    /// following arrow-key navigation. Today `setModel` is called
-    /// twice in MainWindow's constructor (source model, then the
-    /// proxy chain) and the helper is invoked once afterwards to
-    /// bind to the final selection model; the body uses
-    /// `Qt::UniqueConnection` so repeat calls are idempotent.
+    /// Connect the current selection model to the Record Details refresh
+    /// slot. Must be re-called after any `setModel` on the table view --
+    /// Qt destroys the old selection model and severs prior connections.
+    /// Uses `Qt::UniqueConnection`, so repeat calls are idempotent.
     void RebindRecordDetailSelectionTracking();
 
     Ui::MainWindow *ui;
@@ -453,37 +443,26 @@ private:
     /// second open reuses the same window.
     QPointer<class ColumnsManagerDialog> mColumnsManagerDialog;
 
-    /// Dock pane that follows the currently-selected row. Hidden
-    /// until the user opens it via the View menu or by double-
-    /// clicking a row. Floating / docking / closing is provided by
-    /// `QDockWidget`'s own chrome.
+    /// Dock pane that follows the selected row. Hidden until opened
+    /// via the View menu or a double-click. `QDockWidget` provides
+    /// the float / dock / close chrome.
     RecordDetailDock *mRecordDetailDock = nullptr;
 
-    /// One row of bookkeeping per open snapshot window opened from
-    /// the dock's "Open in new window" action. `destroyedConnection`
-    /// is the scoped hook installed in `OpenRecordDetailWindow` so
-    /// `~MainWindow` can sever only the connections we own (a
-    /// blanket `disconnect(sender, signal, this, nullptr)` would
-    /// also tear down any unrelated `destroyed` connection a future
-    /// change might wire from a snapshot window to MainWindow). The
-    /// `QPointer` value lets future iterators dereference safely --
-    /// it goes null on destruction the same way the raw pointer
-    /// would dangle. Insert and remove always touch both fields
-    /// atomically, eliminating the drift hazard of the previous
-    /// two-parallel-map layout.
+    /// One snapshot window plus the scoped `destroyed` connection
+    /// installed by `OpenRecordDetailWindow`. The scoped handle lets
+    /// `~MainWindow` disconnect only what we wired (a blanket
+    /// `disconnect` would catch unrelated future hooks).
     struct TrackedSnapshotWindow
     {
         QPointer<RecordDetailWindow> window;
         QMetaObject::Connection destroyedConnection;
     };
 
-    /// Open snapshot windows keyed by the window's original heap
-    /// address (cast to `quintptr` for stable identity). Each window
-    /// is `Qt::WA_DeleteOnClose`; the `destroyedConnection` lambda
-    /// removes the entry by id so the map stays compact across a
-    /// long session without an explicit sweep, and removal is
-    /// unambiguous even when several windows are torn down
-    /// concurrently.
+    /// Open snapshot windows keyed by the original heap address (cast
+    /// to `quintptr` for stable identity). Each window is
+    /// `Qt::WA_DeleteOnClose`; the `destroyed` lambda removes the
+    /// entry by id, so the map self-compacts without sweeps and
+    /// removal is unambiguous under concurrent teardown.
     QHash<quintptr, TrackedSnapshotWindow> mRecordDetailWindows;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a

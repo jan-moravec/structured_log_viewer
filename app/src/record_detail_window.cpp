@@ -14,14 +14,9 @@ RecordDetailWindow::RecordDetailWindow(const RecordDetailContent &content, QWidg
     : QWidget(parent, Qt::Window)
 {
     setObjectName(QStringLiteral("RecordDetailWindow"));
-    // Free the heap when the user closes the window so the owner's
-    // tracker self-cleans without an explicit handler. When the
-    // parent (`MainWindow`) is destroyed first Qt deletes us
-    // directly via the parent/child chain (no close event), so
-    // `WA_DeleteOnClose` is a no-op in that path; the tracker still
-    // self-cleans because the parent-destruction path also emits
-    // `QObject::destroyed` and the lambda in
-    // `MainWindow::OpenRecordDetailWindow` removes our entry by id.
+    // Self-delete on close so the owner's tracker self-cleans via
+    // `destroyed`. Parent-destruction also fires `destroyed`, so the
+    // tracker is correct on both teardown paths.
     setAttribute(Qt::WA_DeleteOnClose);
 
     const QString titleSummary = content.valid && !content.summary.isEmpty() ? content.summary : tr("Record Details");
@@ -33,8 +28,8 @@ RecordDetailWindow::RecordDetailWindow(const RecordDetailContent &content, QWidg
 
     mWidget = new RecordDetailWidget(this);
     mWidget->SetContent(content);
-    // The pop-out is itself a "new window"; offering another tear-off
-    // from inside would multiply identical snapshots.
+    // Already in a new window -- another tear-off button would just
+    // multiply identical snapshots.
     mWidget->SetOpenInNewWindowVisible(false);
     layout->addWidget(mWidget);
 }

@@ -430,27 +430,17 @@ MainWindow::MainWindow(QWidget *parent)
     mLayout->addWidget(mFindRecord);
     mFindRecord->hide();
 
-    // Record-detail dock: hidden by default, surfaces on double-click
-    // or via the View menu's Ctrl+I toggle. `QDockWidget` provides the
-    // float / dock / close chrome; we only own the row-pinning logic.
+    // Record-detail dock: hidden by default; the View menu's Ctrl+I
+    // toggle and row double-click both surface it.
     mRecordDetailDock = new RecordDetailDock(mModel, this);
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
-    // `actionToggleRecordDetails` is declared at the top of
-    // `main_window.ui` but not placed in any `<addaction>`, so uic
-    // creates it as a child of `MainWindow` without adding it to any
-    // widget's `actions()` list. A QAction's shortcut only fires once
-    // it is associated with at least one widget; we add it to the
-    // main window explicitly so `Ctrl+I` works from a cold launch,
-    // not just after the user has opened the View menu once (which
-    // is when `RebuildViewMenu` would otherwise associate it).
+    // `actionToggleRecordDetails` is declared in `main_window.ui` but
+    // not placed in any `<addaction>`, so uic doesn't add it to any
+    // widget's `actions()`. A QAction's shortcut only fires once it
+    // is associated with a widget; add it here so `Ctrl+I` is live
+    // from a cold launch, before the View menu is ever opened.
     addAction(ui->actionToggleRecordDetails);
-    // Re-target the UI action's checkable state at the dock's own
-    // `toggleViewAction`: we keep `actionToggleRecordDetails` for the
-    // menu+shortcut wiring and forward through. The
-    // `visibilityChanged` hook below covers the actual pinning logic
-    // for both this path AND the title-bar X reopen, so the lambda
-    // here is intentionally lean.
     connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
         mRecordDetailDock->setVisible(on);
         if (on)
@@ -458,12 +448,8 @@ MainWindow::MainWindow(QWidget *parent)
             mRecordDetailDock->raise();
         }
     });
-    // Keep menu entry checked state in sync with the dock's actual
-    // visibility -- the user can also close the dock via its title-
-    // bar X, and we need the menu to reflect that. The
-    // `QSignalBlocker` breaks the loop that would otherwise re-enter
-    // the `toggled` lambda above; `QAction::setChecked` is already
-    // a no-op when the state matches, so no extra guard is needed.
+    // Mirror dock visibility back onto the menu entry so the title-bar
+    // X also un-checks it. `QSignalBlocker` breaks the toggled loop.
     connect(mRecordDetailDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         const QSignalBlocker blocker(ui->actionToggleRecordDetails);
         ui->actionToggleRecordDetails->setChecked(visible);
@@ -474,20 +460,15 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(mRecordDetailDock, &RecordDetailDock::openInNewWindowRequested, this, &MainWindow::OpenRecordDetailWindow);
 
-    // Double-click on a row opens / pins the dock to that row.
     connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
 
-    // Track selection changes through the live selection model. The
-    // helper centralises the binding so a future `setModel` call (Qt
-    // recreates the selection model behind the scenes) only has to
-    // re-invoke it instead of duplicating the lambda inline.
+    // Track selection changes through the live selection model;
+    // centralised so a future `setModel` call only has to re-invoke
+    // this helper.
     RebindRecordDetailSelectionTracking();
 
-    // `RecordDetailDock` already wires its own `modelReset -> Clear`
-    // listener so a stale record doesn't linger after a new file is
-    // opened. The dock owns the lifecycle so future reuse outside
-    // `MainWindow` stays correct without an external host having to
-    // remember to re-create the connect.
+    // The dock owns its own `modelReset -> Clear` wiring, so reuse
+    // outside `MainWindow` stays correct.
 
     mPreferencesEditor = new PreferencesEditor(this);
     connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
@@ -775,25 +756,12 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    // Sever the `QObject::destroyed -> mRecordDetailWindows.remove`
-    // hooks installed by `OpenRecordDetailWindow` before our own
-    // members go away. Order of teardown is: this function body
-    // first, then our direct members (in reverse declaration order
-    // -- `mRecordDetailWindows` included), then the inherited
-    // `~QMainWindow` / `~QWidget` chain which calls
-    // `QObjectPrivate::deleteChildren()` and destroys the snapshot
-    // windows. Each snapshot's `destroyed` signal would otherwise
-    // invoke our lambda against a `QHash` that has already been
-    // destructed, accessing freed memory and crashing the process.
-    // Disconnecting up-front leaves the snapshots to clean
-    // themselves up via Qt's normal child-destruction path; nothing
-    // else relies on the tracker entries surviving the destructor.
-    //
-    // We `disconnect(QMetaObject::Connection)` (scoped) rather than
-    // `disconnect(sender, signal, this, nullptr)` (blanket) so a
-    // future code change that adds a separate `destroyed` hook on
-    // these windows can't be silently torn down by this teardown
-    // loop.
+    // Sever the snapshot windows' `destroyed -> remove` hooks before
+    // our members go away. Without this, the inherited `~QWidget`
+    // child-destruction would fire each `destroyed` against an
+    // already-destructed `mRecordDetailWindows`. Scoped disconnect
+    // (by `QMetaObject::Connection`) so unrelated future `destroyed`
+    // hooks can't be caught in the teardown.
     for (const auto &entry : std::as_const(mRecordDetailWindows))
     {
         disconnect(entry.destroyedConnection);
@@ -1746,10 +1714,8 @@ void MainWindow::ShowColumnsManager()
 
 namespace
 {
-/// Map a proxy index from the table view (filter + row-order proxy
-/// chain) down to a source-model row, or -1 if the chain breaks.
-/// Both proxies inherit `QAbstractProxyModel`, so `mapToSource` is
-/// the right entry point.
+/// Walk the filter + row-order proxy chain down to a source-model
+/// row, or -1 if anything along the chain is invalid.
 [[nodiscard]] int MapProxyIndexToSourceRow(
     const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
 )
@@ -1784,13 +1750,9 @@ void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
         return;
     }
     mRecordDetailDock->ShowSourceRow(sourceRow);
-    // Surface the dock if it was hidden. We probe `isHidden()` rather
-    // than `isVisible()`: the latter is also false whenever any
-    // ancestor of the dock isn't shown (e.g. a delayed
-    // `MainWindow::show()` on startup, or the offscreen QPA in tests),
-    // which would make us call `setVisible(true)` redundantly. The
-    // dock's own hide state is what gates whether the user can see it
-    // once the parent is realised.
+    // Probe `isHidden()` (the dock's own state) rather than
+    // `isVisible()`, which is also false when an ancestor isn't yet
+    // realised (delayed `show()` on startup, offscreen QPA).
     if (mRecordDetailDock->isHidden())
     {
         mRecordDetailDock->setVisible(true);
@@ -1809,14 +1771,8 @@ void MainWindow::RebindRecordDetailSelectionTracking()
     {
         return;
     }
-    // Bind via the member-function slot rather than an inline lambda
-    // so the connection is idempotent under `Qt::UniqueConnection`
-    // (Qt only deduplicates connections whose target is a
-    // pointer-to-member of a QObject subclass; lambdas always slip
-    // past the dedup and would stack up if this helper were called
-    // more than once against the same selection model). Qt happily
-    // truncates the signal's `(current, previous)` arguments when the
-    // slot takes none.
+    // Bind to a member slot (not a lambda) so `Qt::UniqueConnection`
+    // can dedupe; Qt only deduplicates pointer-to-member targets.
     connect(
         selectionModel,
         &QItemSelectionModel::currentRowChanged,
@@ -1828,12 +1784,9 @@ void MainWindow::RebindRecordDetailSelectionTracking()
 
 void MainWindow::UpdateRecordDetailsFromSelection()
 {
-    // `IsVisibleForRefresh()` blends the explicit-hide check (which
-    // still works under offscreen QPA, unlike `isVisible()`) with
-    // the tracked `visibilityChanged` state, so a tabified dock
-    // whose tab is buried also skips refreshes. The dock's
-    // visibility hook re-pins from the selection on resume, so the
-    // skipped navigation history isn't lost.
+    // Skip the refresh when the dock can't be seen. The dock's own
+    // `visibilityChanged` hook re-pins from the selection on resume,
+    // so navigation history isn't lost.
     if (mRecordDetailDock == nullptr || !mRecordDetailDock->IsVisibleForRefresh())
     {
         return;
@@ -1851,12 +1804,9 @@ void MainWindow::UpdateRecordDetailsFromSelection()
         mRecordDetailDock->Clear();
         return;
     }
-    // Short-circuit a no-op re-pin. `visibilityChanged(true)` runs the dock's
-    // own refresh (against its still-valid persistent index) BEFORE this slot,
-    // so when the selection still points at the same source row the dock has
-    // already shown it and an extra `ShowSourceRow` would just re-build the
-    // same content. The steady-state arrow-key path never matches here -- the
-    // current/previous rows differ by construction.
+    // Skip the rebuild when the dock is already pinned to this row.
+    // Mainly relevant on dock re-show: the dock has already refreshed
+    // against its persistent index, and the selection unchanged.
     if (mRecordDetailDock->CurrentSourceRow() == sourceRow)
     {
         return;
@@ -1876,23 +1826,15 @@ void MainWindow::OpenRecordDetailWindow(int sourceRow)
         return;
     }
     auto *window = new RecordDetailWindow(snapshot, this);
-    // Key the tracker by the window's heap address cast to a
-    // `quintptr`. The id is captured *before* the destroyed signal
-    // fires (i.e. while the pointer is still valid), so the
-    // `QHash::remove` below is unambiguous even when several
-    // snapshot windows are torn down concurrently. We deliberately
-    // don't search by `QPointer` equality: by the time `destroyed`
-    // is emitted Qt has already nulled every `QPointer` to the
-    // window, and a naive `removeOne(nullPointer)` would just remove
-    // whichever null entry happened to come first in the container.
+    // Key the tracker by the heap address (captured before
+    // `destroyed` fires, while the pointer is still valid). Using
+    // `QPointer` equality wouldn't work -- by the time `destroyed`
+    // emits, Qt has already nulled every `QPointer` to the window.
     const auto trackerId = reinterpret_cast<quintptr>(window);
     TrackedSnapshotWindow entry;
     entry.window = window;
-    // Store the connection so `~MainWindow` can `disconnect()` this
-    // exact lambda before our member containers go away. A blanket
-    // `disconnect(sender, signal, this, nullptr)` would also kill
-    // any unrelated future hook on the same `destroyed` signal --
-    // scoping by the returned connection keeps the teardown local.
+    // Save the connection so `~MainWindow` can disconnect just this
+    // lambda before member containers go away.
     entry.destroyedConnection = connect(window, &QObject::destroyed, this, [this, trackerId]() {
         mRecordDetailWindows.remove(trackerId);
     });
@@ -3365,9 +3307,8 @@ void MainWindow::RebuildViewMenu()
     manageColumnsAction->setObjectName(QStringLiteral("actionManageColumns"));
     connect(manageColumnsAction, &QAction::triggered, this, &MainWindow::ShowColumnsManager);
 
-    // Record-detail toggle: always reachable from the View menu, both
-    // to open the dock from cold and to bring it back after the user
-    // closed it via the title-bar X.
+    // Always reachable: opens the dock from cold and re-opens it
+    // after the user dismissed it via the title-bar X.
     viewMenu->addAction(ui->actionToggleRecordDetails);
 
     const auto &columns = mModel->Configuration().columns;

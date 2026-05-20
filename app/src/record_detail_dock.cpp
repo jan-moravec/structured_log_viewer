@@ -10,10 +10,8 @@
 
 namespace
 {
-/// Floor for the dock's width. Picked so the field/value table
-/// stays readable without forcing the central log view too narrow
-/// on small displays. `addDockWidget` still picks a larger initial
-/// size if the dock's `sizeHint()` is bigger.
+/// Minimum width for side-docked layout. Keeps the field/value table
+/// readable without squeezing the central log view too much.
 constexpr int DOCK_MIN_WIDTH = 280;
 } // namespace
 
@@ -21,9 +19,6 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
     : QDockWidget(tr("Record Details"), parent), mModel(model)
 {
     setObjectName(QStringLiteral("recordDetailDock"));
-    // Allow docking on either side, float as a top-level window, and
-    // close via the title bar. The View menu's `toggleViewAction()`
-    // mirrors the open/closed state.
     setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
     setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
 
@@ -31,25 +26,19 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
     setWidget(mWidget);
     setMinimumWidth(DOCK_MIN_WIDTH);
 
-    // Floor for side-dock width only -- when the user drops the
-    // dock at the bottom the field/value table can wrap freely, so
-    // a narrow horizontal slot (short history under a wide log
-    // table) is the more useful default. Toggle the min-width to
-    // 0 on bottom-area transitions.
+    // Side-dock width floor only. When docked at the bottom the
+    // field/value table can wrap freely, so a narrow horizontal slot
+    // is more useful than a hard minimum.
     connect(this, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea area) {
         setMinimumWidth(area == Qt::BottomDockWidgetArea ? 0 : DOCK_MIN_WIDTH);
     });
 
     connect(mWidget, &RecordDetailWidget::openInNewWindowRequested, this, &RecordDetailDock::OnOpenInNewWindowRequested);
 
-    // Track our own "is the user actually seeing this pane" state.
-    // `isHidden()` alone misses tabified-dock-area cases where the
-    // dock's tab is buried behind another dock's tab: the explicit
-    // hide flag stays false but `visibilityChanged(false)` fires.
-    // We use both checks together through `IsVisibleForRefresh()`.
-    // When the user surfaces the dock again, refresh once so the
-    // content reflects any model mutations we deliberately ignored
-    // while invisible (FIFO eviction shifts, column moves, ...).
+    // Track "is the user actually seeing this pane". `isHidden()`
+    // alone misses tabified-dock cases where our tab is buried but
+    // the explicit-hide flag is still false. On resume, refresh once
+    // to catch up on changes we ignored while invisible.
     connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         const bool wasVisible = mPerceivedVisible;
         mPerceivedVisible = visible;
@@ -59,31 +48,17 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
         }
     });
 
-    // Refresh after FIFO eviction so the summary's "Row N" label
-    // tracks the row's new position, and so the placeholder kicks
-    // in when the pinned row was evicted itself
-    // (`QPersistentModelIndex::isValid()` flips to false). Qt fires
-    // `rowsRemoved` on the source model after the removal commits.
     if (mModel != nullptr)
     {
-        // `modelReset` (file open / replace, `LogModel::Reset`) blows
-        // away every row without firing `rowsRemoved`, so the
-        // persistent index is left dangling and our placeholder text
-        // would stay stale. Listening directly inside the dock keeps
-        // it self-contained -- the previous design relied on
-        // `MainWindow` calling `Clear()` from its own `modelReset`
-        // lambda, which silently regressed any future reuse of the
-        // dock outside `MainWindow` (e.g. tests, future tools).
+        // `modelReset` (file open, `LogModel::Reset`) drops every row
+        // without firing `rowsRemoved`. Listening here keeps the dock
+        // self-contained -- callers don't have to wire it.
         connect(mModel, &QAbstractItemModel::modelReset, this, &RecordDetailDock::Clear);
         connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int, int) {
             if (mCurrentSourceIndex.isValid())
             {
-                // Pinned row survives -- only its index shifted. Skip
-                // the rebuild when the user isn't looking; the
-                // `visibilityChanged(true)` handler above refreshes
-                // once on re-surface, and `MainWindow::
-                // UpdateRecordDetailsFromSelection` will re-pin from
-                // the table's current selection too.
+                // Pinned row survives, only its index shifted; refresh
+                // so the summary's row number is current.
                 if (!IsVisibleForRefresh())
                 {
                     return;
@@ -92,26 +67,17 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
             }
             else if (mEverPinned)
             {
-                // The persistent index went invalid this tick -- the
-                // pinned record was inside the evicted range. Always
-                // swap to the dedicated placeholder (cheap text
-                // update, no field-table rebuild) so the next show
-                // surfaces "your record is gone" rather than the
-                // default "select a row" prompt. `mEverPinned` stays
-                // true so subsequent removals are an idempotent no-op
-                // until the next `Clear` / `ShowSourceRow`.
+                // Pinned row was just evicted. Always swap to the
+                // dedicated placeholder (cheap; no field rebuild) so
+                // the next show surfaces "record is gone" instead of
+                // the default "select a row" prompt.
                 ShowEvictedPlaceholder();
             }
-            // else: no pin to begin with -- a fresh dock that never
-            // had a row selected. Streaming eviction shouldn't pay
-            // for a placeholder rebuild that has no visible effect.
+            // else: never pinned -- nothing to invalidate.
         });
-        // Refresh when the pinned row's data changes underneath us.
-        // Streaming back-fill, an out-of-band column edit, or an
-        // enum-column promotion all emit `dataChanged` covering the
-        // affected row range; without this connection the pane would
-        // keep showing pre-change values until the user re-selected
-        // the row.
+        // Pinned-row edits (back-fill, header rename, enum promotion)
+        // emit `dataChanged` covering the row. Without this the pane
+        // would show stale values until the user re-selects the row.
         connect(
             mModel,
             &QAbstractItemModel::dataChanged,
@@ -121,10 +87,6 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
                 {
                     return;
                 }
-                // Same visibility gate as the `rowsRemoved` handler:
-                // an invisible dock has nothing to display, and we
-                // refresh on next show via the visibility hook plus
-                // the selection re-pin.
                 if (!IsVisibleForRefresh())
                 {
                     return;
@@ -136,16 +98,10 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
                 }
             }
         );
-        // Column-order events: a header drag and the streaming
-        // `Time` column bubble both emit `columnsMoved`, and the
-        // first batch of a new key emits `columnsInserted`. Both
-        // change the order our `Field / Value` table renders, so
-        // an unrefreshed pin would show stale column order until
-        // the user re-selected the row. The pinned row itself is
-        // unaffected (the persistent index pins column 0, which
-        // `LogModel` never removes); we just need to rebuild the
-        // field list. `LogModel` doesn't emit `columnsRemoved`
-        // today, so we skip that wire to avoid noise.
+        // Column reorders (header drag, streaming `Time` bubble) and
+        // new-key inserts change the order the Field/Value table
+        // renders, so rebuild the field list. The pinned row itself
+        // is unaffected -- column 0 is never removed.
         auto columnsLayoutChanged = [this]() {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid())
             {
@@ -180,11 +136,9 @@ void RecordDetailDock::ShowSourceRow(int sourceRow)
     mCurrentSourceIndex = QPersistentModelIndex(mModel->index(sourceRow, 0));
     if (!mCurrentSourceIndex.isValid())
     {
-        // Defensive: `mModel->index(row, 0)` would only return invalid if the
-        // model has zero columns despite a positive `rowCount`. `LogModel`
-        // never enters that state today (columns always precede rows), but
-        // keeping the guard local prevents `mEverPinned` from latching against
-        // a useless pin if a future model layout breaks that invariant.
+        // Defensive: only happens if a future `LogModel` layout
+        // produces zero columns with positive `rowCount`. Avoids
+        // latching `mEverPinned` on a useless pin.
         Clear();
         return;
     }
@@ -204,10 +158,8 @@ void RecordDetailDock::Clear()
 
 void RecordDetailDock::ShowEvictedPlaceholder()
 {
-    // The persistent index is already invalid by the time we get
-    // here (Qt invalidated it during `rowsRemoved`); explicitly
-    // drop it anyway so future `CurrentSourceRow()` reads are
-    // deterministic without depending on Qt's invariant.
+    // Qt invalidated the persistent index during `rowsRemoved`;
+    // reset it explicitly so `CurrentSourceRow()` is deterministic.
     mCurrentSourceIndex = QPersistentModelIndex();
     RecordDetailContent placeholder;
     placeholder.valid = false;
@@ -235,8 +187,7 @@ bool RecordDetailDock::IsVisibleForRefresh() const noexcept
 
 void RecordDetailDock::OnOpenInNewWindowRequested()
 {
-    // Relay the live row through the persistent index so the owner
-    // builds a snapshot of the actual record (post-eviction shifts
-    // and all) rather than a possibly-stale integer.
+    // Read the row through the persistent index so eviction shifts
+    // are reflected and the snapshot points at the actual record.
     emit openInNewWindowRequested(CurrentSourceRow());
 }
