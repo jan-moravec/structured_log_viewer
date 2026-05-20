@@ -483,14 +483,11 @@ MainWindow::MainWindow(QWidget *parent)
     // re-invoke it instead of duplicating the lambda inline.
     RebindRecordDetailSelectionTracking();
 
-    // Reset clears the dock so a stale record doesn't linger after a
-    // new file is opened.
-    connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
-        if (mRecordDetailDock != nullptr)
-        {
-            mRecordDetailDock->Clear();
-        }
-    });
+    // `RecordDetailDock` already wires its own `modelReset -> Clear`
+    // listener so a stale record doesn't linger after a new file is
+    // opened. The dock owns the lifecycle so future reuse outside
+    // `MainWindow` stays correct without an external host having to
+    // remember to re-create the connect.
 
     mPreferencesEditor = new PreferencesEditor(this);
     connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
@@ -1831,12 +1828,13 @@ void MainWindow::RebindRecordDetailSelectionTracking()
 
 void MainWindow::UpdateRecordDetailsFromSelection()
 {
-    // `isHidden()` (rather than `isVisible()`) is the right gate: if
-    // the user has asked the dock to be visible we want to keep its
-    // content live even when the parent window isn't fully realised
-    // yet (delayed startup, offscreen QPA). `isVisible()` would also
-    // return false in those cases and silently freeze the pane.
-    if (mRecordDetailDock == nullptr || mRecordDetailDock->isHidden())
+    // `IsVisibleForRefresh()` blends the explicit-hide check (which
+    // still works under offscreen QPA, unlike `isVisible()`) with
+    // the tracked `visibilityChanged` state, so a tabified dock
+    // whose tab is buried also skips refreshes. The dock's
+    // visibility hook re-pins from the selection on resume, so the
+    // skipped navigation history isn't lost.
+    if (mRecordDetailDock == nullptr || !mRecordDetailDock->IsVisibleForRefresh())
     {
         return;
     }

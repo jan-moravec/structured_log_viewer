@@ -70,12 +70,43 @@ public:
         return mWidget;
     }
 
+    /// Combined "should we pay for a content refresh right now"
+    /// gate. `isHidden()` alone is insufficient: in a tabified
+    /// dock area the dock can be `!isHidden()` while its tab is
+    /// buried behind another dock's tab, in which case
+    /// `visibilityChanged(false)` has fired but the explicit-hide
+    /// flag is still false. We track that secondary state via
+    /// `visibilityChanged` so the gate skips work the user can't
+    /// see. The flag defaults to `true` so tests that never
+    /// realise the parent (offscreen QPA, no `MainWindow::show()`)
+    /// keep the in-process flow working off the cheaper
+    /// `isHidden()` check alone.
+    ///
+    /// Exposed publicly so the host (`MainWindow`) can short-circuit
+    /// selection-driven refreshes too; the in-dock listeners use
+    /// the same gate internally.
+    [[nodiscard]] bool IsVisibleForRefresh() const noexcept;
+
 signals:
     /// User clicked the widget's "Open in new window" button. The
     /// argument is the currently-shown source row, or -1 when the
     /// dock holds a placeholder (in which case `MainWindow` should
     /// ignore the request).
     void openInNewWindowRequested(int sourceRow);
+
+#ifdef LOGAPP_BUILD_TESTING
+public:
+    /// Test-only counter incremented on every successful
+    /// `RefreshFromModel`. Lets gating regression tests
+    /// (e.g. "this `dataChanged` outside the pinned row must NOT
+    /// rebuild") observe the cheap-skip path directly instead of
+    /// inferring it from structural-equality asserts on the
+    /// resulting `RecordDetailContent`.
+    [[nodiscard]] int RefreshCountForTest() const noexcept
+    {
+        return mRefreshCount;
+    }
+#endif
 
 private:
     void RefreshFromModel();
@@ -103,4 +134,13 @@ private:
     /// this flag both states are observationally identical because
     /// `mCurrentSourceIndex.isValid()` is false in both.
     bool mEverPinned = false;
+    /// Tracks `QDockWidget::visibilityChanged`. Stays true under
+    /// offscreen QPA where the signal never fires (no realised
+    /// parent), which keeps tests using `RecordDetailDock dock(&model);
+    /// dock.show();` working off the `isHidden()` gate. In a real
+    /// session this flips to false when the dock's tab is buried.
+    bool mPerceivedVisible = true;
+#ifdef LOGAPP_BUILD_TESTING
+    int mRefreshCount = 0;
+#endif
 };

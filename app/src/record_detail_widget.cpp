@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDebug>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGroupBox>
@@ -30,6 +31,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTableWidgetSelectionRange>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <cstddef>
@@ -45,6 +47,12 @@ constexpr int RAW_MIN_HEIGHT = 120;
 constexpr int RAW_MAX_HEIGHT = 600;
 constexpr int FIELDS_KEY_COLUMN = 0;
 constexpr int FIELDS_VALUE_COLUMN = 1;
+/// Coalesce window for the post-resize row-height re-flow. 16 ms is
+/// roughly one 60 Hz frame -- short enough that the wrap appears
+/// "live" to the user, long enough to collapse a fast horizontal drag
+/// (which can emit dozens of `resizeEvent`s per frame) into a single
+/// `resizeRowsToContents` call.
+constexpr int RESIZE_REFLOW_DEBOUNCE_MS = 16;
 
 /// Pretty-print @p raw as indented JSON when it parses cleanly; fall
 /// back to the original bytes (UTF-8 decoded) otherwise so non-JSON
@@ -169,7 +177,7 @@ void ConfigureValueItem(QTableWidgetItem *item, const QString &text, const QPale
         // colour and stays consistent with the "no row selected"
         // label below.
         item->setText(QStringLiteral("\u2014"));
-        item->setToolTip(QObject::tr("This field is present but has an empty value."));
+        item->setToolTip(RecordDetailWidget::tr("This field is present but has an empty value."));
         item->setData(RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE, true);
         font.setItalic(true);
         item->setForeground(palette.color(QPalette::PlaceholderText));
@@ -252,18 +260,25 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
         {
             rawLineBytes = source->RawLine(line.LineId());
         }
-        catch (const std::exception &)
+        catch (const std::exception &e)
         {
             // Evicted from a streaming source or any other failure
             // path the line source documents -- keep the parsed
-            // fields visible but mark the raw section empty.
+            // fields visible but mark the raw section empty. Log
+            // the message so a genuinely unexpected throw (e.g. a
+            // future line-source backend with a fresh failure
+            // mode) is at least observable in the console; the
+            // common eviction case is benign but indistinguishable
+            // from a real bug without the message.
+            qWarning() << "BuildRecordDetailContent: line source threw for row" << sourceRow
+                       << "line id" << static_cast<qulonglong>(line.LineId()) << ":" << e.what();
             rawLineBytes.clear();
         }
     }
     content.rawJson = QString::fromUtf8(rawLineBytes.data(), static_cast<qsizetype>(rawLineBytes.size()));
     content.formattedJson = FormatRawLineForDisplay(rawLineBytes);
 
-    QString summary = QObject::tr("Row %1").arg(sourceRow + 1);
+    QString summary = RecordDetailWidget::tr("Row %1").arg(sourceRow + 1);
     if (const int timeCol = FindTimeColumn(configuration); timeCol >= 0)
     {
         const QString timeText = QString::fromStdString(table.GetFormattedValue(row, static_cast<size_t>(timeCol)));
@@ -401,6 +416,18 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     copyShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(copyShortcut, &QShortcut::activated, this, &RecordDetailWidget::CopyFieldsSelectionToClipboard);
 
+    // Debounced row-height re-flow on width changes. See the
+    // member docstring for the rationale.
+    mResizeReflowTimer = new QTimer(this);
+    mResizeReflowTimer->setSingleShot(true);
+    mResizeReflowTimer->setInterval(RESIZE_REFLOW_DEBOUNCE_MS);
+    connect(mResizeReflowTimer, &QTimer::timeout, this, [this]() {
+        if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0)
+        {
+            mFieldsTable->resizeRowsToContents();
+        }
+    });
+
     PopulateUi();
 }
 
@@ -511,11 +538,21 @@ void RecordDetailWidget::PopulateUi()
     const bool desiredChecked = hasRaw && mUserPrefersRawExpanded;
     if (mRawGroup->isChecked() != desiredChecked)
     {
+        // The ctor wires `mRawGroup->toggled` to `mRawEdit->setVisible`,
+        // so flipping the check here propagates to the edit. The
+        // `mSuppressRawToggleHandler` sentinel only suppresses the
+        // user-preference recorder; the visibility wiring still runs.
         mSuppressRawToggleHandler = true;
         mRawGroup->setChecked(desiredChecked);
         mSuppressRawToggleHandler = false;
     }
-    mRawEdit->setVisible(desiredChecked);
+    else
+    {
+        // State didn't change so `toggled` didn't fire; sync the edit
+        // explicitly. Covers the initial-render path where the group
+        // was already at its default-collapsed state.
+        mRawEdit->setVisible(desiredChecked);
+    }
     mRawGroup->setEnabled(hasRaw);
     mRawGroup->setTitle(hasRaw ? tr("Raw JSON") : tr("Raw JSON (unavailable)"));
     mRawGroup->setToolTip(
@@ -531,12 +568,19 @@ void RecordDetailWidget::resizeEvent(QResizeEvent *event)
     // widget's height. Skipping height-only resizes (vertical drag,
     // scrollbar appear/disappear, parent layout reflow) avoids
     // O(rows) measure work on every pixel of a vertical drag when
-    // the record has many fields. For records with hundreds of
+    // the record has many fields.
+    //
+    // The actual re-flow is debounced via `mResizeReflowTimer` so
+    // a fast horizontal drag, which can emit dozens of resize
+    // events per frame, collapses into a single
+    // `resizeRowsToContents` call. For records with hundreds of
     // keys this is the difference between a smooth resize and a
-    // visible stutter.
-    if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0 && event->oldSize().width() != event->size().width())
+    // visible stutter; the human eye sees one final layout pass
+    // either way.
+    if (mFieldsTable != nullptr && mFieldsTable->rowCount() > 0 && event->oldSize().width() != event->size().width() &&
+        mResizeReflowTimer != nullptr)
     {
-        mFieldsTable->resizeRowsToContents();
+        mResizeReflowTimer->start();
     }
 }
 

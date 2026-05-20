@@ -8841,11 +8841,82 @@ private slots:
     // double-click / pop-out integration.
     // ---------------------------------------------------------------
 
+    // Drive a clipboard-producing button + a clipboard read with a
+    // retry loop. On Windows the OLE clipboard is asynchronous and
+    // contended: `OleSetClipboard` can fail outright when another
+    // test's transfer hasn't yet finalised in the OLE marshaller
+    // (Qt logs "OleSetClipboard: Failed to set mime data (NULL)
+    // ... COM error 0x800401d0"). Qt does some internal retrying
+    // but the per-test budget isn't enough when several
+    // consecutive tests hammer the clipboard. We work around it
+    // by re-clicking the producer button until the clipboard
+    // text contains `marker` -- a unique substring of the
+    // expected payload -- or the attempt budget runs out.
+    //
+    // The helper deliberately does both the click and the read in
+    // each iteration so a click that lost the OLE handshake also
+    // gets retried; just polling the clipboard after a single
+    // failed click would never resolve.
+    static QString ClickAndReadClipboardWithRetry(
+        QClipboard *clipboard,
+        QPushButton *button,
+        const QString &marker,
+        int maxAttempts = 20,
+        int sleepMs = 25
+    )
+    {
+        QString text;
+        for (int attempt = 0; attempt < maxAttempts; ++attempt)
+        {
+            button->click();
+            QCoreApplication::processEvents();
+            QTest::qWait(sleepMs);
+            text = clipboard->text();
+            if (marker.isEmpty() ? !text.isEmpty() : text.contains(marker))
+            {
+                return text;
+            }
+        }
+        return text;
+    }
+
+    // Variant for callers that drive the producer via
+    // `QMetaObject::invokeMethod` (e.g. a private slot reached
+    // through the meta-object). Same retry strategy as the click
+    // overload above.
+    static QString InvokeAndReadClipboardWithRetry(
+        QClipboard *clipboard,
+        QObject *target,
+        const char *member,
+        const QString &marker,
+        int maxAttempts = 20,
+        int sleepMs = 25
+    )
+    {
+        QString text;
+        for (int attempt = 0; attempt < maxAttempts; ++attempt)
+        {
+            const bool invoked = QMetaObject::invokeMethod(target, member, Qt::DirectConnection);
+            if (!invoked)
+            {
+                return QString();
+            }
+            QCoreApplication::processEvents();
+            QTest::qWait(sleepMs);
+            text = clipboard->text();
+            if (marker.isEmpty() ? !text.isEmpty() : text.contains(marker))
+            {
+                return text;
+            }
+        }
+        return text;
+    }
+
     // Builds a `RecordDetailContent` against a small static fixture and
     // pins down the basics: summary mentions the row number, every
     // configured column appears in `fields`, and the raw JSON section
     // is pretty-printed (indented multi-line output).
-    static void TestBuildRecordDetailContentBasic()
+    void TestBuildRecordDetailContentBasic()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"timestamp": "2025-01-15T12:34:56Z", "level": "info", "message": "hello"})"),
@@ -8908,7 +8979,7 @@ private slots:
     // Negative / out-of-range source rows must produce an invalid
     // placeholder content with a user-visible explanation, not a crash
     // or garbage data.
-    static void TestBuildRecordDetailContentOutOfRange()
+    void TestBuildRecordDetailContentOutOfRange()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"a": 1})"),
@@ -8930,7 +9001,7 @@ private slots:
     // The widget renders a populated `RecordDetailContent` into its
     // key/value table and raw-JSON edit, and the placeholder branch
     // hides the table while showing the placeholder label.
-    static void TestRecordDetailWidgetRenderingAndPlaceholder()
+    void TestRecordDetailWidgetRenderingAndPlaceholder()
     {
         RecordDetailWidget widget;
 
@@ -8986,7 +9057,7 @@ private slots:
     // (compact) to the clipboard, not the pretty-printed display
     // text. Regression for the contract documented on
     // `RecordDetailContent`.
-    static void TestRecordDetailWidgetCopyRawJsonPushesRawBytes()
+    void TestRecordDetailWidgetCopyRawJsonPushesRawBytes()
     {
         RecordDetailWidget widget;
 
@@ -9004,10 +9075,8 @@ private slots:
 
         QPushButton *copyButton = widget.CopyJsonButtonForTest();
         QVERIFY(copyButton != nullptr);
-        copyButton->click();
-        QCoreApplication::processEvents();
 
-        const QString pasted = clipboard->text();
+        const QString pasted = ClickAndReadClipboardWithRetry(clipboard, copyButton, content.rawJson);
         QCOMPARE(pasted, content.rawJson);
         QVERIFY2(
             !pasted.contains(QLatin1Char('\n')),
@@ -9018,7 +9087,7 @@ private slots:
     // "Copy as key/value" writes one `header: value` line per field,
     // joined by `\n`. Drives the second copy button and the underlying
     // `CopyAsKeyValueClicked` slot end-to-end through the clipboard.
-    static void TestRecordDetailWidgetCopyAsKeyValuePushesPairs()
+    void TestRecordDetailWidgetCopyAsKeyValuePushesPairs()
     {
         RecordDetailWidget widget;
 
@@ -9037,11 +9106,9 @@ private slots:
         QPushButton *copyButton = widget.CopyKeyValueButtonForTest();
         QVERIFY(copyButton != nullptr);
         QVERIFY(copyButton->isEnabled());
-        copyButton->click();
-        QCoreApplication::processEvents();
 
-        const QString pasted = clipboard->text();
         const QString expected = QStringLiteral("level: info\nmessage: hello world\ncount: 42");
+        const QString pasted = ClickAndReadClipboardWithRetry(clipboard, copyButton, expected);
         QCOMPARE(pasted, expected);
     }
 
@@ -9049,7 +9116,7 @@ private slots:
     // evicted line produces a valid content with an empty `rawJson`,
     // and the button stays disabled so a click can't silently no-op.
     // Mirror of the gating in `RecordDetailWidget::PopulateUi`.
-    static void TestRecordDetailWidgetCopyRawJsonDisabledForEmptyRaw()
+    void TestRecordDetailWidgetCopyRawJsonDisabledForEmptyRaw()
     {
         RecordDetailWidget widget;
 
@@ -9101,7 +9168,7 @@ private slots:
     // still parses as `key: value\n` pairs on the receiving end. The
     // unescaped legacy format produced ambiguous output for nested
     // multi-line JSON values.
-    static void TestRecordDetailWidgetCopyAsKeyValueEscapesSpecialChars()
+    void TestRecordDetailWidgetCopyAsKeyValueEscapesSpecialChars()
     {
         RecordDetailWidget widget;
 
@@ -9118,10 +9185,11 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        widget.CopyKeyValueButtonForTest()->click();
-        QCoreApplication::processEvents();
-
-        const QString pasted = clipboard->text();
+        const QString pasted = ClickAndReadClipboardWithRetry(
+            clipboard,
+            widget.CopyKeyValueButtonForTest(),
+            QStringLiteral("multiline: line1\\nline2")
+        );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         // One line per field; no real newline can have escaped into
         // the middle of an entry.
@@ -9130,6 +9198,41 @@ private slots:
         QCOMPARE(lines[1], QStringLiteral("tabbed: col1\\tcol2"));
         QCOMPARE(lines[2], QStringLiteral("backslashed: C:\\\\path\\\\to\\\\file"));
         QCOMPARE(lines[3], QStringLiteral("plain: ok"));
+    }
+
+    // Companion to the value-side escape coverage above: pin that
+    // header text containing `\n`, `\t`, or `\\` is escaped too,
+    // so a real per-field-per-line structure survives even when a
+    // log producer ships fields with newlines in the **key** (rare
+    // but legal in JSON). Without escaping on the header side, a
+    // newline-bearing key would split a single field across two
+    // output lines.
+    void TestRecordDetailWidgetCopyAsKeyValueEscapesHeaderSpecialChars()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("key\nwith\nnewlines"), QStringLiteral("v")});
+        content.fields.append({QStringLiteral("key\twith\ttabs"), QStringLiteral("v")});
+        content.fields.append({QStringLiteral("back\\slash"), QStringLiteral("v")});
+        widget.SetContent(content);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted = ClickAndReadClipboardWithRetry(
+            clipboard,
+            widget.CopyKeyValueButtonForTest(),
+            QStringLiteral("key\\nwith\\nnewlines: v")
+        );
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), content.fields.size());
+        QCOMPARE(lines[0], QStringLiteral("key\\nwith\\nnewlines: v"));
+        QCOMPARE(lines[1], QStringLiteral("key\\twith\\ttabs: v"));
+        QCOMPARE(lines[2], QStringLiteral("back\\\\slash: v"));
     }
 
     // Empty values render the muted em-dash placeholder, with the
@@ -9142,7 +9245,7 @@ private slots:
     // spelled `Qt::UserRole + 1` in the test, so a future change
     // that re-numbers user roles cannot silently check the wrong
     // role.
-    static void TestRecordDetailWidgetEmptyValuePlaceholderUsesEmDashAndFlag()
+    void TestRecordDetailWidgetEmptyValuePlaceholderUsesEmDashAndFlag()
     {
         RecordDetailWidget widget;
 
@@ -9206,7 +9309,7 @@ private slots:
     // value with a leftover italic+muted look or, worse, expose a
     // role flag that downstream consumers would interpret as
     // "this is an empty placeholder".
-    static void TestRecordDetailWidgetReusedCellClearsPlaceholderState()
+    void TestRecordDetailWidgetReusedCellClearsPlaceholderState()
     {
         RecordDetailWidget widget;
 
@@ -9256,7 +9359,7 @@ private slots:
     // visual (key-then-value) order. The coalescing pass in
     // `CopyFieldsSelectionToClipboard` flattens that into one
     // ordered line per row.
-    static void TestRecordDetailWidgetFieldsTableCopyCoalescesMultiRanges()
+    void TestRecordDetailWidgetFieldsTableCopyCoalescesMultiRanges()
     {
         RecordDetailWidget widget;
 
@@ -9297,11 +9400,13 @@ private slots:
         // dispatch goes through a `QShortcut` whose activation under
         // offscreen QPA depends on focus state we can't reliably set
         // in tests. Same code path either way.
-        const bool emitted = QMetaObject::invokeMethod(&widget, "CopyFieldsSelectionToClipboard", Qt::DirectConnection);
-        QVERIFY2(emitted, "CopyFieldsSelectionToClipboard must be reachable via the meta-object");
-        QCoreApplication::processEvents();
-
-        const QString pasted = clipboard->text();
+        const QString pasted = InvokeAndReadClipboardWithRetry(
+            clipboard,
+            &widget,
+            "CopyFieldsSelectionToClipboard",
+            QStringLiteral("alpha\t1")
+        );
+        QVERIFY2(!pasted.isEmpty(), "CopyFieldsSelectionToClipboard must be reachable via the meta-object");
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         // Exactly two rows in the output (row 0 once, row 2 once);
         // row 1 wasn't selected.
@@ -9316,7 +9421,7 @@ private slots:
     // The dock pins to a source row via `ShowSourceRow` and resets to
     // a placeholder via `Clear`. Invalid rows fall back to the
     // placeholder without crashing.
-    static void TestRecordDetailDockPinAndClear()
+    void TestRecordDetailDockPinAndClear()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"k": "alpha"})"),
@@ -9368,7 +9473,7 @@ private slots:
     // A snapshot `RecordDetailWindow` keeps rendering even after the
     // underlying `LogModel` is destroyed: the content was deep-copied
     // at construction so the strings outlive the model.
-    static void TestRecordDetailWindowSnapshotSurvivesModelDestruction()
+    void TestRecordDetailWindowSnapshotSurvivesModelDestruction()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"msg": "snapshot me"})"),
@@ -9652,7 +9757,7 @@ private slots:
     // row index) and never expose a stale row number through
     // `CurrentSourceRow()` -- so "Open in new window" snapshots the
     // right record after eviction.
-    static void TestRecordDetailDockTracksFifoEviction()
+    void TestRecordDetailDockTracksFifoEviction()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -9732,7 +9837,7 @@ private slots:
     // The user-visible state stays at the default placeholder
     // either way; this test pins the cheap-no-op semantics so a
     // future change can't reintroduce the per-tick `Clear()` cost.
-    static void TestRecordDetailDockNoPinSkipsEvictionWork()
+    void TestRecordDetailDockNoPinSkipsEvictionWork()
     {
         LogModel model;
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
@@ -9769,7 +9874,7 @@ private slots:
     // here is a column header rename: `SetColumnHeader` mutates the
     // configuration silently, then `NotifyColumnEdited` emits the
     // model-level `dataChanged` that the dock listens for.
-    static void TestRecordDetailDockRefreshesOnDataChanged()
+    void TestRecordDetailDockRefreshesOnDataChanged()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"k": "alpha"})"),
@@ -9897,7 +10002,7 @@ private slots:
     // refresh on an out-of-band edit, and a subsequent show must
     // surface the refreshed content via the selection re-pin in
     // `MainWindow::UpdateRecordDetailsFromSelection`.
-    static void TestRecordDetailDockHiddenSkipsDataChangedRefresh()
+    void TestRecordDetailDockHiddenSkipsDataChangedRefresh()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"k": "alpha"})"),
@@ -9968,10 +10073,13 @@ private slots:
     // before rebuilding so an edit covering only unpinned rows is
     // ignored. Drop the range check and every `dataChanged` would
     // trigger a full rebuild; this test pins the cheap-skip
-    // semantics by emitting a synthetic dataChanged that excludes
-    // the pinned row and asserting the visible content object is
-    // not rebuilt.
-    static void TestRecordDetailDockSkipsDataChangedOutsidePinnedRow()
+    // semantics directly by observing
+    // `RecordDetailDock::RefreshCountForTest`, which increments on
+    // every successful `RefreshFromModel`. The earlier
+    // structural-equality check was weak: `SetContent` is
+    // idempotent, so a regression that removed the range guard
+    // would have rebuilt the same content and still passed.
+    void TestRecordDetailDockSkipsDataChangedOutsidePinnedRow()
     {
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"k": "alpha"})"),
@@ -9990,18 +10098,14 @@ private slots:
         QVERIFY(dock.Widget()->Content().valid);
         QCOMPARE(dock.CurrentSourceRow(), 0);
 
-        // Snapshot the value side of the pinned content so we can
-        // verify it stays byte-identical after the synthetic
-        // dataChanged. A real rebuild would re-allocate the
-        // QStringList and the pointer-identity check below would
-        // detect that.
-        const RecordDetailContent before = dock.Widget()->Content();
+        // Snapshot the refresh counter post-pin so we measure only
+        // dataChanged-driven work.
+        const int refreshesBefore = dock.RefreshCountForTest();
 
         // Emit dataChanged covering only rows 1-2 (skipping the
         // pinned row 0). The dock's range check must short-circuit;
         // without it, every dataChanged would trigger a refresh,
-        // and this assertion would fail because the content
-        // object's address would change.
+        // and the counter would tick.
         const QModelIndex topLeft = run.model->index(1, kColumn);
         const QModelIndex bottomRight = run.model->index(2, kColumn);
         QVERIFY(topLeft.isValid());
@@ -10009,19 +10113,145 @@ private slots:
         emit run.model->dataChanged(topLeft, bottomRight, {Qt::DisplayRole});
         QCoreApplication::processEvents();
 
-        const RecordDetailContent &after = dock.Widget()->Content();
-        // `SetContent` always copies, but the structural equality
-        // below pins the observable semantics regardless of
-        // whether the refresh path is hit. The real protection is
-        // the absence of an unnecessary rebuild; we can at least
-        // assert the content is structurally unchanged.
-        QCOMPARE(after.fields.size(), before.fields.size());
-        QCOMPARE(after.summary, before.summary);
-        for (qsizetype i = 0; i < before.fields.size(); ++i)
-        {
-            QCOMPARE(after.fields[i].first, before.fields[i].first);
-            QCOMPARE(after.fields[i].second, before.fields[i].second);
-        }
+        QCOMPARE(dock.RefreshCountForTest(), refreshesBefore);
+
+        // Sanity: a dataChanged that DOES cover the pinned row
+        // ticks the counter, so the range check isn't silently
+        // dropping everything.
+        const QModelIndex pinnedTopLeft = run.model->index(0, kColumn);
+        const QModelIndex pinnedBottomRight = run.model->index(0, kColumn);
+        emit run.model->dataChanged(pinnedTopLeft, pinnedBottomRight, {Qt::DisplayRole});
+        QCoreApplication::processEvents();
+        QCOMPARE(dock.RefreshCountForTest(), refreshesBefore + 1);
+    }
+
+    // `RecordDetailDock` refreshes on `columnsMoved` (header drag,
+    // streaming `Time`-column bubble) so the Field/Value list
+    // doesn't keep rendering in the pre-move order. The pinned
+    // row's persistent index pins column 0, which `LogModel` never
+    // removes, so the pin survives the layout shuffle. Driven
+    // through the public `MoveColumn` API rather than via raw
+    // `emit` -- Qt 6 marks `columnsMoved` as private
+    // (`QPrivateSignal` trailing parameter) so external emitters
+    // don't compile.
+    //
+    // The `columnsInserted` branch of the same listener is left
+    // untested here -- exercising it requires synthesising a
+    // streaming batch with a brand-new key, which is meaningfully
+    // more setup. The listener body is the same lambda, so
+    // covering `columnsMoved` end-to-end pins the wiring; if the
+    // `columnsInserted` connect line is dropped silently, that's
+    // a one-line miss visible in code review and the streaming
+    // tests do already drive `columnsInserted` indirectly.
+    void TestRecordDetailDockRefreshesOnColumnsMoved()
+    {
+        // Three keys (a, b, c) so we can move two columns without
+        // touching column 0; that keeps the pinned persistent
+        // index trivially valid (no remap-then-reinterpret to
+        // worry about).
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"a": "alpha", "b": "1", "c": "x"})"),
+            QStringLiteral(R"({"a": "beta",  "b": "2", "c": "y"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 2);
+        QVERIFY(run.model->columnCount() >= 3);
+
+        RecordDetailDock dock(run.model.get());
+        dock.show();
+        dock.ShowSourceRow(0);
+        QVERIFY(dock.Widget()->Content().valid);
+        const int refreshesAfterPin = dock.RefreshCountForTest();
+
+        const int cols = run.model->columnCount();
+        const int src = cols - 1;
+        const int dest = cols - 2;
+        QVERIFY(src != dest);
+        QVERIFY2(src >= 1 && dest >= 1, "Move must skip column 0 so the pin stays trivially valid");
+        QVERIFY(run.model->MoveColumn(src, dest));
+        QCoreApplication::processEvents();
+        QCOMPARE(dock.RefreshCountForTest(), refreshesAfterPin + 1);
+
+        // The hidden-dock gate should also apply here: an invisible
+        // pane shouldn't pay for the column-layout rebuild either.
+        dock.hide();
+        const int refreshesAfterHide = dock.RefreshCountForTest();
+        QVERIFY(run.model->MoveColumn(dest, src));
+        QCoreApplication::processEvents();
+        QCOMPARE(dock.RefreshCountForTest(), refreshesAfterHide);
+    }
+
+    // Tab-switch coverage: a `visibilityChanged(false)` while the
+    // explicit-hide flag stays false (tabified-dock-area inactive
+    // tab) must skip refreshes, and the follow-up
+    // `visibilityChanged(true)` (our tab gets selected again) must
+    // refresh once so the pane catches up on model events we
+    // deliberately ignored while invisible.
+    void TestRecordDetailDockSkipsRefreshWhileTabInactiveAndCatchesUpOnResume()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 2);
+
+        const int kColumn = ColumnByHeader(*run.model, QStringLiteral("k"));
+        QVERIFY(kColumn >= 0);
+
+        RecordDetailDock dock(run.model.get());
+        dock.show();
+        dock.ShowSourceRow(0);
+        QVERIFY(dock.Widget()->Content().valid);
+
+        // Synthesise the tab-inactive transition: emit
+        // `visibilityChanged(false)` directly without calling
+        // `hide()`. `isHidden()` stays false; only the dock's own
+        // `mPerceivedVisible` flips, mirroring how a tabified
+        // dock-area buries a tab in the real UI.
+        emit dock.visibilityChanged(false);
+        QVERIFY(!dock.isHidden());
+
+        const int refreshesBefore = dock.RefreshCountForTest();
+        const QModelIndex pinnedIdx = run.model->index(0, kColumn);
+        emit run.model->dataChanged(pinnedIdx, pinnedIdx, {Qt::DisplayRole});
+        QCoreApplication::processEvents();
+        QCOMPARE(dock.RefreshCountForTest(), refreshesBefore);
+
+        // Coming back into focus must refresh once so the pane
+        // shows the post-edit data.
+        emit dock.visibilityChanged(true);
+        QCoreApplication::processEvents();
+        QCOMPARE(dock.RefreshCountForTest(), refreshesBefore + 1);
+    }
+
+    // The dock should self-clear on `modelReset` even when there's
+    // no host `MainWindow` shimming the connection. This pins the
+    // dock-owns-its-lifecycle contract so future reuse outside
+    // `MainWindow` (tests, embedded tooling) doesn't silently
+    // regress to the previous design where the host had to remember
+    // to wire `modelReset -> Clear`.
+    void TestRecordDetailDockClearsOnModelResetStandalone()
+    {
+        const TempJsonFile fixture(QStringList{
+            QStringLiteral(R"({"k": "alpha"})"),
+            QStringLiteral(R"({"k": "beta"})"),
+        });
+        StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.model->rowCount(), 2);
+
+        RecordDetailDock dock(run.model.get());
+        dock.show();
+        dock.ShowSourceRow(1);
+        QCOMPARE(dock.CurrentSourceRow(), 1);
+        QVERIFY(dock.Widget()->Content().valid);
+
+        run.model->Reset();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(dock.CurrentSourceRow(), -1);
+        QVERIFY(!dock.Widget()->Content().valid);
+        QCOMPARE(dock.Widget()->Content().placeholderText, DefaultRecordDetailPlaceholder());
     }
 
     // `actionToggleRecordDetails` is associated with MainWindow via

@@ -13,6 +13,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QResizeEvent;
 class QTableWidget;
+class QTimer;
 
 /// Marks the value-column item as the muted "empty value" em-dash
 /// placeholder so downstream consumers (tests, future copy paths)
@@ -31,8 +32,11 @@ constexpr int RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 /// retention, etc.) and `placeholderText` is the explanation.
 ///
 /// `rawJson` is what the "Copy raw JSON" button writes to the
-/// clipboard -- exactly the byte sequence the parser ingested. The
-/// QPlainTextEdit in the widget displays `formattedJson` so users
+/// clipboard: the on-disk line bytes, UTF-8 decoded. Valid JSON is
+/// pure ASCII / UTF-8 so this is lossless in practice; invalid UTF-8
+/// in a non-JSON log line would be replaced by U+FFFD, which is good
+/// enough for human-readable text but is not a binary-faithful copy.
+/// The QPlainTextEdit in the widget displays `formattedJson` so users
 /// can read deeply-nested objects; users wanting to copy that
 /// formatted view can select+Ctrl+C inside the edit directly.
 ///
@@ -169,4 +173,14 @@ private:
     /// path); `mSuppressRawToggleHandler` is the sentinel.
     bool mUserPrefersRawExpanded = false;
     bool mSuppressRawToggleHandler = false;
+
+    /// Coalesces width-change re-flow work. `resizeRowsToContents`
+    /// is O(rows * cells_per_row); naively running it on every
+    /// pixel of a horizontal drag visibly stutters for records
+    /// with hundreds of fields. The debounce delays the call to
+    /// the next event-loop tick (idle reflow), and a zero-interval
+    /// `QTimer::singleShot` semantically means "after current
+    /// event batch". Single-shot per resize burst, not a periodic
+    /// timer.
+    QTimer *mResizeReflowTimer = nullptr;
 };

@@ -2,7 +2,6 @@
 
 #include "record_detail_widget.hpp"
 
-#include <QObject>
 #include <QVBoxLayout>
 
 namespace
@@ -25,9 +24,8 @@ RecordDetailWindow::RecordDetailWindow(const RecordDetailContent &content, QWidg
     // `MainWindow::OpenRecordDetailWindow` removes our entry by id.
     setAttribute(Qt::WA_DeleteOnClose);
 
-    const QString titleSummary =
-        content.valid && !content.summary.isEmpty() ? content.summary : QObject::tr("Record Details");
-    setWindowTitle(QObject::tr("Record Details \u2014 %1").arg(titleSummary));
+    const QString titleSummary = content.valid && !content.summary.isEmpty() ? content.summary : tr("Record Details");
+    setWindowTitle(tr("Record Details \u2014 %1").arg(titleSummary));
     resize(WINDOW_INITIAL_WIDTH, WINDOW_INITIAL_HEIGHT);
 
     auto *layout = new QVBoxLayout(this);
