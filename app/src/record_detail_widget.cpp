@@ -41,11 +41,22 @@ namespace
 constexpr int OUTER_MARGIN = 12;
 constexpr int SECTION_SPACING = 8;
 constexpr int RAW_MIN_HEIGHT = 120;
-constexpr int RAW_MAX_HEIGHT = 320;
+constexpr int RAW_MAX_HEIGHT = 600;
 constexpr int FIELDS_KEY_COLUMN = 0;
 constexpr int FIELDS_VALUE_COLUMN = 1;
+/// Marks the value-column item as the muted "empty value" em-dash
+/// placeholder so downstream consumers (tests, future copy paths)
+/// can distinguish it from a real value that happens to look like
+/// the placeholder text.
+constexpr int IS_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 
-QString PrettyPrintJson(const std::string &raw)
+/// Pretty-print @p raw as indented JSON when it parses cleanly; fall
+/// back to the original bytes (UTF-8 decoded) otherwise so non-JSON
+/// log lines remain readable in the raw-text section. Empty input
+/// yields an empty string -- the caller is expected to gate the UI
+/// on `RecordDetailContent::rawJson.isEmpty()` and explain the
+/// missing bytes (e.g. evicted streaming line).
+QString FormatRawLineForDisplay(const std::string &raw)
 {
     if (raw.empty())
     {
@@ -58,8 +69,6 @@ QString PrettyPrintJson(const std::string &raw)
     {
         return QString::fromUtf8(doc.toJson(QJsonDocument::Indented));
     }
-    // Non-JSON / malformed: fall back to the original bytes so the
-    // user still sees something usable.
     return QString::fromUtf8(bytes);
 }
 
@@ -76,6 +85,42 @@ int FindTimeColumn(const loglib::LogConfiguration &configuration)
         }
     }
     return -1;
+}
+
+/// C-style escape for `header: value` clipboard output. Embedded
+/// newlines / carriage returns / tabs are escaped so each pair stays
+/// on a single line; backslashes are escaped so the round-trip is
+/// unambiguous. Leaves printable ASCII and Unicode alone -- the goal
+/// is "this still parses as `key: value` pairs", not full JSON
+/// escaping.
+QString EscapeForKeyValueCopy(const QString &text)
+{
+    QString out;
+    out.reserve(text.size());
+    for (const QChar ch : text)
+    {
+        if (ch == QLatin1Char('\\'))
+        {
+            out += QStringLiteral("\\\\");
+        }
+        else if (ch == QLatin1Char('\n'))
+        {
+            out += QStringLiteral("\\n");
+        }
+        else if (ch == QLatin1Char('\r'))
+        {
+            out += QStringLiteral("\\r");
+        }
+        else if (ch == QLatin1Char('\t'))
+        {
+            out += QStringLiteral("\\t");
+        }
+        else
+        {
+            out += ch;
+        }
+    }
+    return out;
 }
 
 QTableWidgetItem *MakeReadOnlyKeyItem(const QString &text)
@@ -97,10 +142,13 @@ QTableWidgetItem *MakeReadOnlyValueItem(const QString &text)
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
     if (text.isEmpty())
     {
-        // Muted placeholder for missing values; reads "<empty>" so
-        // an empty cell isn't visually identical to a present-but-blank
-        // value the parser produced.
-        item->setText(QStringLiteral("<empty>"));
+        // Muted em-dash placeholder for present-but-empty values. The
+        // em-dash is unlikely to collide with a real value, and a
+        // dedicated `IS_EMPTY_PLACEHOLDER_ROLE` flag below removes the
+        // last shred of ambiguity for tests and future consumers.
+        item->setText(QStringLiteral("\u2014"));
+        item->setToolTip(QObject::tr("This field is present but has an empty value."));
+        item->setData(IS_EMPTY_PLACEHOLDER_ROLE, true);
         QFont font = item->font();
         font.setItalic(true);
         item->setFont(font);
@@ -169,7 +217,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
         }
     }
     content.rawJson = QString::fromUtf8(QByteArray::fromStdString(rawLineBytes));
-    content.formattedJson = PrettyPrintJson(rawLineBytes);
+    content.formattedJson = FormatRawLineForDisplay(rawLineBytes);
 
     QString summary = QObject::tr("Row %1").arg(sourceRow + 1);
     if (const int timeCol = FindTimeColumn(configuration); timeCol >= 0)
@@ -255,7 +303,12 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     mRawEdit = new QPlainTextEdit(mRawGroup);
     mRawEdit->setObjectName(QStringLiteral("rawJsonEdit"));
     mRawEdit->setReadOnly(true);
-    mRawEdit->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // Wrap at widget width so long single-line JSON doesn't force
+    // horizontal scrolling inside the already-narrow dock; users who
+    // want the literal bytes can still copy via "Copy raw JSON". The
+    // generous `RAW_MAX_HEIGHT` cap stops a multi-kilobyte payload
+    // from pushing the buttons row off-screen.
+    mRawEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     mRawEdit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     mRawEdit->setMinimumHeight(RAW_MIN_HEIGHT);
     mRawEdit->setMaximumHeight(RAW_MAX_HEIGHT);
@@ -353,10 +406,22 @@ void RecordDetailWidget::PopulateUi()
     mFieldsTable->resizeRowsToContents();
 
     mRawEdit->setPlainText(mContent.formattedJson);
-    // Empty raw bytes (eviction / parse failure with empty bytes)
-    // collapses the group implicitly because the toggle below
-    // hides the edit; we leave the group visible so the user can
-    // see that there is no raw text available.
+    // Empty raw bytes (FIFO eviction, line source threw, file
+    // truncated mid-line, ...): disable the group AND retitle it so
+    // the user knows there's nothing behind the toggle, instead of
+    // expanding to find an empty edit. The group stays visible so
+    // the absence is observable rather than silent.
+    const bool hasRaw = !mContent.rawJson.isEmpty();
+    mRawGroup->setEnabled(hasRaw);
+    mRawGroup->setTitle(hasRaw ? tr("Raw JSON") : tr("Raw JSON (unavailable)"));
+    if (!hasRaw)
+    {
+        mRawGroup->setToolTip(tr("The original line bytes are no longer available for this record."));
+    }
+    else
+    {
+        mRawGroup->setToolTip(QString());
+    }
 }
 
 void RecordDetailWidget::resizeEvent(QResizeEvent *event)
@@ -394,7 +459,11 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
     lines.reserve(static_cast<int>(mContent.fields.size()));
     for (const auto &pair : mContent.fields)
     {
-        lines.append(QStringLiteral("%1: %2").arg(pair.first, pair.second));
+        // Escape both sides so embedded newlines / tabs / backslashes
+        // don't blur the line-per-field structure on the receiving
+        // end (the previous unescaped format produced ambiguous
+        // output for multi-line nested values).
+        lines.append(QStringLiteral("%1: %2").arg(EscapeForKeyValueCopy(pair.first), EscapeForKeyValueCopy(pair.second)));
     }
     QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
 }
@@ -411,7 +480,7 @@ void RecordDetailWidget::CopyFieldsSelectionToClipboard() const
         return;
     }
     // Read the underlying field text rather than the table-item
-    // display text so the placeholder "<empty>" decoration in
+    // display text so the muted em-dash placeholder in
     // `MakeReadOnlyValueItem` doesn't leak into the clipboard
     // copy. Use the model `Content().fields` as the source of
     // truth.

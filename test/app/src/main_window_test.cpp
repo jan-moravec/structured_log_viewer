@@ -46,6 +46,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QIcon>
 #include <QLabel>
@@ -8949,7 +8950,12 @@ private slots:
         QCOMPARE(table->item(0, 1)->text(), QStringLiteral("info"));
         QCOMPARE(table->item(1, 0)->text(), QStringLiteral("message"));
         QCOMPARE(table->item(1, 1)->text(), QStringLiteral("hello"));
-        QVERIFY(table->isVisible() || !widget.isVisible()); // visible flag set, even if widget hidden
+        // The table is asked to be visible by `PopulateUi` whenever
+        // content is valid; `isHidden()` reflects that requested
+        // state independently of whether the widget's ancestors are
+        // actually realised on screen (which they aren't, under
+        // offscreen QPA in tests).
+        QVERIFY2(!table->isHidden(), "fields table must be explicitly shown when content is valid");
 
         // The on-screen edit shows the *formatted* JSON, not the
         // compact raw bytes.
@@ -9062,6 +9068,130 @@ private slots:
         QVERIFY(kvButton != nullptr);
         QVERIFY2(!rawButton->isEnabled(), "Copy raw JSON must be disabled when there's no raw text");
         QVERIFY2(kvButton->isEnabled(), "Copy as key/value stays enabled -- it reads from the fields, not raw bytes");
+
+        // Companion gating: when the raw bytes aren't available the
+        // group itself is disabled and retitled so the user knows the
+        // collapsed section has nothing to reveal. A subsequent
+        // SetContent with real bytes must restore both.
+        QGroupBox *rawGroup = widget.findChild<QGroupBox *>(QStringLiteral("rawJsonGroup"));
+        QVERIFY(rawGroup != nullptr);
+        QVERIFY2(!rawGroup->isEnabled(), "Raw JSON group must be disabled when no raw bytes are available");
+        QVERIFY2(
+            rawGroup->title().contains(QStringLiteral("unavailable")),
+            qPrintable(QStringLiteral("Raw JSON group title must explain why it's empty; got '%1'").arg(rawGroup->title()))
+        );
+
+        RecordDetailContent withRaw;
+        withRaw.valid = true;
+        withRaw.summary = QStringLiteral("Row 1");
+        withRaw.fields.append({QStringLiteral("k"), QStringLiteral("v")});
+        withRaw.rawJson = QStringLiteral(R"({"k": "v"})");
+        withRaw.formattedJson = QStringLiteral("{\n  \"k\": \"v\"\n}");
+        widget.SetContent(withRaw);
+        QVERIFY2(rawGroup->isEnabled(), "Raw JSON group must re-enable when raw bytes arrive");
+        QVERIFY2(
+            !rawGroup->title().contains(QStringLiteral("unavailable")),
+            qPrintable(QStringLiteral("Raw JSON group title must drop the 'unavailable' suffix when bytes arrive; got '%1'").arg(rawGroup->title()))
+        );
+    }
+
+    // "Copy as key/value" must produce a single line per field even
+    // when values carry embedded newlines / tabs / backslashes --
+    // those characters are escaped C-style so the resulting text
+    // still parses as `key: value\n` pairs on the receiving end. The
+    // unescaped legacy format produced ambiguous output for nested
+    // multi-line JSON values.
+    static void TestRecordDetailWidgetCopyAsKeyValueEscapesSpecialChars()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("multiline"), QStringLiteral("line1\nline2\r\nline3")});
+        content.fields.append({QStringLiteral("tabbed"), QStringLiteral("col1\tcol2")});
+        content.fields.append({QStringLiteral("backslashed"), QStringLiteral(R"(C:\path\to\file)")});
+        content.fields.append({QStringLiteral("plain"), QStringLiteral("ok")});
+        widget.SetContent(content);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        widget.CopyKeyValueButtonForTest()->click();
+        QCoreApplication::processEvents();
+
+        const QString pasted = clipboard->text();
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        // One line per field; no real newline can have escaped into
+        // the middle of an entry.
+        QCOMPARE(lines.size(), content.fields.size());
+        QCOMPARE(lines[0], QStringLiteral("multiline: line1\\nline2\\r\\nline3"));
+        QCOMPARE(lines[1], QStringLiteral("tabbed: col1\\tcol2"));
+        QCOMPARE(lines[2], QStringLiteral("backslashed: C:\\\\path\\\\to\\\\file"));
+        QCOMPARE(lines[3], QStringLiteral("plain: ok"));
+    }
+
+    // Empty values render the muted em-dash placeholder, with the
+    // `IS_EMPTY_PLACEHOLDER_ROLE` flag (Qt::UserRole+1) set so a
+    // hypothetical value that *is* literally an em-dash stays
+    // distinguishable from a synthetic placeholder. The cell text
+    // and tooltip pin the visible behaviour; the role flag pins
+    // the machine-readable discriminator.
+    static void TestRecordDetailWidgetEmptyValuePlaceholderUsesEmDashAndFlag()
+    {
+        RecordDetailWidget widget;
+
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("Row 1");
+        content.fields.append({QStringLiteral("present"), QStringLiteral("hello")});
+        content.fields.append({QStringLiteral("absent"), QString()});
+        // A literal em-dash value: the placeholder text alone would
+        // make this indistinguishable, but the role flag must be
+        // *unset* for a real value.
+        content.fields.append({QStringLiteral("dashy"), QStringLiteral("\u2014")});
+        widget.SetContent(content);
+
+        QTableWidget *table = widget.FieldsTableForTest();
+        QVERIFY(table != nullptr);
+        QCOMPARE(table->rowCount(), 3);
+
+        // Real value: no placeholder flag.
+        QCOMPARE(table->item(0, 1)->text(), QStringLiteral("hello"));
+        QVERIFY2(
+            !table->item(0, 1)->data(Qt::UserRole + 1).toBool(),
+            "Real value must not be flagged as the empty-value placeholder"
+        );
+
+        // Synthetic empty: em-dash text, flagged, italicised.
+        QCOMPARE(table->item(1, 1)->text(), QStringLiteral("\u2014"));
+        QVERIFY2(
+            table->item(1, 1)->data(Qt::UserRole + 1).toBool(),
+            "Synthetic placeholder must carry the IS_EMPTY_PLACEHOLDER_ROLE flag"
+        );
+        QVERIFY2(
+            table->item(1, 1)->font().italic(),
+            "Synthetic placeholder must render italic so it reads as 'no value'"
+        );
+        QVERIFY2(
+            !table->item(1, 1)->toolTip().isEmpty(),
+            "Synthetic placeholder must carry a tooltip explaining the empty value"
+        );
+
+        // Literal em-dash value: same text but NOT flagged, NOT
+        // italic. This is the regression payload for the previous
+        // "<empty>" approach, where a literal "<empty>" string would
+        // collide with the placeholder.
+        QCOMPARE(table->item(2, 1)->text(), QStringLiteral("\u2014"));
+        QVERIFY2(
+            !table->item(2, 1)->data(Qt::UserRole + 1).toBool(),
+            "Literal em-dash value must not be flagged as the empty-value placeholder"
+        );
+        QVERIFY2(
+            !table->item(2, 1)->font().italic(),
+            "Literal em-dash value must not render italic -- italic is the placeholder discriminator"
+        );
     }
 
     // The dock pins to a source row via `ShowSourceRow` and resets to

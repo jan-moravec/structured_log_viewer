@@ -122,7 +122,8 @@ private slots:
     /// Ctrl+C inside the fields table. Writes the selected cells
     /// to the clipboard as TSV (one row per line, tab between
     /// key/value columns), reading the underlying field text so
-    /// the `<empty>` decoration isn't copied verbatim.
+    /// the muted em-dash placeholder for present-but-empty values
+    /// isn't copied verbatim.
     void CopyFieldsSelectionToClipboard() const;
 
 private:

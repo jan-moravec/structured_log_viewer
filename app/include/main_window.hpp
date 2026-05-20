@@ -17,6 +17,7 @@
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QHash>
 #include <QLabel>
 #include <QList>
 #include <QMainWindow>
@@ -406,6 +407,17 @@ private:
     /// Re-apply the persisted retention cap to the model.
     void ApplyStreamingRetention();
 
+    /// (Re)bind the table view's current selection model to the
+    /// Record Details refresh slot. `QAbstractItemView::setModel`
+    /// silently destroys the old selection model and creates a
+    /// fresh one, severing any direct `connect()` made against the
+    /// previous instance; future call sites that swap the table's
+    /// model MUST invoke this helper afterwards to keep the dock
+    /// following arrow-key navigation. Today `setModel` is only
+    /// called in the constructor, so this also serves as the one-
+    /// shot initial wiring.
+    void RebindRecordDetailSelectionTracking();
+
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
     RowOrderProxyModel *mRowOrderProxyModel;
@@ -446,11 +458,17 @@ private:
     RecordDetailDock *mRecordDetailDock = nullptr;
 
     /// Open snapshot windows opened from the dock's "Open in new
-    /// window" action. Each window is `Qt::WA_DeleteOnClose`; we
-    /// drop its entry from this list via a `QObject::destroyed`
-    /// connection in `OpenRecordDetailWindow`, so the list stays
-    /// compact across a long session without an explicit sweep.
-    QList<QPointer<RecordDetailWindow>> mRecordDetailWindows;
+    /// window" action, keyed by the window's original heap address
+    /// (cast to `quintptr` for stable identity). Each window is
+    /// `Qt::WA_DeleteOnClose`; a `QObject::destroyed` connection in
+    /// `OpenRecordDetailWindow` removes the entry by id, so the
+    /// map stays compact across a long session without an explicit
+    /// sweep and removal is unambiguous even when several windows
+    /// are torn down concurrently. The `QPointer` value is here for
+    /// safety if future code ever iterates and dereferences -- it
+    /// goes null on destruction the same way the raw pointer would
+    /// dangle.
+    QHash<quintptr, QPointer<RecordDetailWindow>> mRecordDetailWindows;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.

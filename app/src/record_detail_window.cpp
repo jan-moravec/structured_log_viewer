@@ -16,7 +16,13 @@ RecordDetailWindow::RecordDetailWindow(const RecordDetailContent &content, QWidg
 {
     setObjectName(QStringLiteral("RecordDetailWindow"));
     // Free the heap when the user closes the window so the owner's
-    // `QPointer` list self-cleans without an explicit handler.
+    // tracker self-cleans without an explicit handler. When the
+    // parent (`MainWindow`) is destroyed first Qt deletes us
+    // directly via the parent/child chain (no close event), so
+    // `WA_DeleteOnClose` is a no-op in that path; the tracker still
+    // self-cleans because the parent-destruction path also emits
+    // `QObject::destroyed` and the lambda in
+    // `MainWindow::OpenRecordDetailWindow` removes our entry by id.
     setAttribute(Qt::WA_DeleteOnClose);
 
     const QString titleSummary =
