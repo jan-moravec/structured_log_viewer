@@ -9448,14 +9448,6 @@ private slots:
             if (!window.isNull())
             {
                 window->close();
-                // `close()` only schedules `deleteLater`; the
-                // ubuntu-22.04 / Qt 6.8.3 release runner appears to
-                // carry the still-alive orphan widget into the next
-                // test and trip an internal Qt traversal. Drain the
-                // deferred-delete queue here so the snapshot is gone
-                // before the next test's MainWindow is constructed.
-                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-                QCoreApplication::processEvents();
             }
         });
 
@@ -9486,7 +9478,12 @@ private slots:
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
-        auto *model = mWindow->findChild<LogModel *>();
+        // Direct accessors (not `findChild<...>()`). `findChild` walks
+        // the QObject child tree and that traversal is the path that
+        // segfaults inside Qt on the ubuntu-22.04 / Qt 6.8.3 release
+        // runner -- the existing `ViewMenu()` / `FilterSubMenu()`
+        // accessors hit the same toolchain bug for `QMenu`.
+        auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -9505,14 +9502,14 @@ private slots:
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 3);
 
-        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *dock = mWindow->RecordDetailDockForTest();
         QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
         // `isHidden()` is the right probe under offscreen QPA -- the
         // parent isn't `show()`n so `isVisible()` is always false.
         QVERIFY2(dock->isHidden(), "dock starts hidden");
 
         // Default sort (-1) -> proxy row == source row. Pick row 1.
-        auto *table = mWindow->findChild<LogTableView *>();
+        auto *table = mWindow->TableViewForTest();
         QVERIFY(table != nullptr);
         const QAbstractItemModel *proxyModel = table->model();
         QVERIFY(proxyModel != nullptr);
@@ -9546,7 +9543,7 @@ private slots:
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QVERIFY(toggleAction->isCheckable());
 
-        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *dock = mWindow->RecordDetailDockForTest();
         QVERIFY(dock != nullptr);
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
         QVERIFY(dock->isHidden());
@@ -9611,12 +9608,12 @@ private slots:
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 2);
 
-        QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
+        QVERIFY(mWindow->RecordDetailWindowsForTest().isEmpty());
 
         mWindow->OpenRecordDetailWindow(0);
         mWindow->OpenRecordDetailWindow(1);
 
-        const auto windows = mWindow->findChildren<RecordDetailWindow *>();
+        const auto windows = mWindow->RecordDetailWindowsForTest();
         QCOMPARE(windows.size(), 2);
         for (const RecordDetailWindow *window : windows)
         {
@@ -9626,7 +9623,7 @@ private slots:
 
         // Out-of-range -> no-op.
         mWindow->OpenRecordDetailWindow(99);
-        QCOMPARE(mWindow->findChildren<RecordDetailWindow *>().size(), 2);
+        QCOMPARE(mWindow->RecordDetailWindowsForTest().size(), 2);
 
         for (RecordDetailWindow *window : windows)
         {
@@ -9659,8 +9656,8 @@ private slots:
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
 
-        auto *dock = mWindow->findChild<RecordDetailDock *>();
-        auto *table = mWindow->findChild<LogTableView *>();
+        auto *dock = mWindow->RecordDetailDockForTest();
+        auto *table = mWindow->TableViewForTest();
         QVERIFY(dock != nullptr);
         QVERIFY(table != nullptr);
         QVERIFY(dock->isHidden());
@@ -9872,11 +9869,11 @@ private slots:
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
 
-        QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
+        QVERIFY(mWindow->RecordDetailWindowsForTest().isEmpty());
 
         mWindow->OpenRecordDetailWindow(0);
         mWindow->OpenRecordDetailWindow(0);
-        auto windows = mWindow->findChildren<RecordDetailWindow *>();
+        auto windows = mWindow->RecordDetailWindowsForTest();
         QCOMPARE(windows.size(), 2);
         for (RecordDetailWindow *window : windows)
         {
@@ -9888,7 +9885,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            mWindow->findChildren<RecordDetailWindow *>().isEmpty(),
+            mWindow->RecordDetailWindowsForTest().isEmpty(),
             "closed snapshots must have been deleted, no live children remain"
         );
 
@@ -10030,8 +10027,8 @@ private slots:
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 3);
 
-        auto *dock = mWindow->findChild<RecordDetailDock *>();
-        auto *table = mWindow->findChild<LogTableView *>();
+        auto *dock = mWindow->RecordDetailDockForTest();
+        auto *table = mWindow->TableViewForTest();
         QVERIFY(dock != nullptr);
         QVERIFY(table != nullptr);
 
@@ -10181,7 +10178,7 @@ private slots:
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QVERIFY(toggleAction->isCheckable());
 
-        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *dock = mWindow->RecordDetailDockForTest();
         QVERIFY(dock != nullptr);
         QVERIFY2(dock->isHidden(), "dock starts hidden");
 

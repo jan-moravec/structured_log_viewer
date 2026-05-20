@@ -1427,6 +1427,24 @@ QMenu *MainWindow::FilterSubMenu(const QString &filterID) const
 }
 
 #ifdef LOGAPP_BUILD_TESTING
+QList<RecordDetailWindow *> MainWindow::RecordDetailWindowsForTest() const
+{
+    // Materialise the live snapshot-window set out of the heap-keyed
+    // tracker. The tracker is keyed on the original heap address (a
+    // `quintptr`) but iteration order isn't stable across runs; tests
+    // only assert on count and per-window state, never on identity.
+    QList<RecordDetailWindow *> windows;
+    windows.reserve(mRecordDetailWindows.size());
+    for (const auto &entry : std::as_const(mRecordDetailWindows))
+    {
+        if (!entry.window.isNull())
+        {
+            windows.append(entry.window.data());
+        }
+    }
+    return windows;
+}
+
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)

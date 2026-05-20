@@ -158,6 +158,32 @@ public:
     }
 
 #ifdef LOGAPP_BUILD_TESTING
+    /// Test-only direct accessor for the Record Details dock.
+    /// Same Linux-Release-offscreen reason as `ViewMenu()` /
+    /// `FilterSubMenu()`: `findChild<RecordDetailDock*>()` on the
+    /// Linux Qt 6.8 + offscreen-QPA toolchain segfaults inside Qt's
+    /// child-traversal even though the dock is correctly parented to
+    /// `MainWindow` (production code never walks the tree this way).
+    [[nodiscard]] RecordDetailDock *RecordDetailDockForTest() const
+    {
+        return mRecordDetailDock;
+    }
+
+    /// Test-only direct accessor for the central log table view.
+    /// Same Linux-Release-offscreen reason as `RecordDetailDockForTest()`.
+    [[nodiscard]] LogTableView *TableViewForTest() const
+    {
+        return mTableView;
+    }
+
+    /// Test-only snapshot-window list. Same Linux-Release-offscreen
+    /// reason as `RecordDetailDockForTest()`: `findChildren` walks the
+    /// child tree and that path is the unreliable one. The internal
+    /// `QHash` is keyed by heap address; this view materialises the
+    /// live `RecordDetailWindow*` set in insertion order so tests can
+    /// observe both the count and the per-window state.
+    [[nodiscard]] QList<RecordDetailWindow *> RecordDetailWindowsForTest() const;
+
     /// Test-only session-mode override so display-order tests can
     /// exercise the `Static` branch without a real open flow.
     enum class TestSessionMode
