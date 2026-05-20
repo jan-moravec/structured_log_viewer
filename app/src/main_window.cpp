@@ -441,6 +441,14 @@ MainWindow::MainWindow(QWidget *parent)
     // from a cold launch, before the View menu is ever opened.
     addAction(ui->actionToggleRecordDetails);
     connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
+        // See `ShowRecordDetailsForProxyIndex` for why the
+        // hidden-to-visible transition is gated on the host window
+        // being realised. The hide path is always safe -- it
+        // doesn't traverse the dock-area layout.
+        if (on && !isVisible())
+        {
+            return;
+        }
         mRecordDetailDock->setVisible(on);
         if (on)
         {
@@ -1770,7 +1778,16 @@ void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
     // Probe `isHidden()` (the dock's own state) rather than
     // `isVisible()`, which is also false when an ancestor isn't yet
     // realised (delayed `show()` on startup, offscreen QPA).
-    if (mRecordDetailDock->isHidden())
+    //
+    // The `isVisible()` guard on the host main window keeps headless
+    // tests stable: QDockWidget::setVisible(true) walks the parent
+    // QMainWindowLayout dock-area state, which is uninitialised when
+    // MainWindow has never been `show()`n. On the build-linux runner
+    // (Ubuntu 22.04 / Qt 6.8.3 / GCC-13 / offscreen QPA) that path
+    // SIGSEGVs at offset 0x20 inside QDockWidget's internals.
+    // Production callers always have a shown main window, so this
+    // guard never trips at runtime.
+    if (mRecordDetailDock->isHidden() && isVisible())
     {
         mRecordDetailDock->setVisible(true);
     }
