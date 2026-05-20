@@ -29,7 +29,6 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QCoreApplication>
-#include <QDebug>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -1738,23 +1737,16 @@ namespace
     const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
 )
 {
-    qDebug() << "[DOCK-DBG] MapProxyIndexToSourceRow enter";
     if (!proxyIndex.isValid() || filter == nullptr || rowOrder == nullptr)
     {
-        qDebug() << "[DOCK-DBG] MapProxyIndexToSourceRow early return -1";
         return -1;
     }
-    qDebug() << "[DOCK-DBG] calling filter->mapToSource";
     const QModelIndex midIndex = filter->mapToSource(proxyIndex);
-    qDebug() << "[DOCK-DBG] midIndex.valid=" << midIndex.isValid() << " midIndex.row=" << midIndex.row()
-             << " midIndex.model=" << static_cast<const void *>(midIndex.model());
     if (!midIndex.isValid())
     {
         return -1;
     }
-    qDebug() << "[DOCK-DBG] calling rowOrder->mapToSource";
     const QModelIndex sourceIndex = rowOrder->mapToSource(midIndex);
-    qDebug() << "[DOCK-DBG] sourceIndex.valid=" << sourceIndex.isValid() << " sourceIndex.row=" << sourceIndex.row();
     if (!sourceIndex.isValid())
     {
         return -1;
@@ -1765,36 +1757,24 @@ namespace
 
 void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
 {
-    qDebug() << "[DOCK-DBG] ShowRecordDetailsForProxyIndex enter, dock=" << static_cast<void *>(mRecordDetailDock)
-             << " filter=" << static_cast<void *>(mSortFilterProxyModel)
-             << " rowOrder=" << static_cast<void *>(mRowOrderProxyModel) << " idx.valid=" << proxyIndex.isValid()
-             << " idx.row=" << proxyIndex.row() << " idx.model=" << static_cast<const void *>(proxyIndex.model());
     if (mRecordDetailDock == nullptr)
     {
         return;
     }
-    qDebug() << "[DOCK-DBG] before MapProxyIndexToSourceRow";
     const int sourceRow = MapProxyIndexToSourceRow(proxyIndex, mSortFilterProxyModel, mRowOrderProxyModel);
-    qDebug() << "[DOCK-DBG] sourceRow=" << sourceRow;
     if (sourceRow < 0)
     {
         return;
     }
-    qDebug() << "[DOCK-DBG] before ShowSourceRow";
     mRecordDetailDock->ShowSourceRow(sourceRow);
-    qDebug() << "[DOCK-DBG] after ShowSourceRow, dock hidden=" << mRecordDetailDock->isHidden();
     // Probe `isHidden()` (the dock's own state) rather than
     // `isVisible()`, which is also false when an ancestor isn't yet
     // realised (delayed `show()` on startup, offscreen QPA).
     if (mRecordDetailDock->isHidden())
     {
-        qDebug() << "[DOCK-DBG] before setVisible(true)";
         mRecordDetailDock->setVisible(true);
-        qDebug() << "[DOCK-DBG] after setVisible(true)";
     }
-    qDebug() << "[DOCK-DBG] before raise";
     mRecordDetailDock->raise();
-    qDebug() << "[DOCK-DBG] after raise";
 }
 
 void MainWindow::RebindRecordDetailSelectionTracking()
@@ -1821,17 +1801,13 @@ void MainWindow::RebindRecordDetailSelectionTracking()
 
 void MainWindow::UpdateRecordDetailsFromSelection()
 {
-    qDebug() << "[DOCK-DBG] UpdateRecordDetailsFromSelection enter dock=" << static_cast<void *>(mRecordDetailDock)
-             << " tableView=" << static_cast<void *>(mTableView);
     // Skip the refresh when the dock can't be seen. The dock's own
     // `visibilityChanged` hook re-pins from the selection on resume,
     // so navigation history isn't lost.
     if (mRecordDetailDock == nullptr || !mRecordDetailDock->IsVisibleForRefresh())
     {
-        qDebug() << "[DOCK-DBG] UpdateRecordDetailsFromSelection early return (dock not visible)";
         return;
     }
-    qDebug() << "[DOCK-DBG] UpdateRecordDetailsFromSelection getting selection";
     const QItemSelectionModel *selectionModel = mTableView->selectionModel();
     if (selectionModel == nullptr)
     {

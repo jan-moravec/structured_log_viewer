@@ -9479,17 +9479,18 @@ private slots:
     // clears it back to the placeholder.
     void TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset()
     {
-        // TEMP debug breadcrumbs to localise the Linux build-linux
-        // SIGSEGV. Pinned across the early test body so the CI log
-        // shows the last reached checkpoint before the crash. Remove
-        // once the underlying cause is fixed.
-        qDebug() << "[DOCK-DBG] enter test";
         const TempJsonFile fixture(QStringList{
             QStringLiteral(R"({"k": "alpha"})"),
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
-        qDebug() << "[DOCK-DBG] after fixture";
+        // `show()` the host main window so `QMainWindowLayout` builds
+        // its dock-area state. Under offscreen QPA this is cheap (no
+        // real painting) but is required: on Linux Qt 6.8.3 (build-linux
+        // release runner) the first `setVisible(true)` on a child dock
+        // of an unshown QMainWindow dereferences null layout state and
+        // SIGSEGVs deep inside QDockWidget's internals.
+        mWindow->show();
         // Direct accessors (not `findChild<...>()`). `findChild` walks
         // the QObject child tree and that traversal is the path that
         // segfaults inside Qt on the ubuntu-22.04 / Qt 6.8.3 release
@@ -9497,47 +9498,42 @@ private slots:
         // accessors hit the same toolchain bug for `QMenu`.
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
-        qDebug() << "[DOCK-DBG] got model";
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        qDebug() << "[DOCK-DBG] spy ready";
 
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
-        qDebug() << "[DOCK-DBG] before begin-streaming";
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
-        qDebug() << "[DOCK-DBG] after begin-streaming";
         loglib::ParserOptions options;
         options.stopToken = stopToken;
         loglib::internal::AdvancedParserOptions advanced;
         advanced.threads = 1;
         const loglib::JsonParser parser;
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
-        qDebug() << "[DOCK-DBG] after parse-streaming";
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
-        qDebug() << "[DOCK-DBG] streaming finished";
         QCOMPARE(model->rowCount(), 3);
 
         auto *dock = mWindow->RecordDetailDockForTest();
         QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
-        // `isHidden()` is the right probe under offscreen QPA -- the
-        // parent isn't `show()`n so `isVisible()` is always false.
         QVERIFY2(dock->isHidden(), "dock starts hidden");
-        qDebug() << "[DOCK-DBG] dock hidden ok";
 
         // Default sort (-1) -> proxy row == source row. Pick row 1.
         auto *table = mWindow->TableViewForTest();
         QVERIFY(table != nullptr);
-        const QAbstractItemModel *proxyModel = table->model();
+        QAbstractItemModel *proxyModel = table->model();
         QVERIFY(proxyModel != nullptr);
         const QModelIndex proxyIndex = proxyModel->index(1, 0);
         QVERIFY(proxyIndex.isValid());
-        qDebug() << "[DOCK-DBG] got proxy index";
+        // Mirror what a double-click does: select the row first.
+        // Without this, the `visibilityChanged(true)` cascade fires
+        // `UpdateRecordDetailsFromSelection`, which would clobber our
+        // pin back to whatever row is currently selected (row 0 on
+        // shown-but-not-clicked tables).
+        table->selectionModel()->setCurrentIndex(proxyIndex, QItemSelectionModel::ClearAndSelect);
 
         mWindow->ShowRecordDetailsForProxyIndex(proxyIndex);
-        qDebug() << "[DOCK-DBG] after ShowRecordDetailsForProxyIndex";
         QVERIFY2(!dock->isHidden(), "dock must surface on double-click");
         QCOMPARE(dock->CurrentSourceRow(), 1);
         bool sawBeta = false;
@@ -9549,19 +9545,21 @@ private slots:
             }
         }
         QVERIFY(sawBeta);
-        qDebug() << "[DOCK-DBG] saw beta";
 
         // Reset clears the dock so a stale record doesn't linger.
         model->Reset();
         QCOMPARE(dock->CurrentSourceRow(), -1);
         QVERIFY(!dock->Widget()->Content().valid);
-        qDebug() << "[DOCK-DBG] exit test";
     }
 
     // The View-menu action and the dock's title-bar X stay in sync via
     // `QDockWidget::visibilityChanged`.
     void TestRecordDetailDockViewMenuTogglesVisibility()
     {
+        // See `TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset`
+        // for why the MainWindow must be `show()`n before flipping a
+        // child dock visible under the Linux Qt 6.8.3 build-linux runner.
+        mWindow->show();
         QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QVERIFY(toggleAction->isCheckable());
@@ -9663,6 +9661,9 @@ private slots:
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
+        // See `TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset`
+        // for why the MainWindow must be `show()`n.
+        mWindow->show();
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
 
@@ -9690,6 +9691,10 @@ private slots:
         // proxy row 2 == source row 2.
         const QModelIndex proxyIndex = table->model()->index(2, 0);
         QVERIFY(proxyIndex.isValid());
+        // Mirror a real double-click: select the row first so the
+        // visibility cascade's `UpdateRecordDetailsFromSelection`
+        // doesn't override the pin back to the auto-selected row 0.
+        table->selectionModel()->setCurrentIndex(proxyIndex, QItemSelectionModel::ClearAndSelect);
         const bool emitted =
             QMetaObject::invokeMethod(table, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, proxyIndex));
         QVERIFY2(emitted, "doubleClicked signal must be invocable via the meta-object");
@@ -10034,6 +10039,9 @@ private slots:
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
+        // See `TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset`
+        // for why the MainWindow must be `show()`n.
+        mWindow->show();
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -10197,6 +10205,9 @@ private slots:
     // window activation, which offscreen QPA doesn't realise.
     void TestRecordDetailToggleActionTogglesDockVisibility()
     {
+        // See `TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset`
+        // for why the MainWindow must be `show()`n.
+        mWindow->show();
         QAction *toggleAction = FindActionByObjectName(mWindow, QStringLiteral("actionToggleRecordDetails"));
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QVERIFY(toggleAction->isCheckable());
