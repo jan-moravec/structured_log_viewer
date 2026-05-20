@@ -9448,6 +9448,14 @@ private slots:
             if (!window.isNull())
             {
                 window->close();
+                // `close()` only schedules `deleteLater`; the
+                // ubuntu-22.04 / Qt 6.8.3 release runner appears to
+                // carry the still-alive orphan widget into the next
+                // test and trip an internal Qt traversal. Drain the
+                // deferred-delete queue here so the snapshot is gone
+                // before the next test's MainWindow is constructed.
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                QCoreApplication::processEvents();
             }
         });
 
