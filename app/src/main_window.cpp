@@ -1380,6 +1380,20 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         mModel->ConfigurationManager().Load(file.toStdString());
+        // `Load` succeeded -> the file is a configuration and we
+        // are about to apply it. Mirror the rationale in
+        // `DoLoadConfiguration`: a single-file open / drop that
+        // matches a configuration is a session boundary, so drop
+        // the previous session's recents pin before any subsequent
+        // AutoSave can rewrite that unrelated session's JSON in
+        // place under the stale uuid. Deferred until after `Load`
+        // so a probe miss (file is not a configuration, `Load`
+        // throws, caller falls through to a non-destructive Append
+        // open) preserves the prior pin -- the Append branch is
+        // meant to extend the same recents entry, and a top-of-
+        // function detach would forfeit that ownership on every
+        // negative probe.
+        DetachAutoSaveUuid();
         // `Load` rewrites the configuration without emitting any
         // model signal; the reset re-initialises the header and
         // pulls the loaded `visible` flags via the wired

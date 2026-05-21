@@ -11420,6 +11420,151 @@ private slots:
         QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
     }
 
+    // Sibling regression for the single-file probe path. `OpenFiles`,
+    // `OpenFilesForCli`, and `dropEvent` all funnel a single positional
+    // path through `TryLoadAsConfiguration` before falling back to
+    // opening it as a log file. When that probe succeeds (the file
+    // really is a configuration / session JSON), the load is a
+    // session boundary just like the menu `LoadConfiguration` path
+    // and must detach the previous recents pin. Without the detach,
+    // a closeEvent or follow-up AutoSave would rewrite the earlier
+    // session's JSON under the stale uuid -- silently corrupting
+    // the prior recents entry.
+    //
+    // The fixture uses a `SaveScope::Full` session JSON (one that
+    // carries a `File` source descriptor) rather than a columns-only
+    // configuration because that is the real-world reproduction:
+    // dropping a "recent session" JSON onto a window with an active
+    // session is exactly the gesture that hits this bug. A columns-
+    // only config wipes `mCurrentSource` and silently disables the
+    // auto-save gate on the follow-up Append, masking the corruption.
+    void TestTryLoadAsConfigurationDetachesPreviousRecentsEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Establish session A and pin its uuid into the window.
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        QCOMPARE(wired->ActiveSessionUuid(), uuidA);
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY(QFileInfo::exists(pathA));
+
+        // Drive the same code path that `dropEvent` / `OpenFiles` /
+        // `OpenFilesForCli` use when a single argument is a session
+        // JSON -- the probe that decides whether to apply a
+        // configuration vs. open the file as a log. The probe target
+        // is a `SaveScope::Full` snapshot of session A's own state
+        // (carrying the `File` source descriptor pointing at
+        // fixtureA) so the load lands with a valid `mCurrentSource`
+        // and the follow-up Append can actually fire an AutoSave.
+        QTemporaryDir configDir;
+        QVERIFY(configDir.isValid());
+        const QString sessionPath = QDir(configDir.path()).filePath(QStringLiteral("session_full.json"));
+        wired->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+        QVERIFY2(
+            wired->TryLoadAsConfigurationForTest(sessionPath),
+            "TryLoadAsConfiguration must succeed on a saved session JSON"
+        );
+        QCoreApplication::processEvents();
+
+        // After a successful configuration probe the window must no
+        // longer be pinned to uuidA, so the next AutoSave creates a
+        // fresh entry rather than overwriting A's JSON in place.
+        QVERIFY2(
+            wired->ActiveSessionUuid().isEmpty(),
+            "TryLoadAsConfiguration must detach the previous recents pin on a successful load"
+        );
+
+        // Trigger an AutoSave by appending another file. Without
+        // the detach above this would `WriteSnapshot(..., uuidA)`
+        // and clobber session A's JSON; with the detach a brand-
+        // new uuid is minted instead.
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid,
+            "loading a session JSON via the probe path and appending new files must yield distinct uuids"
+        );
+        QVERIFY2(wired->ActiveSessionUuid() != uuidA, "follow-up AutoSave must not reuse the prior pin");
+
+        // Session A's JSON survives bit-for-bit: still has its
+        // original single-locator `File` source pointing at
+        // fixtureA. The new entry meanwhile carries both fixtures
+        // (session A's source + fixtureB appended in Append mode).
+        QVERIFY(QFileInfo::exists(pathA));
+        loglib::LogConfigurationManager probeA;
+        probeA.Load(pathA.toStdString());
+        QVERIFY(probeA.Configuration().source.has_value());
+        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
+    }
+
+    // Companion to the success-path detach: when the single-file
+    // probe *fails* (the file is not a configuration), the prior
+    // pin must survive so the subsequent Append open extends the
+    // same recents entry instead of forking a new one. This is the
+    // load-bearing reason the detach lives after `Load` succeeds
+    // rather than at the top of `TryLoadAsConfiguration`.
+    void TestTryLoadAsConfigurationFailurePreservesPreviousRecentsEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        QCOMPARE(wired->ActiveSessionUuid(), uuidA);
+
+        // Write a deliberately-non-JSON payload so `TryLoadAsConfiguration`
+        // fails inside `Load(...)`.
+        QTemporaryDir garbageDir;
+        QVERIFY(garbageDir.isValid());
+        const QString garbagePath = QDir(garbageDir.path()).filePath(QStringLiteral("not_a_config.txt"));
+        {
+            std::ofstream stream(garbagePath.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << "this is not json";
+        }
+        QVERIFY2(
+            !wired->TryLoadAsConfigurationForTest(garbagePath),
+            "TryLoadAsConfiguration must reject a non-configuration file"
+        );
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            wired->ActiveSessionUuid() == uuidA,
+            "failed probe must preserve the prior recents pin so an Append open extends the same entry"
+        );
+    }
+
     // The persisted `openWindowsAtQuit` set is maintained eagerly so
     // multi-window restore works even when `aboutToQuit` runs after
     // `WA_DeleteOnClose` has destroyed peer windows. AutoSave adds;
