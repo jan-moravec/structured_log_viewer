@@ -155,6 +155,25 @@ public:
     static QStringList OpenWindowsAtQuit();
     static void SetOpenWindowsAtQuit(const QStringList &uuids);
 
+    /// Atomic read-and-wipe of the `openWindowsAtQuit` list. Used by
+    /// `main()` at launch so we never observe a torn list between
+    /// "read what to restore" and "wipe so a mid-restore crash does
+    /// not loop on the same uuids" -- a sibling `--new-instance`
+    /// peer running concurrently could otherwise either (a) see the
+    /// wipe and lose its own uuids, or (b) write between our read
+    /// and wipe and have its addition silently dropped. Folding the
+    /// two operations under a single lock acquisition closes the
+    /// window without changing the existing crash-resilience
+    /// semantics (the caller still re-adds restored uuids via
+    /// `AddOpenWindowUuid` as windows come up).
+    ///
+    /// On lock-acquisition timeout this returns the read value but
+    /// performs no wipe -- losing the wipe on contention is the
+    /// strictly safer half (we'll just retry the restore on the
+    /// next launch) compared to losing the read and seeing an
+    /// empty restore set.
+    static QStringList TakeOpenWindowsAtQuit();
+
     /// Incrementally add @p uuid to the persisted open-windows list.
     /// Idempotent: re-adding an existing uuid is a no-op. Used by
     /// `MainWindow::AutoSaveSessionSnapshot` so the list reflects the

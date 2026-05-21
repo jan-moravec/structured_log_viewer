@@ -360,10 +360,11 @@ private slots:
     /// informIfNonFile selects between a silent skip (restore-on-
     /// launch, which must never pop a dialog on startup) and a
     /// `QMessageBox::information` (user-initiated recents click).
-    /// Returns `true` when streaming was queued, `false` when the
-    /// source was empty or non-File (caller treats this as a
-    /// "config-only restore" without further work).
-    bool StreamFromCurrentSourceOrSkip(bool informIfNonFile);
+    /// Callers never observe the no-source / non-File branches
+    /// differently from the streamed branch -- both are treated as
+    /// "the restore is done" -- so this returns void rather than
+    /// inviting a misleading bool inspection.
+    void StreamFromCurrentSourceOrSkip(bool informIfNonFile);
     void OpenFiles();
     /// "Open with Configuration..." -- two-step prompt that first
     /// loads a configuration or session JSON (columns, filters, sort)

@@ -11098,6 +11098,37 @@ private slots:
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
     }
 
+    // `TakeOpenWindowsAtQuit` is the atomic read-and-wipe used by
+    // `main()` at startup: it must (a) return the persisted list and
+    // (b) leave the persisted list empty in one critical section, so
+    // a sibling writer (`--new-instance` peer running concurrently)
+    // cannot disappear between the read and the wipe. The split
+    // `OpenWindowsAtQuit()` + `SetOpenWindowsAtQuit({})` pair this
+    // method replaces was correct under single-process operation but
+    // could race a sibling under multi-process.
+    void TestTakeOpenWindowsAtQuitReadsAndWipesAtomically()
+    {
+        const QStringList expected{QStringLiteral("uuid-x"), QStringLiteral("uuid-y")};
+        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previous); });
+
+        SessionHistoryManager::SetOpenWindowsAtQuit(expected);
+        // QSettings-on-Windows soft-skip mirrors `TestOpenWindowsAtQuitRoundTrip`.
+        if (SessionHistoryManager::OpenWindowsAtQuit().isEmpty())
+        {
+            QSKIP("QSettings did not honour the write in this environment");
+        }
+
+        const QStringList taken = SessionHistoryManager::TakeOpenWindowsAtQuit();
+        QCOMPARE(taken, expected);
+
+        // Post-take: the persisted list is empty.
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+
+        // A second take returns empty and is a no-op (idempotent).
+        QCOMPARE(SessionHistoryManager::TakeOpenWindowsAtQuit(), QStringList{});
+    }
+
     // ---------------------------------------------------------------
     // SingleInstanceGuard
     // ---------------------------------------------------------------

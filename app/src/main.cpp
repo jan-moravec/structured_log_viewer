@@ -110,6 +110,14 @@ int main(int argc, char *argv[])
     // Owned by main; lifetime spans every window. MainWindow keeps a
     // non-owning pointer and writes through it on streamingFinished /
     // closeEvent.
+    //
+    // Declaration order matters: this must be constructed *before*
+    // both the primary `w` below and every heap-allocated peer
+    // window in the restore loop, because stack unwinding tears
+    // those down first (and `WA_DeleteOnClose` peers also die
+    // before `exec()` returns). If a future refactor moves
+    // `historyManager` after any window construction, the windows
+    // would outlive the manager they point at.
     SessionHistoryManager historyManager(
         SessionHistoryManager::DefaultSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>()
     );
@@ -140,11 +148,14 @@ int main(int argc, char *argv[])
 
     // Restore-on-launch: opt-in via Preferences. Only fires when no
     // CLI files were passed (so the user explicitly opening a file
-    // does not race the restore) and only when the manager has a
-    // last-session pointer. The single-instance coordinator above
-    // guarantees we only run this in the primary process.
+    // does not race the restore) and only on the canonical primary
+    // (`--new-instance` peers start blank by design -- they are an
+    // escape hatch for "I want a fresh process without disturbing
+    // the running primary", and inheriting the running primary's
+    // open-windows set would defeat that intent and silently
+    // duplicate sessions across both processes).
     const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
-    if (cliFiles.isEmpty() && restoreEnabled)
+    if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance)
     {
         // Multi-window restore: if the previous shutdown captured
         // an `openWindowsAtQuit` list, restore every session in it.
@@ -152,10 +163,13 @@ int main(int argc, char *argv[])
         // shown); the rest fan out into peer windows. Falls back to
         // single-session restore via `LastSessionPath` when the list
         // is empty (clean install / first launch after this commit).
-        QStringList previouslyOpen = SessionHistoryManager::OpenWindowsAtQuit();
-        // Wipe the persisted list so a crash mid-restore does not
-        // loop us forever on the same uuids.
-        SessionHistoryManager::SetOpenWindowsAtQuit({});
+        //
+        // `TakeOpenWindowsAtQuit` reads and wipes the persisted list
+        // atomically under the cross-process lock. The wipe prevents
+        // a crash mid-restore from looping us forever on the same
+        // uuids; the atomicity prevents a sibling writer from
+        // disappearing between the read and the wipe.
+        QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();
 
         if (!previouslyOpen.isEmpty())
         {

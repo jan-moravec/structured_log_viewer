@@ -1044,6 +1044,31 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
         UpdateUi();
         return;
     }
+    // Multi-file path: surface a diagnostic when the *first* file
+    // looks like it would have been auto-detected as a configuration
+    // had it been passed alone. Without this, a user running
+    // `app cfg.json log.json` sees both files opened as logs (cfg
+    // fails to parse and only `log.json` appears) with no hint that
+    // the heuristic-skip is intentional. The probe is cheap (one
+    // JSON parse via a throw-away manager) and only runs on the
+    // off-chance the first file ends in `.json`.
+    if (files.size() > 1 && files.front().endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
+    {
+        try
+        {
+            loglib::LogConfigurationManager probe;
+            probe.Load(files.front().toStdString());
+            qWarning() << "OpenFilesForCli: first argument" << files.front()
+                       << "parses as a configuration but is being opened as a log file because additional "
+                          "positional arguments were also passed. Use 'File -> Open with Configuration...' "
+                          "or pass the configuration on its own to apply it.";
+        }
+        catch (const std::exception &)
+        {
+            // Not a configuration -- proceed silently with the
+            // default multi-file open path below.
+        }
+    }
     // Always Append: a user can drag-drop multiple files onto the
     // binary in one go without each clobbering the previous, and on
     // an empty-session start the Append branch lands at the same
@@ -1174,14 +1199,14 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/true);
 }
 
-bool MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
+void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 {
     if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
     {
         // Configuration without a source: columns / filters are
         // installed but there is nothing to stream. Caller treats
         // this like a plain Load Configuration call.
-        return false;
+        return;
     }
 
     if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
@@ -1203,7 +1228,7 @@ bool MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                                "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
             );
         }
-        return false;
+        return;
     }
 
     QStringList files;
@@ -1219,7 +1244,6 @@ bool MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     // the Append branch is a no-op for state and the first file goes
     // through `BeginStreaming` cleanly.
     StartStreamingOpenQueue(files, OpenMode::Append);
-    return true;
 }
 
 void MainWindow::NewSession()
@@ -2138,6 +2162,12 @@ void MainWindow::MirrorSessionStateToConfiguration()
     }
     using LogFilter = loglib::LogConfiguration::LogFilter;
     std::ranges::sort(snapshot, [](const LogFilter &a, const LogFilter &b) {
+        // Compare `(row, type)` head-on so we never have to alias an
+        // `enum class` value as an int reference (which would be
+        // implementation-defined). Tail fields are `std::optional` /
+        // `std::vector` and already define a lexicographic `<`, so
+        // `std::tie` gives the same byte-identical ordering the
+        // longer manual chain produced.
         if (a.row != b.row)
         {
             return a.row < b.row;
@@ -2146,33 +2176,14 @@ void MainWindow::MirrorSessionStateToConfiguration()
         {
             return static_cast<int>(a.type) < static_cast<int>(b.type);
         }
-        // Tie-break field-wise so duplicate filters still land in a
-        // deterministic order.
-        if (a.filterString != b.filterString)
-        {
-            return a.filterString < b.filterString;
-        }
-        if (a.matchType != b.matchType)
-        {
-            return a.matchType < b.matchType;
-        }
-        if (a.filterBegin != b.filterBegin)
-        {
-            return a.filterBegin < b.filterBegin;
-        }
-        if (a.filterEnd != b.filterEnd)
-        {
-            return a.filterEnd < b.filterEnd;
-        }
-        if (a.filterMinValue != b.filterMinValue)
-        {
-            return a.filterMinValue < b.filterMinValue;
-        }
-        if (a.filterMaxValue != b.filterMaxValue)
-        {
-            return a.filterMaxValue < b.filterMaxValue;
-        }
-        return a.filterValues < b.filterValues;
+        return std::tie(
+                   a.filterString, a.matchType, a.filterBegin, a.filterEnd, a.filterMinValue, a.filterMaxValue,
+                   a.filterValues
+               ) <
+               std::tie(
+                   b.filterString, b.matchType, b.filterBegin, b.filterEnd, b.filterMinValue, b.filterMaxValue,
+                   b.filterValues
+               );
     });
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
 

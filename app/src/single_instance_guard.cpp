@@ -34,6 +34,15 @@ constexpr int CONNECTION_IDLE_TIMEOUT_MS = 5000;
 /// cannot OOM the primary by sending a giant stream. 1 MiB is far
 /// above what a CLI invocation would ever carry.
 constexpr qint64 MAX_PAYLOAD_BYTES = 1024 * 1024;
+
+/// Cap on the number of file paths a secondary may forward in a
+/// single launch. Shared by the secondary (truncates before send +
+/// warns the user) and the primary (truncates post-decode as a
+/// belt-and-braces against a malformed / hostile peer that ignores
+/// the documented limit). 256 comfortably covers shell glob
+/// expansions while staying well below any value at which the
+/// open-files flow stops being user-meaningful.
+constexpr int MAX_FORWARDED_FILES = 256;
 } // namespace
 
 SingleInstanceGuard::SingleInstanceGuard(QObject *parent)
@@ -78,12 +87,27 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         return true;
     }
 
-    auto forwardTo = [&](QLocalSocket &probe) {
+    // Truncate before serialisation so a pathological shell glob
+    // never overruns `MAX_PAYLOAD_BYTES` on the wire. Without this,
+    // an oversized payload would land at the primary, which would
+    // detect the overrun and disconnect -- and the user would see
+    // no window open at all because the secondary exits as soon as
+    // the forward returns. Mirrors the post-decode cap in
+    // `HandleNewConnection` so the limit is symmetric.
+    QStringList trimmed = forwardFiles;
+    if (trimmed.size() > MAX_FORWARDED_FILES)
+    {
+        qWarning() << "SingleInstanceGuard: truncating forwarded file list from" << trimmed.size() << "to"
+                   << MAX_FORWARDED_FILES << "entries; the primary will not see the surplus.";
+        trimmed = trimmed.mid(0, MAX_FORWARDED_FILES);
+    }
+
+    auto forwardTo = [&trimmed](QLocalSocket &probe) {
         QByteArray payload;
         QDataStream stream(&payload, QIODevice::WriteOnly);
         stream.setVersion(QDataStream::Qt_6_0);
         stream << QByteArray(WIRE_MAGIC);
-        stream << forwardFiles;
+        stream << trimmed;
         probe.write(payload);
         probe.flush();
         probe.waitForBytesWritten(WRITE_TIMEOUT_MS);
@@ -188,17 +212,14 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 if (magic == QByteArray(WIRE_MAGIC))
                 {
-                    // Cap the forwarded list to a sane upper bound
-                    // so a hostile (or simply malformed) peer cannot
-                    // pin GB-scale paths into our heap by repeating
-                    // a giant `QStringList`. `MAX_PAYLOAD_BYTES`
-                    // already bounds the wire frame; this is the
-                    // post-decode belt-and-braces on the resident
-                    // string count. 256 comfortably covers shell
-                    // glob expansions while staying well below any
-                    // value at which the open-files flow stops being
-                    // user-meaningful.
-                    constexpr int MAX_FORWARDED_FILES = 256;
+                    // Belt-and-braces post-decode cap matching the
+                    // secondary-side trim in `TryAcquire::forwardTo`.
+                    // `MAX_PAYLOAD_BYTES` already bounds the wire
+                    // frame; this guards against a peer that ignored
+                    // the documented limit and packed more files into
+                    // a smaller payload (e.g. compressing identical
+                    // paths). The trimmed list still opens cleanly --
+                    // the surplus is silently dropped.
                     if (files.size() > MAX_FORWARDED_FILES)
                     {
                         files = files.mid(0, MAX_FORWARDED_FILES);
@@ -229,9 +250,17 @@ void SingleInstanceGuard::HandleNewConnection()
         // On Windows named pipes the data may already have arrived
         // by the time `newConnection` fires; the readyRead signal
         // does not fire retroactively for already-buffered bytes
-        // when wired this late. Pump synchronously once so we drain
-        // anything that was waiting.
-        if (socket->bytesAvailable() > 0 || socket->waitForReadyRead(WRITE_TIMEOUT_MS))
+        // when wired this late. Drain synchronously *if* bytes are
+        // already buffered, but never block on `waitForReadyRead`:
+        // a slow / silent peer would otherwise freeze the primary's
+        // GUI thread for up to `WRITE_TIMEOUT_MS` per connection
+        // (a script firing N background launches multiplies the
+        // freeze by N). When bytes aren't already available, we
+        // rely on the wired-up `readyRead` signal to fire from the
+        // event loop, with the per-connection idle watchdog
+        // (`CONNECTION_IDLE_TIMEOUT_MS`) tearing down any peer that
+        // connects but never sends anything.
+        if (socket->bytesAvailable() > 0)
         {
             tryDecode();
         }

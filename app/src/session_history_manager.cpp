@@ -81,6 +81,12 @@ QString EntryKey(int index, const QString &field)
 /// shutdown). See the constant docstrings for the rationale.
 struct LockFileGuard
 {
+    // Invariant: `locked == true` implies `lock != nullptr`. The only
+    // way to flip `locked` to `true` goes through `AcquireRecentsLock`
+    // below, which constructs the `unique_ptr` before calling
+    // `tryLock`. Move-from clears the source's `locked` so the
+    // invariant survives transfers. Destructor + move-assign therefore
+    // only need to test `locked`.
     std::unique_ptr<QLockFile> lock;
     bool locked = false;
 
@@ -95,7 +101,7 @@ struct LockFileGuard
     {
         if (this != &other)
         {
-            if (locked && lock)
+            if (locked)
             {
                 lock->unlock();
             }
@@ -107,7 +113,7 @@ struct LockFileGuard
     }
     ~LockFileGuard()
     {
-        if (locked && lock)
+        if (locked)
         {
             lock->unlock();
         }
@@ -334,6 +340,18 @@ void SessionHistoryManager::Remove(const QString &uuid)
     entries.erase(it);
     RemoveUuidFileLocked(uuid);
 
+    // Write the entries list *before* the last-uuid pointer so a
+    // crash between the two QSettings sync points leaves the index
+    // self-consistent: the removed uuid is gone from the entries
+    // list, and the stale `lastSessionUuid` (if it pointed at the
+    // removed uuid) is harmless because `LastSessionPath` checks
+    // `QFileInfo::exists` and degrades to `nullopt` when the JSON
+    // is missing. The opposite order would leave `lastSessionUuid`
+    // pointing at a uuid still in the entries list -- a dangling
+    // recents entry that *would* parse on next launch even though
+    // its JSON has already been deleted.
+    mIndexStorage->Write(entries);
+
     const std::optional<QString> currentLast = mIndexStorage->ReadLastUuid();
     if (currentLast.has_value() && *currentLast == uuid)
     {
@@ -342,8 +360,6 @@ void SessionHistoryManager::Remove(const QString &uuid)
             entries.isEmpty() ? std::optional<QString>{} : std::optional<QString>{entries.front().uuid};
         mIndexStorage->WriteLastUuid(next);
     }
-
-    mIndexStorage->Write(entries);
 
     lock.unlock();
     emit changed();
@@ -520,6 +536,28 @@ void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
         return;
     }
     WriteOpenWindowsAtQuit(uuids);
+}
+
+QStringList SessionHistoryManager::TakeOpenWindowsAtQuit()
+{
+    QMutexLocker lock(&OpenWindowsMutex());
+    // Shutdown-class timeout: this runs once at startup and the
+    // alternative (returning an empty list when contended) means
+    // skipping the entire fan-restore. The lock contention window
+    // is narrow in practice -- a sibling writer's `AddOpenWindowUuid`
+    // finishes in milliseconds -- so the long timeout is essentially
+    // unused except as a safety net.
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+    const QStringList uuids = ReadOpenWindowsAtQuit();
+    if (crossProc.locked)
+    {
+        WriteOpenWindowsAtQuit({});
+    }
+    // Lock-acquisition timeout: return the read value without
+    // wiping. We'll re-read (and likely re-restore) on the next
+    // launch, which is the safer half of the trade-off compared
+    // to silently dropping every uuid.
+    return uuids;
 }
 
 void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
