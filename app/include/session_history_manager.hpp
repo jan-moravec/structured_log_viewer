@@ -93,9 +93,13 @@ public:
     void Clear();
 
     /// Path to the last-session JSON, if any. Used by the
-    /// restore-on-launch flow in `main.cpp`. The companion uuid is the
-    /// most recently `WriteSnapshot`-ed entry; `lastSessionUuid` in the
-    /// index storage tracks it.
+    /// restore-on-launch flow in `main.cpp` as the *single-window*
+    /// fallback when the multi-window `openWindowsAtQuit` set is
+    /// empty. The backing `lastSessionUuid` is updated by every
+    /// `WriteSnapshot`, so with multiple concurrent windows it drifts
+    /// to whichever window auto-saved most recently; that is the
+    /// intended semantics for "restore the most recent session" and
+    /// is documented in the matching `WriteLastUuid` call site.
     [[nodiscard]] std::optional<QString> LastSessionPath() const;
 
     /// Per-uuid JSON path. Public so the Recent Sessions menu can
@@ -126,6 +130,31 @@ public:
     /// `SessionsDir()`.
     static QStringList OpenWindowsAtQuit();
     static void SetOpenWindowsAtQuit(const QStringList &uuids);
+
+    /// Incrementally add @p uuid to the persisted open-windows list.
+    /// Idempotent: re-adding an existing uuid is a no-op. Used by
+    /// `MainWindow::AutoSaveSessionSnapshot` so the list reflects the
+    /// currently-live sessions even when `aboutToQuit` runs after
+    /// `WA_DeleteOnClose` has destroyed every peer window. Safe to
+    /// call concurrently from multiple threads / windows in one
+    /// process: serialized through a static mutex around the QSettings
+    /// read-modify-write.
+    static void AddOpenWindowUuid(const QString &uuid);
+
+    /// Companion to `AddOpenWindowUuid`. Removes @p uuid if present;
+    /// no-op when absent or empty. Called from `MainWindow::closeEvent`
+    /// and the destructive open / `NewSession` paths so a user-closed
+    /// or user-discarded session is dropped from the next-launch
+    /// restore set.
+    static void RemoveOpenWindowUuid(const QString &uuid);
+
+    /// One-shot housekeeping: remove every `<uuid>.json` under
+    /// `sessionsDir` whose stem is not in the recents index. Called
+    /// from `main()` at startup so crashes between
+    /// `WriteSnapshot`'s file-write and index-update phases do not
+    /// accumulate orphan files over time. Caller holds no lock; the
+    /// method takes `mMutex` for the read-modify-delete cycle.
+    void CleanupOrphanFiles();
 
 signals:
     void changed();

@@ -977,11 +977,20 @@ void MainWindow::RebuildRecentSessionsMenu()
 
     ui->menuRecentSessions->addSeparator();
     QAction *clearAction = ui->menuRecentSessions->addAction(QStringLiteral("Clear Recent Sessions"));
+    // `menuRecentSessions->clear()` at the top of this rebuild deletes
+    // every QAction we created on the previous show, which severs
+    // these `connect`s -- no manual disconnect or leak management
+    // needed across repeated submenu opens.
     connect(clearAction, &QAction::triggered, this, [this]() {
         if (mHistoryManager != nullptr)
         {
             mHistoryManager->Clear();
-            mAutoSaveUuid.clear();
+            // Drop our pinned uuid + open-windows membership in one
+            // step. Sibling windows still hold their old uuids and
+            // will re-populate the list on their next AutoSave; that
+            // is the documented behaviour ("clear history" wipes the
+            // store, not the live sessions).
+            DetachAutoSaveUuid();
         }
     });
 }
@@ -1034,15 +1043,26 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     // so the next auto-save updates that entry instead of forking
     // off a new one. We compute the uuid by stripping the directory
     // and the `.json` suffix -- per-uuid files always live under
-    // `sessionsDir/<uuid>.json`.
+    // `sessionsDir/<uuid>.json`. The stem must parse as a real
+    // QUuid; otherwise the caller pointed us at an ad-hoc session
+    // file outside the managed sessions dir, and pinning would let
+    // the next AutoSave clobber that user file (or a future recents
+    // entry whose name happens to collide with the stem).
     if (mHistoryManager != nullptr)
     {
         const QFileInfo info(jsonPath);
         const QString stem = info.completeBaseName();
-        if (!stem.isEmpty())
+        const QUuid parsed = QUuid::fromString(stem);
+        if (!parsed.isNull())
         {
             mAutoSaveUuid = stem;
             mHistoryManager->Touch(stem);
+            // Eagerly publish so an OS-quit before the streaming
+            // finish still restores this window. `AutoSaveSessionSnapshot`
+            // would publish on its own once streaming completes, but
+            // we want the membership in place from the moment the
+            // restore begins.
+            SessionHistoryManager::AddOpenWindowUuid(stem);
         }
     }
 }
@@ -1070,17 +1090,40 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
+    // Pre-flight parse before we touch the live model so a corrupt
+    // recents file does not destroy the user's current view for
+    // nothing. `NewSession` + `DoLoadConfiguration` below are both
+    // destructive; calling them upfront would leave the window
+    // blank-but-broken on parse failure.
+    try
+    {
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+    }
+    catch (const std::exception &e)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Cannot Open Recent Session"),
+            QStringLiteral("Failed to parse '%1':\n%2").arg(jsonPath, QString::fromStdString(e.what()))
+        );
+        return;
+    }
+
     // Step 1: discard the active session so the restored columns /
     // filters / sort do not collide with the live state. We pick the
     // destructive path on purpose: Recent Sessions is "open this exact
-    // view", not "merge into the current one".
+    // view", not "merge into the current one". `NewSession` also
+    // detaches our previous `mAutoSaveUuid`; we re-pin to @p uuid
+    // below once the load succeeds.
     NewSession();
 
     // Step 2: load the configuration (this also seeds the source
     // descriptor + filter list + sort).
     if (!DoLoadConfiguration(jsonPath))
     {
-        // `DoLoadConfiguration` already showed a parse error; bail.
+        // Defensive: pre-flight already accepted the file; failing
+        // here implies a TOCTOU race. Bail without queueing files.
         return;
     }
 
@@ -1134,6 +1177,12 @@ void MainWindow::NewSession()
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
     mSourceWaiting = false;
+    // Drop the pinned recents uuid so the next AutoSave creates a
+    // fresh entry instead of silently overwriting the previous
+    // session's JSON (which would erase it from history). Also drop
+    // ourselves from the open-windows-at-quit list so a crash before
+    // the next AutoSave doesn't re-restore the just-discarded session.
+    DetachAutoSaveUuid();
     SetConfigurationUiEnabled(true);
     UpdateStreamToolbarVisibility();
     UpdateStreamingStatus();
@@ -1142,6 +1191,15 @@ void MainWindow::NewSession()
 
 void MainWindow::OpenFiles()
 {
+    // Sample the modifier state *before* the modal file dialog
+    // appears: the dialog yields the keyboard back to the user and
+    // by the time it returns, `keyboardModifiers()` reports whatever
+    // is currently held -- which is approximately never the Shift
+    // they were holding when they clicked the menu entry. Sampling
+    // here matches the "Shift on menu activation forces Replace"
+    // gesture the tooltip advertises.
+    const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+
     const QStringList files = QFileDialog::getOpenFileNames(this, "Select Log Files", QString(), "All Files (*.*)");
     if (files.isEmpty())
     {
@@ -1155,19 +1213,12 @@ void MainWindow::OpenFiles()
         return;
     }
 
-    // Shift forces the destructive reset; otherwise files are appended
-    // to the active static session (or, if no session is active, start
-    // a fresh one without clobbering preloaded filters). See
-    // `StartStreamingOpenQueue` doc for the live-tail caveat.
-    const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
     StartStreamingOpenQueue(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
 }
 
 void MainWindow::OpenWithConfiguration()
 {
-    // Step 1: prompt for the configuration or session JSON. We reuse
-    // `DoLoadConfiguration` so the same validation + filter-restore
-    // path runs as for the standalone Load Configuration action.
+    // Step 1: prompt for the configuration or session JSON.
     const QString configPath = QFileDialog::getOpenFileName(
         this, "Select Configuration or Session", QString(), "JSON (*.json);;All Files (*)"
     );
@@ -1175,17 +1226,31 @@ void MainWindow::OpenWithConfiguration()
     {
         return;
     }
-    if (!DoLoadConfiguration(configPath))
+
+    // Pre-flight the parse into a throw-away manager so we never
+    // mutate the live model with a config whose load we then have
+    // to "undo" on cancel / failure. `DoLoadConfiguration` is
+    // unconditionally destructive (it clears proxy rules + sort
+    // before the load), so calling it before both dialogs return
+    // would strand the user in a half-loaded state if they cancel
+    // the file picker.
+    try
     {
-        // `DoLoadConfiguration` already surfaced the parse error via
-        // QMessageBox; bail out so the user doesn't get a second
-        // file-open dialog on top of the failure.
+        loglib::LogConfigurationManager probe;
+        probe.Load(configPath.toStdString());
+    }
+    catch (const std::exception &e)
+    {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("Cannot Open Configuration"),
+            QStringLiteral("Failed to parse '%1':\n%2").arg(configPath, QString::fromStdString(e.what()))
+        );
         return;
     }
 
-    // Step 2: prompt for log files. Cancelling here leaves the
-    // configuration loaded but no rows -- equivalent to a plain
-    // Load Configuration call, which is a reasonable graceful exit.
+    // Step 2: prompt for log files. Cancelling here is a graceful
+    // exit -- the current view is untouched.
     const QStringList files = QFileDialog::getOpenFileNames(
         this, "Select Log Files to Open with Configuration", QString(), "All Files (*.*)"
     );
@@ -1194,13 +1259,17 @@ void MainWindow::OpenWithConfiguration()
         return;
     }
 
-    // Append mode so the filters / sort just restored from the
-    // configuration survive into the new session. With `mSessionMode`
-    // currently `Idle` and the model empty, the Append path inside
-    // `StartStreamingOpenQueue` is a no-op for state -- it neither
-    // resets nor re-arms Static, and `StreamNextPendingFile` takes
-    // the `BeginStreaming` path for the first file. Subsequent files
-    // queue onto the same session.
+    // Both prompts confirmed: commit the config load, then queue the
+    // files in Append mode so the freshly-restored filters / sort
+    // survive into the new session.
+    if (!DoLoadConfiguration(configPath))
+    {
+        // Defensive: the pre-flight already accepted this file, so
+        // a second-stage failure here would be a TOCTOU race
+        // (file rewritten between the two reads). Surface to the
+        // user and bail without queueing anything.
+        return;
+    }
     StartStreamingOpenQueue(files, OpenMode::Append);
 }
 
@@ -1264,6 +1333,10 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         ClearAllFilters();
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
+        // Drop the previous session's recents uuid so the next
+        // AutoSave creates a fresh entry instead of overwriting (and
+        // erasing) the prior session's JSON in place.
+        DetachAutoSaveUuid();
     }
     else if (mSessionMode == SessionMode::Idle && mModel->rowCount() > 0)
     {
@@ -2035,7 +2108,22 @@ void MainWindow::AutoSaveSessionSnapshot()
         // Pin the uuid so subsequent auto-saves rewrite the same JSON
         // instead of cluttering recents with one entry per save.
         mAutoSaveUuid = uuid;
+        // Eagerly publish ourselves into the open-windows set so a
+        // crash / OS quit between now and `closeEvent` restores this
+        // window on next launch. `closeEvent` removes us again on a
+        // user-initiated close.
+        SessionHistoryManager::AddOpenWindowUuid(uuid);
     }
+}
+
+void MainWindow::DetachAutoSaveUuid()
+{
+    if (mAutoSaveUuid.isEmpty())
+    {
+        return;
+    }
+    SessionHistoryManager::RemoveOpenWindowUuid(mAutoSaveUuid);
+    mAutoSaveUuid.clear();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -2050,6 +2138,12 @@ void MainWindow::closeEvent(QCloseEvent *event)
     {
         AutoSaveSessionSnapshot();
     }
+    // Remove ourselves from the persisted open-windows set: a
+    // user-initiated close (X button, File -> Exit, Ctrl+W if ever
+    // wired) means "I don't want this back on the next launch". The
+    // OS-quit path bypasses `closeEvent` entirely, so its uuids stay
+    // in the set and get fan-restored next time.
+    SessionHistoryManager::RemoveOpenWindowUuid(mAutoSaveUuid);
     QMainWindow::closeEvent(event);
 }
 

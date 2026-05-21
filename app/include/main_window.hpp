@@ -322,13 +322,16 @@ private slots:
     /// `aboutToShow` so we never paint stale entries even after
     /// another window mutated the recents store.
     void RebuildRecentSessionsMenu();
-    /// Reopen the recents entry @p uuid: load the per-uuid JSON via
-    /// `DoLoadConfiguration` (restores columns / filters / sort /
-    /// source descriptor), then queue the source's locators through
-    /// `StartStreamingOpenQueue` in `Replace` mode so the active
-    /// session is discarded before the recents session is restored.
-    /// On success, `mAutoSaveUuid` is pinned to @p uuid so further
-    /// edits update that recents entry instead of creating a new one.
+    /// Reopen the recents entry @p uuid. Pre-flights the parse, then
+    /// runs `NewSession` (destructive teardown of the current view)
+    /// followed by `DoLoadConfiguration` to restore columns / filters
+    /// / sort / source descriptor. The locators captured in the
+    /// configuration are streamed via `StartStreamingOpenQueue` in
+    /// `Append` mode -- `NewSession` already emptied the model, so
+    /// the Append branch is non-destructive here and lets the
+    /// restored filters survive into the streamed rows. On success
+    /// `mAutoSaveUuid` is pinned to @p uuid so further edits update
+    /// that recents entry instead of forking a new one.
     void OpenRecentSession(const QString &uuid);
     void OpenFiles();
     /// "Open with Configuration..." -- two-step prompt that first
@@ -500,7 +503,18 @@ private:
     /// the same window updates one recents entry across its lifetime
     /// instead of appending a fresh one on every save. No-op when
     /// the manager is null or there is no source descriptor.
+    /// Also adds `mAutoSaveUuid` to the persisted `openWindowsAtQuit`
+    /// set so a crash or OS-quit between AutoSave and `closeEvent`
+    /// still restores this window on next launch.
     void AutoSaveSessionSnapshot();
+
+    /// Drop `mAutoSaveUuid` from the persisted open-windows set and
+    /// clear the field. Called from every state-discarding path
+    /// (`NewSession`, destructive `StartStreamingOpenQueue`, the
+    /// recents-clear lambda) so the next AutoSave produces a fresh
+    /// entry instead of silently overwriting the previous session's
+    /// JSON in place.
+    void DetachAutoSaveUuid();
 
     /// Snapshot `mFilters`, the proxy's sort, and `mCurrentSource`
     /// into the wire-format fields on the configuration. Filters

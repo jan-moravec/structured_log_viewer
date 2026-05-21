@@ -102,6 +102,19 @@ int main(int argc, char *argv[])
     // closeEvent.
     SessionHistoryManager historyManager(RecentSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>());
 
+    // One-shot orphan sweep: a crash between `WriteSnapshot`'s
+    // per-uuid JSON write and the index update leaves `<uuid>.json`
+    // on disk with no recents entry pointing at it. Without this
+    // cleanup the sessions dir grows monotonically across crashes.
+    // Cheap (one directory listing + set membership check) and safe
+    // to run while concurrent processes hold the lock file -- a
+    // sibling primary in the middle of `WriteSnapshot` has not yet
+    // updated the index, so its in-flight JSON could in principle
+    // be misclassified as an orphan; the `removeServer`-bounded
+    // single-instance guarantee above means there is no such sibling
+    // primary at this point.
+    historyManager.CleanupOrphanFiles();
+
     MainWindow w(&historyManager, nullptr);
     w.show();
 
@@ -165,11 +178,21 @@ int main(int argc, char *argv[])
         }
     }
 
-    // On clean quit, capture the uuids of every open `MainWindow`
-    // so the next launch can rebuild the layout. We snapshot via
-    // the application's `aboutToQuit` so a window closed mid-life
-    // is dropped naturally (it is no longer in `topLevelWidgets`).
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, [&]() {
+    // Safety-net at shutdown. The persisted `openWindowsAtQuit` list
+    // is maintained eagerly by `AutoSaveSessionSnapshot` (Add) and
+    // `closeEvent` (Remove); by the time `aboutToQuit` fires the list
+    // already reflects reality for the user-initiated-close case.
+    //
+    // The case this handler still matters for is OS-driven quit
+    // (Cmd+Q on macOS, login session teardown on X11, ...) where the
+    // event loop exits *without* `closeEvent` firing on every window.
+    // In that path `topLevelWidgets()` still holds live `MainWindow`s
+    // when `aboutToQuit` is emitted from `exit()`, so we capture them
+    // and overwrite the persisted set. We only overwrite when the
+    // capture is non-empty -- if every window already removed itself
+    // via `closeEvent`, leaving the eagerly-maintained (empty) list
+    // alone is correct.
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [] {
         QStringList openUuids;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
@@ -184,7 +207,10 @@ int main(int argc, char *argv[])
                 openUuids.append(uuid);
             }
         }
-        SessionHistoryManager::SetOpenWindowsAtQuit(openUuids);
+        if (!openUuids.isEmpty())
+        {
+            SessionHistoryManager::SetOpenWindowsAtQuit(openUuids);
+        }
     });
 
     // Forwarded launches from secondary processes spawn a new
@@ -192,17 +218,19 @@ int main(int argc, char *argv[])
     // window opens the forwarded files (if any) into its own
     // session; an empty list still produces a fresh empty window
     // (mirrors VS Code's "open a new window on second launch" UX).
-    QObject::connect(&instanceGuard, &SingleInstanceGuard::openWindowRequested, &a, [&](const QStringList &files) {
-        auto *child = new MainWindow(&historyManager, nullptr);
-        child->setAttribute(Qt::WA_DeleteOnClose);
-        child->show();
-        child->raise();
-        child->activateWindow();
-        if (!files.isEmpty())
-        {
-            child->OpenFilesForCli(files);
+    QObject::connect(
+        &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a, [&historyManager](const QStringList &files) {
+            auto *child = new MainWindow(&historyManager, nullptr);
+            child->setAttribute(Qt::WA_DeleteOnClose);
+            child->show();
+            child->raise();
+            child->activateWindow();
+            if (!files.isEmpty())
+            {
+                child->OpenFilesForCli(files);
+            }
         }
-    });
+    );
 
     return QApplication::exec();
 }

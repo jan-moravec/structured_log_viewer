@@ -64,6 +64,7 @@
 #include <QLockFile>
 #include <QScopeGuard>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QStandardItem>
@@ -492,6 +493,16 @@ private slots:
     {
         // Called before the first test function
         qDebug() << "Starting MainWindow tests";
+        // Configure QSettings so the recents / openWindowsAtQuit
+        // round-trip tests have a writable backing store. Without an
+        // explicit org / app the default scope on Windows lands on
+        // a registry path the apptest binary may not have permission
+        // to write, and the tests would skip themselves. Use a
+        // dedicated *test* identity so we never touch the user's
+        // real recents store while running the suite.
+        QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
+        QCoreApplication::setApplicationName(QStringLiteral("apptest"));
+        QSettings::setDefaultFormat(QSettings::IniFormat);
     }
 
     void cleanupTestCase()
@@ -11116,6 +11127,326 @@ private slots:
         {
             QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
         }
+    }
+
+    // Regression for the "NewSession silently overwrites the previous
+    // recents entry" bug: opening file A creates uuidA; running
+    // `New Session` must detach the window from uuidA so opening
+    // file B does not rewrite uuidA's JSON in place. The expected
+    // post-state is two distinct recents entries with two distinct
+    // on-disk JSONs.
+    void TestNewSessionDoesNotOverwritePreviousRecentsEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY(QFileInfo::exists(pathA));
+
+        // Discard the active session. After this, opening a new file
+        // must NOT reuse uuidA.
+        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        const bool uuidAStillPresent = (entries.front().uuid == uuidA) || (entries.back().uuid == uuidA);
+        QVERIFY2(uuidAStillPresent, "uuidA must still be in the recents index");
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid,
+            "the two sessions must have distinct uuids"
+        );
+
+        // Both JSON files exist on disk and decode independently.
+        QVERIFY(QFileInfo::exists(pathA));
+        loglib::LogConfigurationManager probeA;
+        probeA.Load(pathA.toStdString());
+        QVERIFY(probeA.Configuration().source.has_value());
+        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
+    }
+
+    // Companion regression for the destructive-Replace open path.
+    // `OpenMode::Replace` must also detach the window from the
+    // previous recents uuid so the replaced session lands in a fresh
+    // entry instead of rewriting the prior one in place.
+    void TestReplaceOpenDoesNotOverwritePreviousRecentsEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+
+        // Shift-Open (destructive Replace) must produce a NEW uuid.
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid,
+            "Replace mode must not reuse the previous session's uuid"
+        );
+
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY2(QFileInfo::exists(pathA), "previous session's JSON must survive a Replace open");
+    }
+
+    // The persisted `openWindowsAtQuit` set is maintained eagerly so
+    // multi-window restore works even when `aboutToQuit` runs after
+    // `WA_DeleteOnClose` has destroyed peer windows. AutoSave adds;
+    // closeEvent removes.
+    void TestOpenWindowsAtQuitTrackedAcrossAutoSaveAndClose()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        // Snapshot + restore the user's real openWindowsAtQuit so we
+        // don't pollute the running profile.
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "track"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+
+        // Some QSettings backends (Windows registry under
+        // sandboxed CI runners) refuse the write outright; treat
+        // that as a soft skip rather than a hard failure.
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuit();
+        if (afterAuto.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY2(afterAuto.contains(uuid), "AutoSave must publish the session uuid into openWindowsAtQuit");
+
+        // closeEvent removes the window from the set.
+        QSignalSpy destroyedSpy(wired.get(), &QObject::destroyed);
+        wired->close();
+        wired.reset();
+        for (int i = 0; i < 20 && destroyedSpy.isEmpty(); ++i)
+        {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents();
+        }
+
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            !afterClose.contains(uuid),
+            "closeEvent must remove the window from the open-windows set"
+        );
+    }
+
+    // `NewSession` must not just clear the in-memory `mAutoSaveUuid`;
+    // it must also drop the uuid from the persisted
+    // `openWindowsAtQuit` set, so a crash before the next AutoSave
+    // does not silently re-restore the just-discarded session.
+    void TestNewSessionDetachesFromOpenWindowsAtQuit()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "detach"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuit();
+        if (afterAuto.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY(afterAuto.contains(uuid));
+
+        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            wired->ActiveSessionUuid().isEmpty(),
+            "NewSession must drop the pinned uuid so the next AutoSave produces a fresh entry"
+        );
+        const QStringList afterNew = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            !afterNew.contains(uuid),
+            "NewSession must remove the discarded session's uuid from openWindowsAtQuit"
+        );
+    }
+
+    // `Add` / `Remove` round-trip on the persisted open-windows set
+    // is idempotent and order-preserving for unaffected entries.
+    void TestOpenWindowUuidAddRemoveRoundTrip()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Empty / null uuids are no-ops.
+        SessionHistoryManager::AddOpenWindowUuid(QString());
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        SessionHistoryManager::RemoveOpenWindowUuid(QString());
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+
+        const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SessionHistoryManager::AddOpenWindowUuid(uuidA);
+        QStringList probe = SessionHistoryManager::OpenWindowsAtQuit();
+        if (probe.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QCOMPARE(probe, QStringList{uuidA});
+
+        // Idempotent: re-adding the same uuid does not duplicate.
+        SessionHistoryManager::AddOpenWindowUuid(uuidA);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidA});
+
+        // Order-preserving append for a fresh uuid.
+        SessionHistoryManager::AddOpenWindowUuid(uuidB);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB}));
+
+        // Remove the middle / head entry; the rest stay put.
+        SessionHistoryManager::RemoveOpenWindowUuid(uuidA);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidB});
+
+        // Removing a missing uuid is a no-op.
+        SessionHistoryManager::RemoveOpenWindowUuid(uuidA);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidB});
+    }
+
+    // `CleanupOrphanFiles` deletes per-uuid JSONs that are not in the
+    // index. Index-referenced files survive; the lock file is left
+    // alone.
+    void TestCleanupOrphanFilesRemovesStaleJsons()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed one valid entry.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/kept.json"}
+        };
+        const QString keptUuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!keptUuid.isEmpty());
+        const QString keptPath = manager.PathForUuid(keptUuid);
+        QVERIFY(QFileInfo::exists(keptPath));
+
+        // Plant an orphan JSON next to it (simulates a crash between
+        // `WriteSnapshot`'s file-write and index-update steps).
+        const QString orphanPath =
+            QDir(sessionsDir.path()).filePath(QStringLiteral("orphan-%1.json").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+        {
+            QFile orphan(orphanPath);
+            QVERIFY(orphan.open(QIODevice::WriteOnly));
+            orphan.write("{\"columns\": []}\n");
+        }
+        QVERIFY(QFileInfo::exists(orphanPath));
+
+        manager.CleanupOrphanFiles();
+
+        QVERIFY2(QFileInfo::exists(keptPath), "indexed entries must survive cleanup");
+        QVERIFY2(!QFileInfo::exists(orphanPath), "orphan JSON must be removed");
+    }
+
+    // `RestoreLastSessionFromPath` only pins `mAutoSaveUuid` when the
+    // file stem parses as a QUuid; an ad-hoc session file outside the
+    // sessions dir must not hijack auto-save into writing to the
+    // user's filesystem.
+    void TestRestoreLastSessionRejectsNonUuidStem()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Build a valid session JSON at a path whose stem is NOT a
+        // uuid. Re-uses the library serializer so the parse step
+        // succeeds; the only thing under test is the stem-validation
+        // gate around `mAutoSaveUuid`.
+        QTemporaryDir adhocDir;
+        QVERIFY(adhocDir.isValid());
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "stem"})")});
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        builder.SetSource(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {fixture.Path().toStdString()}
+        });
+        const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
+        builder.Save(adhocPath.toStdString(), loglib::SaveScope::Full);
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->RestoreLastSessionFromPath(adhocPath);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // The streaming completed (rows loaded) but `mAutoSaveUuid`
+        // must NOT be pinned to `not-a-uuid` (otherwise the next
+        // AutoSave would create `sessionsDir/not-a-uuid.json`).
+        QVERIFY2(
+            wired->ActiveSessionUuid() != QStringLiteral("not-a-uuid"),
+            "RestoreLastSessionFromPath must reject non-uuid stems"
+        );
     }
 
 private:

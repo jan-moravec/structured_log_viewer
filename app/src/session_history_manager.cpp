@@ -3,7 +3,9 @@
 #include <QFileInfo>
 #include <QLatin1String>
 #include <QLockFile>
+#include <QMutex>
 #include <QMutexLocker>
+#include <QSet>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -362,6 +364,86 @@ void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
         settings.setValue(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY), uuids);
     }
     settings.sync();
+}
+
+namespace
+{
+/// Serialises read-modify-write of the `openWindowsAtQuit` list across
+/// every window in this process. QSettings itself is reentrant but not
+/// thread-safe; this guard prevents two windows from racing to set the
+/// same key and clobbering each other's update.
+QMutex &OpenWindowsMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+} // namespace
+
+void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
+{
+    if (uuid.isEmpty())
+    {
+        return;
+    }
+    QMutexLocker lock(&OpenWindowsMutex());
+    QStringList uuids = OpenWindowsAtQuit();
+    if (uuids.contains(uuid))
+    {
+        return;
+    }
+    uuids.append(uuid);
+    SetOpenWindowsAtQuit(uuids);
+}
+
+void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
+{
+    if (uuid.isEmpty())
+    {
+        return;
+    }
+    QMutexLocker lock(&OpenWindowsMutex());
+    QStringList uuids = OpenWindowsAtQuit();
+    if (!uuids.removeOne(uuid))
+    {
+        return;
+    }
+    SetOpenWindowsAtQuit(uuids);
+}
+
+void SessionHistoryManager::CleanupOrphanFiles()
+{
+    QMutexLocker lock(&mMutex);
+    if (!mSessionsDir.exists())
+    {
+        // Nothing has been auto-saved yet -- no directory, no orphans.
+        return;
+    }
+
+    // Build the set of uuids the index currently references so we can
+    // bulk-distinguish orphans from live entries with one allocation.
+    const QList<RecentSessionEntry> entries = mIndexStorage->Read();
+    QSet<QString> known;
+    known.reserve(entries.size());
+    for (const RecentSessionEntry &entry : entries)
+    {
+        known.insert(entry.uuid);
+    }
+
+    // `*.json` only; the lock file (`recents.lock`) and any future
+    // sibling metadata never match this glob.
+    const QStringList jsonFiles = mSessionsDir.entryList({QStringLiteral("*.json")}, QDir::Files);
+    for (const QString &fileName : jsonFiles)
+    {
+        const QString stem = QFileInfo(fileName).completeBaseName();
+        if (known.contains(stem))
+        {
+            continue;
+        }
+        // Best-effort removal: ignore failures (filesystem error,
+        // file vanished between listing and unlink, ...) -- the
+        // worst case is the orphan survives one more launch.
+        QFile(mSessionsDir.filePath(fileName)).remove();
+    }
 }
 
 // -----------------------------------------------------------------------------

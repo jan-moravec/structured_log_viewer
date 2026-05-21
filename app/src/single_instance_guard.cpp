@@ -31,7 +31,19 @@ SingleInstanceGuard::SingleInstanceGuard(QObject *parent)
 {
 }
 
-SingleInstanceGuard::~SingleInstanceGuard() = default;
+SingleInstanceGuard::~SingleInstanceGuard()
+{
+    if (mServer)
+    {
+        // `QLocalServer::close()` only stops accepting; on Linux the
+        // socket file lingers in `/tmp` (or `$XDG_RUNTIME_DIR`) until
+        // we explicitly call `removeServer`. Without this, a clean
+        // exit followed by a fast relaunch sometimes finds the stale
+        // file and `connectToServer` succeeds against a dead peer.
+        mServer->close();
+        QLocalServer::removeServer(mSocketName);
+    }
+}
 
 void SingleInstanceGuard::SetSocketNameForTest(const QString &name)
 {

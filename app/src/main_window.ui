@@ -283,10 +283,10 @@
     <string>Stop</string>
    </property>
    <property name="toolTip">
-    <string>Stop the stream and freeze the visible rows (Ctrl+Shift+S)</string>
+    <string>Stop the stream and freeze the visible rows (Ctrl+Shift+X)</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+Shift+S</string>
+    <string>Ctrl+Shift+X</string>
    </property>
   </action>
  </widget>
