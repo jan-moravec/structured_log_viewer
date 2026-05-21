@@ -25,10 +25,10 @@
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/udp_server_producer.hpp>
 
+#include <QAbstractProxyModel>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCoreApplication>
-#include <QDebug>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -55,6 +55,7 @@
 #include <memory>
 #include <system_error>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace
@@ -428,6 +429,53 @@ MainWindow::MainWindow(QWidget *parent)
     mLayout->addWidget(mFindRecord);
     mFindRecord->hide();
 
+    // Record-detail dock: hidden by default; the View menu's Ctrl+I
+    // toggle and row double-click both surface it.
+    mRecordDetailDock = new RecordDetailDock(mModel, this);
+    addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
+    mRecordDetailDock->hide();
+    // `actionToggleRecordDetails` is declared in `main_window.ui` but
+    // not placed in any `<addaction>`, so uic doesn't add it to any
+    // widget's `actions()`. A QAction's shortcut only fires once it
+    // is associated with a widget; add it here so `Ctrl+I` is live
+    // from a cold launch, before the View menu is ever opened.
+    addAction(ui->actionToggleRecordDetails);
+    connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
+        // Gate hidden->visible on a realised host window; see the
+        // comment on `ShowRecordDetailsForProxyIndex`. The hide path
+        // is always safe.
+        if (on && !isVisible())
+        {
+            return;
+        }
+        mRecordDetailDock->setVisible(on);
+        if (on)
+        {
+            mRecordDetailDock->raise();
+        }
+    });
+    // Mirror dock visibility back onto the menu entry so the title-bar
+    // X also un-checks it. `QSignalBlocker` breaks the toggled loop.
+    connect(mRecordDetailDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        const QSignalBlocker blocker(ui->actionToggleRecordDetails);
+        ui->actionToggleRecordDetails->setChecked(visible);
+        if (visible)
+        {
+            UpdateRecordDetailsFromSelection();
+        }
+    });
+    connect(mRecordDetailDock, &RecordDetailDock::openInNewWindowRequested, this, &MainWindow::OpenRecordDetailWindow);
+
+    connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
+
+    // Track selection changes through the live selection model;
+    // centralised so a future `setModel` call only has to re-invoke
+    // this helper.
+    RebindRecordDetailSelectionTracking();
+
+    // The dock owns its own `modelReset -> Clear` wiring, so reuse
+    // outside `MainWindow` stays correct.
+
     mPreferencesEditor = new PreferencesEditor(this);
     connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
         mPreferencesEditor->UpdateFields();
@@ -714,6 +762,17 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // Sever the snapshot windows' `destroyed -> remove` hooks before
+    // our members go away. Without this, the inherited `~QWidget`
+    // child-destruction would fire each `destroyed` against an
+    // already-destructed `mRecordDetailWindows`. Scoped disconnect
+    // (by `QMetaObject::Connection`) so unrelated future `destroyed`
+    // hooks can't be caught in the teardown.
+    for (const auto &entry : std::as_const(mRecordDetailWindows))
+    {
+        disconnect(entry.destroyedConnection);
+    }
+    mRecordDetailWindows.clear();
     delete ui;
 }
 
@@ -1350,6 +1409,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     {
         return ui->actionPreferences;
     }
+    if (name == QStringLiteral("actionToggleRecordDetails"))
+    {
+        return ui->actionToggleRecordDetails;
+    }
     return nullptr;
 }
 
@@ -1374,6 +1437,24 @@ QMenu *MainWindow::FilterSubMenu(const QString &filterID) const
 }
 
 #ifdef LOGAPP_BUILD_TESTING
+QList<RecordDetailWindow *> MainWindow::RecordDetailWindowsForTest() const
+{
+    // Materialise the live snapshot-window set out of the heap-keyed
+    // tracker. The tracker is keyed on the original heap address (a
+    // `quintptr`) but iteration order isn't stable across runs; tests
+    // only assert on count and per-window state, never on identity.
+    QList<RecordDetailWindow *> windows;
+    windows.reserve(mRecordDetailWindows.size());
+    for (const auto &entry : std::as_const(mRecordDetailWindows))
+    {
+        if (!entry.window.isNull())
+        {
+            windows.append(entry.window.data());
+        }
+    }
+    return windows;
+}
+
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)
@@ -1657,6 +1738,141 @@ void MainWindow::ShowColumnsManager()
     mColumnsManagerDialog->show();
     mColumnsManagerDialog->raise();
     mColumnsManagerDialog->activateWindow();
+}
+
+namespace
+{
+/// Walk the filter + row-order proxy chain down to a source-model
+/// row, or -1 if anything along the chain is invalid.
+[[nodiscard]] int MapProxyIndexToSourceRow(
+    const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
+)
+{
+    if (!proxyIndex.isValid() || filter == nullptr || rowOrder == nullptr)
+    {
+        return -1;
+    }
+    const QModelIndex midIndex = filter->mapToSource(proxyIndex);
+    if (!midIndex.isValid())
+    {
+        return -1;
+    }
+    const QModelIndex sourceIndex = rowOrder->mapToSource(midIndex);
+    if (!sourceIndex.isValid())
+    {
+        return -1;
+    }
+    return sourceIndex.row();
+}
+} // namespace
+
+void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
+{
+    if (mRecordDetailDock == nullptr)
+    {
+        return;
+    }
+    const int sourceRow = MapProxyIndexToSourceRow(proxyIndex, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        return;
+    }
+    mRecordDetailDock->ShowSourceRow(sourceRow);
+    // `isHidden()` probes the dock's own explicit-hide flag (the
+    // ancestor `isVisible()` is also false until `show()` has been
+    // called on the main window). The `isVisible()` guard on `this`
+    // avoids a Qt 6.8.3 + offscreen-QPA crash where
+    // `QDockWidget::setVisible(true)` dereferences uninitialised
+    // QMainWindowLayout dock-area state when the host has never been
+    // shown. Production callers always see a visible main window.
+    if (mRecordDetailDock->isHidden() && isVisible())
+    {
+        mRecordDetailDock->setVisible(true);
+    }
+    mRecordDetailDock->raise();
+}
+
+void MainWindow::RebindRecordDetailSelectionTracking()
+{
+    if (mTableView == nullptr)
+    {
+        return;
+    }
+    const QItemSelectionModel *selectionModel = mTableView->selectionModel();
+    if (selectionModel == nullptr)
+    {
+        return;
+    }
+    // Bind to a member slot (not a lambda) so `Qt::UniqueConnection`
+    // can dedupe; Qt only deduplicates pointer-to-member targets.
+    connect(
+        selectionModel,
+        &QItemSelectionModel::currentRowChanged,
+        this,
+        &MainWindow::UpdateRecordDetailsFromSelection,
+        Qt::UniqueConnection
+    );
+}
+
+void MainWindow::UpdateRecordDetailsFromSelection()
+{
+    // Skip the refresh when the dock can't be seen. The dock's own
+    // `visibilityChanged` hook re-pins from the selection on resume,
+    // so navigation history isn't lost.
+    if (mRecordDetailDock == nullptr || !mRecordDetailDock->IsVisibleForRefresh())
+    {
+        return;
+    }
+    const QItemSelectionModel *selectionModel = mTableView->selectionModel();
+    if (selectionModel == nullptr)
+    {
+        mRecordDetailDock->Clear();
+        return;
+    }
+    const QModelIndex current = selectionModel->currentIndex();
+    const int sourceRow = MapProxyIndexToSourceRow(current, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        mRecordDetailDock->Clear();
+        return;
+    }
+    // Skip the rebuild when the dock is already pinned to this row.
+    // Mainly relevant on dock re-show: the dock has already refreshed
+    // against its persistent index, and the selection unchanged.
+    if (mRecordDetailDock->CurrentSourceRow() == sourceRow)
+    {
+        return;
+    }
+    mRecordDetailDock->ShowSourceRow(sourceRow);
+}
+
+void MainWindow::OpenRecordDetailWindow(int sourceRow)
+{
+    if (mModel == nullptr || sourceRow < 0 || sourceRow >= mModel->rowCount())
+    {
+        return;
+    }
+    const RecordDetailContent snapshot = BuildRecordDetailContent(*mModel, sourceRow);
+    if (!snapshot.valid)
+    {
+        return;
+    }
+    auto *window = new RecordDetailWindow(snapshot, this);
+    // Key the tracker by the heap address (captured before
+    // `destroyed` fires, while the pointer is still valid). Using
+    // `QPointer` equality wouldn't work -- by the time `destroyed`
+    // emits, Qt has already nulled every `QPointer` to the window.
+    const auto trackerId = reinterpret_cast<quintptr>(window);
+    TrackedSnapshotWindow entry;
+    entry.window = window;
+    // Save the connection so `~MainWindow` can disconnect just this
+    // lambda before member containers go away.
+    entry.destroyedConnection =
+        connect(window, &QObject::destroyed, this, [this, trackerId]() { mRecordDetailWindows.remove(trackerId); });
+    mRecordDetailWindows.insert(trackerId, entry);
+    window->show();
+    window->raise();
+    window->activateWindow();
 }
 
 void MainWindow::UpdateDiagnosticsStatus()
@@ -3121,6 +3337,10 @@ void MainWindow::RebuildViewMenu()
     QAction *manageColumnsAction = viewMenu->addAction(tr("Manage columns\u2026"));
     manageColumnsAction->setObjectName(QStringLiteral("actionManageColumns"));
     connect(manageColumnsAction, &QAction::triggered, this, &MainWindow::ShowColumnsManager);
+
+    // Always reachable: opens the dock from cold and re-opens it
+    // after the user dismissed it via the title-bar X.
+    viewMenu->addAction(ui->actionToggleRecordDetails);
 
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())

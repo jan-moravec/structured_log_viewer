@@ -169,6 +169,20 @@
     <string>Preferences...</string>
    </property>
   </action>
+  <action name="actionToggleRecordDetails">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Record Details</string>
+   </property>
+   <property name="toolTip">
+    <string>Show / hide the per-record details pane (Ctrl+I)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+I</string>
+   </property>
+  </action>
   <action name="actionOpenLogStream">
    <property name="text">
     <string>Open Log Stream...</string>

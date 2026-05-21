@@ -5,6 +5,8 @@
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "preferences_editor.hpp"
+#include "record_detail_dock.hpp"
+#include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
@@ -15,7 +17,9 @@
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QHash>
 #include <QLabel>
+#include <QList>
 #include <QMainWindow>
 #include <QMimeData>
 #include <QPointer>
@@ -94,6 +98,18 @@ public:
     /// A second call raises the existing instance.
     void ShowColumnsManager();
 
+    /// Show + raise the Record Details dock and pin it to @p proxyIndex
+    /// (mapped to a source row internally). Invalid index: no-op.
+    void ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex);
+
+    /// Sync the dock to the table's current selection. No-op when the
+    /// dock is hidden (avoids work on an invisible widget).
+    void UpdateRecordDetailsFromSelection();
+
+    /// Open a standalone `RecordDetailWindow` snapshot of source row
+    /// @p sourceRow. Out-of-range rows are a no-op.
+    void OpenRecordDetailWindow(int sourceRow);
+
     /// Push every `Column::visible` flag to the header. Idempotent;
     /// run after a load or reorder.
     void ApplyColumnVisibility();
@@ -142,6 +158,32 @@ public:
     }
 
 #ifdef LOGAPP_BUILD_TESTING
+    /// Test-only direct accessor for the Record Details dock.
+    /// Same Linux-Release-offscreen reason as `ViewMenu()` /
+    /// `FilterSubMenu()`: `findChild<RecordDetailDock*>()` on the
+    /// Linux Qt 6.8 + offscreen-QPA toolchain segfaults inside Qt's
+    /// child-traversal even though the dock is correctly parented to
+    /// `MainWindow` (production code never walks the tree this way).
+    [[nodiscard]] RecordDetailDock *RecordDetailDockForTest() const
+    {
+        return mRecordDetailDock;
+    }
+
+    /// Test-only direct accessor for the central log table view.
+    /// Same Linux-Release-offscreen reason as `RecordDetailDockForTest()`.
+    [[nodiscard]] LogTableView *TableViewForTest() const
+    {
+        return mTableView;
+    }
+
+    /// Test-only snapshot-window list. Same Linux-Release-offscreen
+    /// reason as `RecordDetailDockForTest()`: `findChildren` walks the
+    /// child tree and that path is the unreliable one. The internal
+    /// `QHash` is keyed by heap address; this view materialises the
+    /// live `RecordDetailWindow*` set in insertion order so tests can
+    /// observe both the count and the per-window state.
+    [[nodiscard]] QList<RecordDetailWindow *> RecordDetailWindowsForTest() const;
+
     /// Test-only session-mode override so display-order tests can
     /// exercise the `Static` branch without a real open flow.
     enum class TestSessionMode
@@ -388,6 +430,12 @@ private:
     /// Re-apply the persisted retention cap to the model.
     void ApplyStreamingRetention();
 
+    /// Connect the current selection model to the Record Details refresh
+    /// slot. Must be re-called after any `setModel` on the table view --
+    /// Qt destroys the old selection model and severs prior connections.
+    /// Uses `Qt::UniqueConnection`, so repeat calls are idempotent.
+    void RebindRecordDetailSelectionTracking();
+
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
     RowOrderProxyModel *mRowOrderProxyModel;
@@ -420,6 +468,28 @@ private:
     /// Lazy-owned bulk column manager dialog; survives close so a
     /// second open reuses the same window.
     QPointer<class ColumnsManagerDialog> mColumnsManagerDialog;
+
+    /// Dock pane that follows the selected row. Hidden until opened
+    /// via the View menu or a double-click. `QDockWidget` provides
+    /// the float / dock / close chrome.
+    RecordDetailDock *mRecordDetailDock = nullptr;
+
+    /// One snapshot window plus the scoped `destroyed` connection
+    /// installed by `OpenRecordDetailWindow`. The scoped handle lets
+    /// `~MainWindow` disconnect only what we wired (a blanket
+    /// `disconnect` would catch unrelated future hooks).
+    struct TrackedSnapshotWindow
+    {
+        QPointer<RecordDetailWindow> window;
+        QMetaObject::Connection destroyedConnection;
+    };
+
+    /// Open snapshot windows keyed by the original heap address (cast
+    /// to `quintptr` for stable identity). Each window is
+    /// `Qt::WA_DeleteOnClose`; the `destroyed` lambda removes the
+    /// entry by id, so the map self-compacts without sweeps and
+    /// removal is unambiguous under concurrent teardown.
+    QHash<quintptr, TrackedSnapshotWindow> mRecordDetailWindows;
 
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.

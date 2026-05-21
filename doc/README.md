@@ -237,6 +237,28 @@ Duplicate header names are disambiguated as `header [key]` in both menus so colu
 - Click a row to select it. Hold `Ctrl`/`Shift` to extend the selection.
 - **Edit → Copy** (`Ctrl+C`) copies the selected rows as the **original JSON text** (one line per row), so you can paste them back into another tool. Cell-level copy is not performed — rows are always copied whole.
 
+### Inspecting a Record
+
+For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field on its own row plus the pretty-printed original JSON. Open it any of three ways:
+
+- **Double-click** any row in the table.
+- **View → Record Details** (`Ctrl+I`).
+- Click the dock back open if you had closed it via its title-bar `X`.
+
+The pane is a Qt dock widget: drag the title bar to snap it to the left, right, or bottom of the window, or drop it outside the window to float it as an independent top-level window. Once visible, the pane follows the table's current row — arrow-key navigation updates it live.
+
+Inside the pane:
+
+- A bold header summarises the row (`Row N` plus the formatted timestamp when a `Time` column exists). `Row N` is the **source-model row** — the underlying record's stable position — and may not match the row number shown in the main table when a sort or filter is active.
+- A two-column **Field / Value** table lists **every configured column** for the record — a complete view that isn't filtered by the main table's reorder, hide, or sort state. Fields are listed in the parser's original column order so the layout stays stable even as you customise the main view. Values are the same formatted output the table cells show, but without single-line compaction so nested objects stay readable. Present-but-empty fields render as a muted em-dash (`—`) so the row still has visual weight; the original empty value is what gets written to the clipboard.
+- A collapsible **Raw JSON** section reveals the on-disk line, pretty-printed via `QJsonDocument` (with a fall-back to the original bytes for non-JSON lines). When the raw bytes aren't available (e.g. the line was evicted in a streaming session after you pinned it) the section is disabled and labelled *Raw JSON (unavailable)* so the empty state is visible rather than silent.
+- The pane refreshes automatically whenever the pinned record itself changes underneath you: a column rename via the columns manager, an enum-column promotion, or any other `dataChanged` notification covering the pinned row. New rows being appended to a live stream don't trigger a refresh because the pinned record's data is unaffected; the persistent pin keeps tracking the same record across FIFO eviction shifts and falls back to a placeholder if the pinned line is itself evicted.
+- **Copy raw JSON** copies the **original on-disk bytes** of the line (compact, exactly as the parser ingested) so the clipboard text round-trips back into another tool unchanged. To copy the pretty-printed text instead, select inside the Raw JSON edit and press `Ctrl+C`. The button is disabled when the raw bytes aren't available.
+- **Copy as key/value** copies the field table as `header: value` lines. Embedded newlines, tabs, and backslashes inside values are escaped C-style (`\n`, `\r`, `\t`, `\\`) so each field always lands on a single line and the format round-trips unambiguously.
+- Inside the Field/Value table, `Ctrl+C` copies the selected cells as tab-separated values. Selection is extended (Ctrl-click to toggle individual cells, Shift-click for a range), matching standard spreadsheet behaviour.
+
+To pin a record for side-by-side comparison, click **Open in new window** inside the pane. That spawns a top-level snapshot window with a frozen copy of the displayed content — you can open as many as you like, and each one survives streaming-mode FIFO eviction, sort, filter, or even a full `File → Open…` reset because its strings are deep-copied at creation. Close each snapshot with the window's normal close button when you're done.
+
 ## Searching
 
 Open the Find bar with **Edit → Find** (`Ctrl+F`). It appears at the bottom of the window with:
@@ -334,6 +356,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Save configuration         | `Ctrl+S`       |
 | Find                       | `Ctrl+F`       |
 | Copy selected rows as JSON | `Ctrl+C`       |
+| Toggle Record Details pane | `Ctrl+I`       |
 | Pause / Resume stream      | `Ctrl+Shift+P` |
 | Toggle Follow newest       | `Ctrl+Shift+T` |
 | Stop stream                | `Ctrl+Shift+S` |
