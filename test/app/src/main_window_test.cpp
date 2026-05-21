@@ -12,6 +12,7 @@
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
 #include "session_history_manager.hpp"
+#include "single_instance_guard.hpp"
 #include "streaming_control.hpp"
 
 #include <loglib/enum_dictionary.hpp>
@@ -58,6 +59,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QDataStream>
+#include <QLocalSocket>
 #include <QScopeGuard>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -69,6 +72,7 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QVariant>
 #include <QWheelEvent>
 #include <QtTest/QtTest>
@@ -10906,6 +10910,108 @@ private slots:
         // The label tracks the new source descriptor (primary file is
         // still A; B appended on top).
         QCOMPARE(manager.List().front().fileCount, 2);
+    }
+
+    // ---------------------------------------------------------------
+    // SingleInstanceGuard
+    // ---------------------------------------------------------------
+
+    // Primary acquires the socket and a hand-rolled secondary (a
+    // raw `QLocalSocket` driving the wire protocol) is decoded by
+    // the primary into an `openWindowRequested` signal. Hand-rolled
+    // rather than using a second `SingleInstanceGuard::TryAcquire`
+    // because both peers would otherwise share the test thread, and
+    // the secondary's `waitForDisconnected` would block the
+    // primary's `newConnection` slot from running -- a deadlock that
+    // does not exist in production (where primary and secondary are
+    // separate OS processes).
+    void TestSingleInstanceForwardsOpenRequest()
+    {
+        const QString socketName =
+            QStringLiteral("structlog-test-forward-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        const QStringList forwardFiles{
+            QStringLiteral("C:/logs/forward-a.json"), QStringLiteral("C:/logs/forward-b.json")
+        };
+
+        // Drive the secondary side directly. The wire format
+        // (matching `SingleInstanceGuard::TryAcquire`) is the
+        // 11-byte ASCII magic `STRUCTLOGV1` followed by the file
+        // list, serialised via `QDataStream::Qt_6_0`.
+        QLocalSocket secondary;
+        secondary.connectToServer(socketName);
+        QVERIFY2(secondary.waitForConnected(2000), "secondary must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOGV1");
+        out << forwardFiles;
+
+        const qint64 written = secondary.write(payload);
+        QCOMPARE(written, payload.size());
+        // `flush()` returns false when there are no buffered bytes
+        // left to push (the OS may have already taken the write on
+        // some platforms); we only need the bytes on the wire, so
+        // ignore the return and rely on `waitForBytesWritten`.
+        secondary.flush();
+        secondary.waitForBytesWritten(1000);
+
+        // Spin the event loop so the primary can drain the pipe.
+        // `spy.wait` returns true as soon as the signal fires.
+        QVERIFY(spy.wait(2000));
+        QCOMPARE(spy.count(), 1);
+        const auto args = spy.takeFirst();
+        const QStringList received = args.at(0).toStringList();
+        QCOMPARE(received, forwardFiles);
+
+        secondary.disconnectFromServer();
+        if (secondary.state() != QLocalSocket::UnconnectedState)
+        {
+            secondary.waitForDisconnected(1000);
+        }
+    }
+
+    // With `--new-instance` set, the secondary refuses to forward
+    // and tries to become a primary itself. Because the test
+    // socket name is held by the first primary, the new-instance
+    // path falls through to "primary without coordination" --
+    // exercised here by giving each guard its own socket name and
+    // confirming both can `TryAcquire(true)` successfully.
+    void TestSingleInstanceNewInstanceFlagBypassesGuard()
+    {
+        const QString socketName =
+            QStringLiteral("structlog-test-newinst-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Even though the primary owns the socket, allowNewInstance
+        // skips the forward path entirely and falls into the
+        // "couldn't bind, run uncoordinated" branch -- meaning the
+        // primary's spy must stay empty.
+        SingleInstanceGuard secondary;
+        secondary.SetSocketNameForTest(socketName);
+        const bool acquired = secondary.TryAcquire({QStringLiteral("dummy.json")}, /*allowNewInstance=*/true);
+        QVERIFY2(acquired, "new-instance launch must take primary role even when forwarding is suppressed");
+
+        // No forward should have happened.
+        for (int i = 0; i < 5; ++i)
+        {
+            QCoreApplication::processEvents();
+        }
+        QCOMPARE(spy.count(), 0);
     }
 
     // `Clear` empties the index, deletes every per-uuid JSON, and

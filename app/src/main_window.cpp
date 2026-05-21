@@ -986,6 +986,27 @@ void MainWindow::RebuildRecentSessionsMenu()
     });
 }
 
+void MainWindow::OpenFilesForCli(const QStringList &files)
+{
+    if (files.isEmpty())
+    {
+        return;
+    }
+    // Mirror `OpenFiles`: a single file may load as a configuration
+    // (Open-with-Configuration users sometimes alias the binary to
+    // accept a session JSON on the command line).
+    if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
+    {
+        UpdateUi();
+        return;
+    }
+    // Default to Append so a user can drag-drop multiple files onto
+    // the binary in one go without each clobbering the previous; the
+    // empty-session start condition makes this equivalent to a fresh
+    // open regardless.
+    StartStreamingOpenQueue(files, OpenMode::Append);
+}
+
 void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
 {
     if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))

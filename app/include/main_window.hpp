@@ -92,6 +92,14 @@ public:
     /// has nothing to discard).
     void RestoreLastSessionFromPath(const QString &jsonPath);
 
+    /// Open CLI-provided file paths into this window. Behaves like
+    /// `OpenFiles` but bypasses the file dialog; used by `main()`
+    /// after parsing argv and by the single-instance forward
+    /// handler when a secondary launch asks the primary to open
+    /// files. Append mode so any pre-loaded configuration filters
+    /// survive into the new session.
+    void OpenFilesForCli(const QStringList &files);
+
     void UpdateUi();
 
     /// Single sync point for newest-first display: picks the right
