@@ -200,10 +200,14 @@ int main(int argc, char *argv[])
     // event loop exits *without* `closeEvent` firing on every window.
     // In that path `topLevelWidgets()` still holds live `MainWindow`s
     // when `aboutToQuit` is emitted from `exit()`, so we capture them
-    // and overwrite the persisted set. We only overwrite when the
-    // capture is non-empty -- if every window already removed itself
-    // via `closeEvent`, leaving the eagerly-maintained (empty) list
-    // alone is correct.
+    // here.
+    //
+    // We *merge* rather than overwrite: with `--new-instance` two
+    // processes can be alive simultaneously, and a destructive
+    // `SetOpenWindowsAtQuit(openUuids)` from the first quitter would
+    // clobber the other process's published uuids. `AddOpenWindowUuid`
+    // is idempotent and serialised through the cross-process lock,
+    // so each process's contribution survives independently.
     //
     // We deliberately use `RestorableActiveSessionUuid` rather than
     // `ActiveSessionUuid` so windows whose session cannot be
@@ -213,7 +217,6 @@ int main(int argc, char *argv[])
     // re-bind manually" info popup on every subsequent launch until
     // they manually cleared the entry.
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [] {
-        QStringList openUuids;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -224,12 +227,8 @@ int main(int argc, char *argv[])
             const QString uuid = mw->RestorableActiveSessionUuid();
             if (!uuid.isEmpty())
             {
-                openUuids.append(uuid);
+                SessionHistoryManager::AddOpenWindowUuid(uuid);
             }
-        }
-        if (!openUuids.isEmpty())
-        {
-            SessionHistoryManager::SetOpenWindowsAtQuit(openUuids);
         }
     });
 

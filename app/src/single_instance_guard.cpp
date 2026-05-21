@@ -7,6 +7,7 @@
 #include <QLocalSocket>
 #include <QProcessEnvironment>
 #include <QString>
+#include <QTimer>
 #include <QVariant>
 
 namespace
@@ -20,6 +21,14 @@ constexpr char WIRE_MAGIC[] = "STRUCTLOGV1";
 /// becoming its own primary rather than block the user's launch.
 constexpr int CONNECT_TIMEOUT_MS = 1000;
 constexpr int WRITE_TIMEOUT_MS = 1000;
+
+/// Server-side cap on how long an incoming connection may sit
+/// without completing a frame. A peer that connects but never
+/// finishes the `QDataStream` header (and never disconnects) would
+/// otherwise pin its socket + per-connection buffer for the
+/// lifetime of the primary. 5 s is well above the worst-case
+/// network-loopback round trip but well below "noticeably long".
+constexpr int CONNECTION_IDLE_TIMEOUT_MS = 5000;
 
 /// Hard cap on inbound payload size so a malformed / hostile peer
 /// cannot OOM the primary by sending a giant stream. 1 MiB is far
@@ -101,7 +110,12 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     // (Linux leaves them behind when a previous process crashed).
     // `removeServer` is a no-op when the socket name is free.
     QLocalServer::removeServer(mSocketName);
-    mServer = std::make_unique<QLocalServer>(this);
+    // No QObject parent: the `unique_ptr` is the sole owner. Parenting
+    // to `this` *and* unique_ptr-owning was a latent double-delete
+    // footgun -- safe today only because QObject's child-list removal
+    // races the unique_ptr destructor in the right order, but any
+    // future reparent / early reset would break that invariant.
+    mServer = std::make_unique<QLocalServer>();
     mServer->setSocketOptions(QLocalServer::UserAccessOption);
     if (!mServer->listen(mSocketName))
     {
@@ -120,8 +134,9 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         // Stranger errors: we cannot bind the socket *and* nothing
         // is listening. Run as a primary without coordination --
         // secondaries will misroute, but at least the user gets a
-        // window. The lock-file backstop in Part 5b prevents the
-        // resulting recents-index corruption.
+        // window. The cross-process `recents.lock` taken by every
+        // `SessionHistoryManager` mutator keeps the recents index
+        // consistent even in this degraded state.
         mServer.reset();
         return true;
     }
@@ -157,6 +172,12 @@ void SingleInstanceGuard::HandleNewConnection()
                 return;
             }
 
+            // Re-parse the buffer from byte 0 on every `readyRead`.
+            // `QDataStream` reads through `&buffer` without mutating
+            // the QByteArray, so the saved-and-restored buffer keeps
+            // the same wire bytes across invocations. Total work is
+            // bounded by `MAX_PAYLOAD_BYTES`, so the per-readyRead
+            // cost is constant in the worst case.
             QDataStream peek(&buffer, QIODevice::ReadOnly);
             peek.setVersion(QDataStream::Qt_6_0);
             QByteArray magic;
@@ -191,6 +212,19 @@ void SingleInstanceGuard::HandleNewConnection()
         };
 
         connect(socket, &QLocalSocket::readyRead, this, tryDecode);
+
+        // Per-connection idle watchdog. A peer that connects, sits
+        // silent, and never disconnects would otherwise leak its
+        // socket + buffer property until process exit. The timer is
+        // parented to the socket so it dies with it; the lambda
+        // disconnects the peer, which fires `disconnected` and the
+        // matching `deleteLater` above.
+        QTimer::singleShot(CONNECTION_IDLE_TIMEOUT_MS, socket, [socket]() {
+            if (socket->state() != QLocalSocket::UnconnectedState)
+            {
+                socket->disconnectFromServer();
+            }
+        });
 
         // On Windows named pipes the data may already have arrived
         // by the time `newConnection` fires; the readyRead signal

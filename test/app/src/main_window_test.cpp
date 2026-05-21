@@ -523,7 +523,14 @@ private slots:
 
     void init()
     {
-        // Called before each test function
+        // Called before each test function. `initTestCase` pinned the
+        // org/app to the dedicated `structured-log-viewer-tests /
+        // apptest` profile, so this `clear()` only wipes the test
+        // backing store -- never the user's real recents / preferences.
+        // Without it, recents / `openWindowsAtQuit` / `restoreLast`
+        // values bleed across tests and a flake in one fixture can
+        // poison the next one's setup.
+        QSettings().clear();
         mWindow = new MainWindow();
     }
 
@@ -11011,12 +11018,13 @@ private slots:
         QCOMPARE(manager.List().front().fileCount, 2);
     }
 
-    // Even with the cross-process `QLockFile` held by another
-    // simulated process, the manager still finishes its
-    // `WriteSnapshot` rather than deadlocking the UI. The
-    // contention path falls back to "ours wins after the timeout
-    // expires" -- losing one entry under heavy contention is
-    // strictly preferable to a frozen window.
+    // With the cross-process `QLockFile` held by a "foreign"
+    // process the manager fails closed: `WriteSnapshot` returns an
+    // empty uuid (no write attempted, index untouched) rather than
+    // racing the sibling's clear+rewrite of the QSettings entries
+    // sub-group. The timeout itself is bounded by the runtime
+    // budget (1.5 s) so the GUI thread does not freeze, and a
+    // subsequent attempt once the lock is released succeeds.
     void TestWriteSnapshotSurvivesHeldLockFile()
     {
         QTemporaryDir sessionsDir;
@@ -11029,13 +11037,11 @@ private slots:
         // but we want the lock contention to bite before that.
         QVERIFY(QDir().mkpath(sessionsDir.path()));
 
-        // Take the lock from a "foreign" process. We have to call
-        // WriteSnapshot through the manager, which internally tries
-        // for `WRITE_LOCK_TIMEOUT_MS=5000` (the longer of the two
-        // split timeouts -- writes tolerate a longer wait because
-        // silently dropping a mutation under contention would
-        // corrupt the cross-process view) and then proceeds. Use a
-        // very short stale-lock to keep this test fast.
+        // Take the lock from a "foreign" process. WriteSnapshot
+        // will request the runtime write timeout (1.5 s) and bail
+        // when it cannot acquire the lock. Use a very short
+        // stale-lock so the lock is never accidentally treated as
+        // dead by the manager's tryLock.
         QLockFile foreign(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
         foreign.setStaleLockTime(0);
         QVERIFY(foreign.tryLock(100));
@@ -11045,19 +11051,24 @@ private slots:
         src.locators = {"C:/logs/locked.json"};
         cfg.source = src;
 
-        // WriteSnapshot must return a non-empty uuid even though
-        // the lock was held the whole time. Bounded duration <
-        // 7000ms (the write lock timeout + slack) so we don't sit on
-        // the CI for an arbitrarily long stretch.
+        // The fail-closed contract: WriteSnapshot returns an empty
+        // uuid (write skipped, index untouched), bounded by the
+        // runtime write timeout + small slack so the UI does not
+        // freeze for the full shutdown timeout.
         const auto start = std::chrono::steady_clock::now();
         const QString uuid = manager.WriteSnapshot(cfg);
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
 
-        foreign.unlock();
+        QVERIFY2(uuid.isEmpty(), "WriteSnapshot must fail closed when the cross-process lock cannot be acquired");
+        QVERIFY2(elapsed < 3000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
+        QCOMPARE(manager.List().size(), 0);
 
-        QVERIFY2(!uuid.isEmpty(), "WriteSnapshot must produce a uuid even under contention");
-        QVERIFY2(elapsed < 7000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
+        // Once the foreign holder releases the lock, the manager
+        // recovers and the next call writes the entry.
+        foreign.unlock();
+        const QString retryUuid = manager.WriteSnapshot(cfg);
+        QVERIFY2(!retryUuid.isEmpty(), "WriteSnapshot must succeed once contention clears");
         QCOMPARE(manager.List().size(), 1);
     }
 
@@ -11314,6 +11325,68 @@ private slots:
 
         const QString pathA = manager.PathForUuid(uuidA);
         QVERIFY2(QFileInfo::exists(pathA), "previous session's JSON must survive a Replace open");
+    }
+
+    // Loading a configuration via the menu entry point must detach the
+    // window from any previous recents pin. Otherwise the next AutoSave
+    // would silently rewrite an unrelated session's JSON in place.
+    void TestLoadConfigurationDetachesPreviousRecentsEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Establish session A.
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY(QFileInfo::exists(pathA));
+
+        // Manually load a columns-only configuration. This is the
+        // `LoadConfiguration` menu entry point: it does not pre-detach
+        // via `NewSession`, so the pin survives unless
+        // `DoLoadConfiguration` itself detaches.
+        QTemporaryDir configDir;
+        QVERIFY(configDir.isValid());
+        const QString configPath = QDir(configDir.path()).filePath(QStringLiteral("columns_only.json"));
+        wired->SaveConfigurationToPathForTest(configPath, loglib::SaveScope::ColumnsOnly);
+        wired->LoadConfigurationFromPathForTest(configPath);
+        QCoreApplication::processEvents();
+
+        // After the load there must be no pinned uuid, so the next
+        // AutoSave will create a fresh entry rather than overwriting A.
+        QVERIFY2(wired->ActiveSessionUuid().isEmpty(), "LoadConfiguration must detach the previous recents pin");
+
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid,
+            "loading a configuration and opening new files must yield distinct uuids"
+        );
+
+        // Session A's JSON is untouched.
+        QVERIFY(QFileInfo::exists(pathA));
+        loglib::LogConfigurationManager probeA;
+        probeA.Load(pathA.toStdString());
+        QVERIFY(probeA.Configuration().source.has_value());
+        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
     }
 
     // The persisted `openWindowsAtQuit` set is maintained eagerly so

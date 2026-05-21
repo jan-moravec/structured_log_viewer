@@ -49,11 +49,25 @@ public:
 /// auto-saved session and a manually-saved one are interchangeable
 /// and the manager does not need its own serialization layer.
 ///
-/// Concurrency: every mutating method takes the internal `QMutex`
-/// before touching the filesystem + index storage and emits
-/// `changed()` after releasing the lock. A cross-process `QLockFile`
-/// is layered on top in a follow-up commit (Part 5b backstop); this
-/// class is designed to absorb that without an API change.
+/// Concurrency:
+///
+/// - The internal `mMutex` (one per instance) serialises every
+///   read / write of the recents *index* and per-uuid JSON pool
+///   (`List`, `LastSessionPath`, `WriteSnapshot`, `Touch`, `Remove`,
+///   `Clear`, `CleanupOrphanFiles`).
+/// - The static `OpenWindowsMutex` (file-local, one per process)
+///   serialises every read / write of the `openWindowsAtQuit`
+///   QSettings key (`OpenWindowsAtQuit`, `SetOpenWindowsAtQuit`,
+///   `AddOpenWindowUuid`, `RemoveOpenWindowUuid`).
+/// - The two mutexes are independent because the QSettings keys
+///   they guard never alias. A caller never needs to hold both.
+/// - A cross-process `QLockFile` at `sessionsDir/recents.lock`
+///   is layered on top of every mutator (both families). The lock
+///   is a strict gate: on acquisition timeout the mutator returns
+///   without writing rather than racing the QSettings store. See
+///   the `WRITE_LOCK_TIMEOUT_*` docstrings in the .cpp for the
+///   timeout split between GUI-thread mutators (1.5 s) and
+///   shutdown / user-initiated mutators (5 s).
 class SessionHistoryManager : public QObject
 {
     Q_OBJECT
@@ -106,9 +120,10 @@ public:
     /// reopen an entry through `MainWindow::DoLoadConfiguration`.
     [[nodiscard]] QString PathForUuid(const QString &uuid) const;
 
-    /// Sessions directory passed in at construction. Exposed for the
-    /// `QLockFile` strategy in Part 5b and for tests that want to
-    /// inspect on-disk state.
+    /// Sessions directory passed in at construction. Exposed for
+    /// tests that want to inspect on-disk state and for callers
+    /// that need to compose paths against the same root the
+    /// manager uses internally.
     [[nodiscard]] QDir SessionsDir() const
     {
         return mSessionsDir;
@@ -146,13 +161,13 @@ public:
     /// currently-live sessions even when `aboutToQuit` runs after
     /// `WA_DeleteOnClose` has destroyed every peer window.
     ///
-    /// Concurrency: serialised through a process-local mutex
-    /// (multi-window same-process) *and* a `QLockFile` at
+    /// Concurrency: serialised through `OpenWindowsMutex` in the
+    /// .cpp (multi-window same-process) *and* a `QLockFile` at
     /// `DefaultSessionsDir()/recents.lock` (cross-process, e.g. when
     /// the user opted out of single-instance via `--new-instance`).
-    /// Best-effort: if the lock file cannot be acquired within
-    /// `LOCK_FILE_TIMEOUT_MS` we proceed anyway -- losing one entry
-    /// under contention is strictly better than blocking shutdown.
+    /// Fail-closed on lock acquisition timeout: a sibling writer
+    /// gets to finish, and the next AutoSave (or the `aboutToQuit`
+    /// safety-net) re-attempts to publish this window.
     static void AddOpenWindowUuid(const QString &uuid);
 
     /// Companion to `AddOpenWindowUuid`. Removes @p uuid if present;
@@ -190,12 +205,6 @@ private:
     /// Capacity-evict oldest entries until size <= MAX_ENTRIES. Caller
     /// holds `mMutex`.
     void EvictLocked(QList<RecentSessionEntry> &entries);
-
-    /// Path to the cross-process lock file. Lives next to the
-    /// per-uuid JSON files in `mSessionsDir`, named `recents.lock`.
-    /// The mkpath happens lazily inside the mutators because the
-    /// sessions dir is created on first `WriteSnapshot`.
-    [[nodiscard]] QString LockFilePath() const;
 
     QDir mSessionsDir;
     std::unique_ptr<IRecentsIndexStorage> mIndexStorage;

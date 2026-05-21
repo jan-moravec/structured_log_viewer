@@ -1028,9 +1028,17 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     {
         return;
     }
-    // Mirror `OpenFiles`: a single file may load as a configuration
-    // (Open-with-Configuration users sometimes alias the binary to
-    // accept a session JSON on the command line).
+    // Mirror `OpenFiles`: a single positional argument is treated
+    // as a possible configuration / session JSON before falling
+    // back to opening it as a log file. This is the only heuristic
+    // we have today: with multiple positional arguments we always
+    // open them as log files. If a user wants to combine a
+    // configuration with log files on the command line, they have
+    // to load the configuration via `File -> Open with
+    // Configuration...` once the window is up -- a future
+    // dedicated flag (e.g. `--config <path>`) would route through
+    // `DoLoadConfiguration` plus `StartStreamingOpenQueue(Append)`
+    // exactly like that menu entry.
     if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
     {
         UpdateUi();
@@ -2253,6 +2261,14 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     const QString uuid = mHistoryManager->WriteSnapshot(configuration, mAutoSaveUuid);
     if (uuid.isEmpty())
     {
+        // Save failed (serialization error, lock acquisition timeout,
+        // I/O error, ...). Recovery is implicit: the atomic
+        // temp+rename in `LogConfigurationManager::Save` guarantees
+        // that any pre-existing `<uuid>.json` is *not* overwritten
+        // on failure, so the previously-persisted state survives.
+        // The `mAutoSaveUuid` / `openWindowsAtQuit` pins (if any)
+        // still point at that valid JSON, so no extra cleanup is
+        // required here.
         return;
     }
     // Pin the uuid so subsequent auto-saves rewrite the same JSON
@@ -2312,9 +2328,9 @@ QString MainWindow::RestorableActiveSessionUuid() const noexcept
         // NetworkStream / future non-File kinds: the snapshot's
         // locator is a producer URI, not something
         // `StartStreamingOpenQueue` can re-bind on launch. Filtering
-        // here breaks the fan-restore loop noted in the post-commit
-        // review (a legacy stream entry would otherwise come back
-        // on every launch with a "must re-bind manually" popup).
+        // here prevents a fan-restore loop in which a legacy stream
+        // entry would otherwise come back on every launch with a
+        // "must re-bind manually" popup.
         return {};
     }
     return mAutoSaveUuid;
@@ -2621,6 +2637,15 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
 {
     try
     {
+        // Drop the previous session's recents pin: a `Load
+        // Configuration...` / `Open with Configuration...` is a
+        // session boundary, and we must not let the next AutoSave
+        // silently overwrite an unrelated session's JSON in place.
+        // The callers that *do* want to re-pin a uuid after the
+        // load (`OpenRecentSession`, `RestoreLastSessionFromPath`)
+        // explicitly set `mAutoSaveUuid` once this function returns.
+        DetachAutoSaveUuid();
+
         // Drop proxy rules and the active sort before the model is
         // reset: both were built for the old column layout. The
         // runtime `mFilters` map is rebuilt below.

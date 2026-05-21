@@ -471,8 +471,12 @@ private:
     /// reference `SessionMode` (e.g. `ShouldAutoSaveSession`) can be
     /// declared before the full enum definition appears further down
     /// among the data members. The definition lives near `mSessionMode`
-    /// so the two stay co-located.
-    enum class SessionMode;
+    /// so the two stay co-located. The underlying type is fixed
+    /// explicitly to match the definition; without it a future
+    /// `enum class SessionMode : uint8_t` would produce a confusing
+    /// redeclaration-mismatch diagnostic against this opaque-enum
+    /// declaration rather than against the actual definition.
+    enum class SessionMode : int;
 
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a
@@ -584,6 +588,12 @@ private:
     /// writes the slice selected by @p scope; throws on failure.
     /// `DoLoadConfiguration` resets the model, validates saved
     /// filters, restores sort, and returns false on parse error.
+    /// `DoLoadConfiguration` also detaches any pinned `mAutoSaveUuid`
+    /// at the top so the next AutoSave creates a fresh recents entry
+    /// instead of overwriting an unrelated prior session's JSON.
+    /// Callers that want to re-pin a uuid after the load
+    /// (`OpenRecentSession`, `RestoreLastSessionFromPath`) must do so
+    /// explicitly once the load returns true.
     void DoSaveConfiguration(const QString &path, loglib::SaveScope scope);
     bool DoLoadConfiguration(const QString &path);
 
@@ -711,8 +721,9 @@ private:
     std::vector<std::string> mPendingOpenErrors;
 
     /// Streaming session kind; gates UI variants. Set on open, cleared
-    /// in `streamingFinished`.
-    enum class SessionMode
+    /// in `streamingFinished`. Underlying type pinned to match the
+    /// forward declaration further up.
+    enum class SessionMode : int
     {
         Idle,
         Static,
