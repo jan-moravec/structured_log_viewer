@@ -378,6 +378,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
+    connect(ui->actionOpenWithConfiguration, &QAction::triggered, this, &MainWindow::OpenWithConfiguration);
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionOpenNetworkStream, &QAction::triggered, this, &MainWindow::OpenNetworkStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
@@ -927,6 +928,47 @@ void MainWindow::OpenFiles()
     StartStreamingOpenQueue(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
 }
 
+void MainWindow::OpenWithConfiguration()
+{
+    // Step 1: prompt for the configuration or session JSON. We reuse
+    // `DoLoadConfiguration` so the same validation + filter-restore
+    // path runs as for the standalone Load Configuration action.
+    const QString configPath = QFileDialog::getOpenFileName(
+        this, "Select Configuration or Session", QString(), "JSON (*.json);;All Files (*)"
+    );
+    if (configPath.isEmpty())
+    {
+        return;
+    }
+    if (!DoLoadConfiguration(configPath))
+    {
+        // `DoLoadConfiguration` already surfaced the parse error via
+        // QMessageBox; bail out so the user doesn't get a second
+        // file-open dialog on top of the failure.
+        return;
+    }
+
+    // Step 2: prompt for log files. Cancelling here leaves the
+    // configuration loaded but no rows -- equivalent to a plain
+    // Load Configuration call, which is a reasonable graceful exit.
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, "Select Log Files to Open with Configuration", QString(), "All Files (*.*)"
+    );
+    if (files.isEmpty())
+    {
+        return;
+    }
+
+    // Append mode so the filters / sort just restored from the
+    // configuration survive into the new session. With `mSessionMode`
+    // currently `Idle` and the model empty, the Append path inside
+    // `StartStreamingOpenQueue` is a no-op for state -- it neither
+    // resets nor re-arms Static, and `StreamNextPendingFile` takes
+    // the `BeginStreaming` path for the first file. Subsequent files
+    // queue onto the same session.
+    StartStreamingOpenQueue(files, OpenMode::Append);
+}
+
 bool MainWindow::TryLoadAsConfiguration(const QString &file)
 {
     try
@@ -1429,6 +1471,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     {
         return ui->actionOpen;
     }
+    if (name == QStringLiteral("actionOpenWithConfiguration"))
+    {
+        return ui->actionOpenWithConfiguration;
+    }
     if (name == QStringLiteral("actionOpenLogStream"))
     {
         return ui->actionOpenLogStream;
@@ -1585,6 +1631,19 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration:
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
 {
     StartStreamingOpenQueue(files, mode);
+}
+
+bool MainWindow::OpenWithConfigurationForTest(const QString &configPath, const QStringList &files)
+{
+    if (!DoLoadConfiguration(configPath))
+    {
+        return false;
+    }
+    if (!files.isEmpty())
+    {
+        StartStreamingOpenQueue(files, OpenMode::Append);
+    }
+    return true;
 }
 #endif
 

@@ -253,6 +253,14 @@ public:
     /// Test-only entry into the queued static-files open path,
     /// bypassing the file dialog and the keyboard-modifier sniff.
     void OpenFilesForTest(const QStringList &files, OpenMode mode);
+
+    /// Test-only entry into the Open-with-Configuration flow that
+    /// bypasses the two file dialogs. Mirrors the production slot
+    /// step-by-step: load the configuration via `DoLoadConfiguration`,
+    /// then queue @p files via `StartStreamingOpenQueue` in `Append`
+    /// mode. Returns false (and skips the queue) when the
+    /// configuration fails to parse.
+    bool OpenWithConfigurationForTest(const QString &configPath, const QStringList &files);
 #endif
 
 protected:
@@ -264,6 +272,13 @@ private slots:
     /// session mode. Bound to `actionNewSession` (Ctrl+N).
     void NewSession();
     void OpenFiles();
+    /// "Open with Configuration..." -- two-step prompt that first
+    /// loads a configuration or session JSON (columns, filters, sort)
+    /// and then opens the chosen log file(s) via `StartStreamingOpenQueue`
+    /// in `Append` mode, so the freshly-loaded filters survive into
+    /// the new session instead of being wiped by a destructive open.
+    /// Bound to `actionOpenWithConfiguration`.
+    void OpenWithConfiguration();
     void OpenLogStream();
     /// Pop the `NetworkStreamDialog`, build the matching producer, and
     /// call `LogModel::BeginStreaming`.

@@ -5838,6 +5838,79 @@ private slots:
         QCOMPARE(QString::fromStdString(probe.Configuration().source->locators.front()), fixtureB.Path());
     }
 
+    // The Open-with-Configuration flow loads a session JSON first
+    // (filters and sort included) and then opens log files in Append
+    // mode so the restored filters survive into the streamed rows.
+    void TestOpenWithConfigurationPreservesLoadedFilters()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+            QStringLiteral(R"({"category": "error", "msg": "gamma"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        // First load the fixture as a plain Open so we get the column
+        // layout the configuration will reference.
+        QSignalSpy primingSpy(model, &LogModel::streamingFinished);
+        QVERIFY(primingSpy.isValid());
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(primingSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "category column must exist after priming open");
+
+        // Persist a session that filters the `category` column to
+        // values containing "warn"; we then load this session via
+        // Open-with-Configuration and verify the filter is live.
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("filtered.json"));
+
+        loglib::LogConfigurationManager builder;
+        builder.SetSource(loglib::LogConfiguration::Source{});
+        builder.AppendKeys({"category", "msg"});
+
+        loglib::LogConfiguration::LogFilter filter;
+        filter.type = loglib::LogConfiguration::LogFilter::Type::String;
+        filter.row = categoryCol;
+        filter.filterString = "warn";
+        filter.matchType = loglib::LogConfiguration::LogFilter::Match::Contains;
+        builder.SetFilters({filter});
+        builder.Save(sessionPath.toStdString(), loglib::SaveScope::Full);
+
+        // Tear down the priming session, then run the combined flow.
+        mWindow->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 0);
+
+        mWindow->SetSuppressDialogsForTest(true);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        const bool ok = mWindow->OpenWithConfigurationForTest(sessionPath, {fixture.Path()});
+        QVERIFY2(ok, "OpenWithConfigurationForTest must accept the session JSON");
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // Rows are streamed into the model unfiltered; the filter
+        // map carries the restored rule (the proxy applies it on top).
+        QCOMPARE(model->rowCount(), fixtureLines.size());
+        QVERIFY2(
+            mWindow->Filters().size() == 1,
+            qPrintable(QStringLiteral("restored filter count = %1, expected 1").arg(mWindow->Filters().size()))
+        );
+
+        // The proxy filters down to the one row whose category
+        // contains "warn".
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->rowCount(), 1);
+    }
+
     // `actionNewSession` clears rows, filters, source, and session mode.
     // The action is reachable through `FindUiAction` so the keyboard
     // shortcut wiring is covered too (offscreen QPA can't deliver
