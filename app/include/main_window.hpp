@@ -43,6 +43,8 @@ class MainWindow;
 class QMenu;
 QT_END_NAMESPACE
 
+class SessionHistoryManager;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -63,12 +65,24 @@ public:
         Replace,
     };
 
+    /// Backwards-compatible constructor: no history manager wired in,
+    /// so auto-save / Recent Sessions / restore-on-launch behave as
+    /// no-ops. Used by the existing test fixture and by ad-hoc
+    /// MainWindow instantiations that don't care about history.
     MainWindow(QWidget *parent = nullptr);
+
+    /// Production constructor used by `main()`. The history manager
+    /// is owned by `main()` and lives for the application's lifetime;
+    /// the window keeps a non-owning pointer and writes its session
+    /// snapshot through it on streaming completion / window close.
+    MainWindow(SessionHistoryManager *historyManager, QWidget *parent);
+
     ~MainWindow();
 
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 
     void UpdateUi();
 
@@ -435,6 +449,14 @@ private:
     [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
+    /// Mirror the runtime session state into the model's
+    /// configuration manager, then `WriteSnapshot` through the
+    /// injected `SessionHistoryManager`. Reuses `mAutoSaveUuid` so
+    /// the same window updates one recents entry across its lifetime
+    /// instead of appending a fresh one on every save. No-op when
+    /// the manager is null or there is no source descriptor.
+    void AutoSaveSessionSnapshot();
+
     /// Snapshot `mFilters`, the proxy's sort, and `mCurrentSource`
     /// into the wire-format fields on the configuration. Filters
     /// are sorted by `(row, type, payload)` so two saves of an
@@ -554,6 +576,18 @@ private:
     /// `Failed` or by the next open's `Reset()`. Mirrored into
     /// `LogConfiguration::source` before a `SaveScope::Full` save.
     std::optional<loglib::LogConfiguration::Source> mCurrentSource;
+
+    /// Non-owning. Provided by `main()` for the production window;
+    /// `nullptr` for ad-hoc / test-only instantiations, in which case
+    /// auto-save / Recent Sessions / restore-on-launch all degrade to
+    /// no-ops.
+    SessionHistoryManager *mHistoryManager = nullptr;
+
+    /// uuid of the recents entry this window owns this session. Set
+    /// after the first successful `WriteSnapshot` so subsequent
+    /// auto-saves (and the closeEvent flush) rewrite the same JSON
+    /// instead of appending a new entry for every save.
+    QString mAutoSaveUuid;
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;

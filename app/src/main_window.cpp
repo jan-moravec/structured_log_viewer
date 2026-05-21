@@ -8,6 +8,7 @@
 #include "filter_editor.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include "session_history_manager.hpp"
 #include "streaming_control.hpp"
 
 #include <loglib/bytes_producer.hpp>
@@ -28,6 +29,7 @@
 #include <QAbstractProxyModel>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QCoreApplication>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -304,7 +306,12 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow)
+    : MainWindow(nullptr, parent)
+{
+}
+
+MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
+    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager)
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
@@ -596,6 +603,18 @@ MainWindow::MainWindow(QWidget *parent)
         if (result == StreamingResult::Failed)
         {
             mCurrentSource.reset();
+        }
+
+        // Auto-save the session snapshot on successful completion so
+        // the user can reopen this exact view through Recent Sessions
+        // and so the restore-on-launch flow has something to load.
+        // Skipped when no history manager is attached (test fixtures)
+        // and when nothing useful is loaded (no source means there is
+        // nothing to round-trip).
+        if (result == StreamingResult::Success && mHistoryManager != nullptr && mCurrentSource.has_value()
+            && !mCurrentSource->locators.empty())
+        {
+            AutoSaveSessionSnapshot();
         }
     });
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
@@ -1768,6 +1787,50 @@ void MainWindow::MirrorSessionStateToConfiguration()
     mModel->ConfigurationManager().SetSort(sort);
 
     mModel->ConfigurationManager().SetSource(mCurrentSource);
+}
+
+void MainWindow::AutoSaveSessionSnapshot()
+{
+    if (mHistoryManager == nullptr)
+    {
+        return;
+    }
+    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    {
+        // Nothing to round-trip; a session entry without a source
+        // can't be reopened by Recent Sessions and would just confuse
+        // the menu.
+        return;
+    }
+
+    // Snapshot the live filters / sort / source into the model's
+    // configuration manager. Mirrors the manual `SaveSession` path so
+    // auto-save and a user-driven save produce the same JSON.
+    MirrorSessionStateToConfiguration();
+
+    const loglib::LogConfiguration &configuration = mModel->ConfigurationManager().Configuration();
+    const QString uuid = mHistoryManager->WriteSnapshot(configuration, mAutoSaveUuid);
+    if (!uuid.isEmpty())
+    {
+        // Pin the uuid so subsequent auto-saves rewrite the same JSON
+        // instead of cluttering recents with one entry per save.
+        mAutoSaveUuid = uuid;
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // Final flush so the close-to-restore loop captures the exact
+    // state the user left the window in (any column moves / filter
+    // tweaks made after the last `streamingFinished`). Best-effort:
+    // any I/O failure inside the manager is silenced and the close
+    // proceeds, since blocking shutdown on disk errors would be a
+    // worse user experience than losing one snapshot.
+    if (mHistoryManager != nullptr && mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    {
+        AutoSaveSessionSnapshot();
+    }
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::SaveConfiguration()

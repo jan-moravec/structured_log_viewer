@@ -10667,6 +10667,59 @@ private slots:
         QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
     }
 
+    // The MainWindow auto-save hook writes a snapshot through the
+    // injected `SessionHistoryManager` on every successful streaming
+    // finish, reusing the per-window uuid so a second auto-save
+    // updates the same recents entry instead of growing the list.
+    void TestMainWindowAutoSavesOnStreamingFinished()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Use the production constructor that takes a manager. The
+        // default-constructed `mWindow` in the fixture is unwired, so
+        // a local window is needed for this test.
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        auto *model = wired->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "a-0"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "a-1"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        QVERIFY(changedSpy.isValid());
+
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(changedSpy.count(), 1);
+        QCOMPARE(manager.List().size(), 1);
+        const QString firstUuid = manager.List().front().uuid;
+
+        // Second open through the same window should *update* the
+        // existing entry, not add a new one.
+        const TempJsonFile fixtureB(QStringList{QStringLiteral(R"({"msg": "b-0"})")});
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, firstUuid);
+        // The label tracks the new source descriptor (primary file is
+        // still A; B appended on top).
+        QCOMPARE(manager.List().front().fileCount, 2);
+    }
+
     // `Clear` empties the index, deletes every per-uuid JSON, and
     // resets the last-session pointer.
     void TestSessionHistoryClearWipesEverything()
