@@ -1052,16 +1052,29 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     // the heuristic-skip is intentional. The probe is cheap (one
     // JSON parse via a throw-away manager) and only runs on the
     // off-chance the first file ends in `.json`.
+    //
+    // Surface to the status bar (and the console as a backup) so a
+    // GUI-launched user actually sees the hint -- a plain
+    // `qWarning()` only reaches whoever started the binary from a
+    // terminal. The probe rejects column-less parses for parity
+    // with `TryLoadAsConfiguration`: an empty `{}` is not a
+    // configuration the user meant to apply.
     if (files.size() > 1 && files.front().endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
     {
         try
         {
             loglib::LogConfigurationManager probe;
             probe.Load(files.front().toStdString());
-            qWarning() << "OpenFilesForCli: first argument" << files.front()
-                       << "parses as a configuration but is being opened as a log file because additional "
-                          "positional arguments were also passed. Use 'File -> Open with Configuration...' "
-                          "or pass the configuration on its own to apply it.";
+            if (!probe.Configuration().columns.empty())
+            {
+                const QString message =
+                    tr("First argument '%1' parses as a configuration but is being opened as a log "
+                       "file because additional arguments were passed. Use File -> Open with "
+                       "Configuration... or pass the configuration on its own to apply it.")
+                        .arg(files.front());
+                statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+                qWarning().noquote() << "OpenFilesForCli:" << message;
+            }
         }
         catch (const std::exception &)
         {
@@ -1368,31 +1381,64 @@ void MainWindow::OpenWithConfiguration()
 
 bool MainWindow::TryLoadAsConfiguration(const QString &file)
 {
+    // Probe-first: parse into a throw-away manager so the live
+    // proxy / sort / model are never touched if the file isn't
+    // actually a configuration. The previous in-place `Load` had
+    // two failure modes the throw-away avoids:
+    //   1. The destructive pre-clears (`SetFilterRules({})` +
+    //      `sortByColumn(-1, ...)`) ran *before* the parse, so a
+    //      throwing parse would leak: `mFilters` survived but the
+    //      proxy's compiled rules were gone, silently disabling
+    //      every active filter for the caller's Append fall-back.
+    //   2. Glaze accepts `{}` (and any object containing only
+    //      session-only fields) as a default-valued
+    //      `LogConfiguration` -- columns empty. Treating that as a
+    //      "configuration" and applying it would wipe the user's
+    //      column layout to the default. We additionally reject
+    //      column-less parses below as "not a configuration", so
+    //      the caller falls through to opening the file as a log.
     try
     {
-        // Drop proxy rules and the sort *before* `Load` rewrites the
-        // configuration: existing rules / `mSortColumn` were built
-        // for the old column layout and would otherwise evaluate
-        // against the wrong columns under the upcoming model reset.
-        // `mFilters` itself is rebuilt below by
-        // `RebuildFiltersFromConfiguration`.
+        loglib::LogConfigurationManager probe;
+        probe.Load(file.toStdString());
+        if (probe.Configuration().columns.empty())
+        {
+            // A configuration with zero columns is indistinguishable
+            // from a default-constructed one and would clobber the
+            // current view. Treat as a probe miss.
+            return false;
+        }
+    }
+    catch (...)
+    {
+        return false;
+    }
+
+    // Probe accepted: commit destructive changes. From here on a
+    // throw is a TOCTOU race (the file changed between the two
+    // reads); we surface it via the same `false` return as a probe
+    // miss but the live state may already be partially mutated.
+    try
+    {
+        // Drop proxy rules and the sort *before* the in-place
+        // `Load` rewrites the configuration: existing rules /
+        // `mSortColumn` were built for the old column layout and
+        // would otherwise evaluate against the wrong columns under
+        // the upcoming model reset. `mFilters` itself is rebuilt
+        // below by `RebuildFiltersFromConfiguration`.
         mSortFilterProxyModel->SetFilterRules({});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         mModel->ConfigurationManager().Load(file.toStdString());
-        // `Load` succeeded -> the file is a configuration and we
-        // are about to apply it. Mirror the rationale in
-        // `DoLoadConfiguration`: a single-file open / drop that
-        // matches a configuration is a session boundary, so drop
-        // the previous session's recents pin before any subsequent
-        // AutoSave can rewrite that unrelated session's JSON in
-        // place under the stale uuid. Deferred until after `Load`
-        // so a probe miss (file is not a configuration, `Load`
-        // throws, caller falls through to a non-destructive Append
-        // open) preserves the prior pin -- the Append branch is
-        // meant to extend the same recents entry, and a top-of-
-        // function detach would forfeit that ownership on every
-        // negative probe.
+        // Mirror the rationale in `DoLoadConfiguration`: a single-
+        // file open / drop that matches a configuration is a
+        // session boundary, so drop the previous session's recents
+        // pin before any subsequent AutoSave can rewrite that
+        // unrelated session's JSON in place under the stale uuid.
+        // The probe-miss case above already returned without
+        // touching `mAutoSaveUuid`, so a non-configuration drop
+        // still preserves the prior pin for the caller's Append
+        // fall-back.
         DetachAutoSaveUuid();
         // `Load` rewrites the configuration without emitting any
         // model signal; the reset re-initialises the header and

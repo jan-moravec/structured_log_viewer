@@ -10669,6 +10669,35 @@ private slots:
         QCOMPARE(probe.Configuration().columns.size(), static_cast<std::size_t>(2));
     }
 
+    // Recents-menu label for a `Kind::NetworkStream` source must
+    // round-trip the producer URI / display name verbatim. The
+    // earlier label builder ran every locator through
+    // `QFileInfo::fileName()`, which strips at the colon /
+    // separator and turns `"TCP 127.0.0.1:5170"` into `"5170"` --
+    // unreadable in the menu. Production no longer auto-saves
+    // network streams, but legacy entries from pre-gate builds
+    // still surface in the index, so the kind-aware branch matters
+    // for upgrade scenarios.
+    void TestSessionHistoryLabelKeepsNetworkStreamLocatorIntact()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+            .locators = {"TCP 127.0.0.1:5170"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list.front().label, QStringLiteral("TCP 127.0.0.1:5170"));
+    }
+
     // Capacity eviction trims the index to MAX_ENTRIES and deletes the
     // matching per-uuid JSON file.
     void TestSessionHistoryEvictsOldestPastCapacity()
@@ -11523,6 +11552,16 @@ private slots:
     // same recents entry instead of forking a new one. This is the
     // load-bearing reason the detach lives after `Load` succeeds
     // rather than at the top of `TryLoadAsConfiguration`.
+    //
+    // The earlier in-place implementation had a second silent
+    // failure mode: it cleared the proxy filter rules and the
+    // active sort *before* attempting `Load`, so a probe miss
+    // leaked those clears even though the runtime `mFilters` map
+    // and the sort header indicator were rebuilt with no rollback.
+    // Net effect was a window whose Filters menu still listed every
+    // active filter but whose visible rows ignored every one of
+    // them. This test additionally pins down those side-effects so
+    // any future regression to the in-place layout fails loudly.
     void TestTryLoadAsConfigurationFailurePreservesPreviousRecentsEntry()
     {
         QTemporaryDir sessionsDir;
@@ -11531,7 +11570,12 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        // Fixture has one row matching the filter we install below
+        // and one that doesn't, so the proxy row count is a clean
+        // observable for "filter still active".
+        const TempJsonFile fixtureA(
+            {QStringLiteral(R"({"msg": "alpha"})"), QStringLiteral(R"({"msg": "beta"})")}
+        );
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -11542,6 +11586,41 @@ private slots:
         QCOMPARE(manager.List().size(), 1);
         const QString uuidA = manager.List().front().uuid;
         QCOMPARE(wired->ActiveSessionUuid(), uuidA);
+
+        auto *model = wired->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        auto *filterModel = wired->FilterModel();
+        QVERIFY(filterModel != nullptr);
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        // Install a substring filter that drops `beta`, leaving
+        // exactly one row visible. We re-check this row count after
+        // the failed probe; a failure to preserve the proxy's
+        // compiled rules would silently make every row pass and
+        // bump rowCount back to 2.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                wired.get(),
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("survives-failed-probe")),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("alpha")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->rowCount(), 1);
+        QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
+
+        // Pin a deterministic sort so the indicator preservation is
+        // also observable.
+        wired->TableViewForTest()->sortByColumn(msgCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->SortColumn(), msgCol);
+        QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
 
         // Write a deliberately-non-JSON payload so `TryLoadAsConfiguration`
         // fails inside `Load(...)`.
@@ -11563,6 +11642,102 @@ private slots:
             wired->ActiveSessionUuid() == uuidA,
             "failed probe must preserve the prior recents pin so an Append open extends the same entry"
         );
+
+        // Filters and sort survive the failed probe: the user's
+        // runtime state is observably untouched.
+        QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
+        QCOMPARE(filterModel->rowCount(), 1);
+        QCOMPARE(filterModel->SortColumn(), msgCol);
+        QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
+    }
+
+    // CLI invocation `app cfg.json log.json` opens both as logs --
+    // the single-arg config heuristic only fires when the user
+    // passed exactly one argument. Without a diagnostic the user
+    // is left wondering why the configuration was ignored. A plain
+    // `qWarning()` reaches developers running from a terminal but
+    // not GUI users; surfacing the hint via the status bar makes
+    // it actually visible.
+    void TestOpenFilesForCliSurfacesConfigDiagnosticOnStatusBar()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Write a real configuration JSON with at least one column
+        // so the probe accepts it (column-less parses are rejected
+        // by the same gate that `TryLoadAsConfiguration` uses).
+        QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("cli-config.json"));
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        const TempJsonFile log({QStringLiteral(R"({"msg": "from cli"})")});
+
+        wired->statusBar()->clearMessage();
+        wired->OpenFilesForCli({cfgPath, log.Path()});
+        QCoreApplication::processEvents();
+
+        const QString message = wired->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QFileInfo(cfgPath).fileName()),
+            "status bar must mention the configuration file the user passed"
+        );
+        QVERIFY2(
+            message.contains(QStringLiteral("Open with Configuration")),
+            "status bar hint must point the user at the menu entry that does what they meant"
+        );
+    }
+
+    // Glaze accepts an empty `{}` (and any object containing only
+    // session-only fields) as a default-valued `LogConfiguration`
+    // with `columns.empty()`. Treating that as a configuration
+    // would silently wipe the user's column layout when they drop
+    // an unrelated JSON file. `TryLoadAsConfiguration` must reject
+    // column-less parses as a probe miss so the caller falls
+    // through to opening the file as a log.
+    void TestTryLoadAsConfigurationRejectsEmptyJsonObject()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const auto columnsBefore = wired->Model()->Configuration().columns.size();
+        QVERIFY2(columnsBefore > 0, "fixture must produce at least one column");
+
+        // `{}` parses cleanly into a default-valued LogConfiguration.
+        // Without the explicit reject, this would slip past the
+        // probe and `mModel->ConfigurationManager().Load()` would
+        // replace the live columns with the empty default.
+        QTemporaryDir emptyDir;
+        QVERIFY(emptyDir.isValid());
+        const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
+        {
+            std::ofstream stream(emptyPath.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << "{}";
+        }
+        QVERIFY2(
+            !wired->TryLoadAsConfigurationForTest(emptyPath),
+            "an empty JSON object must be rejected as a probe miss"
+        );
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
     }
 
     // The persisted `openWindowsAtQuit` set is maintained eagerly so
@@ -11807,9 +11982,13 @@ private slots:
         QVERIFY(QFileInfo::exists(keptPath));
 
         // Plant an orphan JSON next to it (simulates a crash between
-        // `WriteSnapshot`'s file-write and index-update steps).
+        // `WriteSnapshot`'s file-write and index-update steps). The
+        // stem must be uuid-shaped because the orphan sweeper now
+        // gates deletion on `QUuid::fromString(stem).isNull()` so
+        // unrelated user files in `sessionsDir` are not silently
+        // wiped on next launch.
         const QString orphanPath =
-            QDir(sessionsDir.path()).filePath(QStringLiteral("orphan-%1.json").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+            QDir(sessionsDir.path()).filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json"));
         {
             QFile orphan(orphanPath);
             QVERIFY(orphan.open(QIODevice::WriteOnly));
@@ -11818,11 +11997,11 @@ private slots:
         QVERIFY(QFileInfo::exists(orphanPath));
 
         // Also plant a leftover `.json.tmp` (atomic-write crash
-        // between `ofstream::write` and `rename`). The cleanup must
-        // sweep it alongside the orphan JSON so it does not
-        // accumulate over time.
+        // between `ofstream::write` and `rename`). Same uuid-stem
+        // requirement -- the sweeper applies the gate to both
+        // `*.json` and `*.json.tmp`.
         const QString staleTempPath =
-            QDir(sessionsDir.path()).filePath(QStringLiteral("orphan-%1.json.tmp").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+            QDir(sessionsDir.path()).filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json.tmp"));
         {
             QFile staleTemp(staleTempPath);
             QVERIFY(staleTemp.open(QIODevice::WriteOnly));
@@ -11835,6 +12014,56 @@ private slots:
         QVERIFY2(QFileInfo::exists(keptPath), "indexed entries must survive cleanup");
         QVERIFY2(!QFileInfo::exists(orphanPath), "orphan JSON must be removed");
         QVERIFY2(!QFileInfo::exists(staleTempPath), "stale .json.tmp must be removed");
+    }
+
+    // The orphan sweeper must NOT delete files whose stem isn't a
+    // QUuid. The `sessionsDir` is app-managed by convention but a
+    // user (or unrelated tool) may have planted `notes.json` there;
+    // silently deleting it on next launch would be a foot-gun. The
+    // gate stays in lockstep with the consumer-side validation in
+    // `MainWindow::RestoreLastSessionFromPath`, which already
+    // refuses to pin non-uuid stems.
+    void TestCleanupOrphanFilesPreservesNonUuidStems()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Trigger an mkpath without writing a real recents entry --
+        // we just need the directory to exist so we can plant the
+        // foreign file.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/seed.json"}
+        };
+        const QString seedUuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!seedUuid.isEmpty());
+
+        // Plant a foreign file with a non-uuid stem.
+        const QString foreignPath = QDir(sessionsDir.path()).filePath(QStringLiteral("notes.json"));
+        {
+            QFile foreign(foreignPath);
+            QVERIFY(foreign.open(QIODevice::WriteOnly));
+            foreign.write("user notes -- not ours");
+        }
+        QVERIFY(QFileInfo::exists(foreignPath));
+
+        // Also plant a non-uuid-stemmed `.json.tmp` to confirm the
+        // gate applies symmetrically.
+        const QString foreignTempPath = QDir(sessionsDir.path()).filePath(QStringLiteral("scratch.json.tmp"));
+        {
+            QFile foreignTemp(foreignTempPath);
+            QVERIFY(foreignTemp.open(QIODevice::WriteOnly));
+            foreignTemp.write("scratch space");
+        }
+        QVERIFY(QFileInfo::exists(foreignTempPath));
+
+        manager.CleanupOrphanFiles();
+
+        QVERIFY2(QFileInfo::exists(foreignPath), "non-uuid `notes.json` must survive cleanup");
+        QVERIFY2(QFileInfo::exists(foreignTempPath), "non-uuid `scratch.json.tmp` must survive cleanup");
+        QVERIFY2(QFileInfo::exists(manager.PathForUuid(seedUuid)), "indexed entry must still be present");
     }
 
     // `RestoreLastSessionFromPath` must pin `mAutoSaveUuid` even when
