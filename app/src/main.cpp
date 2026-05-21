@@ -192,6 +192,14 @@ int main(int argc, char *argv[])
     // capture is non-empty -- if every window already removed itself
     // via `closeEvent`, leaving the eagerly-maintained (empty) list
     // alone is correct.
+    //
+    // We deliberately use `RestorableActiveSessionUuid` rather than
+    // `ActiveSessionUuid` so windows whose session cannot be
+    // fan-restored (e.g. a legacy NetworkStream entry the user
+    // opened from Recent Sessions) do not get re-published on every
+    // OS-quit. Without this filter the user would see the "must
+    // re-bind manually" info popup on every subsequent launch until
+    // they manually cleared the entry.
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [] {
         QStringList openUuids;
         for (QWidget *widget : QApplication::topLevelWidgets())
@@ -201,7 +209,7 @@ int main(int argc, char *argv[])
             {
                 continue;
             }
-            const QString uuid = mw->ActiveSessionUuid();
+            const QString uuid = mw->RestorableActiveSessionUuid();
             if (!uuid.isEmpty())
             {
                 openUuids.append(uuid);

@@ -110,6 +110,18 @@ public:
         return mAutoSaveUuid;
     }
 
+    /// Like `ActiveSessionUuid`, but returns an empty string when
+    /// the current session cannot be restored by fan-restore on the
+    /// next launch (no source, network stream, ...). The
+    /// `aboutToQuit` handler in `main()` uses this to avoid writing
+    /// non-restorable uuids into `openWindowsAtQuit`. Without the
+    /// filter, opening a legacy NetworkStream entry from the Recent
+    /// Sessions menu and then OS-quitting (Cmd+Q, login session
+    /// teardown) would re-publish the uuid to `openWindowsAtQuit`
+    /// even though `closeEvent` never ran -- the next launch would
+    /// then loop on the "Network Stream Session" info popup.
+    [[nodiscard]] QString RestorableActiveSessionUuid() const noexcept;
+
     void UpdateUi();
 
     /// Single sync point for newest-first display: picks the right

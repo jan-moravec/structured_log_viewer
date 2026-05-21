@@ -2222,6 +2222,47 @@ void MainWindow::DetachAutoSaveUuid()
     mAutoSaveUuid.clear();
 }
 
+QString MainWindow::RestorableActiveSessionUuid() const noexcept
+{
+    // Mirror the `ShouldAutoSaveSession` gates: a uuid is only
+    // worth persisting into `openWindowsAtQuit` if fan-restore can
+    // actually do something useful with it on the next launch.
+    // Live-tail (`SessionMode::LiveTail`) is intentionally accepted
+    // here even though `ShouldAutoSaveSession` rejects it -- the
+    // uuid was pinned by a previous static load (live-tail starts
+    // from a static `File` source), and the JSON on disk reflects
+    // that static state. Restoring it gives the user back the
+    // static view of the same file, which is closer to what they
+    // had than nothing. The auto-save gate's stricter rule is about
+    // not *creating* fresh stream snapshots; the restore gate's
+    // looser rule is about not *losing* state at OS-quit time.
+    if (mAutoSaveUuid.isEmpty())
+    {
+        return {};
+    }
+    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    {
+        // No-source configurations are intentionally restorable
+        // (the user can pin a columns-only view), but only when a
+        // uuid was explicitly pinned by `RestoreLastSessionFromPath`
+        // / `OpenRecentSession`. If we get here `mAutoSaveUuid` is
+        // set and there is no source -- that case (pinned uuid, no
+        // source) is genuinely round-trippable, so return the uuid.
+        return mAutoSaveUuid;
+    }
+    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    {
+        // NetworkStream / future non-File kinds: the snapshot's
+        // locator is a producer URI, not something
+        // `StartStreamingOpenQueue` can re-bind on launch. Filtering
+        // here breaks the fan-restore loop noted in the post-commit
+        // review (a legacy stream entry would otherwise come back
+        // on every launch with a "must re-bind manually" popup).
+        return {};
+    }
+    return mAutoSaveUuid;
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     // Final flush so the close-to-restore loop captures the exact

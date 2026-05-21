@@ -11540,6 +11540,84 @@ private slots:
         QCOMPARE(wired->ActiveSessionUuid(), uuid);
     }
 
+    // `RestorableActiveSessionUuid` is the predicate the `aboutToQuit`
+    // handler in `main()` consults when snapshotting
+    // `openWindowsAtQuit` on OS-driven quit (Cmd+Q, login session
+    // teardown, ...). It must return an empty string for windows
+    // whose session cannot be fan-restored on the next launch --
+    // otherwise opening a legacy NetworkStream entry from Recent
+    // Sessions and OS-quitting (no `closeEvent`) would re-publish
+    // the uuid every launch, looping the "Network Stream Session"
+    // info popup forever. The plain `ActiveSessionUuid` accessor
+    // still returns the pinned uuid so internal book-keeping
+    // (Touch, AutoSave reuse) stays consistent.
+    void TestRestorableActiveSessionUuidFiltersNonRestorableSessions()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // --- Case A: NetworkStream session (the regression).
+        // `RestoreLastSessionFromPath` pins the uuid (so the user
+        // can manually re-bind and have the entry rewritten in
+        // place) but `RestorableActiveSessionUuid` must hide it
+        // from fan-restore.
+        {
+            const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const QString jsonPath = manager.PathForUuid(uuid);
+            QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+            loglib::LogConfigurationManager builder;
+            builder.AppendKeys({"msg"});
+            builder.SetSource(loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+                .locators = {"tcp://127.0.0.1:5170"}
+            });
+            builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->RestoreLastSessionFromPath(jsonPath);
+            QCoreApplication::processEvents();
+
+            QCOMPARE(wired->ActiveSessionUuid(), uuid);
+            QVERIFY2(
+                wired->RestorableActiveSessionUuid().isEmpty(),
+                "fan-restore must skip NetworkStream sessions"
+            );
+        }
+
+        // --- Case B: no-source configuration (columns-only entry).
+        // These are intentionally restorable -- the user pinned a
+        // column / filter layout and wants it back. The accessor
+        // must therefore mirror `ActiveSessionUuid` for this kind.
+        {
+            const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const QString jsonPath = manager.PathForUuid(uuid);
+            QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+            loglib::LogConfigurationManager builder;
+            builder.AppendKeys({"msg"});
+            // Intentionally no `SetSource`.
+            builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->RestoreLastSessionFromPath(jsonPath);
+            QCoreApplication::processEvents();
+
+            QCOMPARE(wired->ActiveSessionUuid(), uuid);
+            QCOMPARE(wired->RestorableActiveSessionUuid(), uuid);
+        }
+
+        // --- Case C: empty uuid (no session pinned). Trivially
+        // empty regardless of source state -- nothing to restore.
+        {
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            QVERIFY(wired->ActiveSessionUuid().isEmpty());
+            QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
+        }
+    }
+
     // `RestoreLastSessionFromPath` only pins `mAutoSaveUuid` when the
     // file stem parses as a QUuid; an ad-hoc session file outside the
     // sessions dir must not hijack auto-save into writing to the
