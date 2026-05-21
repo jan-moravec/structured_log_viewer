@@ -965,6 +965,46 @@ void MainWindow::RebuildRecentSessionsMenu()
     });
 }
 
+void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
+{
+    if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+    {
+        return;
+    }
+    if (!DoLoadConfiguration(jsonPath))
+    {
+        return;
+    }
+    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    {
+        return;
+    }
+
+    QStringList files;
+    files.reserve(static_cast<qsizetype>(mCurrentSource->locators.size()));
+    for (const std::string &locator : mCurrentSource->locators)
+    {
+        files.append(QString::fromStdString(locator));
+    }
+    StartStreamingOpenQueue(files, OpenMode::Append);
+
+    // Pin the uuid (if the path matches one of our recents entries)
+    // so the next auto-save updates that entry instead of forking
+    // off a new one. We compute the uuid by stripping the directory
+    // and the `.json` suffix -- per-uuid files always live under
+    // `sessionsDir/<uuid>.json`.
+    if (mHistoryManager != nullptr)
+    {
+        const QFileInfo info(jsonPath);
+        const QString stem = info.completeBaseName();
+        if (!stem.isEmpty())
+        {
+            mAutoSaveUuid = stem;
+            mHistoryManager->Touch(stem);
+        }
+    }
+}
+
 void MainWindow::OpenRecentSession(const QString &uuid)
 {
     if (mHistoryManager == nullptr || uuid.isEmpty())

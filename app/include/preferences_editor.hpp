@@ -37,4 +37,5 @@ private:
     QSpinBox *mStreamRetentionSpinBox;
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;
+    QCheckBox *mRestoreLastSessionCheckBox;
 };

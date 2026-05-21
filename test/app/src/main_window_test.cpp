@@ -10667,6 +10667,50 @@ private slots:
         QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
     }
 
+    // `RestoreLastSessionFromPath` opens an auto-saved JSON snapshot
+    // and rehydrates the model + filters from it. Used by main()'s
+    // restore-on-launch hook; tested here against a freshly-built
+    // window so we can drive the entry point directly.
+    void TestRestoreLastSessionFromPath()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Step 1: open a session through one window so we get a
+        // real on-disk JSON to restore from.
+        auto seeder = std::make_unique<MainWindow>(&manager, nullptr);
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(seeder->Model(), &LogModel::streamingFinished);
+        seeder->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+
+        const auto lastPath = manager.LastSessionPath();
+        QVERIFY(lastPath.has_value());
+        // Drop the seeder so any closeEvent flush completes before
+        // we drive the restore (mirrors the real cold-start order).
+        seeder.reset();
+
+        // Step 2: fresh window, restore the snapshot. The fixture
+        // must still exist on disk because the configuration points
+        // at its path.
+        auto restored = std::make_unique<MainWindow>(&manager, nullptr);
+        QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
+        restored->RestoreLastSessionFromPath(*lastPath);
+        QVERIFY(restoredSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
+    }
+
     // The Recent Sessions submenu is rebuilt from
     // `SessionHistoryManager::List` on `aboutToShow`. Asserts:
     // (a) one action per entry (plus a separator + Clear action),

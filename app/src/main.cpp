@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QStandardPaths>
+#include <QStringList>
 
 #include <memory>
 
@@ -47,6 +48,25 @@ int main(int argc, char *argv[])
 
     MainWindow w(&historyManager, nullptr);
     w.show();
+
+    // Restore-on-launch: opt-in via Preferences. Only fires when no
+    // CLI files were passed (so the user explicitly opening a file
+    // does not race the restore) and only when the manager has a
+    // last-session pointer. The multi-instance coordinator landing
+    // in Part 5d narrows this further to "primary first-launch".
+    const QStringList cliArgs = QCoreApplication::arguments();
+    const bool hasCliFiles = (cliArgs.size() > 1);
+    if (!hasCliFiles && SessionHistoryManager::RestoreLastSessionOnLaunch())
+    {
+        const auto lastPath = historyManager.LastSessionPath();
+        if (lastPath.has_value())
+        {
+            // Failures inside the restore flow surface a dialog from
+            // `DoLoadConfiguration`; on success the window is now
+            // mirroring the restored session.
+            w.RestoreLastSessionFromPath(*lastPath);
+        }
+    }
 
     return QApplication::exec();
 }

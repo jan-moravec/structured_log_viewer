@@ -1,6 +1,7 @@
 #include "preferences_editor.hpp"
 
 #include "appearance_control.hpp"
+#include "session_history_manager.hpp"
 #include "streaming_control.hpp"
 
 #include <QApplication>
@@ -33,6 +34,11 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     mStreamRetentionSpinBox = new QSpinBox(this);
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
+    mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
+    mRestoreLastSessionCheckBox->setToolTip(
+        "When enabled, the most recent auto-saved session is reopened automatically on startup. "
+        "Only applies to the primary instance on first launch with no command-line files."
+    );
 
     mSizeSpinBox->setRange(FONT_POINT_SIZE_MIN, FONT_POINT_SIZE_MAX);
 
@@ -99,9 +105,14 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     auto *staticLayout = new QVBoxLayout(staticGroup);
     staticLayout->addWidget(mStaticNewestFirstCheckBox);
 
+    auto *sessionGroup = new QGroupBox("Session History", this);
+    auto *sessionLayout = new QVBoxLayout(sessionGroup);
+    sessionLayout->addWidget(mRestoreLastSessionCheckBox);
+
     layout->addWidget(appearanceGroup);
     layout->addWidget(streamingGroup);
     layout->addWidget(staticGroup);
+    layout->addWidget(sessionGroup);
 
     auto *okButton = new QPushButton("Ok", this);
     auto *cancelButton = new QPushButton("Cancel", this);
@@ -120,6 +131,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         StreamingControl::SetNewestFirst(streamNewestFirst);
         StreamingControl::SetStaticNewestFirst(staticNewestFirst);
         StreamingControl::SaveConfiguration();
+        SessionHistoryManager::SetRestoreLastSessionOnLaunch(mRestoreLastSessionCheckBox->isChecked());
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
@@ -156,4 +168,5 @@ void PreferencesEditor::UpdateFields()
     mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::RetentionLines()));
     mStreamNewestFirstCheckBox->setChecked(StreamingControl::IsNewestFirst());
     mStaticNewestFirstCheckBox->setChecked(StreamingControl::IsStaticNewestFirst());
+    mRestoreLastSessionCheckBox->setChecked(SessionHistoryManager::RestoreLastSessionOnLaunch());
 }

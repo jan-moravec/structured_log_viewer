@@ -84,6 +84,14 @@ public:
     void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
+    /// Restore the auto-saved session at @p jsonPath. Drives the same
+    /// logic as the Recent Sessions reopen path, but starts from a
+    /// JSON path so it can run before any menu wiring -- used by
+    /// `main()`'s restore-on-launch flow and by tests. Skips the
+    /// `NewSession` teardown (the window is freshly constructed and
+    /// has nothing to discard).
+    void RestoreLastSessionFromPath(const QString &jsonPath);
+
     void UpdateUi();
 
     /// Single sync point for newest-first display: picks the right

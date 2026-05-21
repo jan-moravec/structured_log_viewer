@@ -109,6 +109,13 @@ public:
         return mSessionsDir;
     }
 
+    /// Read the `restoreLastSessionOnLaunch` user preference. Default
+    /// is `true` (opt-in to a smooth restart). Backed by `QSettings`;
+    /// kept here so the preference lives in the same module as the
+    /// other recents-related keys.
+    static bool RestoreLastSessionOnLaunch();
+    static void SetRestoreLastSessionOnLaunch(bool enabled);
+
 signals:
     void changed();
 

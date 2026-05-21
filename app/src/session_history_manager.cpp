@@ -16,12 +16,26 @@ namespace
 constexpr char SETTINGS_SIZE_KEY[] = "recentSessions/size";
 constexpr char SETTINGS_ENTRIES_GROUP[] = "recentSessions/entries";
 constexpr char SETTINGS_LAST_UUID_KEY[] = "recentSessions/lastSessionUuid";
+constexpr char SETTINGS_RESTORE_LAST_KEY[] = "recentSessions/restoreLastSessionOnLaunch";
 
 QString EntryKey(int index, const QString &field)
 {
     return QStringLiteral("%1/%2/%3").arg(QLatin1String(SETTINGS_ENTRIES_GROUP)).arg(index).arg(field);
 }
 } // namespace
+
+bool SessionHistoryManager::RestoreLastSessionOnLaunch()
+{
+    QSettings settings;
+    return settings.value(QLatin1String(SETTINGS_RESTORE_LAST_KEY), true).toBool();
+}
+
+void SessionHistoryManager::SetRestoreLastSessionOnLaunch(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(QLatin1String(SETTINGS_RESTORE_LAST_KEY), enabled);
+    settings.sync();
+}
 
 SessionHistoryManager::SessionHistoryManager(
     QDir sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent
