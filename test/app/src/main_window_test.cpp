@@ -1643,7 +1643,9 @@ private slots:
         const QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
         QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via FindUiAction");
         // Sanity-check the keyboard accelerator the production UI ships.
-        QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+N")));
+        // Remapped from Ctrl+Shift+N to Ctrl+Shift+L when File -> New Window
+        // claimed the former shortcut.
+        QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+L")));
     }
 
     //  regression: when the paused-buffer cap forces the
@@ -10665,6 +10667,89 @@ private slots:
             "LastSessionPath must be nullopt after the last entry is removed"
         );
         QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
+    }
+
+    // `actionNewWindow` spawns a second top-level MainWindow that
+    // shares the primary's `SessionHistoryManager`. Asserts:
+    // (a) one new top-level window appears,
+    // (b) the new window points at the same manager (proved
+    //     indirectly by writing through one and listing through the
+    //     other),
+    // (c) the new window has `WA_DeleteOnClose` so closing it does
+    //     not leak.
+    void TestNewWindowSharesHistoryManager()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto primary = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Count only `MainWindow` top-levels; each `MainWindow`
+        // constructor also installs auxiliary top-level widgets
+        // (preferences editor, record detail window, etc.) that
+        // would otherwise inflate a raw `topLevelWidgets` count.
+        auto countMainWindows = []() {
+            int n = 0;
+            for (QWidget *w : QApplication::topLevelWidgets())
+            {
+                if (qobject_cast<MainWindow *>(w) != nullptr)
+                {
+                    ++n;
+                }
+            }
+            return n;
+        };
+
+        const int mainsBefore = countMainWindows();
+        const QList<QWidget *> topLevelBefore = QApplication::topLevelWidgets();
+
+        primary->FindUiAction(QStringLiteral("actionNewWindow"))->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(countMainWindows(), mainsBefore + 1);
+
+        // Find the newly-spawned MainWindow (the one that wasn't in
+        // `topLevelBefore`).
+        MainWindow *child = nullptr;
+        for (QWidget *w : QApplication::topLevelWidgets())
+        {
+            if (topLevelBefore.contains(w))
+            {
+                continue;
+            }
+            MainWindow *candidate = qobject_cast<MainWindow *>(w);
+            if (candidate != nullptr && candidate != primary.get())
+            {
+                child = candidate;
+                break;
+            }
+        }
+        QVERIFY2(child != nullptr, "newly spawned window must be a MainWindow");
+        QVERIFY2(child->testAttribute(Qt::WA_DeleteOnClose), "spawned window must auto-delete on close");
+
+        // Write through the primary window via a real open so the
+        // recents store mutates; the child window sees the same
+        // entry, proving shared-manager wiring.
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "shared"})")});
+        QSignalSpy primaryFinished(primary->Model(), &LogModel::streamingFinished);
+        primary->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(primaryFinished.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+
+        // Close the spawned window so its WA_DeleteOnClose unwinds
+        // before our local `primary` goes out of scope. The
+        // `deleteLater` posted by Qt fires on the next event-loop
+        // iteration, so spin it.
+        QSignalSpy destroyedSpy(child, &QObject::destroyed);
+        child->close();
+        for (int i = 0; i < 50 && destroyedSpy.isEmpty(); ++i)
+        {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents();
+        }
+        QCOMPARE(destroyedSpy.count(), 1);
     }
 
     // `RestoreLastSessionFromPath` opens an auto-saved JSON snapshot

@@ -27,6 +27,7 @@
     <property name="title">
      <string>File</string>
     </property>
+    <addaction name="actionNewWindow"/>
     <addaction name="actionNewSession"/>
     <addaction name="actionOpen"/>
     <addaction name="actionOpenWithConfiguration"/>
@@ -229,7 +230,18 @@
     <string>Open Network Stream...</string>
    </property>
    <property name="toolTip">
-    <string>Listen on a TCP/UDP port for live log lines (Ctrl+Shift+N)</string>
+    <string>Listen on a TCP/UDP port for live log lines (Ctrl+Shift+L)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+L</string>
+   </property>
+  </action>
+  <action name="actionNewWindow">
+   <property name="text">
+    <string>New Window</string>
+   </property>
+   <property name="toolTip">
+    <string>Open a second main window with its own session, sharing the same recent-sessions list (Ctrl+Shift+N).</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+Shift+N</string>

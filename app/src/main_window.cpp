@@ -384,6 +384,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
+    connect(ui->actionNewWindow, &QAction::triggered, this, &MainWindow::NewWindow);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenWithConfiguration, &QAction::triggered, this, &MainWindow::OpenWithConfiguration);
 
@@ -905,6 +906,26 @@ bool MainWindow::event(QEvent *event)
         break;
     }
     return QMainWindow::event(event);
+}
+
+void MainWindow::NewWindow()
+{
+    if (mHistoryManager == nullptr)
+    {
+        // No-history mode (test fixture / ad-hoc instance): refuse
+        // to spawn extra windows. A test that needs multi-window can
+        // construct them directly with the manager-aware constructor.
+        return;
+    }
+
+    // Heap-allocated, no parent so the window is a top-level peer of
+    // `this`. `WA_DeleteOnClose` lets Qt own the lifetime; closing
+    // the new window unwinds it without needing an owner-side list.
+    auto *child = new MainWindow(mHistoryManager, nullptr);
+    child->setAttribute(Qt::WA_DeleteOnClose);
+    child->show();
+    child->raise();
+    child->activateWindow();
 }
 
 void MainWindow::RebuildRecentSessionsMenu()
@@ -1659,6 +1680,10 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     if (name == QStringLiteral("actionNewSession"))
     {
         return ui->actionNewSession;
+    }
+    if (name == QStringLiteral("actionNewWindow"))
+    {
+        return ui->actionNewWindow;
     }
     if (name == QStringLiteral("actionOpen"))
     {

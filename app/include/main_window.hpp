@@ -293,6 +293,12 @@ private slots:
     /// Resets the model, runtime filters, source descriptor, and
     /// session mode. Bound to `actionNewSession` (Ctrl+N).
     void NewSession();
+    /// Spawn a new top-level `MainWindow` sharing the same
+    /// `SessionHistoryManager` as this one. The new window is
+    /// heap-allocated with `Qt::WA_DeleteOnClose` so closing it does
+    /// not need any owner-side tracking. No-op when the current
+    /// window has no manager (no-history mode).
+    void NewWindow();
     /// Rebuild the `File -> Recent Sessions` submenu from the live
     /// `SessionHistoryManager` list. Connected to the submenu's
     /// `aboutToShow` so we never paint stale entries even after
