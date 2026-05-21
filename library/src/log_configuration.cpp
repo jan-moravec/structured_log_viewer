@@ -156,13 +156,18 @@ void LogConfigurationManager::Save(const std::filesystem::path &path) const
 
 void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope scope) const
 {
+    Save(mConfiguration, path, scope);
+}
+
+void LogConfigurationManager::Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope)
+{
     std::string json;
     if (scope == SaveScope::ColumnsOnly)
     {
         // Use the glaze shim so the written JSON has only `columns`,
         // not the default `filters` / `sort` blocks the full struct
         // would emit.
-        const ColumnsOnlyDocument document{.columns = mConfiguration.columns};
+        const ColumnsOnlyDocument document{.columns = configuration.columns};
         const auto error = glz::write<PRETTIFY_OPTS>(document, json);
         if (error)
         {
@@ -171,7 +176,7 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
     }
     else
     {
-        const auto error = glz::write<PRETTIFY_OPTS>(mConfiguration, json);
+        const auto error = glz::write<PRETTIFY_OPTS>(configuration, json);
         if (error)
         {
             throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));

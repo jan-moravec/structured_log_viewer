@@ -11,6 +11,7 @@
 #include "record_detail_widget.hpp"
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
+#include "session_history_manager.hpp"
 #include "streaming_control.hpp"
 
 #include <loglib/enum_dictionary.hpp>
@@ -99,6 +100,37 @@ namespace
 // removes it on destruction. Kept inside this TU to avoid pulling in the
 // library tests' TestJsonLogFile helper (which lives in test/lib and would
 // add a build-graph dependency from apptest onto loglib's catch2 fixtures).
+// In-memory storage backend for `SessionHistoryManager` tests. Keeps
+// the recents index in a private vector so each test case is fully
+// isolated and `QSettings` (and the user's profile) stays untouched.
+class InMemoryRecentsIndexStorage final : public IRecentsIndexStorage
+{
+public:
+    QList<RecentSessionEntry> Read() const override
+    {
+        return mEntries;
+    }
+
+    void Write(const QList<RecentSessionEntry> &entries) override
+    {
+        mEntries = entries;
+    }
+
+    std::optional<QString> ReadLastUuid() const override
+    {
+        return mLastUuid;
+    }
+
+    void WriteLastUuid(const std::optional<QString> &uuid) override
+    {
+        mLastUuid = uuid;
+    }
+
+private:
+    QList<RecentSessionEntry> mEntries;
+    std::optional<QString> mLastUuid;
+};
+
 class TempJsonFile
 {
 public:
@@ -10472,6 +10504,197 @@ private slots:
 
         const qint64 firstUs = run.model->data(run.model->index(0, tsCol), LogModelItemDataRole::SortRole).toLongLong();
         QCOMPARE(firstUs, expectedFirstUtcUs);
+    }
+
+    // ---------------------------------------------------------------
+    // SessionHistoryManager
+    // ---------------------------------------------------------------
+
+    // Round-trip a snapshot: write a configuration, read the list, and
+    // re-load the on-disk JSON. Asserts the per-uuid file lands under
+    // the supplied sessions dir and that the metadata in the index is
+    // populated from the configuration's source descriptor.
+    void TestSessionHistoryWriteSnapshotRoundTrips()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.columns.push_back(loglib::LogConfiguration::Column{
+            .header = "category", .keys = {"category"}, .type = loglib::LogConfiguration::Type::Enumeration
+        });
+        cfg.columns.push_back(
+            loglib::LogConfiguration::Column{.header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String}
+        );
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/first.json", "C:/logs/second.json"}
+        };
+
+        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        const QString uuid = manager.WriteSnapshot(cfg);
+
+        QVERIFY(!uuid.isEmpty());
+        QCOMPARE(changedSpy.count(), 1);
+
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list.front().uuid, uuid);
+        QCOMPARE(list.front().fileCount, 2);
+        QCOMPARE(list.front().label, QStringLiteral("first.json + 1 more"));
+        QCOMPARE(list.front().primaryLocator, QStringLiteral("C:/logs/first.json"));
+
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        // Round-trip through the library loader.
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(probe.Configuration().columns.size(), static_cast<std::size_t>(2));
+    }
+
+    // Capacity eviction trims the index to MAX_ENTRIES and deletes the
+    // matching per-uuid JSON file.
+    void TestSessionHistoryEvictsOldestPastCapacity()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        const int capacityPlus = SessionHistoryManager::MAX_ENTRIES + 3;
+        QStringList writtenUuids;
+        for (int i = 0; i < capacityPlus; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+            };
+            const QString uuid = manager.WriteSnapshot(cfg);
+            QVERIFY(!uuid.isEmpty());
+            writtenUuids.append(uuid);
+        }
+
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), SessionHistoryManager::MAX_ENTRIES);
+
+        // The newest writes survive (writtenUuids are in chronological
+        // order; the last MAX_ENTRIES uuids should be in the list).
+        for (int i = capacityPlus - SessionHistoryManager::MAX_ENTRIES; i < capacityPlus; ++i)
+        {
+            QVERIFY2(
+                std::any_of(
+                    list.begin(),
+                    list.end(),
+                    [&](const RecentSessionEntry &e) { return e.uuid == writtenUuids[i]; }
+                ),
+                qPrintable(QStringLiteral("uuid index %1 must still be in the recents list").arg(i))
+            );
+        }
+
+        // The evicted uuids must not be on disk anymore.
+        for (int i = 0; i < capacityPlus - SessionHistoryManager::MAX_ENTRIES; ++i)
+        {
+            QVERIFY2(
+                !QFileInfo::exists(manager.PathForUuid(writtenUuids[i])),
+                qPrintable(QStringLiteral("evicted uuid %1 must be deleted from disk").arg(i))
+            );
+        }
+    }
+
+    // `LastSessionPath` returns the most recent snapshot. After a
+    // `Touch` on an older entry, that entry becomes the head.
+    void TestSessionHistoryTouchPromotesEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfgA;
+        cfgA.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/a.json"}
+        };
+        const QString uuidA = manager.WriteSnapshot(cfgA);
+
+        loglib::LogConfiguration cfgB;
+        cfgB.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/b.json"}
+        };
+        const QString uuidB = manager.WriteSnapshot(cfgB);
+
+        // Newest (B) is the head; LastSessionPath points at B.
+        const auto lastPath = manager.LastSessionPath();
+        QVERIFY(lastPath.has_value());
+        QCOMPARE(*lastPath, manager.PathForUuid(uuidB));
+
+        // Touch A -> A becomes the head.
+        manager.Touch(uuidA);
+        const auto afterTouch = manager.LastSessionPath();
+        QVERIFY(afterTouch.has_value());
+        QCOMPARE(*afterTouch, manager.PathForUuid(uuidA));
+        QCOMPARE(manager.List().front().uuid, uuidA);
+    }
+
+    // `Remove` drops the entry + its on-disk JSON and resets
+    // `LastSessionPath` to the new head (or `nullopt` when the index
+    // empties out).
+    void TestSessionHistoryRemoveClearsLastWhenLastRemoved()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/only.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
+
+        manager.Remove(uuid);
+        QCOMPARE(manager.List().size(), 0);
+        QVERIFY2(
+            !manager.LastSessionPath().has_value(),
+            "LastSessionPath must be nullopt after the last entry is removed"
+        );
+        QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
+    }
+
+    // `Clear` empties the index, deletes every per-uuid JSON, and
+    // resets the last-session pointer.
+    void TestSessionHistoryClearWipesEverything()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        QStringList uuids;
+        for (int i = 0; i < 3; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()}
+            };
+            uuids.append(manager.WriteSnapshot(cfg));
+        }
+        QCOMPARE(manager.List().size(), 3);
+
+        manager.Clear();
+        QCOMPARE(manager.List().size(), 0);
+        QVERIFY(!manager.LastSessionPath().has_value());
+        for (const QString &uuid : uuids)
+        {
+            QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
+        }
     }
 
 private:

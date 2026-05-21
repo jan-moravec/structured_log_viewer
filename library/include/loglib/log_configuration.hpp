@@ -191,6 +191,14 @@ public:
     /// Writes the subset selected by @p scope.
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
+    /// Free-standing serialization for callers that already hold a
+    /// `LogConfiguration` value (e.g. the app-side session-history
+    /// manager auto-saving a snapshot). Throws on serialization or
+    /// open failure -- same contract as the instance overload.
+    static void Save(
+        const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope = SaveScope::Full
+    );
+
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);
 
