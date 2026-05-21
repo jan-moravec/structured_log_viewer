@@ -33,11 +33,20 @@
     <addaction name="actionOpenLogStream"/>
     <addaction name="actionOpenNetworkStream"/>
     <addaction name="separator"/>
+    <addaction name="menuRecentSessions"/>
     <addaction name="separator"/>
     <addaction name="actionLoadConfiguration"/>
     <addaction name="actionSaveConfiguration"/>
     <addaction name="actionSaveSession"/>
     <addaction name="actionExit"/>
+   </widget>
+   <widget class="QMenu" name="menuRecentSessions">
+    <property name="title">
+     <string>Recent Sessions</string>
+    </property>
+    <property name="toolTip">
+     <string>Reopen sessions you have viewed before. The list is rebuilt every time the submenu is shown.</string>
+    </property>
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">

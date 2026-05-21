@@ -386,6 +386,15 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenWithConfiguration, &QAction::triggered, this, &MainWindow::OpenWithConfiguration);
+
+    // Lazily refresh the Recent Sessions submenu so other-window
+    // mutations (auto-save in a sibling MainWindow, clear, evict) are
+    // visible the next time the user opens the submenu without us
+    // having to react to every `changed()` signal.
+    if (ui->menuRecentSessions != nullptr)
+    {
+        connect(ui->menuRecentSessions, &QMenu::aboutToShow, this, &MainWindow::RebuildRecentSessionsMenu);
+    }
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionOpenNetworkStream, &QAction::triggered, this, &MainWindow::OpenNetworkStream);
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
@@ -896,6 +905,131 @@ bool MainWindow::event(QEvent *event)
         break;
     }
     return QMainWindow::event(event);
+}
+
+void MainWindow::RebuildRecentSessionsMenu()
+{
+    if (ui->menuRecentSessions == nullptr)
+    {
+        return;
+    }
+
+    ui->menuRecentSessions->clear();
+
+    if (mHistoryManager == nullptr)
+    {
+        QAction *placeholder = ui->menuRecentSessions->addAction(QStringLiteral("(history unavailable)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    const QList<RecentSessionEntry> entries = mHistoryManager->List();
+    if (entries.isEmpty())
+    {
+        QAction *placeholder = ui->menuRecentSessions->addAction(QStringLiteral("(no recent sessions)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    for (const RecentSessionEntry &entry : entries)
+    {
+        QString label = entry.label;
+        if (label.isEmpty())
+        {
+            label = entry.uuid;
+        }
+        QAction *action = ui->menuRecentSessions->addAction(label);
+        // Tooltip carries the primary locator + total file count so
+        // the user can disambiguate two entries that share a label.
+        QString tooltip = entry.primaryLocator;
+        if (entry.fileCount > 1)
+        {
+            tooltip += QStringLiteral(" (+ %1 more)").arg(entry.fileCount - 1);
+        }
+        if (!tooltip.isEmpty())
+        {
+            action->setToolTip(tooltip);
+        }
+        const QString uuid = entry.uuid;
+        connect(action, &QAction::triggered, this, [this, uuid]() { OpenRecentSession(uuid); });
+    }
+
+    ui->menuRecentSessions->addSeparator();
+    QAction *clearAction = ui->menuRecentSessions->addAction(QStringLiteral("Clear Recent Sessions"));
+    connect(clearAction, &QAction::triggered, this, [this]() {
+        if (mHistoryManager != nullptr)
+        {
+            mHistoryManager->Clear();
+            mAutoSaveUuid.clear();
+        }
+    });
+}
+
+void MainWindow::OpenRecentSession(const QString &uuid)
+{
+    if (mHistoryManager == nullptr || uuid.isEmpty())
+    {
+        return;
+    }
+
+    const QString jsonPath = mHistoryManager->PathForUuid(uuid);
+    if (!QFileInfo::exists(jsonPath))
+    {
+        // The entry was evicted (or another process deleted the
+        // backing JSON) between the menu rebuild and the click.
+        // Surface a clear error and remove the dangling entry so the
+        // next menu rebuild is clean.
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Recent Session Unavailable"),
+            QStringLiteral("The JSON for this recent session has been removed. Dropping it from the list.")
+        );
+        mHistoryManager->Remove(uuid);
+        return;
+    }
+
+    // Step 1: discard the active session so the restored columns /
+    // filters / sort do not collide with the live state. We pick the
+    // destructive path on purpose: Recent Sessions is "open this exact
+    // view", not "merge into the current one".
+    NewSession();
+
+    // Step 2: load the configuration (this also seeds the source
+    // descriptor + filter list + sort).
+    if (!DoLoadConfiguration(jsonPath))
+    {
+        // `DoLoadConfiguration` already showed a parse error; bail.
+        return;
+    }
+
+    // Step 3: open the source locators captured in the configuration.
+    // `mCurrentSource` was just populated by the load above.
+    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    {
+        // Configuration without a source: the columns / filters are
+        // installed but there is nothing to stream. Treat this like
+        // a plain Load Configuration call.
+        mHistoryManager->Touch(uuid);
+        mAutoSaveUuid = uuid;
+        return;
+    }
+
+    QStringList files;
+    files.reserve(static_cast<qsizetype>(mCurrentSource->locators.size()));
+    for (const std::string &locator : mCurrentSource->locators)
+    {
+        files.append(QString::fromStdString(locator));
+    }
+
+    // Append mode so the freshly-loaded filters survive into the new
+    // streamed rows (see `OpenWithConfiguration` for the same
+    // rationale). With `mSessionMode == Idle` and the model empty,
+    // the Append branch is a no-op for state and the first file goes
+    // through `BeginStreaming` cleanly.
+    StartStreamingOpenQueue(files, OpenMode::Append);
+
+    mHistoryManager->Touch(uuid);
+    mAutoSaveUuid = uuid;
 }
 
 void MainWindow::NewSession()

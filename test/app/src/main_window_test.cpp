@@ -10667,6 +10667,65 @@ private slots:
         QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
     }
 
+    // The Recent Sessions submenu is rebuilt from
+    // `SessionHistoryManager::List` on `aboutToShow`. Asserts:
+    // (a) one action per entry (plus a separator + Clear action),
+    // (b) clicking an entry reopens the underlying configuration, and
+    // (c) `mAutoSaveUuid` is pinned to the reopened uuid so further
+    //     edits update that entry instead of creating a new one.
+    void TestRecentSessionsMenuReopensEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Seed a recents entry through a full open so the on-disk
+        // JSON is a real round-trippable session.
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuid = manager.List().front().uuid;
+
+        // Tear the session down so the menu reopen has work to do.
+        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+        QCOMPARE(wired->Model()->rowCount(), 0);
+
+        // Force the submenu rebuild + drive the entry action. The
+        // `Recent Sessions` menu lives under `menuRecentSessions`
+        // (object name set by the .ui form).
+        QMenu *recentsMenu = wired->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
+        QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist after Part 4c");
+        emit recentsMenu->aboutToShow();
+
+        const QList<QAction *> actions = recentsMenu->actions();
+        QVERIFY2(actions.size() >= 3, "rebuild must produce at least one entry + separator + clear");
+
+        // First action is the single recents entry.
+        QAction *entryAction = actions.first();
+        finishedSpy.clear();
+        entryAction->trigger();
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->rowCount(), fixtureLines.size());
+
+        // Re-stream auto-save updates the same recents entry.
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, uuid);
+    }
+
     // The MainWindow auto-save hook writes a snapshot through the
     // injected `SessionHistoryManager` on every successful streaming
     // finish, reusing the per-window uuid so a second auto-save

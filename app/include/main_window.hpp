@@ -285,6 +285,19 @@ private slots:
     /// Resets the model, runtime filters, source descriptor, and
     /// session mode. Bound to `actionNewSession` (Ctrl+N).
     void NewSession();
+    /// Rebuild the `File -> Recent Sessions` submenu from the live
+    /// `SessionHistoryManager` list. Connected to the submenu's
+    /// `aboutToShow` so we never paint stale entries even after
+    /// another window mutated the recents store.
+    void RebuildRecentSessionsMenu();
+    /// Reopen the recents entry @p uuid: load the per-uuid JSON via
+    /// `DoLoadConfiguration` (restores columns / filters / sort /
+    /// source descriptor), then queue the source's locators through
+    /// `StartStreamingOpenQueue` in `Replace` mode so the active
+    /// session is discarded before the recents session is restored.
+    /// On success, `mAutoSaveUuid` is pinned to @p uuid so further
+    /// edits update that recents entry instead of creating a new one.
+    void OpenRecentSession(const QString &uuid);
     void OpenFiles();
     /// "Open with Configuration..." -- two-step prompt that first
     /// loads a configuration or session JSON (columns, filters, sort)
