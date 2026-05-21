@@ -441,10 +441,9 @@ MainWindow::MainWindow(QWidget *parent)
     // from a cold launch, before the View menu is ever opened.
     addAction(ui->actionToggleRecordDetails);
     connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
-        // See `ShowRecordDetailsForProxyIndex` for why the
-        // hidden-to-visible transition is gated on the host window
-        // being realised. The hide path is always safe -- it
-        // doesn't traverse the dock-area layout.
+        // Gate hidden->visible on a realised host window; see the
+        // comment on `ShowRecordDetailsForProxyIndex`. The hide path
+        // is always safe.
         if (on && !isVisible())
         {
             return;
@@ -1779,18 +1778,13 @@ void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
         return;
     }
     mRecordDetailDock->ShowSourceRow(sourceRow);
-    // Probe `isHidden()` (the dock's own state) rather than
-    // `isVisible()`, which is also false when an ancestor isn't yet
-    // realised (delayed `show()` on startup, offscreen QPA).
-    //
-    // The `isVisible()` guard on the host main window keeps headless
-    // tests stable: QDockWidget::setVisible(true) walks the parent
-    // QMainWindowLayout dock-area state, which is uninitialised when
-    // MainWindow has never been `show()`n. On the build-linux runner
-    // (Ubuntu 22.04 / Qt 6.8.3 / GCC-13 / offscreen QPA) that path
-    // SIGSEGVs at offset 0x20 inside QDockWidget's internals.
-    // Production callers always have a shown main window, so this
-    // guard never trips at runtime.
+    // `isHidden()` probes the dock's own explicit-hide flag (the
+    // ancestor `isVisible()` is also false until `show()` has been
+    // called on the main window). The `isVisible()` guard on `this`
+    // avoids a Qt 6.8.3 + offscreen-QPA crash where
+    // `QDockWidget::setVisible(true)` dereferences uninitialised
+    // QMainWindowLayout dock-area state when the host has never been
+    // shown. Production callers always see a visible main window.
     if (mRecordDetailDock->isHidden() && isVisible())
     {
         mRecordDetailDock->setVisible(true);

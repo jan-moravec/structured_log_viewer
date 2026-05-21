@@ -432,6 +432,17 @@ QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
     return window->findChild<QAction *>(name);
 }
 
+// Why tests drive `RecordDetailDock` visibility via `emit
+// visibilityChanged(...)` instead of `dock.show()` / `dock.hide()`:
+// the build-linux runner (Ubuntu 22.04 / Qt 6.8.3 / GCC-13 /
+// offscreen QPA) SIGSEGVs deep inside `QDockWidget::setVisible(true)`
+// when the host main window has never been `show()`n -- it walks an
+// uninitialised QMainWindowLayout dock-area. `RecordDetailDock`'s
+// refresh gate keys off `mPerceivedVisible`, which is fed by the
+// `visibilityChanged` signal, so emitting it directly exercises the
+// same gate without crashing. Production code is unaffected because
+// the main window is always shown before the user opens the dock.
+
 } // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture; moc expects this declaration shape.
@@ -9510,8 +9521,8 @@ private slots:
 
         auto *dock = mWindow->RecordDetailDockForTest();
         QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
-        // `isHidden()` is the right probe under offscreen QPA -- the
-        // parent isn't `show()`n so `isVisible()` is always false.
+        // Probe `isHidden()` (parent is never `show()`n under
+        // offscreen QPA, so `isVisible()` is always false).
         QVERIFY2(dock->isHidden(), "dock starts hidden");
 
         // Default sort (-1) -> proxy row == source row. Pick row 1.
@@ -9522,14 +9533,9 @@ private slots:
         const QModelIndex proxyIndex = proxyModel->index(1, 0);
         QVERIFY(proxyIndex.isValid());
 
-        // The pin and content are set synchronously inside
-        // `ShowSourceRow`; the visibility transition is gated on the
-        // host main window being realised (production guard against the
-        // QDockWidget::setVisible-walks-uninit-QMainWindowLayout crash
-        // on the Linux Qt 6.8.3 runner). The test verifies the
-        // observable side effects -- pinned row and rebuilt content --
-        // without depending on whether the dock surfaces on this
-        // offscreen-QPA test runner.
+        // `ShowSourceRow` sets the pin synchronously; the visibility
+        // transition is gated on a realised host (see `MainWindow`).
+        // We assert only the observable side effects here.
         mWindow->ShowRecordDetailsForProxyIndex(proxyIndex);
         QCOMPARE(dock->CurrentSourceRow(), 1);
         bool sawBeta = false;
@@ -9557,36 +9563,23 @@ private slots:
         QVERIFY(toggleAction->isCheckable());
 
         auto *dock = mWindow->RecordDetailDockForTest();
-        QVERIFY(dock != nullptr);
-        QVERIFY(dock->isHidden());
+        QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
+        QVERIFY2(dock->isHidden(), "dock starts hidden");
         QVERIFY(!toggleAction->isChecked());
 
-        // The action's `toggled` is the entry point that the View
-        // menu invokes; verify it reaches the dock by spying on the
-        // dock's `visibilityChanged`. Under offscreen-QPA tests the
-        // production guard skips the actual `setVisible(true)` (host
-        // window isn't realised, see `MainWindow` action handler), so
-        // we can't observe the dock becoming visible -- but the
-        // toggled-fires-the-handler chain itself is what we care
-        // about regressing.
-        QVERIFY(toggleAction->isCheckable());
+        // Action -> dock direction: the production handler skips the
+        // actual `setVisible(true)` under offscreen QPA (host isn't
+        // realised), so we only assert the action's own state moves.
         toggleAction->setChecked(true);
         QVERIFY2(toggleAction->isChecked(), "setChecked(true) must update the action's own state");
 
-        // The reverse direction (dock -> action) is wired through
-        // `QDockWidget::visibilityChanged`, which we can drive
-        // synthetically without traversing the dock-area layout.
+        // Dock -> action direction: drive `visibilityChanged`
+        // synthetically (see the namespace note above for why).
         emit dock->visibilityChanged(false);
-        QVERIFY2(
-            !toggleAction->isChecked(),
-            "visibilityChanged(false) on the dock must un-check the View menu action via the wired hook"
-        );
+        QVERIFY2(!toggleAction->isChecked(), "visibilityChanged(false) must un-check the action");
 
         emit dock->visibilityChanged(true);
-        QVERIFY2(
-            toggleAction->isChecked(),
-            "visibilityChanged(true) on the dock must re-check the View menu action via the wired hook"
-        );
+        QVERIFY2(toggleAction->isChecked(), "visibilityChanged(true) must re-check the action");
     }
 
     // `actionToggleRecordDetails` isn't placed in any `<addaction>` in
@@ -9698,10 +9691,8 @@ private slots:
             QMetaObject::invokeMethod(table, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, proxyIndex));
         QVERIFY2(emitted, "doubleClicked signal must be invocable via the meta-object");
 
-        // The pin and content are observable side effects of the
-        // double-click wiring; the dock's visibility transition is
-        // gated on the host main window being realised (see
-        // `MainWindow::ShowRecordDetailsForProxyIndex`).
+        // Pin is the observable side effect; visibility is gated on
+        // a realised host (see `MainWindow::ShowRecordDetailsForProxyIndex`).
         QCOMPARE(dock->CurrentSourceRow(), 2);
         bool sawGamma = false;
         for (const auto &pair : dock->Widget()->Content().fields)
@@ -9734,12 +9725,8 @@ private slots:
         QCOMPARE(model.rowCount(), 100);
 
         RecordDetailDock dock(&model);
-        // Drive the visibility gate (`mPerceivedVisible`) via the
-        // signal that production listeners observe. Calling
-        // `dock.show()` here goes through `QDockWidget::setVisible`,
-        // which SIGSEGVs on the Linux Qt 6.8.3 / offscreen QPA runner
-        // (the dock-area-layout walk hits uninitialised state when
-        // there's no realised QMainWindow host).
+        // Drive the visibility gate via the signal (see the namespace
+        // note above for why we don't `dock.show()` here).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(50);
         QCOMPARE(dock.CurrentSourceRow(), 50);
@@ -9802,8 +9789,7 @@ private slots:
         QCOMPARE(model.rowCount(), 50);
 
         RecordDetailDock dock(&model);
-        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
-        // visibility via the signal instead of `dock.show()`.
+        // Drive the visibility gate via the signal (see namespace note).
         emit dock.visibilityChanged(true);
         // No `ShowSourceRow` -> `mEverPinned` stays false.
         const QString initialPlaceholder = dock.Widget()->Content().placeholderText;
@@ -9837,8 +9823,7 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
-        // visibility via the signal instead of `dock.show()`.
+        // Drive the visibility gate via the signal (see namespace note).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
@@ -9944,8 +9929,7 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        // Pin row 0 while visible. See `TestRecordDetailDockTracksFifoEviction`
-        // for why we drive visibility via the signal instead of `dock.show()`.
+        // Pin row 0 while visible (see namespace note for signal use).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
@@ -10011,8 +9995,7 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
-        // visibility via the signal instead of `dock.show()`.
+        // Drive the visibility gate via the signal (see namespace note).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0); // pin row 0
         QVERIFY(dock.Widget()->Content().valid);
@@ -10080,11 +10063,9 @@ private slots:
         mWindow->ShowRecordDetailsForProxyIndex(proxyIndex);
         QCOMPARE(dock->CurrentSourceRow(), 1);
 
-        // The production setVisible(true) is guarded on the host
-        // window being realised (avoids the Linux Qt 6.8.3 dock-area
-        // SIGSEGV); under offscreen QPA we drive the visibility
-        // cascade synthetically by emitting `visibilityChanged(true)`
-        // so `IsVisibleForRefresh()` returns true.
+        // Production `setVisible(true)` is guarded on a realised
+        // host; drive `visibilityChanged` directly to open the
+        // refresh gate (see namespace note).
         emit dock->visibilityChanged(true);
         QVERIFY(dock->IsVisibleForRefresh());
 
@@ -10123,8 +10104,7 @@ private slots:
         QVERIFY(run.model->columnCount() >= 3);
 
         RecordDetailDock dock(run.model.get());
-        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
-        // visibility via the signal instead of `dock.show()`.
+        // Drive the visibility gate via the signal (see namespace note).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
@@ -10163,8 +10143,7 @@ private slots:
         QVERIFY(kColumn >= 0);
 
         RecordDetailDock dock(run.model.get());
-        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
-        // visibility via the signal instead of `dock.show()`.
+        // Drive the visibility gate via the signal (see namespace note).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(0);
         QVERIFY(dock.Widget()->Content().valid);
@@ -10198,8 +10177,7 @@ private slots:
         QCOMPARE(run.model->rowCount(), 2);
 
         RecordDetailDock dock(run.model.get());
-        // See `TestRecordDetailDockTracksFifoEviction` for why we drive
-        // visibility via the signal instead of `dock.show()`.
+        // Drive the visibility gate via the signal (see namespace note).
         emit dock.visibilityChanged(true);
         dock.ShowSourceRow(1);
         QCOMPARE(dock.CurrentSourceRow(), 1);

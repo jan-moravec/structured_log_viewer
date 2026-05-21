@@ -184,14 +184,10 @@ void RecordDetailDock::RefreshFromModel()
 
 bool RecordDetailDock::IsVisibleForRefresh() const noexcept
 {
-    // `mPerceivedVisible` is the source of truth here -- it tracks
-    // `QDockWidget::visibilityChanged`, which accounts for tabified
-    // docks (Qt fires `visibilityChanged(false)` when the tab isn't
-    // current even though `isHidden()` is still false). It also lets
-    // headless tests drive the refresh gate by emitting the signal
-    // synthetically without going through the dock-area-walking
-    // `setVisible(true)` path that SIGSEGVs on Linux Qt 6.8.3 when
-    // the host main window has never been `show()`n.
+    // `mPerceivedVisible` already tracks `visibilityChanged`, which
+    // covers tabified docks (Qt fires `visibilityChanged(false)`
+    // while `isHidden()` stays false) and lets headless tests drive
+    // the gate by emitting the signal directly.
     return mPerceivedVisible;
 }
 
