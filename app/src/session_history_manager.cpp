@@ -7,6 +7,7 @@
 #include <QMutexLocker>
 #include <QSet>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QUuid>
@@ -14,6 +15,8 @@
 
 #include <algorithm>
 #include <exception>
+#include <memory>
+#include <utility>
 
 namespace
 {
@@ -32,7 +35,86 @@ QString EntryKey(int index, const QString &field)
 {
     return QStringLiteral("%1/%2/%3").arg(QLatin1String(SETTINGS_ENTRIES_GROUP)).arg(index).arg(field);
 }
+
+/// Tries to acquire the cross-process recents lock. Returns a non-null
+/// unique_ptr whose deleter unlocks on scope exit; the inner pointer
+/// is null when the lock could not be created (e.g. the sessions
+/// directory does not exist and `mkpath` failed). Callers proceed
+/// regardless of the outcome -- losing one entry under heavy
+/// contention beats freezing the UI on the shutdown path.
+struct LockFileGuard
+{
+    std::unique_ptr<QLockFile> lock;
+    bool locked = false;
+
+    LockFileGuard() = default;
+    LockFileGuard(const LockFileGuard &) = delete;
+    LockFileGuard &operator=(const LockFileGuard &) = delete;
+    LockFileGuard(LockFileGuard &&other) noexcept : lock(std::move(other.lock)), locked(other.locked)
+    {
+        other.locked = false;
+    }
+    LockFileGuard &operator=(LockFileGuard &&other) noexcept
+    {
+        if (this != &other)
+        {
+            if (locked && lock)
+            {
+                lock->unlock();
+            }
+            lock = std::move(other.lock);
+            locked = other.locked;
+            other.locked = false;
+        }
+        return *this;
+    }
+    ~LockFileGuard()
+    {
+        if (locked && lock)
+        {
+            lock->unlock();
+        }
+    }
+};
+
+LockFileGuard AcquireRecentsLock(const QDir &sessionsDir)
+{
+    LockFileGuard guard;
+    // The lock file lives next to the per-uuid JSONs; the directory
+    // must exist before `tryLock` will succeed. `QDir::mkpath` is
+    // non-const, so we make a one-off mutable copy here -- the caller
+    // is unaffected because we only need the path string from it.
+    // mkpath is idempotent + safe to call concurrently.
+    if (!sessionsDir.exists() && !QDir(sessionsDir).mkpath(QStringLiteral(".")))
+    {
+        // Filesystem refusal (read-only volume, ENOSPC, ...); skip
+        // the lock and let the caller fall through. Returning the
+        // empty guard signals "no lock acquired".
+        return guard;
+    }
+    guard.lock = std::make_unique<QLockFile>(sessionsDir.filePath(QStringLiteral("recents.lock")));
+    guard.lock->setStaleLockTime(0);
+    guard.locked = guard.lock->tryLock(LOCK_FILE_TIMEOUT_MS);
+    return guard;
+}
 } // namespace
+
+QDir SessionHistoryManager::DefaultSessionsDir()
+{
+    // Mirrors `RecentSessionsDir()` in `main.cpp`. Centralised so
+    // `main()` and the static `openWindowsAtQuit` helpers below all
+    // pick the same path regardless of who computes it.
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (base.isEmpty())
+    {
+        // `AppDataLocation` is empty on a few exotic platforms /
+        // portable-mode setups; fall back to the user temp dir so we
+        // still have a writeable scratch space rather than crashing
+        // out of the recents subsystem.
+        base = QDir::tempPath();
+    }
+    return QDir(base).filePath(QStringLiteral("sessions"));
+}
 
 bool SessionHistoryManager::RestoreLastSessionOnLaunch()
 {
@@ -77,25 +159,11 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
 
     QMutexLocker lock(&mMutex);
 
-    if (!mSessionsDir.exists())
-    {
-        // mkpath is idempotent + safe across concurrent callers.
-        mSessionsDir.mkpath(QStringLiteral("."));
-    }
-
-    // Cross-process lock: serialize index read-modify-write across
-    // sibling MainWindow processes. Held for the duration of the
-    // index update so a concurrent `WriteSnapshot` in another
-    // process either sees our committed entries or waits and then
-    // bases its update on them -- never both racing on the same
-    // `entries` snapshot. The per-uuid JSON write outside the lock
-    // is safe because uuids are unique per (process, window).
-    QLockFile crossProc(LockFilePath());
-    crossProc.setStaleLockTime(0);
-    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
-    // A stale-lock or filesystem-error case still lets us proceed
-    // -- losing one entry in a contended cross-process scenario is
-    // strictly better than blocking the UI forever.
+    // The cross-process guard (acquired below) takes care of
+    // `mkpath` for us, but we still need the directory before we
+    // build the per-uuid JSON path -- AcquireRecentsLock guarantees
+    // it exists when the returned lock is held.
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
 
     const QString jsonPath = PathForUuid(uuid);
 
@@ -110,10 +178,6 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
     }
     catch (const std::exception &)
     {
-        if (locked)
-        {
-            crossProc.unlock();
-        }
         return QString();
     }
 
@@ -138,10 +202,6 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
     mIndexStorage->Write(entries);
     mIndexStorage->WriteLastUuid(uuid);
 
-    if (locked)
-    {
-        crossProc.unlock();
-    }
     lock.unlock();
     emit changed();
 
@@ -157,9 +217,7 @@ void SessionHistoryManager::Touch(const QString &uuid)
 
     QMutexLocker lock(&mMutex);
 
-    QLockFile crossProc(LockFilePath());
-    crossProc.setStaleLockTime(0);
-    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
 
     QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
@@ -168,10 +226,6 @@ void SessionHistoryManager::Touch(const QString &uuid)
     );
     if (it == entries.end())
     {
-        if (locked)
-        {
-            crossProc.unlock();
-        }
         return;
     }
 
@@ -183,10 +237,6 @@ void SessionHistoryManager::Touch(const QString &uuid)
     mIndexStorage->Write(entries);
     mIndexStorage->WriteLastUuid(uuid);
 
-    if (locked)
-    {
-        crossProc.unlock();
-    }
     lock.unlock();
     emit changed();
 }
@@ -200,9 +250,7 @@ void SessionHistoryManager::Remove(const QString &uuid)
 
     QMutexLocker lock(&mMutex);
 
-    QLockFile crossProc(LockFilePath());
-    crossProc.setStaleLockTime(0);
-    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
 
     QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
@@ -211,10 +259,6 @@ void SessionHistoryManager::Remove(const QString &uuid)
     );
     if (it == entries.end())
     {
-        if (locked)
-        {
-            crossProc.unlock();
-        }
         return;
     }
 
@@ -232,10 +276,6 @@ void SessionHistoryManager::Remove(const QString &uuid)
 
     mIndexStorage->Write(entries);
 
-    if (locked)
-    {
-        crossProc.unlock();
-    }
     lock.unlock();
     emit changed();
 }
@@ -244,9 +284,7 @@ void SessionHistoryManager::Clear()
 {
     QMutexLocker lock(&mMutex);
 
-    QLockFile crossProc(LockFilePath());
-    crossProc.setStaleLockTime(0);
-    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
 
     const QList<RecentSessionEntry> entries = mIndexStorage->Read();
     for (const auto &e : entries)
@@ -256,10 +294,6 @@ void SessionHistoryManager::Clear()
     mIndexStorage->Write({});
     mIndexStorage->WriteLastUuid(std::nullopt);
 
-    if (locked)
-    {
-        crossProc.unlock();
-    }
     lock.unlock();
     emit changed();
 }
@@ -343,13 +377,18 @@ QString SessionHistoryManager::LockFilePath() const
     return mSessionsDir.filePath(QStringLiteral("recents.lock"));
 }
 
-QStringList SessionHistoryManager::OpenWindowsAtQuit()
+namespace
+{
+/// Read the persisted `openWindowsAtQuit` list. Pulled out so the
+/// public static accessor and the read-modify-write helpers below
+/// share one implementation and one set of QSettings semantics.
+QStringList ReadOpenWindowsAtQuit()
 {
     QSettings settings;
     return settings.value(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY)).toStringList();
 }
 
-void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
+void WriteOpenWindowsAtQuit(const QStringList &uuids)
 {
     QSettings settings;
     if (uuids.isEmpty())
@@ -366,18 +405,32 @@ void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
     settings.sync();
 }
 
-namespace
-{
 /// Serialises read-modify-write of the `openWindowsAtQuit` list across
 /// every window in this process. QSettings itself is reentrant but not
 /// thread-safe; this guard prevents two windows from racing to set the
-/// same key and clobbering each other's update.
+/// same key and clobbering each other's update. The cross-process
+/// `QLockFile` layered on top in `Add` / `Remove` / `Set` handles
+/// inter-process races (e.g. `--new-instance` launches).
 QMutex &OpenWindowsMutex()
 {
     static QMutex mutex;
     return mutex;
 }
 } // namespace
+
+QStringList SessionHistoryManager::OpenWindowsAtQuit()
+{
+    QMutexLocker lock(&OpenWindowsMutex());
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    return ReadOpenWindowsAtQuit();
+}
+
+void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
+{
+    QMutexLocker lock(&OpenWindowsMutex());
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    WriteOpenWindowsAtQuit(uuids);
+}
 
 void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
 {
@@ -386,13 +439,14 @@ void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
         return;
     }
     QMutexLocker lock(&OpenWindowsMutex());
-    QStringList uuids = OpenWindowsAtQuit();
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    QStringList uuids = ReadOpenWindowsAtQuit();
     if (uuids.contains(uuid))
     {
         return;
     }
     uuids.append(uuid);
-    SetOpenWindowsAtQuit(uuids);
+    WriteOpenWindowsAtQuit(uuids);
 }
 
 void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
@@ -402,12 +456,13 @@ void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
         return;
     }
     QMutexLocker lock(&OpenWindowsMutex());
-    QStringList uuids = OpenWindowsAtQuit();
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    QStringList uuids = ReadOpenWindowsAtQuit();
     if (!uuids.removeOne(uuid))
     {
         return;
     }
-    SetOpenWindowsAtQuit(uuids);
+    WriteOpenWindowsAtQuit(uuids);
 }
 
 void SessionHistoryManager::CleanupOrphanFiles()
@@ -418,6 +473,11 @@ void SessionHistoryManager::CleanupOrphanFiles()
         // Nothing has been auto-saved yet -- no directory, no orphans.
         return;
     }
+
+    // Cross-process lock so we don't race a sibling `--new-instance`
+    // primary mid-`WriteSnapshot` and misclassify its in-flight JSON
+    // (already on disk, not yet in the index) as an orphan.
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
 
     // Build the set of uuids the index currently references so we can
     // bulk-distinguish orphans from live entries with one allocation.

@@ -11406,6 +11406,140 @@ private slots:
         QVERIFY2(!QFileInfo::exists(orphanPath), "orphan JSON must be removed");
     }
 
+    // `RestoreLastSessionFromPath` must pin `mAutoSaveUuid` even when
+    // the loaded configuration carries no source (columns-only or
+    // source-less session JSON). Without the pin, the next AutoSave
+    // would fork off a new recents entry instead of updating the one
+    // the caller pointed us at, orphaning the loaded JSON.
+    void TestRestoreLastSessionPinsUuidEvenWithNoSource()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Pre-write a uuid-stemmed session JSON with NO source set.
+        // We bypass `WriteSnapshot` (which only fires for live windows)
+        // and lay it down by hand so the restore path sees the
+        // no-source branch.
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg", "level"});
+        // Intentionally no `SetSource` -- the file is a configuration
+        // snapshot with column metadata but no bound data source.
+        builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->RestoreLastSessionFromPath(jsonPath);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+    }
+
+    // `ShouldAutoSaveSession` (the gate that drives both
+    // `streamingFinished` and `closeEvent` auto-save) must filter
+    // out live-tail and network-stream sessions: they cannot be
+    // re-bound from a JSON snapshot, so persisting them would create
+    // recents entries that always fail to reopen.
+    void TestAutoSaveSkipsLiveTailAndNetworkStreamSessions()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // --- Case A: live-tail-on-a-file session. Source kind is
+        // `File` so a plain kind check would let it through; the
+        // gate must additionally consult `mSessionMode`.
+        {
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/live.log"}
+            });
+            wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+            wired->close();
+            QCoreApplication::processEvents();
+
+            QVERIFY2(
+                manager.List().isEmpty(),
+                "closeEvent must not auto-save a live-tail session into Recent Sessions"
+            );
+        }
+
+        // --- Case B: network stream session. Source kind is
+        // `NetworkStream`; the locator is a producer URI that is
+        // not re-bindable via the static-files open path.
+        {
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+                .locators = {"tcp://127.0.0.1:5170"}
+            });
+            wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+            wired->close();
+            QCoreApplication::processEvents();
+
+            QVERIFY2(
+                manager.List().isEmpty(),
+                "closeEvent must not auto-save a network-stream session into Recent Sessions"
+            );
+        }
+    }
+
+    // `RestoreLastSessionFromPath` must not feed a NetworkStream
+    // source's locator (a producer URI like `tcp://127.0.0.1:5170`)
+    // to `StartStreamingOpenQueue`, which would try to open it as a
+    // static file. The restore should succeed (columns / filters
+    // installed) but no streaming attempt is made.
+    void TestRestoreLastSessionSkipsNetworkStreamSource()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Hand-craft a session JSON with a NetworkStream source. Mirrors
+        // the legacy-data case where an older build auto-saved a
+        // stream session before the gate landed.
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        builder.SetSource(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+            .locators = {"tcp://127.0.0.1:5170"}
+        });
+        builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // `streamingFinished` must NOT fire -- the restore should
+        // not attempt to open the URI as a file.
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->RestoreLastSessionFromPath(jsonPath);
+        // Pump the event loop briefly; if the streaming-open path
+        // were taken we'd see a `finishedSpy.count()` tick.
+        for (int i = 0; i < 5; ++i)
+        {
+            QCoreApplication::processEvents();
+        }
+
+        QCOMPARE(finishedSpy.count(), 0);
+        // The uuid is still pinned so future saves update this
+        // recents entry rather than fork off a new one.
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+    }
+
     // `RestoreLastSessionFromPath` only pins `mAutoSaveUuid` when the
     // file stem parses as a QUuid; an ad-hoc session file outside the
     // sessions dir must not hijack auto-save into writing to the

@@ -401,7 +401,12 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     connect(ui->actionSaveConfiguration, &QAction::triggered, this, &MainWindow::SaveConfiguration);
     connect(ui->actionSaveSession, &QAction::triggered, this, &MainWindow::SaveSession);
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
-    connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
+    // "Exit" quits the whole application rather than just this
+    // window (matches the typical File -> Exit affordance once the
+    // app gained multi-window support). `closeAllWindows` walks the
+    // top-level list and fires `closeEvent` on each, giving every
+    // window's auto-save flush a chance to run before `aboutToQuit`.
+    connect(ui->actionExit, &QAction::triggered, qApp, &QApplication::closeAllWindows);
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
@@ -569,6 +574,12 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
             mPendingOpenFiles.clear();
         }
 
+        // Snapshot the just-finished mode before resetting it so the
+        // auto-save gate below can distinguish "static load completed"
+        // (worth recording in Recent Sessions) from "live-tail /
+        // network stream completed" (transient, never re-openable
+        // from a JSON snapshot).
+        const SessionMode justFinishedMode = mSessionMode;
         mSessionMode = SessionMode::Idle;
 
         // Reset Pause / Follow-tail to defaults for the next session.
@@ -618,11 +629,10 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         // Auto-save the session snapshot on successful completion so
         // the user can reopen this exact view through Recent Sessions
         // and so the restore-on-launch flow has something to load.
-        // Skipped when no history manager is attached (test fixtures)
-        // and when nothing useful is loaded (no source means there is
-        // nothing to round-trip).
-        if (result == StreamingResult::Success && mHistoryManager != nullptr && mCurrentSource.has_value()
-            && !mCurrentSource->locators.empty())
+        // `ShouldAutoSaveSession` filters out the cases where the
+        // snapshot would never be re-openable -- no manager, no
+        // source, network streams, live-tail file sessions.
+        if (result == StreamingResult::Success && ShouldAutoSaveSession(justFinishedMode))
         {
             AutoSaveSessionSnapshot();
         }
@@ -1026,8 +1036,54 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     {
         return;
     }
+
+    // Pin the uuid (if the path matches one of our recents entries)
+    // *before* we kick off streaming so an OS-quit / crash between
+    // the load and the streaming-finished hook still restores this
+    // window on next launch. We compute the uuid by stripping the
+    // directory and the `.json` suffix -- per-uuid files always live
+    // under `sessionsDir/<uuid>.json`. The stem must parse as a real
+    // QUuid; otherwise the caller pointed us at an ad-hoc session
+    // file outside the managed sessions dir, and pinning would let
+    // the next AutoSave clobber that user file (or a future recents
+    // entry whose name happens to collide with the stem).
+    //
+    // We do this *unconditionally* (even when the loaded config has
+    // no source, see below) for parity with `OpenRecentSession`: a
+    // configuration-only restore still belongs to the entry the
+    // user clicked, so the next save should update that entry
+    // rather than forking off a new one.
+    if (mHistoryManager != nullptr)
+    {
+        const QFileInfo info(jsonPath);
+        const QString stem = info.completeBaseName();
+        const QUuid parsed = QUuid::fromString(stem);
+        if (!parsed.isNull())
+        {
+            mAutoSaveUuid = stem;
+            mHistoryManager->Touch(stem);
+            SessionHistoryManager::AddOpenWindowUuid(stem);
+        }
+    }
+
     if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
     {
+        // Configuration without a source: columns / filters are
+        // installed but there is nothing to stream. Treat this like
+        // a plain Load Configuration call (no row data).
+        return;
+    }
+
+    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    {
+        // NetworkStream snapshots persist the producer URI as the
+        // locator. Feeding that to `StartStreamingOpenQueue` (which
+        // opens its arguments as static files) would try to parse
+        // `tcp://...` as a file path and surface a bogus parse
+        // error. Newer builds avoid auto-saving stream sessions
+        // (see `ShouldAutoSaveSession`), but older recents JSON
+        // captured before this gate may still carry stream sources.
+        // The user can manually re-bind via Open Network Stream...
         return;
     }
 
@@ -1038,33 +1094,6 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
         files.append(QString::fromStdString(locator));
     }
     StartStreamingOpenQueue(files, OpenMode::Append);
-
-    // Pin the uuid (if the path matches one of our recents entries)
-    // so the next auto-save updates that entry instead of forking
-    // off a new one. We compute the uuid by stripping the directory
-    // and the `.json` suffix -- per-uuid files always live under
-    // `sessionsDir/<uuid>.json`. The stem must parse as a real
-    // QUuid; otherwise the caller pointed us at an ad-hoc session
-    // file outside the managed sessions dir, and pinning would let
-    // the next AutoSave clobber that user file (or a future recents
-    // entry whose name happens to collide with the stem).
-    if (mHistoryManager != nullptr)
-    {
-        const QFileInfo info(jsonPath);
-        const QString stem = info.completeBaseName();
-        const QUuid parsed = QUuid::fromString(stem);
-        if (!parsed.isNull())
-        {
-            mAutoSaveUuid = stem;
-            mHistoryManager->Touch(stem);
-            // Eagerly publish so an OS-quit before the streaming
-            // finish still restores this window. `AutoSaveSessionSnapshot`
-            // would publish on its own once streaming completes, but
-            // we want the membership in place from the moment the
-            // restore begins.
-            SessionHistoryManager::AddOpenWindowUuid(stem);
-        }
-    }
 }
 
 void MainWindow::OpenRecentSession(const QString &uuid)
@@ -1127,15 +1156,36 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    // Step 3: open the source locators captured in the configuration.
+    // Step 3: pin the recents uuid first so a crash / OS-quit
+    // between here and the streaming-finished hook still restores
+    // this window on next launch (matches `RestoreLastSessionFromPath`).
+    mHistoryManager->Touch(uuid);
+    mAutoSaveUuid = uuid;
+    SessionHistoryManager::AddOpenWindowUuid(uuid);
+
+    // Step 4: open the source locators captured in the configuration.
     // `mCurrentSource` was just populated by the load above.
     if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
     {
         // Configuration without a source: the columns / filters are
         // installed but there is nothing to stream. Treat this like
         // a plain Load Configuration call.
-        mHistoryManager->Touch(uuid);
-        mAutoSaveUuid = uuid;
+        return;
+    }
+
+    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    {
+        // See the matching guard in `RestoreLastSessionFromPath`:
+        // a NetworkStream snapshot's locators are producer URIs and
+        // cannot be fed to `StartStreamingOpenQueue`. Newer
+        // sessions never persist this combination, but legacy
+        // recents entries might.
+        QMessageBox::information(
+            this,
+            QStringLiteral("Network Stream Session"),
+            QStringLiteral("This recent session was a network stream; the columns and filters have been "
+                           "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
+        );
         return;
     }
 
@@ -1152,9 +1202,6 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // the Append branch is a no-op for state and the first file goes
     // through `BeginStreaming` cleanly.
     StartStreamingOpenQueue(files, OpenMode::Append);
-
-    mHistoryManager->Touch(uuid);
-    mAutoSaveUuid = uuid;
 }
 
 void MainWindow::NewSession()
@@ -1483,6 +1530,14 @@ void MainWindow::OpenLogStream()
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
     ClearAllFilters();
+    // Detach the previous static session's recents uuid: a live-tail
+    // stream is transient and we deliberately do not auto-save it,
+    // but leaving `mAutoSaveUuid` pinned to the prior static session
+    // would cause `closeEvent`'s flush + `RemoveOpenWindowUuid` to
+    // operate on a stale uuid (and drop the prior session from the
+    // multi-window restore set even though the user did not discard
+    // it -- they only switched to a stream view).
+    DetachAutoSaveUuid();
 
     mStreamingFileName = QFileInfo(file).fileName();
     mCurrentSource = loglib::LogConfiguration::Source{
@@ -1562,6 +1617,11 @@ void MainWindow::OpenNetworkStream()
     // Mirror the OpenLogStream reset.
     mModel->Reset();
     ClearAllFilters();
+    // Same rationale as `OpenLogStream`: drop the previous static
+    // session's pinned uuid so the network-stream view does not
+    // accidentally inherit (or drop) the recents entry it has no
+    // relationship to.
+    DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
     mCurrentSource = loglib::LogConfiguration::Source{
@@ -2082,17 +2142,48 @@ void MainWindow::MirrorSessionStateToConfiguration()
     mModel->ConfigurationManager().SetSource(mCurrentSource);
 }
 
-void MainWindow::AutoSaveSessionSnapshot()
+bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
 {
     if (mHistoryManager == nullptr)
     {
-        return;
+        return false;
     }
     if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
     {
         // Nothing to round-trip; a session entry without a source
-        // can't be reopened by Recent Sessions and would just confuse
-        // the menu.
+        // can't be reopened by Recent Sessions and would just
+        // confuse the menu.
+        return false;
+    }
+    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    {
+        // NetworkStream sessions are inherently transient: the
+        // locator is a producer URI / display name, not something
+        // `StartStreamingOpenQueue` can re-bind on a future launch.
+        return false;
+    }
+    if (justFinishedMode == SessionMode::LiveTail)
+    {
+        // Live-tail-on-a-file sessions look like a static `File`
+        // source on disk (same kind, same locator) but they bind a
+        // `TailingBytesProducer`, not a one-shot parser. Re-opening
+        // the snapshot would silently downgrade the user from
+        // tailing to a static load -- worse than not auto-saving at
+        // all.
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
+{
+    // Re-evaluate the gate against the *current* mode. Callers that
+    // know more (the `streamingFinished` hook passes the
+    // just-finished mode through `ShouldAutoSaveSession` itself)
+    // already check beforehand; this redundant check makes the
+    // helper safe to call from any future site.
+    if (!ShouldAutoSaveSession(mSessionMode))
+    {
         return;
     }
 
@@ -2103,15 +2194,20 @@ void MainWindow::AutoSaveSessionSnapshot()
 
     const loglib::LogConfiguration &configuration = mModel->ConfigurationManager().Configuration();
     const QString uuid = mHistoryManager->WriteSnapshot(configuration, mAutoSaveUuid);
-    if (!uuid.isEmpty())
+    if (uuid.isEmpty())
     {
-        // Pin the uuid so subsequent auto-saves rewrite the same JSON
-        // instead of cluttering recents with one entry per save.
-        mAutoSaveUuid = uuid;
+        return;
+    }
+    // Pin the uuid so subsequent auto-saves rewrite the same JSON
+    // instead of cluttering recents with one entry per save.
+    mAutoSaveUuid = uuid;
+    if (publishOpenWindow)
+    {
         // Eagerly publish ourselves into the open-windows set so a
         // crash / OS quit between now and `closeEvent` restores this
-        // window on next launch. `closeEvent` removes us again on a
-        // user-initiated close.
+        // window on next launch. The `closeEvent` flush passes
+        // `publishOpenWindow=false` because it immediately removes
+        // the uuid again.
         SessionHistoryManager::AddOpenWindowUuid(uuid);
     }
 }
@@ -2134,10 +2230,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // any I/O failure inside the manager is silenced and the close
     // proceeds, since blocking shutdown on disk errors would be a
     // worse user experience than losing one snapshot.
-    if (mHistoryManager != nullptr && mCurrentSource.has_value() && !mCurrentSource->locators.empty())
-    {
-        AutoSaveSessionSnapshot();
-    }
+    //
+    // `publishOpenWindow=false` so the flush does not add this uuid
+    // to `openWindowsAtQuit` only for the very next line to remove
+    // it -- saves two QSettings round-trips. `ShouldAutoSaveSession`
+    // (called inside `AutoSaveSessionSnapshot`) also filters out
+    // live-tail and network-stream sessions so we don't pollute
+    // Recent Sessions with un-reopenable entries.
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
     // Remove ourselves from the persisted open-windows set: a
     // user-initiated close (X button, File -> Exit, Ctrl+W if ever
     // wired) means "I don't want this back on the next launch". The

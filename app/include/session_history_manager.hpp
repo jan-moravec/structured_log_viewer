@@ -114,6 +114,15 @@ public:
         return mSessionsDir;
     }
 
+    /// Per-user default sessions directory under `AppDataLocation`.
+    /// Shared by `main()` (constructs the production manager against
+    /// this path) and by the static `AddOpenWindowUuid` /
+    /// `RemoveOpenWindowUuid` / `SetOpenWindowsAtQuit` /
+    /// `CleanupOrphanFiles` helpers (so the cross-process lock file
+    /// lands in the same well-known location regardless of which
+    /// process touches `openWindowsAtQuit`).
+    [[nodiscard]] static QDir DefaultSessionsDir();
+
     /// Read the `restoreLastSessionOnLaunch` user preference. Default
     /// is `true` (opt-in to a smooth restart). Backed by `QSettings`;
     /// kept here so the preference lives in the same module as the
@@ -135,17 +144,23 @@ public:
     /// Idempotent: re-adding an existing uuid is a no-op. Used by
     /// `MainWindow::AutoSaveSessionSnapshot` so the list reflects the
     /// currently-live sessions even when `aboutToQuit` runs after
-    /// `WA_DeleteOnClose` has destroyed every peer window. Safe to
-    /// call concurrently from multiple threads / windows in one
-    /// process: serialized through a static mutex around the QSettings
-    /// read-modify-write.
+    /// `WA_DeleteOnClose` has destroyed every peer window.
+    ///
+    /// Concurrency: serialised through a process-local mutex
+    /// (multi-window same-process) *and* a `QLockFile` at
+    /// `DefaultSessionsDir()/recents.lock` (cross-process, e.g. when
+    /// the user opted out of single-instance via `--new-instance`).
+    /// Best-effort: if the lock file cannot be acquired within
+    /// `LOCK_FILE_TIMEOUT_MS` we proceed anyway -- losing one entry
+    /// under contention is strictly better than blocking shutdown.
     static void AddOpenWindowUuid(const QString &uuid);
 
     /// Companion to `AddOpenWindowUuid`. Removes @p uuid if present;
     /// no-op when absent or empty. Called from `MainWindow::closeEvent`
     /// and the destructive open / `NewSession` paths so a user-closed
     /// or user-discarded session is dropped from the next-launch
-    /// restore set.
+    /// restore set. Same cross-process locking story as
+    /// `AddOpenWindowUuid`.
     static void RemoveOpenWindowUuid(const QString &uuid);
 
     /// One-shot housekeeping: remove every `<uuid>.json` under

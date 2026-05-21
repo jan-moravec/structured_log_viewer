@@ -1,6 +1,7 @@
 #include "single_instance_guard.hpp"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QLocalSocket>
@@ -181,10 +182,19 @@ QString SingleInstanceGuard::DefaultSocketName()
 #endif
     );
 
+    // Mix in `applicationName` so a nightly / stable / sandboxed
+    // installation of the same product can coexist without sharing
+    // a primary. Defaults to the binary name when the embedding
+    // application forgot to call `setApplicationName`, which still
+    // gives different names to two unrelated apps. The user is
+    // included so a single host with multiple logged-in users
+    // routes each user's secondaries to their own primary.
+    const QString appId = QCoreApplication::applicationName();
+    const QByteArray salt = (user + QLatin1Char('|') + appId).toUtf8();
+
     // Hash to a fixed length so the resulting name is bounded
-    // regardless of username; prefix with the app id so multiple
+    // regardless of input; prefix with the app id so multiple
     // products on the same host coexist.
-    const QByteArray digest =
-        QCryptographicHash::hash(user.toUtf8(), QCryptographicHash::Sha1).toHex().left(16);
+    const QByteArray digest = QCryptographicHash::hash(salt, QCryptographicHash::Sha1).toHex().left(16);
     return QStringLiteral("structured-log-viewer.") + QString::fromLatin1(digest);
 }

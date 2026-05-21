@@ -436,6 +436,13 @@ private slots:
     void RebuildViewMenu();
 
 private:
+    /// Forward-declaration so the few member-function signatures that
+    /// reference `SessionMode` (e.g. `ShouldAutoSaveSession`) can be
+    /// declared before the full enum definition appears further down
+    /// among the data members. The definition lives near `mSessionMode`
+    /// so the two stay co-located.
+    enum class SessionMode;
+
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a
     /// reorder; menu lambdas use it to re-resolve the target column
@@ -503,10 +510,28 @@ private:
     /// the same window updates one recents entry across its lifetime
     /// instead of appending a fresh one on every save. No-op when
     /// the manager is null or there is no source descriptor.
-    /// Also adds `mAutoSaveUuid` to the persisted `openWindowsAtQuit`
-    /// set so a crash or OS-quit between AutoSave and `closeEvent`
-    /// still restores this window on next launch.
-    void AutoSaveSessionSnapshot();
+    ///
+    /// When @p publishOpenWindow is true (the default), adds
+    /// `mAutoSaveUuid` to the persisted `openWindowsAtQuit` set so
+    /// a crash or OS-quit between AutoSave and `closeEvent` still
+    /// restores this window on next launch. The `closeEvent` flush
+    /// passes false because it immediately removes the uuid again --
+    /// publishing it just to remove it is two QSettings round-trips
+    /// for a net no-op.
+    void AutoSaveSessionSnapshot(bool publishOpenWindow = true);
+
+    /// True iff the current window state is worth auto-saving:
+    /// (a) a history manager is attached, (b) we have a `File`-kind
+    /// source with at least one locator, and (c) the session is a
+    /// static (re-openable) session, not a live-tail or network
+    /// stream. The last gate is important because live-tail / stream
+    /// sessions can't be meaningfully restored from a JSON snapshot
+    /// (the producer is stateful), so polluting Recent Sessions with
+    /// them would create entries that always fail to reopen. The
+    /// helper takes the just-finished mode explicitly because
+    /// `streamingFinished` flips `mSessionMode` to `Idle` before the
+    /// auto-save hook runs.
+    [[nodiscard]] bool ShouldAutoSaveSession(SessionMode justFinishedMode) const;
 
     /// Drop `mAutoSaveUuid` from the persisted open-windows set and
     /// clear the field. Called from every state-discarding path

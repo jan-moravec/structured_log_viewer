@@ -6,8 +6,8 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QProcessEnvironment>
-#include <QStandardPaths>
 #include <QStringList>
 
 #include <memory>
@@ -15,28 +15,18 @@
 namespace
 {
 
-/// Per-user directory under `AppDataLocation` for the recents-index
-/// per-uuid JSON files. Created lazily on first `WriteSnapshot`. The
-/// path is shared across all windows so multi-window history stays
-/// consistent.
-QDir RecentSessionsDir()
-{
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (base.isEmpty())
-    {
-        // Fallback used when the platform refuses to compute the
-        // path (rare; mostly portable-mode setups). Sub-folder
-        // tagged so the directory is easy to wipe by hand.
-        base = QDir::tempPath();
-    }
-    return QDir(base).filePath(QStringLiteral("sessions"));
-}
-
 /// CLI parse: collect every positional argument as a candidate file
 /// path; ignore the binary name and any flag we own. Anything not
 /// understood is forwarded to the primary, which is then free to
 /// reject it with a parse error (matches how the existing OpenFiles
 /// flow handles bad paths).
+///
+/// Paths are converted to absolute against the caller's current
+/// working directory *before* forwarding: with single-instance
+/// coordination on, the primary process probably runs from a
+/// different CWD than the secondary, so a relative path that means
+/// "the file next to me" on the secondary would resolve against the
+/// primary's CWD and fail to open.
 QStringList CollectCliFiles(const QStringList &args)
 {
     QStringList files;
@@ -50,11 +40,19 @@ QStringList CollectCliFiles(const QStringList &args)
             sawProgramName = true;
             continue;
         }
-        if (arg.startsWith(QStringLiteral("--")))
+        if (arg.startsWith(QStringLiteral("-")))
         {
+            // Drop everything that looks like a flag (long `--foo`
+            // *or* short `-x`) so a future option doesn't get
+            // misclassified as a file path. The flags we recognise
+            // are handled below in `ShouldAllowNewInstance`.
             continue;
         }
-        files.append(arg);
+        // `absoluteFilePath` resolves against the *current* CWD
+        // without requiring the file to exist (unlike
+        // `canonicalFilePath`, which returns empty for missing
+        // files and would silently drop a user typo here).
+        files.append(QFileInfo(arg).absoluteFilePath());
     }
     return files;
 }
@@ -100,7 +98,9 @@ int main(int argc, char *argv[])
     // Owned by main; lifetime spans every window. MainWindow keeps a
     // non-owning pointer and writes through it on streamingFinished /
     // closeEvent.
-    SessionHistoryManager historyManager(RecentSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>());
+    SessionHistoryManager historyManager(
+        SessionHistoryManager::DefaultSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>()
+    );
 
     // One-shot orphan sweep: a crash between `WriteSnapshot`'s
     // per-uuid JSON write and the index update leaves `<uuid>.json`
