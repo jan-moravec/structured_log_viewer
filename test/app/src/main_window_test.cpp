@@ -9564,6 +9564,8 @@ private slots:
 
         auto *dock = mWindow->RecordDetailDockForTest();
         QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
+        // clang-analyzer doesn't model `QVERIFY2`'s fail-fast return.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY2(dock->isHidden(), "dock starts hidden");
         QVERIFY(!toggleAction->isChecked());
 
