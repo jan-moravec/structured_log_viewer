@@ -2,9 +2,11 @@
 
 #include <QFileInfo>
 #include <QLatin1String>
+#include <QLockFile>
 #include <QMutexLocker>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QUuid>
 #include <QVariant>
 
@@ -17,6 +19,12 @@ constexpr char SETTINGS_SIZE_KEY[] = "recentSessions/size";
 constexpr char SETTINGS_ENTRIES_GROUP[] = "recentSessions/entries";
 constexpr char SETTINGS_LAST_UUID_KEY[] = "recentSessions/lastSessionUuid";
 constexpr char SETTINGS_RESTORE_LAST_KEY[] = "recentSessions/restoreLastSessionOnLaunch";
+constexpr char SETTINGS_OPEN_WINDOWS_KEY[] = "recentSessions/openWindowsAtQuit";
+
+/// Process-wide timeout for the cross-process lock. We want to wait
+/// long enough to let a sibling process finish its read-modify-write
+/// (`Read` + `Write`) but never block UI for a noticeable stretch.
+constexpr int LOCK_FILE_TIMEOUT_MS = 2000;
 
 QString EntryKey(int index, const QString &field)
 {
@@ -73,6 +81,20 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
         mSessionsDir.mkpath(QStringLiteral("."));
     }
 
+    // Cross-process lock: serialize index read-modify-write across
+    // sibling MainWindow processes. Held for the duration of the
+    // index update so a concurrent `WriteSnapshot` in another
+    // process either sees our committed entries or waits and then
+    // bases its update on them -- never both racing on the same
+    // `entries` snapshot. The per-uuid JSON write outside the lock
+    // is safe because uuids are unique per (process, window).
+    QLockFile crossProc(LockFilePath());
+    crossProc.setStaleLockTime(0);
+    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+    // A stale-lock or filesystem-error case still lets us proceed
+    // -- losing one entry in a contended cross-process scenario is
+    // strictly better than blocking the UI forever.
+
     const QString jsonPath = PathForUuid(uuid);
 
     // Reuse the library serializer so we share the schema with a
@@ -86,6 +108,10 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
     }
     catch (const std::exception &)
     {
+        if (locked)
+        {
+            crossProc.unlock();
+        }
         return QString();
     }
 
@@ -110,6 +136,10 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
     mIndexStorage->Write(entries);
     mIndexStorage->WriteLastUuid(uuid);
 
+    if (locked)
+    {
+        crossProc.unlock();
+    }
     lock.unlock();
     emit changed();
 
@@ -124,6 +154,11 @@ void SessionHistoryManager::Touch(const QString &uuid)
     }
 
     QMutexLocker lock(&mMutex);
+
+    QLockFile crossProc(LockFilePath());
+    crossProc.setStaleLockTime(0);
+    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+
     QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
     const auto it = std::find_if(
@@ -131,6 +166,10 @@ void SessionHistoryManager::Touch(const QString &uuid)
     );
     if (it == entries.end())
     {
+        if (locked)
+        {
+            crossProc.unlock();
+        }
         return;
     }
 
@@ -142,6 +181,10 @@ void SessionHistoryManager::Touch(const QString &uuid)
     mIndexStorage->Write(entries);
     mIndexStorage->WriteLastUuid(uuid);
 
+    if (locked)
+    {
+        crossProc.unlock();
+    }
     lock.unlock();
     emit changed();
 }
@@ -154,6 +197,11 @@ void SessionHistoryManager::Remove(const QString &uuid)
     }
 
     QMutexLocker lock(&mMutex);
+
+    QLockFile crossProc(LockFilePath());
+    crossProc.setStaleLockTime(0);
+    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+
     QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
     const auto it = std::find_if(
@@ -161,6 +209,10 @@ void SessionHistoryManager::Remove(const QString &uuid)
     );
     if (it == entries.end())
     {
+        if (locked)
+        {
+            crossProc.unlock();
+        }
         return;
     }
 
@@ -178,6 +230,10 @@ void SessionHistoryManager::Remove(const QString &uuid)
 
     mIndexStorage->Write(entries);
 
+    if (locked)
+    {
+        crossProc.unlock();
+    }
     lock.unlock();
     emit changed();
 }
@@ -185,6 +241,11 @@ void SessionHistoryManager::Remove(const QString &uuid)
 void SessionHistoryManager::Clear()
 {
     QMutexLocker lock(&mMutex);
+
+    QLockFile crossProc(LockFilePath());
+    crossProc.setStaleLockTime(0);
+    const bool locked = crossProc.tryLock(LOCK_FILE_TIMEOUT_MS);
+
     const QList<RecentSessionEntry> entries = mIndexStorage->Read();
     for (const auto &e : entries)
     {
@@ -193,6 +254,10 @@ void SessionHistoryManager::Clear()
     mIndexStorage->Write({});
     mIndexStorage->WriteLastUuid(std::nullopt);
 
+    if (locked)
+    {
+        crossProc.unlock();
+    }
     lock.unlock();
     emit changed();
 }
@@ -269,6 +334,34 @@ void SessionHistoryManager::EvictLocked(QList<RecentSessionEntry> &entries)
         const RecentSessionEntry evicted = entries.takeLast();
         RemoveUuidFileLocked(evicted.uuid);
     }
+}
+
+QString SessionHistoryManager::LockFilePath() const
+{
+    return mSessionsDir.filePath(QStringLiteral("recents.lock"));
+}
+
+QStringList SessionHistoryManager::OpenWindowsAtQuit()
+{
+    QSettings settings;
+    return settings.value(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY)).toStringList();
+}
+
+void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
+{
+    QSettings settings;
+    if (uuids.isEmpty())
+    {
+        // Remove the key entirely so the next launch's
+        // `OpenWindowsAtQuit()` returns an empty list without us
+        // having to special-case it.
+        settings.remove(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY));
+    }
+    else
+    {
+        settings.setValue(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY), uuids);
+    }
+    settings.sync();
 }
 
 // -----------------------------------------------------------------------------

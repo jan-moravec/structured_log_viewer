@@ -8,6 +8,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
 #include <optional>
@@ -116,6 +117,16 @@ public:
     static bool RestoreLastSessionOnLaunch();
     static void SetRestoreLastSessionOnLaunch(bool enabled);
 
+    /// Read / write the `openWindowsAtQuit` list -- the uuids of
+    /// the sessions that were active in *any* window the last time
+    /// the application shut down. The primary uses this on launch
+    /// to fan-restore every window that was open at quit, so a
+    /// power loss or app crash does not lose the multi-window
+    /// layout. Each uuid corresponds to a session JSON on disk in
+    /// `SessionsDir()`.
+    static QStringList OpenWindowsAtQuit();
+    static void SetOpenWindowsAtQuit(const QStringList &uuids);
+
 signals:
     void changed();
 
@@ -135,6 +146,12 @@ private:
     /// Capacity-evict oldest entries until size <= MAX_ENTRIES. Caller
     /// holds `mMutex`.
     void EvictLocked(QList<RecentSessionEntry> &entries);
+
+    /// Path to the cross-process lock file. Lives next to the
+    /// per-uuid JSON files in `mSessionsDir`, named `recents.lock`.
+    /// The mkpath happens lazily inside the mutators because the
+    /// sessions dir is created on first `WriteSnapshot`.
+    [[nodiscard]] QString LockFilePath() const;
 
     QDir mSessionsDir;
     std::unique_ptr<IRecentsIndexStorage> mIndexStorage;

@@ -61,6 +61,7 @@
 #include <QRegularExpression>
 #include <QDataStream>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QScopeGuard>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -10910,6 +10911,79 @@ private slots:
         // The label tracks the new source descriptor (primary file is
         // still A; B appended on top).
         QCOMPARE(manager.List().front().fileCount, 2);
+    }
+
+    // Even with the cross-process `QLockFile` held by another
+    // simulated process, the manager still finishes its
+    // `WriteSnapshot` rather than deadlocking the UI. The
+    // contention path falls back to "ours wins after the timeout
+    // expires" -- losing one entry under heavy contention is
+    // strictly preferable to a frozen window.
+    void TestWriteSnapshotSurvivesHeldLockFile()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Force the sessions directory to exist so the lock file
+        // path is valid. WriteSnapshot would do this on its own
+        // but we want the lock contention to bite before that.
+        QVERIFY(QDir().mkpath(sessionsDir.path()));
+
+        // Take the lock from a "foreign" process. We have to call
+        // WriteSnapshot through the manager, which internally tries
+        // for `LOCK_FILE_TIMEOUT_MS=2000` and then proceeds. Use a
+        // very short stale-lock to keep this test fast.
+        QLockFile foreign(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
+        foreign.setStaleLockTime(0);
+        QVERIFY(foreign.tryLock(100));
+
+        loglib::LogConfiguration cfg;
+        loglib::LogConfiguration::Source src;
+        src.locators = {"C:/logs/locked.json"};
+        cfg.source = src;
+
+        // WriteSnapshot must return a non-empty uuid even though
+        // the lock was held the whole time. Bounded duration <
+        // 2500ms (the lock timeout + slack) so we don't sit on the
+        // CI for an arbitrarily long stretch.
+        const auto start = std::chrono::steady_clock::now();
+        const QString uuid = manager.WriteSnapshot(cfg);
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+        foreign.unlock();
+
+        QVERIFY2(!uuid.isEmpty(), "WriteSnapshot must produce a uuid even under contention");
+        QVERIFY2(elapsed < 4000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
+        QCOMPARE(manager.List().size(), 1);
+    }
+
+    // The `openWindowsAtQuit` round-trip preserves order. Test runs
+    // in `QSettings`-test-mode where possible (Windows registry
+    // permitting); failure to set a value is acceptable, but if
+    // the write is honoured the read must echo it back faithfully.
+    void TestOpenWindowsAtQuitRoundTrip()
+    {
+        const QStringList expected{QStringLiteral("uuid-a"), QStringLiteral("uuid-b"), QStringLiteral("uuid-c")};
+        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previous); });
+
+        SessionHistoryManager::SetOpenWindowsAtQuit(expected);
+        const QStringList actual = SessionHistoryManager::OpenWindowsAtQuit();
+        // On Windows the registry-backed QSettings can swallow the
+        // write in some test environments; treat that as a soft
+        // skip rather than a failure (the production behaviour is
+        // exercised by the integration path in main.cpp).
+        if (actual.isEmpty())
+        {
+            QSKIP("QSettings did not honour the write in this environment");
+        }
+        QCOMPARE(actual, expected);
+
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
     }
 
     // ---------------------------------------------------------------

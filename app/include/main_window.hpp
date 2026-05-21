@@ -100,6 +100,16 @@ public:
     /// survive into the new session.
     void OpenFilesForCli(const QStringList &files);
 
+    /// Return the auto-save uuid currently pinned to this window,
+    /// or an empty string if the window has no live session worth
+    /// restoring. Used by `main()`'s `aboutToQuit` snapshot so the
+    /// next launch can fan-restore the windows that were open at
+    /// quit.
+    [[nodiscard]] QString ActiveSessionUuid() const noexcept
+    {
+        return mAutoSaveUuid;
+    }
+
     void UpdateUi();
 
     /// Single sync point for newest-first display: picks the right

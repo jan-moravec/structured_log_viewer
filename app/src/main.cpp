@@ -118,17 +118,74 @@ int main(int argc, char *argv[])
     // does not race the restore) and only when the manager has a
     // last-session pointer. The single-instance coordinator above
     // guarantees we only run this in the primary process.
-    if (cliFiles.isEmpty() && SessionHistoryManager::RestoreLastSessionOnLaunch())
+    const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
+    if (cliFiles.isEmpty() && restoreEnabled)
     {
-        const auto lastPath = historyManager.LastSessionPath();
-        if (lastPath.has_value())
+        // Multi-window restore: if the previous shutdown captured
+        // an `openWindowsAtQuit` list, restore every session in it.
+        // The first uuid populates the primary window (already
+        // shown); the rest fan out into peer windows. Falls back to
+        // single-session restore via `LastSessionPath` when the list
+        // is empty (clean install / first launch after this commit).
+        QStringList previouslyOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        // Wipe the persisted list so a crash mid-restore does not
+        // loop us forever on the same uuids.
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        if (!previouslyOpen.isEmpty())
         {
-            // Failures inside the restore flow surface a dialog from
-            // `DoLoadConfiguration`; on success the window is now
-            // mirroring the restored session.
-            w.RestoreLastSessionFromPath(*lastPath);
+            // First uuid into the already-shown primary; remainder
+            // get fresh windows.
+            const QString primaryUuid = previouslyOpen.takeFirst();
+            const QString primaryPath = historyManager.PathForUuid(primaryUuid);
+            if (QFileInfo::exists(primaryPath))
+            {
+                w.RestoreLastSessionFromPath(primaryPath);
+            }
+            for (const QString &uuid : previouslyOpen)
+            {
+                const QString peerPath = historyManager.PathForUuid(uuid);
+                if (!QFileInfo::exists(peerPath))
+                {
+                    continue;
+                }
+                auto *peer = new MainWindow(&historyManager, nullptr);
+                peer->setAttribute(Qt::WA_DeleteOnClose);
+                peer->show();
+                peer->RestoreLastSessionFromPath(peerPath);
+            }
+        }
+        else
+        {
+            const auto lastPath = historyManager.LastSessionPath();
+            if (lastPath.has_value())
+            {
+                w.RestoreLastSessionFromPath(*lastPath);
+            }
         }
     }
+
+    // On clean quit, capture the uuids of every open `MainWindow`
+    // so the next launch can rebuild the layout. We snapshot via
+    // the application's `aboutToQuit` so a window closed mid-life
+    // is dropped naturally (it is no longer in `topLevelWidgets`).
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, [&]() {
+        QStringList openUuids;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr)
+            {
+                continue;
+            }
+            const QString uuid = mw->ActiveSessionUuid();
+            if (!uuid.isEmpty())
+            {
+                openUuids.append(uuid);
+            }
+        }
+        SessionHistoryManager::SetOpenWindowsAtQuit(openUuids);
+    });
 
     // Forwarded launches from secondary processes spawn a new
     // `MainWindow` peer that shares the recents store. The new
