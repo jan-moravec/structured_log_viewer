@@ -48,6 +48,21 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
+    /// Selects how `StartStreamingOpenQueue` interacts with the
+    /// currently-loaded state. `Append` is the default for the
+    /// `OpenFiles` / drop entry points -- new files queue onto the
+    /// active static session without clobbering its filters, sort,
+    /// or rows. `Replace` matches the pre-append behaviour: reset
+    /// the model, clear runtime filters, and drop the source
+    /// descriptor before queueing the new files. Live-tail and
+    /// network sessions ignore `Append` and behave as `Replace`
+    /// (they are single-source by construction).
+    enum class OpenMode
+    {
+        Append,
+        Replace,
+    };
+
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
@@ -234,12 +249,20 @@ public:
     {
         return mDiagnosticsButton;
     }
+
+    /// Test-only entry into the queued static-files open path,
+    /// bypassing the file dialog and the keyboard-modifier sniff.
+    void OpenFilesForTest(const QStringList &files, OpenMode mode);
 #endif
 
 protected:
     bool event(QEvent *event) override;
 
 private slots:
+    /// Discard the current session and return to an empty view.
+    /// Resets the model, runtime filters, source descriptor, and
+    /// session mode. Bound to `actionNewSession` (Ctrl+N).
+    void NewSession();
     void OpenFiles();
     void OpenLogStream();
     /// Pop the `NetworkStreamDialog`, build the matching producer, and
@@ -358,10 +381,21 @@ private:
     /// success.
     bool TryLoadAsConfiguration(const QString &file);
 
-    /// Reset state and start a sequential streaming open of @p files.
-    /// The first file uses `BeginStreaming`; subsequent files are
-    /// dispatched through `AppendStreaming` on `streamingFinished`.
-    void StartStreamingOpenQueue(QStringList files);
+    /// Start a sequential streaming open of @p files.
+    ///
+    /// `OpenMode::Replace` is the historic behaviour: reset the model,
+    /// clear runtime filters, drop `mCurrentSource`, then queue the
+    /// files (the first uses `BeginStreaming`; subsequent files are
+    /// dispatched through `AppendStreaming` on `streamingFinished`).
+    ///
+    /// `OpenMode::Append` keeps the active static session's filters,
+    /// sort, source descriptor, and already-loaded rows intact and
+    /// queues @p files onto the back of that session. With no active
+    /// session it behaves like `Replace` minus the destructive reset --
+    /// columns / filters that were just loaded via Open-with-
+    /// Configuration survive into the new session. Live-tail and
+    /// network sessions force `Replace` regardless of @p mode.
+    void StartStreamingOpenQueue(QStringList files, OpenMode mode);
 
     /// Pop the next file off `mPendingOpenFiles` and parse it. Open
     /// errors accumulate in `mPendingOpenErrors`.

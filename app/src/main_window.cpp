@@ -31,6 +31,7 @@
 #include <QCoreApplication>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -375,6 +376,7 @@ MainWindow::MainWindow(QWidget *parent)
     mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
+    connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
     connect(ui->actionOpenNetworkStream, &QAction::triggered, this, &MainWindow::OpenNetworkStream);
@@ -825,7 +827,12 @@ void MainWindow::dropEvent(QDropEvent *event)
     {
         files.append(url.toLocalFile());
     }
-    StartStreamingOpenQueue(std::move(files));
+
+    // Mirror `OpenFiles`: Shift forces replace; default appends onto
+    // the active static session. `modifiers()` is the Qt 6 successor
+    // to the deprecated `keyboardModifiers()` on `QDropEvent`.
+    const bool forceReplace = event->modifiers().testFlag(Qt::ShiftModifier);
+    StartStreamingOpenQueue(std::move(files), forceReplace ? OpenMode::Replace : OpenMode::Append);
 
     event->acceptProposedAction();
 }
@@ -871,6 +878,32 @@ bool MainWindow::event(QEvent *event)
     return QMainWindow::event(event);
 }
 
+void MainWindow::NewSession()
+{
+    // Tear down whatever was loaded: rows, runtime filters, source
+    // descriptor, session mode. Configuration columns are intentionally
+    // preserved -- the next open / load can reuse the layout the user
+    // has been editing. To wipe columns too, the user loads a fresh
+    // configuration file.
+    //
+    // `LogModel::Reset` already handles an orderly producer stop +
+    // sink drain for live-tail / streaming sessions, so we do not
+    // need a separate branch for `IsStreamingActive`.
+    mModel->Reset();
+    ClearAllFilters();
+    mCurrentSource.reset();
+    mSessionMode = SessionMode::Idle;
+    mStreamingFileName.clear();
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    mFirstStreamingBatchSeen = false;
+    mSourceWaiting = false;
+    SetConfigurationUiEnabled(true);
+    UpdateStreamToolbarVisibility();
+    UpdateStreamingStatus();
+    UpdateUi();
+}
+
 void MainWindow::OpenFiles()
 {
     const QStringList files = QFileDialog::getOpenFileNames(this, "Select Log Files", QString(), "All Files (*.*)");
@@ -886,7 +919,12 @@ void MainWindow::OpenFiles()
         return;
     }
 
-    StartStreamingOpenQueue(files);
+    // Shift forces the destructive reset; otherwise files are appended
+    // to the active static session (or, if no session is active, start
+    // a fresh one without clobbering preloaded filters). See
+    // `StartStreamingOpenQueue` doc for the live-tail caveat.
+    const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+    StartStreamingOpenQueue(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
 }
 
 bool MainWindow::TryLoadAsConfiguration(const QString &file)
@@ -934,11 +972,39 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
     }
 }
 
-void MainWindow::StartStreamingOpenQueue(QStringList files)
+void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 {
-    // Reset before starting so residual state cannot leak in.
-    mModel->Reset();
-    ClearAllFilters();
+    // Live-tail and network sessions are inherently single-source: any
+    // new static-files open implicitly tears them down and starts
+    // fresh, regardless of @p mode. Static sessions honour the caller.
+    const bool destructive = (mode == OpenMode::Replace) || (mSessionMode == SessionMode::LiveTail);
+
+    if (destructive)
+    {
+        // Mirror the historic open path: drop rows, runtime filters,
+        // and the source descriptor before queueing.
+        mModel->Reset();
+        ClearAllFilters();
+        mCurrentSource.reset();
+        mSessionMode = SessionMode::Idle;
+    }
+    else if (mSessionMode == SessionMode::Idle && mModel->rowCount() > 0)
+    {
+        // Append into a previously-finished static session: the
+        // streamingFinished handler flipped `mSessionMode` back to
+        // `Idle`, but the rows / filters / source from the prior
+        // session are still in place. Re-arm `Static` so that
+        // `StreamNextPendingFile` routes the new files through
+        // `AppendStreaming` instead of the row-clearing
+        // `BeginStreaming` path.
+        mSessionMode = SessionMode::Static;
+    }
+    // Otherwise (Idle + empty model): leave mode at Idle. The
+    // upcoming `StreamNextPendingFile` will take the
+    // `isFirstFileInSession` branch and `BeginStreaming` the queue,
+    // which preserves runtime filters loaded via
+    // "Open with Configuration..." because we never called
+    // `ClearAllFilters` in the non-destructive branch.
 
     mPendingOpenFiles = std::move(files);
     mPendingOpenErrors.clear();
@@ -1355,6 +1421,10 @@ void MainWindow::ApplyStreamingRetention()
 QAction *MainWindow::FindUiAction(const QString &name) const
 {
     // Must stay in sync with `main_window.ui`.
+    if (name == QStringLiteral("actionNewSession"))
+    {
+        return ui->actionNewSession;
+    }
     if (name == QStringLiteral("actionOpen"))
     {
         return ui->actionOpen;
@@ -1510,6 +1580,11 @@ int MainWindow::LastDroppedFilterCountForTest() const
 void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source)
 {
     mCurrentSource = std::move(source);
+}
+
+void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
+{
+    StartStreamingOpenQueue(files, mode);
 }
 #endif
 

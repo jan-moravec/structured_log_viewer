@@ -5740,6 +5740,144 @@ private slots:
         QCOMPARE(resaveProbe.Configuration().source->locators.front(), syntheticSource);
     }
 
+    // `OpenMode::Append` keeps the active static session's rows / filters /
+    // source intact and queues the new file via `AppendStreaming`. Row
+    // count after the second open must equal the sum of both fixtures
+    // and `mCurrentSource->locators` must list both file paths in load
+    // order.
+    void TestOpenFilesAppendsToActiveStaticSession()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLinesA{
+            QStringLiteral(R"({"category": "info", "msg": "a-0"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "a-1"})"),
+        };
+        const QStringList fixtureLinesB{
+            QStringLiteral(R"({"category": "error", "msg": "b-0"})"),
+            QStringLiteral(R"({"category": "debug", "msg": "b-1"})"),
+            QStringLiteral(R"({"category": "info", "msg": "b-2"})"),
+        };
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB(fixtureLinesB);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY2(finishedSpy.wait(5000), "first open must finish");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), fixtureLinesA.size());
+        QVERIFY(mWindow->Model() == model);
+
+        finishedSpy.clear();
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY2(finishedSpy.wait(5000), "appended open must finish");
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
+
+        // Source descriptor lists every appended file in load order.
+        loglib::LogConfigurationManager manager;
+        manager.SetSource(loglib::LogConfiguration::Source{});
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("appended.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[0]), fixtureA.Path());
+        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[1]), fixtureB.Path());
+    }
+
+    // `OpenMode::Replace` is the destructive path: rows wiped, filters
+    // cleared, source descriptor reset to just the new file.
+    void TestOpenFilesReplaceWipesPreviousSession()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLinesA{
+            QStringLiteral(R"({"msg": "a-0"})"),
+            QStringLiteral(R"({"msg": "a-1"})"),
+        };
+        const QStringList fixtureLinesB{
+            QStringLiteral(R"({"msg": "b-0"})"),
+        };
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB(fixtureLinesB);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), fixtureLinesA.size());
+
+        finishedSpy.clear();
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), fixtureLinesB.size());
+
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("replaced.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators.front()), fixtureB.Path());
+    }
+
+    // `actionNewSession` clears rows, filters, source, and session mode.
+    // The action is reachable through `FindUiAction` so the keyboard
+    // shortcut wiring is covered too (offscreen QPA can't deliver
+    // shortcuts but the action handler runs identically).
+    void TestNewSessionActionResetsState()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"msg": "x-0"})"),
+            QStringLiteral(R"({"msg": "x-1"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), fixtureLines.size());
+
+        QAction *action = mWindow->FindUiAction(QStringLiteral("actionNewSession"));
+        QVERIFY2(action != nullptr, "actionNewSession must be exposed via FindUiAction");
+        action->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 0);
+
+        // Source descriptor is gone. A subsequent SaveSession must
+        // not write a `source` field.
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("new-session.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY2(!probe.Configuration().source.has_value(), "New Session must clear the source descriptor");
+    }
+
     // Pinning a string-only column (`msg`) to `Integer` is the
     // canonical "user misconfiguration" case: every present value is
     // a string, no value is an integer, so `ColumnTypeHealth` reports

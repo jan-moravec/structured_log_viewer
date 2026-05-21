@@ -27,6 +27,7 @@
     <property name="title">
      <string>File</string>
     </property>
+    <addaction name="actionNewSession"/>
     <addaction name="actionOpen"/>
     <addaction name="actionOpenLogStream"/>
     <addaction name="actionOpenNetworkStream"/>
@@ -79,12 +80,23 @@
    <addaction name="menuSettings"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
+  <action name="actionNewSession">
+   <property name="text">
+    <string>New Session</string>
+   </property>
+   <property name="toolTip">
+    <string>Discard the current session (rows, filters, sort, source) and return to an empty view. Shift on drop / Open... is the in-place equivalent for static sessions.</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+N</string>
+   </property>
+  </action>
   <action name="actionOpen">
    <property name="text">
     <string>Open...</string>
    </property>
    <property name="toolTip">
-    <string>Open log file</string>
+    <string>Open log file(s). Files are appended to the current static session by default; hold Shift to replace it instead.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>
