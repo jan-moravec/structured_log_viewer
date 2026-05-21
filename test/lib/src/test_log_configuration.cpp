@@ -534,7 +534,7 @@ TEST_CASE(
     manager.SetFilters({filter});
     manager.SetSort(LogConfiguration::Sort{.columnIndex = 1, .descending = true});
     manager.SetSource(
-        LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locator = "C:/logs/app.json"}
+        LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locators = {"C:/logs/app.json"}}
     );
 
     const TestLogConfiguration columnsOnlyFile;
@@ -582,14 +582,15 @@ TEST_CASE(
     CHECK(reloadedFromFull.Configuration().sort.descending);
     REQUIRE(reloadedFromFull.Configuration().source.has_value());
     CHECK(reloadedFromFull.Configuration().source->kind == LogConfiguration::Source::Kind::File);
-    CHECK(reloadedFromFull.Configuration().source->locator == "C:/logs/app.json");
+    REQUIRE(reloadedFromFull.Configuration().source->locators.size() == 1);
+    CHECK(reloadedFromFull.Configuration().source->locators.front() == "C:/logs/app.json");
 }
 
 TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_configuration][session][source]")
 {
     LogConfiguration original;
     original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::NetworkStream, .locator = "tcp://127.0.0.1:5170"
+        .kind = LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
     };
 
     std::string json;
@@ -603,7 +604,32 @@ TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_confi
 
     REQUIRE(loaded.source.has_value());
     CHECK(loaded.source->kind == LogConfiguration::Source::Kind::NetworkStream);
-    CHECK(loaded.source->locator == "tcp://127.0.0.1:5170");
+    REQUIRE(loaded.source->locators.size() == 1);
+    CHECK(loaded.source->locators.front() == "tcp://127.0.0.1:5170");
+}
+
+TEST_CASE("LogConfiguration::Source round-trips a multi-file `File` descriptor", "[log_configuration][session][source]")
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File,
+        .locators = {"C:/logs/first.json", "C:/logs/second.json", "C:/logs/third.json"}
+    };
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.source.has_value());
+    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
+    REQUIRE(loaded.source->locators.size() == 3);
+    CHECK(loaded.source->locators[0] == "C:/logs/first.json");
+    CHECK(loaded.source->locators[1] == "C:/logs/second.json");
+    CHECK(loaded.source->locators[2] == "C:/logs/third.json");
 }
 
 TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")

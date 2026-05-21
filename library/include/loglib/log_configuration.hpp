@@ -143,8 +143,13 @@ struct LogConfiguration
             NetworkStream
         };
         Kind kind = Kind::File;
-        /// File path, network URI, etc. Opaque to `loglib`.
-        std::string locator;
+        /// File paths for `Kind::File` (one entry per appended file in
+        /// load order); single-element for `Kind::NetworkStream`
+        /// (producer URI / display name). Empty is allowed but
+        /// indistinguishable from "no source" for UI purposes -- the
+        /// session-state mirror only writes a `Source` when at least
+        /// one locator is present.
+        std::vector<std::string> locators;
     };
 
     /// Required: drives the column layout for every consumer.

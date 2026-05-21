@@ -972,13 +972,19 @@ void MainWindow::StreamNextPendingFile()
         const bool isFirstFileInSession = !IsSessionActive();
 
         mStreamingFileName = QFileInfo(file).fileName();
-        // Multi-file sessions record only the first file as the
-        // source descriptor; subsequent appends keep the original.
+        // Multi-file sessions record every appended file path in load
+        // order so SaveSession + RecentSessions can reopen the full
+        // set. The first file initialises the descriptor; subsequent
+        // files push onto the existing locators vector.
         if (isFirstFileInSession)
         {
             mCurrentSource = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locator = file.toStdString()
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {file.toStdString()}
             };
+        }
+        else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+        {
+            mCurrentSource->locators.push_back(file.toStdString());
         }
         if (isFirstFileInSession)
         {
@@ -1064,7 +1070,7 @@ void MainWindow::OpenLogStream()
 
     mStreamingFileName = QFileInfo(file).fileName();
     mCurrentSource = loglib::LogConfiguration::Source{
-        .kind = loglib::LogConfiguration::Source::Kind::File, .locator = file.toStdString()
+        .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {file.toStdString()}
     };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
@@ -1143,7 +1149,7 @@ void MainWindow::OpenNetworkStream()
 
     mStreamingFileName = QString::fromStdString(displayName);
     mCurrentSource = loglib::LogConfiguration::Source{
-        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locator = displayName
+        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {displayName}
     };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;

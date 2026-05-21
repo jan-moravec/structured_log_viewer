@@ -5692,7 +5692,7 @@ private slots:
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
         mWindow->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locator = syntheticSource
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {syntheticSource}
         });
 
         const QTemporaryDir savedDir;
@@ -5712,8 +5712,10 @@ private slots:
             static_cast<int>(probe.Configuration().source->kind),
             static_cast<int>(loglib::LogConfiguration::Source::Kind::File)
         );
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locator), QString::fromStdString(syntheticSource)
+            QString::fromStdString(probe.Configuration().source->locators.front()),
+            QString::fromStdString(syntheticSource)
         );
 
         // Now load the freshly-saved session back into the running
@@ -5734,7 +5736,8 @@ private slots:
             resaveProbe.Configuration().source.has_value(),
             "Load -> Save round trip must preserve a loaded source descriptor"
         );
-        QCOMPARE(resaveProbe.Configuration().source->locator, syntheticSource);
+        QCOMPARE(resaveProbe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(resaveProbe.Configuration().source->locators.front(), syntheticSource);
     }
 
     // Pinning a string-only column (`msg`) to `Integer` is the
