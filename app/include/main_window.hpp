@@ -96,8 +96,14 @@ public:
     /// `OpenFiles` but bypasses the file dialog; used by `main()`
     /// after parsing argv and by the single-instance forward
     /// handler when a secondary launch asks the primary to open
-    /// files. Append mode so any pre-loaded configuration filters
-    /// survive into the new session.
+    /// files. Always Append mode (so any pre-loaded configuration
+    /// filters survive into the new session); there is no
+    /// `Shift`-equivalent gesture on the CLI / forward path, so a
+    /// secondary launch with `--new-instance` not set will *amend*
+    /// the primary's currently-active session rather than replace
+    /// it. The user opts into that trade-off by running with
+    /// single-instance mode; a future `--replace` flag could opt out
+    /// per launch, but is not currently wired.
     void OpenFilesForCli(const QStringList &files);
 
     /// Return the auto-save uuid currently pinned to this window,
@@ -345,6 +351,19 @@ private slots:
     /// `mAutoSaveUuid` is pinned to @p uuid so further edits update
     /// that recents entry instead of forking a new one.
     void OpenRecentSession(const QString &uuid);
+
+    /// Shared tail of `RestoreLastSessionFromPath` and
+    /// `OpenRecentSession`: after the configuration has been loaded
+    /// and the recents uuid (if any) pinned, queue
+    /// `mCurrentSource->locators` into a streaming open or short-
+    /// circuit on the unsupported / empty source cases. @p
+    /// informIfNonFile selects between a silent skip (restore-on-
+    /// launch, which must never pop a dialog on startup) and a
+    /// `QMessageBox::information` (user-initiated recents click).
+    /// Returns `true` when streaming was queued, `false` when the
+    /// source was empty or non-File (caller treats this as a
+    /// "config-only restore" without further work).
+    bool StreamFromCurrentSourceOrSkip(bool informIfNonFile);
     void OpenFiles();
     /// "Open with Configuration..." -- two-step prompt that first
     /// loads a configuration or session JSON (columns, filters, sort)
@@ -700,6 +719,17 @@ private:
         LiveTail,
     };
     SessionMode mSessionMode = SessionMode::Idle;
+
+    /// Mirror of `mSessionMode` that retains the pre-`streamingFinished`
+    /// value (the live `mSessionMode` is reset to `Idle` before the
+    /// auto-save hook runs). `closeEvent` -> `AutoSaveSessionSnapshot`
+    /// consults this so a closeEvent after a finished live-tail
+    /// session sees `LiveTail` (and bails) instead of `Idle` (which
+    /// looks indistinguishable from a static file session because
+    /// `mCurrentSource->kind` is `File` in both). Reset to `Idle`
+    /// every time we discard a session (`NewSession`, destructive
+    /// `StartStreamingOpenQueue`).
+    SessionMode mLastTerminalSessionMode = SessionMode::Idle;
 
     [[nodiscard]] bool IsSessionActive() const noexcept
     {

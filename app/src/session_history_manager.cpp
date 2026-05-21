@@ -26,10 +26,37 @@ constexpr char SETTINGS_LAST_UUID_KEY[] = "recentSessions/lastSessionUuid";
 constexpr char SETTINGS_RESTORE_LAST_KEY[] = "recentSessions/restoreLastSessionOnLaunch";
 constexpr char SETTINGS_OPEN_WINDOWS_KEY[] = "recentSessions/openWindowsAtQuit";
 
-/// Process-wide timeout for the cross-process lock. We want to wait
-/// long enough to let a sibling process finish its read-modify-write
-/// (`Read` + `Write`) but never block UI for a noticeable stretch.
-constexpr int LOCK_FILE_TIMEOUT_MS = 2000;
+/// Cross-process lock timeouts, split by call-site discipline.
+///
+/// `READ_LOCK_TIMEOUT_MS` is for paths that cannot tolerate a UI
+/// stall (Recent Sessions menu pop, shutdown-time `OpenWindowsAtQuit`
+/// reads, etc.). 500 ms is well above the expected cost of a
+/// sibling's `Read` + `Write` cycle on a non-pathological filesystem
+/// (memory-mapped QSettings, single mkpath, single JSON write) and
+/// well below the threshold at which a user perceives the menu as
+/// unresponsive. On timeout we fall through unlocked: a stale read
+/// is strictly preferable to blocking the GUI.
+///
+/// `WRITE_LOCK_TIMEOUT_MS` is for paths that *mutate* the index or
+/// the per-uuid JSON pool (`WriteSnapshot`, `Touch`, `Remove`,
+/// `Clear`, `AddOpenWindowUuid`, `RemoveOpenWindowUuid`,
+/// `SetOpenWindowsAtQuit`, `CleanupOrphanFiles`). These tolerate a
+/// longer wait because the alternative (silently dropping a write
+/// during contention) corrupts the cross-process view -- two
+/// processes could observe inconsistent `openWindowsAtQuit` /
+/// recents lists across a launch / quit boundary. 5 s comfortably
+/// covers a worst-case sibling save on a slow disk while still
+/// bounding the shutdown delay.
+// `[[maybe_unused]]` because after Tier 3b's read-path fast path
+// (`OpenWindowsAtQuit` no longer takes the cross-process lock at
+// all, `List` / `LastSessionPath` only take the process-local
+// mutex), no current call site requests the read timeout. Kept
+// defined so a future read-path that does need the cross-process
+// lock (e.g. an explicit "refresh recents from sibling writes"
+// menu item) lands the documented short timeout instead of
+// silently reusing the write timeout.
+[[maybe_unused]] constexpr int READ_LOCK_TIMEOUT_MS = 500;
+constexpr int WRITE_LOCK_TIMEOUT_MS = 5000;
 
 QString EntryKey(int index, const QString &field)
 {
@@ -42,6 +69,11 @@ QString EntryKey(int index, const QString &field)
 /// directory does not exist and `mkpath` failed). Callers proceed
 /// regardless of the outcome -- losing one entry under heavy
 /// contention beats freezing the UI on the shutdown path.
+///
+/// Callers pass either `READ_LOCK_TIMEOUT_MS` (UI / shutdown reads)
+/// or `WRITE_LOCK_TIMEOUT_MS` (any mutation of the index, the
+/// per-uuid JSON pool, or `openWindowsAtQuit`). See the constant
+/// docstrings for the rationale behind the split values.
 struct LockFileGuard
 {
     std::unique_ptr<QLockFile> lock;
@@ -77,7 +109,7 @@ struct LockFileGuard
     }
 };
 
-LockFileGuard AcquireRecentsLock(const QDir &sessionsDir)
+LockFileGuard AcquireRecentsLock(const QDir &sessionsDir, int timeoutMs)
 {
     LockFileGuard guard;
     // The lock file lives next to the per-uuid JSONs; the directory
@@ -94,7 +126,7 @@ LockFileGuard AcquireRecentsLock(const QDir &sessionsDir)
     }
     guard.lock = std::make_unique<QLockFile>(sessionsDir.filePath(QStringLiteral("recents.lock")));
     guard.lock->setStaleLockTime(0);
-    guard.locked = guard.lock->tryLock(LOCK_FILE_TIMEOUT_MS);
+    guard.locked = guard.lock->tryLock(timeoutMs);
     return guard;
 }
 } // namespace
@@ -163,7 +195,7 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
     // `mkpath` for us, but we still need the directory before we
     // build the per-uuid JSON path -- AcquireRecentsLock guarantees
     // it exists when the returned lock is held.
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_MS);
 
     const QString jsonPath = PathForUuid(uuid);
 
@@ -217,7 +249,7 @@ void SessionHistoryManager::Touch(const QString &uuid)
 
     QMutexLocker lock(&mMutex);
 
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_MS);
 
     QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
@@ -250,7 +282,7 @@ void SessionHistoryManager::Remove(const QString &uuid)
 
     QMutexLocker lock(&mMutex);
 
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_MS);
 
     QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
@@ -284,7 +316,7 @@ void SessionHistoryManager::Clear()
 {
     QMutexLocker lock(&mMutex);
 
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_MS);
 
     const QList<RecentSessionEntry> entries = mIndexStorage->Read();
     for (const auto &e : entries)
@@ -421,14 +453,23 @@ QMutex &OpenWindowsMutex()
 QStringList SessionHistoryManager::OpenWindowsAtQuit()
 {
     QMutexLocker lock(&OpenWindowsMutex());
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    // Read-only fast path: skip the cross-process lock entirely.
+    // `AddOpenWindowUuid` / `RemoveOpenWindowUuid` /
+    // `SetOpenWindowsAtQuit` all serialise their writes under
+    // `WRITE_LOCK_TIMEOUT_MS`, so the worst case here is a torn
+    // read of the QSettings list -- acceptable on the shutdown
+    // / restore-on-launch path, where blocking the GUI on a
+    // sibling's writer queue would be the more user-visible
+    // problem. Also avoids the `mkpath` side effect of
+    // `AcquireRecentsLock` at process startup before any session
+    // has been auto-saved.
     return ReadOpenWindowsAtQuit();
 }
 
 void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
 {
     QMutexLocker lock(&OpenWindowsMutex());
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_MS);
     WriteOpenWindowsAtQuit(uuids);
 }
 
@@ -439,7 +480,7 @@ void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
         return;
     }
     QMutexLocker lock(&OpenWindowsMutex());
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_MS);
     QStringList uuids = ReadOpenWindowsAtQuit();
     if (uuids.contains(uuid))
     {
@@ -456,7 +497,7 @@ void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
         return;
     }
     QMutexLocker lock(&OpenWindowsMutex());
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir());
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_MS);
     QStringList uuids = ReadOpenWindowsAtQuit();
     if (!uuids.removeOne(uuid))
     {
@@ -476,8 +517,9 @@ void SessionHistoryManager::CleanupOrphanFiles()
 
     // Cross-process lock so we don't race a sibling `--new-instance`
     // primary mid-`WriteSnapshot` and misclassify its in-flight JSON
-    // (already on disk, not yet in the index) as an orphan.
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir);
+    // (already on disk, not yet in the index) as an orphan. Cleanup
+    // mutates the on-disk JSON pool, so it uses the write timeout.
+    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_MS);
 
     // Build the set of uuids the index currently references so we can
     // bulk-distinguish orphans from live entries with one allocation.
@@ -489,9 +531,13 @@ void SessionHistoryManager::CleanupOrphanFiles()
         known.insert(entry.uuid);
     }
 
-    // `*.json` only; the lock file (`recents.lock`) and any future
-    // sibling metadata never match this glob.
-    const QStringList jsonFiles = mSessionsDir.entryList({QStringLiteral("*.json")}, QDir::Files);
+    // `*.json` for live entries plus `*.json.tmp` for leftovers from
+    // a crash mid-`LogConfigurationManager::Save` (the atomic write
+    // path streams into `<uuid>.json.tmp` before rename). The lock
+    // file (`recents.lock`) and any future sibling metadata never
+    // match either glob.
+    const QStringList jsonFiles =
+        mSessionsDir.entryList({QStringLiteral("*.json"), QStringLiteral("*.json.tmp")}, QDir::Files);
     for (const QString &fileName : jsonFiles)
     {
         const QString stem = QFileInfo(fileName).completeBaseName();

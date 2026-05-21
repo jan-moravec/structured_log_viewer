@@ -32,6 +32,7 @@ QStringList CollectCliFiles(const QStringList &args)
     QStringList files;
     files.reserve(args.size());
     bool sawProgramName = false;
+    bool afterDoubleDash = false;
     for (const QString &arg : args)
     {
         if (!sawProgramName)
@@ -40,7 +41,18 @@ QStringList CollectCliFiles(const QStringList &args)
             sawProgramName = true;
             continue;
         }
-        if (arg.startsWith(QStringLiteral("-")))
+        if (!afterDoubleDash && arg == QStringLiteral("--"))
+        {
+            // POSIX end-of-options separator: everything that
+            // follows is treated as a positional argument, even when
+            // it starts with `-`. Lets the user open files whose
+            // names begin with a dash (rare but possible on Linux:
+            // `app -- -weird-filename.log`) without our flag filter
+            // dropping them. The `--` token itself is not a file.
+            afterDoubleDash = true;
+            continue;
+        }
+        if (!afterDoubleDash && arg.startsWith(QStringLiteral("-")))
         {
             // Drop everything that looks like a flag (long `--foo`
             // *or* short `-x`) so a future option doesn't get

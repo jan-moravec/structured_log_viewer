@@ -69,6 +69,7 @@
 #include <QSortFilterProxyModel>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
@@ -493,6 +494,15 @@ private slots:
     {
         // Called before the first test function
         qDebug() << "Starting MainWindow tests";
+        // Belt-and-braces sandbox: redirect every
+        // `QStandardPaths::writableLocation(...)` to a per-user
+        // test-only subdirectory before any code in this suite
+        // resolves `AppDataLocation` (the sessions dir, the recents
+        // index, `openWindowsAtQuit`, ...). Without this, a
+        // contributor who later reorders or removes the explicit
+        // org-name override below could silently pollute the user's
+        // real recents profile when running the suite locally.
+        QStandardPaths::setTestModeEnabled(true);
         // Configure QSettings so the recents / openWindowsAtQuit
         // round-trip tests have a writable backing store. Without an
         // explicit org / app the default scope on Windows lands on
@@ -5844,6 +5854,83 @@ private slots:
         QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[1]), fixtureB.Path());
     }
 
+    // Regression for the Append-while-streaming crash: calling
+    // `StartStreamingOpenQueue(Append)` while a static streaming
+    // worker is still in flight used to fall through to
+    // `LogModel::AppendStreaming`, which asserts
+    // `!mStreamingWatcher->isRunning()` -- crashing debug builds and
+    // silently abandoning the in-flight worker in release. The fix
+    // defers the new files into `mPendingOpenFiles`; the
+    // `streamingFinished` drain in `MainWindow`'s constructor picks
+    // them up once the active parse terminates.
+    void TestAppendDuringActiveStreamingDefersInsteadOfCrashing()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Inflate fixture A so the first parse has a realistic window
+        // in which the second `OpenFilesForTest` call observes
+        // `IsStreamingActive() == true`. Two short fixtures otherwise
+        // race the GUI thread on fast machines and the test would
+        // pass even without the fix.
+        QStringList fixtureLinesA;
+        fixtureLinesA.reserve(500);
+        for (int i = 0; i < 500; ++i)
+        {
+            fixtureLinesA.append(QStringLiteral(R"({"msg": "a-%1"})").arg(i));
+        }
+        const QStringList fixtureLinesB{
+            QStringLiteral(R"({"msg": "b-0"})"),
+            QStringLiteral(R"({"msg": "b-1"})"),
+        };
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB(fixtureLinesB);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // First open arms the streaming worker but does NOT wait
+        // for completion. We pump events just enough for the queue
+        // to enter the streaming state.
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+
+        // Second open is the regression case. Pre-fix, this would
+        // call `AppendStreaming` and trip its
+        // `!mStreamingWatcher->isRunning()` Q_ASSERT in debug builds.
+        // The condition is the "model is streaming" check, not the
+        // post-condition; if streaming already finished on a very
+        // fast runner we still exercise the post-finish Append path
+        // (mSessionMode == Idle, rowCount > 0) which is safe.
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+
+        // Drain both `streamingFinished` events. The deferred queue
+        // entry must produce a second `streamingFinished` once the
+        // first worker terminates.
+        while (finishedSpy.count() < 2)
+        {
+            QVERIFY2(finishedSpy.wait(10000), "both streaming sessions must finish");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
+
+        // The source descriptor records both files in load order
+        // even though the second open was deferred through the
+        // `streamingFinished` drain rather than queued directly.
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("appended_during_stream.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[0]), fixtureA.Path());
+        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[1]), fixtureB.Path());
+    }
+
     // `OpenMode::Replace` is the destructive path: rows wiped, filters
     // cleared, source descriptor reset to just the new file.
     void TestOpenFilesReplaceWipesPreviousSession()
@@ -10944,7 +11031,10 @@ private slots:
 
         // Take the lock from a "foreign" process. We have to call
         // WriteSnapshot through the manager, which internally tries
-        // for `LOCK_FILE_TIMEOUT_MS=2000` and then proceeds. Use a
+        // for `WRITE_LOCK_TIMEOUT_MS=5000` (the longer of the two
+        // split timeouts -- writes tolerate a longer wait because
+        // silently dropping a mutation under contention would
+        // corrupt the cross-process view) and then proceeds. Use a
         // very short stale-lock to keep this test fast.
         QLockFile foreign(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
         foreign.setStaleLockTime(0);
@@ -10957,8 +11047,8 @@ private slots:
 
         // WriteSnapshot must return a non-empty uuid even though
         // the lock was held the whole time. Bounded duration <
-        // 2500ms (the lock timeout + slack) so we don't sit on the
-        // CI for an arbitrarily long stretch.
+        // 7000ms (the write lock timeout + slack) so we don't sit on
+        // the CI for an arbitrarily long stretch.
         const auto start = std::chrono::steady_clock::now();
         const QString uuid = manager.WriteSnapshot(cfg);
         const auto elapsed =
@@ -10967,7 +11057,7 @@ private slots:
         foreign.unlock();
 
         QVERIFY2(!uuid.isEmpty(), "WriteSnapshot must produce a uuid even under contention");
-        QVERIFY2(elapsed < 4000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
+        QVERIFY2(elapsed < 7000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
         QCOMPARE(manager.List().size(), 1);
     }
 
@@ -11281,6 +11371,84 @@ private slots:
         );
     }
 
+    // Regression for the `File -> Exit` republish loop: the primary
+    // `MainWindow w` in `main.cpp` is stack-allocated without
+    // `WA_DeleteOnClose`, so it stays in `topLevelWidgets()` past
+    // `closeEvent`. Without clearing `mAutoSaveUuid` inside
+    // `closeEvent`, the `aboutToQuit` snapshot loop would re-publish
+    // the uuid into `openWindowsAtQuit` and the next launch would
+    // restore the window the user just exited.
+    void TestCloseEventClearsAutoSaveUuidForAboutToQuit()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        // Heap-owned but not `WA_DeleteOnClose`: mirrors `main.cpp`'s
+        // stack-allocated primary in that the widget survives
+        // `close()` long enough for the aboutToQuit replay below.
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "exit"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuit();
+        if (afterAuto.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY(afterAuto.contains(uuid));
+
+        // Simulate File -> Exit: closeAllWindows fires closeEvent
+        // synchronously, but `wired` stays alive (no
+        // WA_DeleteOnClose) just like the stack-allocated primary.
+        wired->close();
+        QCoreApplication::processEvents();
+
+        // Replay main.cpp's aboutToQuit snapshot loop on the still-
+        // live widget. With the fix, `RestorableActiveSessionUuid`
+        // returns empty because `closeEvent` cleared
+        // `mAutoSaveUuid`; without the fix it returns the stale uuid
+        // and re-publishes it into `openWindowsAtQuit`.
+        QStringList capturedOnQuit;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr)
+            {
+                continue;
+            }
+            const QString restorableUuid = mw->RestorableActiveSessionUuid();
+            if (!restorableUuid.isEmpty())
+            {
+                capturedOnQuit.append(restorableUuid);
+            }
+        }
+        if (!capturedOnQuit.isEmpty())
+        {
+            SessionHistoryManager::SetOpenWindowsAtQuit(capturedOnQuit);
+        }
+
+        QVERIFY2(
+            capturedOnQuit.isEmpty(),
+            "aboutToQuit snapshot must not see a uuid from a window whose closeEvent already ran"
+        );
+        QVERIFY2(
+            !SessionHistoryManager::OpenWindowsAtQuit().contains(uuid),
+            "the just-exited window's uuid must not be republished into openWindowsAtQuit"
+        );
+    }
+
     // `NewSession` must not just clear the in-memory `mAutoSaveUuid`;
     // it must also drop the uuid from the persisted
     // `openWindowsAtQuit` set, so a crash before the next AutoSave
@@ -11400,10 +11568,24 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(orphanPath));
 
+        // Also plant a leftover `.json.tmp` (atomic-write crash
+        // between `ofstream::write` and `rename`). The cleanup must
+        // sweep it alongside the orphan JSON so it does not
+        // accumulate over time.
+        const QString staleTempPath =
+            QDir(sessionsDir.path()).filePath(QStringLiteral("orphan-%1.json.tmp").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+        {
+            QFile staleTemp(staleTempPath);
+            QVERIFY(staleTemp.open(QIODevice::WriteOnly));
+            staleTemp.write("{\"columns\": [");
+        }
+        QVERIFY(QFileInfo::exists(staleTempPath));
+
         manager.CleanupOrphanFiles();
 
         QVERIFY2(QFileInfo::exists(keptPath), "indexed entries must survive cleanup");
         QVERIFY2(!QFileInfo::exists(orphanPath), "orphan JSON must be removed");
+        QVERIFY2(!QFileInfo::exists(staleTempPath), "stale .json.tmp must be removed");
     }
 
     // `RestoreLastSessionFromPath` must pin `mAutoSaveUuid` even when
@@ -11491,6 +11673,57 @@ private slots:
                 "closeEvent must not auto-save a network-stream session into Recent Sessions"
             );
         }
+    }
+
+    // Regression for the phantom Recent Sessions entry that
+    // `closeEvent` used to write for a *finished* live-tail session.
+    // The model's `streamingFinished` resets `mSessionMode` to `Idle`
+    // before any user-initiated close can fire, so `closeEvent`'s
+    // auto-save gate was reading `Idle` -- which slips past the
+    // `LiveTail` filter -- against a `Source{File, [path]}` that
+    // looks indistinguishable from a static-files session.
+    // `mLastTerminalSessionMode` records the just-finished mode so
+    // `AutoSaveSessionSnapshot` sees the real `LiveTail` and bails.
+    void TestCloseAfterFinishedLiveTailDoesNotCreatePhantomRecentsEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}
+        });
+        wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+        // Drive a real `streamingFinished` through the model so the
+        // `MainWindow` lambda runs end-to-end: it captures
+        // `mLastTerminalSessionMode = LiveTail` and resets
+        // `mSessionMode = Idle`. Without that capture the close
+        // below would see `Idle` and silently write a phantom entry.
+        auto *model = wired->Model();
+        QVERIFY(model != nullptr);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        BeginSyntheticStreamSession(*model);
+        QVERIFY(model->IsStreamingActive());
+        model->StopAndKeepRows();
+        QCoreApplication::processEvents();
+        QVERIFY2(finishedSpy.count() >= 1, "StopAndKeepRows must emit streamingFinished");
+
+        QVERIFY2(
+            manager.List().isEmpty(),
+            "preconditions: no recents entries before close"
+        );
+
+        wired->close();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            manager.List().isEmpty(),
+            "closeEvent must not write a Recent Sessions entry for a finished live-tail session"
+        );
     }
 
     // `RestoreLastSessionFromPath` must not feed a NetworkStream

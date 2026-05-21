@@ -195,9 +195,13 @@ public:
     /// `LogConfiguration` value (e.g. the app-side session-history
     /// manager auto-saving a snapshot). Throws on serialization or
     /// open failure -- same contract as the instance overload.
-    static void Save(
-        const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope = SaveScope::Full
-    );
+    /// No default for @p scope so callers are forced to opt in
+    /// explicitly: a silent default tends to drift between
+    /// "Columns only" (faster, drops filters / sort / source) and
+    /// "Full" (recents-restorable) as new fields are added to the
+    /// schema, and a snapshot that loses its source is invisible
+    /// until restore time.
+    static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
 
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);

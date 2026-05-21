@@ -54,6 +54,21 @@ void SingleInstanceGuard::SetSocketNameForTest(const QString &name)
 
 bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allowNewInstance)
 {
+    if (allowNewInstance)
+    {
+        // Bypass: run fully uncoordinated. We deliberately do NOT
+        // call `QLocalServer::removeServer` / `listen` here -- doing
+        // so would unlink the canonical socket file on Linux and
+        // silently zombie the already-running primary (its listening
+        // FD survives but new clients cannot resolve the path).
+        // Trade-off: this process cannot accept its own future
+        // forwards, but plain double-clicks still reach the
+        // canonical primary, which is the documented intent of the
+        // `--new-instance` escape hatch ("explicitly running
+        // side-by-side processes").
+        return true;
+    }
+
     auto forwardTo = [&](QLocalSocket &probe) {
         QByteArray payload;
         QDataStream stream(&payload, QIODevice::WriteOnly);
@@ -70,10 +85,9 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         probe.waitForDisconnected(WRITE_TIMEOUT_MS);
     };
 
-    if (!allowNewInstance)
+    // Step 1: try to connect as a secondary. If the connect
+    // succeeds, the primary is up and we forward.
     {
-        // Step 1: try to connect as a secondary. If the connect
-        // succeeds, the primary is up and we forward.
         QLocalSocket probe;
         probe.connectToServer(mSocketName);
         if (probe.waitForConnected(CONNECT_TIMEOUT_MS))
@@ -127,6 +141,13 @@ void SingleInstanceGuard::HandleNewConnection()
         // `readyRead` invocation without us tracking sockets in a
         // map. `QByteArray` is value-typed and trivially copied
         // into / out of `QVariant`.
+        //
+        // Lifetime: an incomplete frame (peer disconnects mid-send,
+        // never finishes the `QDataStream` header) is collected into
+        // this buffer and then dropped when the socket emits
+        // `disconnected` -- the `deleteLater` above tears the
+        // `QLocalSocket` down, and the `QVariant`-owned `QByteArray`
+        // dies with it. No long-lived leak.
         auto tryDecode = [this, socket]() {
             QByteArray buffer = socket->property("structlog_buf").toByteArray();
             buffer.append(socket->readAll());
@@ -146,6 +167,21 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 if (magic == QByteArray(WIRE_MAGIC))
                 {
+                    // Cap the forwarded list to a sane upper bound
+                    // so a hostile (or simply malformed) peer cannot
+                    // pin GB-scale paths into our heap by repeating
+                    // a giant `QStringList`. `MAX_PAYLOAD_BYTES`
+                    // already bounds the wire frame; this is the
+                    // post-decode belt-and-braces on the resident
+                    // string count. 256 comfortably covers shell
+                    // glob expansions while staying well below any
+                    // value at which the open-files flow stops being
+                    // user-meaningful.
+                    constexpr int MAX_FORWARDED_FILES = 256;
+                    if (files.size() > MAX_FORWARDED_FILES)
+                    {
+                        files = files.mid(0, MAX_FORWARDED_FILES);
+                    }
                     emit openWindowRequested(files);
                 }
                 socket->disconnectFromServer();

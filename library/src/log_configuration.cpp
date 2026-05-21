@@ -183,14 +183,43 @@ void LogConfigurationManager::Save(const LogConfiguration &configuration, const 
         }
     }
 
-    std::ofstream file(path);
-    if (file.is_open())
+    // Atomic write: stream the JSON into a sibling `.tmp` file, flush
+    // and stream-state-check, then rename into place. Without the
+    // temp+rename a crash or ENOSPC mid-write would leave a truncated
+    // `<uuid>.json` that the recents index still points at; on next
+    // launch the auto-restore would error out and (worse) the
+    // truncated file would survive the orphan-cleanup glob. Renaming
+    // is atomic on POSIX and best-effort-atomic on Win32 (NTFS;
+    // FAT/exFAT fall back to a non-atomic delete+rename which is
+    // still strictly better than the previous write-in-place).
+    const std::filesystem::path tempPath = path.string() + ".tmp";
     {
+        std::ofstream file(tempPath);
+        if (!file.is_open())
+        {
+            throw std::runtime_error("Failed to open file '" + tempPath.string() + "'.");
+        }
         file << json;
+        file.flush();
+        if (!file.good())
+        {
+            // Best-effort cleanup -- leaving a stale `.tmp` around is
+            // harmless because `SessionHistoryManager::CleanupOrphanFiles`
+            // sweeps `*.json.tmp` alongside orphan `*.json` entries.
+            std::error_code cleanupEc;
+            std::filesystem::remove(tempPath, cleanupEc);
+            throw std::runtime_error("Failed to write file '" + tempPath.string() + "'.");
+        }
     }
-    else
+    std::error_code ec;
+    std::filesystem::rename(tempPath, path, ec);
+    if (ec)
     {
-        throw std::runtime_error("Failed to open file '" + path.string() + "'.");
+        std::error_code cleanupEc;
+        std::filesystem::remove(tempPath, cleanupEc);
+        throw std::runtime_error(
+            "Failed to rename '" + tempPath.string() + "' to '" + path.string() + "': " + ec.message()
+        );
     }
 }
 

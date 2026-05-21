@@ -385,6 +385,13 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
 
     connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
     connect(ui->actionNewWindow, &QAction::triggered, this, &MainWindow::NewWindow);
+    // Greyed-out unless we have a `SessionHistoryManager` to thread
+    // into the new window. `NewWindow()`'s nullptr-guard remains the
+    // authoritative gate; this just turns the menu entry into a
+    // visible affordance instead of a no-op click. Tests that
+    // construct a `MainWindow` without a manager (the default
+    // `init()` path) therefore see the action disabled.
+    ui->actionNewWindow->setEnabled(mHistoryManager != nullptr);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
     connect(ui->actionOpenWithConfiguration, &QAction::triggered, this, &MainWindow::OpenWithConfiguration);
 
@@ -394,6 +401,12 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     // having to react to every `changed()` signal.
     if (ui->menuRecentSessions != nullptr)
     {
+        // QMenu suppresses per-action tooltips unless this flag is
+        // set; without it `RebuildRecentSessionsMenu`'s
+        // primary-locator tooltips never reach the user and two
+        // recents entries with the same `BuildLabel` output are
+        // indistinguishable in the menu.
+        ui->menuRecentSessions->setToolTipsVisible(true);
         connect(ui->menuRecentSessions, &QMenu::aboutToShow, this, &MainWindow::RebuildRecentSessionsMenu);
     }
     connect(ui->actionOpenLogStream, &QAction::triggered, this, &MainWindow::OpenLogStream);
@@ -578,8 +591,12 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         // auto-save gate below can distinguish "static load completed"
         // (worth recording in Recent Sessions) from "live-tail /
         // network stream completed" (transient, never re-openable
-        // from a JSON snapshot).
+        // from a JSON snapshot). The same value is mirrored into
+        // `mLastTerminalSessionMode` so `closeEvent` -> `AutoSave`
+        // (which runs strictly after the live `mSessionMode` has
+        // already been reset to `Idle`) still sees the real mode.
         const SessionMode justFinishedMode = mSessionMode;
+        mLastTerminalSessionMode = mSessionMode;
         mSessionMode = SessionMode::Idle;
 
         // Reset Pause / Follow-tail to defaults for the next session.
@@ -1019,10 +1036,15 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
         UpdateUi();
         return;
     }
-    // Default to Append so a user can drag-drop multiple files onto
-    // the binary in one go without each clobbering the previous; the
-    // empty-session start condition makes this equivalent to a fresh
-    // open regardless.
+    // Always Append: a user can drag-drop multiple files onto the
+    // binary in one go without each clobbering the previous, and on
+    // an empty-session start the Append branch lands at the same
+    // place as a fresh open. There is no `Shift`-equivalent on the
+    // CLI / forward path -- a `--new-instance` secondary launch
+    // simply amends the primary's currently-active session. The user
+    // opts into that trade-off by running with single-instance mode;
+    // a future `--replace` flag could promote selected launches to
+    // `OpenMode::Replace`, but the wire format does not yet carry it.
     StartStreamingOpenQueue(files, OpenMode::Append);
 }
 
@@ -1066,34 +1088,7 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
         }
     }
 
-    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
-    {
-        // Configuration without a source: columns / filters are
-        // installed but there is nothing to stream. Treat this like
-        // a plain Load Configuration call (no row data).
-        return;
-    }
-
-    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
-    {
-        // NetworkStream snapshots persist the producer URI as the
-        // locator. Feeding that to `StartStreamingOpenQueue` (which
-        // opens its arguments as static files) would try to parse
-        // `tcp://...` as a file path and surface a bogus parse
-        // error. Newer builds avoid auto-saving stream sessions
-        // (see `ShouldAutoSaveSession`), but older recents JSON
-        // captured before this gate may still carry stream sources.
-        // The user can manually re-bind via Open Network Stream...
-        return;
-    }
-
-    QStringList files;
-    files.reserve(static_cast<qsizetype>(mCurrentSource->locators.size()));
-    for (const std::string &locator : mCurrentSource->locators)
-    {
-        files.append(QString::fromStdString(locator));
-    }
-    StartStreamingOpenQueue(files, OpenMode::Append);
+    StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/false);
 }
 
 void MainWindow::OpenRecentSession(const QString &uuid)
@@ -1164,29 +1159,43 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     SessionHistoryManager::AddOpenWindowUuid(uuid);
 
     // Step 4: open the source locators captured in the configuration.
-    // `mCurrentSource` was just populated by the load above.
+    // `mCurrentSource` was just populated by the load above. The
+    // user clicked an explicit recents entry, so the non-File
+    // branch is worth surfacing as a `QMessageBox` rather than
+    // silently dropped.
+    StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/true);
+}
+
+bool MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
+{
     if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
     {
-        // Configuration without a source: the columns / filters are
-        // installed but there is nothing to stream. Treat this like
-        // a plain Load Configuration call.
-        return;
+        // Configuration without a source: columns / filters are
+        // installed but there is nothing to stream. Caller treats
+        // this like a plain Load Configuration call.
+        return false;
     }
 
     if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
     {
-        // See the matching guard in `RestoreLastSessionFromPath`:
-        // a NetworkStream snapshot's locators are producer URIs and
-        // cannot be fed to `StartStreamingOpenQueue`. Newer
-        // sessions never persist this combination, but legacy
-        // recents entries might.
-        QMessageBox::information(
-            this,
-            QStringLiteral("Network Stream Session"),
-            QStringLiteral("This recent session was a network stream; the columns and filters have been "
-                           "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
-        );
-        return;
+        // NetworkStream snapshots persist the producer URI as the
+        // locator. Feeding that to `StartStreamingOpenQueue` (which
+        // opens its arguments as static files) would try to parse
+        // `tcp://...` as a file path and surface a bogus parse
+        // error. Newer builds avoid auto-saving stream sessions
+        // (see `ShouldAutoSaveSession`), but older recents JSON
+        // captured before this gate may still carry stream sources.
+        // The user can manually re-bind via Open Network Stream...
+        if (informIfNonFile)
+        {
+            QMessageBox::information(
+                this,
+                QStringLiteral("Network Stream Session"),
+                QStringLiteral("This recent session was a network stream; the columns and filters have been "
+                               "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
+            );
+        }
+        return false;
     }
 
     QStringList files;
@@ -1202,6 +1211,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // the Append branch is a no-op for state and the first file goes
     // through `BeginStreaming` cleanly.
     StartStreamingOpenQueue(files, OpenMode::Append);
+    return true;
 }
 
 void MainWindow::NewSession()
@@ -1219,6 +1229,10 @@ void MainWindow::NewSession()
     ClearAllFilters();
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
+    // Forget what the last session was: the next closeEvent's
+    // `AutoSaveSessionSnapshot` should treat us as Idle, not as
+    // "still carries the previous (possibly live-tail) mode".
+    mLastTerminalSessionMode = SessionMode::Idle;
     mStreamingFileName.clear();
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -1375,15 +1389,37 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
     if (destructive)
     {
         // Mirror the historic open path: drop rows, runtime filters,
-        // and the source descriptor before queueing.
+        // and the source descriptor before queueing. `mModel->Reset()`
+        // stops any in-flight streaming worker synchronously, so the
+        // destructive branch is safe even mid-stream.
         mModel->Reset();
         ClearAllFilters();
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
+        // Forget the just-discarded session's mode so a closeEvent
+        // before the next streamingFinished does not consult a stale
+        // `mLastTerminalSessionMode` from the previous session.
+        mLastTerminalSessionMode = SessionMode::Idle;
         // Drop the previous session's recents uuid so the next
         // AutoSave creates a fresh entry instead of overwriting (and
         // erasing) the prior session's JSON in place.
         DetachAutoSaveUuid();
+    }
+    else if (mModel->IsStreamingActive())
+    {
+        // Append onto an in-flight static session: queue and bail.
+        // The `streamingFinished` lambda in this class's constructor
+        // already drains `mPendingOpenFiles` via
+        // `StreamNextPendingFile` once the active worker terminates.
+        // Starting another worker here would trip
+        // `LogModel::AppendStreaming`'s
+        // `!mStreamingWatcher->isRunning()` assert in debug builds
+        // and silently abandon the in-flight worker (rows lost, no
+        // `streamingFinished` for the original parse) in release.
+        // We `append` rather than overwrite so an existing tail-end
+        // queue from the current `streamingFinished` drain survives.
+        mPendingOpenFiles.append(std::move(files));
+        return;
     }
     else if (mSessionMode == SessionMode::Idle && mModel->rowCount() > 0)
     {
@@ -2139,7 +2175,22 @@ void MainWindow::MirrorSessionStateToConfiguration()
     sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
     mModel->ConfigurationManager().SetSort(sort);
 
-    mModel->ConfigurationManager().SetSource(mCurrentSource);
+    // Drop empty-locator Sources before mirroring: the on-disk
+    // schema documents `source` as "omit when no source is bound",
+    // so a `Source{kind: File, locators: {}}` is meaningless to a
+    // re-loading window (kind without an address is not actionable)
+    // and round-trips into the recents UI as a label-less entry.
+    // `SetSource(nullopt)` keeps the loaded configuration shape
+    // consistent with the snapshots `WriteSnapshot` would later
+    // index against.
+    if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    {
+        mModel->ConfigurationManager().SetSource(mCurrentSource);
+    }
+    else
+    {
+        mModel->ConfigurationManager().SetSource(std::nullopt);
+    }
 }
 
 bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
@@ -2177,12 +2228,18 @@ bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
 
 void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
 {
-    // Re-evaluate the gate against the *current* mode. Callers that
-    // know more (the `streamingFinished` hook passes the
-    // just-finished mode through `ShouldAutoSaveSession` itself)
-    // already check beforehand; this redundant check makes the
-    // helper safe to call from any future site.
-    if (!ShouldAutoSaveSession(mSessionMode))
+    // Prefer the live `mSessionMode` (e.g. closeEvent fires
+    // mid-stream while we're still `Static` / `LiveTail`), falling
+    // back to the mode captured just before the last
+    // `streamingFinished` reset. Without the fallback, a closeEvent
+    // that fires after a live-tail finished would see
+    // `mSessionMode == Idle`, slip past the `justFinishedMode ==
+    // LiveTail` guard in `ShouldAutoSaveSession`, and write a
+    // phantom Recent Sessions entry pointing at a tailing producer
+    // that cannot be re-bound on restore.
+    const SessionMode effectiveMode =
+        (mSessionMode != SessionMode::Idle) ? mSessionMode : mLastTerminalSessionMode;
+    if (!ShouldAutoSaveSession(effectiveMode))
     {
         return;
     }
@@ -2274,17 +2331,22 @@ void MainWindow::closeEvent(QCloseEvent *event)
     //
     // `publishOpenWindow=false` so the flush does not add this uuid
     // to `openWindowsAtQuit` only for the very next line to remove
-    // it -- saves two QSettings round-trips. `ShouldAutoSaveSession`
-    // (called inside `AutoSaveSessionSnapshot`) also filters out
-    // live-tail and network-stream sessions so we don't pollute
-    // Recent Sessions with un-reopenable entries.
+    // it -- saves two QSettings round-trips. `AutoSaveSessionSnapshot`
+    // consults `mLastTerminalSessionMode` rather than the live
+    // `mSessionMode`, so a closeEvent after a live-tail or network
+    // stream finished does not write a phantom Recent Sessions entry
+    // for an un-restorable session.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-    // Remove ourselves from the persisted open-windows set: a
-    // user-initiated close (X button, File -> Exit, Ctrl+W if ever
-    // wired) means "I don't want this back on the next launch". The
-    // OS-quit path bypasses `closeEvent` entirely, so its uuids stay
-    // in the set and get fan-restored next time.
-    SessionHistoryManager::RemoveOpenWindowUuid(mAutoSaveUuid);
+    // `DetachAutoSaveUuid` both removes the uuid from the persisted
+    // open-windows set *and* clears `mAutoSaveUuid` on this window.
+    // The clear is load-bearing: the stack-allocated primary window
+    // in `main.cpp` is not `WA_DeleteOnClose`, so it stays in
+    // `QApplication::topLevelWidgets()` past `closeEvent`. Without
+    // the clear, the `aboutToQuit` handler's
+    // `RestorableActiveSessionUuid` capture would re-publish the
+    // uuid into `openWindowsAtQuit` and the next launch would
+    // re-open the window the user just explicitly exited.
+    DetachAutoSaveUuid();
     QMainWindow::closeEvent(event);
 }
 

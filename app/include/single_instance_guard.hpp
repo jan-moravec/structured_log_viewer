@@ -36,9 +36,13 @@ public:
     ///   it (an empty list still triggers a "raise a new window"
     ///   request) and return `false`. The caller is expected to exit
     ///   the application immediately.
-    /// - If @p allowNewInstance is `true`, the forward step is
-    ///   skipped and the function unconditionally tries to become
-    ///   the primary -- used by the `--new-instance` escape hatch.
+    /// - If @p allowNewInstance is `true`, skip both the forward
+    ///   and the listen path. The process runs as a fully
+    ///   uncoordinated primary: plain launches still reach the
+    ///   canonical primary's socket, and this process will not see
+    ///   forwarded files from future secondaries. Going through
+    ///   `removeServer` + `listen` would unlink the canonical socket
+    ///   file on Linux and silently zombie the existing primary.
     [[nodiscard]] bool TryAcquire(const QStringList &forwardFiles, bool allowNewInstance);
 
     /// Server socket name used by `QLocalServer`. Exposed for tests
