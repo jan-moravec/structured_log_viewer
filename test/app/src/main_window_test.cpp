@@ -6075,91 +6075,23 @@ private slots:
         QCOMPARE(QString::fromStdString(probe.Configuration().source->locators.front()), fixtureB.Path());
     }
 
-    // The Open-with-Configuration flow loads a session JSON first
-    // (filters and sort included) and then opens log files in Append
-    // mode so the restored filters survive into the streamed rows.
-    void TestOpenWithConfigurationPreservesLoadedFilters()
-    {
-        auto *model = mWindow->Model();
-        QVERIFY(model != nullptr);
-
-        const QStringList fixtureLines{
-            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
-            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
-            QStringLiteral(R"({"category": "error", "msg": "gamma"})"),
-        };
-        const TempJsonFile fixture(fixtureLines);
-
-        // First load the fixture as a plain Open so we get the column
-        // layout the configuration will reference.
-        QSignalSpy primingSpy(model, &LogModel::streamingFinished);
-        QVERIFY(primingSpy.isValid());
-        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
-        QVERIFY(primingSpy.wait(5000));
-        QCoreApplication::processEvents();
-
-        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
-        QVERIFY2(categoryCol >= 0, "category column must exist after priming open");
-
-        // Persist a session that filters the `category` column to
-        // values containing "warn"; we then load this session via
-        // Open-with-Configuration and verify the filter is live.
-        const QTemporaryDir saved;
-        QVERIFY(saved.isValid());
-        const QString sessionPath = saved.filePath(QStringLiteral("filtered.json"));
-
-        loglib::LogConfigurationManager builder;
-        builder.SetSource(loglib::LogConfiguration::Source{});
-        builder.AppendKeys({"category", "msg"});
-
-        loglib::LogConfiguration::LogFilter filter;
-        filter.type = loglib::LogConfiguration::LogFilter::Type::String;
-        filter.row = categoryCol;
-        filter.filterString = "warn";
-        filter.matchType = loglib::LogConfiguration::LogFilter::Match::Contains;
-        builder.SetFilters({filter});
-        builder.Save(sessionPath.toStdString(), loglib::SaveScope::Full);
-
-        // Tear down the priming session, then run the combined flow.
-        mWindow->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
-        QCoreApplication::processEvents();
-        QCOMPARE(model->rowCount(), 0);
-
-        mWindow->SetSuppressDialogsForTest(true);
-        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
-        QVERIFY(finishedSpy.isValid());
-        const bool ok = mWindow->OpenWithConfigurationForTest(sessionPath, {fixture.Path()});
-        QVERIFY2(ok, "OpenWithConfigurationForTest must accept the session JSON");
-        QVERIFY(finishedSpy.wait(5000));
-        QCoreApplication::processEvents();
-
-        // Rows are streamed into the model unfiltered; the filter
-        // map carries the restored rule (the proxy applies it on top).
-        QCOMPARE(model->rowCount(), fixtureLines.size());
-        QVERIFY2(
-            mWindow->Filters().size() == 1,
-            qPrintable(QStringLiteral("restored filter count = %1, expected 1").arg(mWindow->Filters().size()))
-        );
-
-        // The proxy filters down to the one row whose category
-        // contains "warn".
-        auto *proxy = mWindow->FilterModel();
-        QVERIFY(proxy != nullptr);
-        QCOMPARE(proxy->rowCount(), 1);
-    }
-
-    // `actionNewSession` clears rows, filters, source, and session mode.
-    // The action is reachable through `FindUiAction` so the keyboard
-    // shortcut wiring is covered too (offscreen QPA can't deliver
-    // shortcuts but the action handler runs identically).
+    // `actionNewSession` clears rows, runtime filters, the persisted
+    // column configuration (columns / sort / filters / source), and
+    // the session mode. The action is reachable through
+    // `FindUiAction` so the keyboard shortcut wiring is covered too
+    // (offscreen QPA can't deliver shortcuts but the action handler
+    // runs identically).
     void TestNewSessionActionResetsState()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
+        // Two distinct keys so the auto-detector materialises at
+        // least two columns. NewSession must wipe both, not just
+        // the rows underneath them.
         const QStringList fixtureLines{
-            QStringLiteral(R"({"msg": "x-0"})"),
-            QStringLiteral(R"({"msg": "x-1"})"),
+            QStringLiteral(R"({"category": "info", "msg": "x-0"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "x-1"})"),
         };
         const TempJsonFile fixture(fixtureLines);
 
@@ -6169,16 +6101,38 @@ private slots:
         QVERIFY(finishedSpy.wait(5000));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), fixtureLines.size());
+        QVERIFY2(model->columnCount() >= 2, "fixture must auto-detect at least the two JSON keys as columns");
+
+        // Apply a sort so NewSession has something to clear: without
+        // this the "after NewSession sort is -1" assertion below
+        // could trivially hold because the proxy never received a
+        // sort indicator in the first place.
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        mWindow->TableViewForTest()->sortByColumn(categoryCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), categoryCol);
 
         QAction *action = mWindow->FindUiAction(QStringLiteral("actionNewSession"));
         QVERIFY2(action != nullptr, "actionNewSession must be exposed via FindUiAction");
         action->trigger();
         QCoreApplication::processEvents();
 
+        // In-memory state: rows, columns, runtime filters all gone;
+        // the proxy sort is back to "no sort".
         QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(model->columnCount(), 0);
+        QVERIFY2(
+            model->Configuration().columns.empty(),
+            "New Session must clear the persisted column configuration"
+        );
+        QVERIFY2(mWindow->Filters().empty(), "New Session must clear the runtime filter map");
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
 
-        // Source descriptor is gone. A subsequent SaveSession must
-        // not write a `source` field.
+        // On-disk round-trip: a subsequent SaveSession must not
+        // write a `source`, must write an empty `columns` /
+        // `filters` array, and must write the default sort
+        // (columnIndex == -1).
         const QTemporaryDir saved;
         QVERIFY(saved.isValid());
         const QString sessionPath = saved.filePath(QStringLiteral("new-session.json"));
@@ -6186,6 +6140,9 @@ private slots:
         loglib::LogConfigurationManager probe;
         probe.Load(sessionPath.toStdString());
         QVERIFY2(!probe.Configuration().source.has_value(), "New Session must clear the source descriptor");
+        QVERIFY2(probe.Configuration().columns.empty(), "New Session saved JSON must have no columns");
+        QVERIFY2(probe.Configuration().filters.empty(), "New Session saved JSON must have no filters");
+        QCOMPARE(probe.Configuration().sort.columnIndex, -1);
     }
 
     // Pinning a string-only column (`msg`) to `Integer` is the
@@ -11783,7 +11740,7 @@ private slots:
             "status bar must mention the configuration file the user passed"
         );
         QVERIFY2(
-            message.contains(QStringLiteral("Open with Configuration")),
+            message.contains(QStringLiteral("Load Configuration or Session")),
             "status bar hint must point the user at the menu entry that does what they meant"
         );
     }
@@ -13159,84 +13116,6 @@ private slots:
         const QStringList sessionFiles =
             QDir(sessionsDir.path()).entryList(QStringList{QStringLiteral("*.json")}, QDir::Files);
         QCOMPARE(sessionFiles.size(), 1);
-    }
-
-    // H2 regression (third-pass review): a deferred
-    // `OpenWithConfiguration` continuation must NOT fire when the
-    // user supersedes the deferred apply with another
-    // session-changing entrypoint (NewSession, OpenLogStream,
-    // another OpenWithConfiguration, ...) before the in-flight
-    // stream's `streamingFinished` arrives. The fix wires a
-    // monotonic `mDeferredApplyInvalidationGen` counter that every
-    // session-changing entrypoint bumps; the deferred lambda
-    // captures the value at attach time and bails on mismatch.
-    //
-    // We test the counter mechanic directly via the test seam --
-    // testing the lambda end-to-end requires faking the file
-    // dialog that `OpenWithConfiguration` opens, which would
-    // make the test brittle. The seam exposes the gen value so we
-    // can assert each documented entrypoint advances it.
-    void TestDeferredApplyInvalidationGenAdvancesOnEachEntrypoint()
-    {
-        QTemporaryDir sessionsDir;
-        QVERIFY(sessionsDir.isValid());
-        SessionHistoryManager manager(QDir(sessionsDir.path()),
-                                      std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
-
-        const TempJsonFile fixture({QStringLiteral(R"({"msg": "h2"})")});
-
-        // 1. StartStreamingOpenQueue (covers OpenFiles, drag-drop,
-        //    OpenFilesForCli's multi-file fallback).
-        const int genBeforeOpen = wired->DeferredApplyInvalidationGenForTest();
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
-        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY2(
-            wired->DeferredApplyInvalidationGenForTest() > genBeforeOpen,
-            "StartStreamingOpenQueue must bump the deferred-apply gen"
-        );
-        QVERIFY(finishedSpy.wait(5000));
-        QCoreApplication::processEvents();
-
-        // 2. NewSession (the most-likely supersede path: user clicks
-        //    File -> New Session while a deferred apply is queued).
-        const int genBeforeNew = wired->DeferredApplyInvalidationGenForTest();
-        wired->NewSessionForTest();
-        QCoreApplication::processEvents();
-        QVERIFY2(
-            wired->DeferredApplyInvalidationGenForTest() > genBeforeNew,
-            "NewSession must bump the deferred-apply gen"
-        );
-
-        // 3. DoLoadConfiguration via OpenWithConfigurationForTest's
-        //    sync path (covers File -> Open with Configuration when
-        //    no stream is active, plus RestoreLastSessionFromPath
-        //    and OpenRecentSession transitively).
-        loglib::LogConfigurationManager builder;
-        builder.AppendKeys({"x", "y"});
-        QTemporaryDir scratch;
-        QVERIFY(scratch.isValid());
-        const QString configPath = scratch.filePath(QStringLiteral("h2-cfg.json"));
-        builder.Save(configPath.toStdString(), loglib::SaveScope::ColumnsOnly);
-
-        const int genBeforeCfg = wired->DeferredApplyInvalidationGenForTest();
-        QVERIFY(wired->OpenWithConfigurationForTest(configPath, {}));
-        QCoreApplication::processEvents();
-        QVERIFY2(
-            wired->DeferredApplyInvalidationGenForTest() > genBeforeCfg,
-            "DoLoadConfiguration must bump the deferred-apply gen"
-        );
-
-        // 4. OpenLogStreamFromPath (live-tail open: emits a
-        //    synchronous Cancelled via `mModel->Reset()` that the
-        //    pre-fix lambda would have responded to).
-        const int genBeforeStream = wired->DeferredApplyInvalidationGenForTest();
-        wired->OpenLogStreamForTest(fixture.Path());
-        QCoreApplication::processEvents();
-        QVERIFY2(
-            wired->DeferredApplyInvalidationGenForTest() > genBeforeStream,
-            "OpenLogStreamFromPath must bump the deferred-apply gen"
-        );
     }
 
 private:

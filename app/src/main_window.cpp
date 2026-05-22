@@ -393,7 +393,6 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     // `init()` path) therefore see the action disabled.
     ui->actionNewWindow->setEnabled(mHistoryManager != nullptr);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
-    connect(ui->actionOpenWithConfiguration, &QAction::triggered, this, &MainWindow::OpenWithConfiguration);
 
     // Lazily refresh the Recent Sessions submenu so other-window
     // mutations (auto-save in a sibling MainWindow, clear, evict) are
@@ -1174,8 +1173,9 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
             {
                 const QString message =
                     tr("First argument '%1' looks like a configuration but is being opened as a log "
-                       "file because additional arguments were passed. Use File -> Open with "
-                       "Configuration... or pass the configuration on its own to apply it.")
+                       "file because additional arguments were passed. Use File -> Load Configuration "
+                       "or Session... then File -> Open... or pass the configuration on its own to "
+                       "apply it.")
                         .arg(files.front());
                 statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
                 qWarning().noquote() << "OpenFilesForCli:" << message;
@@ -1411,8 +1411,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     }
 
     // Append mode so the freshly-loaded filters survive into the new
-    // streamed rows (see `OpenWithConfiguration` for the same
-    // rationale). With `mSessionMode == Idle` and the model empty,
+    // streamed rows. With `mSessionMode == Idle` and the model empty,
     // the Append branch is a no-op for state and the first file goes
     // through `BeginStreaming` cleanly.
     StartStreamingOpenQueue(files, OpenMode::Append);
@@ -1421,23 +1420,45 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 void MainWindow::NewSession()
 {
     // Tear down whatever was loaded: rows, runtime filters, source
-    // descriptor, session mode. Configuration columns are intentionally
-    // preserved -- the next open / load can reuse the layout the user
-    // has been editing. To wipe columns too, the user loads a fresh
-    // configuration file.
+    // descriptor, session mode, *and* the configuration columns /
+    // sort / persisted filters. The window ends up indistinguishable
+    // from a freshly-constructed one -- matching the user's "New
+    // Session = blank window" mental model. Users who want to reuse
+    // the column layout from the previous session can pick
+    // `Load Configuration or Session...` (which loads the saved
+    // layout explicitly) or reopen the recents entry directly.
     //
     // `LogModel::Reset` already handles an orderly producer stop +
     // sink drain for live-tail / streaming sessions, so we do not
     // need a separate branch for `IsStreamingActive`.
-    //
-    // Invalidate any pending deferred-apply continuations *before*
-    // `mModel->Reset()`: Reset emits `streamingFinished(Cancelled)`
-    // synchronously, which would re-enter the deferred lambda
-    // mid-NewSession and clobber the just-cleared state. The bump
-    // is checked in the lambda's gen guard.
-    ++mDeferredApplyInvalidationGen;
+
+    // Drop proxy state *before* the configuration wipe below: the
+    // sort and filter rules carry column indices that become
+    // dangling once `LogConfigurationManager::Reset` empties
+    // `columns`. Clearing the proxy first means no signal handler
+    // can briefly evaluate against a stale index. `ClearAllFilters`
+    // also calls `SetFilterRules({})` internally, but ordering it
+    // explicitly here keeps the contract obvious and survives
+    // future refactors of `ClearAllFilters`.
+    mTableView->sortByColumn(-1, Qt::AscendingOrder);
+    mSortFilterProxyModel->SetFilterRules({});
+
     mModel->Reset();
     ClearAllFilters();
+
+    // Wipe the persisted configuration (columns, filters, sort,
+    // source) and rebuild the header so the table view renders an
+    // empty layout. `NotifyConfigurationReplaced` emits
+    // `beginResetModel` / `endResetModel`, which fires the wired
+    // `modelReset -> ApplyColumnVisibility` slot against the
+    // now-empty `columns` vector and collapses the header to zero
+    // sections. The double reset (one from `mModel->Reset()` above,
+    // one here) is intentional: the first wipes row data while the
+    // configuration is still populated, the second re-syncs Qt's
+    // header against the now-empty configuration.
+    mModel->ConfigurationManager().Reset();
+    mModel->NotifyConfigurationReplaced();
+
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
     // Forget what the last session was: the next closeEvent's
@@ -1486,152 +1507,6 @@ void MainWindow::OpenFiles()
     }
 
     StartStreamingOpenQueue(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
-}
-
-void MainWindow::OpenWithConfiguration()
-{
-    // Step 1: prompt for the configuration or session JSON.
-    const QString configPath = QFileDialog::getOpenFileName(
-        this, "Select Configuration or Session", QString(), "JSON (*.json);;All Files (*)"
-    );
-    if (configPath.isEmpty())
-    {
-        return;
-    }
-
-    // Pre-flight the parse into a throw-away manager so we never
-    // mutate the live model with a config whose load we then have
-    // to "undo" on cancel / failure. `DoLoadConfiguration` is
-    // unconditionally destructive (it clears proxy rules + sort
-    // before the load), so calling it before both dialogs return
-    // would strand the user in a half-loaded state if they cancel
-    // the file picker.
-    try
-    {
-        loglib::LogConfigurationManager probe;
-        probe.Load(configPath.toStdString());
-    }
-    catch (const std::exception &e)
-    {
-        QMessageBox::critical(
-            this,
-            QStringLiteral("Cannot Open Configuration"),
-            QStringLiteral("Failed to parse '%1':\n%2").arg(configPath, QString::fromStdString(e.what()))
-        );
-        return;
-    }
-
-    // Step 2: prompt for log files. Cancelling here is a graceful
-    // exit -- the current view is untouched.
-    const QStringList files = QFileDialog::getOpenFileNames(
-        this, "Select Log Files to Open with Configuration", QString(), "All Files (*.*)"
-    );
-    if (files.isEmpty())
-    {
-        return;
-    }
-
-    // Both prompts confirmed. If a streaming parse is currently in
-    // flight, defer the destructive `DoLoadConfiguration` until it
-    // finishes: the worker thread is reading the *current* column
-    // layout from the configuration snapshot it captured at
-    // `BeginStreaming` time, and rewriting that layout from under
-    // it would surface as columns shifting / disappearing mid-parse
-    // and (worse) cached `EnumDictionary` indices pointing at the
-    // wrong column. We surface the deferral as a status-bar hint
-    // so the user understands why the new config / files do not
-    // appear immediately.
-    if (mModel->IsStreamingActive())
-    {
-        const QString message =
-            tr("Configuration will apply once the current parse completes.");
-        statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
-
-        // Bump the invalidation counter *before* capturing it in the
-        // lambda: any previously-queued deferred apply (the user
-        // double-clicking Open with Configuration during the same
-        // parse) sees its captured gen no longer match and bails.
-        // Then capture the post-bump value for our new lambda; we
-        // are the sole "live" deferred apply until another
-        // session-changing entrypoint bumps the counter again.
-        ++mDeferredApplyInvalidationGen;
-        const int capturedGen = mDeferredApplyInvalidationGen;
-
-        // One-shot connect: fires on the next `streamingFinished`
-        // and disconnects automatically. `Qt::SingleShotConnection`
-        // is the canonical way to express "run once and tear down"
-        // without juggling a `QMetaObject::Connection`.
-        QObject::connect(
-            mModel,
-            &LogModel::streamingFinished,
-            this,
-            [this, configPath, files, capturedGen](StreamingResult result) {
-                // Bail if the user superseded us with another
-                // session-changing op (NewSession, OpenLogStream,
-                // another OpenWithConfiguration, ...). The captured
-                // gen was current at attach time; any bump since
-                // means an unrelated `streamingFinished` is now
-                // delivering us, and applying would clobber the
-                // user's new session. Specifically, `mModel->Reset()`
-                // emits `streamingFinished(Cancelled)` synchronously
-                // from inside those callers, so without this gate
-                // we would re-enter `DoLoadConfiguration` mid-stack
-                // -- guaranteed corruption of the streaming worker
-                // state.
-                if (capturedGen != mDeferredApplyInvalidationGen)
-                {
-                    return;
-                }
-                // Even when no other op intervened, only apply on a
-                // clean Success: a Cancelled / Failed terminal state
-                // means the user explicitly aborted (Stop button) or
-                // the producer errored, and silently following up
-                // with a new config + open queue would surprise the
-                // user. The above gen-check already covers the
-                // common cancel paths (NewSession, OpenLogStream)
-                // because they bump the gen before issuing Reset;
-                // this is the belt for the explicit-Stop case where
-                // no other entrypoint is invoked.
-                if (result != StreamingResult::Success)
-                {
-                    return;
-                }
-                if (!DoLoadConfiguration(configPath))
-                {
-                    // TOCTOU race between the dialog accept and the
-                    // deferred apply: the file was rewritten in the
-                    // meantime. Surface to the user and abandon the
-                    // queue rather than silently dropping the load.
-                    QMessageBox::warning(
-                        this,
-                        QStringLiteral("Cannot Open with Configuration"),
-                        QStringLiteral(
-                            "Configuration '%1' could no longer be parsed when the active "
-                            "parse completed. Re-select the file from File -> Open with "
-                            "Configuration..."
-                        ).arg(configPath)
-                    );
-                    return;
-                }
-                StartStreamingOpenQueue(files, OpenMode::Append);
-            },
-            Qt::SingleShotConnection
-        );
-        return;
-    }
-
-    // No streaming in flight: commit the config load, then queue
-    // the files in Append mode so the freshly-restored filters /
-    // sort survive into the new session.
-    if (!DoLoadConfiguration(configPath))
-    {
-        // Defensive: the pre-flight already accepted this file, so
-        // a second-stage failure here would be a TOCTOU race
-        // (file rewritten between the two reads). Surface to the
-        // user and bail without queueing anything.
-        return;
-    }
-    StartStreamingOpenQueue(files, OpenMode::Append);
 }
 
 bool MainWindow::TryLoadAsConfiguration(const QString &file)
@@ -1728,13 +1603,6 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 {
-    // Any new streaming open invalidates any deferred
-    // "apply-on-streamingFinished" continuation: this entrypoint is
-    // itself the user-initiated session change those continuations
-    // are meant to lose to. Bumping here covers OpenFiles, drag-drop,
-    // OpenWithConfiguration's synchronous tail, OpenRecentSession's
-    // streaming tail, and the secondary-launch forwarding path.
-    ++mDeferredApplyInvalidationGen;
     // Live-tail and network sessions are inherently single-source: any
     // new static-files open implicitly tears them down and starts
     // fresh, regardless of @p mode. Static sessions honour the caller.
@@ -1789,8 +1657,8 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
     // Otherwise (Idle + empty model): leave mode at Idle. The
     // upcoming `StreamNextPendingFile` will take the
     // `isFirstFileInSession` branch and `BeginStreaming` the queue,
-    // which preserves runtime filters loaded via
-    // "Open with Configuration..." because we never called
+    // which preserves runtime filters previously loaded via
+    // `Load Configuration or Session...` because we never called
     // `ClearAllFilters` in the non-destructive branch.
 
     mPendingOpenFiles = std::move(files);
@@ -1955,12 +1823,6 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mPendingOpenFiles.clear();
     }
 
-    // Invalidate any deferred-apply continuation: the upcoming
-    // `mModel->Reset()` emits `streamingFinished(Cancelled)`
-    // synchronously, which would otherwise wake a stale
-    // `OpenWithConfiguration` deferred lambda mid-OpenLogStream and
-    // race the BeginStreaming call we are about to issue.
-    ++mDeferredApplyInvalidationGen;
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
     ClearAllFilters();
@@ -2071,10 +1933,6 @@ void MainWindow::OpenNetworkStream()
         mPendingOpenFiles.clear();
     }
 
-    // Same rationale as `OpenLogStreamFromPath`: invalidate any
-    // deferred-apply continuation before the synchronous Cancel
-    // emit from `mModel->Reset()`.
-    ++mDeferredApplyInvalidationGen;
     // Mirror the OpenLogStream reset.
     mModel->Reset();
     ClearAllFilters();
@@ -2304,10 +2162,6 @@ QAction *MainWindow::FindUiAction(const QString &name) const
     {
         return ui->actionOpen;
     }
-    if (name == QStringLiteral("actionOpenWithConfiguration"))
-    {
-        return ui->actionOpenWithConfiguration;
-    }
     if (name == QStringLiteral("actionOpenLogStream"))
     {
         return ui->actionOpenLogStream;
@@ -2464,19 +2318,6 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration:
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
 {
     StartStreamingOpenQueue(files, mode);
-}
-
-bool MainWindow::OpenWithConfigurationForTest(const QString &configPath, const QStringList &files)
-{
-    if (!DoLoadConfiguration(configPath))
-    {
-        return false;
-    }
-    if (!files.isEmpty())
-    {
-        StartStreamingOpenQueue(files, OpenMode::Append);
-    }
-    return true;
 }
 #endif
 
@@ -3070,23 +2911,14 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
 {
     try
     {
-        // Drop the previous session's recents pin: a `Load
-        // Configuration...` / `Open with Configuration...` is a
-        // session boundary, and we must not let the next AutoSave
-        // silently overwrite an unrelated session's JSON in place.
+        // Drop the previous session's recents pin: a
+        // `Load Configuration or Session...` is a session boundary,
+        // and we must not let the next AutoSave silently overwrite
+        // an unrelated session's JSON in place.
         // The callers that *do* want to re-pin a uuid after the
         // load (`OpenRecentSession`, `RestoreLastSessionFromPath`)
         // explicitly set `mAutoSaveUuid` once this function returns.
         DetachAutoSaveUuid();
-
-        // Invalidate any deferred-apply continuation: this function
-        // is reached from `OpenWithConfiguration` (sync branch),
-        // `OpenRecentSession`, and `RestoreLastSessionFromPath`,
-        // each of which is a session-replacement event. The
-        // upcoming `mModel->Reset()` also emits a synchronous
-        // Cancelled signal that would otherwise wake a stale
-        // deferred lambda.
-        ++mDeferredApplyInvalidationGen;
 
         // Drop proxy rules and the active sort before the model is
         // reset: both were built for the old column layout. The

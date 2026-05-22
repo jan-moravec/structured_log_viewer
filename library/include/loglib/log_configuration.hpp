@@ -206,6 +206,16 @@ public:
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);
 
+    /// Wipe the configuration back to a default-constructed
+    /// `LogConfiguration` (no columns, no filters, no sort, no
+    /// source). Invalidates the key cache. Used by `MainWindow::
+    /// NewSession` to produce a true blank-window state -- the
+    /// previous behavior preserved columns across NewSession so the
+    /// user could reuse the layout, but that left stale headers /
+    /// sort / source attached to an otherwise empty view, which
+    /// did not match the user's "fresh window" mental model.
+    void Reset();
+
     /// Append-only: adds keys not already configured, auto-promoting
     /// timestamp-named ones. Existing column indices stay put.
     void AppendKeys(const std::vector<std::string> &newKeys);

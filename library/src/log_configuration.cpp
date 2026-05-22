@@ -236,6 +236,18 @@ void LogConfigurationManager::Save(const LogConfiguration &configuration, const 
     }
 }
 
+void LogConfigurationManager::Reset()
+{
+    // Default-construct the wire struct so columns / filters / sort /
+    // source all return to their factory state in one assignment.
+    // Mark the key cache stale rather than clearing it: the next
+    // `EnsureKeyCacheBuilt` will rebuild from the (now empty)
+    // `mConfiguration.columns`, which is equivalent but keeps the
+    // invalidation path identical to every other mutator.
+    mConfiguration = LogConfiguration{};
+    mCacheStale = true;
+}
+
 void LogConfigurationManager::Update(const LogData &logData)
 {
     EnsureKeyCacheBuilt();

@@ -30,7 +30,6 @@
     <addaction name="actionNewWindow"/>
     <addaction name="actionNewSession"/>
     <addaction name="actionOpen"/>
-    <addaction name="actionOpenWithConfiguration"/>
     <addaction name="actionOpenLogStream"/>
     <addaction name="actionOpenNetworkStream"/>
     <addaction name="separator"/>
@@ -111,14 +110,6 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>
-   </property>
-  </action>
-  <action name="actionOpenWithConfiguration">
-   <property name="text">
-    <string>Open with Configuration...</string>
-   </property>
-   <property name="toolTip">
-    <string>Load a configuration or session file first (columns and any saved filters / sort), then open log file(s) parsed against that layout. The combined action skips the autodetect that a plain Open would run.</string>
    </property>
   </action>
   <action name="actionExit">

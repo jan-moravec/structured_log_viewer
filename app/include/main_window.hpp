@@ -374,20 +374,11 @@ public:
     /// bypassing the file dialog and the keyboard-modifier sniff.
     void OpenFilesForTest(const QStringList &files, OpenMode mode);
 
-    /// Test-only entry into the Open-with-Configuration flow that
-    /// bypasses the two file dialogs. Mirrors the production slot
-    /// step-by-step: load the configuration via `DoLoadConfiguration`,
-    /// then queue @p files via `StartStreamingOpenQueue` in `Append`
-    /// mode. Returns false (and skips the queue) when the
-    /// configuration fails to parse.
-    bool OpenWithConfigurationForTest(const QString &configPath, const QStringList &files);
-
     /// Drive the post-dialog body of `OpenLogStream` with @p filePath.
     /// Lets tests exercise the live-tail open path (in particular
     /// the "flush the previous static session before reset" hook
     /// added in the recents fixes) without standing up a real
-    /// modal `QFileDialog`. Mirrors `OpenFilesForTest` /
-    /// `OpenWithConfigurationForTest`.
+    /// modal `QFileDialog`. Mirrors `OpenFilesForTest`.
     void OpenLogStreamForTest(const QString &filePath);
 
     /// Test-only forwarder to `NewSession`, kept distinct so a
@@ -403,16 +394,6 @@ public:
     /// (uuid pinning, `Touch`, openWindowsAtQuit publish gate)
     /// without standing up the dynamic menu.
     void OpenRecentSessionForTest(const QString &uuid) { OpenRecentSession(uuid); }
-
-    /// Test-only readout of the monotonic counter that the deferred
-    /// `OpenWithConfiguration` continuation captures + checks. Used
-    /// to verify each session-changing entrypoint advances the
-    /// counter as documented on `mDeferredApplyInvalidationGen`,
-    /// without exposing the member.
-    [[nodiscard]] int DeferredApplyInvalidationGenForTest() const noexcept
-    {
-        return mDeferredApplyInvalidationGen;
-    }
 #endif
 
 protected:
@@ -460,13 +441,6 @@ private slots:
     /// inviting a misleading bool inspection.
     void StreamFromCurrentSourceOrSkip(bool informIfNonFile);
     void OpenFiles();
-    /// "Open with Configuration..." -- two-step prompt that first
-    /// loads a configuration or session JSON (columns, filters, sort)
-    /// and then opens the chosen log file(s) via `StartStreamingOpenQueue`
-    /// in `Append` mode, so the freshly-loaded filters survive into
-    /// the new session instead of being wiped by a destructive open.
-    /// Bound to `actionOpenWithConfiguration`.
-    void OpenWithConfiguration();
     void OpenLogStream();
     /// Pop the `NetworkStreamDialog`, build the matching producer, and
     /// call `LogModel::BeginStreaming`.
@@ -809,21 +783,6 @@ private:
     /// on a window that never finished a streaming session). Each
     /// `AddOpenWindowUuid` call site must keep this flag in lockstep.
     bool mAutoSaveUuidPublished = false;
-
-    /// Monotonic counter that supersedes any deferred
-    /// "apply-on-streamingFinished" continuation. The deferred path
-    /// in `OpenWithConfiguration` (queued when a parse is already in
-    /// flight) captures the current value at attach time and only
-    /// applies its config + open queue when the captured value still
-    /// matches at fire time. Any session-changing entrypoint
-    /// (`NewSession`, `StartStreamingOpenQueue`, `DoLoadConfiguration`,
-    /// `OpenLogStreamFromPath`, `OpenNetworkStream`,
-    /// `OpenWithConfiguration` re-entry) bumps this counter so a
-    /// stale deferred lambda fired by an unrelated `streamingFinished`
-    /// (e.g. a follow-up `mModel->Reset()` from `NewSession` that
-    /// emits `Cancelled` synchronously) bails instead of clobbering
-    /// the user's new session.
-    int mDeferredApplyInvalidationGen = 0;
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
