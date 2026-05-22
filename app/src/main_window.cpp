@@ -418,20 +418,25 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     // window (matches the typical File -> Exit affordance once the
     // app gained multi-window support).
     //
-    // We pair `closeAllWindows` (which walks the top-level list and
-    // fires `closeEvent` on each, giving every window's auto-save
-    // flush a chance to run) with an explicit `quit` so the binary
-    // also exits if a future change ever calls
-    // `setQuitOnLastWindowClosed(false)` -- in that mode the
-    // `closeAllWindows` walk on its own would leave a hidden,
-    // running process behind. The pairing also keeps the `aboutToQuit`
-    // safety-net in `main.cpp` engaged for windows whose close event
-    // somehow declined to fire (e.g. a future overridden
-    // `closeEvent` that calls `event->ignore()`).
-    connect(ui->actionExit, &QAction::triggered, qApp, [] {
-        QApplication::closeAllWindows();
-        QApplication::quit();
-    });
+    // `closeAllWindows` walks the top-level list and fires
+    // `closeEvent` on each, giving every window's auto-save flush
+    // a chance to run. The default `quitOnLastWindowClosed=true`
+    // (see `QGuiApplication::quitOnLastWindowClosed`) handles the
+    // shutdown once the last visible window goes away, which then
+    // triggers the `aboutToQuit` fan in `main.cpp`.
+    //
+    // We deliberately do NOT also call `QApplication::quit()` here:
+    //
+    // - A window whose `closeEvent` calls `event->ignore()` (e.g.
+    //   an unsaved-changes prompt) should keep the application
+    //   running; a redundant `quit()` would force termination
+    //   despite the ignore.
+    // - For windows that did honour the close, the AutoSave fan
+    //   in `aboutToQuit` already runs (driven by the
+    //   quit-on-last-window-closed default); a redundant `quit()`
+    //   would just walk a second no-op fan over already-cleared
+    //   state.
+    connect(ui->actionExit, &QAction::triggered, qApp, [] { QApplication::closeAllWindows(); });
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
@@ -805,30 +810,22 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     ApplyStreamingRetention();
     ApplyDisplayOrder();
 
-    QTimer::singleShot(0, [] {
-        // qCritical instead of a modal: offscreen Qt hangs on modals.
-        std::vector<std::filesystem::path> searched;
-        const auto tzdata = FindTzdata(searched);
-
-        if (tzdata.empty())
-        {
-            const QString message = FormatTzdataNotFoundMessage(searched);
-            qCritical().noquote() << "Fatal:" << message;
-            QApplication::exit(1);
-            return;
-        }
-
-        try
-        {
-            loglib::Initialize(tzdata);
-        }
-        catch (std::exception &e)
-        {
-            qCritical().noquote() << "Fatal: failed to initialize timezone database at"
-                                  << QString::fromStdString(tzdata.string()) << ":" << e.what();
-            QApplication::exit(1);
-        }
-    });
+    // Timezone database initialisation used to live here as a
+    // `QTimer::singleShot(0, ...)` so the diagnostic-only `qCritical`
+    // path could call `QApplication::exit(1)` from inside the running
+    // event loop. The deferral was a bug magnet: every `main()` call
+    // that ran *before* `exec()` (notably `RestoreLastSessionFromPath`
+    // on launch) executed with the date library uninitialised, and a
+    // session whose JSON contained a time-range filter triggered the
+    // lazy `date::current_zone()` call inside `loglib::CurrentZone()`
+    // -- the date library then probed its platform-default install
+    // path (on Windows: `<user-profile>/Downloads/tzdata`, which is
+    // not staged for production users) and threw, surfacing as a
+    // misleading "Error Parsing Configuration" dialog from
+    // `DoLoadConfiguration`. The init is now called synchronously
+    // before window construction (from `main()` and from the QtTest
+    // fixture's `initTestCase`), keeping the constructor free of
+    // process-global side effects.
 }
 
 MainWindow::~MainWindow()
@@ -845,6 +842,47 @@ MainWindow::~MainWindow()
     }
     mRecordDetailWindows.clear();
     delete ui;
+}
+
+bool MainWindow::InitializeTimezoneDatabase()
+{
+    // Idempotent: the first successful call wins. `loglib::Initialize`
+    // is itself cheap (one `date::set_install` + one
+    // `date::current_zone`) so the guard exists mainly to keep the
+    // diagnostic output single-shot when a fixture calls this from
+    // both `initTestCase` and a defensive sanity check.
+    static bool initialised = false;
+    if (initialised)
+    {
+        return true;
+    }
+
+    // qCritical instead of a modal: the offscreen Qt platform plugin
+    // (used by the GitHub-hosted Linux runner) deadlocks on `exec()`-
+    // style modals, so a diagnostic log is the only safe failure path
+    // shared across production and tests.
+    std::vector<std::filesystem::path> searched;
+    const auto tzdata = FindTzdata(searched);
+
+    if (tzdata.empty())
+    {
+        qCritical().noquote() << "Fatal:" << FormatTzdataNotFoundMessage(searched);
+        return false;
+    }
+
+    try
+    {
+        loglib::Initialize(tzdata);
+    }
+    catch (std::exception &e)
+    {
+        qCritical().noquote() << "Fatal: failed to initialize timezone database at"
+                              << QString::fromStdString(tzdata.string()) << ":" << e.what();
+        return false;
+    }
+
+    initialised = true;
+    return true;
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
@@ -1193,19 +1231,31 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
         if (!parsed.isNull())
         {
             mAutoSaveUuid = stem;
-            // Gate the `AddOpenWindowUuid` publish on `Touch`
-            // confirming the manager actually owns this stem. The
-            // QUuid::fromString check above only proves the filename
-            // is uuid-shaped -- the JSON could still live outside
-            // `sessionsDir` (caller passed an external path) or its
-            // index entry could have been evicted by a sibling
-            // process. In either case publishing the stem into
-            // `openWindowsAtQuit` would leak a ghost uuid that the
-            // next launch's fan-restore has to filter via
-            // `QFileInfo::exists`. `Touch` returns true only when
-            // the stem was found in the index, so the publish below
-            // is restricted to entries we genuinely own.
-            if (mHistoryManager->Touch(stem))
+            // Gate the `AddOpenWindowUuid` publish on two checks:
+            //
+            // 1. `Touch` confirming the manager actually owns this
+            //    stem. The QUuid::fromString check above only proves
+            //    the filename is uuid-shaped -- the JSON could still
+            //    live outside `sessionsDir` (caller passed an
+            //    external path) or its index entry could have been
+            //    evicted by a sibling process. Publishing such a
+            //    stem would leak a ghost uuid that the next launch's
+            //    fan-restore has to filter via `QFileInfo::exists`.
+            //
+            // 2. `RestorableActiveSessionUuid` confirming the loaded
+            //    session is actually round-trippable on next launch.
+            //    `Touch` happily succeeds for legacy NetworkStream
+            //    entries in the index, but their snapshot's locator
+            //    is a producer URI that `StartStreamingOpenQueue`
+            //    cannot re-bind -- publishing them creates a
+            //    fan-restore loop in which every launch resurrects a
+            //    "must re-bind manually" popup. `DoLoadConfiguration`
+            //    above has populated `mCurrentSource`, so the
+            //    predicate evaluates against the just-loaded state.
+            //
+            // `Touch` always runs (it updates the LRU / lastOpenedAt
+            // bookkeeping); only the publish is conditional.
+            if (mHistoryManager->Touch(stem) && !RestorableActiveSessionUuid().isEmpty())
             {
                 SessionHistoryManager::AddOpenWindowUuid(stem);
                 mAutoSaveUuidPublished = true;
@@ -1279,14 +1329,26 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // Step 3: pin the recents uuid first so a crash / OS-quit
     // between here and the streaming-finished hook still restores
     // this window on next launch (matches `RestoreLastSessionFromPath`).
-    // Gate the publish on `Touch` confirming the index still owns
-    // @p uuid -- between the `QFileInfo::exists` check above and
-    // here, a sibling process could have `Remove`d the entry. The
-    // file we already loaded survives, but publishing the uuid
-    // would leak a ghost entry that the next launch's fan-restore
-    // has to filter away.
+    // Gate the publish on two checks:
+    //
+    // 1. `Touch` confirming the index still owns @p uuid -- between
+    //    the `QFileInfo::exists` check above and here, a sibling
+    //    process could have `Remove`d the entry. The file we already
+    //    loaded survives, but publishing the uuid would leak a ghost
+    //    entry that the next launch's fan-restore has to filter away.
+    //
+    // 2. `RestorableActiveSessionUuid` confirming the loaded session
+    //    is actually round-trippable on next launch. NetworkStream
+    //    snapshots survive in the index (so `Touch` succeeds) but
+    //    cannot be reopened from a saved locator; publishing them
+    //    creates a fan-restore loop. `DoLoadConfiguration` above has
+    //    populated `mCurrentSource`, so the predicate evaluates
+    //    against the just-loaded state.
+    //
+    // `Touch` always runs (LRU / lastOpenedAt bookkeeping); only
+    // the publish is conditional.
     mAutoSaveUuid = uuid;
-    if (mHistoryManager->Touch(uuid))
+    if (mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
     {
         SessionHistoryManager::AddOpenWindowUuid(uuid);
         mAutoSaveUuidPublished = true;
@@ -1322,12 +1384,21 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
         // The user can manually re-bind via Open Network Stream...
         if (informIfNonFile)
         {
-            QMessageBox::information(
-                this,
-                QStringLiteral("Network Stream Session"),
-                QStringLiteral("This recent session was a network stream; the columns and filters have been "
-                               "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
-            );
+#ifdef LOGAPP_BUILD_TESTING
+            // Skip the modal under test-only suppression: tests
+            // exercising `OpenRecentSession` against a NetworkStream
+            // recents entry would otherwise hang on the modal under
+            // the offscreen QPA. The production path is unaffected.
+            if (!mSuppressDialogsForTest)
+#endif
+            {
+                QMessageBox::information(
+                    this,
+                    QStringLiteral("Network Stream Session"),
+                    QStringLiteral("This recent session was a network stream; the columns and filters have been "
+                                   "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
+                );
+            }
         }
         return;
     }
@@ -1865,6 +1936,25 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // `DetachAutoSaveUuid()` afterwards.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
+    // Surface (then drop) any queued multi-file-open continuation
+    // before the destructive reset. The `mModel->Reset()` below
+    // emits `streamingFinished(Cancelled)` synchronously and the
+    // shared finished-lambda quietly `clear()`s `mPendingOpenFiles`
+    // on the Cancelled branch -- without this hint the user has no
+    // way to know that a mid-append "Open Log Stream..." just
+    // discarded the rest of their drag-drop selection. Explicit
+    // clear here keeps the eventual cancel-handler clear a no-op
+    // (idempotent) and makes the discard visible in the source.
+    const int discardedQueuedFiles = mPendingOpenFiles.size();
+    if (discardedQueuedFiles > 0)
+    {
+        statusBar()->showMessage(
+            tr("Discarded %n queued file(s) before opening log stream.", nullptr, discardedQueuedFiles),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        mPendingOpenFiles.clear();
+    }
+
     // Invalidate any deferred-apply continuation: the upcoming
     // `mModel->Reset()` emits `streamingFinished(Cancelled)`
     // synchronously, which would otherwise wake a stale
@@ -1966,6 +2056,20 @@ void MainWindow::OpenNetworkStream()
     // Same rationale as `OpenLogStream`: flush any unsaved edits to
     // the outgoing static session before the destructive reset.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+
+    // Same rationale as `OpenLogStreamFromPath`: surface and drop
+    // any queued multi-file-open continuation before the
+    // destructive reset so the cancel-handler clear is a visible
+    // no-op rather than a silent discard.
+    const int discardedQueuedFiles = mPendingOpenFiles.size();
+    if (discardedQueuedFiles > 0)
+    {
+        statusBar()->showMessage(
+            tr("Discarded %n queued file(s) before opening network stream.", nullptr, discardedQueuedFiles),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        mPendingOpenFiles.clear();
+    }
 
     // Same rationale as `OpenLogStreamFromPath`: invalidate any
     // deferred-apply continuation before the synchronous Cancel

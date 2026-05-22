@@ -129,6 +129,26 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // Initialise the IANA timezone database *before* any code path
+    // that formats timestamps. The restore-on-launch flow below calls
+    // `RestoreLastSessionFromPath` synchronously (i.e. before
+    // `exec()`), and that path rehydrates filters whose titles run
+    // through `loglib::UtcMicrosecondsToDateTimeString`. The first
+    // call to that helper materialises the date library's process-
+    // wide zone cache; without a prior `loglib::Initialize` the date
+    // library would probe its platform-default install path (on
+    // Windows: `<user-profile>/Downloads/tzdata`, which is not the
+    // location the build / installer ships tzdata to) and throw,
+    // surfacing as a misleading "Error Parsing Configuration"
+    // dialog. Initialising here -- before the manager + windows are
+    // built -- collapses that footgun: every subsequent timestamp
+    // helper sees an initialised zone cache regardless of which
+    // entry point reaches it first.
+    if (!MainWindow::InitializeTimezoneDatabase())
+    {
+        return 1;
+    }
+
     // Owned by main; lifetime spans every window. MainWindow keeps a
     // non-owning pointer and writes through it on streamingFinished /
     // closeEvent.
@@ -197,6 +217,16 @@ int main(int argc, char *argv[])
         {
             // First uuid into the already-shown primary; remainder
             // get fresh windows.
+            //
+            // Every path we pass to `RestoreLastSessionFromPath` here
+            // is produced by `historyManager.PathForUuid(uuid)`, so
+            // the stem is always a UUID and the uuid-pin branch of
+            // that function applies. The fallback below (single-window
+            // restore via `LastSessionPath`) preserves the same
+            // invariant: `lastSessionUuid` is uuid-shaped by
+            // construction. The non-uuid-stem branch documented on
+            // `RestoreLastSessionFromPath` is reserved for tests and
+            // for hypothetical future callers that pass ad-hoc paths.
             const QString primaryUuid = previouslyOpen.takeFirst();
             const QString primaryPath = historyManager.PathForUuid(primaryUuid);
             if (QFileInfo::exists(primaryPath))
@@ -238,44 +268,47 @@ int main(int argc, char *argv[])
     // when `aboutToQuit` is emitted from `exit()`, so we capture them
     // here.
     //
-    // Two-step per window:
+    // Two-phase batched fan:
     //
-    //   1. `AutoSaveSessionSnapshot(publishOpenWindow=true)` flushes
-    //      any post-`streamingFinished` edits (filter tweaks, sort
-    //      changes, column moves) into the recents JSON *and*
-    //      publishes the uuid. Without this flush the persisted
-    //      snapshot would be whatever the last `streamingFinished`
-    //      wrote -- typically stale. The flush is a no-op on
-    //      live-tail / network-stream / no-source windows because
+    //   1. Loop windows once, calling
+    //      `AutoSaveSessionSnapshot(publishOpenWindow=false)` to
+    //      flush any post-`streamingFinished` edits (filter tweaks,
+    //      sort changes, column moves) into the recents JSON
+    //      *without* touching the persisted open-windows key. Each
+    //      window's `RestorableActiveSessionUuid()` is collected into
+    //      a local `QStringList` instead. The flush itself is a no-op
+    //      on live-tail / network-stream / no-source windows because
     //      `ShouldAutoSaveSession` rejects them.
     //
-    //   2. The fall-through `AddOpenWindowUuid` covers the one case
-    //      the flush deliberately skips: a live-tail-on-a-file
-    //      window whose uuid was pinned by a previous static load.
-    //      `RestorableActiveSessionUuid` accepts that case (the
-    //      JSON on disk still reflects the static view, which is
-    //      what the user would expect to come back after the OS
-    //      quit) but `ShouldAutoSaveSession` does not. The call is
-    //      idempotent, so the static-session path that already
-    //      published in step 1 just no-ops here.
+    //   2. Issue a single `AddOpenWindowUuids(restorable)` call so
+    //      all collected uuids enter the persisted set under one
+    //      cross-process lock acquisition. Pre-fix this loop did
+    //      N * `AddOpenWindowUuid` (and N * `WriteSnapshot` -- the
+    //      `publishOpenWindow=true` argument made the per-window
+    //      snapshot itself a second publisher), so an OS-driven
+    //      shutdown with M restorable windows paid up to
+    //      2M * `WRITE_LOCK_TIMEOUT_RUNTIME_MS` worth of lock waits.
+    //      The batched primitive bounds the contribution from this
+    //      handler to a single
+    //      `WRITE_LOCK_TIMEOUT_SHUTDOWN_MS` slot regardless of M.
     //
-    // The cross-process lock inside `WriteSnapshot` uses
-    // `WRITE_LOCK_TIMEOUT_RUNTIME_MS` (the runtime, not the longer
-    // shutdown timeout): with N windows and a contended sibling
-    // writer the shutdown stall is bounded by N * runtime-timeout
-    // rather than N * shutdown-timeout. Any window whose snapshot
-    // fails returns an empty uuid and is silently skipped, mirroring
-    // the existing fail-closed semantics of every other auto-save
-    // call site.
+    // The collected list covers two cases that previously needed
+    // separate code paths: (a) a finished static session whose uuid
+    // the per-window `publishOpenWindow=true` AutoSave used to
+    // republish, and (b) a live-tail-on-a-file window whose uuid was
+    // pinned by a previous static load -- `RestorableActiveSessionUuid`
+    // returns it (the JSON on disk still reflects the static view,
+    // which is what the user would expect to come back after the OS
+    // quit) but `ShouldAutoSaveSession` rejects it for re-flush.
     //
     // We *merge* rather than overwrite: with `--new-instance` two
     // processes can be alive simultaneously, and a destructive
-    // `SetOpenWindowsAtQuit(openUuids)` from the first quitter would
-    // clobber the other process's published uuids. Both
-    // `AutoSaveSessionSnapshot(true)` and `AddOpenWindowUuid` are
-    // idempotent and serialised through the cross-process lock, so
-    // each process's contribution survives independently.
+    // `SetOpenWindowsAtQuit(restorable)` from the first quitter
+    // would clobber the other process's published uuids.
+    // `AddOpenWindowUuids` honours the same idempotent merge as the
+    // per-uuid `AddOpenWindowUuid`.
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [] {
+        QStringList restorable;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -283,13 +316,14 @@ int main(int argc, char *argv[])
             {
                 continue;
             }
-            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/true);
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
             const QString uuid = mw->RestorableActiveSessionUuid();
             if (!uuid.isEmpty())
             {
-                SessionHistoryManager::AddOpenWindowUuid(uuid);
+                restorable.append(uuid);
             }
         }
+        SessionHistoryManager::AddOpenWindowUuids(restorable);
     });
 
     // Forwarded launches from secondary processes spawn a new

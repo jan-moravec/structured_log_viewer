@@ -79,6 +79,33 @@ public:
 
     ~MainWindow();
 
+    /// Locate the staged `tzdata/` directory and initialise loglib's
+    /// timezone database from it. Idempotent; the second and later
+    /// calls are no-ops once a successful init has been recorded.
+    ///
+    /// Must be called before any code that formats timestamps (e.g.
+    /// `RestoreLastSessionFromPath`, which rehydrates filters whose
+    /// titles run through `loglib::UtcMicrosecondsToDateTimeString`).
+    /// `main()` calls this synchronously *before* constructing the
+    /// primary window and *before* the restore-on-launch flow; the
+    /// QtTest fixture mirrors the call in `initTestCase`. Without
+    /// this ordering, the first `loglib::CurrentZone()` invocation
+    /// (which happens during configuration load for sessions
+    /// containing a time-range filter) initialises the date library
+    /// against its platform-default install path -- on Windows that
+    /// is `<user-profile>/Downloads/tzdata`, which typically does
+    /// not exist -- and the load fails with a misleading "Error
+    /// Parsing Configuration" dialog.
+    ///
+    /// Returns true on success (including no-op re-entry). On
+    /// failure, logs a `qCritical` diagnostic listing the candidate
+    /// paths searched and returns false; the caller in `main()`
+    /// propagates that as a non-zero exit code. Tests treat a false
+    /// return as a hard fixture failure (the staged `tzdata/` is
+    /// supposed to live next to the test binary -- if it doesn't,
+    /// every timestamp-touching test would mis-diagnose downstream).
+    [[nodiscard]] static bool InitializeTimezoneDatabase();
+
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -90,6 +117,20 @@ public:
     /// `main()`'s restore-on-launch flow and by tests. Skips the
     /// `NewSession` teardown (the window is freshly constructed and
     /// has nothing to discard).
+    ///
+    /// `mAutoSaveUuid` is pinned only when @p jsonPath's stem parses
+    /// as a `QUuid` (the convention for manager-owned per-uuid JSON
+    /// files under `sessionsDir`). For ad-hoc / external JSONs whose
+    /// stem is *not* uuid-shaped, the configuration loads but the
+    /// uuid pin is skipped on purpose: pinning a non-uuid stem would
+    /// let the next `AutoSaveSessionSnapshot` rewrite an unrelated
+    /// file outside the sessions directory. The trade-off is that a
+    /// subsequent auto-save mints a fresh uuid (a new entry in the
+    /// recents store backed by `sessionsDir/<new-uuid>.json`),
+    /// implicitly forking off the original ad-hoc file rather than
+    /// updating it. This matches the "external JSONs are read-only
+    /// in-place; saves go through the managed sessions store"
+    /// invariant -- the original file is never overwritten.
     void RestoreLastSessionFromPath(const QString &jsonPath);
 
     /// Open CLI-provided file paths into this window. Behaves like
@@ -355,6 +396,13 @@ public:
     /// dragging in any UI side effects (status bar messages,
     /// shortcut sniffing, etc.). Today this is a thin trampoline.
     void NewSessionForTest() { NewSession(); }
+
+    /// Test-only forwarder to `OpenRecentSession`, which is a
+    /// `private slot` in production (wired to the Recent Sessions
+    /// menu). Tests use this to exercise the recents-click path
+    /// (uuid pinning, `Touch`, openWindowsAtQuit publish gate)
+    /// without standing up the dynamic menu.
+    void OpenRecentSessionForTest(const QString &uuid) { OpenRecentSession(uuid); }
 
     /// Test-only readout of the monotonic counter that the deferred
     /// `OpenWithConfiguration` continuation captures + checks. Used

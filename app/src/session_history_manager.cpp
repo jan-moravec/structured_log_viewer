@@ -309,17 +309,19 @@ bool SessionHistoryManager::Touch(const QString &uuid)
     // rebuild and click) would still pay for the 1.5 s GUI freeze
     // under cross-process contention before returning empty-handed.
     //
-    // No `mMutex` here: `QSettings` reads are thread-safe and the
-    // pre-check only needs a coherent point-in-time snapshot --
-    // taking the in-process mutex would only serialise this peek
-    // with concurrent same-process writers, which still race the
-    // post-lock recheck (`foundUnderLock`) below regardless. The
-    // membership can change between this peek and the
-    // cross-process lock acquisition; the post-lock recheck is
-    // authoritative and corrects either direction (peek saw it but
-    // a sibling evicted before the lock; peek missed it but a
-    // sibling re-added before the lock).
+    // The peek is taken under `mMutex` for the same reason the
+    // post-lock phase below is: `IRecentsIndexStorage` is a virtual
+    // interface and not every implementation is internally
+    // thread-safe (the production `QSettings` backend happens to
+    // be, but the in-memory storage used in tests is not). The
+    // membership can still change between this peek and the
+    // cross-process lock acquisition below; the post-lock recheck
+    // (`foundUnderLock`) is authoritative and corrects either
+    // direction (peek saw it but a sibling evicted before the
+    // lock; peek missed it but a sibling re-added before the
+    // lock).
     {
+        QMutexLocker peekLock(&mMutex);
         const QList<RecentSessionEntry> peek = mIndexStorage->Read();
         const auto found = std::find_if(
             peek.begin(), peek.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; }
@@ -725,6 +727,43 @@ void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
     }
     uuids.append(uuid);
     WriteOpenWindowsAtQuit(uuids);
+}
+
+void SessionHistoryManager::AddOpenWindowUuids(const QStringList &uuids)
+{
+    if (uuids.isEmpty())
+    {
+        return;
+    }
+    QMutexLocker lock(&OpenWindowsMutex());
+    // Shutdown-class timeout: the primary caller is the `aboutToQuit`
+    // fan in `main()`, which would otherwise pay N * runtime-timeout
+    // for N windows. Folding the publish into one lock acquisition
+    // keeps the worst-case OS-quit stall bounded even with many
+    // restorable windows. Other callers (the static
+    // `AddOpenWindowUuid` per-window publish path) keep the runtime
+    // timeout because they are on the interactive auto-save path.
+    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+    if (!crossProc.locked)
+    {
+        // Fail-closed: skip the publish. Mirrors the per-uuid path.
+        return;
+    }
+    QStringList merged = ReadOpenWindowsAtQuit();
+    bool changed = false;
+    for (const QString &uuid : uuids)
+    {
+        if (uuid.isEmpty() || merged.contains(uuid))
+        {
+            continue;
+        }
+        merged.append(uuid);
+        changed = true;
+    }
+    if (changed)
+    {
+        WriteOpenWindowsAtQuit(merged);
+    }
 }
 
 void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)

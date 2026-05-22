@@ -22,10 +22,14 @@ constexpr char WIRE_MAGIC[] = "STRUCTLOGV1";
 /// secondaries cleanly (instead of silently misinterpreting their
 /// payload). Today only version 1 exists; future revs may add
 /// fields after the file list. The primary checks that the
-/// received version is `<= WIRE_VERSION_MAX_SUPPORTED` so a
+/// received version is in
+/// `[WIRE_VERSION_MIN_SUPPORTED, WIRE_VERSION_MAX_SUPPORTED]` so a
 /// newer secondary against an older primary fails fast rather
-/// than producing surprising behaviour.
+/// than producing surprising behaviour, and an older secondary
+/// whose schema we no longer accept can be rejected by bumping
+/// `WIRE_VERSION_MIN_SUPPORTED` past it.
 constexpr quint8 WIRE_VERSION = 1;
+constexpr quint8 WIRE_VERSION_MIN_SUPPORTED = 1;
 constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 1;
 
 /// Connection / write timeouts. Tight on purpose: a secondary that
@@ -78,7 +82,22 @@ SingleInstanceGuard::~SingleInstanceGuard()
 
 void SingleInstanceGuard::SetSocketNameForTest(const QString &name)
 {
+    // Must be called before `TryAcquire`: changing the socket name
+    // after the server has been bound would leave `mServer` listening
+    // on the original path while `mSocketName` claims a new one, so
+    // the next `TryAcquire` would either silently zombie the live
+    // server (re-bind on a different name) or, on Linux, unlink a
+    // stale path that does not exist. In debug builds we keep the
+    // historical assert so tests catch the misuse loudly; in release
+    // builds we degrade to a `qWarning` + early return rather than
+    // proceeding into the inconsistent state.
     Q_ASSERT(mServer == nullptr);
+    if (mServer != nullptr)
+    {
+        qWarning() << "SingleInstanceGuard::SetSocketNameForTest ignored after TryAcquire; "
+                      "the existing server remains bound to the previous socket name";
+        return;
+    }
     mSocketName = name;
 }
 
@@ -234,12 +253,17 @@ void SingleInstanceGuard::HandleNewConnection()
                 // `version > WIRE_VERSION_MAX_SUPPORTED` means a
                 // newer secondary is talking to this primary; we
                 // refuse rather than guess at the payload schema.
-                // The connection is still drained / disconnected
-                // below so the secondary's
+                // `version < WIRE_VERSION_MIN_SUPPORTED` is the
+                // symmetric direction -- we will use this in the
+                // future to drop support for retired wire versions
+                // without sprinkling magic numbers across the
+                // codebase. The connection is still drained /
+                // disconnected below so the secondary's
                 // `waitForDisconnected` returns promptly and the
                 // user gets a fresh primary in the secondary
                 // instead of a hung forward attempt.
-                if (magic == QByteArray(WIRE_MAGIC) && version >= 1
+                if (magic == QByteArray(WIRE_MAGIC)
+                    && version >= WIRE_VERSION_MIN_SUPPORTED
                     && version <= WIRE_VERSION_MAX_SUPPORTED)
                 {
                     // Belt-and-braces post-decode cap matching the

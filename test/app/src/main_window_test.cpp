@@ -513,6 +513,25 @@ private slots:
         QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
         QCoreApplication::setApplicationName(QStringLiteral("apptest"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
+
+        // Initialise loglib's timezone database synchronously so any
+        // test that loads a saved configuration containing a time-
+        // range filter (e.g. TestRestoreLastSessionFromPath) does not
+        // trip the lazy `date::current_zone()` cache against the
+        // platform default install path. Production `main()` does the
+        // same thing before constructing the primary window; the
+        // QtTest harness uses `QTEST_MAIN`, so this `initTestCase`
+        // slot is the symmetric hook. CMake pins the apptest working
+        // directory to `$<TARGET_FILE_DIR:apptest>`, which contains
+        // the staged `tzdata/` next to the binary, so `FindTzdata`'s
+        // appDir probe always wins here.
+        QVERIFY2(
+            MainWindow::InitializeTimezoneDatabase(),
+            "Failed to initialise timezone database; see qCritical above. The staged "
+            "`tzdata/` directory must live next to the apptest binary "
+            "($<TARGET_FILE_DIR:apptest>); run via `ctest --preset <preset>` or "
+            "invoke `apptest` from its build directory."
+        );
     }
 
     void cleanupTestCase()
@@ -5936,6 +5955,80 @@ private slots:
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[0]), fixtureA.Path());
         QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[1]), fixtureB.Path());
+    }
+
+    // Switching to a live-tail stream mid-append-queue silently
+    // dropped the remaining queued files in earlier builds: the
+    // destructive `mModel->Reset()` inside `OpenLogStreamFromPath`
+    // emits `streamingFinished(Cancelled)` synchronously, and the
+    // shared finished-lambda `clear()`s `mPendingOpenFiles` on the
+    // Cancelled branch with no user-visible signal. The fix
+    // snapshots the queue size, posts a status-bar hint, and
+    // explicitly clears the queue before the reset so the discard
+    // is both visible to the user and an audit-traceable line of
+    // code rather than an emergent side-effect of the cancel-path
+    // clear.
+    void TestOpenLogStreamSurfacesDiscardedQueuedFiles()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Inflate fixture A so the first parse is still in flight
+        // when the second Append queues into `mPendingOpenFiles` --
+        // same trick as `TestAppendDuringActiveStreamingDefersInsteadOfCrashing`.
+        QStringList fixtureLinesA;
+        fixtureLinesA.reserve(500);
+        for (int i = 0; i < 500; ++i)
+        {
+            fixtureLinesA.append(QStringLiteral(R"({"msg": "discard-a-%1"})").arg(i));
+        }
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "discard-b"})")});
+        const TempJsonFile streamFixture({QStringLiteral(R"({"msg": "discard-stream"})")});
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+        // Second open lands in `mPendingOpenFiles` because the
+        // first parse is still in flight (mirrors the defer path
+        // covered by `TestAppendDuringActiveStreamingDefersInsteadOfCrashing`).
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+
+        mWindow->statusBar()->clearMessage();
+
+        // Switch to a live-tail stream while the append queue is
+        // primed. The fix surfaces a discard hint and clears the
+        // queue; without the fix the queue is silently cleared
+        // when the cancel-path runs inside `mModel->Reset()`.
+        mWindow->OpenLogStreamForTest(streamFixture.Path());
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("queued file")),
+            qPrintable(QStringLiteral("expected discard hint in status bar; got: '%1'").arg(message))
+        );
+
+        // The fixtureB drain never happened (its rows are not in
+        // the model) -- it was discarded before the stream took
+        // over the view. The live-tail session may or may not
+        // have produced rows yet; we only assert the queue was
+        // dropped, not the row count of the stream.
+        const bool seesFixtureB = [&]() {
+            const int rows = model->rowCount();
+            for (int r = 0; r < rows; ++r)
+            {
+                const QModelIndex idx = model->index(r, 0);
+                if (model->data(idx, Qt::DisplayRole).toString().contains(QStringLiteral("discard-b")))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }();
+        QVERIFY2(!seesFixtureB, "discarded queued file's rows must not be in the model");
     }
 
     // `OpenMode::Replace` is the destructive path: rows wiped, filters
@@ -11963,6 +12056,49 @@ private slots:
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidB});
     }
 
+    // `AddOpenWindowUuids` is the batched companion to
+    // `AddOpenWindowUuid` used by `main.cpp`'s `aboutToQuit` fan.
+    // The contract is "merge under one lock acquisition": (a) every
+    // new uuid is appended in order, (b) duplicates are skipped, (c)
+    // empty strings are skipped, (d) pre-existing entries (e.g.
+    // published by a `--new-instance` sibling) are preserved.
+    void TestAddOpenWindowUuidsBatchedMerge()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Empty list is a no-op.
+        SessionHistoryManager::AddOpenWindowUuids(QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+
+        const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuidC = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        // Pre-seed `uuidA` to model a `--new-instance` peer that
+        // already published its own restorable window. The batched
+        // call must merge with this rather than overwrite it.
+        SessionHistoryManager::AddOpenWindowUuid(uuidA);
+        const QStringList preBatch = SessionHistoryManager::OpenWindowsAtQuit();
+        if (preBatch.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QCOMPARE(preBatch, QStringList{uuidA});
+
+        // Batch: an empty string (skipped), a duplicate of `uuidA`
+        // (skipped -- idempotent), and two new uuids appended in
+        // order.
+        SessionHistoryManager::AddOpenWindowUuids(QStringList{QString(), uuidA, uuidB, uuidC});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB, uuidC}));
+
+        // A subsequent batch with no new entries is also a no-op
+        // (every uuid is already present).
+        SessionHistoryManager::AddOpenWindowUuids(QStringList{uuidA, uuidB, uuidC});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB, uuidC}));
+    }
+
     // `CleanupOrphanFiles` deletes per-uuid JSONs that are not in the
     // index. Index-referenced files survive; the lock file is left
     // alone.
@@ -12473,10 +12609,13 @@ private slots:
 
         // Replay the aboutToQuit lambda's body without actually
         // exiting the test. Mirrors the production code in
-        // `main.cpp` exactly: `AutoSaveSessionSnapshot(true)` on
-        // every `MainWindow` in `topLevelWidgets()`, plus the
-        // fall-through `AddOpenWindowUuid` for the
-        // live-tail-with-prior-static-uuid case.
+        // `main.cpp` exactly: per-window
+        // `AutoSaveSessionSnapshot(publishOpenWindow=false)` to
+        // flush edits, restorability collected into a single list,
+        // and one batched `AddOpenWindowUuids` to publish the
+        // restorable uuids under a single cross-process lock
+        // acquisition.
+        QStringList restorable;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -12484,17 +12623,18 @@ private slots:
             {
                 continue;
             }
-            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/true);
-            const QString restorable = mw->RestorableActiveSessionUuid();
-            if (!restorable.isEmpty())
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            const QString restorableUuid = mw->RestorableActiveSessionUuid();
+            if (!restorableUuid.isEmpty())
             {
-                SessionHistoryManager::AddOpenWindowUuid(restorable);
+                restorable.append(restorableUuid);
             }
         }
+        SessionHistoryManager::AddOpenWindowUuids(restorable);
 
         QVERIFY2(
             changedSpy.count() >= 1,
-            "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuid"
+            "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuids"
         );
 
         const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuit();
@@ -12575,6 +12715,115 @@ private slots:
         QVERIFY2(
             !openSet.contains(uuid),
             "external uuid-shaped JSON must not be published into openWindowsAtQuit"
+        );
+    }
+
+    // `RestoreLastSessionFromPath` must NOT publish a uuid into
+    // `openWindowsAtQuit` when the loaded session's `Source::Kind` is
+    // not File (currently NetworkStream is the only such kind, but
+    // the gate applies to any future non-file kind). The recents
+    // index legitimately owns the entry -- `Touch` succeeds and the
+    // user can manually re-bind via Open Network Stream -- but the
+    // saved locator is a producer URI that `StartStreamingOpenQueue`
+    // cannot re-bind on launch. Without the fix, every launch's
+    // fan-restore would resurrect the stream window with a
+    // "must re-bind manually" popup, looping forever.
+    //
+    // Pairs with `TestRestorableActiveSessionUuidFiltersNonRestorableSessions`,
+    // which covers the predicate in isolation. This test wires the
+    // predicate into the publish path that the production
+    // `aboutToQuit` handler depends on.
+    void TestRestoreLastSessionDoesNotPublishNetworkStreamUuid()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()),
+                                      std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Use `WriteSnapshot` so the entry actually lives in the
+        // recents index. Without this, `Touch(stem)` would short-
+        // circuit to false in `RestoreLastSessionFromPath` and the
+        // pre-fix code would already skip the publish (a different
+        // gate, not the one under test).
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+            .locators = {"tcp://127.0.0.1:5170"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->RestoreLastSessionFromPath(jsonPath);
+        QCoreApplication::processEvents();
+
+        // The window still owns the uuid (so a subsequent re-bind +
+        // auto-save updates the same entry rather than forking a
+        // duplicate) -- but the restorability predicate hides it
+        // from fan-restore.
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+        QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
+
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            !openSet.contains(uuid),
+            "NetworkStream uuid must not be published into openWindowsAtQuit on restore"
+        );
+    }
+
+    // Companion to `TestRestoreLastSessionDoesNotPublishNetworkStreamUuid`
+    // covering the second publish call site:
+    // `OpenRecentSession(uuid)` (user clicks a NetworkStream entry
+    // in the Recent Sessions menu). Same invariant -- the uuid is
+    // owned but must not enter `openWindowsAtQuit`.
+    void TestOpenRecentSessionDoesNotPublishNetworkStreamUuid()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()),
+                                      std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+            .locators = {"tcp://127.0.0.1:5171"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+        QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        // Suppress the "Network Stream Session" modal that
+        // `OpenRecentSession` raises for non-File sources -- the
+        // offscreen QPA test runner cannot dismiss it and the test
+        // would hang on `processEvents`. Production keeps the
+        // modal (this is purely a test seam, gated on
+        // `LOGAPP_BUILD_TESTING`).
+        wired->SetSuppressDialogsForTest(true);
+
+        wired->OpenRecentSessionForTest(uuid);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+        QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
+
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            !openSet.contains(uuid),
+            "NetworkStream uuid must not be published into openWindowsAtQuit on reopen"
         );
     }
 
@@ -12865,11 +13114,12 @@ private slots:
         );
 
         // Stage 3: replicate the production aboutToQuit body. Mirrors
-        // `app/src/main.cpp:278-293` exactly: per-window
-        // `AutoSaveSessionSnapshot(true)` followed by an
-        // `AddOpenWindowUuid(RestorableActiveSessionUuid())` fall-through.
-        // Without the H1 fix this loop would synthesise a fresh uuid
-        // for the closed window via the AutoSave call.
+        // the batched body in `app/src/main.cpp`: per-window
+        // `AutoSaveSessionSnapshot(false)`, collect restorable uuids,
+        // single batched `AddOpenWindowUuids` at the end. Without the
+        // H1 fix this loop would synthesise a fresh uuid for the
+        // closed window via the AutoSave call.
+        QStringList restorableUuids;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -12877,13 +13127,14 @@ private slots:
             {
                 continue;
             }
-            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/true);
-            const QString restorable = mw->RestorableActiveSessionUuid();
-            if (!restorable.isEmpty())
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            const QString uuid = mw->RestorableActiveSessionUuid();
+            if (!uuid.isEmpty())
             {
-                SessionHistoryManager::AddOpenWindowUuid(restorable);
+                restorableUuids.append(uuid);
             }
         }
+        SessionHistoryManager::AddOpenWindowUuids(restorableUuids);
         QCoreApplication::processEvents();
 
         // Assertion 1: the recents index size is unchanged. The

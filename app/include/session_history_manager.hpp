@@ -31,6 +31,13 @@ struct RecentSessionEntry
 /// the user's profile (`QStandardPaths::setTestModeEnabled` alone is not
 /// enough -- it changes paths but the singleton QSettings instance may
 /// still collide across test cases).
+///
+/// Thread-safety contract: implementations MAY assume the caller has
+/// taken `SessionHistoryManager::mMutex` for every `Read` / `Write` /
+/// `ReadLastUuid` / `WriteLastUuid` call. The manager honours this on
+/// every code path -- including the cheap pre-check inside `Touch` --
+/// so implementations are free to keep their internal state non-thread-
+/// safe (e.g. a bare `QList` member without its own lock).
 class IRecentsIndexStorage
 {
 public:
@@ -154,9 +161,12 @@ public:
     /// Shared by `main()` (constructs the production manager against
     /// this path) and by the static `AddOpenWindowUuid` /
     /// `RemoveOpenWindowUuid` / `SetOpenWindowsAtQuit` /
-    /// `CleanupOrphanFiles` helpers (so the cross-process lock file
-    /// lands in the same well-known location regardless of which
-    /// process touches `openWindowsAtQuit`).
+    /// `OpenWindowsAtQuit` / `TakeOpenWindowsAtQuit` helpers (so the
+    /// cross-process lock file lands in the same well-known location
+    /// regardless of which process touches `openWindowsAtQuit`). The
+    /// `CleanupOrphanFiles` instance method also reads the directory
+    /// for its sweep, but it does so through the per-instance
+    /// `mSessionsDir` rather than this static helper.
     [[nodiscard]] static QDir DefaultSessionsDir();
 
     /// Read the `restoreLastSessionOnLaunch` user preference. Default
@@ -209,6 +219,20 @@ public:
     /// gets to finish, and the next AutoSave (or the `aboutToQuit`
     /// safety-net) re-attempts to publish this window.
     static void AddOpenWindowUuid(const QString &uuid);
+
+    /// Batched variant of `AddOpenWindowUuid`: append every entry in
+    /// @p uuids that is not already in the persisted list, under a
+    /// single cross-process lock acquisition. Used by `main()`'s
+    /// `aboutToQuit` fan, which otherwise paid N cross-process lock
+    /// round-trips for N restorable windows during OS-driven
+    /// shutdown (Cmd+Q, login session teardown). The merge preserves
+    /// the same "don't clobber `--new-instance` peers" invariant as
+    /// the single-uuid path: any uuid already in the list -- whether
+    /// published by us in a previous call or by a sibling process --
+    /// is left in place. Empty strings inside @p uuids are skipped.
+    /// Fail-closed on lock acquisition timeout, same rationale as
+    /// `AddOpenWindowUuid`.
+    static void AddOpenWindowUuids(const QStringList &uuids);
 
     /// Companion to `AddOpenWindowUuid`. Removes @p uuid if present;
     /// no-op when absent or empty. Called from `MainWindow::closeEvent`

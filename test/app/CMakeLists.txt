@@ -35,11 +35,13 @@ target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 # `LOGLIB_KEY_INDEX_INSTRUMENTATION` pattern in `test/lib`.
 target_compile_definitions(logapp PUBLIC LOGAPP_BUILD_TESTING)
 
-# WORKING_DIRECTORY pinned to the binary directory so MainWindow's deferred
-# tzdata loader resolves `current_path() / "tzdata"` against the staged
-# folder. Otherwise ctest launches apptest from build/test/app/ where no
-# tzdata exists and the loader fires a QMessageBox that segfaults under
-# the Qt offscreen platform.
+# WORKING_DIRECTORY pinned to the binary directory so
+# `MainWindow::InitializeTimezoneDatabase` (called from the QtTest
+# `initTestCase` slot) resolves the staged `tzdata/` against the binary's
+# directory. Both the `appDir / "tzdata"` probe and the CWD-ancestor
+# fallback succeed under this layout; without the pin, ctest launches
+# apptest from build/test/app/ where no tzdata exists and the init slot
+# fails the suite with a `QVERIFY2` diagnostic.
 add_test(NAME apptest COMMAND apptest WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest>)
 
 # Separate executable for the GUI-path throughput benchmark. Kept out of
