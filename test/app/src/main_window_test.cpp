@@ -12805,6 +12805,189 @@ private slots:
         );
     }
 
+    // H1 regression (third-pass review): the `aboutToQuit` lambda
+    // fans `AutoSaveSessionSnapshot(true)` across every still-tracked
+    // top-level `MainWindow`. For a stack-allocated primary window
+    // that already saw `closeEvent` (e.g. user clicked File -> Exit
+    // and the close ran before app teardown), the window stays in
+    // `topLevelWidgets()` even after `close()`. Without the
+    // closeEvent's session-state reset, the secondary
+    // `AutoSaveSessionSnapshot(true)` would re-enter `WriteSnapshot`
+    // with `mAutoSaveUuid` empty (closeEvent cleared it) but
+    // `mCurrentSource` + `mSessionMode == Static` still live --
+    // generating a fresh duplicate uuid, a duplicate JSON on disk,
+    // a duplicate recents entry, and a published `openWindowsAtQuit`
+    // uuid that resurrects the just-Exited window on next launch.
+    //
+    // The fix resets `mCurrentSource`, `mSessionMode`, and
+    // `mLastTerminalSessionMode` in `closeEvent`. This test
+    // replicates the full `aboutToQuit` body after `close()` and
+    // verifies (a) no duplicate recents entry was prepended and
+    // (b) the open-windows set does not gain a fresh uuid.
+    void TestCloseEventThenAboutToQuitDoesNotResurrectClosedWindow()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()),
+                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Stage 1: open a static session and let it auto-save on
+        // streamingFinished (this is the path that publishes the
+        // uuid into openWindowsAtQuit).
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "h1-regr"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString origUuid = wired->ActiveSessionUuid();
+        QVERIFY(!origUuid.isEmpty());
+        QCOMPARE(manager.List().size(), 1);
+
+        // Stage 2: close the window (closeEvent runs, removes uuid
+        // from openWindowsAtQuit, and -- with the fix -- resets the
+        // session-mode state to Idle).
+        wired->close();
+        QCoreApplication::processEvents();
+
+        // Sanity: the just-closed uuid should be out of the open
+        // set (this is the existing 1.2 invariant).
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            !afterClose.contains(origUuid),
+            "closeEvent should remove the window's uuid from openWindowsAtQuit"
+        );
+
+        // Stage 3: replicate the production aboutToQuit body. Mirrors
+        // `app/src/main.cpp:278-293` exactly: per-window
+        // `AutoSaveSessionSnapshot(true)` followed by an
+        // `AddOpenWindowUuid(RestorableActiveSessionUuid())` fall-through.
+        // Without the H1 fix this loop would synthesise a fresh uuid
+        // for the closed window via the AutoSave call.
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr || mw != wired.get())
+            {
+                continue;
+            }
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/true);
+            const QString restorable = mw->RestorableActiveSessionUuid();
+            if (!restorable.isEmpty())
+            {
+                SessionHistoryManager::AddOpenWindowUuid(restorable);
+            }
+        }
+        QCoreApplication::processEvents();
+
+        // Assertion 1: the recents index size is unchanged. The
+        // closeEvent's `AutoSaveSessionSnapshot(false)` already
+        // re-pinned `origUuid` (no-op rewrite), and the post-close
+        // aboutToQuit loop must not have added a brand-new entry.
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, origUuid);
+
+        // Assertion 2: the open-windows set must not gain a fresh
+        // uuid. (The original uuid was already removed in stage 2.)
+        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            afterQuit.isEmpty() || (afterQuit.size() == 1 && afterQuit.front() == origUuid),
+            qPrintable(QStringLiteral("aboutToQuit fan-flush must not resurrect the closed window via "
+                                      "a fresh uuid; got: %1")
+                           .arg(afterQuit.join(QStringLiteral(", "))))
+        );
+
+        // Assertion 3: there is no second JSON on disk -- the
+        // fan-flush must not have written a duplicate.
+        const QStringList sessionFiles =
+            QDir(sessionsDir.path()).entryList(QStringList{QStringLiteral("*.json")}, QDir::Files);
+        QCOMPARE(sessionFiles.size(), 1);
+    }
+
+    // H2 regression (third-pass review): a deferred
+    // `OpenWithConfiguration` continuation must NOT fire when the
+    // user supersedes the deferred apply with another
+    // session-changing entrypoint (NewSession, OpenLogStream,
+    // another OpenWithConfiguration, ...) before the in-flight
+    // stream's `streamingFinished` arrives. The fix wires a
+    // monotonic `mDeferredApplyInvalidationGen` counter that every
+    // session-changing entrypoint bumps; the deferred lambda
+    // captures the value at attach time and bails on mismatch.
+    //
+    // We test the counter mechanic directly via the test seam --
+    // testing the lambda end-to-end requires faking the file
+    // dialog that `OpenWithConfiguration` opens, which would
+    // make the test brittle. The seam exposes the gen value so we
+    // can assert each documented entrypoint advances it.
+    void TestDeferredApplyInvalidationGenAdvancesOnEachEntrypoint()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()),
+                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "h2"})")});
+
+        // 1. StartStreamingOpenQueue (covers OpenFiles, drag-drop,
+        //    OpenFilesForCli's multi-file fallback).
+        const int genBeforeOpen = wired->DeferredApplyInvalidationGenForTest();
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY2(
+            wired->DeferredApplyInvalidationGenForTest() > genBeforeOpen,
+            "StartStreamingOpenQueue must bump the deferred-apply gen"
+        );
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // 2. NewSession (the most-likely supersede path: user clicks
+        //    File -> New Session while a deferred apply is queued).
+        const int genBeforeNew = wired->DeferredApplyInvalidationGenForTest();
+        wired->NewSessionForTest();
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            wired->DeferredApplyInvalidationGenForTest() > genBeforeNew,
+            "NewSession must bump the deferred-apply gen"
+        );
+
+        // 3. DoLoadConfiguration via OpenWithConfigurationForTest's
+        //    sync path (covers File -> Open with Configuration when
+        //    no stream is active, plus RestoreLastSessionFromPath
+        //    and OpenRecentSession transitively).
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"x", "y"});
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString configPath = scratch.filePath(QStringLiteral("h2-cfg.json"));
+        builder.Save(configPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        const int genBeforeCfg = wired->DeferredApplyInvalidationGenForTest();
+        QVERIFY(wired->OpenWithConfigurationForTest(configPath, {}));
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            wired->DeferredApplyInvalidationGenForTest() > genBeforeCfg,
+            "DoLoadConfiguration must bump the deferred-apply gen"
+        );
+
+        // 4. OpenLogStreamFromPath (live-tail open: emits a
+        //    synchronous Cancelled via `mModel->Reset()` that the
+        //    pre-fix lambda would have responded to).
+        const int genBeforeStream = wired->DeferredApplyInvalidationGenForTest();
+        wired->OpenLogStreamForTest(fixture.Path());
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            wired->DeferredApplyInvalidationGenForTest() > genBeforeStream,
+            "OpenLogStreamFromPath must bump the deferred-apply gen"
+        );
+    }
+
 private:
     MainWindow *mWindow{};
 };

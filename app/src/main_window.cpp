@@ -1103,14 +1103,34 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
             const QByteArray head = probe.read(4096);
             probe.close();
 
-            // Skip leading whitespace so a pretty-printed file that
-            // starts with `\n  {` still looks like a JSON object.
-            int firstNonWs = 0;
-            while (firstNonWs < head.size() && QChar::fromLatin1(head[firstNonWs]).isSpace())
+            // Skip a UTF-8 BOM so a Notepad-saved configuration
+            // (Windows defaults its `Save As ... UTF-8` to BOM-on)
+            // still looks like a JSON object. The previous probe
+            // tripped on the leading `0xEF` byte and silently dropped
+            // the hint, sending the user into the multi-file fallback
+            // with no diagnostic.
+            int cursor = 0;
+            if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF
+                && static_cast<unsigned char>(head[1]) == 0xBB
+                && static_cast<unsigned char>(head[2]) == 0xBF)
             {
-                ++firstNonWs;
+                cursor = 3;
             }
-            const bool startsWithObject = firstNonWs < head.size() && head[firstNonWs] == '{';
+            // Skip leading ASCII whitespace so a pretty-printed file
+            // that starts with `\n  {` still looks like a JSON
+            // object. Restrict to ASCII (vs `QChar::isSpace`) so a
+            // multi-byte UTF-8 leading byte is not misclassified as
+            // whitespace.
+            while (cursor < head.size())
+            {
+                const char c = head[cursor];
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+                {
+                    break;
+                }
+                ++cursor;
+            }
+            const bool startsWithObject = cursor < head.size() && head[cursor] == '{';
             const bool mentionsColumns = head.contains("\"columns\"");
             if (startsWithObject && mentionsColumns)
             {
@@ -1338,6 +1358,13 @@ void MainWindow::NewSession()
     // `LogModel::Reset` already handles an orderly producer stop +
     // sink drain for live-tail / streaming sessions, so we do not
     // need a separate branch for `IsStreamingActive`.
+    //
+    // Invalidate any pending deferred-apply continuations *before*
+    // `mModel->Reset()`: Reset emits `streamingFinished(Cancelled)`
+    // synchronously, which would re-enter the deferred lambda
+    // mid-NewSession and clobber the just-cleared state. The bump
+    // is checked in the lambda's gen guard.
+    ++mDeferredApplyInvalidationGen;
     mModel->Reset();
     ClearAllFilters();
     mCurrentSource.reset();
@@ -1448,6 +1475,17 @@ void MainWindow::OpenWithConfiguration()
         const QString message =
             tr("Configuration will apply once the current parse completes.");
         statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+
+        // Bump the invalidation counter *before* capturing it in the
+        // lambda: any previously-queued deferred apply (the user
+        // double-clicking Open with Configuration during the same
+        // parse) sees its captured gen no longer match and bails.
+        // Then capture the post-bump value for our new lambda; we
+        // are the sole "live" deferred apply until another
+        // session-changing entrypoint bumps the counter again.
+        ++mDeferredApplyInvalidationGen;
+        const int capturedGen = mDeferredApplyInvalidationGen;
+
         // One-shot connect: fires on the next `streamingFinished`
         // and disconnects automatically. `Qt::SingleShotConnection`
         // is the canonical way to express "run once and tear down"
@@ -1456,7 +1494,37 @@ void MainWindow::OpenWithConfiguration()
             mModel,
             &LogModel::streamingFinished,
             this,
-            [this, configPath, files](StreamingResult /*result*/) {
+            [this, configPath, files, capturedGen](StreamingResult result) {
+                // Bail if the user superseded us with another
+                // session-changing op (NewSession, OpenLogStream,
+                // another OpenWithConfiguration, ...). The captured
+                // gen was current at attach time; any bump since
+                // means an unrelated `streamingFinished` is now
+                // delivering us, and applying would clobber the
+                // user's new session. Specifically, `mModel->Reset()`
+                // emits `streamingFinished(Cancelled)` synchronously
+                // from inside those callers, so without this gate
+                // we would re-enter `DoLoadConfiguration` mid-stack
+                // -- guaranteed corruption of the streaming worker
+                // state.
+                if (capturedGen != mDeferredApplyInvalidationGen)
+                {
+                    return;
+                }
+                // Even when no other op intervened, only apply on a
+                // clean Success: a Cancelled / Failed terminal state
+                // means the user explicitly aborted (Stop button) or
+                // the producer errored, and silently following up
+                // with a new config + open queue would surprise the
+                // user. The above gen-check already covers the
+                // common cancel paths (NewSession, OpenLogStream)
+                // because they bump the gen before issuing Reset;
+                // this is the belt for the explicit-Stop case where
+                // no other entrypoint is invoked.
+                if (result != StreamingResult::Success)
+                {
+                    return;
+                }
                 if (!DoLoadConfiguration(configPath))
                 {
                     // TOCTOU race between the dialog accept and the
@@ -1589,6 +1657,13 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 {
+    // Any new streaming open invalidates any deferred
+    // "apply-on-streamingFinished" continuation: this entrypoint is
+    // itself the user-initiated session change those continuations
+    // are meant to lose to. Bumping here covers OpenFiles, drag-drop,
+    // OpenWithConfiguration's synchronous tail, OpenRecentSession's
+    // streaming tail, and the secondary-launch forwarding path.
+    ++mDeferredApplyInvalidationGen;
     // Live-tail and network sessions are inherently single-source: any
     // new static-files open implicitly tears them down and starts
     // fresh, regardless of @p mode. Static sessions honour the caller.
@@ -1790,6 +1865,12 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // `DetachAutoSaveUuid()` afterwards.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
+    // Invalidate any deferred-apply continuation: the upcoming
+    // `mModel->Reset()` emits `streamingFinished(Cancelled)`
+    // synchronously, which would otherwise wake a stale
+    // `OpenWithConfiguration` deferred lambda mid-OpenLogStream and
+    // race the BeginStreaming call we are about to issue.
+    ++mDeferredApplyInvalidationGen;
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
     ClearAllFilters();
@@ -1886,6 +1967,10 @@ void MainWindow::OpenNetworkStream()
     // the outgoing static session before the destructive reset.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
+    // Same rationale as `OpenLogStreamFromPath`: invalidate any
+    // deferred-apply continuation before the synchronous Cancel
+    // emit from `mModel->Reset()`.
+    ++mDeferredApplyInvalidationGen;
     // Mirror the OpenLogStream reset.
     mModel->Reset();
     ClearAllFilters();
@@ -2591,6 +2676,22 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // uuid into `openWindowsAtQuit` and the next launch would
     // re-open the window the user just explicitly exited.
     DetachAutoSaveUuid();
+    // Reset the rest of the session-mode state so a subsequent
+    // `aboutToQuit` flush (which fans `AutoSaveSessionSnapshot(true)`
+    // across every still-tracked top-level `MainWindow`) sees this
+    // window as fully Idle and short-circuits via
+    // `ShouldAutoSaveSession`. Without these resets, a closed but
+    // still-tracked window would re-enter `WriteSnapshot` with
+    // `mAutoSaveUuid` empty (we just cleared it) and a live
+    // `mCurrentSource` / `mSessionMode == Static`, generating a
+    // *brand-new* uuid for the just-Exited session: a duplicate
+    // recents entry, a duplicate JSON on disk, and a published
+    // open-windows uuid that resurrects the window on next launch.
+    // Mirrors the teardown that `NewSession` already performs for
+    // an in-process session boundary.
+    mCurrentSource.reset();
+    mSessionMode = SessionMode::Idle;
+    mLastTerminalSessionMode = SessionMode::Idle;
     QMainWindow::closeEvent(event);
 }
 
@@ -2873,6 +2974,15 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         // load (`OpenRecentSession`, `RestoreLastSessionFromPath`)
         // explicitly set `mAutoSaveUuid` once this function returns.
         DetachAutoSaveUuid();
+
+        // Invalidate any deferred-apply continuation: this function
+        // is reached from `OpenWithConfiguration` (sync branch),
+        // `OpenRecentSession`, and `RestoreLastSessionFromPath`,
+        // each of which is a session-replacement event. The
+        // upcoming `mModel->Reset()` also emits a synchronous
+        // Cancelled signal that would otherwise wake a stale
+        // deferred lambda.
+        ++mDeferredApplyInvalidationGen;
 
         // Drop proxy rules and the active sort before the model is
         // reset: both were built for the old column layout. The

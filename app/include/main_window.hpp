@@ -348,6 +348,23 @@ public:
     /// modal `QFileDialog`. Mirrors `OpenFilesForTest` /
     /// `OpenWithConfigurationForTest`.
     void OpenLogStreamForTest(const QString &filePath);
+
+    /// Test-only forwarder to `NewSession`, kept distinct so a
+    /// future refactor that splits the menu-action body from the
+    /// reusable core can still call the core from tests without
+    /// dragging in any UI side effects (status bar messages,
+    /// shortcut sniffing, etc.). Today this is a thin trampoline.
+    void NewSessionForTest() { NewSession(); }
+
+    /// Test-only readout of the monotonic counter that the deferred
+    /// `OpenWithConfiguration` continuation captures + checks. Used
+    /// to verify each session-changing entrypoint advances the
+    /// counter as documented on `mDeferredApplyInvalidationGen`,
+    /// without exposing the member.
+    [[nodiscard]] int DeferredApplyInvalidationGenForTest() const noexcept
+    {
+        return mDeferredApplyInvalidationGen;
+    }
 #endif
 
 protected:
@@ -744,6 +761,21 @@ private:
     /// on a window that never finished a streaming session). Each
     /// `AddOpenWindowUuid` call site must keep this flag in lockstep.
     bool mAutoSaveUuidPublished = false;
+
+    /// Monotonic counter that supersedes any deferred
+    /// "apply-on-streamingFinished" continuation. The deferred path
+    /// in `OpenWithConfiguration` (queued when a parse is already in
+    /// flight) captures the current value at attach time and only
+    /// applies its config + open queue when the captured value still
+    /// matches at fire time. Any session-changing entrypoint
+    /// (`NewSession`, `StartStreamingOpenQueue`, `DoLoadConfiguration`,
+    /// `OpenLogStreamFromPath`, `OpenNetworkStream`,
+    /// `OpenWithConfiguration` re-entry) bumps this counter so a
+    /// stale deferred lambda fired by an unrelated `streamingFinished`
+    /// (e.g. a follow-up `mModel->Reset()` from `NewSession` that
+    /// emits `Cancelled` synchronously) bails instead of clobbering
+    /// the user's new session.
+    int mDeferredApplyInvalidationGen = 0;
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
