@@ -126,6 +126,72 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
 // linger before the bar reverts to default state.
 constexpr int STATUS_BAR_MESSAGE_TIMEOUT_MS = 5000;
 
+// Cheap-peek + Glaze-probe classifier used by
+// `MainWindow::DispatchMixedOpenInput` to detect a configuration
+// anywhere in a drop / Open... / argv set before deciding whether
+// to route through the mixed-input path.
+//
+// Step 1 (cheap peek -- formerly the diagnostic-only block in
+// `OpenFilesForCli`): skip a UTF-8 BOM, skip leading ASCII
+// whitespace, require a leading `{`, then look for the substring
+// `"columns"` in the first 4 KB. Keeps multi-megabyte JSONL logs
+// out of Glaze (their first record is a `{` but rarely mentions
+// `columns`, and even if it does step 2 vetoes them).
+//
+// Step 2 (full Glaze probe): mirror `TryLoadAsConfiguration`'s
+// throw-away parse. Reject `columns.empty()` for the same reason:
+// `{}` parses cleanly as a default-valued `LogConfiguration` and
+// must not be misclassified as a configuration. Any parse
+// exception also returns false. Pinned by
+// `TestTryLoadAsConfigurationRejectsEmptyJsonObject`.
+bool FileLooksLikeConfiguration(const QString &file)
+{
+    if (file.isEmpty())
+    {
+        return false;
+    }
+    QFile probeFile(file);
+    if (!probeFile.open(QIODevice::ReadOnly))
+    {
+        return false;
+    }
+    const QByteArray head = probeFile.read(4096);
+    probeFile.close();
+
+    int cursor = 0;
+    if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF
+        && static_cast<unsigned char>(head[1]) == 0xBB && static_cast<unsigned char>(head[2]) == 0xBF)
+    {
+        cursor = 3;
+    }
+    while (cursor < head.size())
+    {
+        const char c = head[cursor];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+        {
+            break;
+        }
+        ++cursor;
+    }
+    const bool startsWithObject = cursor < head.size() && head[cursor] == '{';
+    const bool mentionsColumns = head.contains("\"columns\"");
+    if (!startsWithObject || !mentionsColumns)
+    {
+        return false;
+    }
+
+    try
+    {
+        loglib::LogConfigurationManager probe;
+        probe.Load(file.toStdString());
+        return !probe.Configuration().columns.empty();
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
 /// Decode the on-disk `Type::Boolean` filter (a subset of
 /// `{"true", "false"}`) into the two-toggle pair
 /// `BoolRowPredicate` consumes. Case-insensitive so a hand-edited
@@ -915,18 +981,6 @@ void MainWindow::dropEvent(QDropEvent *event)
         return;
     }
 
-    // Single-file drop may load as a configuration; multi-file always streams.
-    if (urlList.size() == 1)
-    {
-        const QString singleFile = urlList.front().toLocalFile();
-        if (TryLoadAsConfiguration(singleFile))
-        {
-            UpdateUi();
-            event->acceptProposedAction();
-            return;
-        }
-    }
-
     QStringList files;
     files.reserve(urlList.size());
     for (const QUrl &url : urlList)
@@ -936,9 +990,13 @@ void MainWindow::dropEvent(QDropEvent *event)
 
     // Mirror `OpenFiles`: Shift forces replace; default appends onto
     // the active static session. `modifiers()` is the Qt 6 successor
-    // to the deprecated `keyboardModifiers()` on `QDropEvent`.
+    // to the deprecated `keyboardModifiers()` on `QDropEvent`. The
+    // dispatcher classifies each path (config vs. log) and routes
+    // mixed inputs through `DoLoadConfiguration` + Append, so a
+    // user dropping `cfg.json + log1.json + log2.json` gets the
+    // config applied before the logs stream.
     const bool forceReplace = event->modifiers().testFlag(Qt::ShiftModifier);
-    StartStreamingOpenQueue(std::move(files), forceReplace ? OpenMode::Replace : OpenMode::Append);
+    DispatchMixedOpenInput(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
 
     event->acceptProposedAction();
 }
@@ -1077,123 +1135,35 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     {
         return;
     }
-    // Mirror `OpenFiles`: a single positional argument is treated
-    // as a possible configuration / session JSON before falling
-    // back to opening it as a log file. This is the only heuristic
-    // we have today: with multiple positional arguments we always
-    // open them as log files. If a user wants to combine a
-    // configuration with log files on the command line, they have
-    // to load the configuration via `File -> Open with
-    // Configuration...` once the window is up -- a future
-    // dedicated flag (e.g. `--config <path>`) would route through
-    // `DoLoadConfiguration` plus `StartStreamingOpenQueue(Append)`
-    // exactly like that menu entry.
-    if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
+    // Always Append on the CLI / forward path: a user can drag-drop
+    // multiple files onto the binary in one go without each
+    // clobbering the previous, and on an empty-session start the
+    // Append branch lands at the same place as a fresh open. There
+    // is no `Shift`-equivalent on the CLI -- a `--new-instance`
+    // secondary launch simply amends the primary's currently-active
+    // session. A future `--replace` flag could promote selected
+    // launches to `OpenMode::Replace`, but the wire format does not
+    // yet carry it.
+    const MixedInputDispatch result = DispatchMixedOpenInput(files, OpenMode::Append);
+
+    // CLI-only courtesy: a lone configuration argument applies but
+    // never kicks off streaming (`TryLoadAsConfiguration` only
+    // touches columns / filters / sort + sets `mCurrentSource` for
+    // future Save Session). Without an explicit hint the user is
+    // staring at an empty view with column headers and no visible
+    // indication that the binary actually accepted their argument.
+    // Even a source-bound configuration ends here without any rows
+    // on screen -- the source is mirrored into `mCurrentSource` so
+    // File -> Open / Save Session round-trip it, but no parse runs
+    // until the user picks a file.
+    if (result == MixedInputDispatch::AppliedConfigOnly)
     {
-        UpdateUi();
-        // Always hint after a configuration accept on the CLI:
-        // `TryLoadAsConfiguration` never kicks off streaming on its
-        // own (it only updates columns / filters / sort + sets
-        // `mCurrentSource` for future Save Session), so the user is
-        // staring at an empty view with column headers and no
-        // visible indication that the binary actually accepted
-        // their argument. Even a source-bound configuration ends
-        // here without any rows on screen -- the source is mirrored
-        // into `mCurrentSource` so File -> Open / Save Session
-        // round-trip it, but no parse runs until the user picks a
-        // file. The hint reads identically in both cases.
         const QString message =
             tr("Loaded '%1' as a configuration. Open log files (File -> Open...) to populate the view.")
                 .arg(files.front());
         statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         qInfo().noquote() << "OpenFilesForCli:" << message;
-        return;
     }
-    // Multi-file path: surface a diagnostic when the *first* file
-    // looks like it would have been auto-detected as a configuration
-    // had it been passed alone. Without this, a user running
-    // `app cfg.json log.json` sees both files opened as logs (cfg
-    // fails to parse and only `log.json` appears) with no hint that
-    // the heuristic-skip is intentional.
-    //
-    // The probe is intentionally a substring peek (first 4 KB of
-    // the file) rather than a full Glaze parse: the previous
-    // implementation re-parsed the entire first file even when it
-    // was a multi-megabyte JSONL log that just happened to end in
-    // `.json` -- doubling the I/O on the largest argument the user
-    // passed. False positives (a JSONL log whose first 4 KB contain
-    // the literal string `"columns"`) only result in a stale
-    // status-bar hint; the actual open path below still treats the
-    // file as a log. The peek is paired with a leading-`{` shape
-    // check so we don't fire on JSONL logs whose first line happens
-    // to mention "columns" in a payload field.
-    //
-    // Surface to the status bar (and the console as a backup) so a
-    // GUI-launched user actually sees the hint -- a plain
-    // `qWarning()` only reaches whoever started the binary from a
-    // terminal.
-    if (files.size() > 1 && files.front().endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
-    {
-        QFile probe(files.front());
-        if (probe.open(QIODevice::ReadOnly))
-        {
-            const QByteArray head = probe.read(4096);
-            probe.close();
-
-            // Skip a UTF-8 BOM so a Notepad-saved configuration
-            // (Windows defaults its `Save As ... UTF-8` to BOM-on)
-            // still looks like a JSON object. The previous probe
-            // tripped on the leading `0xEF` byte and silently dropped
-            // the hint, sending the user into the multi-file fallback
-            // with no diagnostic.
-            int cursor = 0;
-            if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF
-                && static_cast<unsigned char>(head[1]) == 0xBB
-                && static_cast<unsigned char>(head[2]) == 0xBF)
-            {
-                cursor = 3;
-            }
-            // Skip leading ASCII whitespace so a pretty-printed file
-            // that starts with `\n  {` still looks like a JSON
-            // object. Restrict to ASCII (vs `QChar::isSpace`) so a
-            // multi-byte UTF-8 leading byte is not misclassified as
-            // whitespace.
-            while (cursor < head.size())
-            {
-                const char c = head[cursor];
-                if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
-                {
-                    break;
-                }
-                ++cursor;
-            }
-            const bool startsWithObject = cursor < head.size() && head[cursor] == '{';
-            const bool mentionsColumns = head.contains("\"columns\"");
-            if (startsWithObject && mentionsColumns)
-            {
-                const QString message =
-                    tr("First argument '%1' looks like a configuration but is being opened as a log "
-                       "file because additional arguments were passed. Use File -> Load Configuration "
-                       "or Session... then File -> Open... or pass the configuration on its own to "
-                       "apply it.")
-                        .arg(files.front());
-                statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
-                qWarning().noquote() << "OpenFilesForCli:" << message;
-            }
-        }
-        // QFile::open failure is silent: if we can't read the file,
-        // the streaming open below will surface the error properly.
-    }
-    // Always Append: a user can drag-drop multiple files onto the
-    // binary in one go without each clobbering the previous, and on
-    // an empty-session start the Append branch lands at the same
-    // place as a fresh open. There is no `Shift`-equivalent on the
-    // CLI / forward path -- a `--new-instance` secondary launch
-    // simply amends the primary's currently-active session. The user
-    // opts into that trade-off by running with single-instance mode;
-    // a future `--replace` flag could promote selected launches to
-    // `OpenMode::Replace`, but the wire format does not yet carry it.
-    StartStreamingOpenQueue(files, OpenMode::Append);
 }
 
 void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
@@ -1499,14 +1469,12 @@ void MainWindow::OpenFiles()
         return;
     }
 
-    // Single-file open may load as a configuration; multi-file always streams.
-    if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
-    {
-        UpdateUi();
-        return;
-    }
-
-    StartStreamingOpenQueue(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
+    // Mixed-input dispatcher: lone-config files apply via
+    // `TryLoadAsConfiguration` (unchanged behaviour), lone-log
+    // selections route to `StartStreamingOpenQueue`, and a mixed
+    // selection of `cfg.json + log files` loads the config first
+    // then streams the logs in Append mode.
+    DispatchMixedOpenInput(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
 }
 
 bool MainWindow::TryLoadAsConfiguration(const QString &file)
@@ -1599,6 +1567,106 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
     {
         return false;
     }
+}
+
+MainWindow::MixedInputDispatch MainWindow::DispatchMixedOpenInput(const QStringList &files, OpenMode logMode)
+{
+    if (files.isEmpty())
+    {
+        return MixedInputDispatch::QueuedLogsOnly;
+    }
+
+    // Classify each file. `FileLooksLikeConfiguration` is cheap on
+    // non-configs (4 KB peek vetoes typical JSONL logs before
+    // Glaze ever sees them) so probing the entire input is fine
+    // even for multi-gigabyte log selections.
+    QStringList configPaths;
+    QStringList logPaths;
+    configPaths.reserve(files.size());
+    logPaths.reserve(files.size());
+    for (const QString &file : files)
+    {
+        if (FileLooksLikeConfiguration(file))
+        {
+            configPaths.append(file);
+        }
+        else
+        {
+            logPaths.append(file);
+        }
+    }
+
+    if (configPaths.size() >= 2)
+    {
+        // Multi-config rejection: a drop / argv with two-or-more
+        // config-shaped files is almost certainly user error (the
+        // intended single config is ambiguous, and stacking configs
+        // would silently lose all but the last). Show a modal and
+        // bail without touching any live state -- the user can
+        // retry with a single config alongside their logs.
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mSuppressDialogsForTest)
+#endif
+        {
+            QMessageBox::warning(
+                this,
+                tr("Multiple Configurations Selected"),
+                tr("Found %n configuration file(s) in the input. Drop or open exactly one configuration "
+                   "file alongside your log files.\n\nConfigurations:\n%1",
+                   nullptr,
+                   static_cast<int>(configPaths.size()))
+                    .arg(configPaths.join(QChar('\n')))
+            );
+        }
+        return MixedInputDispatch::RejectedMultiConfig;
+    }
+
+    if (configPaths.isEmpty())
+    {
+        StartStreamingOpenQueue(files, logMode);
+        return MixedInputDispatch::QueuedLogsOnly;
+    }
+
+    // Exactly one configuration in the input.
+    const QString configPath = configPaths.front();
+    if (logPaths.isEmpty())
+    {
+        // No logs to stream: preserve the historical single-file
+        // probe semantics by routing through `TryLoadAsConfiguration`
+        // (no `mModel->Reset()` -> existing rows survive a config
+        // refresh). `FileLooksLikeConfiguration` already validated
+        // the parse + non-empty columns, so the probe inside
+        // `TryLoadAsConfiguration` should also succeed; an
+        // intervening file rewrite (TOCTOU) just lands us at the
+        // `false` return, which we surface as `QueuedLogsOnly`
+        // (nothing was actually opened) rather than inventing a new
+        // outcome.
+        if (TryLoadAsConfiguration(configPath))
+        {
+            UpdateUi();
+            return MixedInputDispatch::AppliedConfigOnly;
+        }
+        return MixedInputDispatch::QueuedLogsOnly;
+    }
+
+    // Mixed: apply the configuration with a full reset, then
+    // append the logs so the freshly-loaded columns / filters /
+    // sort apply to the streamed rows. `DoLoadConfiguration` is
+    // the destructive variant (drops rows / proxy rules / sort /
+    // uuid); `Append` afterwards is non-destructive on the now-
+    // empty model -- the streamed rows pick up the loaded layout.
+    if (!DoLoadConfiguration(configPath))
+    {
+        // Pre-flight already accepted this file, so a second-stage
+        // failure here is a TOCTOU race (file rewritten between
+        // the two reads). Bail without queueing anything: the model
+        // was reset by `DoLoadConfiguration` before the throw, so
+        // streaming the logs against the unintended default columns
+        // would mislead the user.
+        return MixedInputDispatch::QueuedLogsOnly;
+    }
+    StartStreamingOpenQueue(logPaths, OpenMode::Append);
+    return MixedInputDispatch::AppliedConfigThenLogs;
 }
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
@@ -2318,6 +2386,11 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration:
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
 {
     StartStreamingOpenQueue(files, mode);
+}
+
+MainWindow::MixedInputDispatch MainWindow::OpenMixedFilesForTest(const QStringList &files, OpenMode logMode)
+{
+    return DispatchMixedOpenInput(files, logMode);
 }
 #endif
 

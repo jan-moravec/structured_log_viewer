@@ -65,6 +65,32 @@ public:
         Replace,
     };
 
+    /// Outcome of `DispatchMixedOpenInput`. Lets callers distinguish
+    /// the four mutually-exclusive shapes of a drop / Open... / argv
+    /// set so they can attach entry-point-specific tails (e.g. the
+    /// CLI `AppliedConfigOnly` status-bar hint).
+    enum class MixedInputDispatch
+    {
+        /// Zero config-shaped files in the input -- everything was
+        /// streamed via `StartStreamingOpenQueue` in the caller's
+        /// requested `OpenMode`.
+        QueuedLogsOnly,
+        /// Exactly one config-shaped file, no logs -- applied via
+        /// `TryLoadAsConfiguration` (no model reset, preserves the
+        /// historical single-file behaviour).
+        AppliedConfigOnly,
+        /// Exactly one config-shaped file plus >=1 log files --
+        /// applied via `DoLoadConfiguration` (full reset) then the
+        /// logs streamed via `StartStreamingOpenQueue(Append)` so
+        /// the freshly-loaded columns / filters / sort survive into
+        /// the streamed rows.
+        AppliedConfigThenLogs,
+        /// Two or more config-shaped files -- rejected. A
+        /// `QMessageBox::warning` was shown (skipped under
+        /// `mSuppressDialogsForTest`) and no state was mutated.
+        RejectedMultiConfig,
+    };
+
     /// Backwards-compatible constructor: no history manager wired in,
     /// so auto-save / Recent Sessions / restore-on-launch behave as
     /// no-ops. Used by the existing test fixture and by ad-hoc
@@ -374,6 +400,14 @@ public:
     /// bypassing the file dialog and the keyboard-modifier sniff.
     void OpenFilesForTest(const QStringList &files, OpenMode mode);
 
+    /// Test-only entry into the mixed-input dispatcher used by
+    /// `dropEvent`, `OpenFiles`, and `OpenFilesForCli`. Returns the
+    /// branch the dispatcher took so the test can assert on the
+    /// shape (queued-only / config-only / config-then-logs /
+    /// rejected) without scraping the status bar. Bypasses the
+    /// file dialog and the Shift / multi-config modal.
+    MixedInputDispatch OpenMixedFilesForTest(const QStringList &files, OpenMode logMode);
+
     /// Drive the post-dialog body of `OpenLogStream` with @p filePath.
     /// Lets tests exercise the live-tail open path (in particular
     /// the "flush the previous static session before reset" hook
@@ -568,6 +602,29 @@ private:
     /// Try to load @p file as a `LogConfiguration`; returns true on
     /// success.
     bool TryLoadAsConfiguration(const QString &file);
+
+    /// Funnel for drop / Open... / CLI inputs that may contain a
+    /// mix of configuration JSONs and log files. Each path in @p
+    /// files is classified via `FileLooksLikeConfiguration`:
+    ///
+    /// - Zero configs -> `StartStreamingOpenQueue(files, logMode)`.
+    /// - One config + zero logs -> `TryLoadAsConfiguration(cfg)`
+    ///   (preserves the historical "lone-file probe" semantics:
+    ///   the model is not reset and existing rows survive).
+    /// - One config + N logs -> `DoLoadConfiguration(cfg)` (full
+    ///   reset, drops prior rows / proxy rules / sort / uuid)
+    ///   followed by `StartStreamingOpenQueue(logs, Append)` so
+    ///   the freshly-loaded columns / filters / sort apply to the
+    ///   streamed rows.
+    /// - Two or more configs -> show a `QMessageBox::warning` and
+    ///   leave all state untouched. The modal is skipped under
+    ///   `mSuppressDialogsForTest`.
+    ///
+    /// @p logMode selects the streaming mode for the no-config
+    /// branch (`Append` / `Replace`). The mixed branch always uses
+    /// `Append` because `DoLoadConfiguration` already performed a
+    /// full reset and `Replace` would be redundant.
+    MixedInputDispatch DispatchMixedOpenInput(const QStringList &files, OpenMode logMode);
 
     /// Start a sequential streaming open of @p files.
     ///

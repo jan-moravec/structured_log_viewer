@@ -11502,15 +11502,16 @@ private slots:
     }
 
     // Sibling regression for the single-file probe path. `OpenFiles`,
-    // `OpenFilesForCli`, and `dropEvent` all funnel a single positional
-    // path through `TryLoadAsConfiguration` before falling back to
-    // opening it as a log file. When that probe succeeds (the file
-    // really is a configuration / session JSON), the load is a
-    // session boundary just like the menu `LoadConfiguration` path
-    // and must detach the previous recents pin. Without the detach,
-    // a closeEvent or follow-up AutoSave would rewrite the earlier
-    // session's JSON under the stale uuid -- silently corrupting
-    // the prior recents entry.
+    // `OpenFilesForCli`, and `dropEvent` all funnel inputs through
+    // `DispatchMixedOpenInput`, whose lone-config branch lands in
+    // `TryLoadAsConfiguration` (no model reset; existing rows
+    // survive). When that probe succeeds (the file really is a
+    // configuration / session JSON), the load is a session boundary
+    // just like the menu `LoadConfiguration` path and must detach
+    // the previous recents pin. Without the detach, a closeEvent
+    // or follow-up AutoSave would rewrite the earlier session's
+    // JSON under the stale uuid -- silently corrupting the prior
+    // recents entry.
     //
     // The fixture uses a `SaveScope::Full` session JSON (one that
     // carries a `File` source descriptor) rather than a columns-only
@@ -11544,7 +11545,8 @@ private slots:
         QVERIFY(QFileInfo::exists(pathA));
 
         // Drive the same code path that `dropEvent` / `OpenFiles` /
-        // `OpenFilesForCli` use when a single argument is a session
+        // `OpenFilesForCli` reach via `DispatchMixedOpenInput`'s
+        // lone-config branch when a single argument is a session
         // JSON -- the probe that decides whether to apply a
         // configuration vs. open the file as a log. The probe target
         // is a `SaveScope::Full` snapshot of session A's own state
@@ -11703,46 +11705,290 @@ private slots:
         QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
     }
 
-    // CLI invocation `app cfg.json log.json` opens both as logs --
-    // the single-arg config heuristic only fires when the user
-    // passed exactly one argument. Without a diagnostic the user
-    // is left wondering why the configuration was ignored. A plain
-    // `qWarning()` reaches developers running from a terminal but
-    // not GUI users; surfacing the hint via the status bar makes
-    // it actually visible.
-    void TestOpenFilesForCliSurfacesConfigDiagnosticOnStatusBar()
+    // Core "config-first" contract for the mixed-input dispatcher.
+    // A drop / Open... / argv that mixes one configuration with N
+    // log files must apply the configuration *before* the logs
+    // stream, so the freshly-loaded columns / filters / sort end
+    // up driving the streamed rows. Without this routing the
+    // configuration file would be opened as a log (parsing nothing
+    // useful and polluting `ShowParseErrors`) and the user would
+    // see the default-columns autodetect rather than their saved
+    // layout.
+    void TestDispatchMixedConfigAndLogsAppliesConfigThenStreams()
     {
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
-
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Write a real configuration JSON with at least one column
-        // so the probe accepts it (column-less parses are rejected
-        // by the same gate that `TryLoadAsConfiguration` uses).
+        // Two log fixtures sharing the same schema so the streamed
+        // row count is a sum we can assert on.
+        const TempJsonFile fixtureA(
+            {QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
+             QStringLiteral(R"({"category": "beta", "msg": "second"})")}
+        );
+        const TempJsonFile fixtureB({QStringLiteral(R"({"category": "alpha", "msg": "third"})")});
+        const int expectedRows = 3;
+
+        // Build a Full-scope configuration carrying a contains-`alpha`
+        // filter on `category` plus a descending sort on `category`.
+        // Both must apply to the streamed rows: the proxy row count
+        // collapses to two (only `alpha` survives) and the sort
+        // indicator on the table view matches the loaded sort.
         QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
-        const QString cfgPath = cfgDir.filePath(QStringLiteral("cli-config.json"));
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("mixed-cfg.json"));
+
+        loglib::LogConfigurationManager builder;
+        builder.SetSource(loglib::LogConfiguration::Source{});
+        builder.AppendKeys({"category", "msg"});
+
+        loglib::LogConfiguration::LogFilter filter;
+        filter.type = loglib::LogConfiguration::LogFilter::Type::String;
+        filter.row = 0;
+        filter.filterString = "alpha";
+        filter.matchType = loglib::LogConfiguration::LogFilter::Match::Contains;
+        builder.SetFilters({filter});
+
+        loglib::LogConfiguration::Sort sort;
+        sort.columnIndex = 0;
+        sort.descending = true;
+        builder.SetSort(sort);
+
+        builder.Save(cfgPath.toStdString(), loglib::SaveScope::Full);
+
+        const MainWindow::MixedInputDispatch result = wired->OpenMixedFilesForTest(
+            {cfgPath, fixtureA.Path(), fixtureB.Path()}, MainWindow::OpenMode::Append
+        );
+        QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
+
+        // Two log files chain through `StartStreamingOpenQueue` ->
+        // `BeginStreaming` (fixtureA) then `AppendStreaming`
+        // (fixtureB). Wait until the model has accumulated rows for
+        // both rather than tying to a single `streamingFinished`,
+        // which only fires per-file.
+        auto *model = wired->Model();
+        QVERIFY(model != nullptr);
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), expectedRows, 5000);
+
+        // The configuration's columns ended up on the model and the
+        // logs streamed under them (no fallback autodetect kicked
+        // in).
+        QCOMPARE(static_cast<int>(model->Configuration().columns.size()), 2);
+
+        // The Full-scope filter survived: live runtime filter map is
+        // populated, and the proxy applies the rule on top so only
+        // `alpha` rows are visible.
+        QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
+        auto *proxy = wired->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->rowCount(), 2);
+
+        // The Full-scope sort survived: the table view is sorting
+        // by `category` descending.
+        const auto *header = wired->TableViewForTest()->horizontalHeader();
+        QVERIFY(header != nullptr);
+        QCOMPARE(header->sortIndicatorSection(), 0);
+        QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
+    }
+
+    // Lone-config input must keep the historical
+    // `TryLoadAsConfiguration` semantics: columns / filters / sort
+    // apply, the model is not reset, and no streaming kicks off.
+    // The dispatcher reports `AppliedConfigOnly` so the CLI caller
+    // can attach its status-bar hint without re-classifying.
+    void TestDispatchMixedSingleConfigDelegatesToTryLoadAsConfiguration()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("lone-cfg.json"));
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg", "level"});
+        builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({cfgPath}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigOnly);
+        QCOMPARE(static_cast<int>(wired->Model()->Configuration().columns.size()), 2);
+        QCOMPARE(wired->Model()->rowCount(), 0);
+        QCOMPARE(finishedSpy.count(), 0);
+    }
+
+    // Two-or-more-config input is user error: the intended single
+    // configuration is ambiguous and silently picking one would
+    // lose the others. The dispatcher must surface a modal warning
+    // (suppressed under `mSuppressDialogsForTest`) and leave the
+    // live state untouched -- no config applied, no streaming
+    // started, no uuid mutation.
+    void TestDispatchMixedRejectsMultipleConfigs()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Pre-seed a known session so we can later assert the
+        // multi-config rejection did not mutate any of it.
+        const TempJsonFile prior({QStringLiteral(R"({"msg": "kept"})")});
+        QSignalSpy primingSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(primingSpy.isValid());
+        wired->OpenFilesForTest({prior.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(primingSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const int rowsBefore = wired->Model()->rowCount();
+        const auto columnsBefore = wired->Model()->Configuration().columns.size();
+        const QString uuidBefore = wired->ActiveSessionUuid();
+        QVERIFY2(rowsBefore > 0, "priming open must produce at least one row");
+        QVERIFY2(columnsBefore > 0, "priming open must produce at least one column");
+
+        // Two real columns-only configurations and a log file.
+        QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPathA = cfgDir.filePath(QStringLiteral("cfg-a.json"));
+        const QString cfgPathB = cfgDir.filePath(QStringLiteral("cfg-b.json"));
+        {
+            loglib::LogConfigurationManager builderA;
+            builderA.AppendKeys({"alpha"});
+            builderA.Save(cfgPathA.toStdString(), loglib::SaveScope::ColumnsOnly);
+            loglib::LogConfigurationManager builderB;
+            builderB.AppendKeys({"beta"});
+            builderB.Save(cfgPathB.toStdString(), loglib::SaveScope::ColumnsOnly);
+        }
+        const TempJsonFile log({QStringLiteral(R"({"msg": "ignored"})")});
+
+        wired->SetSuppressDialogsForTest(true);
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result = wired->OpenMixedFilesForTest(
+            {cfgPathA, cfgPathB, log.Path()}, MainWindow::OpenMode::Append
+        );
+        QCoreApplication::processEvents();
+
+        QCOMPARE(result, MainWindow::MixedInputDispatch::RejectedMultiConfig);
+        QCOMPARE(wired->Model()->rowCount(), rowsBefore);
+        QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
+        QCOMPARE(wired->ActiveSessionUuid(), uuidBefore);
+        QCOMPARE(finishedSpy.count(), 0);
+    }
+
+    // No-config input is the historical "always stream" path: the
+    // dispatcher hands everything to `StartStreamingOpenQueue` in
+    // the caller's requested `OpenMode` (Append here). This locks
+    // in that we did not regress the lone-log / multi-log case.
+    void TestDispatchMixedNoConfigStreamsEverything()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile logA({QStringLiteral(R"({"msg": "first"})")});
+        const TempJsonFile logB({QStringLiteral(R"({"msg": "second"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({logA.Path(), logB.Path()}, MainWindow::OpenMode::Append);
+        QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
+
+        // StartStreamingOpenQueue chains files via successive
+        // `BeginStreaming` / `AppendStreaming` calls, each of which
+        // fires `streamingFinished`. Wait for both.
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->rowCount(), 2);
+    }
+
+    // Regression guard for the empty-`{}` edge case: the classifier
+    // must reject column-less parses (mirrors
+    // `TestTryLoadAsConfigurationRejectsEmptyJsonObject`). Without
+    // this gate, a stray `{}` JSON dropped alongside a log would
+    // be misclassified as a configuration and either wipe the
+    // user's columns (single match) or trigger a multi-config
+    // modal (with another stray `{}` in the mix). The expected
+    // behaviour is that `{}` is treated as a log, parsing fails
+    // for it, and the real log streams normally.
+    void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        QTemporaryDir emptyDir;
+        QVERIFY(emptyDir.isValid());
+        const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
+        {
+            std::ofstream stream(emptyPath.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << "{}";
+        }
+
+        const TempJsonFile log({QStringLiteral(R"({"msg": "real"})")});
+
+        wired->SetSuppressDialogsForTest(true);
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({emptyPath, log.Path()}, MainWindow::OpenMode::Append);
+        QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // Real log row survives; the `{}` file fails to parse and
+        // its error lands in `ShowParseErrors` (which we don't
+        // inspect here -- the point of this test is the dispatcher,
+        // not the parse-error surface).
+        QCOMPARE(wired->Model()->rowCount(), 1);
+    }
+
+    // CLI variant of the core mixed-input contract: a `cfg.json
+    // log.json` argv must apply the configuration first and stream
+    // the log under it. Replaces the obsolete
+    // `TestOpenFilesForCliSurfacesConfigDiagnosticOnStatusBar`
+    // which asserted the inverse (configuration ignored, hint
+    // shown).
+    void TestOpenFilesForCliConfigAndLogsAppliesConfigThenStreams()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("cli-cfg.json"));
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
         builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
 
         const TempJsonFile log({QStringLiteral(R"({"msg": "from cli"})")});
 
-        wired->statusBar()->clearMessage();
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
         wired->OpenFilesForCli({cfgPath, log.Path()});
+        QVERIFY(finishedSpy.wait(5000));
         QCoreApplication::processEvents();
 
-        const QString message = wired->statusBar()->currentMessage();
-        QVERIFY2(
-            message.contains(QFileInfo(cfgPath).fileName()),
-            "status bar must mention the configuration file the user passed"
-        );
-        QVERIFY2(
-            message.contains(QStringLiteral("Load Configuration or Session")),
-            "status bar hint must point the user at the menu entry that does what they meant"
-        );
+        // Configuration applied: single column `msg` from the cfg.
+        // Log streamed under it: one row.
+        QCOMPARE(static_cast<int>(wired->Model()->Configuration().columns.size()), 1);
+        QCOMPARE(wired->Model()->rowCount(), 1);
     }
 
     // Glaze accepts an empty `{}` (and any object containing only
