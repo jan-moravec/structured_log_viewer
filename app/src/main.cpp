@@ -27,6 +27,28 @@ namespace
 /// different CWD than the secondary, so a relative path that means
 /// "the file next to me" on the secondary would resolve against the
 /// primary's CWD and fail to open.
+///
+/// Limitations of this hand-rolled parser (kept deliberately small;
+/// migrate to `QCommandLineParser` once the flag set grows past a
+/// second entry):
+///   - No `--flag=value` syntax. Every flag we own today
+///     (`--new-instance`) is boolean / valueless. Adding the first
+///     value-bearing flag is the trigger for migration.
+///   - Unrecognised long-form `--foo` and short-form `-x` are
+///     silently dropped (no `--help`, no error). A typo like
+///     `--new-instnace` therefore behaves identically to no flag,
+///     which is annoying but safer than mis-routing the typo to a
+///     file open. The migration to `QCommandLineParser` would
+///     surface unknown flags via its built-in error path.
+///   - The flag list is duplicated between `CollectCliFiles` (which
+///     filters them out) and `ShouldAllowNewInstance` (which
+///     interprets them). New flags must be reflected in both -- a
+///     `QCommandLineParser` migration would consolidate both into a
+///     single declarative table.
+///   - `--` end-of-options is honoured so `app -- -weird-name.log`
+///     opens a dash-prefixed file. Same semantics as
+///     `QCommandLineParser`, kept for forward-compat with the
+///     migration.
 QStringList CollectCliFiles(const QStringList &args)
 {
     QStringList files;
@@ -216,20 +238,43 @@ int main(int argc, char *argv[])
     // when `aboutToQuit` is emitted from `exit()`, so we capture them
     // here.
     //
+    // Two-step per window:
+    //
+    //   1. `AutoSaveSessionSnapshot(publishOpenWindow=true)` flushes
+    //      any post-`streamingFinished` edits (filter tweaks, sort
+    //      changes, column moves) into the recents JSON *and*
+    //      publishes the uuid. Without this flush the persisted
+    //      snapshot would be whatever the last `streamingFinished`
+    //      wrote -- typically stale. The flush is a no-op on
+    //      live-tail / network-stream / no-source windows because
+    //      `ShouldAutoSaveSession` rejects them.
+    //
+    //   2. The fall-through `AddOpenWindowUuid` covers the one case
+    //      the flush deliberately skips: a live-tail-on-a-file
+    //      window whose uuid was pinned by a previous static load.
+    //      `RestorableActiveSessionUuid` accepts that case (the
+    //      JSON on disk still reflects the static view, which is
+    //      what the user would expect to come back after the OS
+    //      quit) but `ShouldAutoSaveSession` does not. The call is
+    //      idempotent, so the static-session path that already
+    //      published in step 1 just no-ops here.
+    //
+    // The cross-process lock inside `WriteSnapshot` uses
+    // `WRITE_LOCK_TIMEOUT_RUNTIME_MS` (the runtime, not the longer
+    // shutdown timeout): with N windows and a contended sibling
+    // writer the shutdown stall is bounded by N * runtime-timeout
+    // rather than N * shutdown-timeout. Any window whose snapshot
+    // fails returns an empty uuid and is silently skipped, mirroring
+    // the existing fail-closed semantics of every other auto-save
+    // call site.
+    //
     // We *merge* rather than overwrite: with `--new-instance` two
     // processes can be alive simultaneously, and a destructive
     // `SetOpenWindowsAtQuit(openUuids)` from the first quitter would
-    // clobber the other process's published uuids. `AddOpenWindowUuid`
-    // is idempotent and serialised through the cross-process lock,
-    // so each process's contribution survives independently.
-    //
-    // We deliberately use `RestorableActiveSessionUuid` rather than
-    // `ActiveSessionUuid` so windows whose session cannot be
-    // fan-restored (e.g. a legacy NetworkStream entry the user
-    // opened from Recent Sessions) do not get re-published on every
-    // OS-quit. Without this filter the user would see the "must
-    // re-bind manually" info popup on every subsequent launch until
-    // they manually cleared the entry.
+    // clobber the other process's published uuids. Both
+    // `AutoSaveSessionSnapshot(true)` and `AddOpenWindowUuid` are
+    // idempotent and serialised through the cross-process lock, so
+    // each process's contribution survives independently.
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [] {
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
@@ -238,6 +283,7 @@ int main(int argc, char *argv[])
             {
                 continue;
             }
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/true);
             const QString uuid = mw->RestorableActiveSessionUuid();
             if (!uuid.isEmpty())
             {
@@ -251,6 +297,18 @@ int main(int argc, char *argv[])
     // window opens the forwarded files (if any) into its own
     // session; an empty list still produces a fresh empty window
     // (mirrors VS Code's "open a new window on second launch" UX).
+    //
+    // Lifetime invariant: this lambda captures `&historyManager` by
+    // reference. `historyManager` is declared above in the same
+    // scope, so it outlives both `instanceGuard` (which is destroyed
+    // on stack unwind after `historyManager`) and every peer window
+    // produced here. The peer is heap-allocated with
+    // `WA_DeleteOnClose`, so it is reaped through its closeEvent's
+    // `deleteLater` while `exec()` is still pumping events --
+    // guaranteeing the peer's `mHistoryManager` deref in
+    // `closeEvent` (auto-save flush) sees a live manager. The
+    // `&a` context object further ensures the lambda is disconnected
+    // before `QApplication` is torn down.
     QObject::connect(
         &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a, [&historyManager](const QStringList &files) {
             auto *child = new MainWindow(&historyManager, nullptr);

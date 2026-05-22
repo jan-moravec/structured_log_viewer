@@ -210,6 +210,19 @@ void LogConfigurationManager::Save(const LogConfiguration &configuration, const 
             std::filesystem::remove(tempPath, cleanupEc);
             throw std::runtime_error("Failed to write file '" + tempPath.string() + "'.");
         }
+        // Explicit close before the destructor so a close-time
+        // failure (Windows network shares, ENOSPC on deferred-write
+        // filesystems) is observable. The destructor swallows close
+        // errors; without this manual close + good() check we would
+        // happily rename a possibly-truncated `.tmp` over the live
+        // file and report success.
+        file.close();
+        if (!file.good())
+        {
+            std::error_code cleanupEc;
+            std::filesystem::remove(tempPath, cleanupEc);
+            throw std::runtime_error("Failed to close file '" + tempPath.string() + "'.");
+        }
     }
     std::error_code ec;
     std::filesystem::rename(tempPath, path, ec);

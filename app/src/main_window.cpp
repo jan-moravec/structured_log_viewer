@@ -416,10 +416,22 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     connect(ui->actionLoadConfiguration, &QAction::triggered, this, &MainWindow::LoadConfiguration);
     // "Exit" quits the whole application rather than just this
     // window (matches the typical File -> Exit affordance once the
-    // app gained multi-window support). `closeAllWindows` walks the
-    // top-level list and fires `closeEvent` on each, giving every
-    // window's auto-save flush a chance to run before `aboutToQuit`.
-    connect(ui->actionExit, &QAction::triggered, qApp, &QApplication::closeAllWindows);
+    // app gained multi-window support).
+    //
+    // We pair `closeAllWindows` (which walks the top-level list and
+    // fires `closeEvent` on each, giving every window's auto-save
+    // flush a chance to run) with an explicit `quit` so the binary
+    // also exits if a future change ever calls
+    // `setQuitOnLastWindowClosed(false)` -- in that mode the
+    // `closeAllWindows` walk on its own would leave a hidden,
+    // running process behind. The pairing also keeps the `aboutToQuit`
+    // safety-net in `main.cpp` engaged for windows whose close event
+    // somehow declined to fire (e.g. a future overridden
+    // `closeEvent` that calls `event->ignore()`).
+    connect(ui->actionExit, &QAction::triggered, qApp, [] {
+        QApplication::closeAllWindows();
+        QApplication::quit();
+    });
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
@@ -1042,6 +1054,22 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     if (files.size() == 1 && TryLoadAsConfiguration(files.front()))
     {
         UpdateUi();
+        // Always hint after a configuration accept on the CLI:
+        // `TryLoadAsConfiguration` never kicks off streaming on its
+        // own (it only updates columns / filters / sort + sets
+        // `mCurrentSource` for future Save Session), so the user is
+        // staring at an empty view with column headers and no
+        // visible indication that the binary actually accepted
+        // their argument. Even a source-bound configuration ends
+        // here without any rows on screen -- the source is mirrored
+        // into `mCurrentSource` so File -> Open / Save Session
+        // round-trip it, but no parse runs until the user picks a
+        // file. The hint reads identically in both cases.
+        const QString message =
+            tr("Loaded '%1' as a configuration. Open log files (File -> Open...) to populate the view.")
+                .arg(files.front());
+        statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        qInfo().noquote() << "OpenFilesForCli:" << message;
         return;
     }
     // Multi-file path: surface a diagnostic when the *first* file
@@ -1049,26 +1077,45 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     // had it been passed alone. Without this, a user running
     // `app cfg.json log.json` sees both files opened as logs (cfg
     // fails to parse and only `log.json` appears) with no hint that
-    // the heuristic-skip is intentional. The probe is cheap (one
-    // JSON parse via a throw-away manager) and only runs on the
-    // off-chance the first file ends in `.json`.
+    // the heuristic-skip is intentional.
+    //
+    // The probe is intentionally a substring peek (first 4 KB of
+    // the file) rather than a full Glaze parse: the previous
+    // implementation re-parsed the entire first file even when it
+    // was a multi-megabyte JSONL log that just happened to end in
+    // `.json` -- doubling the I/O on the largest argument the user
+    // passed. False positives (a JSONL log whose first 4 KB contain
+    // the literal string `"columns"`) only result in a stale
+    // status-bar hint; the actual open path below still treats the
+    // file as a log. The peek is paired with a leading-`{` shape
+    // check so we don't fire on JSONL logs whose first line happens
+    // to mention "columns" in a payload field.
     //
     // Surface to the status bar (and the console as a backup) so a
     // GUI-launched user actually sees the hint -- a plain
     // `qWarning()` only reaches whoever started the binary from a
-    // terminal. The probe rejects column-less parses for parity
-    // with `TryLoadAsConfiguration`: an empty `{}` is not a
-    // configuration the user meant to apply.
+    // terminal.
     if (files.size() > 1 && files.front().endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
     {
-        try
+        QFile probe(files.front());
+        if (probe.open(QIODevice::ReadOnly))
         {
-            loglib::LogConfigurationManager probe;
-            probe.Load(files.front().toStdString());
-            if (!probe.Configuration().columns.empty())
+            const QByteArray head = probe.read(4096);
+            probe.close();
+
+            // Skip leading whitespace so a pretty-printed file that
+            // starts with `\n  {` still looks like a JSON object.
+            int firstNonWs = 0;
+            while (firstNonWs < head.size() && QChar::fromLatin1(head[firstNonWs]).isSpace())
+            {
+                ++firstNonWs;
+            }
+            const bool startsWithObject = firstNonWs < head.size() && head[firstNonWs] == '{';
+            const bool mentionsColumns = head.contains("\"columns\"");
+            if (startsWithObject && mentionsColumns)
             {
                 const QString message =
-                    tr("First argument '%1' parses as a configuration but is being opened as a log "
+                    tr("First argument '%1' looks like a configuration but is being opened as a log "
                        "file because additional arguments were passed. Use File -> Open with "
                        "Configuration... or pass the configuration on its own to apply it.")
                         .arg(files.front());
@@ -1076,11 +1123,8 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
                 qWarning().noquote() << "OpenFilesForCli:" << message;
             }
         }
-        catch (const std::exception &)
-        {
-            // Not a configuration -- proceed silently with the
-            // default multi-file open path below.
-        }
+        // QFile::open failure is silent: if we can't read the file,
+        // the streaming open below will surface the error properly.
     }
     // Always Append: a user can drag-drop multiple files onto the
     // binary in one go without each clobbering the previous, and on
@@ -1129,8 +1173,23 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
         if (!parsed.isNull())
         {
             mAutoSaveUuid = stem;
-            mHistoryManager->Touch(stem);
-            SessionHistoryManager::AddOpenWindowUuid(stem);
+            // Gate the `AddOpenWindowUuid` publish on `Touch`
+            // confirming the manager actually owns this stem. The
+            // QUuid::fromString check above only proves the filename
+            // is uuid-shaped -- the JSON could still live outside
+            // `sessionsDir` (caller passed an external path) or its
+            // index entry could have been evicted by a sibling
+            // process. In either case publishing the stem into
+            // `openWindowsAtQuit` would leak a ghost uuid that the
+            // next launch's fan-restore has to filter via
+            // `QFileInfo::exists`. `Touch` returns true only when
+            // the stem was found in the index, so the publish below
+            // is restricted to entries we genuinely own.
+            if (mHistoryManager->Touch(stem))
+            {
+                SessionHistoryManager::AddOpenWindowUuid(stem);
+                mAutoSaveUuidPublished = true;
+            }
         }
     }
 
@@ -1200,9 +1259,18 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // Step 3: pin the recents uuid first so a crash / OS-quit
     // between here and the streaming-finished hook still restores
     // this window on next launch (matches `RestoreLastSessionFromPath`).
-    mHistoryManager->Touch(uuid);
+    // Gate the publish on `Touch` confirming the index still owns
+    // @p uuid -- between the `QFileInfo::exists` check above and
+    // here, a sibling process could have `Remove`d the entry. The
+    // file we already loaded survives, but publishing the uuid
+    // would leak a ghost entry that the next launch's fan-restore
+    // has to filter away.
     mAutoSaveUuid = uuid;
-    SessionHistoryManager::AddOpenWindowUuid(uuid);
+    if (mHistoryManager->Touch(uuid))
+    {
+        SessionHistoryManager::AddOpenWindowUuid(uuid);
+        mAutoSaveUuidPublished = true;
+    }
 
     // Step 4: open the source locators captured in the configuration.
     // `mCurrentSource` was just populated by the load above. The
@@ -1365,9 +1433,57 @@ void MainWindow::OpenWithConfiguration()
         return;
     }
 
-    // Both prompts confirmed: commit the config load, then queue the
-    // files in Append mode so the freshly-restored filters / sort
-    // survive into the new session.
+    // Both prompts confirmed. If a streaming parse is currently in
+    // flight, defer the destructive `DoLoadConfiguration` until it
+    // finishes: the worker thread is reading the *current* column
+    // layout from the configuration snapshot it captured at
+    // `BeginStreaming` time, and rewriting that layout from under
+    // it would surface as columns shifting / disappearing mid-parse
+    // and (worse) cached `EnumDictionary` indices pointing at the
+    // wrong column. We surface the deferral as a status-bar hint
+    // so the user understands why the new config / files do not
+    // appear immediately.
+    if (mModel->IsStreamingActive())
+    {
+        const QString message =
+            tr("Configuration will apply once the current parse completes.");
+        statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        // One-shot connect: fires on the next `streamingFinished`
+        // and disconnects automatically. `Qt::SingleShotConnection`
+        // is the canonical way to express "run once and tear down"
+        // without juggling a `QMetaObject::Connection`.
+        QObject::connect(
+            mModel,
+            &LogModel::streamingFinished,
+            this,
+            [this, configPath, files](StreamingResult /*result*/) {
+                if (!DoLoadConfiguration(configPath))
+                {
+                    // TOCTOU race between the dialog accept and the
+                    // deferred apply: the file was rewritten in the
+                    // meantime. Surface to the user and abandon the
+                    // queue rather than silently dropping the load.
+                    QMessageBox::warning(
+                        this,
+                        QStringLiteral("Cannot Open with Configuration"),
+                        QStringLiteral(
+                            "Configuration '%1' could no longer be parsed when the active "
+                            "parse completed. Re-select the file from File -> Open with "
+                            "Configuration..."
+                        ).arg(configPath)
+                    );
+                    return;
+                }
+                StartStreamingOpenQueue(files, OpenMode::Append);
+            },
+            Qt::SingleShotConnection
+        );
+        return;
+    }
+
+    // No streaming in flight: commit the config load, then queue
+    // the files in Append mode so the freshly-restored filters /
+    // sort survive into the new session.
     if (!DoLoadConfiguration(configPath))
     {
         // Defensive: the pre-flight already accepted this file, so
@@ -1635,6 +1751,15 @@ void MainWindow::OpenLogStream()
     {
         return;
     }
+    OpenLogStreamFromPath(file);
+}
+
+void MainWindow::OpenLogStreamFromPath(const QString &file)
+{
+    if (file.isEmpty())
+    {
+        return;
+    }
 
     // Construct on the GUI thread for synchronous open errors.
     const size_t retention =
@@ -1654,6 +1779,16 @@ void MainWindow::OpenLogStream()
         );
         return;
     }
+
+    // Flush the *outgoing* session so any user edits made after its
+    // last `streamingFinished` (filter tweaks, sort changes) survive
+    // the destructive reset below. `AutoSaveSessionSnapshot` is a
+    // no-op when the previous session was itself live-tail or had no
+    // pinned uuid -- the only path that actually writes is "Static
+    // session with edits"; live-tail-to-live-tail switches stay
+    // free. `publishOpenWindow=false` because we immediately
+    // `DetachAutoSaveUuid()` afterwards.
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
@@ -1689,6 +1824,11 @@ void MainWindow::OpenLogStream()
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     mModel->BeginStreaming(std::move(streamSource), std::move(options));
+}
+
+void MainWindow::OpenLogStreamForTest(const QString &filePath)
+{
+    OpenLogStreamFromPath(filePath);
 }
 
 void MainWindow::OpenNetworkStream()
@@ -1741,6 +1881,10 @@ void MainWindow::OpenNetworkStream()
         );
         return;
     }
+
+    // Same rationale as `OpenLogStream`: flush any unsaved edits to
+    // the outgoing static session before the destructive reset.
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
     // Mirror the OpenLogStream reset.
     mModel->Reset();
@@ -2353,6 +2497,7 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
         // `publishOpenWindow=false` because it immediately removes
         // the uuid again.
         SessionHistoryManager::AddOpenWindowUuid(uuid);
+        mAutoSaveUuidPublished = true;
     }
 }
 
@@ -2362,7 +2507,19 @@ void MainWindow::DetachAutoSaveUuid()
     {
         return;
     }
-    SessionHistoryManager::RemoveOpenWindowUuid(mAutoSaveUuid);
+    // Skip the cross-process `RemoveOpenWindowUuid` round-trip when
+    // we never published the uuid in the first place. Common case:
+    // `closeEvent` runs `AutoSaveSessionSnapshot(false)` (flush
+    // only) and then this method on a window that never reached a
+    // `streamingFinished` (so the per-window publish from the
+    // default-`true` snapshot path never fired). The Remove would
+    // be a no-op on the QSettings key but still pays the
+    // `QLockFile` acquisition + `sync()` cost.
+    if (mAutoSaveUuidPublished)
+    {
+        SessionHistoryManager::RemoveOpenWindowUuid(mAutoSaveUuid);
+        mAutoSaveUuidPublished = false;
+    }
     mAutoSaveUuid.clear();
 }
 

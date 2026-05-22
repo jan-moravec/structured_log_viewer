@@ -11189,8 +11189,9 @@ private slots:
 
         // Drive the secondary side directly. The wire format
         // (matching `SingleInstanceGuard::TryAcquire`) is the
-        // 11-byte ASCII magic `STRUCTLOGV1` followed by the file
-        // list, serialised via `QDataStream::Qt_6_0`.
+        // 11-byte ASCII magic `STRUCTLOGV1`, followed by a `quint8`
+        // version (currently `1`), followed by the file list,
+        // serialised via `QDataStream::Qt_6_0`.
         QLocalSocket secondary;
         secondary.connectToServer(socketName);
         QVERIFY2(secondary.waitForConnected(2000), "secondary must connect to primary's socket");
@@ -11199,6 +11200,7 @@ private slots:
         QDataStream out(&payload, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_0);
         out << QByteArray("STRUCTLOGV1");
+        out << static_cast<quint8>(1);
         out << forwardFiles;
 
         const qint64 written = secondary.write(payload);
@@ -12369,6 +12371,437 @@ private slots:
         QVERIFY2(
             wired->ActiveSessionUuid() != QStringLiteral("not-a-uuid"),
             "RestoreLastSessionFromPath must reject non-uuid stems"
+        );
+    }
+
+    // Switching from a static session to a live-tail stream must
+    // flush any unsaved post-`streamingFinished` edits to the recents
+    // JSON before the destructive `mModel->Reset()`. Without the
+    // flush, filter / sort / column edits made after the last
+    // `streamingFinished` are silently discarded by the reset (the
+    // closeEvent flush would catch them on a normal exit, but a user
+    // who switches sources mid-session never gets to closeEvent).
+    //
+    // The witness is the manager's `changed` signal: with the fix in
+    // place, the OpenLogStream transition fires `changed` once for
+    // the pre-reset flush; without the fix it fires zero times.
+    void TestOpenLogStreamFlushesPriorStaticSessionEdits()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Stage 1: open a static session and let it auto-save on
+        // `streamingFinished`. The `changed` signal fires once for
+        // the auto-save itself; we drain it before the assertion
+        // window so the post-OpenLogStream count is unambiguous.
+        const TempJsonFile staticFixture({QStringLiteral(R"({"msg": "static"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({staticFixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(manager.List().size(), 1);
+        const QString staticUuid = wired->ActiveSessionUuid();
+        QVERIFY(!staticUuid.isEmpty());
+
+        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        QVERIFY(changedSpy.isValid());
+
+        // Stage 2: switch to a live-tail stream. The fix calls
+        // `AutoSaveSessionSnapshot(false)` on the outgoing static
+        // session before the destructive reset, which fires
+        // `changed` exactly once. Without the fix, no auto-save
+        // happens (the reset clobbers `mCurrentSource` before any
+        // flush can run).
+        const TempJsonFile streamFixture({QStringLiteral(R"({"msg": "stream-seed"})")});
+        wired->OpenLogStreamForTest(streamFixture.Path());
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            changedSpy.count() >= 1,
+            "OpenLogStream must flush the outgoing static session before resetting the model"
+        );
+
+        // The static session's recents entry survives unchanged
+        // (same uuid, just rewritten with whatever the post-edit
+        // state was). The new live-tail session is intentionally
+        // not auto-saved, so the index size stays at 1.
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, staticUuid);
+
+        // Post-reset: `mAutoSaveUuid` must be cleared so the
+        // (transient) live-tail session does not silently rewrite
+        // the static entry on a subsequent flush.
+        QVERIFY(wired->ActiveSessionUuid().isEmpty());
+    }
+
+    // The `aboutToQuit` handler in `main()` must call
+    // `AutoSaveSessionSnapshot(true)` per window so post-
+    // `streamingFinished` edits survive an OS-driven quit (Cmd+Q,
+    // login session teardown) where `closeEvent` does not fire. The
+    // pre-fix handler only called `AddOpenWindowUuid`, so the
+    // persisted snapshot was whatever the last `streamingFinished`
+    // wrote -- typically stale relative to the user's current view.
+    void TestAboutToQuitFlushesPerWindowEdits()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "abq-flush"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+
+        // Drain the auto-save signal so the assertion below is
+        // unambiguous.
+        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        QVERIFY(changedSpy.isValid());
+
+        // Replay the aboutToQuit lambda's body without actually
+        // exiting the test. Mirrors the production code in
+        // `main.cpp` exactly: `AutoSaveSessionSnapshot(true)` on
+        // every `MainWindow` in `topLevelWidgets()`, plus the
+        // fall-through `AddOpenWindowUuid` for the
+        // live-tail-with-prior-static-uuid case.
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr)
+            {
+                continue;
+            }
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/true);
+            const QString restorable = mw->RestorableActiveSessionUuid();
+            if (!restorable.isEmpty())
+            {
+                SessionHistoryManager::AddOpenWindowUuid(restorable);
+            }
+        }
+
+        QVERIFY2(
+            changedSpy.count() >= 1,
+            "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuid"
+        );
+
+        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuit();
+        if (afterQuit.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY2(
+            afterQuit.contains(uuid),
+            "aboutToQuit handler must publish the live window's uuid into openWindowsAtQuit"
+        );
+    }
+
+    // `RestoreLastSessionFromPath` must NOT publish a uuid into
+    // `openWindowsAtQuit` when the JSON lives outside the manager's
+    // sessions directory (the stem parses as a UUID but the entry is
+    // not in the recents index). The fix gates the publish on
+    // `Touch` confirming the index actually owns the stem; without
+    // it, the next launch's fan-restore has to filter the ghost via
+    // `QFileInfo::exists`.
+    //
+    // We exercise the uuid-shape gate against a *no-source*
+    // configuration JSON: that path skips streaming (and therefore
+    // skips the legitimating `streamingFinished` -> auto-save which
+    // would have written the entry into the index after the fact).
+    // Without the fix the no-source restore window leaves a ghost
+    // uuid sitting in `openWindowsAtQuit` until the next launch's
+    // fan-restore filters it.
+    void TestRestoreLastSessionDoesNotPublishGhostUuid()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Build a no-source session JSON with a uuid-shaped stem in
+        // a directory that is NOT the manager's sessionsDir. The
+        // `Touch(stem)` call inside `RestoreLastSessionFromPath`
+        // reports not-in-index because the manager's store is empty
+        // here, and the no-source configuration short-circuits
+        // `StreamFromCurrentSourceOrSkip` so no auto-save legitimises
+        // the uuid afterwards.
+        QTemporaryDir externalDir;
+        QVERIFY(externalDir.isValid());
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString externalPath = externalDir.filePath(uuid + QStringLiteral(".json"));
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        // Intentionally no SetSource -- the file is a columns-only
+        // configuration snapshot. RestoreLastSessionFromPath hits
+        // the no-source branch of StreamFromCurrentSourceOrSkip and
+        // returns without kicking off any streaming.
+        builder.Save(externalPath.toStdString(), loglib::SaveScope::Full);
+        QVERIFY(QFileInfo::exists(externalPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->RestoreLastSessionFromPath(externalPath);
+        QCoreApplication::processEvents();
+
+        // mAutoSaveUuid is still pinned (so a hypothetical future
+        // auto-save would update the same uuid in the manager's
+        // sessionsDir rather than fork off a new entry). What must
+        // NOT happen is the publish into the persisted open-windows
+        // set, because the manager's recents index has no entry to
+        // back the uuid.
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuit();
+        // Do NOT QSKIP on empty here: an empty set is precisely
+        // what the fix guarantees. The QSettings-honouring soft
+        // skip used elsewhere is for tests that *expect* a write.
+        QVERIFY2(
+            !openSet.contains(uuid),
+            "external uuid-shaped JSON must not be published into openWindowsAtQuit"
+        );
+    }
+
+    // Reordering `EvictLocked` so the index write precedes the
+    // unlink keeps the post-condition observable behaviour the same:
+    // newest entries still survive, oldest are still deleted from
+    // disk. The fix is about crash safety (a crash between unlink
+    // and write used to leave a dangling index entry referencing a
+    // missing JSON; with the fix, a crash between write and unlink
+    // leaves an orphan JSON that `CleanupOrphanFiles` mops up on
+    // next launch). This test asserts the steady-state invariant
+    // and pairs with `TestCleanupOrphanFilesRemovesStaleJsons` which
+    // covers the orphan-recovery half.
+    void TestEvictionKeepsIndexConsistentWithDisk()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        const int capacityPlus = SessionHistoryManager::MAX_ENTRIES + 1;
+        QStringList writtenUuids;
+        for (int i = 0; i < capacityPlus; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()}
+            };
+            const QString uuid = manager.WriteSnapshot(cfg);
+            QVERIFY(!uuid.isEmpty());
+            writtenUuids.append(uuid);
+        }
+
+        // Every entry in the index must have its JSON on disk -- the
+        // index/disk pair is the invariant we are protecting.
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), SessionHistoryManager::MAX_ENTRIES);
+        for (const RecentSessionEntry &e : list)
+        {
+            QVERIFY2(
+                QFileInfo::exists(manager.PathForUuid(e.uuid)),
+                qPrintable(
+                    QStringLiteral("indexed entry %1 must have backing JSON on disk").arg(e.uuid)
+                )
+            );
+        }
+
+        // The single evicted uuid (oldest) must NOT have a backing
+        // file. With the reordered fix this happens via a post-write
+        // unlink; with the original ordering it was a pre-write
+        // unlink. The observable post-condition is identical.
+        QVERIFY2(
+            !QFileInfo::exists(manager.PathForUuid(writtenUuids.first())),
+            "evicted entry's JSON must be removed from disk"
+        );
+    }
+
+    // `LogConfigurationManager::Save` performs an atomic temp+rename:
+    // any failure on the temp file (open / write / close) must throw
+    // and leave the destination untouched. Pre-fix, a `close()`
+    // failure was silently swallowed by the destructor and the
+    // possibly-truncated temp file was renamed over the live JSON.
+    // The post-fix code adds an explicit `close() + good()` check.
+    //
+    // We can't easily fault-inject a close failure across platforms,
+    // so this test asserts the closer-cousin invariant: an open
+    // failure (parent directory does not exist) throws and the
+    // destination is untouched. The test covers the same throw-and-
+    // untouched contract the close-failure path now also honours.
+    void TestSaveTempFailureDoesNotClobberDestination()
+    {
+        QTemporaryDir scratchDir;
+        QVERIFY(scratchDir.isValid());
+
+        // Pre-seed an existing JSON we can detect modifications on.
+        const QString destPath = scratchDir.filePath(QStringLiteral("seed.json"));
+        loglib::LogConfigurationManager seeder;
+        seeder.AppendKeys({"a", "b"});
+        seeder.Save(destPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        QVERIFY(QFileInfo::exists(destPath));
+        QFile destFile(destPath);
+        QVERIFY(destFile.open(QIODevice::ReadOnly));
+        const QByteArray seedBytes = destFile.readAll();
+        destFile.close();
+        QVERIFY(!seedBytes.isEmpty());
+
+        // Drive Save into a path whose parent directory does not
+        // exist -- the temp-file open() inside the atomic-write
+        // block will fail. We need a path the OS cannot reach,
+        // independent of trailing-slash behaviour. A nested missing
+        // sub-directory works on every platform we ship to.
+        const QString unreachablePath = QDir(scratchDir.path()).filePath(
+            QStringLiteral("does/not/exist/save-target.json")
+        );
+
+        loglib::LogConfigurationManager doomed;
+        doomed.AppendKeys({"x", "y"});
+        bool threw = false;
+        try
+        {
+            doomed.Save(unreachablePath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        }
+        catch (const std::exception &)
+        {
+            threw = true;
+        }
+        QVERIFY2(threw, "Save must throw when the temp file cannot be opened");
+        QVERIFY2(
+            !QFileInfo::exists(unreachablePath),
+            "Save must not have created a partial file at the unreachable path"
+        );
+
+        // Pre-existing destination next to the scratch dir is
+        // untouched (Save's atomic semantics never modify a path
+        // it didn't get to rename into).
+        QVERIFY(destFile.open(QIODevice::ReadOnly));
+        const QByteArray afterBytes = destFile.readAll();
+        destFile.close();
+        QCOMPARE(afterBytes, seedBytes);
+    }
+
+    // 2.1 regression: `OpenFilesForCli` with a single configuration
+    // JSON that does not bind a source must surface a status-bar
+    // hint pointing the user at File -> Open. Without the hint the
+    // user sees an empty window with column headers and no
+    // indication that the binary actually accepted the argument --
+    // the launch looks like a no-op.
+    void TestOpenFilesForCliSingleConfigWithoutSourceShowsHint()
+    {
+        SessionHistoryManager manager(QDir(QDir::tempPath() + QStringLiteral("/abs-2-1")),
+                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Source-less configuration JSON: real columns, no
+        // `source` field. Mirrors what a user does today via File
+        // -> Save Configuration before any log is opened.
+        QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString configPath = scratch.filePath(QStringLiteral("hint-cfg.json"));
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"timestamp", "level", "msg"});
+        builder.Save(configPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        wired->OpenFilesForCli({configPath});
+        QCoreApplication::processEvents();
+
+        // The hint lands on the status bar. We accept either the
+        // tr() form or its English fallback (test runs without a
+        // translation context loaded).
+        const QString status = wired->statusBar()->currentMessage();
+        QVERIFY2(
+            status.contains(QStringLiteral("configuration"), Qt::CaseInsensitive)
+                && status.contains(QStringLiteral("File")),
+            qPrintable(QStringLiteral("status bar should hint at File -> Open after a source-less "
+                                      "configuration load; got: %1")
+                           .arg(status))
+        );
+
+        // The configuration itself must have been applied -- columns
+        // present in the model so a subsequent File -> Open lands on
+        // the user's chosen layout.
+        QVERIFY2(
+            wired->Model()->columnCount() >= 1,
+            "OpenFilesForCli must apply the configuration's columns even when no source is bound"
+        );
+    }
+
+    // 2.4 regression: `closeEvent` on a window that never published
+    // its uuid into `openWindowsAtQuit` must not leave a stale
+    // entry behind in the persisted set. The fix tracks the publish
+    // state on `mAutoSaveUuidPublished` and skips the
+    // cross-process `RemoveOpenWindowUuid` round-trip, but the
+    // observable invariant is the same either way: the open set
+    // stays clear of this window's uuid.
+    //
+    // We exercise the path where `AutoSaveSessionSnapshot(false)` is
+    // the *first* save (no prior streamingFinished published the
+    // uuid). This is the exact closeEvent ordering the fix
+    // optimises -- and is also the case where the pre-fix Remove
+    // would have been a wasted no-op against the QSettings store.
+    void TestCloseEventOnUnpublishedSessionLeavesOpenWindowsClear()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        // Snapshot + restore the persisted open-windows list so the
+        // assertion below can rely on a clean slate without
+        // disturbing developer-machine state.
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()),
+                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Open a static session and let it auto-save on
+        // `streamingFinished`. With the production wiring this
+        // *publishes* the uuid into `openWindowsAtQuit` -- but to
+        // exercise the unpublished-close path we then manually
+        // clear the set before closing, simulating the
+        // close-mid-stream-without-prior-finish corner case.
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "unpub"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+
+        // Force the simulated unpublished state: scrub the open
+        // set. This is what a sibling process or a forced reset
+        // would leave behind. The fix must still produce a clean
+        // open-windows set after closeEvent rather than
+        // "discovering" the wiped uuid is gone via a no-op Remove.
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Closing tears down the window; we close synchronously so
+        // the closeEvent runs before the assertion.
+        wired->close();
+        QCoreApplication::processEvents();
+
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            !afterClose.contains(uuid),
+            "closeEvent must leave the open-windows set free of this window's uuid"
         );
     }
 

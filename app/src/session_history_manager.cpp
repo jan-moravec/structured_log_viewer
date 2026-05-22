@@ -128,6 +128,17 @@ LockFileGuard AcquireRecentsLock(const QDir &sessionsDir, int timeoutMs)
     // non-const, so we make a one-off mutable copy here -- the caller
     // is unaffected because we only need the path string from it.
     // mkpath is idempotent + safe to call concurrently.
+    //
+    // The mkpath side-effect is acceptable because every caller is a
+    // write-class operation (`WriteSnapshot`, `Touch`, `Remove`,
+    // `Clear`, the `*OpenWindowUuid` writers, `CleanupOrphanFiles`)
+    // that genuinely needs the sessions directory to exist before
+    // any subsequent file I/O. The pure-read path
+    // (`OpenWindowsAtQuit -> ReadOpenWindowsAtQuit`) deliberately
+    // skips `AcquireRecentsLock` entirely so it never pays the
+    // mkpath cost on a process that has not yet auto-saved a
+    // session -- see `OpenWindowsAtQuit`'s comment for the
+    // torn-read trade-off that justifies the unlocked read.
     if (!sessionsDir.exists() && !QDir(sessionsDir).mkpath(QStringLiteral(".")))
     {
         // Filesystem refusal (read-only volume, ENOSPC, ...).
@@ -258,10 +269,22 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
         }
         entries.prepend(entry);
 
-        EvictLocked(entries);
+        const QStringList evictedUuids = EvictLocked(entries);
 
+        // Index write *first*, then unlink. A crash between the two
+        // leaves an orphan JSON whose stem is no longer in the index
+        // -- the next launch's `CleanupOrphanFiles` mops those up
+        // automatically. The reverse order would leave a dangling
+        // index entry pointing at a missing file, which surfaces as
+        // a "Recent Session Unavailable" warning the next time the
+        // user clicks the entry.
         mIndexStorage->Write(entries);
         mIndexStorage->WriteLastUuid(uuid);
+
+        for (const QString &evictedUuid : evictedUuids)
+        {
+            RemoveUuidFileLocked(evictedUuid);
+        }
 
         changedFired = true;
     }
@@ -273,34 +296,41 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
     return uuid;
 }
 
-void SessionHistoryManager::Touch(const QString &uuid)
+bool SessionHistoryManager::Touch(const QString &uuid)
 {
     if (uuid.isEmpty())
     {
-        return;
+        return false;
     }
 
-    // Cheap pre-check under just `mMutex`: if @p uuid isn't even in
-    // the index there's nothing to bump. Without this, an
-    // already-evicted uuid (multi-window peer cleared the recents
-    // store between menu rebuild and click) would still pay for the
-    // 1.5 s GUI freeze under cross-process contention before
-    // returning empty-handed. The membership could change between
-    // this peek and the lock acquisition below, but the worst case
-    // is that we drop the bump -- the same fail-closed outcome the
-    // unconditional path produces under contention.
+    // Cheap pre-check: if @p uuid isn't even in the index there's
+    // nothing to bump. Without this, an already-evicted uuid
+    // (multi-window peer cleared the recents store between menu
+    // rebuild and click) would still pay for the 1.5 s GUI freeze
+    // under cross-process contention before returning empty-handed.
+    //
+    // No `mMutex` here: `QSettings` reads are thread-safe and the
+    // pre-check only needs a coherent point-in-time snapshot --
+    // taking the in-process mutex would only serialise this peek
+    // with concurrent same-process writers, which still race the
+    // post-lock recheck (`foundUnderLock`) below regardless. The
+    // membership can change between this peek and the
+    // cross-process lock acquisition; the post-lock recheck is
+    // authoritative and corrects either direction (peek saw it but
+    // a sibling evicted before the lock; peek missed it but a
+    // sibling re-added before the lock).
     {
-        QMutexLocker peekLock(&mMutex);
         const QList<RecentSessionEntry> peek = mIndexStorage->Read();
         const auto found = std::find_if(
             peek.begin(), peek.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; }
         );
         if (found == peek.end())
         {
-            return;
+            return false;
         }
     }
 
+    bool foundUnderLock = true;
     bool changedFired = false;
     {
         QMutexLocker lock(&mMutex);
@@ -311,7 +341,12 @@ void SessionHistoryManager::Touch(const QString &uuid)
             // Fail-closed: skip the bump rather than racing a
             // sibling writer. The next successful `Touch` /
             // `WriteSnapshot` will re-establish the intended order.
-            return;
+            // Still report `true` to the caller -- the pre-check
+            // saw @p uuid in the index, so as far as the caller's
+            // intent ("is this a recents entry I own?") goes, the
+            // answer is yes; we just couldn't grab the lock to
+            // reorder.
+            return true;
         }
 
         QList<RecentSessionEntry> entries = mIndexStorage->Read();
@@ -322,34 +357,40 @@ void SessionHistoryManager::Touch(const QString &uuid)
         if (it == entries.end())
         {
             // Race: the entry was evicted between the peek above
-            // and our acquisition of the cross-process lock.
-            return;
+            // and our acquisition of the cross-process lock. The
+            // index no longer contains @p uuid, so callers that
+            // gate their `openWindowsAtQuit` publish on our return
+            // value should treat this as "not present".
+            foundUnderLock = false;
         }
-
-        RecentSessionEntry refreshed = *it;
-        refreshed.timestampMsEpoch = QDateTime::currentMSecsSinceEpoch();
-        entries.erase(it);
-        entries.prepend(refreshed);
-
-        mIndexStorage->Write(entries);
-        // Skip the `lastSessionUuid` rewrite when it is already
-        // pointing at @p uuid. Multi-window restore Touches every
-        // restored window back-to-back; without this guard, every
-        // `Touch` would round-trip QSettings even though the value
-        // is unchanged.
-        const std::optional<QString> currentLast = mIndexStorage->ReadLastUuid();
-        if (!currentLast.has_value() || *currentLast != uuid)
+        else
         {
-            mIndexStorage->WriteLastUuid(uuid);
-        }
+            RecentSessionEntry refreshed = *it;
+            refreshed.timestampMsEpoch = QDateTime::currentMSecsSinceEpoch();
+            entries.erase(it);
+            entries.prepend(refreshed);
 
-        changedFired = true;
+            mIndexStorage->Write(entries);
+            // Skip the `lastSessionUuid` rewrite when it is already
+            // pointing at @p uuid. Multi-window restore Touches every
+            // restored window back-to-back; without this guard, every
+            // `Touch` would round-trip QSettings even though the value
+            // is unchanged.
+            const std::optional<QString> currentLast = mIndexStorage->ReadLastUuid();
+            if (!currentLast.has_value() || *currentLast != uuid)
+            {
+                mIndexStorage->WriteLastUuid(uuid);
+            }
+
+            changedFired = true;
+        }
     }
 
     if (changedFired)
     {
         emit changed();
     }
+    return foundUnderLock;
 }
 
 void SessionHistoryManager::Remove(const QString &uuid)
@@ -385,19 +426,24 @@ void SessionHistoryManager::Remove(const QString &uuid)
         }
 
         entries.erase(it);
-        RemoveUuidFileLocked(uuid);
 
-        // Write the entries list *before* the last-uuid pointer so
-        // a crash between the two QSettings sync points leaves the
-        // index self-consistent: the removed uuid is gone from the
-        // entries list, and the stale `lastSessionUuid` (if it
-        // pointed at the removed uuid) is harmless because
-        // `LastSessionPath` checks `QFileInfo::exists` and degrades
-        // to `nullopt` when the JSON is missing. The opposite order
-        // would leave `lastSessionUuid` pointing at a uuid still in
-        // the entries list -- a dangling recents entry that *would*
-        // parse on next launch even though its JSON has already
-        // been deleted.
+        // Index write *first*, then unlink. A crash between the two
+        // leaves the JSON behind as an orphan that
+        // `CleanupOrphanFiles` sweeps on next launch (its stem is
+        // no longer in the entries list). The reverse order would
+        // leave the entries list referencing a missing JSON, which
+        // surfaces as "Recent Session Unavailable" warnings that
+        // the user can never repair without manually clicking the
+        // entry.
+        //
+        // Within the index pair we still write entries *before* the
+        // last-uuid pointer for the secondary reason described in
+        // the previous revision: a stale `lastSessionUuid` pointing
+        // at a missing file is harmless (`LastSessionPath` returns
+        // nullopt) but the opposite order would leave
+        // `lastSessionUuid` pointing at a uuid that is still in the
+        // entries list -- the kind of phantom-but-parseable entry
+        // we are explicitly trying to avoid.
         mIndexStorage->Write(entries);
 
         const std::optional<QString> currentLast = mIndexStorage->ReadLastUuid();
@@ -409,6 +455,8 @@ void SessionHistoryManager::Remove(const QString &uuid)
                 entries.isEmpty() ? std::optional<QString>{} : std::optional<QString>{entries.front().uuid};
             mIndexStorage->WriteLastUuid(next);
         }
+
+        RemoveUuidFileLocked(uuid);
 
         changedFired = true;
     }
@@ -437,12 +485,20 @@ void SessionHistoryManager::Clear()
         }
 
         const QList<RecentSessionEntry> entries = mIndexStorage->Read();
+
+        // Index wipe *first*, then unlink the per-uuid JSONs. A
+        // crash between the two leaves orphan files that the next
+        // launch's `CleanupOrphanFiles` sweep removes; the reverse
+        // order (unlink, then wipe) would leave the index briefly
+        // referencing missing files, the failure mode this fix is
+        // designed to prevent.
+        mIndexStorage->Write({});
+        mIndexStorage->WriteLastUuid(std::nullopt);
+
         for (const auto &e : entries)
         {
             RemoveUuidFileLocked(e.uuid);
         }
-        mIndexStorage->Write({});
-        mIndexStorage->WriteLastUuid(std::nullopt);
 
         changedFired = true;
     }
@@ -541,13 +597,15 @@ void SessionHistoryManager::RemoveUuidFileLocked(const QString &uuid)
     }
 }
 
-void SessionHistoryManager::EvictLocked(QList<RecentSessionEntry> &entries)
+QStringList SessionHistoryManager::EvictLocked(QList<RecentSessionEntry> &entries)
 {
+    QStringList evictedUuids;
     while (entries.size() > MAX_ENTRIES)
     {
         const RecentSessionEntry evicted = entries.takeLast();
-        RemoveUuidFileLocked(evicted.uuid);
+        evictedUuids.append(evicted.uuid);
     }
+    return evictedUuids;
 }
 
 namespace

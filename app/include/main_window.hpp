@@ -128,6 +128,27 @@ public:
     /// then loop on the "Network Stream Session" info popup.
     [[nodiscard]] QString RestorableActiveSessionUuid() const noexcept;
 
+    /// Mirror the runtime session state into the model's
+    /// configuration manager, then `WriteSnapshot` through the
+    /// injected `SessionHistoryManager`. Reuses `mAutoSaveUuid` so
+    /// the same window updates one recents entry across its lifetime
+    /// instead of appending a fresh one on every save. No-op when
+    /// the manager is null or there is no source descriptor.
+    ///
+    /// When @p publishOpenWindow is true (the default), adds
+    /// `mAutoSaveUuid` to the persisted `openWindowsAtQuit` set so
+    /// a crash or OS-quit between AutoSave and `closeEvent` still
+    /// restores this window on next launch. The `closeEvent` flush
+    /// passes false because it immediately removes the uuid again --
+    /// publishing it just to remove it is two QSettings round-trips
+    /// for a net no-op.
+    ///
+    /// Public so the `aboutToQuit` handler in `main()` can flush
+    /// every live window before exit. The flush is also used
+    /// internally as a "discard previous session safely" hook from
+    /// `OpenLogStream` / `OpenNetworkStream` / `closeEvent`.
+    void AutoSaveSessionSnapshot(bool publishOpenWindow = true);
+
     void UpdateUi();
 
     /// Single sync point for newest-first display: picks the right
@@ -319,6 +340,14 @@ public:
     /// mode. Returns false (and skips the queue) when the
     /// configuration fails to parse.
     bool OpenWithConfigurationForTest(const QString &configPath, const QStringList &files);
+
+    /// Drive the post-dialog body of `OpenLogStream` with @p filePath.
+    /// Lets tests exercise the live-tail open path (in particular
+    /// the "flush the previous static session before reset" hook
+    /// added in the recents fixes) without standing up a real
+    /// modal `QFileDialog`. Mirrors `OpenFilesForTest` /
+    /// `OpenWithConfigurationForTest`.
+    void OpenLogStreamForTest(const QString &filePath);
 #endif
 
 protected:
@@ -540,22 +569,6 @@ private:
     [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
-    /// Mirror the runtime session state into the model's
-    /// configuration manager, then `WriteSnapshot` through the
-    /// injected `SessionHistoryManager`. Reuses `mAutoSaveUuid` so
-    /// the same window updates one recents entry across its lifetime
-    /// instead of appending a fresh one on every save. No-op when
-    /// the manager is null or there is no source descriptor.
-    ///
-    /// When @p publishOpenWindow is true (the default), adds
-    /// `mAutoSaveUuid` to the persisted `openWindowsAtQuit` set so
-    /// a crash or OS-quit between AutoSave and `closeEvent` still
-    /// restores this window on next launch. The `closeEvent` flush
-    /// passes false because it immediately removes the uuid again --
-    /// publishing it just to remove it is two QSettings round-trips
-    /// for a net no-op.
-    void AutoSaveSessionSnapshot(bool publishOpenWindow = true);
-
     /// True iff the current window state is worth auto-saving:
     /// (a) a history manager is attached, (b) we have a `File`-kind
     /// source with at least one locator, and (c) the session is a
@@ -583,6 +596,13 @@ private:
     /// unchanged set produce byte-identical JSON. Bulk callers
     /// should `deferSync = true` and mirror once at the end.
     void MirrorSessionStateToConfiguration();
+
+    /// Shared tail of `OpenLogStream` and `OpenLogStreamForTest`:
+    /// runs the actual open (TailingBytesProducer construction,
+    /// flush-and-reset of the previous session, BeginStreaming) on
+    /// @p file. Pulled out so tests can drive the post-dialog path
+    /// without standing up a modal `QFileDialog`.
+    void OpenLogStreamFromPath(const QString &file);
 
     /// Path-based save / load shared by the dialog slots and the
     /// test seams. `DoSaveConfiguration` mirrors session state and
@@ -714,6 +734,16 @@ private:
     /// auto-saves (and the closeEvent flush) rewrite the same JSON
     /// instead of appending a new entry for every save.
     QString mAutoSaveUuid;
+
+    /// True iff `mAutoSaveUuid` is currently in the persisted
+    /// `openWindowsAtQuit` set. Tracks the publish state so
+    /// `DetachAutoSaveUuid` can skip the cross-process
+    /// `RemoveOpenWindowUuid` round-trip when nothing was published
+    /// in the first place (e.g. closeEvent that immediately follows
+    /// a flush-only `AutoSaveSessionSnapshot(publishOpenWindow=false)`
+    /// on a window that never finished a streaming session). Each
+    /// `AddOpenWindowUuid` call site must keep this flag in lockstep.
+    bool mAutoSaveUuidPublished = false;
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;

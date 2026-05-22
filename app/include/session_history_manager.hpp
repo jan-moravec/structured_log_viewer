@@ -83,7 +83,20 @@ public:
 
     /// Newest-first list of recent sessions. Safe to call from the
     /// GUI thread between mutations; reads the index storage under
-    /// the same mutex used by writers, so the snapshot is consistent.
+    /// the same in-process mutex used by writers, so the snapshot
+    /// is consistent against same-process mutators.
+    ///
+    /// Cross-process consistency is best-effort: the read does
+    /// *not* take the cross-process `QLockFile` (matches the
+    /// rationale in `OpenWindowsAtQuit`'s comment -- the GUI-thread
+    /// menu rebuild on `aboutToShow` cannot afford the worst-case
+    /// 1.5 s acquire stall a sibling writer would force, and a
+    /// torn read just shows a slightly stale recents menu rather
+    /// than corrupting state). The QSettings backend writes the
+    /// `size` key after the per-entry sub-group, so a worst-case
+    /// torn read is "size says N, only M < N entries actually
+    /// readable"; the storage layer detects this and drops the
+    /// torn slot rather than fabricating an empty entry.
     [[nodiscard]] QList<RecentSessionEntry> List() const;
 
     /// Persist @p configuration as a full session snapshot under
@@ -95,8 +108,16 @@ public:
     QString WriteSnapshot(const loglib::LogConfiguration &configuration, const QString &reuseUuid = QString());
 
     /// Move @p uuid to the top of the recents list and refresh its
-    /// timestamp. No-op if @p uuid is not in the index.
-    void Touch(const QString &uuid);
+    /// timestamp. No-op if @p uuid is not in the index. Returns
+    /// `true` when the index actually contained @p uuid and was
+    /// reordered (whether or not the cross-process write succeeded
+    /// -- a contended lock counts as "found but not bumped" because
+    /// the caller's intent was correct), `false` when @p uuid was
+    /// not in the index. Callers use the return value to decide
+    /// whether to publish @p uuid into `openWindowsAtQuit` (we only
+    /// want to publish uuids the manager actually owns, not arbitrary
+    /// stems that happen to parse as UUIDs).
+    bool Touch(const QString &uuid);
 
     /// Remove the entry + its per-uuid JSON file. No-op if @p uuid is
     /// not in the index.
@@ -221,9 +242,15 @@ private:
     /// `mMutex`.
     void RemoveUuidFileLocked(const QString &uuid);
 
-    /// Capacity-evict oldest entries until size <= MAX_ENTRIES. Caller
-    /// holds `mMutex`.
-    void EvictLocked(QList<RecentSessionEntry> &entries);
+    /// Capacity-evict oldest entries until size <= MAX_ENTRIES. Returns
+    /// the uuids of the entries that were dropped so the caller can
+    /// unlink their backing JSON *after* the index `Write` lands. The
+    /// reverse order (unlink first, then write) was unsafe: a crash
+    /// between the unlink and the write left a dangling index entry
+    /// pointing at a missing JSON, which `CleanupOrphanFiles` cannot
+    /// repair (it sweeps unreferenced files, not unreferenced index
+    /// entries). Caller holds `mMutex`.
+    [[nodiscard]] QStringList EvictLocked(QList<RecentSessionEntry> &entries);
 
     QDir mSessionsDir;
     std::unique_ptr<IRecentsIndexStorage> mIndexStorage;

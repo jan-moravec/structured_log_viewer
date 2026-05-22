@@ -16,6 +16,18 @@ namespace
 /// strings and have us treat them as file paths.
 constexpr char WIRE_MAGIC[] = "STRUCTLOGV1";
 
+/// Wire format version, serialised as a `quint8` immediately after
+/// `WIRE_MAGIC`. Bump on any breaking change to the payload schema
+/// so a primary running an updated build can reject older
+/// secondaries cleanly (instead of silently misinterpreting their
+/// payload). Today only version 1 exists; future revs may add
+/// fields after the file list. The primary checks that the
+/// received version is `<= WIRE_VERSION_MAX_SUPPORTED` so a
+/// newer secondary against an older primary fails fast rather
+/// than producing surprising behaviour.
+constexpr quint8 WIRE_VERSION = 1;
+constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 1;
+
 /// Connection / write timeouts. Tight on purpose: a secondary that
 /// cannot reach the primary within a second should fall back to
 /// becoming its own primary rather than block the user's launch.
@@ -107,6 +119,13 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         QDataStream stream(&payload, QIODevice::WriteOnly);
         stream.setVersion(QDataStream::Qt_6_0);
         stream << QByteArray(WIRE_MAGIC);
+        // Version byte sits between the magic and the payload. A
+        // pre-versioned (no-byte) secondary is impossible today
+        // (same binary on both sides), but the byte gives future
+        // schema changes a clean upgrade story: a v2 secondary
+        // talking to a v1 primary is rejected via the
+        // `WIRE_VERSION_MAX_SUPPORTED` check on the read side.
+        stream << static_cast<quint8>(WIRE_VERSION);
         stream << trimmed;
         probe.write(payload);
         probe.flush();
@@ -206,11 +225,22 @@ void SingleInstanceGuard::HandleNewConnection()
             peek.setVersion(QDataStream::Qt_6_0);
             QByteArray magic;
             peek >> magic;
+            quint8 version = 0;
+            peek >> version;
             QStringList files;
             peek >> files;
             if (peek.status() == QDataStream::Ok)
             {
-                if (magic == QByteArray(WIRE_MAGIC))
+                // `version > WIRE_VERSION_MAX_SUPPORTED` means a
+                // newer secondary is talking to this primary; we
+                // refuse rather than guess at the payload schema.
+                // The connection is still drained / disconnected
+                // below so the secondary's
+                // `waitForDisconnected` returns promptly and the
+                // user gets a fresh primary in the secondary
+                // instead of a hung forward attempt.
+                if (magic == QByteArray(WIRE_MAGIC) && version >= 1
+                    && version <= WIRE_VERSION_MAX_SUPPORTED)
                 {
                     // Belt-and-braces post-decode cap matching the
                     // secondary-side trim in `TryAcquire::forwardTo`.
