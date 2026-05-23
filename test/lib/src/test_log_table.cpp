@@ -2478,6 +2478,151 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
 }
 
+TEST_CASE(
+    "LogTable::FinalizeAutoDetection -- demotes small-file enum whose health budget the per-batch min-samples missed",
+    "[log_table][finalize][enum][small_file][demote]"
+)
+{
+    // Stream-mode promotes at 2 rows; the per-batch `ShouldDemote` is
+    // gated by `ENUM_HEALTH_MIN_SAMPLES = 50`, so a small file (here
+    // 30 rows) where most slots are over-cap-length stays stuck at
+    // `Enumeration` between the candidate-scan promotion and the
+    // never-arriving 50th sample. `FinalizeAutoDetection` re-checks
+    // the same long-value ratio with the min-samples floor dropped
+    // and demotes the column to `String` at end-of-parse.
+    //
+    // Mirrors the user-reported repro of opening a small log whose
+    // `message` column never demoted at end-of-stream.
+    const TestLogFile testFile("enum_finalize_small_demote.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    const std::string longValue(80, 'q');
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"message"};
+    for (size_t i = 0; i < 30; ++i)
+    {
+        // 70% over the 64-byte length cap; one short value sits in
+        // the dictionary so the candidate scan still flips to
+        // `Enumeration` after 4 rows.
+        const std::string value = (i == 1) ? "short" : longValue;
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"message", LogValue{value}}}));
+    }
+    table.AppendBatch(std::move(batch));
+
+    // Confirm the per-batch path leaves the column promoted: the
+    // health budget is well above the 1% ratio but below the
+    // 50-sample floor, so `RunEnumPassForAppendBatch` cannot demote
+    // mid-batch.
+    REQUIRE(table.RowCount() == 30);
+    REQUIRE(table.Configuration().Configuration().columns.size() == 1);
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+
+    // End-of-parse sweep: now demotes via the min-samples-relaxed
+    // health check.
+    table.FinalizeAutoDetection();
+
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::String);
+    const KeyId messageKey = keys.Find("message");
+    REQUIRE(messageKey != INVALID_KEY_ID);
+    CHECK_FALSE(table.EnumDictionaries().Contains(messageKey));
+}
+
+TEST_CASE(
+    "LogTable::FinalizeAutoDetection -- preserves small-file enum without long-value health breach",
+    "[log_table][finalize][enum][small_file]"
+)
+{
+    // Counterpart to the demote-on-finalize test: a 30-row file with
+    // 2 short, well-typed enum values must keep the streaming
+    // promotion. Confirms the relaxed finalize check does not
+    // demote genuinely-enum-shaped small files.
+    const TestLogFile testFile("enum_finalize_small_keep.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"tier"};
+    for (size_t i = 0; i < 30; ++i)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tier", std::string(i % 2 == 0 ? "alpha" : "beta")}}));
+    }
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+
+    table.FinalizeAutoDetection();
+
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    const KeyId tierKey = keys.Find("tier");
+    REQUIRE(tierKey != INVALID_KEY_ID);
+    REQUIRE(table.EnumDictionaries().Contains(tierKey));
+}
+
+TEST_CASE(
+    "LogTable::FinalizeAutoDetection -- spares user-pinned (autoDetect=false) enum from finalize-time demote",
+    "[log_table][finalize][enum][user_pinned]"
+)
+{
+    // The user explicitly pinned the column to `Enumeration`; the
+    // finalize-time demote sweep must respect that. Only the hard
+    // dictionary cap and the cumulative `ShouldDemote` (firing per
+    // batch once `totalSlots >= 50`) override a pin.
+    const TestLogFile testFile("enum_finalize_pinned_keep.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "tag",
+         .keys = {"tag"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {},
+         .autoDetect = false}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    const std::string longValue(80, 'q');
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    batch.newKeys = {"tag"};
+    // 30 rows, all over-cap: would demote an autoDetect column at
+    // finalize, must not demote a user-pinned one.
+    for (size_t i = 0; i < 30; ++i)
+    {
+        batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"tag", LogValue{longValue}}}));
+    }
+    table.AppendBatch(std::move(batch));
+
+    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+
+    table.FinalizeAutoDetection();
+
+    CHECK(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    CHECK_FALSE(table.Configuration().Configuration().columns[0].autoDetect);
+}
+
 // Regression: the explicit `LogTable` move ctor / assignment used
 // to drop `mLastBatchDemotedKeys`, so a table moved between an
 // `AppendBatch` that demoted a column and the `LogModel` consumer
