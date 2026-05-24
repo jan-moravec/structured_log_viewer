@@ -1,13 +1,22 @@
 #include "main_window.hpp"
 
 #include "appearance_control.hpp"
+#include "cli_parser.hpp"
+#include "log_warning.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
+#include "uuid_utils.hpp"
 
 #include <QApplication>
+#include <QAtomicInt>
 #include <QDir>
+#include <QEvent>
 #include <QFileInfo>
+#include <QFileOpenEvent>
+#include <QObject>
+#include <QPointer>
 #include <QProcessEnvironment>
+#include <QString>
 #include <QStringList>
 
 #include <memory>
@@ -15,91 +24,72 @@
 namespace
 {
 
-/// CLI parse: collect every positional argument as a candidate file
-/// path; ignore the binary name and any flag we own. Anything not
-/// understood is forwarded to the primary, which is then free to
-/// reject it with a parse error (matches how the existing OpenFiles
-/// flow handles bad paths).
-///
-/// Paths are converted to absolute against the caller's current
-/// working directory *before* forwarding: with single-instance
-/// coordination on, the primary process probably runs from a
-/// different CWD than the secondary, so a relative path that means
-/// "the file next to me" on the secondary would resolve against the
-/// primary's CWD and fail to open.
-///
-/// Limitations of this hand-rolled parser (kept deliberately small;
-/// migrate to `QCommandLineParser` once the flag set grows past a
-/// second entry):
-///   - No `--flag=value` syntax. Every flag we own today
-///     (`--new-instance`) is boolean / valueless. Adding the first
-///     value-bearing flag is the trigger for migration.
-///   - Unrecognised long-form `--foo` and short-form `-x` are
-///     silently dropped (no `--help`, no error). A typo like
-///     `--new-instnace` therefore behaves identically to no flag,
-///     which is annoying but safer than mis-routing the typo to a
-///     file open. The migration to `QCommandLineParser` would
-///     surface unknown flags via its built-in error path.
-///   - The flag list is duplicated between `CollectCliFiles` (which
-///     filters them out) and `ShouldAllowNewInstance` (which
-///     interprets them). New flags must be reflected in both -- a
-///     `QCommandLineParser` migration would consolidate both into a
-///     single declarative table.
-///   - `--` end-of-options is honoured so `app -- -weird-name.log`
-///     opens a dash-prefixed file. Same semantics as
-///     `QCommandLineParser`, kept for forward-compat with the
-///     migration.
-QStringList CollectCliFiles(const QStringList &args)
-{
-    QStringList files;
-    files.reserve(args.size());
-    bool sawProgramName = false;
-    bool afterDoubleDash = false;
-    for (const QString &arg : args)
-    {
-        if (!sawProgramName)
-        {
-            // First entry is the program path; skip exactly one.
-            sawProgramName = true;
-            continue;
-        }
-        if (!afterDoubleDash && arg == QStringLiteral("--"))
-        {
-            // POSIX end-of-options separator: everything that
-            // follows is treated as a positional argument, even when
-            // it starts with `-`. Lets the user open files whose
-            // names begin with a dash (rare but possible on Linux:
-            // `app -- -weird-filename.log`) without our flag filter
-            // dropping them. The `--` token itself is not a file.
-            afterDoubleDash = true;
-            continue;
-        }
-        if (!afterDoubleDash && arg.startsWith(QStringLiteral("-")))
-        {
-            // Drop everything that looks like a flag (long `--foo`
-            // *or* short `-x`) so a future option doesn't get
-            // misclassified as a file path. The flags we recognise
-            // are handled below in `ShouldAllowNewInstance`.
-            continue;
-        }
-        // `absoluteFilePath` resolves against the *current* CWD
-        // without requiring the file to exist (unlike
-        // `canonicalFilePath`, which returns empty for missing
-        // files and would silently drop a user typo here).
-        files.append(QFileInfo(arg).absoluteFilePath());
-    }
-    return files;
-}
+/// Hard cap on the number of peer windows we will fan-restore from a
+/// previous-launch snapshot. 25 is well above the user-meaningful
+/// ceiling (anyone with 25 log windows open is already past the
+/// point where the UI is useful) and well below the value at which
+/// the cumulative cross-process lock waits stop being bounded.
+/// Pre-fix this loop was unbounded, so a pathological persisted
+/// state could trap the launch in restore for tens of seconds.
+constexpr int MAX_RESTORE_PEERS = 25;
 
-bool ShouldAllowNewInstance(const QStringList &args)
+/// macOS-specific forwarder for `QFileOpenEvent`. The Finder /
+/// `open` command and "Open With..." menu deliver requests via
+/// this event; without a handler, a double-click of a `.log` file
+/// in Finder launches the app but the file never opens. We install
+/// it as an event filter on `qApp` so we can route requests
+/// through whichever subsystem is appropriate based on lifecycle:
+///   - Before the primary window is constructed (i.e. the events
+///     arrived during `QApplication` startup, very common on macOS
+///     where launch services delivers them before `exec()`), we
+///     append the file to a pending queue that `main()` drains
+///     into the first window once it constructs.
+///   - After the primary window is up, we forward the file
+///     directly to `MainWindow::OpenFilesForCli` so it lands in the
+///     current session (matching the CLI / forward semantics).
+class FileOpenEventFilter : public QObject
 {
-    if (args.contains(QStringLiteral("--new-instance")))
+public:
+    explicit FileOpenEventFilter(QObject *parent = nullptr) : QObject(parent) {}
+
+    [[nodiscard]] QStringList takePending()
     {
+        QStringList out;
+        out.swap(mPending);
+        return out;
+    }
+
+    void setLiveWindow(MainWindow *window) { mLiveWindow = window; }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() != QEvent::FileOpen)
+        {
+            return QObject::eventFilter(watched, event);
+        }
+        auto *fileOpen = static_cast<QFileOpenEvent *>(event);
+        const QString path = fileOpen->file();
+        if (path.isEmpty())
+        {
+            return true;
+        }
+        const QString canonical = logapp::CanonicalLocator(path);
+        if (mLiveWindow != nullptr)
+        {
+            mLiveWindow->OpenFilesForCli({canonical});
+        }
+        else
+        {
+            mPending.append(canonical);
+        }
         return true;
     }
-    const QString envOverride = QProcessEnvironment::systemEnvironment().value(QStringLiteral("LOGAPP_NEW_INSTANCE"));
-    return envOverride == QStringLiteral("1") || envOverride.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0;
-}
+
+private:
+    QStringList mPending;
+    QPointer<MainWindow> mLiveWindow;
+};
 
 } // namespace
 
@@ -110,11 +100,18 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
 
+    // Install the macOS file-open handler immediately so events that
+    // arrive between `QApplication` construction and `exec()` (the
+    // double-click-to-launch flow) are queued instead of dropped.
+    FileOpenEventFilter fileOpenFilter;
+    qApp->installEventFilter(&fileOpenFilter);
+
     AppearanceControl::LoadConfiguration();
 
-    const QStringList cliArgs = QCoreApplication::arguments();
-    const QStringList cliFiles = CollectCliFiles(cliArgs);
-    const bool allowNewInstance = ShouldAllowNewInstance(cliArgs);
+    const logapp::ParsedCli parsed =
+        logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());
+    QStringList cliFiles = parsed.files;
+    const bool allowNewInstance = parsed.allowNewInstance;
 
     // Single-instance coordinator: try to take the primary role. A
     // secondary launch forwards its parsed files to the primary and
@@ -179,6 +176,20 @@ int main(int argc, char *argv[])
 
     MainWindow w(&historyManager, nullptr);
     w.show();
+    fileOpenFilter.setLiveWindow(&w);
+
+    // Drain any `QFileOpenEvent`s that arrived during the
+    // pre-window startup window (common on macOS when launching via
+    // Finder double-click) into the primary's CLI queue. The events
+    // were captured by `fileOpenFilter` while `mLiveWindow` was
+    // null; we append them to the CLI files so a launch via
+    // "Open With..." behaves identically to a launch with argv
+    // file paths.
+    const QStringList pendingFromOs = fileOpenFilter.takePending();
+    if (!pendingFromOs.isEmpty())
+    {
+        cliFiles.append(pendingFromOs);
+    }
 
     // Open any CLI-provided files in the primary's first window.
     // Append mode so a future `--config` switch can preload filters
@@ -187,6 +198,18 @@ int main(int argc, char *argv[])
     {
         w.OpenFilesForCli(cliFiles);
     }
+
+    // Peer windows tracked so we can deterministically close + reap
+    // them before `historyManager` goes out of scope. Pre-fix the
+    // restore-loop peers and forwarded peers relied on
+    // `WA_DeleteOnClose` + Qt's deferred deletion to reach
+    // `closeEvent` before the manager's destruction. That ordering
+    // happened to work in practice but was a latent dependency: any
+    // future refactor that pumps `aboutToQuit` after
+    // `historyManager` is destroyed would surface as a use-after-free
+    // in `MainWindow::closeEvent` (which deref's the manager pointer
+    // to flush its final auto-save snapshot).
+    QList<QPointer<MainWindow>> peers;
 
     // Restore-on-launch: opt-in via Preferences. Only fires when no
     // CLI files were passed (so the user explicitly opening a file
@@ -213,6 +236,17 @@ int main(int argc, char *argv[])
         // disappearing between the read and the wipe.
         QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();
 
+        // Cap the fan-restore to a bounded number of peers. A
+        // pathological persisted state (lots of accumulated uuids
+        // from prior crashes the wipe never reached) would otherwise
+        // dominate the launch with cross-process lock waits.
+        if (previouslyOpen.size() > MAX_RESTORE_PEERS)
+        {
+            LOGAPP_WARN() << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
+                          << "peer windows; the surplus stays in the recents index and can be reopened manually.";
+            previouslyOpen = previouslyOpen.mid(0, MAX_RESTORE_PEERS);
+        }
+
         if (!previouslyOpen.isEmpty())
         {
             // First uuid into the already-shown primary; remainder
@@ -229,21 +263,32 @@ int main(int argc, char *argv[])
             // for hypothetical future callers that pass ad-hoc paths.
             const QString primaryUuid = previouslyOpen.takeFirst();
             const QString primaryPath = historyManager.PathForUuid(primaryUuid);
-            if (QFileInfo::exists(primaryPath))
+            if (!primaryPath.isEmpty() && QFileInfo::exists(primaryPath))
             {
                 w.RestoreLastSessionFromPath(primaryPath);
             }
             for (const QString &uuid : previouslyOpen)
             {
                 const QString peerPath = historyManager.PathForUuid(uuid);
-                if (!QFileInfo::exists(peerPath))
+                if (peerPath.isEmpty() || !QFileInfo::exists(peerPath))
                 {
+                    // Pre-fix this branch silently dropped the entry
+                    // and left it lingering in the recents index --
+                    // every subsequent launch would see the same
+                    // dangling uuid in `OpenWindowsAtQuit`. Removing
+                    // it here both cleans the index and keeps the
+                    // restore-loop cap meaningful.
+                    if (logapp::LooksLikeUuid(uuid))
+                    {
+                        historyManager.Remove(uuid);
+                    }
                     continue;
                 }
                 auto *peer = new MainWindow(&historyManager, nullptr);
                 peer->setAttribute(Qt::WA_DeleteOnClose);
                 peer->show();
                 peer->RestoreLastSessionFromPath(peerPath);
+                peers.append(QPointer<MainWindow>(peer));
             }
         }
         else
@@ -282,24 +327,16 @@ int main(int argc, char *argv[])
     //
     //   2. Issue a single `AddOpenWindowUuids(restorable)` call so
     //      all collected uuids enter the persisted set under one
-    //      cross-process lock acquisition. Pre-fix this loop did
-    //      N * `AddOpenWindowUuid` (and N * `WriteSnapshot` -- the
-    //      `publishOpenWindow=true` argument made the per-window
-    //      snapshot itself a second publisher), so an OS-driven
-    //      shutdown with M restorable windows paid up to
-    //      2M * `WRITE_LOCK_TIMEOUT_RUNTIME_MS` worth of lock waits.
-    //      The batched primitive bounds the contribution from this
-    //      handler to a single
-    //      `WRITE_LOCK_TIMEOUT_SHUTDOWN_MS` slot regardless of M.
-    //
-    // The collected list covers two cases that previously needed
-    // separate code paths: (a) a finished static session whose uuid
-    // the per-window `publishOpenWindow=true` AutoSave used to
-    // republish, and (b) a live-tail-on-a-file window whose uuid was
-    // pinned by a previous static load -- `RestorableActiveSessionUuid`
-    // returns it (the JSON on disk still reflects the static view,
-    // which is what the user would expect to come back after the OS
-    // quit) but `ShouldAutoSaveSession` rejects it for re-flush.
+    //      cross-process lock acquisition. The N-window cost shrinks
+    //      from `2N * WRITE_LOCK_TIMEOUT_RUNTIME_MS` worth of
+    //      worst-case waits (the pre-fix loop did one
+    //      `AddOpenWindowUuid` *and* one `WriteSnapshot` per window)
+    //      to `N * WRITE_LOCK_TIMEOUT_RUNTIME_MS` (only the
+    //      per-window saves) plus a single shutdown-budget
+    //      `AddOpenWindowUuids` slot. The per-window saves are
+    //      themselves bounded individually, so the wall-clock cost
+    //      stays roughly linear in `N`; only the asymptote on the
+    //      coordination side became O(1) -- not the whole handler.
     //
     // We *merge* rather than overwrite: with `--new-instance` two
     // processes can be alive simultaneously, and a destructive
@@ -307,9 +344,33 @@ int main(int argc, char *argv[])
     // would clobber the other process's published uuids.
     // `AddOpenWindowUuids` honours the same idempotent merge as the
     // per-uuid `AddOpenWindowUuid`.
-    QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [] {
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [&peers] {
+        // Idempotency guard: `aboutToQuit` is documented to fire
+        // exactly once per `QCoreApplication` lifetime, but a few
+        // edge cases (test harnesses re-driving the event loop,
+        // OS-level shutdown signals racing the GUI quit path) have
+        // historically delivered it twice. A second pass would
+        // double-flush every window's auto-save and re-publish the
+        // open-windows set the post-`closeEvent` window has just
+        // detached, leaving a phantom entry in the persisted
+        // restore-on-launch list. `QAtomicInt::fetchAndOrAcquire`
+        // races safely across threads (Qt may emit from either the
+        // main or a signal-handler thread depending on the OS) and
+        // costs one CAS in the no-op path.
+        static QAtomicInt fired{0};
+        if (fired.fetchAndOrAcquire(1) != 0)
+        {
+            return;
+        }
         QStringList restorable;
-        for (QWidget *widget : QApplication::topLevelWidgets())
+        // Snapshot the top-level widget list before iteration: the
+        // `AutoSaveSessionSnapshot` -> `closeEvent` chain can mutate
+        // the list mid-iteration if a window decides to close
+        // synchronously, and Qt's container iterators are not
+        // tolerant of size changes under-foot. Using a `QList<QWidget*>`
+        // captured upfront makes the iteration deterministic.
+        const QList<QWidget *> topLevels = QApplication::topLevelWidgets();
+        for (QWidget *widget : topLevels)
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
             if (mw == nullptr)
@@ -324,6 +385,22 @@ int main(int argc, char *argv[])
             }
         }
         SessionHistoryManager::AddOpenWindowUuids(restorable);
+
+        // Tear peer windows down explicitly so their `closeEvent`
+        // (which deref's `historyManager`) runs while the manager
+        // is still alive. `WA_DeleteOnClose` schedules a
+        // `deleteLater`, but `aboutToQuit` is the last event-loop
+        // turn -- without this explicit close, peers would be
+        // destroyed during static destruction *after* the manager
+        // already unwound.
+        for (const QPointer<MainWindow> &peer : peers)
+        {
+            if (peer.isNull())
+            {
+                continue;
+            }
+            peer->close();
+        }
     });
 
     // Forwarded launches from secondary processes spawn a new
@@ -342,9 +419,12 @@ int main(int argc, char *argv[])
     // guaranteeing the peer's `mHistoryManager` deref in
     // `closeEvent` (auto-save flush) sees a live manager. The
     // `&a` context object further ensures the lambda is disconnected
-    // before `QApplication` is torn down.
+    // before `QApplication` is torn down. We additionally pin the
+    // peer in `peers` so the shutdown `aboutToQuit` handler can
+    // close it deterministically.
     QObject::connect(
-        &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a, [&historyManager](const QStringList &files) {
+        &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a,
+        [&historyManager, &peers](const QStringList &files) {
             auto *child = new MainWindow(&historyManager, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();
@@ -354,6 +434,7 @@ int main(int argc, char *argv[])
             {
                 child->OpenFilesForCli(files);
             }
+            peers.append(QPointer<MainWindow>(child));
         }
     );
 
