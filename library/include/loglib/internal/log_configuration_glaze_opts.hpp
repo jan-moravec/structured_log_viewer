@@ -33,8 +33,6 @@ struct LogConfigOpts : glz::opts
 // Designated-init in member-declaration order
 // (`error_on_unknown_keys` then `prettify`); MSVC enforces that
 // order even for designated initialisers.
-constexpr LogConfigOpts LOG_CONFIG_OPTS{
-    {.error_on_unknown_keys = false, .prettify = true}
-};
+constexpr LogConfigOpts LOG_CONFIG_OPTS{{.error_on_unknown_keys = false, .prettify = true}};
 
 } // namespace loglib::internal

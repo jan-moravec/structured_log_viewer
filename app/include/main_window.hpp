@@ -444,14 +444,20 @@ public:
     /// reusable core can still call the core from tests without
     /// dragging in any UI side effects (status bar messages,
     /// shortcut sniffing, etc.). Today this is a thin trampoline.
-    void NewSessionForTest() { NewSession(); }
+    void NewSessionForTest()
+    {
+        NewSession();
+    }
 
     /// Test-only forwarder to `OpenRecentSession`, which is a
     /// `private slot` in production (wired to the Recent Sessions
     /// menu). Tests use this to exercise the recents-click path
     /// (uuid pinning, `Touch`, openWindowsAtQuit publish gate)
     /// without standing up the dynamic menu.
-    void OpenRecentSessionForTest(const QString &uuid) { OpenRecentSession(uuid); }
+    void OpenRecentSessionForTest(const QString &uuid)
+    {
+        OpenRecentSession(uuid);
+    }
 #endif
 
 protected:
@@ -624,8 +630,15 @@ private:
     /// helper needs the guard.
     struct SessionSwitchScope
     {
-        explicit SessionSwitchScope(MainWindow &owner) noexcept : mOwner(owner) { mOwner.mSessionSwitchInProgress = true; }
-        ~SessionSwitchScope() { mOwner.mSessionSwitchInProgress = false; }
+        explicit SessionSwitchScope(MainWindow &owner) noexcept
+            : mOwner(owner)
+        {
+            mOwner.mSessionSwitchInProgress = true;
+        }
+        ~SessionSwitchScope()
+        {
+            mOwner.mSessionSwitchInProgress = false;
+        }
         SessionSwitchScope(const SessionSwitchScope &) = delete;
         SessionSwitchScope &operator=(const SessionSwitchScope &) = delete;
         SessionSwitchScope(SessionSwitchScope &&) = delete;

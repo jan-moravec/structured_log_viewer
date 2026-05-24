@@ -790,12 +790,10 @@ void LogModel::EndStreaming(bool cancelled)
         {
             const auto typeAfter = columnsAfter[i].type;
             const auto typeBefore = typesBefore[i];
-            const bool isEnumLikeAfter =
-                typeAfter == loglib::LogConfiguration::Type::Enumeration ||
-                typeAfter == loglib::LogConfiguration::Type::Level;
-            const bool wasEnumLikeBefore =
-                typeBefore == loglib::LogConfiguration::Type::Enumeration ||
-                typeBefore == loglib::LogConfiguration::Type::Level;
+            const bool isEnumLikeAfter = typeAfter == loglib::LogConfiguration::Type::Enumeration ||
+                                         typeAfter == loglib::LogConfiguration::Type::Level;
+            const bool wasEnumLikeBefore = typeBefore == loglib::LogConfiguration::Type::Enumeration ||
+                                           typeBefore == loglib::LogConfiguration::Type::Level;
             // Fresh promotion to any enum-like type.
             if (!wasEnumLikeBefore && isEnumLikeAfter)
             {

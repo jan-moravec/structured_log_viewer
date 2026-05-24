@@ -52,7 +52,10 @@ constexpr int MAX_RESTORE_PEERS = 25;
 class FileOpenEventFilter : public QObject
 {
 public:
-    explicit FileOpenEventFilter(QObject *parent = nullptr) : QObject(parent) {}
+    explicit FileOpenEventFilter(QObject *parent = nullptr)
+        : QObject(parent)
+    {
+    }
 
     [[nodiscard]] QStringList takePending()
     {
@@ -61,7 +64,10 @@ public:
         return out;
     }
 
-    void setLiveWindow(MainWindow *window) { mLiveWindow = window; }
+    void setLiveWindow(MainWindow *window)
+    {
+        mLiveWindow = window;
+    }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
@@ -320,8 +326,10 @@ int main(int argc, char *argv[])
         // dominate the launch with cross-process lock waits.
         if (previouslyOpen.size() > MAX_RESTORE_PEERS)
         {
-            logapp::LogWarning() << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
-                                 << "peer windows; the surplus stays in the recents index and can be reopened manually.";
+            logapp::LogWarning(
+            ) << "Truncating restore from"
+              << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
+              << "peer windows; the surplus stays in the recents index and can be reopened manually.";
             previouslyOpen = previouslyOpen.mid(0, MAX_RESTORE_PEERS);
         }
 
@@ -551,7 +559,9 @@ int main(int argc, char *argv[])
     // peer in `peers` so the shutdown `aboutToQuit` handler can
     // close it deterministically.
     QObject::connect(
-        &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a,
+        &instanceGuard,
+        &SingleInstanceGuard::openWindowRequested,
+        &a,
         [&historyManager, &appendPeer](const QStringList &files, int truncatedCount) {
             auto *child = new MainWindow(&historyManager, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
@@ -572,8 +582,11 @@ int main(int argc, char *argv[])
             {
                 constexpr int TRUNCATION_MESSAGE_TIMEOUT_MS = 8000;
                 child->statusBar()->showMessage(
-                    QObject::tr("Opened forwarded files; %n additional file(s) were dropped (single-launch limit).",
-                                nullptr, truncatedCount),
+                    QObject::tr(
+                        "Opened forwarded files; %n additional file(s) were dropped (single-launch limit).",
+                        nullptr,
+                        truncatedCount
+                    ),
                     TRUNCATION_MESSAGE_TIMEOUT_MS
                 );
             }

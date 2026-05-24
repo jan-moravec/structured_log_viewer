@@ -15,12 +15,12 @@
 #include <QTimer>
 
 #if defined(Q_OS_WIN)
-#include <windows.h>
 #include <lmcons.h>
+#include <windows.h>
 #else
-#include <unistd.h>
 #include <sys/types.h>
 #include <pwd.h>
+#include <unistd.h>
 #endif
 
 namespace
@@ -46,7 +46,8 @@ constexpr char WIRE_MAGIC[] = "STRUCTLOG";
 /// bytes; magic is 9 bytes; version byte is 1 byte -> 14-byte peek
 /// window before we trust the rest of the frame.
 constexpr int MAGIC_BYTES = sizeof(WIRE_MAGIC) - 1;
-constexpr int MAGIC_FRAME_PEEK_BYTES = static_cast<int>(sizeof(quint32)) + MAGIC_BYTES + static_cast<int>(sizeof(quint8));
+constexpr int MAGIC_FRAME_PEEK_BYTES =
+    static_cast<int>(sizeof(quint32)) + MAGIC_BYTES + static_cast<int>(sizeof(quint8));
 
 /// Wire format version, serialised as a `quint8` immediately after
 /// `WIRE_MAGIC`. Bump on any breaking change to the payload schema
@@ -317,8 +318,8 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         const qint64 written = probe.write(payload);
         if (written != payload.size())
         {
-            logapp::LogWarning() << "SingleInstanceGuard: short write forwarding to primary; wrote" << written
-                                 << "of" << payload.size() << "bytes; error:" << probe.error() << probe.errorString();
+            logapp::LogWarning() << "SingleInstanceGuard: short write forwarding to primary; wrote" << written << "of"
+                                 << payload.size() << "bytes; error:" << probe.error() << probe.errorString();
             return false;
         }
         // `flush()` and `waitForBytesWritten()` legitimately return
@@ -339,9 +340,7 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         // `bytesToWrite()` after the wait. Either alone (already
         // disconnected, or transient send-queue activity) is fine.
         const bool ack = probe.waitForDisconnected(WRITE_TIMEOUT_MS);
-        if (!ack
-            && probe.state() == QLocalSocket::ConnectedState
-            && probe.bytesToWrite() > 0)
+        if (!ack && probe.state() == QLocalSocket::ConnectedState && probe.bytesToWrite() > 0)
         {
             logapp::LogWarning() << "SingleInstanceGuard: forward stalled with" << probe.bytesToWrite()
                                  << "bytes still pending; error:" << probe.error() << probe.errorString();
@@ -538,10 +537,8 @@ void SingleInstanceGuard::HandleNewConnection()
                 magicPeek >> magic;
                 quint8 version = 0;
                 magicPeek >> version;
-                if (magicPeek.status() != QDataStream::Ok
-                    || magic != QByteArray(WIRE_MAGIC)
-                    || version < WIRE_VERSION_MIN_SUPPORTED
-                    || version > WIRE_VERSION_MAX_SUPPORTED)
+                if (magicPeek.status() != QDataStream::Ok || magic != QByteArray(WIRE_MAGIC) ||
+                    version < WIRE_VERSION_MIN_SUPPORTED || version > WIRE_VERSION_MAX_SUPPORTED)
                 {
                     logapp::LogWarning() << "SingleInstanceGuard: rejecting peer with bad magic or unsupported version"
                                          << version;
@@ -615,7 +612,8 @@ QString SingleInstanceGuard::DefaultSocketName()
     // configuration bug we want to surface in debug builds.
     const QString appId = QCoreApplication::applicationName();
     Q_ASSERT_X(
-        !appId.isEmpty(), "SingleInstanceGuard::DefaultSocketName",
+        !appId.isEmpty(),
+        "SingleInstanceGuard::DefaultSocketName",
         "QCoreApplication::applicationName() is empty; call setApplicationName before constructing the guard"
     );
 

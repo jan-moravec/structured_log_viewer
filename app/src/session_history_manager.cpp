@@ -174,7 +174,8 @@ struct LockFileGuard
     LockFileGuard() = default;
     LockFileGuard(const LockFileGuard &) = delete;
     LockFileGuard &operator=(const LockFileGuard &) = delete;
-    LockFileGuard(LockFileGuard &&other) noexcept : lock(std::move(other.lock)), locked(other.locked)
+    LockFileGuard(LockFileGuard &&other) noexcept
+        : lock(std::move(other.lock)), locked(other.locked)
     {
         other.locked = false;
     }
@@ -388,10 +389,7 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
 }
 
 QString SessionHistoryManager::WriteSnapshotAndPublish(
-    const loglib::LogConfiguration &configuration,
-    const QString &reuseUuid,
-    bool publishOpenWindow,
-    bool *publishedOut
+    const loglib::LogConfiguration &configuration, const QString &reuseUuid, bool publishOpenWindow, bool *publishedOut
 )
 {
     // Default the out-flag to false; we only flip it true on the
@@ -493,12 +491,11 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
             // `aboutToShow` and uses the timestamp only for the
             // relative-time tooltip; a few-second skew is not
             // user-visible.
-            const auto it = std::find_if(
-                entries.begin(), entries.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; }
-            );
-            const bool inPlaceFastPath =
-                it != entries.end() && it == entries.begin() && it->label == entry.label
-                && it->primaryLocator == entry.primaryLocator && it->fileCount == entry.fileCount;
+            const auto it = std::find_if(entries.begin(), entries.end(), [&](const RecentSessionEntry &e) {
+                return e.uuid == uuid;
+            });
+            const bool inPlaceFastPath = it != entries.end() && it == entries.begin() && it->label == entry.label &&
+                                         it->primaryLocator == entry.primaryLocator && it->fileCount == entry.fileCount;
             if (inPlaceFastPath)
             {
                 // Skip the entries-group rewrite. Only refresh
@@ -626,9 +623,8 @@ bool SessionHistoryManager::Touch(const QString &uuid)
     {
         QMutexLocker peekLock(&mMutex);
         const QList<RecentSessionEntry> peek = mIndexStorage->Read();
-        const auto found = std::find_if(
-            peek.begin(), peek.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; }
-        );
+        const auto found =
+            std::find_if(peek.begin(), peek.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; });
         if (found == peek.end())
         {
             return false;
@@ -663,9 +659,9 @@ bool SessionHistoryManager::Touch(const QString &uuid)
         {
             QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
-            const auto it = std::find_if(
-                entries.begin(), entries.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; }
-            );
+            const auto it = std::find_if(entries.begin(), entries.end(), [&](const RecentSessionEntry &e) {
+                return e.uuid == uuid;
+            });
             if (it == entries.end())
             {
                 // Race: the entry was evicted between the peek
@@ -738,9 +734,9 @@ void SessionHistoryManager::Remove(const QString &uuid)
         {
             QList<RecentSessionEntry> entries = mIndexStorage->Read();
 
-            const auto it = std::find_if(
-                entries.begin(), entries.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; }
-            );
+            const auto it = std::find_if(entries.begin(), entries.end(), [&](const RecentSessionEntry &e) {
+                return e.uuid == uuid;
+            });
             if (it == entries.end())
             {
                 return;
@@ -1265,8 +1261,7 @@ SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
         // write path streams into `<uuid>.json.tmp` before rename).
         // The lock file (`recents.lock`) and any future sibling
         // metadata never match either glob.
-        jsonFiles =
-            mSessionsDir.entryList({QStringLiteral("*.json"), QStringLiteral("*.json.tmp")}, QDir::Files);
+        jsonFiles = mSessionsDir.entryList({QStringLiteral("*.json"), QStringLiteral("*.json.tmp")}, QDir::Files);
     }
     catch (const std::exception &e)
     {
@@ -1286,8 +1281,7 @@ SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
         // caller can surface a "we throttled" status-bar hint.
         if (report.deletedCount >= CLEANUP_DELETIONS_PER_LAUNCH)
         {
-            logapp::LogWarning() << "CleanupOrphanFiles: hit per-launch deletion cap of"
-                                 << CLEANUP_DELETIONS_PER_LAUNCH
+            logapp::LogWarning() << "CleanupOrphanFiles: hit per-launch deletion cap of" << CLEANUP_DELETIONS_PER_LAUNCH
                                  << "; the rest will be swept next launch.";
             report.capped = true;
             break;
@@ -1368,8 +1362,8 @@ QList<RecentSessionEntry> QSettingsRecentsIndexStorage::Read() const
     }
     else if (size > CORRUPT_PROFILE_CAP)
     {
-        logapp::LogWarning() << "QSettingsRecentsIndexStorage::Read: capping recentSessions/size from" << size
-                             << "to" << CORRUPT_PROFILE_CAP << "(corrupt profile suspected).";
+        logapp::LogWarning() << "QSettingsRecentsIndexStorage::Read: capping recentSessions/size from" << size << "to"
+                             << CORRUPT_PROFILE_CAP << "(corrupt profile suspected).";
         size = CORRUPT_PROFILE_CAP;
     }
 

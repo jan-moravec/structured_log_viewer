@@ -170,7 +170,9 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
     Save(mConfiguration, path, scope);
 }
 
-void LogConfigurationManager::Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope)
+void LogConfigurationManager::Save(
+    const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope
+)
 {
     std::string json;
     if (scope == SaveScope::ColumnsOnly)

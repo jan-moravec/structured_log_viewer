@@ -233,8 +233,8 @@ bool FileLooksLikeConfiguration(const QString &file)
     probeFile.seek(0);
 
     int cursor = 0;
-    if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF
-        && static_cast<unsigned char>(head[1]) == 0xBB && static_cast<unsigned char>(head[2]) == 0xBF)
+    if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF &&
+        static_cast<unsigned char>(head[1]) == 0xBB && static_cast<unsigned char>(head[2]) == 0xBF)
     {
         cursor = 3;
     }
@@ -1215,8 +1215,7 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
         // first log file is large and the row stream takes a beat
         // to start.
         const QString message =
-            tr("Loaded '%1' as a configuration; streaming queued log files into it.")
-                .arg(result.appliedConfigPath);
+            tr("Loaded '%1' as a configuration; streaming queued log files into it.").arg(result.appliedConfigPath);
         statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         qInfo().noquote() << "OpenFilesForCli:" << message;
     }
@@ -2030,7 +2029,9 @@ void MainWindow::StreamNextPendingFile()
         if (isFirstFileInSession)
         {
             mCurrentSource = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {displayPath}, .locatorDedupKeys = {dedupKey}
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {displayPath},
+                .locatorDedupKeys = {dedupKey}
             };
         }
         else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
@@ -2045,7 +2046,8 @@ void MainWindow::StreamNextPendingFile()
             // -- two paths with different casings hit the same file
             // and should collapse to one entry.
             const bool alreadyPresent = std::any_of(
-                mCurrentSource->locatorDedupKeys.begin(), mCurrentSource->locatorDedupKeys.end(),
+                mCurrentSource->locatorDedupKeys.begin(),
+                mCurrentSource->locatorDedupKeys.end(),
                 [&dedupKey](const std::string &existing) { return existing == dedupKey; }
             );
             if (!alreadyPresent)
@@ -2212,7 +2214,9 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         const std::string displayPath = logapp::CanonicalDisplayPath(file).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
         mCurrentSource = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {displayPath}, .locatorDedupKeys = {dedupKey}
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {displayPath},
+            .locatorDedupKeys = {dedupKey}
         };
     }
     mSessionMode = SessionMode::LiveTail;
@@ -2826,11 +2830,21 @@ void MainWindow::MirrorSessionStateToConfiguration()
             return static_cast<int>(a.type) < static_cast<int>(b.type);
         }
         return std::tie(
-                   a.filterString, a.matchType, a.filterBegin, a.filterEnd, a.filterMinValue, a.filterMaxValue,
+                   a.filterString,
+                   a.matchType,
+                   a.filterBegin,
+                   a.filterEnd,
+                   a.filterMinValue,
+                   a.filterMaxValue,
                    a.filterValues
                ) <
                std::tie(
-                   b.filterString, b.matchType, b.filterBegin, b.filterEnd, b.filterMinValue, b.filterMaxValue,
+                   b.filterString,
+                   b.matchType,
+                   b.filterBegin,
+                   b.filterEnd,
+                   b.filterMinValue,
+                   b.filterMaxValue,
                    b.filterValues
                );
     });
@@ -2864,8 +2878,8 @@ void MainWindow::MirrorSessionStateToConfiguration()
     // `CanonicalLocator` keeps the persisted shape stable across
     // identical paths (`C:\foo\bar.json` vs `c:/foo/bar.json` on
     // Windows are the same file).
-    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File
-        && !mPendingOpenFiles.isEmpty())
+    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
+        !mPendingOpenFiles.isEmpty())
     {
         loglib::LogConfiguration::Source mirrored = *mCurrentSource;
         // Seed the dedup set with the already-streamed locators
@@ -2962,8 +2976,7 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     // LiveTail` guard in `ShouldAutoSaveSession`, and write a
     // phantom Recent Sessions entry pointing at a tailing producer
     // that cannot be re-bound on restore.
-    const SessionMode effectiveMode =
-        (mSessionMode != SessionMode::Idle) ? mSessionMode : mLastTerminalSessionMode;
+    const SessionMode effectiveMode = (mSessionMode != SessionMode::Idle) ? mSessionMode : mLastTerminalSessionMode;
     if (!ShouldAutoSaveSession(effectiveMode))
     {
         return;

@@ -1626,8 +1626,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Unknown top-level field in a session JSON does not abort the load",
-    "[log_configuration][session][source][compat]"
+    "Unknown top-level field in a session JSON does not abort the load", "[log_configuration][session][source][compat]"
 )
 {
     const TestLogConfiguration futureFile("test_log_configuration_future_field.json");
@@ -1676,15 +1675,10 @@ TEST_CASE(
     CHECK(manager.Configuration().source->locators.front() == "C:/logs/example.json");
 }
 
-TEST_CASE(
-    "Empty `locators` round-trips through Save / Load as an empty array",
-    "[log_configuration][session][source]"
-)
+TEST_CASE("Empty `locators` round-trips through Save / Load as an empty array", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File, .locators = {}
-    };
+    original.source = LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locators = {}};
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -1705,14 +1699,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Pretty-write emits `locators` as a JSON array (wire-format snapshot)",
-    "[log_configuration][session][source]"
+    "Pretty-write emits `locators` as a JSON array (wire-format snapshot)", "[log_configuration][session][source]"
 )
 {
     LogConfiguration original;
     original.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File,
-        .locators = {"C:/logs/a.json", "C:/logs/b.json"}
+        .kind = LogConfiguration::Source::Kind::File, .locators = {"C:/logs/a.json", "C:/logs/b.json"}
     };
 
     const TestLogConfiguration file("test_log_configuration_pretty_locators.json");

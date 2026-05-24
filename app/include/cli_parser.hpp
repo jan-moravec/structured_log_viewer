@@ -48,11 +48,9 @@ struct ParsedCli
 
     QCommandLineOption newInstanceOption(
         QStringLiteral("new-instance"),
-        QStringLiteral(
-            "Run a fresh process without coordinating with the canonical primary. "
-            "Useful for side-by-side debugging or running an alternate session "
-            "without disturbing the running primary."
-        )
+        QStringLiteral("Run a fresh process without coordinating with the canonical primary. "
+                       "Useful for side-by-side debugging or running an alternate session "
+                       "without disturbing the running primary.")
     );
     parser.addOption(newInstanceOption);
     parser.addPositionalArgument(
@@ -72,8 +70,7 @@ struct ParsedCli
     result.allowNewInstance = parser.isSet(newInstanceOption);
 
     const QString envOverride = env.value(QStringLiteral("LOGAPP_NEW_INSTANCE"));
-    if (envOverride == QStringLiteral("1")
-        || envOverride.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0)
+    if (envOverride == QStringLiteral("1") || envOverride.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0)
     {
         result.allowNewInstance = true;
     }

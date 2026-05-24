@@ -20,10 +20,10 @@
 /// `sessionsDir/<uuid>.json` and is read on demand.
 struct RecentSessionEntry
 {
-    QString uuid;            ///< Filename stem under `sessionsDir`.
-    QString label;           ///< User-facing menu label.
-    QString primaryLocator;  ///< First file path (tooltip + provenance).
-    int fileCount = 0;       ///< Number of locators in the original session.
+    QString uuid;           ///< Filename stem under `sessionsDir`.
+    QString label;          ///< User-facing menu label.
+    QString primaryLocator; ///< First file path (tooltip + provenance).
+    int fileCount = 0;      ///< Number of locators in the original session.
     qint64 timestampMsEpoch = 0;
 };
 
@@ -107,7 +107,9 @@ class SessionHistoryManager : public QObject
 {
     Q_OBJECT
 public:
-    SessionHistoryManager(QDir sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent = nullptr);
+    SessionHistoryManager(
+        QDir sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent = nullptr
+    );
     ~SessionHistoryManager() override;
 
     // The manager owns shared cross-process state (the lock file

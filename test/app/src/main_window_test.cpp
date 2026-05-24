@@ -1,3 +1,4 @@
+#include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
@@ -11,11 +12,10 @@
 #include "record_detail_widget.hpp"
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
-#include "cli_parser.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
-#include "uuid_utils.hpp"
 #include "streaming_control.hpp"
+#include "uuid_utils.hpp"
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
@@ -45,6 +45,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDataStream>
 #include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -56,14 +57,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QLocalSocket>
+#include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
-#include <QDataStream>
-#include <QLocalSocket>
-#include <QLockFile>
 #include <QScopeGuard>
 #include <QScrollBar>
 #include <QSettings>
@@ -6152,10 +6152,7 @@ private slots:
         // the proxy sort is back to "no sort".
         QCOMPARE(model->rowCount(), 0);
         QCOMPARE(model->columnCount(), 0);
-        QVERIFY2(
-            model->Configuration().columns.empty(),
-            "New Session must clear the persisted column configuration"
-        );
+        QVERIFY2(model->Configuration().columns.empty(), "New Session must clear the persisted column configuration");
         QVERIFY2(mWindow->Filters().empty(), "New Session must clear the runtime filter map");
         QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
 
@@ -10717,9 +10714,9 @@ private slots:
         cfg.columns.push_back(loglib::LogConfiguration::Column{
             .header = "category", .keys = {"category"}, .type = loglib::LogConfiguration::Type::Enumeration
         });
-        cfg.columns.push_back(
-            loglib::LogConfiguration::Column{.header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String}
-        );
+        cfg.columns.push_back(loglib::LogConfiguration::Column{
+            .header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String
+        });
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .locators = {"C:/logs/first.json", "C:/logs/second.json"}
@@ -10767,8 +10764,7 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
-            .locators = {"TCP 127.0.0.1:5170"}
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"TCP 127.0.0.1:5170"}
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -10810,9 +10806,7 @@ private slots:
         {
             QVERIFY2(
                 std::any_of(
-                    list.begin(),
-                    list.end(),
-                    [&](const RecentSessionEntry &e) { return e.uuid == writtenUuids[i]; }
+                    list.begin(), list.end(), [&](const RecentSessionEntry &e) { return e.uuid == writtenUuids[i]; }
                 ),
                 qPrintable(QStringLiteral("uuid index %1 must still be in the recents list").arg(i))
             );
@@ -10882,8 +10876,7 @@ private slots:
         manager.Remove(uuid);
         QCOMPARE(manager.List().size(), 0);
         QVERIFY2(
-            !manager.LastSessionPath().has_value(),
-            "LastSessionPath must be nullopt after the last entry is removed"
+            !manager.LastSessionPath().has_value(), "LastSessionPath must be nullopt after the last entry is removed"
         );
         QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
     }
@@ -11815,8 +11808,9 @@ private slots:
         QCOMPARE(parsed.files.size(), 2);
         QVERIFY2(
             parsed.files.front().endsWith(QStringLiteral("first.log"), Qt::CaseInsensitive),
-            qPrintable(QStringLiteral("expected leading positional to be 'first.log', got '%1'")
-                           .arg(parsed.files.front()))
+            qPrintable(
+                QStringLiteral("expected leading positional to be 'first.log', got '%1'").arg(parsed.files.front())
+            )
         );
         QVERIFY2(
             parsed.files.back().endsWith(QStringLiteral("second.log"), Qt::CaseInsensitive),
@@ -11919,8 +11913,7 @@ private slots:
         // lock acquisition.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
-            .locators = {"C:/logs/contended.json"}
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/contended.json"}
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -12044,8 +12037,7 @@ private slots:
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
-            .locators = {"C:/logs/versioned.json"}
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/versioned.json"}
         };
         QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
 
@@ -12173,9 +12165,7 @@ private slots:
         SessionHistoryManager::SetOpenWindowsAtQuit({uuid});
 
         // Hold the cross-process lock so the take fails.
-        QLockFile holderLock(
-            SessionHistoryManager::DefaultSessionsDir().filePath(QStringLiteral("recents.lock"))
-        );
+        QLockFile holderLock(SessionHistoryManager::DefaultSessionsDir().filePath(QStringLiteral("recents.lock")));
         if (!holderLock.tryLock(0))
         {
             QSKIP("Could not seize the cross-process lock; skipping (env-dependent)");
@@ -12234,10 +12224,7 @@ private slots:
         QCOMPARE(entries.size(), 2);
         const bool uuidAStillPresent = (entries.front().uuid == uuidA) || (entries.back().uuid == uuidA);
         QVERIFY2(uuidAStillPresent, "uuidA must still be in the recents index");
-        QVERIFY2(
-            entries.front().uuid != entries.back().uuid,
-            "the two sessions must have distinct uuids"
-        );
+        QVERIFY2(entries.front().uuid != entries.back().uuid, "the two sessions must have distinct uuids");
 
         // Both JSON files exist on disk and decode independently.
         QVERIFY(QFileInfo::exists(pathA));
@@ -12284,8 +12271,7 @@ private slots:
         const QList<RecentSessionEntry> entries = manager.List();
         QCOMPARE(entries.size(), 2);
         QVERIFY2(
-            entries.front().uuid != entries.back().uuid,
-            "Replace mode must not reuse the previous session's uuid"
+            entries.front().uuid != entries.back().uuid, "Replace mode must not reuse the previous session's uuid"
         );
 
         const QString pathA = manager.PathForUuid(uuidA);
@@ -12486,9 +12472,7 @@ private slots:
         // Fixture has one row matching the filter we install below
         // and one that doesn't, so the proxy row count is a clean
         // observable for "filter still active".
-        const TempJsonFile fixtureA(
-            {QStringLiteral(R"({"msg": "alpha"})"), QStringLiteral(R"({"msg": "beta"})")}
-        );
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})"), QStringLiteral(R"({"msg": "beta"})")});
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -12616,9 +12600,8 @@ private slots:
 
         builder.Save(cfgPath.toStdString(), loglib::SaveScope::Full);
 
-        const MainWindow::MixedInputDispatch result = wired->OpenMixedFilesForTest(
-            {cfgPath, fixtureA.Path(), fixtureB.Path()}, MainWindow::OpenMode::Append
-        );
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({cfgPath, fixtureA.Path(), fixtureB.Path()}, MainWindow::OpenMode::Append);
         QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
 
         // Two log files chain through `StartStreamingOpenQueue` ->
@@ -12730,9 +12713,8 @@ private slots:
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        const MainWindow::MixedInputDispatch result = wired->OpenMixedFilesForTest(
-            {cfgPathA, cfgPathB, log.Path()}, MainWindow::OpenMode::Append
-        );
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({cfgPathA, cfgPathB, log.Path()}, MainWindow::OpenMode::Append);
         QCoreApplication::processEvents();
 
         QCOMPARE(result, MainWindow::MixedInputDispatch::RejectedMultiConfig);
@@ -12889,8 +12871,7 @@ private slots:
             stream << "{}";
         }
         QVERIFY2(
-            !wired->TryLoadAsConfigurationForTest(emptyPath),
-            "an empty JSON object must be rejected as a probe miss"
+            !wired->TryLoadAsConfigurationForTest(emptyPath), "an empty JSON object must be rejected as a probe miss"
         );
         QCoreApplication::processEvents();
 
@@ -12946,10 +12927,7 @@ private slots:
         }
 
         const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        QVERIFY2(
-            !afterClose.contains(uuid),
-            "closeEvent must remove the window from the open-windows set"
-        );
+        QVERIFY2(!afterClose.contains(uuid), "closeEvent must remove the window from the open-windows set");
     }
 
     // Regression for the `File -> Exit` republish loop: the primary
@@ -13071,8 +13049,7 @@ private slots:
         );
         const QStringList afterNew = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
-            !afterNew.contains(uuid),
-            "NewSession must remove the discarded session's uuid from openWindowsAtQuit"
+            !afterNew.contains(uuid), "NewSession must remove the discarded session's uuid from openWindowsAtQuit"
         );
     }
 
@@ -13195,7 +13172,8 @@ private slots:
         // unrelated user files in `sessionsDir` are not silently
         // wiped on next launch.
         const QString orphanPath =
-            QDir(sessionsDir.path()).filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json"));
+            QDir(sessionsDir.path())
+                .filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json"));
         {
             QFile orphan(orphanPath);
             QVERIFY(orphan.open(QIODevice::WriteOnly));
@@ -13208,7 +13186,8 @@ private slots:
         // requirement -- the sweeper applies the gate to both
         // `*.json` and `*.json.tmp`.
         const QString staleTempPath =
-            QDir(sessionsDir.path()).filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json.tmp"));
+            QDir(sessionsDir.path())
+                .filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json.tmp"));
         {
             QFile staleTemp(staleTempPath);
             QVERIFY(staleTemp.open(QIODevice::WriteOnly));
@@ -13334,8 +13313,7 @@ private slots:
             QCoreApplication::processEvents();
 
             QVERIFY2(
-                manager.List().isEmpty(),
-                "closeEvent must not auto-save a live-tail session into Recent Sessions"
+                manager.List().isEmpty(), "closeEvent must not auto-save a live-tail session into Recent Sessions"
             );
         }
 
@@ -13345,8 +13323,7 @@ private slots:
         {
             auto wired = std::make_unique<MainWindow>(&manager, nullptr);
             wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
-                .locators = {"tcp://127.0.0.1:5170"}
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
             });
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
@@ -13354,8 +13331,7 @@ private slots:
             QCoreApplication::processEvents();
 
             QVERIFY2(
-                manager.List().isEmpty(),
-                "closeEvent must not auto-save a network-stream session into Recent Sessions"
+                manager.List().isEmpty(), "closeEvent must not auto-save a network-stream session into Recent Sessions"
             );
         }
     }
@@ -13397,10 +13373,7 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(finishedSpy.count() >= 1, "StopAndKeepRows must emit streamingFinished");
 
-        QVERIFY2(
-            manager.List().isEmpty(),
-            "preconditions: no recents entries before close"
-        );
+        QVERIFY2(manager.List().isEmpty(), "preconditions: no recents entries before close");
 
         wired->close();
         QCoreApplication::processEvents();
@@ -13433,8 +13406,7 @@ private slots:
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
         builder.SetSource(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5170"}
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
         });
         builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
@@ -13489,8 +13461,7 @@ private slots:
             loglib::LogConfigurationManager builder;
             builder.AppendKeys({"msg"});
             builder.SetSource(loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
-                .locators = {"tcp://127.0.0.1:5170"}
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
             });
             builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
 
@@ -13499,10 +13470,7 @@ private slots:
             QCoreApplication::processEvents();
 
             QCOMPARE(wired->ActiveSessionUuid(), uuid);
-            QVERIFY2(
-                wired->RestorableActiveSessionUuid().isEmpty(),
-                "fan-restore must skip NetworkStream sessions"
-            );
+            QVERIFY2(wired->RestorableActiveSessionUuid().isEmpty(), "fan-restore must skip NetworkStream sessions");
         }
 
         // --- Case B: no-source configuration (columns-only entry).
@@ -13626,8 +13594,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            changedSpy.count() >= 1,
-            "OpenLogStream must flush the outgoing static session before resetting the model"
+            changedSpy.count() >= 1, "OpenLogStream must flush the outgoing static session before resetting the model"
         );
 
         // The static session's recents entry survives unchanged
@@ -13702,8 +13669,7 @@ private slots:
         SessionHistoryManager::AddOpenWindowUuids(restorable);
 
         QVERIFY2(
-            changedSpy.count() >= 1,
-            "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuids"
+            changedSpy.count() >= 1, "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuids"
         );
 
         const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13712,8 +13678,7 @@ private slots:
             QSKIP("QSettings did not honour the open-windows write in this environment");
         }
         QVERIFY2(
-            afterQuit.contains(uuid),
-            "aboutToQuit handler must publish the live window's uuid into openWindowsAtQuit"
+            afterQuit.contains(uuid), "aboutToQuit handler must publish the live window's uuid into openWindowsAtQuit"
         );
     }
 
@@ -13783,20 +13748,15 @@ private slots:
         // uuid and writes to the managed location instead.
         QVERIFY2(
             wired->ActiveSessionUuid().isEmpty(),
-            qPrintable(
-                QStringLiteral("external uuid-shaped JSON must not pin mAutoSaveUuid (got '%1')")
-                    .arg(wired->ActiveSessionUuid())
-            )
+            qPrintable(QStringLiteral("external uuid-shaped JSON must not pin mAutoSaveUuid (got '%1')")
+                           .arg(wired->ActiveSessionUuid()))
         );
 
         const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         // Do NOT QSKIP on empty here: an empty set is precisely
         // what the fix guarantees. The QSettings-honouring soft
         // skip used elsewhere is for tests that *expect* a write.
-        QVERIFY2(
-            !openSet.contains(uuid),
-            "external uuid-shaped JSON must not be published into openWindowsAtQuit"
-        );
+        QVERIFY2(!openSet.contains(uuid), "external uuid-shaped JSON must not be published into openWindowsAtQuit");
     }
 
     // `RestoreLastSessionFromPath` must NOT publish a uuid into
@@ -13823,8 +13783,7 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        SessionHistoryManager manager(QDir(sessionsDir.path()),
-                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         // Use `WriteSnapshot` so the entry actually lives in the
         // recents index. Without this, `Touch(stem)` would short-
@@ -13833,8 +13792,7 @@ private slots:
         // gate, not the one under test).
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5170"}
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -13854,10 +13812,7 @@ private slots:
         QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
 
         const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        QVERIFY2(
-            !openSet.contains(uuid),
-            "NetworkStream uuid must not be published into openWindowsAtQuit on restore"
-        );
+        QVERIFY2(!openSet.contains(uuid), "NetworkStream uuid must not be published into openWindowsAtQuit on restore");
     }
 
     // Companion to `TestRestoreLastSessionDoesNotPublishNetworkStreamUuid`
@@ -13874,13 +13829,11 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        SessionHistoryManager manager(QDir(sessionsDir.path()),
-                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
-            .locators = {"tcp://127.0.0.1:5171"}
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -13902,10 +13855,7 @@ private slots:
         QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
 
         const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        QVERIFY2(
-            !openSet.contains(uuid),
-            "NetworkStream uuid must not be published into openWindowsAtQuit on reopen"
-        );
+        QVERIFY2(!openSet.contains(uuid), "NetworkStream uuid must not be published into openWindowsAtQuit on reopen");
     }
 
     // -------------------------------------------------------------------------
@@ -13918,9 +13868,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        SessionHistoryManager manager(
-            QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>()
-        );
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         // Write a valid session, then corrupt the JSON on disk so the
         // pre-flight parse fails. Pre-fix the OpenRecentSession path
@@ -13929,8 +13877,7 @@ private slots:
         // the corrupt entry is removed.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
-            .locators = {"C:/logs/will-be-corrupted.json"}
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}
         };
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
@@ -13952,8 +13899,9 @@ private slots:
 
         const QList<RecentSessionEntry> entries = manager.List();
         QVERIFY2(
-            std::none_of(entries.begin(), entries.end(),
-                         [&uuid](const RecentSessionEntry &e) { return e.uuid == uuid; }),
+            std::none_of(
+                entries.begin(), entries.end(), [&uuid](const RecentSessionEntry &e) { return e.uuid == uuid; }
+            ),
             "Corrupt recents entry must be removed after a failed open attempt"
         );
     }
@@ -14040,9 +13988,7 @@ private slots:
         {
             QVERIFY2(
                 QFileInfo::exists(manager.PathForUuid(e.uuid)),
-                qPrintable(
-                    QStringLiteral("indexed entry %1 must have backing JSON on disk").arg(e.uuid)
-                )
+                qPrintable(QStringLiteral("indexed entry %1 must have backing JSON on disk").arg(e.uuid))
             );
         }
 
@@ -14090,9 +14036,8 @@ private slots:
         // block will fail. We need a path the OS cannot reach,
         // independent of trailing-slash behaviour. A nested missing
         // sub-directory works on every platform we ship to.
-        const QString unreachablePath = QDir(scratchDir.path()).filePath(
-            QStringLiteral("does/not/exist/save-target.json")
-        );
+        const QString unreachablePath =
+            QDir(scratchDir.path()).filePath(QStringLiteral("does/not/exist/save-target.json"));
 
         loglib::LogConfigurationManager doomed;
         doomed.AppendKeys({"x", "y"});
@@ -14107,8 +14052,7 @@ private slots:
         }
         QVERIFY2(threw, "Save must throw when the temp file cannot be opened");
         QVERIFY2(
-            !QFileInfo::exists(unreachablePath),
-            "Save must not have created a partial file at the unreachable path"
+            !QFileInfo::exists(unreachablePath), "Save must not have created a partial file at the unreachable path"
         );
 
         // Pre-existing destination next to the scratch dir is
@@ -14128,8 +14072,9 @@ private slots:
     // the launch looks like a no-op.
     void TestOpenFilesForCliSingleConfigWithoutSourceShowsHint()
     {
-        SessionHistoryManager manager(QDir(QDir::tempPath() + QStringLiteral("/abs-2-1")),
-                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        SessionHistoryManager manager(
+            QDir(QDir::tempPath() + QStringLiteral("/abs-2-1")), std::make_unique<InMemoryRecentsIndexStorage>()
+        );
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
         // Source-less configuration JSON: real columns, no
@@ -14150,8 +14095,8 @@ private slots:
         // translation context loaded).
         const QString status = wired->statusBar()->currentMessage();
         QVERIFY2(
-            status.contains(QStringLiteral("configuration"), Qt::CaseInsensitive)
-                && status.contains(QStringLiteral("File")),
+            status.contains(QStringLiteral("configuration"), Qt::CaseInsensitive) &&
+                status.contains(QStringLiteral("File")),
             qPrintable(QStringLiteral("status bar should hint at File -> Open after a source-less "
                                       "configuration load; got: %1")
                            .arg(status))
@@ -14191,8 +14136,7 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        SessionHistoryManager manager(QDir(sessionsDir.path()),
-                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
         // Open a static session and let it auto-save on
@@ -14222,10 +14166,7 @@ private slots:
         QCoreApplication::processEvents();
 
         const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        QVERIFY2(
-            !afterClose.contains(uuid),
-            "closeEvent must leave the open-windows set free of this window's uuid"
-        );
+        QVERIFY2(!afterClose.contains(uuid), "closeEvent must leave the open-windows set free of this window's uuid");
     }
 
     // H1 regression (third-pass review): the `aboutToQuit` lambda
@@ -14256,8 +14197,7 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        SessionHistoryManager manager(QDir(sessionsDir.path()),
-                                      std::make_unique<InMemoryRecentsIndexStorage>());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
         // Stage 1: open a static session and let it auto-save on
@@ -14282,10 +14222,7 @@ private slots:
         // Sanity: the just-closed uuid should be out of the open
         // set (this is the existing 1.2 invariant).
         const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        QVERIFY2(
-            !afterClose.contains(origUuid),
-            "closeEvent should remove the window's uuid from openWindowsAtQuit"
-        );
+        QVERIFY2(!afterClose.contains(origUuid), "closeEvent should remove the window's uuid from openWindowsAtQuit");
 
         // Stage 3: replicate the production aboutToQuit body. Mirrors
         // the batched body in `app/src/main.cpp`: per-window
@@ -14484,8 +14421,8 @@ private slots:
     // name must succeed without conflict).
     void TestSingleInstanceSetSocketNameForTestIgnoredAfterAcquire()
     {
-        const QString originalName = QStringLiteral("structlog-set-name-test-original-")
-                                     + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        const QString originalName = QStringLiteral("structlog-set-name-test-original-") +
+                                     QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(originalName);
@@ -14497,8 +14434,8 @@ private slots:
         // before we ever reach the early-return branch, so skip
         // this assertion in debug to keep the test green there.
 #ifdef QT_NO_DEBUG
-        const QString divertName = QStringLiteral("structlog-set-name-test-divert-")
-                                   + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        const QString divertName = QStringLiteral("structlog-set-name-test-divert-") +
+                                   QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         primary.SetSocketNameForTest(divertName);
 
         // The misused-name secondary must NOT find a primary on the
@@ -14531,8 +14468,7 @@ private slots:
             .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/atomic.json"}
         };
 
-        const QString uuid =
-            manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
+        const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
         QVERIFY(!uuid.isEmpty());
 
         // After the call the uuid must be visible in both stores
@@ -14568,8 +14504,7 @@ private slots:
             .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/noopen.json"}
         };
 
-        const QString uuid =
-            manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
+        const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
         QVERIFY(!uuid.isEmpty());
 
         QCOMPARE(manager.List().size(), 1);
