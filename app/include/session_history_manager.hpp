@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
 
 #include <memory>
 #include <optional>
@@ -43,6 +44,15 @@ class IRecentsIndexStorage
 public:
     virtual ~IRecentsIndexStorage() = default;
 
+    /// Implementations are strongly encouraged to be `noexcept` in
+    /// effect (any internal failure should be logged + swallowed,
+    /// never propagated). `WriteSnapshot` catches `std::exception`
+    /// in a single envelope around every storage call so a throwing
+    /// implementation does not corrupt the in-process state; even so,
+    /// a `noexcept` implementation gives the manager the cleanest
+    /// guarantee that "the lock is the only thing that can stop a
+    /// write" -- not also "did the storage throw" -- which keeps
+    /// the cross-process recovery story simple.
     virtual QList<RecentSessionEntry> Read() const = 0;
     virtual void Write(const QList<RecentSessionEntry> &entries) = 0;
     virtual std::optional<QString> ReadLastUuid() const = 0;
@@ -82,11 +92,41 @@ public:
     SessionHistoryManager(QDir sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent = nullptr);
     ~SessionHistoryManager() override;
 
-    /// Cap on the number of entries kept in the index. Older entries
-    /// are evicted on `WriteSnapshot` / `Touch`. Hard-coded for now;
-    /// future Preferences entry can flow through here without an API
-    /// change.
-    static constexpr int MAX_ENTRIES = 10;
+    // The manager owns shared cross-process state (the lock file
+    // path, the QSettings index, the on-disk JSON pool); copying or
+    // moving it would either share that state across the copies
+    // (with no real synchronisation) or invalidate the pointer the
+    // window holds. Both are footguns.
+    Q_DISABLE_COPY_MOVE(SessionHistoryManager)
+
+    /// Default cap on the number of entries kept in the index. The
+    /// runtime cap is read from `QSettings` via `MaxEntries()` so a
+    /// Preferences entry can override the default per profile;
+    /// callers that need a compile-time bound (e.g. test fixtures
+    /// generating a deterministic number of entries) use this
+    /// constant directly. Older entries are evicted on `WriteSnapshot`
+    /// / `Touch`.
+    static constexpr int MAX_ENTRIES = 25;
+
+    /// Hard lower / upper bounds for the user-configurable cap.
+    /// `SetMaxEntries` clamps to this range so an out-of-range
+    /// QSettings value (manually edited profile, future migration
+    /// bug) cannot wedge the recents subsystem or trigger
+    /// pathological eviction counts.
+    static constexpr int MAX_ENTRIES_LOWER_BOUND = 1;
+    static constexpr int MAX_ENTRIES_UPPER_BOUND = 200;
+
+    /// Read the user-configurable recents-cap. Returns
+    /// `MAX_ENTRIES` when the preference has never been set, and a
+    /// value clamped into `[MAX_ENTRIES_LOWER_BOUND,
+    /// MAX_ENTRIES_UPPER_BOUND]` otherwise. Cheap (one QSettings
+    /// read); call sites can re-query on every mutation rather
+    /// than caching.
+    [[nodiscard]] static int MaxEntries();
+    /// Persist the user-configurable recents-cap. Values outside
+    /// `[MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND]` are
+    /// clamped before writing.
+    static void SetMaxEntries(int maxEntries);
 
     /// Newest-first list of recent sessions. Safe to call from the
     /// GUI thread between mutations; reads the index storage under
@@ -114,17 +154,37 @@ public:
     /// session repeatedly without bloating the recents list).
     QString WriteSnapshot(const loglib::LogConfiguration &configuration, const QString &reuseUuid = QString());
 
+    /// Persist @p configuration as `WriteSnapshot` would and -- if
+    /// @p publishOpenWindow is `true` and the snapshot succeeded --
+    /// publish the assigned uuid into the persisted
+    /// `openWindowsAtQuit` set under the same cross-process lock
+    /// acquisition. This is the recommended path for
+    /// `AutoSaveSessionSnapshot`: the pre-fix code took two
+    /// independent cross-process lock acquisitions back-to-back
+    /// (one for the snapshot, one for the publish), doubling the
+    /// worst-case GUI freeze under sibling contention and creating
+    /// a small race window where a sibling could see the recents
+    /// JSON updated but the openWindowsAtQuit set not yet
+    /// reflecting it. Returns the assigned uuid (empty on failure)
+    /// with the same semantics as `WriteSnapshot`.
+    QString WriteSnapshotAndPublish(
+        const loglib::LogConfiguration &configuration, const QString &reuseUuid, bool publishOpenWindow
+    );
+
     /// Move @p uuid to the top of the recents list and refresh its
     /// timestamp. No-op if @p uuid is not in the index. Returns
-    /// `true` when the index actually contained @p uuid and was
-    /// reordered (whether or not the cross-process write succeeded
-    /// -- a contended lock counts as "found but not bumped" because
-    /// the caller's intent was correct), `false` when @p uuid was
-    /// not in the index. Callers use the return value to decide
-    /// whether to publish @p uuid into `openWindowsAtQuit` (we only
-    /// want to publish uuids the manager actually owns, not arbitrary
-    /// stems that happen to parse as UUIDs).
-    bool Touch(const QString &uuid);
+    /// `true` iff the index actually contained @p uuid **and** the
+    /// cross-process lock was acquired so the bump landed on disk;
+    /// returns `false` for either "not found" or "contended lock".
+    ///
+    /// Callers use the return value as the publish gate for
+    /// `openWindowsAtQuit`: only ever publish a uuid we *both* own
+    /// and have just successfully touched. Treating a contended
+    /// lock as success (the pre-fix behaviour) lets two sibling
+    /// processes publish the same uuid into the persisted set when
+    /// neither has actually written the bump, so the next launch
+    /// fan-restores a window the sibling may have never seen.
+    [[nodiscard]] bool Touch(const QString &uuid);
 
     /// Remove the entry + its per-uuid JSON file. No-op if @p uuid is
     /// not in the index.
@@ -146,6 +206,12 @@ public:
 
     /// Per-uuid JSON path. Public so the Recent Sessions menu can
     /// reopen an entry through `MainWindow::DoLoadConfiguration`.
+    ///
+    /// Refuses non-uuid-shaped @p uuid (returns an empty string).
+    /// Without the gate this is naive string concatenation and a
+    /// malicious / corrupted QSettings value (e.g. `"../etc/passwd"`)
+    /// would escape the sessions directory on every caller that
+    /// composed the result into a `QFile::remove` / unlink.
     [[nodiscard]] QString PathForUuid(const QString &uuid) const;
 
     /// Sessions directory passed in at construction. Exposed for
@@ -251,6 +317,24 @@ public:
     void CleanupOrphanFiles();
 
 signals:
+    /// Fired after a successful mutation (`WriteSnapshot`,
+    /// `WriteSnapshotAndPublish`, `Touch`, `Remove`, `Clear`).
+    ///
+    /// Threading contract: always emitted from the thread that
+    /// invoked the mutator -- the manager has no internal worker
+    /// thread. In production every call site is on the GUI thread
+    /// (auto-save, menu actions, restore-on-launch), so direct
+    /// connections from a `MainWindow` slot run synchronously
+    /// before the mutator returns. The mutator releases both the
+    /// in-process mutex and the cross-process `QLockFile` *before*
+    /// emitting, so a slot that recursively calls another mutator
+    /// (e.g. `Clear` from inside a `changed()` handler) is safe
+    /// against re-entrant deadlock.
+    ///
+    /// Tests that drive the manager from a worker thread are
+    /// expected to use a `Qt::QueuedConnection` if the slot must
+    /// run on the GUI thread; direct connections will run on the
+    /// emitting thread.
     void changed();
 
 private:
