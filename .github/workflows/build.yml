@@ -223,8 +223,9 @@ jobs:
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
-        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates.
-        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev
+        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates;
+        # gdb: backtrace capture on AppImage smoke-test crash.
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev gdb
 
       - name: Configure
         # TLS pinned ON so the published AppImage can't silently lose it.
@@ -304,31 +305,20 @@ jobs:
           echo "--- ldd on bundled offscreen plugin ---"
           ldd "squashfs-root/usr/plugins/platforms/libqoffscreen.so" || true
 
-          # Direct run from the extracted tree (bypasses the AppImage
-          # runtime). Uses the bundle's QT_PLUGIN_PATH so we test what
-          # the user actually executes.
-          echo "--- direct-launch from extracted tree ---"
+          # Direct run from the extracted tree under gdb so a crash
+          # produces an actual backtrace, not just an exit code.
+          echo "--- direct-launch from extracted tree under gdb ---"
           set +e
           env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QT_ROOT_DIR -u LD_LIBRARY_PATH \
-            QT_QPA_PLATFORM=offscreen QT_DEBUG_PLUGINS=1 \
+            QT_QPA_PLATFORM=offscreen \
             LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" \
             QT_PLUGIN_PATH="$PWD/squashfs-root/usr/plugins" \
-            "$EXTRACTED_BIN" >direct.stdout 2>direct.stderr &
-          DIRECT_PID=$!
-          sleep 5
-          if ! kill -0 "$DIRECT_PID" 2>/dev/null; then
-            RC=0
-            wait "$DIRECT_PID" || RC=$?
-            echo "Direct extracted binary exited prematurely with code $RC" >&2
-            echo "--- direct stdout ---" >&2
-            cat direct.stdout >&2 || true
-            echo "--- direct stderr (last 200 lines) ---" >&2
-            tail -n 200 direct.stderr >&2 || true
-          else
-            kill "$DIRECT_PID" 2>/dev/null || true
-            wait "$DIRECT_PID" 2>/dev/null || true
-            echo "Direct extracted binary launched successfully."
-          fi
+            gdb -batch \
+              -ex 'set pagination off' \
+              -ex 'handle SIG33 nostop noprint' \
+              -ex run \
+              -ex 'thread apply all bt full' \
+              --args "$EXTRACTED_BIN" 2>&1 | tail -n 400
           set -e
 
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
