@@ -193,7 +193,10 @@ jobs:
     permissions:
       contents: write
     env:
-      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
+      # `libqoffscreen.so` is bundled so the headless smoke test below can
+      # run inside the AppImage's own Qt environment (without it linuxdeploy
+      # only ships xcb + wayland and `QT_QPA_PLATFORM=offscreen` aborts).
+      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so;libqoffscreen.so"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
