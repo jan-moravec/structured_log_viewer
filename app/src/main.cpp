@@ -91,9 +91,7 @@ private:
 
 int main(int argc, char *argv[])
 {
-    qInfo() << "[StructLog] main() entered";
     const QApplication a(argc, argv);
-    qInfo() << "[StructLog] QApplication constructed";
 
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
@@ -104,7 +102,6 @@ int main(int argc, char *argv[])
     qApp->installEventFilter(&fileOpenFilter);
 
     AppearanceControl::LoadConfiguration();
-    qInfo() << "[StructLog] AppearanceControl loaded";
 
     const logapp::ParsedCli parsed =
         logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());
@@ -126,12 +123,10 @@ int main(int argc, char *argv[])
     // Single-instance coordinator. A secondary forwards its files
     // to the primary and exits.
     SingleInstanceGuard instanceGuard;
-    qInfo() << "[StructLog] SingleInstanceGuard constructed; calling TryAcquire";
     if (!instanceGuard.TryAcquire(cliFiles, allowNewInstance))
     {
         return 0;
     }
-    qInfo() << "[StructLog] TryAcquire returned true (primary role)";
 
     // `--new-instance` peers must not mutate the canonical primary's
     // `openWindowsAtQuit`.
@@ -143,25 +138,20 @@ int main(int argc, char *argv[])
     {
         return 1;
     }
-    qInfo() << "[StructLog] Timezone database initialized";
 
     // Owned by main; outlives every window (closeEvent /
     // aboutToQuit both deref the manager).
     SessionHistoryManager historyManager(
         SessionHistoryManager::DefaultSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>()
     );
-    qInfo() << "[StructLog] SessionHistoryManager constructed";
 
     // Reap `<uuid>.json` files left behind by a crash between
     // `WriteSnapshot`'s file write and its index update. Capped
     // result feeds a status-bar hint.
     const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
-    qInfo() << "[StructLog] CleanupOrphanFiles done";
 
     MainWindow w(&historyManager, nullptr);
-    qInfo() << "[StructLog] MainWindow constructed";
     w.show();
-    qInfo() << "[StructLog] MainWindow shown";
     if (cleanupReport.capped)
     {
         constexpr int CAPPED_MESSAGE_TIMEOUT_MS = 8000;
@@ -349,6 +339,5 @@ int main(int argc, char *argv[])
         }
     );
 
-    qInfo() << "[StructLog] entering event loop";
     return QApplication::exec();
 }

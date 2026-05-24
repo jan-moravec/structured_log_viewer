@@ -274,6 +274,13 @@ jobs:
       - name: Smoke-test packaged AppImage
         # Headless launch so a missing bundled plugin / shared library fails
         # CI before we ship a broken release. ctest only covers the build tree.
+        #
+        # `env -u` strips the host Qt vars install-qt-action exports. Without
+        # that the AppImage would pick the host's `libq*.so` plugin (which
+        # links the host Qt build), load it into a process that already has
+        # the bundled Qt libs in memory, and crash with an ABI mismatch.
+        # End users never have those vars set, so this matches the real
+        # launch path.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -286,7 +293,8 @@ jobs:
           chmod +x "$APPIMAGE"
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
           # in the workflow log instead of an opaque exit code.
-          QT_QPA_PLATFORM=offscreen QT_DEBUG_PLUGINS=1 "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
+          env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QT_ROOT_DIR -u LD_LIBRARY_PATH \
+            QT_QPA_PLATFORM=offscreen "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
