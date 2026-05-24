@@ -21,7 +21,6 @@
 #include <QStringList>
 
 #include <algorithm>
-#include <cstdio>
 #include <memory>
 
 namespace
@@ -90,26 +89,9 @@ private:
 
 } // namespace
 
-namespace
-{
-inline void DiagLog(const char *msg)
-{
-    std::fprintf(stderr, "[StructLogDiag] %s\n", msg);
-    std::fflush(stderr);
-}
-} // namespace
-
 int main(int argc, char *argv[])
 {
-    DiagLog("main entered");
     const QApplication a(argc, argv);
-    DiagLog("QApplication constructed");
-
-    if (QString::fromLocal8Bit(qgetenv("LOGAPP_SMOKE_TEST_BAIL_OUT")) == "1")
-    {
-        DiagLog("smoke-test bailout requested, returning 0");
-        return 0;
-    }
 
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
@@ -120,7 +102,6 @@ int main(int argc, char *argv[])
     qApp->installEventFilter(&fileOpenFilter);
 
     AppearanceControl::LoadConfiguration();
-    DiagLog("AppearanceControl::LoadConfiguration done");
 
     const logapp::ParsedCli parsed =
         logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());
@@ -141,14 +122,11 @@ int main(int argc, char *argv[])
 
     // Single-instance coordinator. A secondary forwards its files
     // to the primary and exits.
-    DiagLog("constructing SingleInstanceGuard");
     SingleInstanceGuard instanceGuard;
-    DiagLog("SingleInstanceGuard::TryAcquire");
     if (!instanceGuard.TryAcquire(cliFiles, allowNewInstance))
     {
         return 0;
     }
-    DiagLog("TryAcquire returned primary");
 
     // `--new-instance` peers must not mutate the canonical primary's
     // `openWindowsAtQuit`.
@@ -156,30 +134,24 @@ int main(int argc, char *argv[])
 
     // Init the IANA timezone database before any timestamp work
     // (restore-on-launch rehydrates filters that format timestamps).
-    DiagLog("InitializeTimezoneDatabase");
     if (!MainWindow::InitializeTimezoneDatabase())
     {
         return 1;
     }
-    DiagLog("timezone database ready");
 
     // Owned by main; outlives every window (closeEvent /
     // aboutToQuit both deref the manager).
     SessionHistoryManager historyManager(
         SessionHistoryManager::DefaultSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>()
     );
-    DiagLog("SessionHistoryManager constructed");
 
     // Reap `<uuid>.json` files left behind by a crash between
     // `WriteSnapshot`'s file write and its index update. Capped
     // result feeds a status-bar hint.
     const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
-    DiagLog("CleanupOrphanFiles done");
 
     MainWindow w(&historyManager, nullptr);
-    DiagLog("MainWindow constructed");
     w.show();
-    DiagLog("MainWindow shown");
     if (cleanupReport.capped)
     {
         constexpr int CAPPED_MESSAGE_TIMEOUT_MS = 8000;
@@ -367,6 +339,5 @@ int main(int argc, char *argv[])
         }
     );
 
-    DiagLog("entering exec()");
     return QApplication::exec();
 }

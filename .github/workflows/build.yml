@@ -193,10 +193,7 @@ jobs:
     permissions:
       contents: write
     env:
-      # `libqoffscreen.so` is bundled so the headless smoke test below can
-      # run inside the AppImage's own Qt environment (without it linuxdeploy
-      # only ships xcb + wayland and `QT_QPA_PLATFORM=offscreen` aborts).
-      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so;libqoffscreen.so"
+      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -223,9 +220,8 @@ jobs:
 
       - name: Install build tools
         # libssl-dev: find_package(OpenSSL); libfuse2: AppImage runtime;
-        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates;
-        # gdb: backtrace capture on AppImage smoke-test crash.
-        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev gdb
+        # libxcb-cursor0: still loaded by the offscreen QPA; zsync: delta updates.
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 libxcb-cursor0 zsync libssl-dev
 
       - name: Configure
         # TLS pinned ON so the published AppImage can't silently lose it.
@@ -278,13 +274,6 @@ jobs:
       - name: Smoke-test packaged AppImage
         # Headless launch so a missing bundled plugin / shared library fails
         # CI before we ship a broken release. ctest only covers the build tree.
-        #
-        # `env -u` strips the host Qt vars install-qt-action exports. Without
-        # that the AppImage would pick the host's `libq*.so` plugin (which
-        # links the host Qt build), load it into a process that already has
-        # the bundled Qt libs in memory, and crash with an ABI mismatch.
-        # End users never have those vars set, so this matches the real
-        # launch path.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -295,63 +284,13 @@ jobs:
           fi
           APPIMAGE="${APPIMAGES[0]}"
           chmod +x "$APPIMAGE"
-          # Extract the AppImage so we can run the inner binary directly.
-          # That bypasses the (uninstrumentable) appimage runtime and lets
-          # us collect ldd / strace-style diagnostics if startup fails.
-          "./$APPIMAGE" --appimage-extract >/dev/null
-          EXTRACTED_BIN="squashfs-root/usr/bin/${{ env.APP_NAME }}"
-          echo "--- ldd on extracted binary ---"
-          ldd "$EXTRACTED_BIN" || true
-          echo "--- ldd on bundled offscreen plugin ---"
-          ldd "squashfs-root/usr/plugins/platforms/libqoffscreen.so" || true
-
-          # Detailed gdb backtrace with disassembly around the crash
-          # PC. addr2line on the bundled libQt6Core to map the offset
-          # to a symbol name.
-          echo "--- nm symbols near the crash offset in libQt6Core ---"
-          # The crash always lands at libQt6Core+0x12138e. Print
-          # nm's sorted dump and use awk's hex parse to filter the
-          # surrounding window so we can name the function gdb shows
-          # as `??`.
-          BUNDLED_QT_CORE="$PWD/squashfs-root/usr/lib/libQt6Core.so.6"
-          nm -DC --defined-only --numeric-sort "$BUNDLED_QT_CORE" \
-            | awk '{
-                addr = strtonum("0x" $1)
-                if (addr >= strtonum("0x121000") && addr <= strtonum("0x121800")) print
-              }' || true
-          echo "(end of nm window)"
-
-          echo "--- direct-launch (bailout) under gdb with disasm ---"
-          set +e
-          cat > /tmp/diag.gdb <<'GDB'
-          set pagination off
-          handle SIG33 nostop noprint
-          set print pretty on
-          run
-          info registers
-          info symbol $rip
-          info symbol $rip-1
-          x/16i $rip-32
-          thread apply all bt full
-          info sharedlibrary libQt6Core
-          GDB
-          QT_QPA_PLATFORM=offscreen LOGAPP_SMOKE_TEST_BAIL_OUT=1 \
-            gdb -batch -x /tmp/diag.gdb --args "$EXTRACTED_BIN" 2>&1 | tail -n 300
-          set -e
-
-          # Capture stdout/stderr so a startup crash leaves a useful diagnostic
-          # in the workflow log instead of an opaque exit code.
-          QT_QPA_PLATFORM=offscreen "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
+          QT_QPA_PLATFORM=offscreen "./$APPIMAGE" &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
             RC=0
             wait "$PID" || RC=$?
             echo "Packaged AppImage exited prematurely with code $RC" >&2
-            echo "--- stdout ---" >&2
-            cat appimage.stdout >&2 || true
-            echo "--- stderr (last 200 lines) ---" >&2
-            tail -n 200 appimage.stderr >&2 || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
