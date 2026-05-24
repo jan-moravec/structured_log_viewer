@@ -40,6 +40,16 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         "Only applies to the primary instance on first launch with no command-line files."
     );
 
+    mRecentSessionsMaxSpinBox = new QSpinBox(this);
+    mRecentSessionsMaxSpinBox->setRange(
+        SessionHistoryManager::MAX_ENTRIES_LOWER_BOUND, SessionHistoryManager::MAX_ENTRIES_UPPER_BOUND
+    );
+    mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MAX_ENTRIES);
+    mRecentSessionsMaxSpinBox->setToolTip(
+        "Maximum number of entries kept in the Recent Sessions submenu. Older entries are evicted "
+        "automatically as new sessions are saved."
+    );
+
     mSizeSpinBox->setRange(FONT_POINT_SIZE_MIN, FONT_POINT_SIZE_MAX);
 
     mStreamRetentionSpinBox->setRange(
@@ -108,6 +118,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     auto *sessionGroup = new QGroupBox("Session History", this);
     auto *sessionLayout = new QVBoxLayout(sessionGroup);
     sessionLayout->addWidget(mRestoreLastSessionCheckBox);
+    sessionLayout->addWidget(new QLabel("Maximum Recent Sessions entries:"));
+    sessionLayout->addWidget(mRecentSessionsMaxSpinBox);
 
     layout->addWidget(appearanceGroup);
     layout->addWidget(streamingGroup);
@@ -132,6 +144,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         StreamingControl::SetStaticNewestFirst(staticNewestFirst);
         StreamingControl::SaveConfiguration();
         SessionHistoryManager::SetRestoreLastSessionOnLaunch(mRestoreLastSessionCheckBox->isChecked());
+        SessionHistoryManager::SetMaxEntries(mRecentSessionsMaxSpinBox->value());
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
@@ -169,4 +182,5 @@ void PreferencesEditor::UpdateFields()
     mStreamNewestFirstCheckBox->setChecked(StreamingControl::IsNewestFirst());
     mStaticNewestFirstCheckBox->setChecked(StreamingControl::IsStaticNewestFirst());
     mRestoreLastSessionCheckBox->setChecked(SessionHistoryManager::RestoreLastSessionOnLaunch());
+    mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MaxEntries());
 }

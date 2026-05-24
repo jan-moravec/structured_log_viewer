@@ -38,4 +38,5 @@ private:
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;
     QCheckBox *mRestoreLastSessionCheckBox;
+    QSpinBox *mRecentSessionsMaxSpinBox;
 };
