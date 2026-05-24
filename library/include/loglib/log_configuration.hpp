@@ -135,26 +135,21 @@ struct LogConfiguration
 
     /// Persisted source descriptor. `nullopt` means "no source bound".
     /// On load the app may re-open this; rebind failure is non-fatal
-    /// (columns and filters still apply). The non-fatal promise also
-    /// covers schema drift: legacy session JSON that used the pre-
-    /// widening `"locator":"..."` shape loses its source binding on
-    /// load but keeps columns / filters / sort, courtesy of the
-    /// `error_on_unknown_keys=false` option configured for the read
-    /// path (`loglib/internal/log_configuration_glaze_opts.hpp`).
+    /// (columns and filters still apply). Legacy JSON using the
+    /// pre-widening `"locator"` field loses its source binding but
+    /// keeps the rest, courtesy of
+    /// `error_on_unknown_keys=false` (see `log_configuration_glaze_opts.hpp`).
     ///
-    /// `locators` and `locatorDedupKeys` are parallel arrays of equal
-    /// length (enforced via `AppendLocator` below): the former is
-    /// the human-facing path (display tooltip + the path actually
-    /// passed to `QFile::open`); the latter is the normalised form
-    /// used for byte-equality dedup. On Windows the two diverge
-    /// because the filesystem is case-insensitive but the user
-    /// expects to see the case they typed (a recents tooltip
-    /// reading "c:/users/jane/server.log" when the user typed
-    /// "C:/Users/Jane/Server.log" was the pre-fix bug). On
-    /// Linux / macOS the dedup key is identical to the display
-    /// path; the two-vector shape costs one extra `std::string` per
-    /// locator across all platforms, which is invisible against
-    /// session JSON sizes already dominated by columns / filters.
+    /// `locators` and `locatorDedupKeys` are parallel arrays:
+    /// - `locators[i]` is the human-facing path (original case;
+    ///   what the user sees and what `QFile::open` consumes).
+    /// - `locatorDedupKeys[i]` is the normalised dedup form
+    ///   (lower-cased on Windows). Equality between locators is
+    ///   compared on the dedup key.
+    ///
+    /// Mutate both vectors together via `AppendLocator` /
+    /// `ClearLocators`; direct `push_back` on either alone breaks
+    /// the invariant.
     struct Source
     {
         enum class Kind
@@ -163,21 +158,7 @@ struct LogConfiguration
             NetworkStream
         };
         Kind kind = Kind::File;
-        /// Original-case absolute paths for `Kind::File` (one entry
-        /// per appended file in load order); single-element for
-        /// `Kind::NetworkStream` (producer URI / display name).
-        /// Always parallel to `locatorDedupKeys` -- both vectors
-        /// must be mutated together via `AppendLocator` /
-        /// `ClearLocators`; direct `push_back` on either alone
-        /// breaks the invariant.
         std::vector<std::string> locators;
-        /// Canonicalised dedup keys (lower-cased + forward-slashed
-        /// absolute paths on Windows; identical to `locators[i]`
-        /// on case-sensitive platforms). The "are these two paths
-        /// the same file?" check inside the open / append paths
-        /// compares this rather than `locators[i]`, so a user
-        /// dropping the same file with two different casings on
-        /// Windows still gets a single entry.
         std::vector<std::string> locatorDedupKeys;
     };
 
@@ -196,41 +177,26 @@ struct LogConfiguration
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
-/// Inline helper for the recurring `source.has_value() &&
-/// !source->locators.empty()` shape -- the "source descriptor is
-/// actionable" predicate. Centralising the gate prevents a half-checked
-/// form (`has_value()` without `empty()`) from sneaking through one
-/// call site at a time: a `Source{kind: File, locators: {}}` parses
-/// but is not actionable, so every accessor that wants "do we have a
-/// rebindable source" must check both. `noexcept` because both
-/// operations on `std::optional` / `std::vector` are noexcept.
+/// "Source is actionable" predicate. Centralises the
+/// `has_value() && !locators.empty()` gate so the half-checked form
+/// can't sneak through one call site at a time.
 [[nodiscard]] inline bool HasLocators(const std::optional<LogConfiguration::Source> &source) noexcept
 {
     return source.has_value() && !source->locators.empty();
 }
 
-/// Append a locator to @p target, keeping `locators` and
-/// `locatorDedupKeys` in lockstep. Every production call site that
-/// mutates `Source::locators` MUST go through here (or
-/// `ClearLocators` below) so the parallel-array invariant cannot be
-/// broken by a caller forgetting one half. The helper takes the
-/// already-computed @p dedupKey rather than re-computing it from
-/// @p displayPath because the canonicalisation lives in the
-/// application layer (`logapp::CanonicalLocator`) and the library
-/// deliberately has no Qt dependency. (Parameter is named `target`
-/// rather than `source` to avoid shadowing the `LogConfiguration::source`
-/// member at call sites that inline this helper.)
+/// Append a locator, keeping `locators` and `locatorDedupKeys` in
+/// lockstep. All call sites that mutate `Source::locators` MUST go
+/// through this helper (or `ClearLocators`). @p dedupKey is taken
+/// pre-computed because canonicalisation lives in the application
+/// layer (the library has no Qt dependency).
 inline void AppendLocator(LogConfiguration::Source &target, std::string displayPath, std::string dedupKey)
 {
     target.locators.push_back(std::move(displayPath));
     target.locatorDedupKeys.push_back(std::move(dedupKey));
 }
 
-/// Drop every locator on @p target, keeping `locators` and
-/// `locatorDedupKeys` in lockstep. Trivially short, but preserving
-/// the same chokepoint pattern as `AppendLocator` makes the
-/// invariant impossible to forget when a future refactor needs to
-/// wipe a source mid-flow.
+/// Drop every locator, keeping the parallel arrays in lockstep.
 inline void ClearLocators(LogConfiguration::Source &target)
 {
     target.locators.clear();
@@ -257,49 +223,33 @@ public:
     /// Throws `std::runtime_error` on open failure.
     void Load(const std::filesystem::path &path);
 
-    /// Parse a configuration directly from an in-memory buffer.
-    /// Throws `std::runtime_error` on parse failure. Used by the
-    /// app-side "could this file be a configuration?" probe so it
-    /// can read a bounded prefix from disk rather than streaming
-    /// the entire file through the IO path -- protects against
-    /// pathological multi-gigabyte log files that happen to start
-    /// with a `{"columns":[...]}` line.
+    /// Parse from an in-memory buffer. Throws on parse failure.
+    /// Used by the app-side configuration probe so a bounded
+    /// prefix can be read from disk without streaming a
+    /// multi-gigabyte log through the IO path.
     void LoadFromString(std::string_view content);
     /// Writes the full struct (equivalent to `SaveScope::Full`).
     void Save(const std::filesystem::path &path) const;
     /// Writes the subset selected by @p scope.
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
-    /// Free-standing serialization for callers that already hold a
-    /// `LogConfiguration` value (e.g. the app-side session-history
-    /// manager auto-saving a snapshot). Throws on serialization or
-    /// open failure -- same contract as the instance overload.
-    /// No default for @p scope so callers are forced to opt in
-    /// explicitly: a silent default tends to drift between
-    /// "Columns only" (faster, drops filters / sort / source) and
-    /// "Full" (recents-restorable) as new fields are added to the
-    /// schema, and a snapshot that loses its source is invisible
-    /// until restore time.
+    /// Free-standing save for callers that already hold a
+    /// `LogConfiguration` value. Throws on serialization / open
+    /// failure. @p scope has no default so callers can't silently
+    /// drift between Columns-only and Full as the schema grows.
     static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
 
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);
 
-    /// Wipe the configuration back to a default-constructed
-    /// `LogConfiguration` (no columns, no filters, no sort, no
-    /// source). Invalidates the key cache. Used by `MainWindow::
-    /// NewSession` to produce a true blank-window state -- the
-    /// previous behavior preserved columns across NewSession so the
-    /// user could reuse the layout, but that left stale headers /
-    /// sort / source attached to an otherwise empty view, which
-    /// did not match the user's "fresh window" mental model.
+    /// Wipe to a default-constructed `LogConfiguration`. Invalidates
+    /// the key cache. Used by `MainWindow::NewSession` to produce a
+    /// true blank-window state.
     void Reset();
 
-    /// Replace the held `LogConfiguration` wholesale. Lets callers
-    /// pre-parse a configuration from disk (e.g. `MainWindow`'s
-    /// recents pre-flight) and apply it atomically without paying
-    /// the second file read that `Load(path)` would. Invalidates
-    /// the key cache so the next `Keys()` call rebuilds.
+    /// Replace the held configuration wholesale. Lets callers
+    /// apply an already-parsed value atomically (no second file
+    /// read). Invalidates the key cache.
     void SetConfiguration(LogConfiguration configuration);
 
     /// Append-only: adds keys not already configured, auto-promoting

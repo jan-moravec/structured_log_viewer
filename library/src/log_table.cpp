@@ -1422,30 +1422,14 @@ bool LogTable::FinalizeAutoDetection()
         }
     }
 
-    // Demote sweep: stream-mode aggressively promotes at 2 rows, but
-    // the per-batch `ShouldDemote` is gated by
-    // `ENUM_HEALTH_MIN_SAMPLES = 50`, so a small file (fewer than 50
-    // present slots) whose column is genuinely not enum-shaped --
-    // mostly over-cap-length values, mostly wrong-type slots -- can
-    // stay stuck at `Enumeration`. At finalize time we have all the
-    // rows we are going to get, so the min-samples floor no longer
-    // earns its keep; re-check the same ratio without it.
+    // Demote sweep: per-batch `ShouldDemote` is gated by a
+    // 50-sample floor; small files whose column is genuinely not
+    // enum-shaped can stay stuck at `Enumeration`. At finalize
+    // we have every row, so re-check the ratio without the floor.
+    // User-pinned columns (`autoDetect == false`) are not touched.
     //
-    // We do not add a finalize-time cardinality bail here: the
-    // existing dictionary cap (`mEnumValueCap`, default 64) already
-    // catches truly-unique columns once they exceed it, and a
-    // ratio-based cardinality test cannot distinguish a 4-row file
-    // with 2 genuine levels (ratio 0.5) from a 4-row file with 4
-    // unique strings (ratio 1.0) -- both are equally plausible at
-    // such tiny sample sizes.
-    //
-    // User-pinned columns (`autoDetect == false`) are deliberately
-    // left alone: the user picked the type, only the hard dictionary
-    // cap and cumulative `ShouldDemote` (already firing per batch
-    // once large enough) override the pin.
-    //
-    // Re-read `columns` after the candidate sweep: `PromoteColumnToEnum`
-    // mutates `mConfiguration`.
+    // Re-read `columns` after the candidate sweep above:
+    // `PromoteColumnToEnum` mutates `mConfiguration`.
     {
         const auto &columnsForDemote = mConfiguration.Configuration().columns;
         for (size_t columnIndex = 0; columnIndex < columnsForDemote.size(); ++columnIndex)
@@ -1471,8 +1455,7 @@ bool LogTable::FinalizeAutoDetection()
             {
                 continue;
             }
-            // Long / wrong-type budget: same ratio as the per-batch
-            // check, minus the 50-sample floor.
+            // Same ratio as the per-batch check, minus the floor.
             if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, /*minSamples=*/1U))
             {
                 DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);

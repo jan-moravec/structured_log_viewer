@@ -109,9 +109,8 @@ namespace
 // removes it on destruction. Kept inside this TU to avoid pulling in the
 // library tests' TestJsonLogFile helper (which lives in test/lib and would
 // add a build-graph dependency from apptest onto loglib's catch2 fixtures).
-// In-memory storage backend for `SessionHistoryManager` tests. Keeps
-// the recents index in a private vector so each test case is fully
-// isolated and `QSettings` (and the user's profile) stays untouched.
+// In-memory storage backend for `SessionHistoryManager` tests so
+// each case stays isolated from `QSettings` and the user's profile.
 class InMemoryRecentsIndexStorage final : public IRecentsIndexStorage
 {
 public:
@@ -496,37 +495,24 @@ private slots:
     {
         // Called before the first test function
         qDebug() << "Starting MainWindow tests";
-        // Belt-and-braces sandbox: redirect every
-        // `QStandardPaths::writableLocation(...)` to a per-user
-        // test-only subdirectory before any code in this suite
-        // resolves `AppDataLocation` (the sessions dir, the recents
-        // index, `openWindowsAtQuit`, ...). Without this, a
-        // contributor who later reorders or removes the explicit
-        // org-name override below could silently pollute the user's
-        // real recents profile when running the suite locally.
+        // Redirect `QStandardPaths::writableLocation(...)` to a
+        // per-user test-only subdirectory so this suite never
+        // touches the user's real recents profile.
         QStandardPaths::setTestModeEnabled(true);
-        // Configure QSettings so the recents / openWindowsAtQuit
-        // round-trip tests have a writable backing store. Without an
-        // explicit org / app the default scope on Windows lands on
-        // a registry path the apptest binary may not have permission
-        // to write, and the tests would skip themselves. Use a
-        // dedicated *test* identity so we never touch the user's
-        // real recents store while running the suite.
+        // Use a dedicated test identity for QSettings so the
+        // recents / openWindowsAtQuit round-trip tests have a
+        // writable backing store that does not collide with the
+        // real app profile.
         QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
         QCoreApplication::setApplicationName(QStringLiteral("apptest"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
 
-        // Initialise loglib's timezone database synchronously so any
-        // test that loads a saved configuration containing a time-
-        // range filter (e.g. TestRestoreLastSessionFromPath) does not
-        // trip the lazy `date::current_zone()` cache against the
-        // platform default install path. Production `main()` does the
-        // same thing before constructing the primary window; the
-        // QtTest harness uses `QTEST_MAIN`, so this `initTestCase`
-        // slot is the symmetric hook. CMake pins the apptest working
-        // directory to `$<TARGET_FILE_DIR:apptest>`, which contains
-        // the staged `tzdata/` next to the binary, so `FindTzdata`'s
-        // appDir probe always wins here.
+        // Initialise loglib's timezone database before any test
+        // loads a saved configuration containing a time-range
+        // filter; mirrors what production `main()` does before
+        // constructing the primary window. CMake pins the apptest
+        // working directory next to the staged `tzdata/` so
+        // `FindTzdata`'s appDir probe always wins.
         QVERIFY2(
             MainWindow::InitializeTimezoneDatabase(),
             "Failed to initialise timezone database; see qCritical above. The staged "
@@ -544,13 +530,9 @@ private slots:
 
     void init()
     {
-        // Called before each test function. `initTestCase` pinned the
-        // org/app to the dedicated `structured-log-viewer-tests /
-        // apptest` profile, so this `clear()` only wipes the test
-        // backing store -- never the user's real recents / preferences.
-        // Without it, recents / `openWindowsAtQuit` / `restoreLast`
-        // values bleed across tests and a flake in one fixture can
-        // poison the next one's setup.
+        // Wipe the dedicated test QSettings (set up in `initTestCase`)
+        // so recents / `openWindowsAtQuit` / `restoreLast` values
+        // never bleed across tests.
         QSettings().clear();
         mWindow = new MainWindow();
     }
@@ -1431,15 +1413,12 @@ private slots:
         }
 
         QCoreApplication::processEvents();
-        // No queued lambdas fired through (we're paused), and the buffered
-        // count must reflect the `lines` payload — not 0 as it would have
-        // with the pre-fix `PausedLineCountLocked`.
+        // No queued lambdas fired (we're paused); the buffered
+        // count reflects the `lines` payload.
         QCOMPARE(model.rowCount(), 0);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), batchesWhilePaused * linesPerBatch);
 
-        // Resume coalesces all three batches and posts once. Pre-fix this
-        // dropped every row because `CoalesceLocked` ignored `lines` /
-        // `localLineOffsets`; post-fix the model gains the full count.
+        // Resume coalesces all three batches and posts once.
         sink->Resume();
         QVERIFY(!sink->IsPaused());
         QCoreApplication::processEvents();
@@ -1696,9 +1675,8 @@ private slots:
         const MainWindow mainWindow;
         const QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
         QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via FindUiAction");
-        // Sanity-check the keyboard accelerator the production UI ships.
-        // Remapped from Ctrl+Shift+N to Ctrl+Shift+L when File -> New Window
-        // claimed the former shortcut.
+        // Ctrl+Shift+N was reassigned to File -> New Window; the
+        // network-stream action moved to Ctrl+Shift+L.
         QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+L")));
     }
 
@@ -1838,11 +1816,10 @@ private slots:
     // during a static-streaming parse from the **Stream** menu), the
     // eviction loop in `OnBatch` evicts the whole batch atomically even
     // when its row count exceeds the requested `toDrop` — the
-    // `localLineOffsets` array can be longer than `lines`, so a partial
-    // prefix trim would break the `LogTable::AppendBatch` invariant. The
-    // pre-fix counter snapshotted `toDrop` up front, under-reporting the
-    // overshoot to the status-bar "dropped while paused" indicator. The
-    // fix accumulates the *actual* lines evicted as the loop runs.
+    // `localLineOffsets` may be longer than `lines`, so a partial
+    // prefix trim would break `LogTable::AppendBatch`. The counter
+    // accumulates the actual lines evicted as the loop runs (not a
+    // pre-loop snapshot).
     static void TestPausedDropCountReflectsStaticBatchOverEviction()
     {
         const TempJsonFile fixture(QStringList{
@@ -1892,11 +1869,11 @@ private slots:
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(staticBatchRows));
         QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), qulonglong(0));
 
-        // Step 2 — push a small live-tail batch that overflows the cap by
-        // a fraction of the static head. Pre-fix `toDrop = 30` was used
-        // as the drop count; in reality the entire 100-row static head
-        // is evicted (atomic on `hasStaticContent`), and the counter
-        // must reflect that overshoot. Build the live-tail rows as
+        // Step 2: push a small live-tail batch that overflows the
+        // cap by a fraction of the static head. The entire 100-row
+        // static head is evicted atomically; the counter must
+        // reflect the actual eviction count. Build the live-tail
+        // rows as
         // `LogLine`s referencing a no-producer `StreamLineSource` we
         // wire up directly (not via the model — the model is mid-static-
         // session here).
@@ -1919,10 +1896,9 @@ private slots:
             sink->OnBatch(std::move(batch));
         }
 
-        // Whole 100-row static head was evicted; only the 30-row live-tail
-        // batch survives in the buffer. Pre-fix the counter would report
-        // 30 (the snapshot of `toDrop`); post-fix it reports the actual
-        // 100 lines that left the buffer.
+        // Whole 100-row static head was evicted; only the 30-row
+        // live-tail batch survives. Counter reports the 100 lines
+        // that actually left the buffer.
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(overflowRows));
         QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), static_cast<qulonglong>(staticBatchRows));
 
@@ -1997,10 +1973,11 @@ private slots:
     // buffer **before** any subsequent `OnBatch` (running on the worker
     // thread, observing the now-cleared `mPaused`) can land in the model.
     //
-    // The pre-fix `Resume()` cleared `mPaused` synchronously and then
-    // posted the coalesced buffer via `Qt::QueuedConnection`. Between
-    // those two steps a worker `OnBatch` could see `mPaused == false`,
-    // skip the buffer, and post its own newer batch — also via
+    // The bug: `Resume()` cleared `mPaused` synchronously then
+    // posted the coalesced buffer via `Qt::QueuedConnection`.
+    // Between those steps a worker `OnBatch` could see
+    // `mPaused == false`, skip the buffer, and post its newer
+    // batch ahead of the coalesced one via
     // `QueuedConnection`. The Qt event queue is FIFO, but because both
     // posts happen from different threads ordering depends entirely on
     // wall-clock arrival, so the newer batch could be processed first.
@@ -2038,12 +2015,9 @@ private slots:
         QCOMPARE(sink->PausedLineCount(), size_t{0});
 
         // Drive a follow-up `OnBatch` directly (mirroring a worker that
-        // fires immediately after `mPaused` was cleared) — its rows must
-        // append *after* the paused-buffer rows because Resume already
-        // delivered them. With the pre-fix code a queued post-Resume
-        // batch could arrive at the model first if it happened to land
-        // in the Qt queue before the Resume lambda; this test would not
-        // trigger that exact race, but the synchronous contract makes
+        // fires after `mPaused` was cleared) -- its rows must
+        // append after the paused-buffer rows because Resume
+        // already delivered them. The synchronous contract makes
         // the inversion impossible by construction. We assert the
         // resulting row order matches the input order.
         const size_t followupCount = 4;
@@ -2124,9 +2098,8 @@ private slots:
         QAction *pauseAction = FindActionByObjectName(mWindow, QStringLiteral("actionPauseStream"));
         QVERIFY(pauseAction != nullptr);
 
-        // Simulate the bug condition: forcibly enable the action and
-        // set it checked while idle (matching the Stream-menu click
-        // that the pre-fix code allowed).
+        // Simulate the bug condition: action enabled + checked
+        // while idle.
         pauseAction->setEnabled(true);
         pauseAction->setChecked(true);
         QVERIFY(pauseAction->isChecked());
@@ -2152,12 +2125,11 @@ private slots:
         QVERIFY(!pauseAction->isEnabled());
     }
 
-    // Regression: hovering over table cells (and other Qt-internal,
-    // layout-driven scrollbar updates) must not auto-disengage the
-    // **Follow newest** toggle. Pre-fix, `LogTableView` connected the
-    // verticalScrollBar's `valueChanged` signal directly to the
-    // edge-trigger lambda — so any programmatic value change (e.g. an
-    // `endInsertRows` clamp, a hover/repaint-induced scroll adjustment,
+    // Regression: hover / layout-driven scrollbar updates must not
+    // auto-disengage **Follow newest**. Earlier `LogTableView`
+    // connected `valueChanged` directly to the edge-trigger lambda,
+    // so any programmatic value change (`endInsertRows` clamp,
+    // hover/repaint scroll adjustment,
     // a viewport-size update) flipped `mAtTailEdge` from true to false
     // and emitted `userScrolledAwayFromTail`, which the `MainWindow`
     // then dutifully translated into "uncheck Follow newest" — even
@@ -2198,10 +2170,8 @@ private slots:
         const QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
         QVERIFY(awaySpy.isValid());
 
-        // Programmatic value change to the middle of the range — the
-        // in-process equivalent of a layout-driven scroll adjustment
-        // that Qt fires on hover / repaint. Pre-fix this flipped
-        // `actionFollowTail` to unchecked.
+        // Programmatic value change: mimics a layout-driven scroll
+        // adjustment Qt fires on hover / repaint.
         scrollBar->setValue(scrollBar->maximum() / 2);
         QCoreApplication::processEvents();
 
@@ -2414,10 +2384,11 @@ private slots:
     // must remap its own persistent indices to follow the entity,
     // not the bare row number.
     //
-    // Pre-fix the snapshot stored an integer source row, which under
-    // a no-filter pass-through stayed numerically the same after the
-    // flip; the filter's persistent index ended up pointing at the
-    // entity that moved into the row -- a silent selection swap. The
+    // Earlier the snapshot stored an integer source row, which
+    // under a no-filter pass-through stayed numerically the same
+    // after the flip; the persistent index ended up pointing at
+    // the row that moved into the slot -- a silent selection swap.
+    // The
     // fix anchors each snapshot on a `QPersistentModelIndex` of the
     // source-mapped index, which the source's own
     // `changePersistentIndexList` remaps to the entity's new row.
@@ -2883,9 +2854,8 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(vbar->value(), parkedValue);
 
-        // Push another batch: this fires `lineCountChanged`, which
-        // pre-fix would have called `ScrollToNewestRowIfFollowing`
-        // and snapped the viewport to the bottom.
+        // Push another batch; the slot must not snap the viewport
+        // to the bottom (only live-tail sessions follow).
         sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 201, 200, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 400);
@@ -2915,12 +2885,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Companion to `testStaticSessionDoesNotFollowNewestRows`: the
-    // user-scroll-to-tail signal must not silently re-arm
-    // `actionFollowTail` while a static session is active. Pre-fix
-    // the slot re-engaged the toggle whenever
-    // `mModel->IsStreamingActive()`, which is true for static
-    // sessions too -- so a user who scrolled to the bottom of a
+    // Companion to `testStaticSessionDoesNotFollowNewestRows`:
+    // user scroll-to-tail must not silently re-arm
+    // `actionFollowTail` in a static session. The slot must gate
+    // on session mode, not on `IsStreamingActive()` (which is true
+    // for static sessions too).
     // partially-parsed static file would have the next incoming
     // batch yank the viewport away.
     void TestStaticSessionDoesNotReArmFollowOnScrollToTail()
@@ -3776,10 +3745,8 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
 
-        // Batch 2 grows the dictionary (new value "error"). Pre-fix
-        // the slot called `InvalidateEnumRanks()` on every emit and
-        // the cache dropped to 0 entries; post-fix `Grew` is a no-op
-        // for the cache so the entry stays.
+        // Batch 2 grows the dictionary. `Grew` is a no-op for the
+        // rank cache so the entry stays.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;
@@ -3795,11 +3762,9 @@ private slots:
 
     // Regression: a column auto-promoted to `Type::Enumeration` and
     // demoted back to `Type::String` inside the same batch (encode
-    // overflows the dict cap) must still emit `Demoted` so consumers
-    // can rebuild any rank-cache entry or filter rule that aliased
-    // the transient dictionary. Pre-fix the `enumDictSizesBefore`
-    // detector only saw columns already enum at snapshot time and
-    // missed this transition.
+    // overflows the dict cap) must still emit `Demoted` so
+    // consumers can rebuild any rank-cache entry or filter rule
+    // that aliased the transient dictionary.
     void TestEnumDemotedSignalFiresOnSameBatchPromoteThenDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -4116,14 +4081,13 @@ private slots:
         const std::size_t cacheSizeBefore = filterModel->EnumRankCacheSizeForTest();
         QVERIFY2(cacheSizeBefore >= std::size_t{1}, "sorting by an enum column must populate the rank cache");
 
-        // Reorder columns. Pre-fix a `columnsMoved` hook dropped the
-        // cache; post-fix it survives (KeyId-keyed).
+        // Reorder columns; the rank cache is KeyId-keyed and
+        // survives.
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
-        // Also pin the proxy-level forwarding contract: pre-fix
-        // `LogFilterModel` swallowed the `columnsMoved` pair (only
-        // re-emitted `headerDataChanged`), which left downstream
-        // views with stale column metadata when a streaming session
+        // Pin the proxy-level forwarding contract too: `LogFilterModel`
+        // must forward `columnsMoved` so downstream views see the
+        // bracketed structural change during a streaming session
         // late-promoted a `Type::Time` column. Post-fix the proxy
         // forwards begin/endMoveColumns through to the view.
         const QSignalSpy filterColumnsAboutToBeMovedSpy(filterModel, &QAbstractItemModel::columnsAboutToBeMoved);
@@ -5878,10 +5842,9 @@ private slots:
         probe.Load(sessionPath.toStdString());
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
-        // `locators` now stores case-preserved display paths; the
+        // `locators` stores case-preserved display paths; the
         // lower-cased dedup form is parallel-indexed under
-        // `locatorDedupKeys`. Assert both invariants so a future
-        // accidental "drop the dedup key" regression is caught here.
+        // `locatorDedupKeys`. Assert both stay populated.
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators[0]),
             logapp::CanonicalDisplayPath(fixtureA.Path())
@@ -5901,25 +5864,19 @@ private slots:
         );
     }
 
-    // Regression for the Append-while-streaming crash: calling
-    // `StartStreamingOpenQueue(Append)` while a static streaming
-    // worker is still in flight used to fall through to
-    // `LogModel::AppendStreaming`, which asserts
-    // `!mStreamingWatcher->isRunning()` -- crashing debug builds and
-    // silently abandoning the in-flight worker in release. The fix
-    // defers the new files into `mPendingOpenFiles`; the
-    // `streamingFinished` drain in `MainWindow`'s constructor picks
-    // them up once the active parse terminates.
+    // Regression for the Append-while-streaming crash: Append while
+    // a static streaming worker was in flight used to call
+    // `AppendStreaming` and assert `!isRunning()`. The fix defers
+    // the new files into `mPendingOpenFiles` so the next
+    // `streamingFinished` picks them up.
     void TestAppendDuringActiveStreamingDefersInsteadOfCrashing()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        // Inflate fixture A so the first parse has a realistic window
-        // in which the second `OpenFilesForTest` call observes
-        // `IsStreamingActive() == true`. Two short fixtures otherwise
-        // race the GUI thread on fast machines and the test would
-        // pass even without the fix.
+        // Inflate fixture A so the first parse is still in flight
+        // when the second `OpenFilesForTest` lands. Short fixtures
+        // would race the GUI thread on fast machines.
         QStringList fixtureLinesA;
         fixtureLinesA.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -5936,24 +5893,21 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // First open arms the streaming worker but does NOT wait
-        // for completion. We pump events just enough for the queue
-        // to enter the streaming state.
+        // First open arms the worker but does NOT wait. Pump events
+        // just enough to enter the streaming state.
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
         QCoreApplication::processEvents();
 
-        // Second open is the regression case. Pre-fix, this would
-        // call `AppendStreaming` and trip its
-        // `!mStreamingWatcher->isRunning()` Q_ASSERT in debug builds.
-        // The condition is the "model is streaming" check, not the
-        // post-condition; if streaming already finished on a very
-        // fast runner we still exercise the post-finish Append path
-        // (mSessionMode == Idle, rowCount > 0) which is safe.
+        // Second open is the regression case: with an in-flight
+        // streaming worker, the file must defer onto
+        // `mPendingOpenFiles` instead of tripping `AppendStreaming`'s
+        // `!isRunning()` assert. On a fast runner streaming may
+        // already have finished and the safer post-finish Append
+        // path runs.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
 
-        // Drain both `streamingFinished` events. The deferred queue
-        // entry must produce a second `streamingFinished` once the
-        // first worker terminates.
+        // Drain both `streamingFinished` events; the deferred file
+        // produces a second one after the first worker terminates.
         while (finishedSpy.count() < 2)
         {
             QVERIFY2(finishedSpy.wait(10000), "both streaming sessions must finish");
@@ -5962,9 +5916,8 @@ private slots:
 
         QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
 
-        // The source descriptor records both files in load order
-        // even though the second open was deferred through the
-        // `streamingFinished` drain rather than queued directly.
+        // Both files land on the source descriptor in load order
+        // despite the second open being deferred.
         const QTemporaryDir saved;
         QVERIFY(saved.isValid());
         const QString sessionPath = saved.filePath(QStringLiteral("appended_during_stream.json"));
@@ -5984,25 +5937,18 @@ private slots:
         );
     }
 
-    // Switching to a live-tail stream mid-append-queue silently
-    // dropped the remaining queued files in earlier builds: the
-    // destructive `mModel->Reset()` inside `OpenLogStreamFromPath`
-    // emits `streamingFinished(Cancelled)` synchronously, and the
-    // shared finished-lambda `clear()`s `mPendingOpenFiles` on the
-    // Cancelled branch with no user-visible signal. The fix
-    // snapshots the queue size, posts a status-bar hint, and
-    // explicitly clears the queue before the reset so the discard
-    // is both visible to the user and an audit-traceable line of
-    // code rather than an emergent side-effect of the cancel-path
-    // clear.
+    // Switching to live-tail mid-append-queue used to silently drop
+    // the remaining queued files via the cancel-path `clear()`. The
+    // fix snapshots the queue size, posts a status-bar hint, and
+    // clears the queue explicitly before the reset.
     void TestOpenLogStreamSurfacesDiscardedQueuedFiles()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        // Inflate fixture A so the first parse is still in flight
-        // when the second Append queues into `mPendingOpenFiles` --
-        // same trick as `TestAppendDuringActiveStreamingDefersInsteadOfCrashing`.
+        // Inflate fixture A so the second Append queues into
+        // `mPendingOpenFiles` while the first parse is still active
+        // (same trick as the Defer-vs-Crash test).
         QStringList fixtureLinesA;
         fixtureLinesA.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -6019,16 +5965,14 @@ private slots:
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
         QCoreApplication::processEvents();
         // Second open lands in `mPendingOpenFiles` because the
-        // first parse is still in flight (mirrors the defer path
-        // covered by `TestAppendDuringActiveStreamingDefersInsteadOfCrashing`).
+        // first parse is still in flight.
         mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
 
         mWindow->statusBar()->clearMessage();
 
-        // Switch to a live-tail stream while the append queue is
-        // primed. The fix surfaces a discard hint and clears the
-        // queue; without the fix the queue is silently cleared
-        // when the cancel-path runs inside `mModel->Reset()`.
+        // Switch to live-tail while the append queue is primed.
+        // The fix surfaces a discard hint; without it the queue is
+        // silently cleared via the cancel-path inside Reset().
         mWindow->OpenLogStreamForTest(streamFixture.Path());
         QCoreApplication::processEvents();
 
@@ -6038,11 +5982,9 @@ private slots:
             qPrintable(QStringLiteral("expected discard hint in status bar; got: '%1'").arg(message))
         );
 
-        // The fixtureB drain never happened (its rows are not in
-        // the model) -- it was discarded before the stream took
-        // over the view. The live-tail session may or may not
-        // have produced rows yet; we only assert the queue was
-        // dropped, not the row count of the stream.
+        // fixtureB never streamed (discarded before the live-tail
+        // took over). We only check the queue drop, not the
+        // live-tail row count.
         const bool seesFixtureB = [&]() {
             const int rows = model->rowCount();
             for (int r = 0; r < rows; ++r)
@@ -6106,19 +6048,15 @@ private slots:
     }
 
     // `actionNewSession` clears rows, runtime filters, the persisted
-    // column configuration (columns / sort / filters / source), and
-    // the session mode. The action is reachable through
-    // `FindUiAction` so the keyboard shortcut wiring is covered too
-    // (offscreen QPA can't deliver shortcuts but the action handler
-    // runs identically).
+    // column configuration, and session mode. Reached through
+    // `FindUiAction` so the action wiring is covered too.
     void TestNewSessionActionResetsState()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
         // Two distinct keys so the auto-detector materialises at
-        // least two columns. NewSession must wipe both, not just
-        // the rows underneath them.
+        // least two columns; NewSession must wipe both.
         const QStringList fixtureLines{
             QStringLiteral(R"({"category": "info", "msg": "x-0"})"),
             QStringLiteral(R"({"category": "warn", "msg": "x-1"})"),
@@ -6133,10 +6071,8 @@ private slots:
         QCOMPARE(model->rowCount(), fixtureLines.size());
         QVERIFY2(model->columnCount() >= 2, "fixture must auto-detect at least the two JSON keys as columns");
 
-        // Apply a sort so NewSession has something to clear: without
-        // this the "after NewSession sort is -1" assertion below
-        // could trivially hold because the proxy never received a
-        // sort indicator in the first place.
+        // Apply a sort so NewSession has something to clear --
+        // otherwise the post-condition holds trivially.
         const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
         mWindow->TableViewForTest()->sortByColumn(categoryCol, Qt::DescendingOrder);
@@ -6148,18 +6084,15 @@ private slots:
         action->trigger();
         QCoreApplication::processEvents();
 
-        // In-memory state: rows, columns, runtime filters all gone;
-        // the proxy sort is back to "no sort".
+        // Rows, columns, runtime filters gone; sort cleared.
         QCOMPARE(model->rowCount(), 0);
         QCOMPARE(model->columnCount(), 0);
         QVERIFY2(model->Configuration().columns.empty(), "New Session must clear the persisted column configuration");
         QVERIFY2(mWindow->Filters().empty(), "New Session must clear the runtime filter map");
         QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
 
-        // On-disk round-trip: a subsequent SaveSession must not
-        // write a `source`, must write an empty `columns` /
-        // `filters` array, and must write the default sort
-        // (columnIndex == -1).
+        // SaveSession on the cleared state writes no source, empty
+        // columns / filters arrays, and the default sort.
         const QTemporaryDir saved;
         QVERIFY(saved.isValid());
         const QString sessionPath = saved.filePath(QStringLiteral("new-session.json"));
@@ -6510,12 +6443,11 @@ private slots:
     // `(type=Enumeration, autoDetect=true)` because the pipeline
     // flips only `type` through `SetColumnType`. The Type combo
     // must therefore:
-    //   1. Surface the *resolved* type in the combo (the user must
-    //      see "Enumeration", not the misleading "Auto-detect"
-    //      entry that the pre-fix lookup fell back to).
-    //   2. Round-trip cleanly on accept-without-change: the column's
-    //      `(type, autoDetect)` pair must be preserved unmodified
-    //      (no silent `(Enumeration, false)` pin, no destructive
+    //   1. Surface the resolved type in the combo (the user must
+    //      see "Enumeration", not a fallback to "Auto-detect").
+    //   2. Round-trip cleanly on accept-without-change: the
+    //      column's `(type, autoDetect)` pair stays intact (no
+    //      silent `(Enumeration, false)` pin, no destructive
     //      `(Any, true)` rewrite via the "Auto-detect" entry).
     void TestColumnEditorPreservesAutoDetectFlagOnPromotedColumn()
     {
@@ -6524,10 +6456,9 @@ private slots:
         auto *model = mWindow->Model();
 
         // Precondition: streaming auto-promoted `category` to
-        // `Enumeration` and left `autoDetect = true` (the detector
-        // never clears the flag). This is the exact (concrete-type,
-        // autoDetect=true) pair the pre-fix `FindTypeChoiceIndex`
-        // dropped to index 0 ("Auto-detect").
+        // `Enumeration` with `autoDetect = true`: the detector
+        // never clears the flag. `FindTypeChoiceIndex` must surface
+        // this as "Enumeration", not as index 0 ("Auto-detect").
         const auto &preEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
         QCOMPARE(preEdit.type, loglib::LogConfiguration::Type::Enumeration);
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
@@ -6536,11 +6467,8 @@ private slots:
         auto *typeCombo = editor.TypeComboForTest();
         QVERIFY(typeCombo != nullptr);
         // (1) Combo must show the resolved type. Index 8 is
-        // "Enumeration" in `TypeChoices()` (same convention as the
-        // other editor tests in this file). Anything else (and
-        // especially index 0, the pre-fix fallback) would mislead
-        // the user into thinking the column is still in auto-detect
-        // mode.
+        // "Enumeration" in `TypeChoices()`. Index 0 (the auto-detect
+        // fallback) would mislead the user.
         constexpr int ENUMERATION_CHOICE_INDEX = 8;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(typeCombo->currentIndex(), ENUMERATION_CHOICE_INDEX);
@@ -7402,10 +7330,9 @@ private slots:
 
         mWindow->statusBar()->clearMessage();
 
-        // `*[invalid` is a syntactically-broken regex (quantifier with
-        // no operand, unbalanced bracket). `QRegularExpression(pattern).isValid()`
-        // returns false; pre-fix this was passed straight into the
-        // matcher.
+        // `*[invalid` is syntactically broken;
+        // `QRegularExpression::isValid()` returns false and the
+        // matcher must short-circuit.
         const QString filterId = QStringLiteral("invalid-regex");
         const int column = 0;
         QVERIFY2(
@@ -7444,11 +7371,9 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: string filters now match the user-visible (one-line,
-    // simplified) text. Pre-fix the matcher saw raw bytes with
-    // embedded `\n`, so a `Contains` typed as the displayed text
-    // ("line1 line2") silently rejected the row. All four match
-    // modes flowed through the same broken path.
+    // String filters match the user-visible (one-line, simplified)
+    // text, not the raw bytes with embedded `\n`. All four match
+    // modes share one path.
     void TestStringFilterMatchesDisplayedTextForMultilineValues()
     {
         // Two rows: one matches, one doesn't, so we know the filter
@@ -7981,12 +7906,11 @@ private slots:
     }
 
     // Regression: a streaming batch through `LogFilterModel` with no
-    // active sort and no filter must emit a single bracketed
-    // `rowsInserted` pair covering the whole accepted range, not one
-    // pair per source row. Pre-fix `OnSourceRowsInserted` bracketed
-    // each row individually and rebuilt the reverse index outside
-    // the bracket (O(n) signal pairs + O(n)-staleness window on
-    // `mSourceRowToProxyRow`). Post-fix coalesces into one bracket
+    // active sort and no filter emits one bracketed `rowsInserted`
+    // pair covering the whole accepted range, not one pair per
+    // source row. The reverse-index rebuild lives inside the
+    // bracket so no O(n) staleness window on `mSourceRowToProxyRow`
+    // is observable.
     // and rebuilds the reverse index inside it.
     void TestStreamingBatchEmitsSingleRowsInsertedBracket()
     {
@@ -8028,7 +7952,7 @@ private slots:
 
         QCOMPARE(filterModel->rowCount(), BATCH_SIZE);
 
-        // One bulk bracket. Pre-fix this would have been BATCH_SIZE pairs.
+        // One bulk bracket, not BATCH_SIZE pairs.
         QCOMPARE(aboutToInsertSpy.count(), 1);
         QCOMPARE(insertedSpy.count(), 1);
 
@@ -8062,11 +7986,11 @@ private slots:
     // Regression: an enum filter installed while the column is still
     // `Type::Any + autoDetect` builds with `dictionary = nullptr` and
     // runs the slow string-set fallback. On auto-promote,
-    // `MainWindow::enumColumnsChanged(Promoted)` must rebuild the
-    // predicate so it picks up the bitset hot path. Pre-fix the slot
-    // gated the rebuild on `!EnumFilterFullyResolved` -- which goes
-    // true the instant the new dictionary contains every selected
-    // value -- so no rebuild ever fired. The observable is a
+    // `enumColumnsChanged(Promoted)` must rebuild the predicate so
+    // it picks up the bitset hot path -- gating the rebuild on
+    // `!EnumFilterFullyResolved` would skip it as soon as the new
+    // dictionary contained every selected value. The observable
+    // is a
     // `LogFilterModel::layoutChanged` from `UpdateFilters` after the
     // `Promoted` signal.
     void TestNumericRangeFilterFiltersToBoundedRange()
@@ -8788,10 +8712,8 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: `enumColumnsChanged(Promoted, columnIndex)` only
-    // rebuilds filters that actually target the promoted column.
-    // Pre-fix the slot rebuilt for any enum filter, regardless of
-    // which column changed.
+    // `enumColumnsChanged(Promoted, columnIndex)` only rebuilds
+    // filters that target the promoted column.
     void TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -8895,11 +8817,11 @@ private slots:
     }
 
     // Regression: a pre-existing enum column whose dict only grew in
-    // a batch must emit `Grew` exactly once and never `Promoted`.
-    // `LastBackfillRange` is a min/max over every back-filled column,
-    // so a grow-only column can fall inside it. Pre-fix the back-fill
-    // loop fired `Promoted` for every enum column in that range,
-    // double-triggering `MainWindow::UpdateFilters`.
+    // a batch emits `Grew` exactly once and never `Promoted`.
+    // `LastBackfillRange` is a min/max over every back-filled
+    // column, so a grow-only column can fall inside it; the
+    // back-fill loop must filter rather than firing `Promoted`
+    // for every enum column in the range.
     //
     // Setup:
     //   * batch 1 leaves `colA` as a candidate (`Type::Any +
@@ -8996,8 +8918,7 @@ private slots:
         QCOMPARE(static_cast<int>(colBDictAfter->Size()), 2);
 
         // colB is the sandwiched pre-existing enum: exactly one
-        // `Grew`, zero `Promoted`. Pre-fix the back-fill loop also
-        // fired `Promoted` here, double-triggering `UpdateFilters`.
+        // `Grew`, zero `Promoted`.
         int colBGrewCount = 0;
         int colBPromotedCount = 0;
         int colBDemotedCount = 0;
@@ -9112,11 +9033,9 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the inverted-range status-bar message uses the
-    // C-locale, max-digits10 formatter, matching what the user typed.
-    // Pre-fix it used precision-6 `arg(double)` which collapsed
-    // distinct bounds like `12345.6789` and `12345.6790` into the
-    // same string.
+    // The inverted-range status-bar message uses the C-locale,
+    // max-digits10 formatter so distinct bounds (`12345.6789` vs.
+    // `12345.6790`) stay distinguishable.
     void TestNumericRangeRejectionMessagePreservesPrecision()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -9894,10 +9813,9 @@ private slots:
         // runner, and a still-alive sibling top-level (no parent) trips
         // Qt's internal QWidget-list traversal inside the next test's
         // setup.
-        // The analyzer cannot prove the `QScopeGuard`-driven `delete`
-        // runs (it does, exactly once on every exit path), so we
-        // suppress the bookend warning across the function body via
-        // a matching end-marker at the closing brace.
+        // The analyzer cannot prove the `QScopeGuard`-driven delete
+        // runs; suppress the warning across the body with a matching
+        // end-marker at the closing brace.
         // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
         QPointer<RecordDetailWindow> window = new RecordDetailWindow(snapshot);
         const QScopeGuard cleanup([&]() {
@@ -10751,15 +10669,8 @@ private slots:
         QCOMPARE(probe.Configuration().columns.size(), static_cast<std::size_t>(2));
     }
 
-    // Recents-menu label for a `Kind::NetworkStream` source must
-    // round-trip the producer URI / display name verbatim. The
-    // earlier label builder ran every locator through
-    // `QFileInfo::fileName()`, which strips at the colon /
-    // separator and turns `"TCP 127.0.0.1:5170"` into `"5170"` --
-    // unreadable in the menu. Production no longer auto-saves
-    // network streams, but legacy entries from pre-gate builds
-    // still surface in the index, so the kind-aware branch matters
-    // for upgrade scenarios.
+    // Recents label for a `NetworkStream` source round-trips the
+    // URI verbatim (no `QFileInfo::fileName()` collapse).
     void TestSessionHistoryLabelKeepsNetworkStreamLocatorIntact()
     {
         const QTemporaryDir sessionsDir;
@@ -10886,14 +10797,10 @@ private slots:
         QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
     }
 
-    // `actionNewWindow` spawns a second top-level MainWindow that
-    // shares the primary's `SessionHistoryManager`. Asserts:
-    // (a) one new top-level window appears,
-    // (b) the new window points at the same manager (proved
-    //     indirectly by writing through one and listing through the
-    //     other),
-    // (c) the new window has `WA_DeleteOnClose` so closing it does
-    //     not leak.
+    // `actionNewWindow` spawns a second MainWindow sharing the
+    // primary's manager. Asserts: one new top-level appears, the
+    // shared manager observes the same writes, and the spawn has
+    // `WA_DeleteOnClose`.
     void TestNewWindowSharesHistoryManager()
     {
         const QTemporaryDir sessionsDir;
@@ -10902,10 +10809,9 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto primary = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Count only `MainWindow` top-levels; each `MainWindow`
-        // constructor also installs auxiliary top-level widgets
-        // (preferences editor, record detail window, etc.) that
-        // would otherwise inflate a raw `topLevelWidgets` count.
+        // Each `MainWindow` constructor also installs auxiliary
+        // top-levels (preferences, record detail), so filter to
+        // just the MainWindows.
         auto countMainWindows = []() {
             int n = 0;
             for (QWidget *w : QApplication::topLevelWidgets())
@@ -10945,9 +10851,8 @@ private slots:
         QVERIFY2(child != nullptr, "newly spawned window must be a MainWindow");
         QVERIFY2(child->testAttribute(Qt::WA_DeleteOnClose), "spawned window must auto-delete on close");
 
-        // Write through the primary window via a real open so the
-        // recents store mutates; the child window sees the same
-        // entry, proving shared-manager wiring.
+        // Drive a real open through the primary; the shared
+        // manager surfaces the entry to both windows.
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "shared"})")});
         QSignalSpy primaryFinished(primary->Model(), &LogModel::streamingFinished);
         primary->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
@@ -10955,10 +10860,9 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(manager.List().size(), 1);
 
-        // Close the spawned window so its WA_DeleteOnClose unwinds
-        // before our local `primary` goes out of scope. The
-        // `deleteLater` posted by Qt fires on the next event-loop
-        // iteration, so spin it.
+        // Close the spawned window and spin the event loop so the
+        // `deleteLater` from `WA_DeleteOnClose` runs before
+        // `primary` falls out of scope.
         const QSignalSpy destroyedSpy(child, &QObject::destroyed);
         child->close();
         for (int i = 0; i < 50 && destroyedSpy.isEmpty(); ++i)
@@ -10969,10 +10873,9 @@ private slots:
         QCOMPARE(destroyedSpy.count(), 1);
     }
 
-    // `RestoreLastSessionFromPath` opens an auto-saved JSON snapshot
-    // and rehydrates the model + filters from it. Used by main()'s
-    // restore-on-launch hook; tested here against a freshly-built
-    // window so we can drive the entry point directly.
+    // `RestoreLastSessionFromPath` reopens an auto-saved snapshot
+    // into a freshly-built window (the entry point that `main()`'s
+    // restore-on-launch hook uses).
     void TestRestoreLastSessionFromPath()
     {
         const QTemporaryDir sessionsDir;
@@ -10980,8 +10883,7 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Step 1: open a session through one window so we get a
-        // real on-disk JSON to restore from.
+        // Seed an on-disk JSON via a real open.
         auto seeder = std::make_unique<MainWindow>(&manager, nullptr);
         const QStringList fixtureLines{
             QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
@@ -10997,13 +10899,11 @@ private slots:
 
         const auto lastPath = manager.LastSessionPath();
         QVERIFY(lastPath.has_value());
-        // Drop the seeder so any closeEvent flush completes before
-        // we drive the restore (mirrors the real cold-start order).
+        // Drop the seeder so its closeEvent flush completes first
+        // (mirrors the real cold-start order).
         seeder.reset();
 
-        // Step 2: fresh window, restore the snapshot. The fixture
-        // must still exist on disk because the configuration points
-        // at its path.
+        // Fresh window restores the snapshot.
         auto restored = std::make_unique<MainWindow>(&manager, nullptr);
         QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->RestoreLastSessionFromPath(*lastPath);
@@ -11013,12 +10913,10 @@ private slots:
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
     }
 
-    // The Recent Sessions submenu is rebuilt from
-    // `SessionHistoryManager::List` on `aboutToShow`. Asserts:
-    // (a) one action per entry (plus a separator + Clear action),
-    // (b) clicking an entry reopens the underlying configuration, and
-    // (c) `mAutoSaveUuid` is pinned to the reopened uuid so further
-    //     edits update that entry instead of creating a new one.
+    // Recent Sessions submenu rebuild on `aboutToShow`. Asserts:
+    // entries + separator + Clear are present, clicking an entry
+    // reopens the configuration, and `mAutoSaveUuid` is pinned so
+    // further edits update the same entry.
     void TestRecentSessionsMenuReopensEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -11027,8 +10925,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Seed a recents entry through a full open so the on-disk
-        // JSON is a real round-trippable session.
+        // Seed a recents entry via a real open.
         const QStringList fixtureLines{
             QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
             QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
@@ -11048,11 +10945,9 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(wired->Model()->rowCount(), 0);
 
-        // Force the submenu rebuild + drive the entry action. The
-        // `Recent Sessions` menu lives under `menuRecentSessions`
-        // (object name set by the .ui form).
+        // Force the submenu rebuild + drive the entry action.
         auto *recentsMenu = wired->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
-        QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist after Part 4c");
+        QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist");
         emit recentsMenu->aboutToShow();
 
         const QList<QAction *> actions = recentsMenu->actions();
@@ -11072,8 +10967,7 @@ private slots:
         QCOMPARE(manager.List().front().uuid, uuid);
     }
 
-    // The MainWindow auto-save hook writes a snapshot through the
-    // injected `SessionHistoryManager` on every successful streaming
+    // Auto-save writes a snapshot on every successful streaming
     // finish, reusing the per-window uuid so a second auto-save
     // updates the same recents entry instead of growing the list.
     void TestMainWindowAutoSavesOnStreamingFinished()
@@ -11083,9 +10977,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Use the production constructor that takes a manager. The
-        // default-constructed `mWindow` in the fixture is unwired, so
-        // a local window is needed for this test.
+        // The fixture's `mWindow` is unwired; use the production
+        // constructor that takes a manager.
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
         auto *model = wired->Model();
@@ -11110,8 +11003,7 @@ private slots:
         QCOMPARE(manager.List().size(), 1);
         const QString firstUuid = manager.List().front().uuid;
 
-        // Second open through the same window should *update* the
-        // existing entry, not add a new one.
+        // Second open updates the existing entry, not appends.
         const TempJsonFile fixtureB(QStringList{QStringLiteral(R"({"msg": "b-0"})")});
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
@@ -11120,18 +11012,14 @@ private slots:
 
         QCOMPARE(manager.List().size(), 1);
         QCOMPARE(manager.List().front().uuid, firstUuid);
-        // The label tracks the new source descriptor (primary file is
-        // still A; B appended on top).
+        // Label now tracks both A and B (B appended onto A).
         QCOMPARE(manager.List().front().fileCount, 2);
     }
 
-    // With the cross-process `QLockFile` held by a "foreign"
-    // process the manager fails closed: `WriteSnapshot` returns an
-    // empty uuid (no write attempted, index untouched) rather than
-    // racing the sibling's clear+rewrite of the QSettings entries
-    // sub-group. The timeout itself is bounded by the runtime
-    // budget (1.5 s) so the GUI thread does not freeze, and a
-    // subsequent attempt once the lock is released succeeds.
+    // With the cross-process lockfile held by a sibling, the
+    // manager fails closed: `WriteSnapshot` returns an empty uuid,
+    // the lock attempt is bounded so the GUI does not freeze, and
+    // a retry succeeds once the lock is released.
     void TestWriteSnapshotSurvivesHeldLockFile()
     {
         const QTemporaryDir sessionsDir;
@@ -11139,16 +11027,12 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Force the sessions directory to exist so the lock file
-        // path is valid. WriteSnapshot would do this on its own
-        // but we want the lock contention to bite before that.
+        // Force the directory so the lock path exists before
+        // WriteSnapshot would create it.
         QVERIFY(QDir().mkpath(sessionsDir.path()));
 
-        // Take the lock from a "foreign" process. WriteSnapshot
-        // will request the runtime write timeout (1.5 s) and bail
-        // when it cannot acquire the lock. Use a very short
-        // stale-lock so the lock is never accidentally treated as
-        // dead by the manager's tryLock.
+        // Take the lock from a "foreign" holder. Short stale-time
+        // so the manager's tryLock never treats it as dead.
         QLockFile foreign(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
         foreign.setStaleLockTime(0);
         QVERIFY(foreign.tryLock(100));
@@ -11158,10 +11042,7 @@ private slots:
         src.locators = {"C:/logs/locked.json"};
         cfg.source = src;
 
-        // The fail-closed contract: WriteSnapshot returns an empty
-        // uuid (write skipped, index untouched), bounded by the
-        // runtime write timeout + small slack so the UI does not
-        // freeze for the full shutdown timeout.
+        // Fail-closed: empty uuid, no write, bounded duration.
         const auto start = std::chrono::steady_clock::now();
         const QString uuid = manager.WriteSnapshot(cfg);
         const auto elapsed =
@@ -11171,18 +11052,16 @@ private slots:
         QVERIFY2(elapsed < 3000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
         QCOMPARE(manager.List().size(), 0);
 
-        // Once the foreign holder releases the lock, the manager
-        // recovers and the next call writes the entry.
+        // Releasing the foreign lock unblocks the next call.
         foreign.unlock();
         const QString retryUuid = manager.WriteSnapshot(cfg);
         QVERIFY2(!retryUuid.isEmpty(), "WriteSnapshot must succeed once contention clears");
         QCOMPARE(manager.List().size(), 1);
     }
 
-    // The `openWindowsAtQuit` round-trip preserves order. Test runs
-    // in `QSettings`-test-mode where possible (Windows registry
-    // permitting); failure to set a value is acceptable, but if
-    // the write is honoured the read must echo it back faithfully.
+    // `openWindowsAtQuit` round-trip preserves order. If QSettings
+    // refuses the write (registry permissions in some Windows test
+    // envs), the test skips rather than failing.
     void TestOpenWindowsAtQuitRoundTrip()
     {
         const QStringList expected{QStringLiteral("uuid-a"), QStringLiteral("uuid-b"), QStringLiteral("uuid-c")};
@@ -11191,10 +11070,7 @@ private slots:
 
         SessionHistoryManager::SetOpenWindowsAtQuit(expected);
         const QStringList actual = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        // On Windows the registry-backed QSettings can swallow the
-        // write in some test environments; treat that as a soft
-        // skip rather than a failure (the production behaviour is
-        // exercised by the integration path in main.cpp).
+        // QSettings may swallow the write on some Windows test envs.
         if (actual.isEmpty())
         {
             QSKIP("QSettings did not honour the write in this environment");
@@ -11206,13 +11082,8 @@ private slots:
     }
 
     // `TakeOpenWindowsAtQuit` is the atomic read-and-wipe used by
-    // `main()` at startup: it must (a) return the persisted list and
-    // (b) leave the persisted list empty in one critical section, so
-    // a sibling writer (`--new-instance` peer running concurrently)
-    // cannot disappear between the read and the wipe. The split
-    // `OpenWindowsAtQuitUnlocked()` + `SetOpenWindowsAtQuit({})` pair this
-    // method replaces was correct under single-process operation but
-    // could race a sibling under multi-process.
+    // `main()` at startup: returns the list and wipes it under one
+    // critical section so a sibling writer can't race between them.
     void TestTakeOpenWindowsAtQuitReadsAndWipesAtomically()
     {
         const QStringList expected{QStringLiteral("uuid-x"), QStringLiteral("uuid-y")};
@@ -11240,15 +11111,10 @@ private slots:
     // SingleInstanceGuard
     // ---------------------------------------------------------------
 
-    // Primary acquires the socket and a hand-rolled secondary (a
-    // raw `QLocalSocket` driving the wire protocol) is decoded by
-    // the primary into an `openWindowRequested` signal. Hand-rolled
-    // rather than using a second `SingleInstanceGuard::TryAcquire`
-    // because both peers would otherwise share the test thread, and
-    // the secondary's `waitForDisconnected` would block the
-    // primary's `newConnection` slot from running -- a deadlock that
-    // does not exist in production (where primary and secondary are
-    // separate OS processes).
+    // Primary's socket receives a hand-rolled secondary frame and
+    // emits `openWindowRequested`. Hand-rolled rather than using a
+    // second `TryAcquire` because both peers share the test thread,
+    // and the secondary's wait would block the primary's slot.
     void TestSingleInstanceForwardsOpenRequest()
     {
         const QString socketName =
@@ -11265,12 +11131,8 @@ private slots:
             QStringLiteral("C:/logs/forward-a.json"), QStringLiteral("C:/logs/forward-b.json")
         };
 
-        // Drive the secondary side directly. The wire format
-        // (matching `SingleInstanceGuard::TryAcquire`) is the 9-byte
-        // ASCII magic `STRUCTLOG`, followed by a `quint8` version
-        // (currently `2`), followed by the file list and a
-        // `quint32 truncatedCount` tail, serialised via
-        // `QDataStream::Qt_6_0`.
+        // Wire format: magic `STRUCTLOG`, `quint8` version (2),
+        // file list, `quint32 truncatedCount`, via Qt_6_0.
         QLocalSocket secondary;
         secondary.connectToServer(socketName);
         QVERIFY2(secondary.waitForConnected(2000), "secondary must connect to primary's socket");
@@ -11285,15 +11147,12 @@ private slots:
 
         const qint64 written = secondary.write(payload);
         QCOMPARE(written, payload.size());
-        // `flush()` returns false when there are no buffered bytes
-        // left to push (the OS may have already taken the write on
-        // some platforms); we only need the bytes on the wire, so
-        // ignore the return and rely on `waitForBytesWritten`.
+        // `flush` may return false if the OS already drained;
+        // rely on `waitForBytesWritten` for the wire guarantee.
         secondary.flush();
         secondary.waitForBytesWritten(1000);
 
-        // Spin the event loop so the primary can drain the pipe.
-        // `spy.wait` returns true as soon as the signal fires.
+        // Spin the loop so the primary drains the pipe.
         QVERIFY(spy.wait(2000));
         QCOMPARE(spy.count(), 1);
         const auto args = spy.takeFirst();
@@ -11308,12 +11167,9 @@ private slots:
         }
     }
 
-    // With `--new-instance` set, the secondary refuses to forward
-    // and tries to become a primary itself. Because the test
-    // socket name is held by the first primary, the new-instance
-    // path falls through to "primary without coordination" --
-    // exercised here by giving each guard its own socket name and
-    // confirming both can `TryAcquire(true)` successfully.
+    // With `--new-instance`, the secondary skips forwarding and
+    // runs uncoordinated. Both guards `TryAcquire(true)` on their
+    // own socket names without forwarding.
     void TestSingleInstanceNewInstanceFlagBypassesGuard()
     {
         const QString socketName =
@@ -11326,10 +11182,8 @@ private slots:
         const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
-        // Even though the primary owns the socket, allowNewInstance
-        // skips the forward path entirely and falls into the
-        // "couldn't bind, run uncoordinated" branch -- meaning the
-        // primary's spy must stay empty.
+        // allowNewInstance skips forwarding; the primary's spy
+        // must stay empty.
         SingleInstanceGuard secondary;
         secondary.SetSocketNameForTest(socketName);
         const bool acquired = secondary.TryAcquire({QStringLiteral("dummy.json")}, /*allowNewInstance=*/true);
@@ -11344,11 +11198,8 @@ private slots:
     }
 
     // -------------------------------------------------------------------------
-    // SingleInstanceGuard hardening regressions (commit "Branch review
-    // fixes"). Each test pins a specific behaviour added in commit 4:
-    // magic-first peek, version range, idle-timer reset on activity,
-    // payload cap on the secondary side, and the forward-error
-    // fall-through to the listen branch.
+    // SingleInstanceGuard hardening: magic-first peek, version
+    // range, idle-timer reset, payload cap, forward-error fallback.
     // -------------------------------------------------------------------------
 
     void TestSingleInstanceMagicMismatchRejected()
@@ -11363,11 +11214,8 @@ private slots:
         const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
-        // Send something that *looks like* a frame (well-formed
-        // QDataStream `QByteArray` length prefix) but with the wrong
-        // magic. The primary must reject it without emitting
-        // `openWindowRequested` and without leaking the per-connection
-        // buffer past the disconnect.
+        // Frame-shaped payload with the wrong magic. Primary
+        // rejects and emits nothing.
         QLocalSocket peer;
         peer.connectToServer(socketName);
         QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
@@ -11383,8 +11231,7 @@ private slots:
         peer.flush();
         peer.waitForBytesWritten(1000);
 
-        // Spin a beat to let the primary's readyRead drain and the
-        // rejection path fire. We assert that no signal was emitted.
+        // Let the primary drain the bytes; no signal expected.
         for (int i = 0; i < 10; ++i)
         {
             QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
@@ -11410,9 +11257,8 @@ private slots:
         const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
-        // Correct magic, but the version byte is out of range. The
-        // primary checks `version <= WIRE_VERSION_MAX_SUPPORTED` and
-        // refuses to interpret a future-schema payload.
+        // Correct magic, out-of-range version byte. Primary refuses
+        // to interpret a future-schema payload.
         QLocalSocket peer;
         peer.connectToServer(socketName);
         QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
@@ -11454,9 +11300,8 @@ private slots:
         const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
-        // Send 2 MiB of bytes -- exceeds the documented 1 MiB cap
-        // on the primary side. The connection is torn down with no
-        // signal emitted.
+        // Exceed the 1 MiB primary-side cap. Connection torn down
+        // with no signal.
         QLocalSocket peer;
         peer.connectToServer(socketName);
         QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
@@ -11466,19 +11311,16 @@ private slots:
         peer.flush();
         peer.waitForBytesWritten(2000);
 
-        // Wait for the disconnect that the primary will issue once
-        // the buffer overruns `MAX_PAYLOAD_BYTES`.
+        // Wait for the disconnect once the buffer overruns the cap.
         peer.waitForDisconnected(2000);
         QCOMPARE(spy.count(), 0);
     }
 
     void TestSingleInstancePostDecodePayloadCap()
     {
-        // A hostile peer that ignores the documented file-list cap
-        // can still hit the primary; the post-decode truncation is
-        // the belt-and-braces. We bypass `TryAcquire` (which would
-        // truncate before sending) and stamp a 300-entry list onto
-        // the wire directly, then assert the primary clamps to 256.
+        // A hostile peer that bypasses the pre-send cap still gets
+        // truncated by the primary post-decode. Stamp 300 entries
+        // directly and assert the primary clamps to 256.
         const QString socketName =
             QStringLiteral("structlog-test-postcap-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
 
@@ -11505,15 +11347,12 @@ private slots:
         out << QByteArray("STRUCTLOG");
         out << static_cast<quint8>(2);
         out << paths;
-        // Truncation overrun is computed by the primary post-decode
-        // (paths.size() = 300, cap = 256, so it folds 44 dropped
-        // entries into the emitted `truncatedCount`).
+        // Overrun computed by the primary post-decode: 300 sent,
+        // cap 256, so 44 dropped entries get folded into the count.
         out << static_cast<quint32>(0);
 
-        // Drip the payload in chunks while pumping the primary's
-        // event loop so its `readyRead` slot can drain the pipe
-        // buffer between writes. Same-thread synchronous waits would
-        // otherwise stall the primary on the OS pipe back-pressure.
+        // Drip the payload in chunks while pumping events; a single
+        // sync write would stall on pipe back-pressure same-thread.
         const int chunkSize = 4096;
         int sent = 0;
         while (sent < payload.size())
@@ -11597,10 +11436,8 @@ private slots:
     void TestSingleInstanceIdleTimerResetsOnActivity()
     {
         // Drip-feed bytes so the cumulative interval crosses the
-        // pre-fix watchdog (which fired from accept-time regardless
-        // of activity). The new contract resets the timer on every
-        // `readyRead`, so the same drip-pattern completes a frame
-        // successfully.
+        // idle watchdog. The watchdog resets on every `readyRead`,
+        // so this drip pattern completes a frame successfully.
         //
         // Concrete timings: the watchdog uses
         // `CONNECTION_IDLE_TIMEOUT_MS = 5000`. We drip bytes in 200
@@ -11639,14 +11476,7 @@ private slots:
             peer.flush();
             peer.waitForBytesWritten(500);
             sent += n;
-            // Brief gap between chunks; far below the 5 s watchdog
-            // but long enough that pre-fix behaviour (timer from
-            // accept) would still be ticking. The fact that the
-            // frame still completes proves the new behaviour
-            // (timer reset on readyRead). Pump the primary's event
-            // loop during the gap so its `readyRead` handler can
-            // drain the chunk and reset the watchdog before we send
-            // the next one.
+            // Gap so the primary's `readyRead` resets the watchdog.
             QElapsedTimer pause;
             pause.start();
             while (pause.elapsed() < 50)
@@ -11655,8 +11485,8 @@ private slots:
             }
         }
 
-        // Once the final chunk lands, the frame completes and the
-        // primary disconnects. Pump the loop until the signal fires.
+        // Once the final chunk lands, the frame completes; pump
+        // events until the signal fires.
         QElapsedTimer timer;
         timer.start();
         while (spy.isEmpty() && timer.elapsed() < 3000)
@@ -11675,7 +11505,7 @@ private slots:
     }
 
     // -------------------------------------------------------------------------
-    // CLI parser regressions (commit "Branch review fixes" commit 5).
+    // CLI parser regressions.
     // -------------------------------------------------------------------------
 
     void TestCliParserHonoursNewInstanceFlag()
@@ -11725,11 +11555,8 @@ private slots:
 
     void TestCliParserDoubleDashLetsDashedPathsThrough()
     {
-        // POSIX `--` separator: anything after it is treated as a
-        // positional argument even when it starts with a dash. Pre-fix
-        // (hand-rolled parser) honoured this; the new
-        // `QCommandLineParser` path must keep the same semantics so
-        // `app -- -weird-filename.log` opens the dash-prefixed file.
+        // POSIX `--`: everything after is positional, even when
+        // dash-prefixed.
         const QStringList args = {
             QStringLiteral("StructuredLogViewer"),
             QStringLiteral("--"),
@@ -11743,18 +11570,16 @@ private slots:
 
     void TestCliParserCanonicalisesPositionalsAgainstCwd()
     {
-        // A bare filename like `notes.log` is resolved against the
-        // caller's CWD via `CanonicalLocator`. The resulting path is
-        // absolute, regardless of whether the file exists on disk.
+        // Bare filenames resolve to absolute paths against CWD,
+        // regardless of whether the file exists.
         const QStringList args = {
             QStringLiteral("StructuredLogViewer"),
             QStringLiteral("relative.log"),
         };
         const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
         QCOMPARE(parsed.files.size(), 1);
-        // `isAbsolute` is the contract -- "exists on disk" is not
-        // required (the file may legitimately be missing; the open
-        // path will surface that to the user via a parse error).
+        // `isAbsolute` is the contract; missing files surface to
+        // the user later via a parse error.
         QVERIFY2(
             QFileInfo(parsed.files.front()).isAbsolute(),
             qPrintable(QStringLiteral("expected absolute path, got `%1`").arg(parsed.files.front()))
@@ -11763,45 +11588,25 @@ private slots:
 
     void TestCliParserUnknownFlagDoesNotDropFiles()
     {
-        // Unknown long-form flags get logged via `logapp::LogWarning` but the
-        // parser still returns whatever positionals it could
-        // recognise. Pre-fix the hand-rolled parser silently dropped
-        // unknown flags + their following positional; the new
-        // contract returns the explicit positionals so the user
-        // still gets a usable window.
+        // Unknown long-form flags log a warning but the parser
+        // still returns whatever positionals it recognised.
         const QStringList args = {
             QStringLiteral("StructuredLogViewer"),
             QStringLiteral("--this-flag-does-not-exist"),
             QStringLiteral("real.log"),
         };
         const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
-        // The exact files surfaced depend on
-        // `QCommandLineParser`'s recovery; we only pin the
-        // invariant that the parser does not crash or strip the
-        // valid flag's effect. `real.log` either survives as a
-        // positional or is swallowed by the unknown flag's
-        // expected-value gap -- both are acceptable; the test
-        // exists to lock in "does not abort the launch".
+        // The exact files depend on `QCommandLineParser`'s recovery;
+        // the only invariant we pin is "does not abort the launch".
         Q_UNUSED(parsed);
     }
 
     void TestCliParserPositionalsSurviveUnknownFlagMidArgv()
     {
-        // Stronger version of `TestCliParserUnknownFlagDoesNotDropFiles`:
-        // when an unknown flag appears *between* two file positionals,
-        // both positionals must still reach `ParsedCli::files`. The
-        // pre-rewrite hand-rolled parser silently abandoned every
-        // positional after the unknown flag; `QCommandLineParser` in
-        // `ParseAsLongOptions` mode is documented to continue
-        // collecting positionals past an unknown option, and `ParseCli`
-        // relies on that recovery semantics to give the user a usable
-        // window even when their launcher passes a flag we don't know
-        // about (e.g. a third-party shell wrapper adding diagnostics).
-        // Locking the behaviour down here keeps a future Qt upgrade or
-        // `ParseCli` refactor from regressing the silent-drop bug.
-        //
-        // `--new-instance` is *not* set anywhere in the argv, so the
-        // gate must remain false despite the unknown-flag error.
+        // An unknown flag between two positionals must not drop
+        // either. `QCommandLineParser` in `ParseAsLongOptions`
+        // mode keeps collecting positionals past the unknown flag.
+        // `--new-instance` is not set; the gate stays false.
         const QStringList args = {
             QStringLiteral("StructuredLogViewer"),
             QStringLiteral("first.log"),
@@ -11855,12 +11660,10 @@ private slots:
     }
 
     // -------------------------------------------------------------------------
-    // Recents hardening regressions (commit "Branch review fixes").
-    //
-    // The plan demanded a defence-in-depth shape: validate uuids at the
-    // storage boundary, at `PathForUuid`, and at `RemoveUuidFileLocked`,
-    // and prove that a corrupted-profile attack cannot escape the
-    // sessions directory. The tests below pin the new contracts.
+    // Recents hardening: defence-in-depth uuid validation across
+    // the storage boundary, `PathForUuid`, and
+    // `RemoveUuidFileLocked` so a hostile profile cannot escape
+    // the sessions directory.
     // -------------------------------------------------------------------------
 
     void TestRecentsRejectsMaliciousUuid()
@@ -11872,9 +11675,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Plant a "canary" file outside the sessions directory; the
-        // assertion at the end of the test is that this file survives
-        // every recents API call we make with a hostile uuid.
+        // Canary file outside the sessions dir; must survive every
+        // hostile-uuid recents call.
         const QString canaryPath = outsideDir.filePath(QStringLiteral("canary.json"));
         {
             QFile canary(canaryPath);
@@ -11883,10 +11685,8 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(canaryPath));
 
-        // Try to convince the manager to escape the sessions directory
-        // through every public mutator + accessor surface. `PathForUuid`
-        // returns empty for a non-uuid stem, so each downstream sink
-        // (`Remove`, `Touch`, `LastSessionPath`) becomes a no-op.
+        // `PathForUuid` returns empty for a non-uuid stem so every
+        // downstream sink becomes a no-op.
         for (const QString &hostile : {
                  QStringLiteral("../canary"),
                  QStringLiteral("..\\..\\..\\canary"),
@@ -11900,8 +11700,8 @@ private slots:
             QVERIFY(!manager.Touch(hostile));
         }
 
-        // The canary survives, proving none of the hostile uuids
-        // composed into a file deletion path that reached it.
+        // Canary survives: no hostile uuid composed into a path
+        // that reached it.
         QVERIFY2(QFileInfo::exists(canaryPath), "canary file must survive every hostile-uuid call");
     }
 
@@ -11913,9 +11713,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Seed an entry so the `Touch` pre-check (`is the uuid in the
-        // index?`) succeeds and the path reaches the cross-process
-        // lock acquisition.
+        // Seed an entry so the `Touch` pre-check passes and the
+        // call reaches the cross-process lock.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/contended.json"}
@@ -11923,19 +11722,14 @@ private slots:
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 
-        // Externally seize the cross-process lock; every `Touch` while
-        // we hold this must report `false` (the new contract) so the
-        // caller's `AddOpenWindowUuid` publish stays gated. The pre-fix
-        // contract returned `true` here, which let two siblings
-        // publish the same uuid without either having actually
-        // landed the bump.
+        // External lock holder: `Touch` returns false so the
+        // caller's publish stays gated.
         QLockFile externalLock(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
         QVERIFY(externalLock.tryLock(0));
         QVERIFY(!manager.Touch(uuid));
         externalLock.unlock();
 
-        // Once the contention is released, the next `Touch` succeeds
-        // and the publish gate re-opens.
+        // Once released, `Touch` succeeds again.
         QVERIFY(manager.Touch(uuid));
     }
 
@@ -11944,13 +11738,11 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        // The QSettings backend is shared with the main app under the
-        // `apptest` profile (see `initTestCase`). Plant a deliberately
-        // bogus `size` and assert that `Read` clamps to the cap rather
-        // than allocating gigabytes.
+        // Plant a bogus `size` value and assert `Read` clamps to
+        // the cap instead of allocating gigabytes.
         QSettings settings;
         const QStringList previousAll = settings.allKeys();
-        // Snapshot/restore guard so we don't poison sibling tests.
+        // Snapshot/restore so we don't poison sibling tests.
         QHash<QString, QVariant> snapshot;
         for (const QString &key : previousAll)
         {
@@ -11970,12 +11762,7 @@ private slots:
         settings.sync();
 
         const QSettingsRecentsIndexStorage storage;
-        // No actual per-entry data was written; with the cap, the
-        // loop iterates at most `MAX_ENTRIES * 4` times and produces
-        // an empty list (every slot has an empty `uuid` and is
-        // skipped). Critically, the call returns at all -- pre-fix
-        // would have spun for INT_MAX iterations or OOMed on the
-        // reservation.
+        // No entries written; the cap bounds the read loop.
         const QList<RecentSessionEntry> entries = storage.Read();
         QVERIFY(entries.isEmpty());
     }
@@ -11999,8 +11786,8 @@ private slots:
         });
 
         settings.clear();
-        // Three slots: a real uuid, a hostile path-like value, and an
-        // empty string. Read must surface only the real entry.
+        // Three slots: real uuid + hostile path + empty string.
+        // Read must surface only the real entry.
         const QString realUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         settings.setValue(QStringLiteral("recentSessions/size"), 3);
         settings.setValue(QStringLiteral("recentSessions/entries/0/uuid"), realUuid);
@@ -12058,9 +11845,7 @@ private slots:
 
         SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Drop a `notes.json` next to (potential) session files. A
-        // user / unrelated tool sometimes stashes non-uuid files into
-        // managed dirs; the orphan sweeper must leave them alone.
+        // The orphan sweeper must leave non-uuid files alone.
         const QString notesPath = dir.filePath(QStringLiteral("notes.json"));
         {
             QFile notes(notesPath);
@@ -12095,18 +11880,9 @@ private slots:
         QVERIFY2(!QFileInfo::exists(orphanPath), "orphan uuid JSON must be deleted by CleanupOrphanFiles");
     }
 
-    // Regression for the original SHM lock-ordering issue: with the
-    // pre-fix order (mMutex first, then LockFileGuard), a writer
-    // blocked on the cross-process lock would also hold the in-process
-    // mutex, freezing every concurrent `List()` reader. Post-fix the
-    // order is inverted (lock file first, mutex second), so readers
-    // only block briefly during the in-memory work.
-    //
-    // We exercise the contract by holding the cross-process lock
-    // externally for a short window and asserting that `List()` still
-    // returns promptly. A timing-tolerant assertion (under 200 ms)
-    // pins the new behaviour without becoming a flaky timing test --
-    // pre-fix would have stalled for the full `WRITE_LOCK_TIMEOUT_*`.
+    // Lock order: cross-process first, `mMutex` second. A writer
+    // blocked on the file lock no longer holds `mMutex`, so
+    // concurrent `List()` readers stay responsive.
     void TestRecentsListReadsAreNotBlockedByCrossProcessLock()
     {
         const QTemporaryDir sessionsDir;
@@ -12135,9 +11911,8 @@ private slots:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
-        // `List()` only takes `mMutex` and skips the cross-process
-        // lock entirely (documented contract). It must return
-        // promptly even though the sibling holds the lock file.
+        // `List()` skips the cross-process lock by contract and
+        // must return promptly even with the lock file held.
         QElapsedTimer timer;
         timer.start();
         const QList<RecentSessionEntry> result = manager.List();
@@ -12151,13 +11926,11 @@ private slots:
         holder.join();
     }
 
-    // Regression for the previously-default-true return from
-    // `TakeOpenWindowsAtQuit` under contention: the pre-fix returned
-    // the read-but-not-wiped list, which let two simultaneously-
-    // launching processes both fan-restore the same uuids. Post-fix
-    // it returns empty on contention -- the safer half of the
-    // trade-off because a sibling's `AddOpenWindowUuid` will re-add
-    // the missed uuid as soon as it constructs its window.
+    // `TakeOpenWindowsAtQuit` returns empty on contention so two
+    // simultaneously-launching siblings can't both fan-restore the
+    // same uuids. A sibling republishes its uuid on construction
+    // so a
+    // missed take here is recoverable.
     void TestRecentsTakeOpenWindowsAtQuitReturnsEmptyOnContention()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -12187,12 +11960,9 @@ private slots:
         QCOMPARE(retake, QStringList{uuid});
     }
 
-    // Regression for the "NewSession silently overwrites the previous
-    // recents entry" bug: opening file A creates uuidA; running
-    // `New Session` must detach the window from uuidA so opening
-    // file B does not rewrite uuidA's JSON in place. The expected
-    // post-state is two distinct recents entries with two distinct
-    // on-disk JSONs.
+    // Regression: `New Session` must detach the window from the
+    // previous uuid so opening another file mints a fresh entry
+    // instead of rewriting uuidA's JSON in place.
     void TestNewSessionDoesNotOverwritePreviousRecentsEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -12243,10 +12013,8 @@ private slots:
         );
     }
 
-    // Companion regression for the destructive-Replace open path.
-    // `OpenMode::Replace` must also detach the window from the
-    // previous recents uuid so the replaced session lands in a fresh
-    // entry instead of rewriting the prior one in place.
+    // Companion: `OpenMode::Replace` must detach the window from
+    // the previous uuid so the replaced session gets a fresh entry.
     void TestReplaceOpenDoesNotOverwritePreviousRecentsEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -12283,9 +12051,8 @@ private slots:
         QVERIFY2(QFileInfo::exists(pathA), "previous session's JSON must survive a Replace open");
     }
 
-    // Loading a configuration via the menu entry point must detach the
-    // window from any previous recents pin. Otherwise the next AutoSave
-    // would silently rewrite an unrelated session's JSON in place.
+    // `LoadConfiguration` must detach the previous recents pin so
+    // the next AutoSave doesn't rewrite the prior session in place.
     void TestLoadConfigurationDetachesPreviousRecentsEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -12309,10 +12076,9 @@ private slots:
         const QString pathA = manager.PathForUuid(uuidA);
         QVERIFY(QFileInfo::exists(pathA));
 
-        // Manually load a columns-only configuration. This is the
-        // `LoadConfiguration` menu entry point: it does not pre-detach
-        // via `NewSession`, so the pin survives unless
-        // `DoLoadConfiguration` itself detaches.
+        // The menu `LoadConfiguration` path does not pre-detach via
+        // `NewSession`; the pin only clears if `DoLoadConfiguration`
+        // detaches itself.
         const QTemporaryDir configDir;
         QVERIFY(configDir.isValid());
         const QString configPath = QDir(configDir.path()).filePath(QStringLiteral("columns_only.json"));
@@ -12320,8 +12086,8 @@ private slots:
         wired->LoadConfigurationFromPathForTest(configPath);
         QCoreApplication::processEvents();
 
-        // After the load there must be no pinned uuid, so the next
-        // AutoSave will create a fresh entry rather than overwriting A.
+        // No pinned uuid after the load so the next AutoSave forks
+        // rather than overwriting session A.
         QVERIFY2(wired->ActiveSessionUuid().isEmpty(), "LoadConfiguration must detach the previous recents pin");
 
         finishedSpy.clear();
@@ -12348,25 +12114,15 @@ private slots:
         );
     }
 
-    // Sibling regression for the single-file probe path. `OpenFiles`,
-    // `OpenFilesForCli`, and `dropEvent` all funnel inputs through
-    // `DispatchMixedOpenInput`, whose lone-config branch lands in
-    // `TryLoadAsConfiguration` (no model reset; existing rows
-    // survive). When that probe succeeds (the file really is a
-    // configuration / session JSON), the load is a session boundary
-    // just like the menu `LoadConfiguration` path and must detach
-    // the previous recents pin. Without the detach, a closeEvent
-    // or follow-up AutoSave would rewrite the earlier session's
-    // JSON under the stale uuid -- silently corrupting the prior
-    // recents entry.
+    // Single-file probe path: `TryLoadAsConfiguration` succeeding
+    // is a session boundary and must detach the previous recents
+    // pin -- otherwise a follow-up AutoSave would rewrite the
+    // prior session's JSON under the stale uuid.
     //
-    // The fixture uses a `SaveScope::Full` session JSON (one that
-    // carries a `File` source descriptor) rather than a columns-only
-    // configuration because that is the real-world reproduction:
-    // dropping a "recent session" JSON onto a window with an active
-    // session is exactly the gesture that hits this bug. A columns-
-    // only config wipes `mCurrentSource` and silently disables the
-    // auto-save gate on the follow-up Append, masking the corruption.
+    // Uses a `SaveScope::Full` session JSON (real-world repro:
+    // dropping a recent session JSON onto an active window); a
+    // columns-only config would wipe `mCurrentSource` and mask
+    // the auto-save corruption.
     void TestTryLoadAsConfigurationDetachesPreviousRecentsEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -12391,15 +12147,10 @@ private slots:
         const QString pathA = manager.PathForUuid(uuidA);
         QVERIFY(QFileInfo::exists(pathA));
 
-        // Drive the same code path that `dropEvent` / `OpenFiles` /
-        // `OpenFilesForCli` reach via `DispatchMixedOpenInput`'s
-        // lone-config branch when a single argument is a session
-        // JSON -- the probe that decides whether to apply a
-        // configuration vs. open the file as a log. The probe target
-        // is a `SaveScope::Full` snapshot of session A's own state
-        // (carrying the `File` source descriptor pointing at
-        // fixtureA) so the load lands with a valid `mCurrentSource`
-        // and the follow-up Append can actually fire an AutoSave.
+        // Drive the `DispatchMixedOpenInput` lone-config probe with
+        // a Full-scope snapshot of session A's own state (the
+        // source points at fixtureA) so the load lands with a
+        // valid `mCurrentSource` and the follow-up Append fires.
         const QTemporaryDir configDir;
         QVERIFY(configDir.isValid());
         const QString sessionPath = QDir(configDir.path()).filePath(QStringLiteral("session_full.json"));
@@ -12410,18 +12161,14 @@ private slots:
         );
         QCoreApplication::processEvents();
 
-        // After a successful configuration probe the window must no
-        // longer be pinned to uuidA, so the next AutoSave creates a
-        // fresh entry rather than overwriting A's JSON in place.
+        // No pinned uuid after a successful probe.
         QVERIFY2(
             wired->ActiveSessionUuid().isEmpty(),
             "TryLoadAsConfiguration must detach the previous recents pin on a successful load"
         );
 
-        // Trigger an AutoSave by appending another file. Without
-        // the detach above this would `WriteSnapshot(..., uuidA)`
-        // and clobber session A's JSON; with the detach a brand-
-        // new uuid is minted instead.
+        // Append fires AutoSave; with the detach, a brand-new uuid
+        // is minted instead of clobbering session A.
         finishedSpy.clear();
         wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
         QVERIFY(finishedSpy.wait(5000));
@@ -12435,10 +12182,8 @@ private slots:
         );
         QVERIFY2(wired->ActiveSessionUuid() != uuidA, "follow-up AutoSave must not reuse the prior pin");
 
-        // Session A's JSON survives bit-for-bit: still has its
-        // original single-locator `File` source pointing at
-        // fixtureA. The new entry meanwhile carries both fixtures
-        // (session A's source + fixtureB appended in Append mode).
+        // Session A's JSON is untouched: single-locator File
+        // source still points at fixtureA.
         QVERIFY(QFileInfo::exists(pathA));
         loglib::LogConfigurationManager probeA;
         probeA.Load(pathA.toStdString());
@@ -12450,22 +12195,11 @@ private slots:
         );
     }
 
-    // Companion to the success-path detach: when the single-file
-    // probe *fails* (the file is not a configuration), the prior
-    // pin must survive so the subsequent Append open extends the
-    // same recents entry instead of forking a new one. This is the
-    // load-bearing reason the detach lives after `Load` succeeds
-    // rather than at the top of `TryLoadAsConfiguration`.
-    //
-    // The earlier in-place implementation had a second silent
-    // failure mode: it cleared the proxy filter rules and the
-    // active sort *before* attempting `Load`, so a probe miss
-    // leaked those clears even though the runtime `mFilters` map
-    // and the sort header indicator were rebuilt with no rollback.
-    // Net effect was a window whose Filters menu still listed every
-    // active filter but whose visible rows ignored every one of
-    // them. This test additionally pins down those side-effects so
-    // any future regression to the in-place layout fails loudly.
+    // Companion: on a probe *failure* the pin survives so the
+    // subsequent Append extends the same entry. The detach lives
+    // after a successful `Load` for exactly this reason. Also
+    // pins that filters / sort survive a failed probe (a prior
+    // implementation cleared them pre-Load with no rollback).
     void TestTryLoadAsConfigurationFailurePreservesPreviousRecentsEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -12474,9 +12208,8 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Fixture has one row matching the filter we install below
-        // and one that doesn't, so the proxy row count is a clean
-        // observable for "filter still active".
+        // One matching + one non-matching row so the proxy row
+        // count is a clean signal for "filter still active".
         const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})"), QStringLiteral(R"({"msg": "beta"})")});
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
@@ -12496,11 +12229,8 @@ private slots:
         QVERIFY(filterModel != nullptr);
         QCOMPARE(filterModel->rowCount(), 2);
 
-        // Install a substring filter that drops `beta`, leaving
-        // exactly one row visible. We re-check this row count after
-        // the failed probe; a failure to preserve the proxy's
-        // compiled rules would silently make every row pass and
-        // bump rowCount back to 2.
+        // Substring filter that drops `beta`; rowCount falls to 1.
+        // A leaked-clear regression would bump it back to 2.
         QVERIFY2(
             QMetaObject::invokeMethod(
                 wired.get(),
@@ -12545,23 +12275,16 @@ private slots:
             "failed probe must preserve the prior recents pin so an Append open extends the same entry"
         );
 
-        // Filters and sort survive the failed probe: the user's
-        // runtime state is observably untouched.
+        // Filters and sort survive the failed probe.
         QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
         QCOMPARE(filterModel->rowCount(), 1);
         QCOMPARE(filterModel->SortColumn(), msgCol);
         QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
     }
 
-    // Core "config-first" contract for the mixed-input dispatcher.
-    // A drop / Open... / argv that mixes one configuration with N
-    // log files must apply the configuration *before* the logs
-    // stream, so the freshly-loaded columns / filters / sort end
-    // up driving the streamed rows. Without this routing the
-    // configuration file would be opened as a log (parsing nothing
-    // useful and polluting `ShowParseErrors`) and the user would
-    // see the default-columns autodetect rather than their saved
-    // layout.
+    // Mixed input (one config + N logs): apply the configuration
+    // before the logs stream, so the loaded columns / filters /
+    // sort drive the streamed rows.
     void TestDispatchMixedConfigAndLogsAppliesConfigThenStreams()
     {
         const QTemporaryDir sessionsDir;
@@ -12569,8 +12292,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Two log fixtures sharing the same schema so the streamed
-        // row count is a sum we can assert on.
+        // Two fixtures sharing a schema so we can assert on a sum.
         const TempJsonFile fixtureA(
             {QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
              QStringLiteral(R"({"category": "beta", "msg": "second"})")}
@@ -12578,11 +12300,9 @@ private slots:
         const TempJsonFile fixtureB({QStringLiteral(R"({"category": "alpha", "msg": "third"})")});
         const int expectedRows = 3;
 
-        // Build a Full-scope configuration carrying a contains-`alpha`
-        // filter on `category` plus a descending sort on `category`.
-        // Both must apply to the streamed rows: the proxy row count
-        // collapses to two (only `alpha` survives) and the sort
-        // indicator on the table view matches the loaded sort.
+        // Full-scope cfg with a contains-`alpha` filter and a
+        // descending sort on `category`. Proxy row count collapses
+        // to 2 and the sort indicator matches.
         const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("mixed-cfg.json"));
@@ -12609,23 +12329,17 @@ private slots:
             wired->OpenMixedFilesForTest({cfgPath, fixtureA.Path(), fixtureB.Path()}, MainWindow::OpenMode::Append);
         QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
 
-        // Two log files chain through `StartStreamingOpenQueue` ->
-        // `BeginStreaming` (fixtureA) then `AppendStreaming`
-        // (fixtureB). Wait until the model has accumulated rows for
-        // both rather than tying to a single `streamingFinished`,
-        // which only fires per-file.
+        // Two log files chain: `BeginStreaming` then
+        // `AppendStreaming`. Wait on the accumulated row count
+        // rather than `streamingFinished` (it fires per-file).
         auto *model = wired->Model();
         QVERIFY(model != nullptr);
         QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), expectedRows, 5000);
 
-        // The configuration's columns ended up on the model and the
-        // logs streamed under them (no fallback autodetect kicked
-        // in).
+        // Cfg columns drove the load (no autodetect fallback).
         QCOMPARE(static_cast<int>(model->Configuration().columns.size()), 2);
 
-        // The Full-scope filter survived: live runtime filter map is
-        // populated, and the proxy applies the rule on top so only
-        // `alpha` rows are visible.
+        // Full-scope filter survived; proxy hides non-`alpha`.
         QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
         auto *proxy = wired->FilterModel();
         QVERIFY(proxy != nullptr);
@@ -12639,11 +12353,9 @@ private slots:
         QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
     }
 
-    // Lone-config input must keep the historical
-    // `TryLoadAsConfiguration` semantics: columns / filters / sort
-    // apply, the model is not reset, and no streaming kicks off.
-    // The dispatcher reports `AppliedConfigOnly` so the CLI caller
-    // can attach its status-bar hint without re-classifying.
+    // Lone-config input: `TryLoadAsConfiguration` applies columns
+    // / filters / sort, model is not reset, no streaming starts.
+    // Dispatcher reports `AppliedConfigOnly` for the CLI hint.
     void TestDispatchMixedSingleConfigDelegatesToTryLoadAsConfiguration()
     {
         const QTemporaryDir sessionsDir;
@@ -12671,12 +12383,9 @@ private slots:
         QCOMPARE(finishedSpy.count(), 0);
     }
 
-    // Two-or-more-config input is user error: the intended single
-    // configuration is ambiguous and silently picking one would
-    // lose the others. The dispatcher must surface a modal warning
-    // (suppressed under `mSuppressDialogsForTest`) and leave the
-    // live state untouched -- no config applied, no streaming
-    // started, no uuid mutation.
+    // Multiple configs in one input is rejected with a modal
+    // (suppressed in tests). Live state untouched: no config
+    // applied, no streaming, no uuid mutation.
     void TestDispatchMixedRejectsMultipleConfigs()
     {
         const QTemporaryDir sessionsDir;
@@ -12684,8 +12393,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Pre-seed a known session so we can later assert the
-        // multi-config rejection did not mutate any of it.
+        // Pre-seed so we can later assert nothing mutated.
         const TempJsonFile prior({QStringLiteral(R"({"msg": "kept"})")});
         QSignalSpy primingSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(primingSpy.isValid());
@@ -12729,10 +12437,8 @@ private slots:
         QCOMPARE(finishedSpy.count(), 0);
     }
 
-    // No-config input is the historical "always stream" path: the
-    // dispatcher hands everything to `StartStreamingOpenQueue` in
-    // the caller's requested `OpenMode` (Append here). This locks
-    // in that we did not regress the lone-log / multi-log case.
+    // No-config input streams everything via
+    // `StartStreamingOpenQueue` in the caller's `OpenMode`.
     void TestDispatchMixedNoConfigStreamsEverything()
     {
         const QTemporaryDir sessionsDir;
@@ -12750,24 +12456,16 @@ private slots:
             wired->OpenMixedFilesForTest({logA.Path(), logB.Path()}, MainWindow::OpenMode::Append);
         QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
 
-        // StartStreamingOpenQueue chains files via successive
-        // `BeginStreaming` / `AppendStreaming` calls, each of which
-        // fires `streamingFinished`. Wait for both.
+        // Each chained file fires `streamingFinished`; wait both.
         QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
     }
 
-    // Regression guard for the empty-`{}` edge case: the classifier
-    // must reject column-less parses (mirrors
-    // `TestTryLoadAsConfigurationRejectsEmptyJsonObject`). Without
-    // this gate, a stray `{}` JSON dropped alongside a log would
-    // be misclassified as a configuration and either wipe the
-    // user's columns (single match) or trigger a multi-config
-    // modal (with another stray `{}` in the mix). The expected
-    // behaviour is that `{}` is treated as a log, parsing fails
-    // for it, and the real log streams normally.
+    // Empty `{}` must be classified as a log (parsing fails), not
+    // as a configuration. Otherwise it would wipe columns or
+    // trigger a multi-config modal.
     void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
     {
         const QTemporaryDir sessionsDir;
@@ -12796,19 +12494,13 @@ private slots:
         QVERIFY(finishedSpy.wait(5000));
         QCoreApplication::processEvents();
 
-        // Real log row survives; the `{}` file fails to parse and
-        // its error lands in `ShowParseErrors` (which we don't
-        // inspect here -- the point of this test is the dispatcher,
-        // not the parse-error surface).
+        // Real log row survives; the `{}` parse error lands in
+        // `ShowParseErrors` (not asserted here).
         QCOMPARE(wired->Model()->rowCount(), 1);
     }
 
-    // CLI variant of the core mixed-input contract: a `cfg.json
-    // log.json` argv must apply the configuration first and stream
-    // the log under it. Replaces the obsolete
-    // `TestOpenFilesForCliSurfacesConfigDiagnosticOnStatusBar`
-    // which asserted the inverse (configuration ignored, hint
-    // shown).
+    // CLI variant: `app cfg.json log.json` applies the cfg first
+    // and streams the log under it.
     void TestOpenFilesForCliConfigAndLogsAppliesConfigThenStreams()
     {
         const QTemporaryDir sessionsDir;
@@ -12837,13 +12529,10 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 1);
     }
 
-    // Glaze accepts an empty `{}` (and any object containing only
-    // session-only fields) as a default-valued `LogConfiguration`
-    // with `columns.empty()`. Treating that as a configuration
-    // would silently wipe the user's column layout when they drop
-    // an unrelated JSON file. `TryLoadAsConfiguration` must reject
-    // column-less parses as a probe miss so the caller falls
-    // through to opening the file as a log.
+    // Glaze accepts `{}` as a default-valued `LogConfiguration` with
+    // no columns; treating that as a config would wipe the live
+    // column layout. `TryLoadAsConfiguration` must reject column-
+    // less parses so the caller opens the file as a log instead.
     void TestTryLoadAsConfigurationRejectsEmptyJsonObject()
     {
         const QTemporaryDir sessionsDir;
@@ -12863,10 +12552,8 @@ private slots:
         const auto columnsBefore = wired->Model()->Configuration().columns.size();
         QVERIFY2(columnsBefore > 0, "fixture must produce at least one column");
 
-        // `{}` parses cleanly into a default-valued LogConfiguration.
-        // Without the explicit reject, this would slip past the
-        // probe and `mModel->ConfigurationManager().Load()` would
-        // replace the live columns with the empty default.
+        // `{}` parses cleanly into a default config; without the
+        // explicit reject this would wipe the live columns.
         const QTemporaryDir emptyDir;
         QVERIFY(emptyDir.isValid());
         const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
@@ -12883,17 +12570,15 @@ private slots:
         QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
     }
 
-    // The persisted `openWindowsAtQuit` set is maintained eagerly so
-    // multi-window restore works even when `aboutToQuit` runs after
-    // `WA_DeleteOnClose` has destroyed peer windows. AutoSave adds;
-    // closeEvent removes.
+    // `openWindowsAtQuit` is maintained eagerly so multi-window
+    // restore survives `WA_DeleteOnClose`. AutoSave adds; close
+    // removes.
     void TestOpenWindowsAtQuitTrackedAcrossAutoSaveAndClose()
     {
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        // Snapshot + restore the user's real openWindowsAtQuit so we
-        // don't pollute the running profile.
+        // Snapshot + restore so we don't pollute the live profile.
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
@@ -12911,9 +12596,7 @@ private slots:
         const QString uuid = wired->ActiveSessionUuid();
         QVERIFY(!uuid.isEmpty());
 
-        // Some QSettings backends (Windows registry under
-        // sandboxed CI runners) refuse the write outright; treat
-        // that as a soft skip rather than a hard failure.
+        // Some sandboxed CI Windows envs refuse the write; skip.
         const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (afterAuto.isEmpty())
         {
@@ -12935,13 +12618,11 @@ private slots:
         QVERIFY2(!afterClose.contains(uuid), "closeEvent must remove the window from the open-windows set");
     }
 
-    // Regression for the `File -> Exit` republish loop: the primary
-    // `MainWindow w` in `main.cpp` is stack-allocated without
+    // Regression: the primary window in `main.cpp` is not
     // `WA_DeleteOnClose`, so it stays in `topLevelWidgets()` past
-    // `closeEvent`. Without clearing `mAutoSaveUuid` inside
-    // `closeEvent`, the `aboutToQuit` snapshot loop would re-publish
-    // the uuid into `openWindowsAtQuit` and the next launch would
-    // restore the window the user just exited.
+    // `closeEvent`. Without clearing `mAutoSaveUuid` in
+    // `closeEvent`, the `aboutToQuit` snapshot would re-publish
+    // the exited window into `openWindowsAtQuit`.
     void TestCloseEventClearsAutoSaveUuidForAboutToQuit()
     {
         const QTemporaryDir sessionsDir;
@@ -12953,8 +12634,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         // Heap-owned but not `WA_DeleteOnClose`: mirrors `main.cpp`'s
-        // stack-allocated primary in that the widget survives
-        // `close()` long enough for the aboutToQuit replay below.
+        // primary -- survives `close()` long enough for the
+        // aboutToQuit replay.
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "exit"})")});
@@ -12973,17 +12654,14 @@ private slots:
         }
         QVERIFY(afterAuto.contains(uuid));
 
-        // Simulate File -> Exit: closeAllWindows fires closeEvent
-        // synchronously, but `wired` stays alive (no
-        // WA_DeleteOnClose) just like the stack-allocated primary.
+        // Simulate File -> Exit: closeEvent fires synchronously,
+        // widget stays alive.
         wired->close();
         QCoreApplication::processEvents();
 
-        // Replay main.cpp's aboutToQuit snapshot loop on the still-
-        // live widget. With the fix, `RestorableActiveSessionUuid`
-        // returns empty because `closeEvent` cleared
-        // `mAutoSaveUuid`; without the fix it returns the stale uuid
-        // and re-publishes it into `openWindowsAtQuit`.
+        // Replay `main.cpp`'s aboutToQuit snapshot loop on the
+        // still-live widget. With the fix,
+        // `RestorableActiveSessionUuid` is empty after closeEvent.
         QStringList capturedOnQuit;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
@@ -13013,10 +12691,9 @@ private slots:
         );
     }
 
-    // `NewSession` must not just clear the in-memory `mAutoSaveUuid`;
-    // it must also drop the uuid from the persisted
-    // `openWindowsAtQuit` set, so a crash before the next AutoSave
-    // does not silently re-restore the just-discarded session.
+    // `NewSession` must clear `mAutoSaveUuid` and drop it from
+    // `openWindowsAtQuit` so a crash before the next AutoSave
+    // does not re-restore the just-discarded session.
     void TestNewSessionDetachesFromOpenWindowsAtQuit()
     {
         const QTemporaryDir sessionsDir;
@@ -13066,10 +12743,8 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        // Empty / null uuids are no-ops. `AddOpenWindowUuid` now
-        // reports the publish outcome via its bool return: empty
-        // input gets `false` (we didn't publish anything); a real
-        // uuid that lands gets `true`.
+        // Empty / null uuids are no-ops; `AddOpenWindowUuid`
+        // returns false for empty input, true on a real publish.
         QVERIFY(!SessionHistoryManager::AddOpenWindowUuid(QString()));
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
         SessionHistoryManager::RemoveOpenWindowUuid(QString());
@@ -13086,11 +12761,8 @@ private slots:
         }
         QCOMPARE(probe, QStringList{uuidA});
 
-        // Idempotent: re-adding the same uuid does not duplicate.
-        // The return is still `true` -- the post-condition "uuid is
-        // in the persisted set" holds either way (newly added or
-        // already present), and the caller's latch should remain
-        // accurate.
+        // Idempotent: re-adding does not duplicate. Returns true
+        // because the post-condition "uuid is in the set" holds.
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidA});
 
@@ -13107,12 +12779,9 @@ private slots:
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidB});
     }
 
-    // `AddOpenWindowUuids` is the batched companion to
-    // `AddOpenWindowUuid` used by `main.cpp`'s `aboutToQuit` fan.
-    // The contract is "merge under one lock acquisition": (a) every
-    // new uuid is appended in order, (b) duplicates are skipped, (c)
-    // empty strings are skipped, (d) pre-existing entries (e.g.
-    // published by a `--new-instance` sibling) are preserved.
+    // Batched `AddOpenWindowUuids` (used by `aboutToQuit`): merge
+    // under one lock acquisition. Appends in order, skips
+    // duplicates / empty strings, preserves pre-existing entries.
     void TestAddOpenWindowUuidsBatchedMerge()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13127,9 +12796,8 @@ private slots:
         const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString uuidC = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
-        // Pre-seed `uuidA` to model a `--new-instance` peer that
-        // already published its own restorable window. The batched
-        // call must merge with this rather than overwrite it.
+        // Pre-seed `uuidA` to model a sibling peer. Batched call
+        // must merge, not overwrite.
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
         const QStringList preBatch = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (preBatch.isEmpty())
@@ -13170,12 +12838,9 @@ private slots:
         const QString keptPath = manager.PathForUuid(keptUuid);
         QVERIFY(QFileInfo::exists(keptPath));
 
-        // Plant an orphan JSON next to it (simulates a crash between
-        // `WriteSnapshot`'s file-write and index-update steps). The
-        // stem must be uuid-shaped because the orphan sweeper now
-        // gates deletion on `QUuid::fromString(stem).isNull()` so
-        // unrelated user files in `sessionsDir` are not silently
-        // wiped on next launch.
+        // Orphan JSON (simulates a crash between file-write and
+        // index-update). Stem must be uuid-shaped -- the sweeper
+        // gates deletion on a strict uuid check.
         const QString orphanPath =
             QDir(sessionsDir.path())
                 .filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json"));
@@ -13186,10 +12851,8 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(orphanPath));
 
-        // Also plant a leftover `.json.tmp` (atomic-write crash
-        // between `ofstream::write` and `rename`). Same uuid-stem
-        // requirement -- the sweeper applies the gate to both
-        // `*.json` and `*.json.tmp`.
+        // Leftover `.json.tmp` (atomic-write crash). Same uuid-
+        // stem requirement applies to `*.json.tmp` as to `*.json`.
         const QString staleTempPath =
             QDir(sessionsDir.path())
                 .filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json.tmp"));
@@ -13208,12 +12871,8 @@ private slots:
     }
 
     // The orphan sweeper must NOT delete files whose stem isn't a
-    // QUuid. The `sessionsDir` is app-managed by convention but a
-    // user (or unrelated tool) may have planted `notes.json` there;
-    // silently deleting it on next launch would be a foot-gun. The
-    // gate stays in lockstep with the consumer-side validation in
-    // `MainWindow::RestoreLastSessionFromPath`, which already
-    // refuses to pin non-uuid stems.
+    // QUuid -- silently wiping a user's `notes.json` would be a
+    // foot-gun.
     void TestCleanupOrphanFilesPreservesNonUuidStems()
     {
         const QTemporaryDir sessionsDir;
@@ -13221,9 +12880,7 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Trigger an mkpath without writing a real recents entry --
-        // we just need the directory to exist so we can plant the
-        // foreign file.
+        // Seed an entry to mkpath the directory.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/seed.json"}
@@ -13240,8 +12897,7 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(foreignPath));
 
-        // Also plant a non-uuid-stemmed `.json.tmp` to confirm the
-        // gate applies symmetrically.
+        // Symmetric check for `.json.tmp` stems.
         const QString foreignTempPath = QDir(sessionsDir.path()).filePath(QStringLiteral("scratch.json.tmp"));
         {
             QFile foreignTemp(foreignTempPath);
@@ -13257,11 +12913,9 @@ private slots:
         QVERIFY2(QFileInfo::exists(manager.PathForUuid(seedUuid)), "indexed entry must still be present");
     }
 
-    // `RestoreLastSessionFromPath` must pin `mAutoSaveUuid` even when
-    // the loaded configuration carries no source (columns-only or
-    // source-less session JSON). Without the pin, the next AutoSave
-    // would fork off a new recents entry instead of updating the one
-    // the caller pointed us at, orphaning the loaded JSON.
+    // `RestoreLastSessionFromPath` must pin `mAutoSaveUuid` even
+    // for source-less configurations; otherwise the next AutoSave
+    // forks a fresh entry instead of updating the loaded one.
     void TestRestoreLastSessionPinsUuidEvenWithNoSource()
     {
         const QTemporaryDir sessionsDir;
@@ -13269,18 +12923,15 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Pre-write a uuid-stemmed session JSON with NO source set.
-        // We bypass `WriteSnapshot` (which only fires for live windows)
-        // and lay it down by hand so the restore path sees the
-        // no-source branch.
+        // Hand-craft a uuid-stemmed JSON with no source so the
+        // restore path hits the no-source branch.
         const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString jsonPath = manager.PathForUuid(uuid);
         QDir().mkpath(QFileInfo(jsonPath).absolutePath());
 
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg", "level"});
-        // Intentionally no `SetSource` -- the file is a configuration
-        // snapshot with column metadata but no bound data source.
+        // No `SetSource`: column-only snapshot.
         builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
@@ -13292,11 +12943,9 @@ private slots:
         QCOMPARE(wired->ActiveSessionUuid(), uuid);
     }
 
-    // `ShouldAutoSaveSession` (the gate that drives both
-    // `streamingFinished` and `closeEvent` auto-save) must filter
-    // out live-tail and network-stream sessions: they cannot be
-    // re-bound from a JSON snapshot, so persisting them would create
-    // recents entries that always fail to reopen.
+    // `ShouldAutoSaveSession` filters out live-tail / network-
+    // stream sessions: they can't be rebound from a JSON snapshot,
+    // so saving them would create entries that never reopen.
     void TestAutoSaveSkipsLiveTailAndNetworkStreamSessions()
     {
         const QTemporaryDir sessionsDir;
@@ -13304,9 +12953,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // --- Case A: live-tail-on-a-file session. Source kind is
-        // `File` so a plain kind check would let it through; the
-        // gate must additionally consult `mSessionMode`.
+        // Case A: live-tail on a File source. A plain kind check
+        // would let it through; the gate must also see `LiveTail`.
         {
             auto wired = std::make_unique<MainWindow>(&manager, nullptr);
             wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
@@ -13322,9 +12970,7 @@ private slots:
             );
         }
 
-        // --- Case B: network stream session. Source kind is
-        // `NetworkStream`; the locator is a producer URI that is
-        // not re-bindable via the static-files open path.
+        // Case B: NetworkStream source -- not re-bindable.
         {
             auto wired = std::make_unique<MainWindow>(&manager, nullptr);
             wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
@@ -13341,15 +12987,11 @@ private slots:
         }
     }
 
-    // Regression for the phantom Recent Sessions entry that
-    // `closeEvent` used to write for a *finished* live-tail session.
-    // The model's `streamingFinished` resets `mSessionMode` to `Idle`
-    // before any user-initiated close can fire, so `closeEvent`'s
-    // auto-save gate was reading `Idle` -- which slips past the
-    // `LiveTail` filter -- against a `Source{File, [path]}` that
-    // looks indistinguishable from a static-files session.
-    // `mLastTerminalSessionMode` records the just-finished mode so
-    // `AutoSaveSessionSnapshot` sees the real `LiveTail` and bails.
+    // Regression: closeEvent used to write a phantom recents
+    // entry for a *finished* live-tail session because
+    // `streamingFinished` resets `mSessionMode` to `Idle`.
+    // `mLastTerminalSessionMode` retains the real mode so the
+    // auto-save gate bails.
     void TestCloseAfterFinishedLiveTailDoesNotCreatePhantomRecentsEntry()
     {
         const QTemporaryDir sessionsDir;
@@ -13363,11 +13005,9 @@ private slots:
         });
         wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
-        // Drive a real `streamingFinished` through the model so the
-        // `MainWindow` lambda runs end-to-end: it captures
-        // `mLastTerminalSessionMode = LiveTail` and resets
-        // `mSessionMode = Idle`. Without that capture the close
-        // below would see `Idle` and silently write a phantom entry.
+        // Drive a real `streamingFinished` so the MainWindow lambda
+        // captures `mLastTerminalSessionMode = LiveTail` before
+        // resetting `mSessionMode = Idle`.
         auto *model = wired->Model();
         QVERIFY(model != nullptr);
         const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -13389,10 +13029,8 @@ private slots:
         );
     }
 
-    // `RestoreLastSessionFromPath` must not feed a NetworkStream
-    // source's locator (a producer URI like `tcp://127.0.0.1:5170`)
-    // to `StartStreamingOpenQueue`, which would try to open it as a
-    // static file. The restore should succeed (columns / filters
+    // `RestoreLastSessionFromPath` must not stream a NetworkStream
+    // URI as a static file. Restore succeeds (columns / filters
     // installed) but no streaming attempt is made.
     void TestRestoreLastSessionSkipsNetworkStreamSource()
     {
@@ -13401,9 +13039,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Hand-craft a session JSON with a NetworkStream source. Mirrors
-        // the legacy-data case where an older build auto-saved a
-        // stream session before the gate landed.
+        // Hand-craft a NetworkStream session JSON (legacy: older
+        // builds auto-saved streams before the gate landed).
         const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString jsonPath = manager.PathForUuid(uuid);
         QDir().mkpath(QFileInfo(jsonPath).absolutePath());
@@ -13418,34 +13055,24 @@ private slots:
 
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // `streamingFinished` must NOT fire -- the restore should
-        // not attempt to open the URI as a file.
+        // No streaming attempt -- `finishedSpy` must stay at 0.
         const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->RestoreLastSessionFromPath(jsonPath);
-        // Pump the event loop briefly; if the streaming-open path
-        // were taken we'd see a `finishedSpy.count()` tick.
+        // Pump the event loop briefly.
         for (int i = 0; i < 5; ++i)
         {
             QCoreApplication::processEvents();
         }
 
         QCOMPARE(finishedSpy.count(), 0);
-        // The uuid is still pinned so future saves update this
-        // recents entry rather than fork off a new one.
+        // uuid still pinned so future saves update this entry.
         QCOMPARE(wired->ActiveSessionUuid(), uuid);
     }
 
-    // `RestorableActiveSessionUuid` is the predicate the `aboutToQuit`
-    // handler in `main()` consults when snapshotting
-    // `openWindowsAtQuit` on OS-driven quit (Cmd+Q, login session
-    // teardown, ...). It must return an empty string for windows
-    // whose session cannot be fan-restored on the next launch --
-    // otherwise opening a legacy NetworkStream entry from Recent
-    // Sessions and OS-quitting (no `closeEvent`) would re-publish
-    // the uuid every launch, looping the "Network Stream Session"
-    // info popup forever. The plain `ActiveSessionUuid` accessor
-    // still returns the pinned uuid so internal book-keeping
-    // (Touch, AutoSave reuse) stays consistent.
+    // `RestorableActiveSessionUuid` returns empty for sessions that
+    // can't be fan-restored (NetworkStream, no source). The plain
+    // `ActiveSessionUuid` still returns the pin so Touch / AutoSave
+    // bookkeeping stays consistent.
     void TestRestorableActiveSessionUuidFiltersNonRestorableSessions()
     {
         const QTemporaryDir sessionsDir;
@@ -13453,11 +13080,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // --- Case A: NetworkStream session (the regression).
-        // `RestoreLastSessionFromPath` pins the uuid (so the user
-        // can manually re-bind and have the entry rewritten in
-        // place) but `RestorableActiveSessionUuid` must hide it
-        // from fan-restore.
+        // Case A: NetworkStream. The uuid is pinned (manual rebind
+        // can still rewrite in place) but fan-restore must skip it.
         {
             const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
             const QString jsonPath = manager.PathForUuid(uuid);
@@ -13478,10 +13102,8 @@ private slots:
             QVERIFY2(wired->RestorableActiveSessionUuid().isEmpty(), "fan-restore must skip NetworkStream sessions");
         }
 
-        // --- Case B: no-source configuration (columns-only entry).
-        // These are intentionally restorable -- the user pinned a
-        // column / filter layout and wants it back. The accessor
-        // must therefore mirror `ActiveSessionUuid` for this kind.
+        // Case B: source-less config. Restorable -- the user
+        // pinned a layout and wants it back.
         {
             const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
             const QString jsonPath = manager.PathForUuid(uuid);
@@ -13500,8 +13122,7 @@ private slots:
             QCOMPARE(wired->RestorableActiveSessionUuid(), uuid);
         }
 
-        // --- Case C: empty uuid (no session pinned). Trivially
-        // empty regardless of source state -- nothing to restore.
+        // Case C: no session pinned -- trivially empty.
         {
             auto wired = std::make_unique<MainWindow>(&manager, nullptr);
             QVERIFY(wired->ActiveSessionUuid().isEmpty());
@@ -13509,10 +13130,9 @@ private slots:
         }
     }
 
-    // `RestoreLastSessionFromPath` only pins `mAutoSaveUuid` when the
-    // file stem parses as a QUuid; an ad-hoc session file outside the
-    // sessions dir must not hijack auto-save into writing to the
-    // user's filesystem.
+    // `RestoreLastSessionFromPath` only pins `mAutoSaveUuid` when
+    // the stem parses as a QUuid -- an ad-hoc file can't hijack
+    // auto-save into the user's filesystem.
     void TestRestoreLastSessionRejectsNonUuidStem()
     {
         const QTemporaryDir sessionsDir;
@@ -13520,10 +13140,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Build a valid session JSON at a path whose stem is NOT a
-        // uuid. Re-uses the library serializer so the parse step
-        // succeeds; the only thing under test is the stem-validation
-        // gate around `mAutoSaveUuid`.
+        // Valid session JSON at a non-uuid path; only the stem-
+        // validation gate is under test.
         const QTemporaryDir adhocDir;
         QVERIFY(adhocDir.isValid());
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "stem"})")});
@@ -13543,9 +13161,8 @@ private slots:
         QVERIFY(finishedSpy.wait(5000));
         QCoreApplication::processEvents();
 
-        // The streaming completed (rows loaded) but `mAutoSaveUuid`
-        // must NOT be pinned to `not-a-uuid` (otherwise the next
-        // AutoSave would create `sessionsDir/not-a-uuid.json`).
+        // Streaming finished but `mAutoSaveUuid` must not pin to
+        // `not-a-uuid`.
         QVERIFY2(
             wired->ActiveSessionUuid() != QStringLiteral("not-a-uuid"),
             "RestoreLastSessionFromPath must reject non-uuid stems"
@@ -13553,16 +13170,9 @@ private slots:
     }
 
     // Switching from a static session to a live-tail stream must
-    // flush any unsaved post-`streamingFinished` edits to the recents
-    // JSON before the destructive `mModel->Reset()`. Without the
-    // flush, filter / sort / column edits made after the last
-    // `streamingFinished` are silently discarded by the reset (the
-    // closeEvent flush would catch them on a normal exit, but a user
-    // who switches sources mid-session never gets to closeEvent).
-    //
-    // The witness is the manager's `changed` signal: with the fix in
-    // place, the OpenLogStream transition fires `changed` once for
-    // the pre-reset flush; without the fix it fires zero times.
+    // flush unsaved post-`streamingFinished` edits to the recents
+    // JSON before the destructive `mModel->Reset()`. Witnessed via
+    // a `changed` signal tick on the pre-reset flush.
     void TestOpenLogStreamFlushesPriorStaticSessionEdits()
     {
         const QTemporaryDir sessionsDir;
@@ -13571,10 +13181,8 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Stage 1: open a static session and let it auto-save on
-        // `streamingFinished`. The `changed` signal fires once for
-        // the auto-save itself; we drain it before the assertion
-        // window so the post-OpenLogStream count is unambiguous.
+        // Stage 1: open a static session and let it auto-save.
+        // Drain `changed` before the assertion window.
         const TempJsonFile staticFixture({QStringLiteral(R"({"msg": "static"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({staticFixture.Path()}, MainWindow::OpenMode::Append);
@@ -13588,12 +13196,9 @@ private slots:
         const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
         QVERIFY(changedSpy.isValid());
 
-        // Stage 2: switch to a live-tail stream. The fix calls
-        // `AutoSaveSessionSnapshot(false)` on the outgoing static
-        // session before the destructive reset, which fires
-        // `changed` exactly once. Without the fix, no auto-save
-        // happens (the reset clobbers `mCurrentSource` before any
-        // flush can run).
+        // Stage 2: switch to live-tail. The fix calls
+        // `AutoSaveSessionSnapshot(false)` on the outgoing session
+        // before the reset, firing `changed` once.
         const TempJsonFile streamFixture({QStringLiteral(R"({"msg": "stream-seed"})")});
         wired->OpenLogStreamForTest(streamFixture.Path());
         QCoreApplication::processEvents();
@@ -13602,26 +13207,19 @@ private slots:
             changedSpy.count() >= 1, "OpenLogStream must flush the outgoing static session before resetting the model"
         );
 
-        // The static session's recents entry survives unchanged
-        // (same uuid, just rewritten with whatever the post-edit
-        // state was). The new live-tail session is intentionally
-        // not auto-saved, so the index size stays at 1.
+        // Static entry survives (rewritten with the latest state);
+        // the new live-tail session is intentionally not saved.
         QCOMPARE(manager.List().size(), 1);
         QCOMPARE(manager.List().front().uuid, staticUuid);
 
-        // Post-reset: `mAutoSaveUuid` must be cleared so the
-        // (transient) live-tail session does not silently rewrite
-        // the static entry on a subsequent flush.
+        // Post-reset: pin cleared so a follow-up flush does not
+        // silently rewrite the static entry.
         QVERIFY(wired->ActiveSessionUuid().isEmpty());
     }
 
-    // The `aboutToQuit` handler in `main()` must call
-    // `AutoSaveSessionSnapshot(true)` per window so post-
-    // `streamingFinished` edits survive an OS-driven quit (Cmd+Q,
-    // login session teardown) where `closeEvent` does not fire. The
-    // pre-fix handler only called `AddOpenWindowUuid`, so the
-    // persisted snapshot was whatever the last `streamingFinished`
-    // wrote -- typically stale relative to the user's current view.
+    // `aboutToQuit` must flush each window via
+    // `AutoSaveSessionSnapshot(true)` so post-`streamingFinished`
+    // edits survive an OS-driven quit (no `closeEvent`).
     void TestAboutToQuitFlushesPerWindowEdits()
     {
         const QTemporaryDir sessionsDir;
@@ -13648,14 +13246,8 @@ private slots:
         const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
         QVERIFY(changedSpy.isValid());
 
-        // Replay the aboutToQuit lambda's body without actually
-        // exiting the test. Mirrors the production code in
-        // `main.cpp` exactly: per-window
-        // `AutoSaveSessionSnapshot(publishOpenWindow=false)` to
-        // flush edits, restorability collected into a single list,
-        // and one batched `AddOpenWindowUuids` to publish the
-        // restorable uuids under a single cross-process lock
-        // acquisition.
+        // Replay the `aboutToQuit` body: per-window flush, then
+        // one batched publish under a single lock acquisition.
         QStringList restorable;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
@@ -13687,26 +13279,12 @@ private slots:
         );
     }
 
-    // `RestoreLastSessionFromPath` must NOT pin OR publish a uuid
-    // when the JSON lives outside the manager's sessions directory.
-    // The pin gate is the stronger half: a uuid-shaped stem alone
-    // does not justify pinning `mAutoSaveUuid`, because a later
-    // AutoSave would silently fork the user's external file into a
-    // managed copy under `sessionsDir/<stem>.json` (the original
-    // external file stays untouched but the user's edits go to a
-    // new location). The publish gate is the weaker half: even if
-    // the pin slipped through, `Touch(stem)` would report
-    // not-in-index for an external file and `AddOpenWindowUuid`
-    // would never see the call.
+    // External JSON (outside the sessions dir) must not pin or
+    // publish a uuid -- a future AutoSave would otherwise silently
+    // fork the user's file into a managed copy.
     //
-    // We exercise both gates against a *no-source* configuration
-    // JSON: that path skips streaming (and therefore skips the
-    // legitimating `streamingFinished` -> auto-save which would
-    // have written the entry into the index after the fact).
-    // Without the fixes the no-source restore window would (a)
-    // pin the external uuid, and (b) leak a ghost uuid into
-    // `openWindowsAtQuit` until the next launch's fan-restore
-    // filtered it.
+    // Exercised against a no-source config so `streamingFinished`
+    // never legitimises the entry after the fact.
     void TestRestoreLastSessionDoesNotPublishGhostUuid()
     {
         const QTemporaryDir sessionsDir;
@@ -13718,13 +13296,9 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Build a no-source session JSON with a uuid-shaped stem in
-        // a directory that is NOT the manager's sessionsDir. The
-        // sessionsDir gate in `RestoreLastSessionFromPath` will
-        // notice the directory mismatch and skip the entire pin +
-        // publish block. The no-source configuration also
-        // short-circuits `StreamFromCurrentSourceOrSkip` so no
-        // auto-save legitimises the uuid afterwards.
+        // No-source JSON with a uuid-shaped stem outside the
+        // managed sessionsDir. The directory mismatch trips the
+        // gate so the pin + publish block is skipped.
         const QTemporaryDir externalDir;
         QVERIFY(externalDir.isValid());
         const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -13732,10 +13306,8 @@ private slots:
 
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
-        // Intentionally no SetSource -- the file is a columns-only
-        // configuration snapshot. RestoreLastSessionFromPath hits
-        // the no-source branch of StreamFromCurrentSourceOrSkip and
-        // returns without kicking off any streaming.
+        // Columns-only (no `SetSource`): restore hits the no-source
+        // branch and never starts streaming.
         builder.Save(externalPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(externalPath));
 
@@ -13744,13 +13316,8 @@ private slots:
         wired->RestoreLastSessionFromPath(externalPath);
         QCoreApplication::processEvents();
 
-        // mAutoSaveUuid must NOT be pinned: the JSON is outside the
-        // manager's sessions directory, so pinning would let a
-        // future AutoSave silently fork the user's external file
-        // into a managed copy under `sessionsDir/<uuid>.json`. The
-        // configuration still loads (the window is usable) but the
-        // uuid stays unpinned, so any subsequent save mints a fresh
-        // uuid and writes to the managed location instead.
+        // The configuration loads but the uuid stays unpinned, so
+        // the next save mints a fresh uuid in the managed dir.
         QVERIFY2(
             wired->ActiveSessionUuid().isEmpty(),
             qPrintable(QStringLiteral("external uuid-shaped JSON must not pin mAutoSaveUuid (got '%1')")
@@ -13758,27 +13325,16 @@ private slots:
         );
 
         const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
-        // Do NOT QSKIP on empty here: an empty set is precisely
-        // what the fix guarantees. The QSettings-honouring soft
-        // skip used elsewhere is for tests that *expect* a write.
+        // No `QSKIP` on empty -- an empty set is what the fix
+        // guarantees.
         QVERIFY2(!openSet.contains(uuid), "external uuid-shaped JSON must not be published into openWindowsAtQuit");
     }
 
-    // `RestoreLastSessionFromPath` must NOT publish a uuid into
-    // `openWindowsAtQuit` when the loaded session's `Source::Kind` is
-    // not File (currently NetworkStream is the only such kind, but
-    // the gate applies to any future non-file kind). The recents
-    // index legitimately owns the entry -- `Touch` succeeds and the
-    // user can manually re-bind via Open Network Stream -- but the
-    // saved locator is a producer URI that `StartStreamingOpenQueue`
-    // cannot re-bind on launch. Without the fix, every launch's
-    // fan-restore would resurrect the stream window with a
-    // "must re-bind manually" popup, looping forever.
-    //
-    // Pairs with `TestRestorableActiveSessionUuidFiltersNonRestorableSessions`,
-    // which covers the predicate in isolation. This test wires the
-    // predicate into the publish path that the production
-    // `aboutToQuit` handler depends on.
+    // Non-File source kinds (NetworkStream today) must not publish
+    // into `openWindowsAtQuit`. The recents index still owns the
+    // entry (Touch / manual rebind work) but fan-restore must skip
+    // it; otherwise every launch resurrects a "re-bind manually"
+    // popup loop.
     void TestRestoreLastSessionDoesNotPublishNetworkStreamUuid()
     {
         const QTemporaryDir sessionsDir;
@@ -13790,11 +13346,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Use `WriteSnapshot` so the entry actually lives in the
-        // recents index. Without this, `Touch(stem)` would short-
-        // circuit to false in `RestoreLastSessionFromPath` and the
-        // pre-fix code would already skip the publish (a different
-        // gate, not the one under test).
+        // `WriteSnapshot` so the entry lives in the index; without
+        // it, `Touch` would short-circuit and mask the gate.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
@@ -13809,10 +13362,8 @@ private slots:
         wired->RestoreLastSessionFromPath(jsonPath);
         QCoreApplication::processEvents();
 
-        // The window still owns the uuid (so a subsequent re-bind +
-        // auto-save updates the same entry rather than forking a
-        // duplicate) -- but the restorability predicate hides it
-        // from fan-restore.
+        // Window owns the uuid (so a manual rebind updates the
+        // same entry), but the restorability predicate hides it.
         QCOMPARE(wired->ActiveSessionUuid(), uuid);
         QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
 
@@ -13820,11 +13371,8 @@ private slots:
         QVERIFY2(!openSet.contains(uuid), "NetworkStream uuid must not be published into openWindowsAtQuit on restore");
     }
 
-    // Companion to `TestRestoreLastSessionDoesNotPublishNetworkStreamUuid`
-    // covering the second publish call site:
-    // `OpenRecentSession(uuid)` (user clicks a NetworkStream entry
-    // in the Recent Sessions menu). Same invariant -- the uuid is
-    // owned but must not enter `openWindowsAtQuit`.
+    // Companion: same invariant for the menu reopen path
+    // (`OpenRecentSession(uuid)`).
     void TestOpenRecentSessionDoesNotPublishNetworkStreamUuid()
     {
         const QTemporaryDir sessionsDir;
@@ -13845,12 +13393,8 @@ private slots:
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
 
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
-        // Suppress the "Network Stream Session" modal that
-        // `OpenRecentSession` raises for non-File sources -- the
-        // offscreen QPA test runner cannot dismiss it and the test
-        // would hang on `processEvents`. Production keeps the
-        // modal (this is purely a test seam, gated on
-        // `LOGAPP_BUILD_TESTING`).
+        // Suppress the non-File source modal so the offscreen
+        // runner doesn't hang.
         wired->SetSuppressDialogsForTest(true);
 
         wired->OpenRecentSessionForTest(uuid);
@@ -13864,8 +13408,7 @@ private slots:
     }
 
     // -------------------------------------------------------------------------
-    // MainWindow lifecycle regressions (commit "Branch review fixes"
-    // commit 6).
+    // MainWindow lifecycle regressions.
     // -------------------------------------------------------------------------
 
     void TestOpenRecentSessionDropsCorruptEntry()
@@ -13875,11 +13418,8 @@ private slots:
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Write a valid session, then corrupt the JSON on disk so the
-        // pre-flight parse fails. Pre-fix the OpenRecentSession path
-        // warned but left the entry in the index, so the user could
-        // click it again and keep hitting the same parse error. Post-fix
-        // the corrupt entry is removed.
+        // Corrupt the JSON so the pre-flight parse fails. Post-fix
+        // the corrupt entry is removed from the index.
         loglib::LogConfiguration cfg;
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}
@@ -13913,12 +13453,8 @@ private slots:
 
     void TestLoadFromStringParsesValidConfiguration()
     {
-        // `LogConfigurationManager::LoadFromString` is the in-memory
-        // pre-flight that `FileLooksLikeConfiguration` uses to bound
-        // its disk-IO budget. Verify it produces the same parsed
-        // structure as `Load(path)` -- writing a config via the
-        // public API ensures we exercise the exact schema the
-        // probe will see in production.
+        // `LoadFromString` is the in-memory pre-flight that
+        // `FileLooksLikeConfiguration` uses to bound disk IO.
         const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath(QStringLiteral("seed.json"));
@@ -13950,27 +13486,16 @@ private slots:
         }
         catch (const std::exception &)
         {
-            // Expected: garbage input must surface as an exception. We
-            // catch into a bool latch (rather than letting the QFAIL
-            // inside the try-block double as the assertion) so the
-            // catch block has an actual observable side effect --
-            // bugprone-empty-catch refuses to recognise the "we only
-            // care that *some* exception was thrown" idiom otherwise.
+            // Latch the throw so `bugprone-empty-catch` is happy.
             threw = true;
         }
         QVERIFY2(threw, "LoadFromString must throw on garbage input");
     }
 
-    // Reordering `EvictLocked` so the index write precedes the
-    // unlink keeps the post-condition observable behaviour the same:
-    // newest entries still survive, oldest are still deleted from
-    // disk. The fix is about crash safety (a crash between unlink
-    // and write used to leave a dangling index entry referencing a
-    // missing JSON; with the fix, a crash between write and unlink
-    // leaves an orphan JSON that `CleanupOrphanFiles` mops up on
-    // next launch). This test asserts the steady-state invariant
-    // and pairs with `TestCleanupOrphanFilesRemovesStaleJsons` which
-    // covers the orphan-recovery half.
+    // `EvictLocked` writes the index before unlinking so a crash
+    // between the two leaves an orphan JSON (recovered by
+    // `CleanupOrphanFiles`) rather than a dangling index entry.
+    // Steady-state observable invariant is unchanged.
     void TestEvictionKeepsIndexConsistentWithDisk()
     {
         const QTemporaryDir sessionsDir;
@@ -13992,8 +13517,7 @@ private slots:
             writtenUuids.append(uuid);
         }
 
-        // Every entry in the index must have its JSON on disk -- the
-        // index/disk pair is the invariant we are protecting.
+        // Every indexed entry has its JSON on disk.
         const QList<RecentSessionEntry> list = manager.List();
         QCOMPARE(list.size(), SessionHistoryManager::MAX_ENTRIES);
         for (const RecentSessionEntry &e : list)
@@ -14004,28 +13528,17 @@ private slots:
             );
         }
 
-        // The single evicted uuid (oldest) must NOT have a backing
-        // file. With the reordered fix this happens via a post-write
-        // unlink; with the original ordering it was a pre-write
-        // unlink. The observable post-condition is identical.
+        // The evicted (oldest) uuid has no backing file.
         QVERIFY2(
             !QFileInfo::exists(manager.PathForUuid(writtenUuids.first())),
             "evicted entry's JSON must be removed from disk"
         );
     }
 
-    // `LogConfigurationManager::Save` performs an atomic temp+rename:
-    // any failure on the temp file (open / write / close) must throw
-    // and leave the destination untouched. Pre-fix, a `close()`
-    // failure was silently swallowed by the destructor and the
-    // possibly-truncated temp file was renamed over the live JSON.
-    // The post-fix code adds an explicit `close() + good()` check.
-    //
-    // We can't easily fault-inject a close failure across platforms,
-    // so this test asserts the closer-cousin invariant: an open
-    // failure (parent directory does not exist) throws and the
-    // destination is untouched. The test covers the same throw-and-
-    // untouched contract the close-failure path now also honours.
+    // Atomic temp+rename: any temp-file failure must throw and
+    // leave the destination untouched. We can't fault-inject a
+    // close failure portably; instead exercise an open failure
+    // (parent dir missing), which honours the same contract.
     void TestSaveTempFailureDoesNotClobberDestination()
     {
         const QTemporaryDir scratchDir;
@@ -14043,11 +13556,8 @@ private slots:
         destFile.close();
         QVERIFY(!seedBytes.isEmpty());
 
-        // Drive Save into a path whose parent directory does not
-        // exist -- the temp-file open() inside the atomic-write
-        // block will fail. We need a path the OS cannot reach,
-        // independent of trailing-slash behaviour. A nested missing
-        // sub-directory works on every platform we ship to.
+        // Save into a path whose parent dir does not exist; the
+        // temp-file open inside the atomic write must fail.
         const QString unreachablePath =
             QDir(scratchDir.path()).filePath(QStringLiteral("does/not/exist/save-target.json"));
 
@@ -14067,21 +13577,16 @@ private slots:
             !QFileInfo::exists(unreachablePath), "Save must not have created a partial file at the unreachable path"
         );
 
-        // Pre-existing destination next to the scratch dir is
-        // untouched (Save's atomic semantics never modify a path
-        // it didn't get to rename into).
+        // The pre-existing destination is untouched.
         QVERIFY(destFile.open(QIODevice::ReadOnly));
         const QByteArray afterBytes = destFile.readAll();
         destFile.close();
         QCOMPARE(afterBytes, seedBytes);
     }
 
-    // 2.1 regression: `OpenFilesForCli` with a single configuration
-    // JSON that does not bind a source must surface a status-bar
-    // hint pointing the user at File -> Open. Without the hint the
-    // user sees an empty window with column headers and no
-    // indication that the binary actually accepted the argument --
-    // the launch looks like a no-op.
+    // CLI with a single source-less config must show a status-bar
+    // hint pointing at File -> Open; otherwise the launch looks
+    // like a no-op (just column headers, no rows).
     void TestOpenFilesForCliSingleConfigWithoutSourceShowsHint()
     {
         SessionHistoryManager manager(
@@ -14089,9 +13594,7 @@ private slots:
         );
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Source-less configuration JSON: real columns, no
-        // `source` field. Mirrors what a user does today via File
-        // -> Save Configuration before any log is opened.
+        // Source-less config (columns only, no `source` field).
         const QTemporaryDir scratch;
         QVERIFY(scratch.isValid());
         const QString configPath = scratch.filePath(QStringLiteral("hint-cfg.json"));
@@ -14102,9 +13605,7 @@ private slots:
         wired->OpenFilesForCli({configPath});
         QCoreApplication::processEvents();
 
-        // The hint lands on the status bar. We accept either the
-        // tr() form or its English fallback (test runs without a
-        // translation context loaded).
+        // Status-bar hint visible.
         const QString status = wired->statusBar()->currentMessage();
         QVERIFY2(
             status.contains(QStringLiteral("configuration"), Qt::CaseInsensitive) &&
@@ -14114,36 +13615,28 @@ private slots:
                            .arg(status))
         );
 
-        // The configuration itself must have been applied -- columns
-        // present in the model so a subsequent File -> Open lands on
-        // the user's chosen layout.
+        // Configuration applied so a follow-up File -> Open lands
+        // on the user's chosen column layout.
         QVERIFY2(
             wired->Model()->columnCount() >= 1,
             "OpenFilesForCli must apply the configuration's columns even when no source is bound"
         );
     }
 
-    // 2.4 regression: `closeEvent` on a window that never published
-    // its uuid into `openWindowsAtQuit` must not leave a stale
-    // entry behind in the persisted set. The fix tracks the publish
-    // state on `mAutoSaveUuidPublished` and skips the
-    // cross-process `RemoveOpenWindowUuid` round-trip, but the
-    // observable invariant is the same either way: the open set
-    // stays clear of this window's uuid.
+    // `closeEvent` on a window that never published its uuid must
+    // not leave a stale entry in `openWindowsAtQuit`. The fix
+    // skips the cross-process `RemoveOpenWindowUuid` when nothing
+    // was published.
     //
-    // We exercise the path where `AutoSaveSessionSnapshot(false)` is
-    // the *first* save (no prior streamingFinished published the
-    // uuid). This is the exact closeEvent ordering the fix
-    // optimises -- and is also the case where the pre-fix Remove
-    // would have been a wasted no-op against the QSettings store.
+    // Exercised via the path where `AutoSaveSessionSnapshot(false)`
+    // is the *first* save (no prior `streamingFinished` published
+    // the uuid), so a Remove would be a wasted no-op.
     void TestCloseEventOnUnpublishedSessionLeavesOpenWindowsClear()
     {
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        // Snapshot + restore the persisted open-windows list so the
-        // assertion below can rely on a clean slate without
-        // disturbing developer-machine state.
+        // Snapshot + restore so the assertion starts clean.
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
@@ -14151,12 +13644,8 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Open a static session and let it auto-save on
-        // `streamingFinished`. With the production wiring this
-        // *publishes* the uuid into `openWindowsAtQuit` -- but to
-        // exercise the unpublished-close path we then manually
-        // clear the set before closing, simulating the
-        // close-mid-stream-without-prior-finish corner case.
+        // Open a static session (auto-save publishes the uuid),
+        // then clear the set so we exercise the unpublished close.
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "unpub"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
@@ -14165,15 +13654,10 @@ private slots:
         const QString uuid = wired->ActiveSessionUuid();
         QVERIFY(!uuid.isEmpty());
 
-        // Force the simulated unpublished state: scrub the open
-        // set. This is what a sibling process or a forced reset
-        // would leave behind. The fix must still produce a clean
-        // open-windows set after closeEvent rather than
-        // "discovering" the wiped uuid is gone via a no-op Remove.
+        // Scrub the set to simulate a sibling reset.
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        // Closing tears down the window; we close synchronously so
-        // the closeEvent runs before the assertion.
+        // closeEvent runs synchronously.
         wired->close();
         QCoreApplication::processEvents();
 
@@ -14181,25 +13665,11 @@ private slots:
         QVERIFY2(!afterClose.contains(uuid), "closeEvent must leave the open-windows set free of this window's uuid");
     }
 
-    // H1 regression (third-pass review): the `aboutToQuit` lambda
-    // fans `AutoSaveSessionSnapshot(true)` across every still-tracked
-    // top-level `MainWindow`. For a stack-allocated primary window
-    // that already saw `closeEvent` (e.g. user clicked File -> Exit
-    // and the close ran before app teardown), the window stays in
-    // `topLevelWidgets()` even after `close()`. Without the
-    // closeEvent's session-state reset, the secondary
-    // `AutoSaveSessionSnapshot(true)` would re-enter `WriteSnapshot`
-    // with `mAutoSaveUuid` empty (closeEvent cleared it) but
-    // `mCurrentSource` + `mSessionMode == Static` still live --
-    // generating a fresh duplicate uuid, a duplicate JSON on disk,
-    // a duplicate recents entry, and a published `openWindowsAtQuit`
-    // uuid that resurrects the just-Exited window on next launch.
-    //
-    // The fix resets `mCurrentSource`, `mSessionMode`, and
-    // `mLastTerminalSessionMode` in `closeEvent`. This test
-    // replicates the full `aboutToQuit` body after `close()` and
-    // verifies (a) no duplicate recents entry was prepended and
-    // (b) the open-windows set does not gain a fresh uuid.
+    // H1 regression: after `File -> Exit` runs `closeEvent`, the
+    // primary stays in `topLevelWidgets()`. Without resetting
+    // session-mode state in `closeEvent`, the `aboutToQuit`
+    // fan-AutoSave would mint a fresh uuid and resurrect the
+    // window on next launch.
     void TestCloseEventThenAboutToQuitDoesNotResurrectClosedWindow()
     {
         const QTemporaryDir sessionsDir;
@@ -14212,9 +13682,8 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        // Stage 1: open a static session and let it auto-save on
-        // streamingFinished (this is the path that publishes the
-        // uuid into openWindowsAtQuit).
+        // Stage 1: open a static session; auto-save publishes the
+        // uuid into `openWindowsAtQuit`.
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "h1-regr"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
@@ -14225,23 +13694,17 @@ private slots:
         QVERIFY(!origUuid.isEmpty());
         QCOMPARE(manager.List().size(), 1);
 
-        // Stage 2: close the window (closeEvent runs, removes uuid
-        // from openWindowsAtQuit, and -- with the fix -- resets the
-        // session-mode state to Idle).
+        // Stage 2: close the window; with the fix, closeEvent
+        // also resets session-mode state to Idle.
         wired->close();
         QCoreApplication::processEvents();
 
-        // Sanity: the just-closed uuid should be out of the open
-        // set (this is the existing 1.2 invariant).
+        // Sanity: the just-closed uuid is gone from the open set.
         const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(!afterClose.contains(origUuid), "closeEvent should remove the window's uuid from openWindowsAtQuit");
 
-        // Stage 3: replicate the production aboutToQuit body. Mirrors
-        // the batched body in `app/src/main.cpp`: per-window
-        // `AutoSaveSessionSnapshot(false)`, collect restorable uuids,
-        // single batched `AddOpenWindowUuids` at the end. Without the
-        // H1 fix this loop would synthesise a fresh uuid for the
-        // closed window via the AutoSave call.
+        // Stage 3: replicate the production `aboutToQuit` body:
+        // per-window flush, then one batched publish.
         QStringList restorableUuids;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
@@ -14260,15 +13723,11 @@ private slots:
         SessionHistoryManager::AddOpenWindowUuids(restorableUuids);
         QCoreApplication::processEvents();
 
-        // Assertion 1: the recents index size is unchanged. The
-        // closeEvent's `AutoSaveSessionSnapshot(false)` already
-        // re-pinned `origUuid` (no-op rewrite), and the post-close
-        // aboutToQuit loop must not have added a brand-new entry.
+        // 1: recents index size unchanged (no duplicate entry).
         QCOMPARE(manager.List().size(), 1);
         QCOMPARE(manager.List().front().uuid, origUuid);
 
-        // Assertion 2: the open-windows set must not gain a fresh
-        // uuid. (The original uuid was already removed in stage 2.)
+        // 2: no fresh uuid in the open-windows set.
         const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             afterQuit.isEmpty() || (afterQuit.size() == 1 && afterQuit.front() == origUuid),
@@ -14277,18 +13736,14 @@ private slots:
                            .arg(afterQuit.join(QStringLiteral(", "))))
         );
 
-        // Assertion 3: there is no second JSON on disk -- the
-        // fan-flush must not have written a duplicate.
+        // 3: no duplicate JSON on disk.
         const QStringList sessionFiles =
             QDir(sessionsDir.path()).entryList(QStringList{QStringLiteral("*.json")}, QDir::Files);
         QCOMPARE(sessionFiles.size(), 1);
     }
 
-    // `SessionHistoryManager::MaxEntries()` reads the live preference
-    // and `SetMaxEntries()` writes it; the round-trip is the contract
-    // exposed to the Preferences UI. We also pin the default fallback
-    // (no QSettings value -> `MAX_ENTRIES`) so a future config-key
-    // rename does not silently regress to a different cap.
+    // `MaxEntries` / `SetMaxEntries` round-trip and default fallback
+    // (absent key -> `MAX_ENTRIES`).
     void TestMaxEntriesPreferenceRoundTrip()
     {
         QSettings settings;
@@ -14314,12 +13769,8 @@ private slots:
         QCOMPARE(SessionHistoryManager::MaxEntries(), 42);
     }
 
-    // Out-of-range values must clamp into
-    // `[MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND]`. Without
-    // the clamp a manually-edited profile could plant `INT_MAX` and
-    // we would happily try to keep that many entries on disk; below
-    // the lower bound (or `<= 0`) we would never retain anything,
-    // making the menu useless after the first auto-save.
+    // Out-of-range values clamp into
+    // `[MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND]`.
     void TestMaxEntriesClampedToValidRange()
     {
         const QSettings settings;
@@ -14347,10 +13798,8 @@ private slots:
         QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_LOWER_BOUND);
     }
 
-    // The runtime cap drives `WriteSnapshot`'s `EvictLocked` so a
-    // Preferences edit lowering the cap takes effect on the next
-    // write. Conversely, raising the cap before adding new entries
-    // lets all of them survive.
+    // The runtime cap drives `EvictLocked`: a Preferences edit
+    // takes effect on the next `WriteSnapshot`.
     void TestMaxEntriesPreferenceDrivesEviction()
     {
         const QSettings settings;
@@ -14388,10 +13837,7 @@ private slots:
         QCOMPARE(entries.size(), 3);
     }
 
-    // `RestoreLastSessionOnLaunch` is the Preferences toggle controlling
-    // whether `main()` reopens the most recent session on startup. The
-    // default is `true` (opt-in to a smooth restart) and the round-trip
-    // must persist explicit user choices.
+    // `RestoreLastSessionOnLaunch` round-trip; default is `true`.
     void TestRestoreLastSessionOnLaunchPreferenceRoundTrip()
     {
         QSettings settings;
@@ -14423,14 +13869,9 @@ private slots:
         QVERIFY(SessionHistoryManager::RestoreLastSessionOnLaunch());
     }
 
-    // `SingleInstanceGuard::SetSocketNameForTest` is documented as
-    // "must be called before TryAcquire". The contract is enforced by
-    // a debug assertion *and* a release-build qWarning + early
-    // return so production binaries do not zombie a live server on
-    // misuse. Verify the early-return path by attempting to mutate
-    // the socket name after `TryAcquire` and asserting the original
-    // name is still in effect (a sibling acquiring with the changed
-    // name must succeed without conflict).
+    // `SetSocketNameForTest` after `TryAcquire` must early-return
+    // (debug: `Q_ASSERT`; release: qWarning + ignore) so the
+    // original binding stays intact.
     void TestSingleInstanceSetSocketNameForTestIgnoredAfterAcquire()
     {
         const QString originalName = QStringLiteral("structlog-set-name-test-original-") +
@@ -14440,30 +13881,23 @@ private slots:
         primary.SetSocketNameForTest(originalName);
         QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
 
-        // Misuse: try to rebind to a new name. The release-mode
-        // early-return path must keep the original binding intact.
-        // In debug builds the `Q_ASSERT(mServer == nullptr)` fires
-        // before we ever reach the early-return branch, so skip
-        // this assertion in debug to keep the test green there.
+        // Release-only: debug `Q_ASSERT` fires before the early
+        // return, so skip the rebind attempt in debug builds.
 #ifdef QT_NO_DEBUG
         const QString divertName = QStringLiteral("structlog-set-name-test-divert-") +
                                    QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         primary.SetSocketNameForTest(divertName);
 
-        // The misused-name secondary must NOT find a primary on the
-        // divert name (because the primary is still bound to the
-        // original). It is free to become its own primary.
+        // The divert-name secondary becomes its own primary
+        // because the original primary is still bound elsewhere.
         SingleInstanceGuard divertSecondary;
         divertSecondary.SetSocketNameForTest(divertName);
         QVERIFY(divertSecondary.TryAcquire({}, /*allowNewInstance=*/false));
 #endif
     }
 
-    // `WriteSnapshotAndPublish(publishOpenWindow=true)` is the new
-    // single-lock-acquisition variant used by `AutoSaveSessionSnapshot`
-    // -- the recents JSON write and the `openWindowsAtQuit` publish
-    // happen under one cross-process lock, instead of paying two
-    // independent acquisitions.
+    // `WriteSnapshotAndPublish(true)` performs the JSON write and
+    // `openWindowsAtQuit` publish under one cross-process lock.
     void TestWriteSnapshotAndPublishUpdatesOpenWindowsAtomically()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -14483,8 +13917,7 @@ private slots:
         const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
         QVERIFY(!uuid.isEmpty());
 
-        // After the call the uuid must be visible in both stores
-        // -- the recents index AND the open-windows-at-quit list.
+        // uuid visible in both the recents index and the open set.
         const auto entries = manager.List();
         QCOMPARE(entries.size(), 1);
         QCOMPARE(entries.front().uuid, uuid);
@@ -14496,10 +13929,8 @@ private slots:
         );
     }
 
-    // `WriteSnapshotAndPublish(publishOpenWindow=false)` must be
-    // equivalent to plain `WriteSnapshot`: the recents JSON is
-    // written but the open-windows list is left untouched. Used by
-    // `closeEvent`'s flush-only path.
+    // `WriteSnapshotAndPublish(false)` matches plain `WriteSnapshot`:
+    // JSON written, open-windows list untouched.
     void TestWriteSnapshotAndPublishSkipsPublishWhenFlagFalse()
     {
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -14523,12 +13954,9 @@ private slots:
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
     }
 
-    // Reuse-uuid fast path: an in-place rewrite of the same session
-    // (every `streamingFinished` re-saves the same uuid with the
-    // same label / primaryLocator / fileCount) must keep the entry
-    // count and head-of-list ordering stable. The fast path skips
-    // the full entries-group rewrite under the hood; from the
-    // caller's perspective only the JSON on disk has changed.
+    // Reuse-uuid fast path: re-saving with identical metadata
+    // keeps the count and head-of-list ordering stable; only the
+    // JSON on disk is rewritten.
     void TestWriteSnapshotReuseUuidFastPathIsStable()
     {
         const QTemporaryDir sessionsDir;
@@ -14545,22 +13973,19 @@ private slots:
         QVERIFY(!uuid.isEmpty());
         QCOMPARE(manager.List().size(), 1);
 
-        // Re-save with the same uuid + identical metadata. The fast
-        // path should leave the entry count at 1 and keep `uuid` at
-        // the head.
+        // Re-save with identical metadata; fast path triggers.
         const QString reuse = manager.WriteSnapshot(cfg, uuid);
         QCOMPARE(reuse, uuid);
         const auto entries = manager.List();
         QCOMPARE(entries.size(), 1);
         QCOMPARE(entries.front().uuid, uuid);
-        // The on-disk JSON must still exist (the fast path does
-        // rewrite the JSON, only the entries-group is skipped).
+        // JSON still exists; only the entries-group rewrite is
+        // skipped.
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
     }
 
-    // Reuse-uuid with *changed* metadata must take the slow path
-    // (full entries-group rewrite) so the menu label reflects the
-    // new label / locator / fileCount.
+    // Reuse-uuid with changed metadata takes the slow path so the
+    // menu label reflects the new label / locator / fileCount.
     void TestWriteSnapshotReuseUuidPicksSlowPathOnMetadataChange()
     {
         const QTemporaryDir sessionsDir;
@@ -14575,10 +14000,8 @@ private slots:
         const QString uuid = manager.WriteSnapshot(cfg);
         QVERIFY(!uuid.isEmpty());
 
-        // Mutate the source so `BuildLabel` produces a different
-        // string. The fast-path equality check on
-        // (label, primaryLocator, fileCount) must reject the
-        // unchanged-fast-path branch and rewrite the entry slot.
+        // Mutate the source so `BuildLabel` differs; fast-path
+        // equality check rejects and rewrites the entry slot.
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .locators = {"C:/logs/initial.json", "C:/logs/added.json"}
@@ -14591,14 +14014,9 @@ private slots:
         QCOMPARE(entries.front().fileCount, 2);
     }
 
-    // Concurrent stress: many threads pounding the same manager
-    // through `WriteSnapshot` / `Touch` / `Remove` / `List` must
-    // not corrupt the index or deadlock. This is the documented
-    // thread-safety contract for `SessionHistoryManager` (`mMutex`
-    // serialises every read-modify-write across threads in the
-    // same process). The harness is bounded -- a few thousand
-    // iterations across a handful of threads is enough to surface
-    // a regression while keeping the test runtime low.
+    // Concurrent stress: many threads through `WriteSnapshot` /
+    // `Touch` / `Remove` / `List` must not corrupt the index or
+    // deadlock. Pins the `mMutex` thread-safety contract.
     void TestSessionHistoryConcurrentStress()
     {
         const QTemporaryDir sessionsDir;
@@ -14629,8 +14047,7 @@ private slots:
         auto reader = [&]() {
             while (!stop.load())
             {
-                // `List()` must always return a self-consistent
-                // snapshot regardless of writer-thread interleaving.
+                // `List()` always returns a self-consistent snapshot.
                 const auto entries = manager.List();
                 for (const auto &e : entries)
                 {
@@ -14653,8 +14070,7 @@ private slots:
         stop = true;
         readerThread.join();
 
-        // At least some writes landed; eviction at MAX_ENTRIES caps
-        // the visible count.
+        // Some writes landed; eviction caps the visible count.
         QVERIFY2(writes.load() > 0, "writer threads must produce at least one successful WriteSnapshot");
         QVERIFY(manager.List().size() <= SessionHistoryManager::MaxEntries());
     }

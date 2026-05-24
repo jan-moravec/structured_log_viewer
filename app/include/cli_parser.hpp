@@ -13,31 +13,22 @@
 namespace logapp
 {
 
-/// Parsed CLI state shared between `main()` and the test harness.
-/// `files` is the list of positional arguments, canonicalised
-/// against the caller's CWD via `CanonicalLocator`. `allowNewInstance`
-/// reflects both the `--new-instance` flag and the
-/// `LOGAPP_NEW_INSTANCE` env override (set the env var to `1` or
-/// `true` to opt every launch out of single-instance coordination,
-/// useful for CI runs that spawn many windows).
+/// Parsed CLI state. `files` holds the positional arguments
+/// canonicalised against the caller's CWD. `allowNewInstance` is
+/// true when `--new-instance` is set or `LOGAPP_NEW_INSTANCE` is
+/// `1` / `true` (the env override is useful for CI runs that
+/// spawn many windows).
 struct ParsedCli
 {
     QStringList files;
     bool allowNewInstance = false;
 };
 
-/// Single declarative source of truth for CLI parsing. Replaces the
-/// pre-fix hand-rolled `CollectCliFiles` + `ShouldAllowNewInstance`
-/// pair, which duplicated the flag table and silently dropped
-/// unknown long-form flags. `QCommandLineParser` rejects unknown
-/// flags via `parse`'s error path; we surface the error to stderr
-/// for shell-script consumers but still proceed with the parsed
-/// positionals so an unknown flag in the middle of an open-files
-/// gesture does not fail the entire launch.
-///
-/// The `env` argument exists so tests can drive the parser with a
-/// hermetic env -- production callers pass
-/// `QProcessEnvironment::systemEnvironment()`.
+/// Parse CLI arguments. Unknown flags are reported to stderr but
+/// the positional arguments still flow through, so a typo in the
+/// middle of an open-files gesture does not fail the entire launch.
+/// `env` lets tests drive the parser with a hermetic environment;
+/// production passes `QProcessEnvironment::systemEnvironment()`.
 [[nodiscard]] inline ParsedCli ParseCli(const QStringList &args, const QProcessEnvironment &env)
 {
     ParsedCli result;
@@ -59,9 +50,8 @@ struct ParsedCli
         QStringLiteral("[files...]")
     );
 
-    // `parse()` (as opposed to `process()`) does not call `exit()` on
-    // error; we surface the diagnostic and still salvage the
-    // positional arguments + flags so the user sees a window.
+    // `parse()` does not exit on error; surface the diagnostic but
+    // still keep the parsed positionals and flags.
     if (!parser.parse(args))
     {
         ::logapp::LogWarning() << "Unrecognised CLI argument:" << parser.errorText();
@@ -75,17 +65,9 @@ struct ParsedCli
         result.allowNewInstance = true;
     }
 
-    // `absoluteFilePath` (inside `CanonicalDisplayPath`) resolves
-    // against the caller's CWD without requiring the file to exist
-    // (unlike `canonicalFilePath`, which would silently drop a user
-    // typo). The path returned here is the *display* form (case
-    // preserved on Windows): the user-visible `cliFiles` list
-    // flows through `OpenFilesForCli` -> `DispatchMixedOpenInput`
-    // -> `StreamNextPendingFile`, and the dedup key is computed
-    // by `StreamNextPendingFile` at the point where the path
-    // actually lands on a `Source`. Computing only the display
-    // form here keeps argv echoing (status bar, error messages)
-    // case-correct.
+    // Store display-form paths (case preserved on Windows); the dedup
+    // key is computed later by `StreamNextPendingFile` when the path
+    // lands on a `Source`.
     for (const QString &positional : parser.positionalArguments())
     {
         if (positional.isEmpty())

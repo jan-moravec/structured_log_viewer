@@ -717,19 +717,16 @@ void LogModel::EndStreaming(bool cancelled)
 {
     mStreamingActive = false;
 
-    // Graceful end-of-stream: run the permissive auto-detection sweep so
-    // small/short streams still get enum filter chips. Cancellation
-    // skips the sweep. Emit `enumColumnsChanged` for any
-    // promote / demote that landed during finalize, before
-    // `streamingFinished` so the picker has a stable dictionary by
-    // the time the UI re-enables editing.
+    // End-of-stream sweep so small streams still get enum filter
+    // chips. Cancellation skips it. Emit `enumColumnsChanged` for
+    // every promote / demote that lands during finalize, before
+    // `streamingFinished` so the UI has a stable dictionary.
     if (!cancelled)
     {
-        // Snapshot per-column types so we can emit one scoped signal
-        // per transitioned column; capture per-Level dictionary
-        // contents pre-finalize so a finalize-time `Level -> String`
-        // demote keeps the same level-mapping translation that the
-        // per-batch path provides via `mLastBatchLevelDemoteMapping`.
+        // Snapshot per-column types pre-finalize, plus per-Level
+        // dictionary contents so a Level -> ... demote can populate
+        // `mLastBatchLevelDemoteMapping` the same way the per-batch
+        // path does.
         std::vector<loglib::LogConfiguration::Type> typesBefore;
         std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>> levelMappingsBefore;
         {
@@ -775,13 +772,11 @@ void LogModel::EndStreaming(bool cancelled)
             }
         }
 
-        // Drop any leftover per-batch demote translations: finalize
-        // populates fresh ones below for whatever it demotes.
+        // Drop per-batch demote translations; finalize repopulates.
         mLastBatchLevelDemoteMapping.clear();
 
-        // Always invoke; the bool return only reports promotions, so
-        // the diff loop below is the source of truth for both
-        // promote and demote signals.
+        // The bool return only reports promotions; the diff loop
+        // below is the source of truth for both promote and demote.
         (void)mLogTable.FinalizeAutoDetection();
 
         const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
@@ -808,11 +803,9 @@ void LogModel::EndStreaming(bool cancelled)
                 emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                 continue;
             }
-            // Demote: any enum-like type left the family. Stash the
-            // pre-finalize level mapping (if any) so the Demoted
-            // receiver can rewrite canonical-name Level filters into
-            // raw dictionary entries. Plain `Enumeration -> ...`
-            // demotes have no mapping to translate.
+            // Demote out of the enum family. Stash any pre-finalize
+            // level mapping so the receiver can rewrite canonical-
+            // name Level filters into raw dictionary entries.
             if (wasEnumLikeBefore && !isEnumLikeAfter)
             {
                 auto mappingIt = levelMappingsBefore.find(static_cast<int>(i));
@@ -823,9 +816,8 @@ void LogModel::EndStreaming(bool cancelled)
                 emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, static_cast<int>(i));
                 continue;
             }
-            // Sub-demote `Level -> Enumeration`: same gate as a real
-            // demote so saved Level filters get rewritten to raw
-            // dictionary entries before the post-demote rebuild.
+            // Sub-demote `Level -> Enumeration`: same handling as a
+            // full demote so saved Level filters get rewritten.
             if (typeBefore == loglib::LogConfiguration::Type::Level &&
                 typeAfter == loglib::LogConfiguration::Type::Enumeration)
             {
