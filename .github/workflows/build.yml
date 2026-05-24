@@ -288,13 +288,17 @@ jobs:
           fi
           APPIMAGE="${APPIMAGES[0]}"
           chmod +x "$APPIMAGE"
-          # `minimal` over `offscreen`: the offscreen plugin's startup
-          # path (screen emission during `QGuiApplicationPrivate::init`)
-          # is sensitive to a host-Qt-vs-bundled-Qt mix that the GitHub
-          # runner's `install-qt-action` environment forces on the
-          # AppImage. The `minimal` plugin stubs the same surface for
-          # the launch-and-kill smoke check without that crash.
-          QT_QPA_PLATFORM=minimal "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
+          # `env -i` strips every host-environment var
+          # `install-qt-action` injected (`QT_PLUGIN_PATH`,
+          # `QML2_IMPORT_PATH`, `QT_ROOT_DIR`, `LD_LIBRARY_PATH`,
+          # ...). Without this strip the AppImage tries to mix the
+          # host Qt's QPA plugin against the bundled `libQt6Core`
+          # / `libQt6Gui` and SIGSEGVs deep in
+          # `QGuiApplicationPrivate::createPlatformIntegration`.
+          # End users never have those vars set, so this matches
+          # the real launch path.
+          env -i HOME="$HOME" PATH=/usr/bin:/bin QT_QPA_PLATFORM=minimal \
+            "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
