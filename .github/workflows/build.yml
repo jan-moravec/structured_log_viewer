@@ -308,6 +308,19 @@ jobs:
           # Detailed gdb backtrace with disassembly around the crash
           # PC. addr2line on the bundled libQt6Core to map the offset
           # to a symbol name.
+          echo "--- nm symbols near the crash offset in libQt6Core ---"
+          # The crash always lands at libQt6Core+0x12138e. Print
+          # nm's sorted dump and use awk's hex parse to filter the
+          # surrounding window so we can name the function gdb shows
+          # as `??`.
+          BUNDLED_QT_CORE="$PWD/squashfs-root/usr/lib/libQt6Core.so.6"
+          nm -DC --defined-only --numeric-sort "$BUNDLED_QT_CORE" \
+            | awk '{
+                addr = strtonum("0x" $1)
+                if (addr >= strtonum("0x121000") && addr <= strtonum("0x121800")) print
+              }' || true
+          echo "(end of nm window)"
+
           echo "--- direct-launch (bailout) under gdb with disasm ---"
           set +e
           cat > /tmp/diag.gdb <<'GDB'
