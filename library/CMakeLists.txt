@@ -20,6 +20,7 @@ add_library(
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
+    src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
     src/log_compare.cpp
     src/log_data.cpp
     src/log_factory.cpp
