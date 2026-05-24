@@ -14,7 +14,7 @@
 #include <QString>
 #include <QTimer>
 
-#if defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
 #include <lmcons.h>
 #include <windows.h>
 #else
@@ -123,8 +123,8 @@ constexpr int TAKEOVER_LOCK_TIMEOUT_MS = 1000;
 /// stripped-down service accounts).
 QString CurrentUserId()
 {
-    const QString env = QProcessEnvironment::systemEnvironment().value(
-#if defined(Q_OS_WIN)
+    QString env = QProcessEnvironment::systemEnvironment().value(
+#ifdef Q_OS_WIN
         QStringLiteral("USERNAME")
 #else
         QStringLiteral("USER")
@@ -134,7 +134,7 @@ QString CurrentUserId()
     {
         return env;
     }
-#if defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
     wchar_t name[UNLEN + 1];
     DWORD size = UNLEN + 1;
     if (GetUserNameW(name, &size) && size > 0)
@@ -424,13 +424,10 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
             const bool forwarded = payloadFits && forwardTo(retry);
             mServer.reset();
             takeover.unlock();
-            if (forwarded)
-            {
-                return false;
-            }
-            // Fall back to running uncoordinated; better than no
-            // window.
-            return true;
+            // When `forwarded` is true the secondary handed off
+            // successfully and we exit; otherwise fall back to
+            // running uncoordinated -- better than no window.
+            return !forwarded;
         }
         // Stranger errors: we cannot bind the socket *and* nothing
         // is listening. Run as a primary without coordination --

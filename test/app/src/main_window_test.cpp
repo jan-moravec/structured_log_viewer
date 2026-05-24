@@ -6013,7 +6013,7 @@ private slots:
         const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "discard-b"})")});
         const TempJsonFile streamFixture({QStringLiteral(R"({"msg": "discard-stream"})")});
 
-        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
@@ -9894,7 +9894,11 @@ private slots:
         // runner, and a still-alive sibling top-level (no parent) trips
         // Qt's internal QWidget-list traversal inside the next test's
         // setup.
-        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+        // The analyzer cannot prove the `QScopeGuard`-driven `delete`
+        // runs (it does, exactly once on every exit path), so we
+        // suppress the bookend warning across the function body via
+        // a matching end-marker at the closing brace.
+        // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
         QPointer<RecordDetailWindow> window = new RecordDetailWindow(snapshot);
         const QScopeGuard cleanup([&]() {
             if (!window.isNull())
@@ -9920,6 +9924,7 @@ private slots:
         QVERIFY(popOutButton != nullptr);
         QVERIFY(!popOutButton->isVisibleTo(window->WidgetForTest()));
     }
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 
     // Double-clicking a row surfaces and pins the dock; `modelReset`
     // clears it back to the placeholder.
@@ -10705,7 +10710,7 @@ private slots:
     // populated from the configuration's source descriptor.
     void TestSessionHistoryWriteSnapshotRoundTrips()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -10722,7 +10727,7 @@ private slots:
             .locators = {"C:/logs/first.json", "C:/logs/second.json"}
         };
 
-        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
         const QString uuid = manager.WriteSnapshot(cfg);
 
         QVERIFY(!uuid.isEmpty());
@@ -10757,7 +10762,7 @@ private slots:
     // for upgrade scenarios.
     void TestSessionHistoryLabelKeepsNetworkStreamLocatorIntact()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -10778,7 +10783,7 @@ private slots:
     // matching per-uuid JSON file.
     void TestSessionHistoryEvictsOldestPastCapacity()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -10826,7 +10831,7 @@ private slots:
     // `Touch` on an older entry, that entry becomes the head.
     void TestSessionHistoryTouchPromotesEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -10861,7 +10866,7 @@ private slots:
     // empties out).
     void TestSessionHistoryRemoveClearsLastWhenLastRemoved()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -10891,7 +10896,7 @@ private slots:
     //     not leak.
     void TestNewWindowSharesHistoryManager()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -10930,7 +10935,7 @@ private slots:
             {
                 continue;
             }
-            MainWindow *candidate = qobject_cast<MainWindow *>(w);
+            auto *candidate = qobject_cast<MainWindow *>(w);
             if (candidate != nullptr && candidate != primary.get())
             {
                 child = candidate;
@@ -10954,7 +10959,7 @@ private slots:
         // before our local `primary` goes out of scope. The
         // `deleteLater` posted by Qt fires on the next event-loop
         // iteration, so spin it.
-        QSignalSpy destroyedSpy(child, &QObject::destroyed);
+        const QSignalSpy destroyedSpy(child, &QObject::destroyed);
         child->close();
         for (int i = 0; i < 50 && destroyedSpy.isEmpty(); ++i)
         {
@@ -10970,7 +10975,7 @@ private slots:
     // window so we can drive the entry point directly.
     void TestRestoreLastSessionFromPath()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -11016,7 +11021,7 @@ private slots:
     //     edits update that entry instead of creating a new one.
     void TestRecentSessionsMenuReopensEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -11046,7 +11051,7 @@ private slots:
         // Force the submenu rebuild + drive the entry action. The
         // `Recent Sessions` menu lives under `menuRecentSessions`
         // (object name set by the .ui form).
-        QMenu *recentsMenu = wired->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
+        auto *recentsMenu = wired->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
         QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist after Part 4c");
         emit recentsMenu->aboutToShow();
 
@@ -11073,7 +11078,7 @@ private slots:
     // updates the same recents entry instead of growing the list.
     void TestMainWindowAutoSavesOnStreamingFinished()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -11094,7 +11099,7 @@ private slots:
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
-        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
         QVERIFY(changedSpy.isValid());
 
         wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
@@ -11129,7 +11134,7 @@ private slots:
     // subsequent attempt once the lock is released succeeds.
     void TestWriteSnapshotSurvivesHeldLockFile()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -11318,7 +11323,7 @@ private slots:
         primary.SetSocketNameForTest(socketName);
         QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
 
-        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
         // Even though the primary owns the socket, allowNewInstance
@@ -11355,7 +11360,7 @@ private slots:
         primary.SetSocketNameForTest(socketName);
         QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
 
-        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
         // Send something that *looks like* a frame (well-formed
@@ -11402,7 +11407,7 @@ private slots:
         primary.SetSocketNameForTest(socketName);
         QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
 
-        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
         // Correct magic, but the version byte is out of range. The
@@ -11446,7 +11451,7 @@ private slots:
         primary.SetSocketNameForTest(socketName);
         QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
 
-        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
         // Send 2 MiB of bytes -- exceeds the documented 1 MiB cap
@@ -11569,7 +11574,7 @@ private slots:
 
         // Mirror the truncation logic in `TryAcquire::forwardTo`.
         constexpr int MAX_FORWARDED_FILES = 256;
-        QStringList trimmed = paths.size() > MAX_FORWARDED_FILES ? paths.mid(0, MAX_FORWARDED_FILES) : paths;
+        const QStringList trimmed = paths.size() > MAX_FORWARDED_FILES ? paths.mid(0, MAX_FORWARDED_FILES) : paths;
         QCOMPARE(trimmed.size(), 256);
 
         // And confirm the resulting payload stays under 1 MiB so the
@@ -11823,7 +11828,7 @@ private slots:
     // resets the last-session pointer.
     void TestSessionHistoryClearWipesEverything()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -11860,9 +11865,9 @@ private slots:
 
     void TestRecentsRejectsMaliciousUuid()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
-        QTemporaryDir outsideDir;
+        const QTemporaryDir outsideDir;
         QVERIFY(outsideDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -11902,7 +11907,7 @@ private slots:
 
     void TestRecentsTouchReturnsFalseOnLockContention()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         QVERIFY(QDir(sessionsDir.path()).mkpath(QStringLiteral(".")));
 
@@ -11936,7 +11941,7 @@ private slots:
 
     void TestRecentsCorruptSizeIsCapped()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         // The QSettings backend is shared with the main app under the
@@ -11964,7 +11969,7 @@ private slots:
         settings.setValue(QStringLiteral("recentSessions/size"), std::numeric_limits<int>::max());
         settings.sync();
 
-        QSettingsRecentsIndexStorage storage;
+        const QSettingsRecentsIndexStorage storage;
         // No actual per-entry data was written; with the cap, the
         // loop iterates at most `MAX_ENTRIES * 4` times and produces
         // an empty list (every slot has an empty `uuid` and is
@@ -12004,7 +12009,7 @@ private slots:
         settings.setValue(QStringLiteral("recentSessions/entries/2/uuid"), QString());
         settings.sync();
 
-        QSettingsRecentsIndexStorage storage;
+        const QSettingsRecentsIndexStorage storage;
         const QList<RecentSessionEntry> entries = storage.Read();
         QCOMPARE(entries.size(), 1);
         QCOMPARE(entries.front().uuid, realUuid);
@@ -12031,7 +12036,7 @@ private slots:
         settings.clear();
         QVERIFY(!settings.contains(QStringLiteral("recentSessions/version")));
 
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
 
@@ -12041,15 +12046,15 @@ private slots:
         };
         QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
 
-        QSettings probe;
+        const QSettings probe;
         QCOMPARE(probe.value(QStringLiteral("recentSessions/version")).toInt(), 1);
     }
 
     void TestRecentsCleanupSkipsNonUuidFiles()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
-        QDir dir(sessionsDir.path());
+        const QDir dir(sessionsDir.path());
 
         SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
 
@@ -12070,9 +12075,9 @@ private slots:
 
     void TestRecentsCleanupRemovesOrphanedUuidJson()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
-        QDir dir(sessionsDir.path());
+        const QDir dir(sessionsDir.path());
 
         SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
 
@@ -12104,11 +12109,11 @@ private slots:
     // pre-fix would have stalled for the full `WRITE_LOCK_TIMEOUT_*`.
     void TestRecentsListReadsAreNotBlockedByCrossProcessLock()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         QVERIFY(QDir(sessionsDir.path()).mkpath(QStringLiteral(".")));
 
-        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        const SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         // Hold the cross-process lock from a sibling thread so the
         // manager's own mutators can't acquire it. The thread waits
@@ -12190,7 +12195,7 @@ private slots:
     // on-disk JSONs.
     void TestNewSessionDoesNotOverwritePreviousRecentsEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -12244,7 +12249,7 @@ private slots:
     // entry instead of rewriting the prior one in place.
     void TestReplaceOpenDoesNotOverwritePreviousRecentsEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -12283,7 +12288,7 @@ private slots:
     // would silently rewrite an unrelated session's JSON in place.
     void TestLoadConfigurationDetachesPreviousRecentsEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -12308,7 +12313,7 @@ private slots:
         // `LoadConfiguration` menu entry point: it does not pre-detach
         // via `NewSession`, so the pin survives unless
         // `DoLoadConfiguration` itself detaches.
-        QTemporaryDir configDir;
+        const QTemporaryDir configDir;
         QVERIFY(configDir.isValid());
         const QString configPath = QDir(configDir.path()).filePath(QStringLiteral("columns_only.json"));
         wired->SaveConfigurationToPathForTest(configPath, loglib::SaveScope::ColumnsOnly);
@@ -12364,7 +12369,7 @@ private slots:
     // auto-save gate on the follow-up Append, masking the corruption.
     void TestTryLoadAsConfigurationDetachesPreviousRecentsEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -12395,7 +12400,7 @@ private slots:
         // (carrying the `File` source descriptor pointing at
         // fixtureA) so the load lands with a valid `mCurrentSource`
         // and the follow-up Append can actually fire an AutoSave.
-        QTemporaryDir configDir;
+        const QTemporaryDir configDir;
         QVERIFY(configDir.isValid());
         const QString sessionPath = QDir(configDir.path()).filePath(QStringLiteral("session_full.json"));
         wired->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
@@ -12463,7 +12468,7 @@ private slots:
     // any future regression to the in-place layout fails loudly.
     void TestTryLoadAsConfigurationFailurePreservesPreviousRecentsEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -12521,7 +12526,7 @@ private slots:
 
         // Write a deliberately-non-JSON payload so `TryLoadAsConfiguration`
         // fails inside `Load(...)`.
-        QTemporaryDir garbageDir;
+        const QTemporaryDir garbageDir;
         QVERIFY(garbageDir.isValid());
         const QString garbagePath = QDir(garbageDir.path()).filePath(QStringLiteral("not_a_config.txt"));
         {
@@ -12559,7 +12564,7 @@ private slots:
     // layout.
     void TestDispatchMixedConfigAndLogsAppliesConfigThenStreams()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
@@ -12578,7 +12583,7 @@ private slots:
         // Both must apply to the streamed rows: the proxy row count
         // collapses to two (only `alpha` survives) and the sort
         // indicator on the table view matches the loaded sort.
-        QTemporaryDir cfgDir;
+        const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("mixed-cfg.json"));
 
@@ -12641,19 +12646,19 @@ private slots:
     // can attach its status-bar hint without re-classifying.
     void TestDispatchMixedSingleConfigDelegatesToTryLoadAsConfiguration()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        QTemporaryDir cfgDir;
+        const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("lone-cfg.json"));
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg", "level"});
         builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
 
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         const MainWindow::MixedInputDispatch result =
@@ -12674,7 +12679,7 @@ private slots:
     // started, no uuid mutation.
     void TestDispatchMixedRejectsMultipleConfigs()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
@@ -12695,7 +12700,7 @@ private slots:
         QVERIFY2(columnsBefore > 0, "priming open must produce at least one column");
 
         // Two real columns-only configurations and a log file.
-        QTemporaryDir cfgDir;
+        const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPathA = cfgDir.filePath(QStringLiteral("cfg-a.json"));
         const QString cfgPathB = cfgDir.filePath(QStringLiteral("cfg-b.json"));
@@ -12710,7 +12715,7 @@ private slots:
         const TempJsonFile log({QStringLiteral(R"({"msg": "ignored"})")});
 
         wired->SetSuppressDialogsForTest(true);
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         const MainWindow::MixedInputDispatch result =
@@ -12730,7 +12735,7 @@ private slots:
     // in that we did not regress the lone-log / multi-log case.
     void TestDispatchMixedNoConfigStreamsEverything()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
@@ -12738,7 +12743,7 @@ private slots:
         const TempJsonFile logA({QStringLiteral(R"({"msg": "first"})")});
         const TempJsonFile logB({QStringLiteral(R"({"msg": "second"})")});
 
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         const MainWindow::MixedInputDispatch result =
@@ -12765,12 +12770,12 @@ private slots:
     // for it, and the real log streams normally.
     void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        QTemporaryDir emptyDir;
+        const QTemporaryDir emptyDir;
         QVERIFY(emptyDir.isValid());
         const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
         {
@@ -12806,12 +12811,12 @@ private slots:
     // shown).
     void TestOpenFilesForCliConfigAndLogsAppliesConfigThenStreams()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(&manager, nullptr);
 
-        QTemporaryDir cfgDir;
+        const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
         const QString cfgPath = cfgDir.filePath(QStringLiteral("cli-cfg.json"));
         loglib::LogConfigurationManager builder;
@@ -12841,7 +12846,7 @@ private slots:
     // through to opening the file as a log.
     void TestTryLoadAsConfigurationRejectsEmptyJsonObject()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -12862,7 +12867,7 @@ private slots:
         // Without the explicit reject, this would slip past the
         // probe and `mModel->ConfigurationManager().Load()` would
         // replace the live columns with the empty default.
-        QTemporaryDir emptyDir;
+        const QTemporaryDir emptyDir;
         QVERIFY(emptyDir.isValid());
         const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
         {
@@ -12884,7 +12889,7 @@ private slots:
     // closeEvent removes.
     void TestOpenWindowsAtQuitTrackedAcrossAutoSaveAndClose()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         // Snapshot + restore the user's real openWindowsAtQuit so we
@@ -12917,7 +12922,7 @@ private slots:
         QVERIFY2(afterAuto.contains(uuid), "AutoSave must publish the session uuid into openWindowsAtQuit");
 
         // closeEvent removes the window from the set.
-        QSignalSpy destroyedSpy(wired.get(), &QObject::destroyed);
+        const QSignalSpy destroyedSpy(wired.get(), &QObject::destroyed);
         wired->close();
         wired.reset();
         for (int i = 0; i < 20 && destroyedSpy.isEmpty(); ++i)
@@ -12939,7 +12944,7 @@ private slots:
     // restore the window the user just exited.
     void TestCloseEventClearsAutoSaveUuidForAboutToQuit()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13014,7 +13019,7 @@ private slots:
     // does not silently re-restore the just-discarded session.
     void TestNewSessionDetachesFromOpenWindowsAtQuit()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13074,7 +13079,7 @@ private slots:
         const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
-        QStringList probe = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        const QStringList probe = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (probe.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -13150,7 +13155,7 @@ private slots:
     // alone.
     void TestCleanupOrphanFilesRemovesStaleJsons()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13211,7 +13216,7 @@ private slots:
     // refuses to pin non-uuid stems.
     void TestCleanupOrphanFilesPreservesNonUuidStems()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13259,7 +13264,7 @@ private slots:
     // the caller pointed us at, orphaning the loaded JSON.
     void TestRestoreLastSessionPinsUuidEvenWithNoSource()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13294,7 +13299,7 @@ private slots:
     // recents entries that always fail to reopen.
     void TestAutoSaveSkipsLiveTailAndNetworkStreamSessions()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13347,7 +13352,7 @@ private slots:
     // `AutoSaveSessionSnapshot` sees the real `LiveTail` and bails.
     void TestCloseAfterFinishedLiveTailDoesNotCreatePhantomRecentsEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13365,7 +13370,7 @@ private slots:
         // below would see `Idle` and silently write a phantom entry.
         auto *model = wired->Model();
         QVERIFY(model != nullptr);
-        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         BeginSyntheticStreamSession(*model);
         QVERIFY(model->IsStreamingActive());
@@ -13391,7 +13396,7 @@ private slots:
     // installed) but no streaming attempt is made.
     void TestRestoreLastSessionSkipsNetworkStreamSource()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13415,7 +13420,7 @@ private slots:
 
         // `streamingFinished` must NOT fire -- the restore should
         // not attempt to open the URI as a file.
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->RestoreLastSessionFromPath(jsonPath);
         // Pump the event loop briefly; if the streaming-open path
         // were taken we'd see a `finishedSpy.count()` tick.
@@ -13443,7 +13448,7 @@ private slots:
     // (Touch, AutoSave reuse) stays consistent.
     void TestRestorableActiveSessionUuidFiltersNonRestorableSessions()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13510,7 +13515,7 @@ private slots:
     // user's filesystem.
     void TestRestoreLastSessionRejectsNonUuidStem()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13519,7 +13524,7 @@ private slots:
         // uuid. Re-uses the library serializer so the parse step
         // succeeds; the only thing under test is the stem-validation
         // gate around `mAutoSaveUuid`.
-        QTemporaryDir adhocDir;
+        const QTemporaryDir adhocDir;
         QVERIFY(adhocDir.isValid());
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "stem"})")});
 
@@ -13560,7 +13565,7 @@ private slots:
     // the pre-reset flush; without the fix it fires zero times.
     void TestOpenLogStreamFlushesPriorStaticSessionEdits()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13580,7 +13585,7 @@ private slots:
         const QString staticUuid = wired->ActiveSessionUuid();
         QVERIFY(!staticUuid.isEmpty());
 
-        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
         QVERIFY(changedSpy.isValid());
 
         // Stage 2: switch to a live-tail stream. The fix calls
@@ -13619,7 +13624,7 @@ private slots:
     // wrote -- typically stale relative to the user's current view.
     void TestAboutToQuitFlushesPerWindowEdits()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13640,7 +13645,7 @@ private slots:
 
         // Drain the auto-save signal so the assertion below is
         // unambiguous.
-        QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
         QVERIFY(changedSpy.isValid());
 
         // Replay the aboutToQuit lambda's body without actually
@@ -13704,7 +13709,7 @@ private slots:
     // filtered it.
     void TestRestoreLastSessionDoesNotPublishGhostUuid()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13720,7 +13725,7 @@ private slots:
         // publish block. The no-source configuration also
         // short-circuits `StreamFromCurrentSourceOrSkip` so no
         // auto-save legitimises the uuid afterwards.
-        QTemporaryDir externalDir;
+        const QTemporaryDir externalDir;
         QVERIFY(externalDir.isValid());
         const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString externalPath = externalDir.filePath(uuid + QStringLiteral(".json"));
@@ -13776,7 +13781,7 @@ private slots:
     // `aboutToQuit` handler depends on.
     void TestRestoreLastSessionDoesNotPublishNetworkStreamUuid()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13822,7 +13827,7 @@ private slots:
     // owned but must not enter `openWindowsAtQuit`.
     void TestOpenRecentSessionDoesNotPublishNetworkStreamUuid()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -13865,7 +13870,7 @@ private slots:
 
     void TestOpenRecentSessionDropsCorruptEntry()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -13914,7 +13919,7 @@ private slots:
         // structure as `Load(path)` -- writing a config via the
         // public API ensures we exercise the exact schema the
         // probe will see in production.
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath(QStringLiteral("seed.json"));
         {
@@ -13938,15 +13943,22 @@ private slots:
     void TestLoadFromStringRejectsNonJsonGarbage()
     {
         loglib::LogConfigurationManager mgr;
+        bool threw = false;
         try
         {
             mgr.LoadFromString("definitely not json {{");
-            QFAIL("LoadFromString must throw on garbage input");
         }
         catch (const std::exception &)
         {
-            // Expected
+            // Expected: garbage input must surface as an exception. We
+            // catch into a bool latch (rather than letting the QFAIL
+            // inside the try-block double as the assertion) so the
+            // catch block has an actual observable side effect --
+            // bugprone-empty-catch refuses to recognise the "we only
+            // care that *some* exception was thrown" idiom otherwise.
+            threw = true;
         }
+        QVERIFY2(threw, "LoadFromString must throw on garbage input");
     }
 
     // Reordering `EvictLocked` so the index write precedes the
@@ -13961,7 +13973,7 @@ private slots:
     // covers the orphan-recovery half.
     void TestEvictionKeepsIndexConsistentWithDisk()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -14016,7 +14028,7 @@ private slots:
     // untouched contract the close-failure path now also honours.
     void TestSaveTempFailureDoesNotClobberDestination()
     {
-        QTemporaryDir scratchDir;
+        const QTemporaryDir scratchDir;
         QVERIFY(scratchDir.isValid());
 
         // Pre-seed an existing JSON we can detect modifications on.
@@ -14080,7 +14092,7 @@ private slots:
         // Source-less configuration JSON: real columns, no
         // `source` field. Mirrors what a user does today via File
         // -> Save Configuration before any log is opened.
-        QTemporaryDir scratch;
+        const QTemporaryDir scratch;
         QVERIFY(scratch.isValid());
         const QString configPath = scratch.filePath(QStringLiteral("hint-cfg.json"));
         loglib::LogConfigurationManager builder;
@@ -14126,7 +14138,7 @@ private slots:
     // would have been a wasted no-op against the QSettings store.
     void TestCloseEventOnUnpublishedSessionLeavesOpenWindowsClear()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         // Snapshot + restore the persisted open-windows list so the
@@ -14190,7 +14202,7 @@ private slots:
     // (b) the open-windows set does not gain a fresh uuid.
     void TestCloseEventThenAboutToQuitDoesNotResurrectClosedWindow()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
@@ -14310,7 +14322,7 @@ private slots:
     // making the menu useless after the first auto-save.
     void TestMaxEntriesClampedToValidRange()
     {
-        QSettings settings;
+        const QSettings settings;
         const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
         auto restoreGuard = qScopeGuard([&]() {
             QSettings restore;
@@ -14341,7 +14353,7 @@ private slots:
     // lets all of them survive.
     void TestMaxEntriesPreferenceDrivesEviction()
     {
-        QSettings settings;
+        const QSettings settings;
         const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
         auto restoreGuard = qScopeGuard([&]() {
             QSettings restore;
@@ -14358,7 +14370,7 @@ private slots:
 
         SessionHistoryManager::SetMaxEntries(3);
 
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
@@ -14458,7 +14470,7 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -14494,7 +14506,7 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -14519,7 +14531,7 @@ private slots:
     // caller's perspective only the JSON on disk has changed.
     void TestWriteSnapshotReuseUuidFastPathIsStable()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -14551,7 +14563,7 @@ private slots:
     // new label / locator / fileCount.
     void TestWriteSnapshotReuseUuidPicksSlowPathOnMetadataChange()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
@@ -14589,7 +14601,7 @@ private slots:
     // a regression while keeping the test runtime low.
     void TestSessionHistoryConcurrentStress()
     {
-        QTemporaryDir sessionsDir;
+        const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());

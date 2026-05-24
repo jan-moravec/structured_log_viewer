@@ -69,14 +69,18 @@ public:
         mLiveWindow = window;
     }
 
-protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
         if (event->type() != QEvent::FileOpen)
         {
             return QObject::eventFilter(watched, event);
         }
-        auto *fileOpen = static_cast<QFileOpenEvent *>(event);
+        // Safe downcast: Qt's `QEvent::FileOpen` type discriminator
+        // guarantees the dynamic type is `QFileOpenEvent`. Qt does
+        // not enable RTTI on `QEvent`, so `dynamic_cast` is not the
+        // canonical idiom here.
+        auto *fileOpen =
+            static_cast<QFileOpenEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
         const QString path = fileOpen->file();
         if (path.isEmpty())
         {

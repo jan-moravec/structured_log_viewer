@@ -80,15 +80,11 @@ QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
     {
         return {};
     }
-    qint64 diffMs = nowMs - timestampMsEpoch;
-    if (diffMs < 0)
-    {
-        // Clock skew: a sibling running with a faster clock saved
-        // a session "in the future" relative to us. Treat as "just
-        // now" rather than showing a negative duration -- the user
-        // does not need to debug NTP from a tooltip.
-        diffMs = 0;
-    }
+    // Clock skew: a sibling running with a faster clock saved
+    // a session "in the future" relative to us. Treat as "just
+    // now" rather than showing a negative duration -- the user
+    // does not need to debug NTP from a tooltip.
+    const qint64 diffMs = std::max<qint64>(nowMs - timestampMsEpoch, 0);
     constexpr qint64 SECOND_MS = 1000;
     constexpr qint64 MINUTE_MS = 60 * SECOND_MS;
     constexpr qint64 HOUR_MS = 60 * MINUTE_MS;
@@ -108,7 +104,12 @@ QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
         return QStringLiteral("%1 %2 ago").arg(hours).arg(hours == 1 ? "hour" : "hours");
     }
     const qint64 days = diffMs / DAY_MS;
-    if (days < 30)
+    /// Above this many days, the absolute date is more useful than
+    /// "N days ago" / "N months ago" (the latter is ambiguous
+    /// because months are not uniform). 30 is the conventional
+    /// "about a month" cutoff for relative-time strings.
+    constexpr qint64 RELATIVE_DAYS_CUTOFF = 30;
+    if (days < RELATIVE_DAYS_CUTOFF)
     {
         return QStringLiteral("%1 %2 ago").arg(days).arg(days == 1 ? "day" : "days");
     }
@@ -232,11 +233,19 @@ bool FileLooksLikeConfiguration(const QString &file)
     const QByteArray head = probeFile.read(4096);
     probeFile.seek(0);
 
+    // UTF-8 BOM marker bytes (EF BB BF). We skip them so the
+    // structural sniff below sees the first real character of the
+    // payload rather than the BOM's first byte.
+    constexpr unsigned char UTF8_BOM_BYTE_0 = 0xEF;
+    constexpr unsigned char UTF8_BOM_BYTE_1 = 0xBB;
+    constexpr unsigned char UTF8_BOM_BYTE_2 = 0xBF;
+    constexpr int UTF8_BOM_SIZE = 3;
     int cursor = 0;
-    if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF &&
-        static_cast<unsigned char>(head[1]) == 0xBB && static_cast<unsigned char>(head[2]) == 0xBF)
+    if (head.size() >= UTF8_BOM_SIZE && static_cast<unsigned char>(head[0]) == UTF8_BOM_BYTE_0 &&
+        static_cast<unsigned char>(head[1]) == UTF8_BOM_BYTE_1 &&
+        static_cast<unsigned char>(head[2]) == UTF8_BOM_BYTE_2)
     {
-        cursor = 3;
+        cursor = UTF8_BOM_SIZE;
     }
     while (cursor < head.size())
     {
@@ -1143,7 +1152,7 @@ void MainWindow::RebuildRecentSessionsMenu()
     }
 
     ui->menuRecentSessions->addSeparator();
-    QAction *clearAction = ui->menuRecentSessions->addAction(QStringLiteral("Clear Recent Sessions"));
+    const QAction *clearAction = ui->menuRecentSessions->addAction(QStringLiteral("Clear Recent Sessions"));
     // `menuRecentSessions->clear()` at the top of this rebuild deletes
     // every QAction we created on the previous show, which severs
     // these `connect`s -- no manual disconnect or leak management
@@ -1462,7 +1471,11 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
         return;
     }
 
-    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    // Bind a local reference so the optional-access analyser sees
+    // the dereference is gated by the `HasLocators` check above
+    // (which it cannot peer into across the function boundary).
+    const auto &source = *mCurrentSource;
+    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
         // NetworkStream snapshots persist the producer URI as the
         // locator. Feeding that to `StartStreamingOpenQueue` (which
@@ -1494,8 +1507,8 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     }
 
     QStringList files;
-    files.reserve(static_cast<qsizetype>(mCurrentSource->locators.size()));
-    for (const std::string &locator : mCurrentSource->locators)
+    files.reserve(static_cast<qsizetype>(source.locators.size()));
+    for (const std::string &locator : source.locators)
     {
         files.append(QString::fromStdString(locator));
     }
@@ -1540,7 +1553,7 @@ void MainWindow::NewSession()
     // flag on every return path below, including exceptions out of
     // `ClearAllFilters` (unlikely but technically possible if a
     // proxy hook throws).
-    SessionSwitchScope switchGuard(*this);
+    const SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
     ClearAllFilters();
@@ -1707,7 +1720,7 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 {
     if (files.isEmpty())
     {
-        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
+        return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
 
     // Classify each file. `FileLooksLikeConfiguration` is cheap on
@@ -1762,13 +1775,13 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
                     .arg(configPaths.join(QChar('\n')))
             );
         }
-        return MixedInputResult{MixedInputDispatch::RejectedMultiConfig, QString()};
+        return MixedInputResult{.outcome = MixedInputDispatch::RejectedMultiConfig, .appliedConfigPath = QString()};
     }
 
     if (configPaths.isEmpty())
     {
         StartStreamingOpenQueue(files, logMode);
-        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
+        return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
 
     // Exactly one configuration in the input.
@@ -1788,9 +1801,9 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         if (TryLoadAsConfiguration(configPath))
         {
             UpdateUi();
-            return MixedInputResult{MixedInputDispatch::AppliedConfigOnly, configPath};
+            return MixedInputResult{.outcome = MixedInputDispatch::AppliedConfigOnly, .appliedConfigPath = configPath};
         }
-        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
+        return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
 
     // Mixed: apply the configuration with a full reset, then
@@ -1807,10 +1820,10 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         // was reset by `DoLoadConfiguration` before the throw, so
         // streaming the logs against the unintended default columns
         // would mislead the user.
-        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
+        return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
     StartStreamingOpenQueue(logPaths, OpenMode::Append);
-    return MixedInputResult{MixedInputDispatch::AppliedConfigThenLogs, configPath};
+    return MixedInputResult{.outcome = MixedInputDispatch::AppliedConfigThenLogs, .appliedConfigPath = configPath};
 }
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
@@ -2162,7 +2175,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // recents entry must not silently capture the never-opened
     // files. Clearing first guarantees the AutoSave snapshots only
     // the actually-streamed locators.
-    const int discardedQueuedFiles = mPendingOpenFiles.size();
+    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
     if (discardedQueuedFiles > 0)
     {
         statusBar()->showMessage(
@@ -2188,7 +2201,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // UI bookkeeping or we briefly flash the wrong toolbar / status
     // state at the user. The RAII helper clears it once the new
     // session is fully wired up below.
-    SessionSwitchScope switchGuard(*this);
+    const SessionSwitchScope switchGuard(*this);
 
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
@@ -2305,7 +2318,7 @@ void MainWindow::OpenNetworkStream()
     // would otherwise union the never-opened pending paths into the
     // prior session's persisted `Source.locators`, polluting the
     // recents entry with files the user explicitly discarded.
-    const int discardedQueuedFiles = mPendingOpenFiles.size();
+    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
     if (discardedQueuedFiles > 0)
     {
         statusBar()->showMessage(
@@ -2323,7 +2336,7 @@ void MainWindow::OpenNetworkStream()
     // outgoing-session cleanup that `mModel->Reset()`'s synchronous
     // `streamingFinished(Cancelled)` would otherwise run, since we
     // are mid-way through wiring up the incoming network stream.
-    SessionSwitchScope switchGuard(*this);
+    const SessionSwitchScope switchGuard(*this);
 
     // Mirror the OpenLogStream reset.
     mModel->Reset();
@@ -2945,7 +2958,11 @@ bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
         // confuse the menu.
         return false;
     }
-    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    // `HasLocators` already guarantees `has_value()`; bind a local
+    // reference so the optional-access analyser sees a checked
+    // dereference at this scope.
+    const auto &source = *mCurrentSource;
+    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
         // NetworkStream sessions are inherently transient: the
         // locator is a producer URI / display name, not something
@@ -3084,7 +3101,11 @@ QString MainWindow::RestorableActiveSessionUuid() const noexcept
         // source) is genuinely round-trippable, so return the uuid.
         return mAutoSaveUuid;
     }
-    if (mCurrentSource->kind != loglib::LogConfiguration::Source::Kind::File)
+    // `HasLocators` already guarantees `has_value()`; bind a local
+    // reference so the optional-access analyser sees a checked
+    // dereference at this scope.
+    const auto &source = *mCurrentSource;
+    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
         // NetworkStream / future non-File kinds: the snapshot's
         // locator is a producer URI, not something
@@ -3477,7 +3498,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // `streamingFinished(Cancelled)` from `mModel->Reset()`
         // would otherwise run while we are mid-way through wiring
         // up the loaded session.
-        SessionSwitchScope switchGuard(*this);
+        const SessionSwitchScope switchGuard(*this);
 
         mModel->Reset();
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));

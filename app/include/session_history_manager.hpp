@@ -108,7 +108,7 @@ class SessionHistoryManager : public QObject
     Q_OBJECT
 public:
     SessionHistoryManager(
-        QDir sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent = nullptr
+        const QDir &sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent = nullptr
     );
     ~SessionHistoryManager() override;
 
@@ -473,7 +473,7 @@ private:
     /// Tear down the per-uuid JSON file. Errors are swallowed -- a
     /// stale file does not block index mutation. Caller holds
     /// `mMutex`.
-    void RemoveUuidFileLocked(const QString &uuid);
+    void RemoveUuidFileLocked(const QString &uuid) const;
 
     /// Capacity-evict oldest entries until size <= MAX_ENTRIES. Returns
     /// the uuids of the entries that were dropped so the caller can

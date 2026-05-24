@@ -69,7 +69,8 @@ constexpr int CLEANUP_DELETIONS_PER_LAUNCH = 5000;
 /// and stay silent afterwards -- enough for support triage to see
 /// "this user is hitting lock contention" without flooding the
 /// log.
-std::atomic<bool> g_recents_lock_warned{false}; // NOLINT(readability-identifier-naming)
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,readability-identifier-naming)
+std::atomic<bool> g_recents_lock_warned{false};
 
 /// Process-wide kill switch for `openWindowsAtQuit` mutations.
 /// Defaults to `true` (the canonical primary publishes / removes
@@ -82,7 +83,8 @@ std::atomic<bool> g_recents_lock_warned{false}; // NOLINT(readability-identifier
 /// rather than a per-instance flag because the `Add*` / `Remove*`
 /// API is static (no `this`) and the gate decision is made once
 /// per process in `main.cpp` -- not on a per-manager basis.
-std::atomic<bool> g_publishing_enabled{true}; // NOLINT(readability-identifier-naming)
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,readability-identifier-naming)
+std::atomic<bool> g_publishing_enabled{true};
 
 /// Log a once-per-process diagnostic when a `QSettings::sync()` call
 /// reports an error. `AccessError` covers "could not write to the
@@ -91,7 +93,8 @@ std::atomic<bool> g_publishing_enabled{true}; // NOLINT(readability-identifier-n
 /// QSettings could not reconcile". Both are conditions the caller
 /// cannot recover from but support triage needs to know about; the
 /// flag-and-skip pattern matches the lock-contention warning above.
-std::atomic<bool> g_settings_status_warned{false}; // NOLINT(readability-identifier-naming)
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,readability-identifier-naming)
+std::atomic<bool> g_settings_status_warned{false};
 void SyncWarnIfNeeded(QSettings &settings, const char *context)
 {
     const auto status = settings.status();
@@ -168,8 +171,10 @@ struct LockFileGuard
     // `tryLock`. Move-from clears the source's `locked` so the
     // invariant survives transfers. Destructor + move-assign therefore
     // only need to test `locked`.
+    // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
     std::unique_ptr<QLockFile> lock;
     bool locked = false;
+    // NOLINTEND(misc-non-private-member-variables-in-classes)
 
     LockFileGuard() = default;
     LockFileGuard(const LockFileGuard &) = delete;
@@ -220,7 +225,7 @@ struct LockFileGuard
 /// share one implementation and one set of QSettings semantics.
 QStringList ReadOpenWindowsAtQuit()
 {
-    QSettings settings;
+    const QSettings settings;
     return settings.value(QLatin1String(SETTINGS_OPEN_WINDOWS_KEY)).toStringList();
 }
 
@@ -328,7 +333,7 @@ QDir SessionHistoryManager::DefaultSessionsDir()
 
 bool SessionHistoryManager::RestoreLastSessionOnLaunch()
 {
-    QSettings settings;
+    const QSettings settings;
     return settings.value(QLatin1String(SETTINGS_RESTORE_LAST_KEY), true).toBool();
 }
 
@@ -342,14 +347,14 @@ void SessionHistoryManager::SetRestoreLastSessionOnLaunch(bool enabled)
 
 int SessionHistoryManager::MaxEntries()
 {
-    QSettings settings;
+    const QSettings settings;
     const QVariant raw = settings.value(QLatin1String(SETTINGS_MAX_ENTRIES_KEY));
     if (!raw.isValid())
     {
         return MAX_ENTRIES;
     }
     bool ok = false;
-    int value = raw.toInt(&ok);
+    const int value = raw.toInt(&ok);
     if (!ok)
     {
         return MAX_ENTRIES;
@@ -367,9 +372,9 @@ void SessionHistoryManager::SetMaxEntries(int maxEntries)
 }
 
 SessionHistoryManager::SessionHistoryManager(
-    QDir sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent
+    const QDir &sessionsDir, std::unique_ptr<IRecentsIndexStorage> indexStorage, QObject *parent
 )
-    : QObject(parent), mSessionsDir(std::move(sessionsDir)), mIndexStorage(std::move(indexStorage))
+    : QObject(parent), mSessionsDir(sessionsDir), mIndexStorage(std::move(indexStorage))
 {
     Q_ASSERT(mIndexStorage != nullptr);
     // Create the directory lazily on first write; nothing to do here.
@@ -379,7 +384,7 @@ SessionHistoryManager::~SessionHistoryManager() = default;
 
 QList<RecentSessionEntry> SessionHistoryManager::List() const
 {
-    QMutexLocker lock(&mMutex);
+    const QMutexLocker lock(&mMutex);
     return mIndexStorage->Read();
 }
 
@@ -416,7 +421,7 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
     else if (!logapp::LooksLikeUuid(uuid))
     {
         logapp::LogWarning() << "WriteSnapshot rejecting non-uuid reuseUuid:" << uuid;
-        return QString();
+        return {};
     }
 
     // Scope the locks so both the cross-process `QLockFile` and
@@ -434,7 +439,7 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
         // mutator) for the same window. `mMutex`-after-`QLockFile`
         // means readers stay fast even when a sibling process is
         // mid-write.
-        LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_RUNTIME_MS);
+        const LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_RUNTIME_MS);
         if (!crossProc.locked)
         {
             // Fail-closed: a sibling writer is mid-`Write`, and
@@ -442,10 +447,10 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
             // would corrupt the index. Returning an empty uuid lets
             // the caller treat this exactly like a serialization
             // failure.
-            return QString();
+            return {};
         }
 
-        QMutexLocker lock(&mMutex);
+        const QMutexLocker lock(&mMutex);
 
         const QString jsonPath = PathForUuid(uuid);
         if (jsonPath.isEmpty())
@@ -454,7 +459,7 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
             // failed `LooksLikeUuid`. We validated above so this is
             // an internal-consistency assertion -- if it fires the
             // uuid generation logic has drifted.
-            return QString();
+            return {};
         }
 
         // The library serializer plus every `IRecentsIndexStorage`
@@ -564,7 +569,7 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
                 // path. We still write the per-uuid JSON above
                 // (the peer's session JSON is its own; only the
                 // shared open-windows set is off-limits).
-                QMutexLocker openWindowsLock(&OpenWindowsMutex());
+                const QMutexLocker openWindowsLock(&OpenWindowsMutex());
                 QStringList openUuids = ReadOpenWindowsAtQuit();
                 if (!openUuids.contains(uuid))
                 {
@@ -584,7 +589,7 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
         catch (const std::exception &e)
         {
             logapp::LogWarning() << "WriteSnapshot failed:" << e.what();
-            return QString();
+            return {};
         }
 
         changedFired = true;
@@ -621,7 +626,7 @@ bool SessionHistoryManager::Touch(const QString &uuid)
     // (peek saw it but a sibling evicted before the lock; peek
     // missed it but a sibling re-added before the lock).
     {
-        QMutexLocker peekLock(&mMutex);
+        const QMutexLocker peekLock(&mMutex);
         const QList<RecentSessionEntry> peek = mIndexStorage->Read();
         const auto found =
             std::find_if(peek.begin(), peek.end(), [&](const RecentSessionEntry &e) { return e.uuid == uuid; });
@@ -635,7 +640,7 @@ bool SessionHistoryManager::Touch(const QString &uuid)
     // wait does not freeze `mMutex` (and therefore every same-
     // process `List()` reader). See the same comment on
     // `WriteSnapshot`.
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_RUNTIME_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_RUNTIME_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: skip the bump rather than racing a sibling
@@ -654,7 +659,7 @@ bool SessionHistoryManager::Touch(const QString &uuid)
     bool bumped = false;
     bool changedFired = false;
     {
-        QMutexLocker lock(&mMutex);
+        const QMutexLocker lock(&mMutex);
         try
         {
             QList<RecentSessionEntry> entries = mIndexStorage->Read();
@@ -721,7 +726,7 @@ void SessionHistoryManager::Remove(const QString &uuid)
         // transient sibling write doesn't make the menu action look
         // broken. Cross-process lock first so the in-process mutex
         // is held only across the fast in-memory work.
-        LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+        const LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
         if (!crossProc.locked)
         {
             // Fail-closed: the dangling entry survives one more
@@ -729,7 +734,7 @@ void SessionHistoryManager::Remove(const QString &uuid)
             return;
         }
 
-        QMutexLocker lock(&mMutex);
+        const QMutexLocker lock(&mMutex);
         try
         {
             QList<RecentSessionEntry> entries = mIndexStorage->Read();
@@ -798,7 +803,7 @@ void SessionHistoryManager::Clear()
         // timeout so the menu action does the right thing even
         // under contention. Cross-process lock first; see the
         // `WriteSnapshot` comment for the rationale.
-        LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+        const LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
         if (!crossProc.locked)
         {
             // Fail-closed: the user will have to re-trigger Clear
@@ -806,7 +811,7 @@ void SessionHistoryManager::Clear()
             return;
         }
 
-        QMutexLocker lock(&mMutex);
+        const QMutexLocker lock(&mMutex);
         try
         {
             const QList<RecentSessionEntry> entries = mIndexStorage->Read();
@@ -842,14 +847,14 @@ void SessionHistoryManager::Clear()
 
 std::optional<QString> SessionHistoryManager::LastSessionPath() const
 {
-    QMutexLocker lock(&mMutex);
+    const QMutexLocker lock(&mMutex);
     const std::optional<QString> uuid = mIndexStorage->ReadLastUuid();
     if (!uuid.has_value() || uuid->isEmpty())
     {
         return std::nullopt;
     }
 
-    const QString path = PathForUuid(*uuid);
+    QString path = PathForUuid(*uuid);
     // Empty path = the uuid stem failed the strict shape check
     // inside `PathForUuid` (corrupt profile). Treat as "no last
     // session" rather than escaping the sessions directory.
@@ -876,7 +881,7 @@ QString SessionHistoryManager::PathForUuid(const QString &uuid) const
     // location.
     if (!logapp::LooksLikeUuid(uuid))
     {
-        return QString();
+        return {};
     }
     return mSessionsDir.filePath(uuid + QStringLiteral(".json"));
 }
@@ -944,7 +949,7 @@ RecentSessionEntry SessionHistoryManager::MakeEntryMetadata(const loglib::LogCon
     return entry;
 }
 
-void SessionHistoryManager::RemoveUuidFileLocked(const QString &uuid)
+void SessionHistoryManager::RemoveUuidFileLocked(const QString &uuid) const
 {
     // Belt-and-braces: every call site already validates the uuid,
     // but `PathForUuid` is the canonical gate so we re-check here.
@@ -983,7 +988,7 @@ QStringList SessionHistoryManager::EvictLocked(QList<RecentSessionEntry> &entrie
 
 QStringList SessionHistoryManager::OpenWindowsAtQuitUnlocked()
 {
-    QMutexLocker lock(&OpenWindowsMutex());
+    const QMutexLocker lock(&OpenWindowsMutex());
     // Read-only fast path: skip the cross-process lock entirely.
     // `AddOpenWindowUuid` / `RemoveOpenWindowUuid` /
     // `SetOpenWindowsAtQuit` all serialise their writes under the
@@ -1028,7 +1033,7 @@ void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
     //
     // Used by startup-clear and the aboutToQuit safety-net -- both
     // tolerate the longer wait, neither is on an interactive path.
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: the persisted list reflects whatever the
@@ -1037,7 +1042,7 @@ void SessionHistoryManager::SetOpenWindowsAtQuit(const QStringList &uuids)
         // better than a torn write that loses every uuid.
         return;
     }
-    QMutexLocker lock(&OpenWindowsMutex());
+    const QMutexLocker lock(&OpenWindowsMutex());
     WriteOpenWindowsAtQuit(uuids);
 }
 
@@ -1053,7 +1058,7 @@ QStringList SessionHistoryManager::TakeOpenWindowsAtQuit()
     // is narrow in practice -- a sibling writer's `AddOpenWindowUuid`
     // finishes in milliseconds -- so the long timeout is essentially
     // unused except as a safety net.
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: return an empty list (and skip the wipe) when
@@ -1068,7 +1073,7 @@ QStringList SessionHistoryManager::TakeOpenWindowsAtQuit()
         // their windows over the runtime of this process).
         return {};
     }
-    QMutexLocker lock(&OpenWindowsMutex());
+    const QMutexLocker lock(&OpenWindowsMutex());
     const QStringList uuids = ReadOpenWindowsAtQuit();
     WriteOpenWindowsAtQuit({});
     return uuids;
@@ -1093,7 +1098,7 @@ bool SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
     // Lock-ordering invariant: `crossProc` first, then
     // `OpenWindowsMutex`. See `SetOpenWindowsAtQuit` for the
     // rationale.
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_RUNTIME_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_RUNTIME_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: skip the publish. The next AutoSave (or the
@@ -1101,7 +1106,7 @@ bool SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
         // window for restore.
         return false;
     }
-    QMutexLocker lock(&OpenWindowsMutex());
+    const QMutexLocker lock(&OpenWindowsMutex());
     QStringList uuids = ReadOpenWindowsAtQuit();
     if (uuids.contains(uuid))
     {
@@ -1141,13 +1146,13 @@ void SessionHistoryManager::AddOpenWindowUuids(const QStringList &uuids)
     // restorable windows. Other callers (the static
     // `AddOpenWindowUuid` per-window publish path) keep the runtime
     // timeout because they are on the interactive auto-save path.
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_SHUTDOWN_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: skip the publish. Mirrors the per-uuid path.
         return;
     }
-    QMutexLocker lock(&OpenWindowsMutex());
+    const QMutexLocker lock(&OpenWindowsMutex());
     QStringList merged = ReadOpenWindowsAtQuit();
     bool changed = false;
     for (const QString &uuid : uuids)
@@ -1188,7 +1193,7 @@ void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
     // Lock-ordering invariant: `crossProc` first, then
     // `OpenWindowsMutex`. See `SetOpenWindowsAtQuit` for the
     // rationale.
-    LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_RUNTIME_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_RUNTIME_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: leave the stale uuid in place. The next
@@ -1197,7 +1202,7 @@ void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
         // is still on disk.
         return;
     }
-    QMutexLocker lock(&OpenWindowsMutex());
+    const QMutexLocker lock(&OpenWindowsMutex());
     QStringList uuids = ReadOpenWindowsAtQuit();
     if (!uuids.removeOne(uuid))
     {
@@ -1231,7 +1236,7 @@ SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
     // runs from `main()` at startup which is mildly time-sensitive,
     // so use the runtime timeout. Cross-process first; see the
     // `WriteSnapshot` comment.
-    LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_RUNTIME_MS);
+    const LockFileGuard crossProc = AcquireRecentsLock(mSessionsDir, WRITE_LOCK_TIMEOUT_RUNTIME_MS);
     if (!crossProc.locked)
     {
         // Fail-closed: an orphan that survives this launch will be
@@ -1241,7 +1246,7 @@ SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
         return report;
     }
 
-    QMutexLocker lock(&mMutex);
+    const QMutexLocker lock(&mMutex);
     QSet<QString> known;
     QStringList jsonFiles;
     try
@@ -1341,7 +1346,7 @@ SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
 
 QList<RecentSessionEntry> QSettingsRecentsIndexStorage::Read() const
 {
-    QSettings settings;
+    const QSettings settings;
     int size = settings.value(QLatin1String(SETTINGS_SIZE_KEY), 0).toInt();
     // Cap the read size against a corrupted-profile attack: an
     // attacker (or a buggy migration from another tool) could plant
@@ -1451,13 +1456,13 @@ void QSettingsRecentsIndexStorage::Write(const QList<RecentSessionEntry> &entrie
 
 std::optional<QString> QSettingsRecentsIndexStorage::ReadLastUuid() const
 {
-    QSettings settings;
+    const QSettings settings;
     const QVariant raw = settings.value(QLatin1String(SETTINGS_LAST_UUID_KEY));
     if (!raw.isValid())
     {
         return std::nullopt;
     }
-    const QString value = raw.toString();
+    QString value = raw.toString();
     if (value.isEmpty())
     {
         return std::nullopt;
