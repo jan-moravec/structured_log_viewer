@@ -286,7 +286,7 @@ jobs:
           chmod +x "$APPIMAGE"
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
           # in the workflow log instead of an opaque exit code.
-          QT_QPA_PLATFORM=offscreen "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
+          QT_QPA_PLATFORM=offscreen QT_DEBUG_PLUGINS=1 "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
@@ -295,8 +295,8 @@ jobs:
             echo "Packaged AppImage exited prematurely with code $RC" >&2
             echo "--- stdout ---" >&2
             cat appimage.stdout >&2 || true
-            echo "--- stderr ---" >&2
-            cat appimage.stderr >&2 || true
+            echo "--- stderr (last 200 lines) ---" >&2
+            tail -n 200 appimage.stderr >&2 || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
