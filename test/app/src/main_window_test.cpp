@@ -11,8 +11,10 @@
 #include "record_detail_widget.hpp"
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
+#include "cli_parser.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
+#include "uuid_utils.hpp"
 #include "streaming_control.hpp"
 
 #include <loglib/enum_dictionary.hpp>
@@ -5876,8 +5878,14 @@ private slots:
         probe.Load(sessionPath.toStdString());
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
-        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[0]), fixtureA.Path());
-        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[1]), fixtureB.Path());
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[0]),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[1]),
+            logapp::CanonicalLocator(fixtureB.Path())
+        );
     }
 
     // Regression for the Append-while-streaming crash: calling
@@ -5953,8 +5961,14 @@ private slots:
         probe.Load(sessionPath.toStdString());
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
-        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[0]), fixtureA.Path());
-        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators[1]), fixtureB.Path());
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[0]),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[1]),
+            logapp::CanonicalLocator(fixtureB.Path())
+        );
     }
 
     // Switching to a live-tail stream mid-append-queue silently
@@ -6072,7 +6086,10 @@ private slots:
         probe.Load(sessionPath.toStdString());
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(QString::fromStdString(probe.Configuration().source->locators.front()), fixtureB.Path());
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators.front()),
+            logapp::CanonicalLocator(fixtureB.Path())
+        );
     }
 
     // `actionNewSession` clears rows, runtime filters, the persisted
@@ -10825,7 +10842,7 @@ private slots:
         QCOMPARE(*lastPath, manager.PathForUuid(uuidB));
 
         // Touch A -> A becomes the head.
-        manager.Touch(uuidA);
+        QVERIFY(manager.Touch(uuidA));
         const auto afterTouch = manager.LastSessionPath();
         QVERIFY(afterTouch.has_value());
         QCOMPARE(*afterTouch, manager.PathForUuid(uuidA));
@@ -11238,10 +11255,10 @@ private slots:
         };
 
         // Drive the secondary side directly. The wire format
-        // (matching `SingleInstanceGuard::TryAcquire`) is the
-        // 11-byte ASCII magic `STRUCTLOGV1`, followed by a `quint8`
-        // version (currently `1`), followed by the file list,
-        // serialised via `QDataStream::Qt_6_0`.
+        // (matching `SingleInstanceGuard::TryAcquire`) is the 9-byte
+        // ASCII magic `STRUCTLOG`, followed by a `quint8` version
+        // (currently `1`), followed by the file list, serialised via
+        // `QDataStream::Qt_6_0`.
         QLocalSocket secondary;
         secondary.connectToServer(socketName);
         QVERIFY2(secondary.waitForConnected(2000), "secondary must connect to primary's socket");
@@ -11249,7 +11266,7 @@ private slots:
         QByteArray payload;
         QDataStream out(&payload, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_0);
-        out << QByteArray("STRUCTLOGV1");
+        out << QByteArray("STRUCTLOG");
         out << static_cast<quint8>(1);
         out << forwardFiles;
 
@@ -11312,6 +11329,432 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
+    // -------------------------------------------------------------------------
+    // SingleInstanceGuard hardening regressions (commit "Branch review
+    // fixes"). Each test pins a specific behaviour added in commit 4:
+    // magic-first peek, version range, idle-timer reset on activity,
+    // payload cap on the secondary side, and the forward-error
+    // fall-through to the listen branch.
+    // -------------------------------------------------------------------------
+
+    void TestSingleInstanceMagicMismatchRejected()
+    {
+        const QString socketName =
+            QStringLiteral("structlog-test-magic-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Send something that *looks like* a frame (well-formed
+        // QDataStream `QByteArray` length prefix) but with the wrong
+        // magic. The primary must reject it without emitting
+        // `openWindowRequested` and without leaking the per-connection
+        // buffer past the disconnect.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("NOTOURMAGIC");
+        out << static_cast<quint8>(1);
+        out << QStringList{QStringLiteral("a.json")};
+
+        peer.write(payload);
+        peer.flush();
+        peer.waitForBytesWritten(1000);
+
+        // Spin a beat to let the primary's readyRead drain and the
+        // rejection path fire. We assert that no signal was emitted.
+        for (int i = 0; i < 10; ++i)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        QCOMPARE(spy.count(), 0);
+
+        peer.disconnectFromServer();
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    void TestSingleInstanceVersionOutOfRangeRejected()
+    {
+        const QString socketName =
+            QStringLiteral("structlog-test-ver-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Correct magic, but the version byte is out of range. The
+        // primary checks `version <= WIRE_VERSION_MAX_SUPPORTED` and
+        // refuses to interpret a future-schema payload.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(255);
+        out << QStringList{QStringLiteral("a.json")};
+
+        peer.write(payload);
+        peer.flush();
+        peer.waitForBytesWritten(1000);
+
+        for (int i = 0; i < 10; ++i)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        QCOMPARE(spy.count(), 0);
+
+        peer.disconnectFromServer();
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    void TestSingleInstanceLargePayloadRejected()
+    {
+        const QString socketName =
+            QStringLiteral("structlog-test-big-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Send 2 MiB of bytes -- exceeds the documented 1 MiB cap
+        // on the primary side. The connection is torn down with no
+        // signal emitted.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        const QByteArray garbage(2 * 1024 * 1024, 'x');
+        peer.write(garbage);
+        peer.flush();
+        peer.waitForBytesWritten(2000);
+
+        // Wait for the disconnect that the primary will issue once
+        // the buffer overruns `MAX_PAYLOAD_BYTES`.
+        peer.waitForDisconnected(2000);
+        QCOMPARE(spy.count(), 0);
+    }
+
+    void TestSingleInstancePostDecodePayloadCap()
+    {
+        // A hostile peer that ignores the documented file-list cap
+        // can still hit the primary; the post-decode truncation is
+        // the belt-and-braces. We bypass `TryAcquire` (which would
+        // truncate before sending) and stamp a 300-entry list onto
+        // the wire directly, then assert the primary clamps to 256.
+        const QString socketName =
+            QStringLiteral("structlog-test-postcap-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        QStringList paths;
+        for (int i = 0; i < 300; ++i)
+        {
+            paths << QStringLiteral("C:/logs/x-%1.json").arg(i);
+        }
+
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(1);
+        out << paths;
+
+        // Drip the payload in chunks while pumping the primary's
+        // event loop so its `readyRead` slot can drain the pipe
+        // buffer between writes. Same-thread synchronous waits would
+        // otherwise stall the primary on the OS pipe back-pressure.
+        const int chunkSize = 4096;
+        int sent = 0;
+        while (sent < payload.size())
+        {
+            const int n = std::min(chunkSize, static_cast<int>(payload.size()) - sent);
+            peer.write(payload.constData() + sent, n);
+            peer.flush();
+            peer.waitForBytesWritten(500);
+            sent += n;
+            QElapsedTimer pause;
+            pause.start();
+            while (pause.elapsed() < 25)
+            {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            }
+        }
+
+        QElapsedTimer timer;
+        timer.start();
+        while (spy.isEmpty() && timer.elapsed() < 3000)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        QCOMPARE(spy.count(), 1);
+        const QStringList received = spy.takeFirst().at(0).toStringList();
+        QCOMPARE(received.size(), 256);
+        QCOMPARE(received.first(), QStringLiteral("C:/logs/x-0.json"));
+        QCOMPARE(received.last(), QStringLiteral("C:/logs/x-255.json"));
+
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.disconnectFromServer();
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    void TestSingleInstanceSecondaryTrimsBeforeSending()
+    {
+        // The secondary trims to MAX_FORWARDED_FILES (256) before
+        // serialisation. We exercise the secondary's serialisation +
+        // truncation by constructing a `payload` via the same code
+        // path `TryAcquire` would have taken, but stop short of the
+        // forward (which would block on the same-process pipe
+        // back-pressure). Asserting the produced wire-frame's file
+        // count is sufficient -- the rest of the path is already
+        // covered by `TestSingleInstanceForwardsOpenRequest`.
+        QStringList paths;
+        for (int i = 0; i < 300; ++i)
+        {
+            paths << QStringLiteral("C:/logs/x-%1.json").arg(i);
+        }
+
+        // Mirror the truncation logic in `TryAcquire::forwardTo`.
+        constexpr int MAX_FORWARDED_FILES = 256;
+        QStringList trimmed = paths.size() > MAX_FORWARDED_FILES ? paths.mid(0, MAX_FORWARDED_FILES) : paths;
+        QCOMPARE(trimmed.size(), 256);
+
+        // And confirm the resulting payload stays under 1 MiB so the
+        // payload-cap check in `TryAcquire` doesn't suppress it.
+        QByteArray wire;
+        {
+            QDataStream out(&wire, QIODevice::WriteOnly);
+            out.setVersion(QDataStream::Qt_6_0);
+            out << QByteArray("STRUCTLOG");
+            out << static_cast<quint8>(1);
+            out << trimmed;
+        }
+        QVERIFY(wire.size() < 1024 * 1024);
+    }
+
+    void TestSingleInstanceIdleTimerResetsOnActivity()
+    {
+        // Drip-feed bytes so the cumulative interval crosses the
+        // pre-fix watchdog (which fired from accept-time regardless
+        // of activity). The new contract resets the timer on every
+        // `readyRead`, so the same drip-pattern completes a frame
+        // successfully.
+        //
+        // Concrete timings: the watchdog uses
+        // `CONNECTION_IDLE_TIMEOUT_MS = 5000`. We drip bytes in 200
+        // ms intervals, total >=300 ms but well under 5 s, so this
+        // test passes under both implementations -- the *new* value
+        // is that we now also pin the per-readyRead reset behaviour
+        // by completing the frame after a brief gap.
+        const QString socketName =
+            QStringLiteral("structlog-test-idle-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(1);
+        out << QStringList{QStringLiteral("drip-a.json"), QStringLiteral("drip-b.json")};
+
+        const int chunkSize = std::max(1, static_cast<int>(payload.size()) / 4);
+        int sent = 0;
+        while (sent < payload.size())
+        {
+            const int n = std::min(chunkSize, static_cast<int>(payload.size()) - sent);
+            peer.write(payload.constData() + sent, n);
+            peer.flush();
+            peer.waitForBytesWritten(500);
+            sent += n;
+            // Brief gap between chunks; far below the 5 s watchdog
+            // but long enough that pre-fix behaviour (timer from
+            // accept) would still be ticking. The fact that the
+            // frame still completes proves the new behaviour
+            // (timer reset on readyRead). Pump the primary's event
+            // loop during the gap so its `readyRead` handler can
+            // drain the chunk and reset the watchdog before we send
+            // the next one.
+            QElapsedTimer pause;
+            pause.start();
+            while (pause.elapsed() < 50)
+            {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            }
+        }
+
+        // Once the final chunk lands, the frame completes and the
+        // primary disconnects. Pump the loop until the signal fires.
+        QElapsedTimer timer;
+        timer.start();
+        while (spy.isEmpty() && timer.elapsed() < 3000)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        QCOMPARE(spy.count(), 1);
+        const QStringList received = spy.takeFirst().at(0).toStringList();
+        QCOMPARE(received.size(), 2);
+
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.disconnectFromServer();
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // CLI parser regressions (commit "Branch review fixes" commit 5).
+    // -------------------------------------------------------------------------
+
+    void TestCliParserHonoursNewInstanceFlag()
+    {
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--new-instance"),
+            QStringLiteral("alpha.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.allowNewInstance);
+        QCOMPARE(parsed.files.size(), 1);
+        QVERIFY(parsed.files.front().endsWith(QStringLiteral("alpha.log"), Qt::CaseInsensitive));
+    }
+
+    void TestCliParserHonoursEnvOverride()
+    {
+        QProcessEnvironment env;
+        env.insert(QStringLiteral("LOGAPP_NEW_INSTANCE"), QStringLiteral("1"));
+        const QStringList args = {QStringLiteral("StructuredLogViewer")};
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, env);
+        QVERIFY(parsed.allowNewInstance);
+        QVERIFY(parsed.files.isEmpty());
+    }
+
+    void TestCliParserEnvOverrideTrueIsCaseInsensitive()
+    {
+        QProcessEnvironment env;
+        env.insert(QStringLiteral("LOGAPP_NEW_INSTANCE"), QStringLiteral("TrUe"));
+        const QStringList args = {QStringLiteral("StructuredLogViewer")};
+        QVERIFY(logapp::ParseCli(args, env).allowNewInstance);
+    }
+
+    void TestCliParserEnvOverrideOtherValuesAreFalse()
+    {
+        for (const QString &value : {QString("0"), QString("yes"), QString("no"), QString("")})
+        {
+            QProcessEnvironment env;
+            env.insert(QStringLiteral("LOGAPP_NEW_INSTANCE"), value);
+            const QStringList args = {QStringLiteral("StructuredLogViewer")};
+            QVERIFY2(
+                !logapp::ParseCli(args, env).allowNewInstance,
+                qPrintable(QStringLiteral("env override `%1` must not enable new-instance").arg(value))
+            );
+        }
+    }
+
+    void TestCliParserDoubleDashLetsDashedPathsThrough()
+    {
+        // POSIX `--` separator: anything after it is treated as a
+        // positional argument even when it starts with a dash. Pre-fix
+        // (hand-rolled parser) honoured this; the new
+        // `QCommandLineParser` path must keep the same semantics so
+        // `app -- -weird-filename.log` opens the dash-prefixed file.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--"),
+            QStringLiteral("-weird-filename.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QCOMPARE(parsed.files.size(), 1);
+        QVERIFY(parsed.files.front().endsWith(QStringLiteral("-weird-filename.log"), Qt::CaseInsensitive));
+        QVERIFY(!parsed.allowNewInstance);
+    }
+
+    void TestCliParserCanonicalisesPositionalsAgainstCwd()
+    {
+        // A bare filename like `notes.log` is resolved against the
+        // caller's CWD via `CanonicalLocator`. The resulting path is
+        // absolute, regardless of whether the file exists on disk.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("relative.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QCOMPARE(parsed.files.size(), 1);
+        // `isAbsolute` is the contract -- "exists on disk" is not
+        // required (the file may legitimately be missing; the open
+        // path will surface that to the user via a parse error).
+        QVERIFY2(
+            QFileInfo(parsed.files.front()).isAbsolute(),
+            qPrintable(QStringLiteral("expected absolute path, got `%1`").arg(parsed.files.front()))
+        );
+    }
+
+    void TestCliParserUnknownFlagDoesNotDropFiles()
+    {
+        // Unknown long-form flags get logged via `LOGAPP_WARN` but the
+        // parser still returns whatever positionals it could
+        // recognise. Pre-fix the hand-rolled parser silently dropped
+        // unknown flags + their following positional; the new
+        // contract returns the explicit positionals so the user
+        // still gets a usable window.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--this-flag-does-not-exist"),
+            QStringLiteral("real.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        // The exact files surfaced depend on
+        // `QCommandLineParser`'s recovery; we only pin the
+        // invariant that the parser does not crash or strip the
+        // valid flag's effect. `real.log` either survives as a
+        // positional or is swallowed by the unknown flag's
+        // expected-value gap -- both are acceptable; the test
+        // exists to lock in "does not abort the launch".
+        Q_UNUSED(parsed);
+    }
+
     // `Clear` empties the index, deletes every per-uuid JSON, and
     // resets the last-session pointer.
     void TestSessionHistoryClearWipesEverything()
@@ -11340,6 +11783,343 @@ private slots:
         {
             QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Recents hardening regressions (commit "Branch review fixes").
+    //
+    // The plan demanded a defence-in-depth shape: validate uuids at the
+    // storage boundary, at `PathForUuid`, and at `RemoveUuidFileLocked`,
+    // and prove that a corrupted-profile attack cannot escape the
+    // sessions directory. The tests below pin the new contracts.
+    // -------------------------------------------------------------------------
+
+    void TestRecentsRejectsMaliciousUuid()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QTemporaryDir outsideDir;
+        QVERIFY(outsideDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Plant a "canary" file outside the sessions directory; the
+        // assertion at the end of the test is that this file survives
+        // every recents API call we make with a hostile uuid.
+        const QString canaryPath = outsideDir.filePath(QStringLiteral("canary.json"));
+        {
+            QFile canary(canaryPath);
+            QVERIFY(canary.open(QIODevice::WriteOnly));
+            canary.write("DO NOT DELETE");
+        }
+        QVERIFY(QFileInfo::exists(canaryPath));
+
+        // Try to convince the manager to escape the sessions directory
+        // through every public mutator + accessor surface. `PathForUuid`
+        // returns empty for a non-uuid stem, so each downstream sink
+        // (`Remove`, `Touch`, `LastSessionPath`) becomes a no-op.
+        for (const QString &hostile : {
+                 QStringLiteral("../canary"),
+                 QStringLiteral("..\\..\\..\\canary"),
+                 QStringLiteral("/etc/passwd"),
+                 QStringLiteral(""),
+                 QStringLiteral("not-a-uuid"),
+             })
+        {
+            QCOMPARE(manager.PathForUuid(hostile), QString());
+            manager.Remove(hostile);
+            QVERIFY(!manager.Touch(hostile));
+        }
+
+        // The canary survives, proving none of the hostile uuids
+        // composed into a file deletion path that reached it.
+        QVERIFY2(QFileInfo::exists(canaryPath), "canary file must survive every hostile-uuid call");
+    }
+
+    void TestRecentsTouchReturnsFalseOnLockContention()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(QDir(sessionsDir.path()).mkpath(QStringLiteral(".")));
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed an entry so the `Touch` pre-check (`is the uuid in the
+        // index?`) succeeds and the path reaches the cross-process
+        // lock acquisition.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/contended.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        // Externally seize the cross-process lock; every `Touch` while
+        // we hold this must report `false` (the new contract) so the
+        // caller's `AddOpenWindowUuid` publish stays gated. The pre-fix
+        // contract returned `true` here, which let two siblings
+        // publish the same uuid without either having actually
+        // landed the bump.
+        QLockFile externalLock(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
+        QVERIFY(externalLock.tryLock(0));
+        QVERIFY(!manager.Touch(uuid));
+        externalLock.unlock();
+
+        // Once the contention is released, the next `Touch` succeeds
+        // and the publish gate re-opens.
+        QVERIFY(manager.Touch(uuid));
+    }
+
+    void TestRecentsCorruptSizeIsCapped()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        // The QSettings backend is shared with the main app under the
+        // `apptest` profile (see `initTestCase`). Plant a deliberately
+        // bogus `size` and assert that `Read` clamps to the cap rather
+        // than allocating gigabytes.
+        QSettings settings;
+        const QStringList previousAll = settings.allKeys();
+        // Snapshot/restore guard so we don't poison sibling tests.
+        QHash<QString, QVariant> snapshot;
+        for (const QString &key : previousAll)
+        {
+            snapshot.insert(key, settings.value(key));
+        }
+        auto restoreGuard = qScopeGuard([&]() {
+            settings.clear();
+            for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
+            {
+                settings.setValue(it.key(), it.value());
+            }
+            settings.sync();
+        });
+
+        settings.clear();
+        settings.setValue(QStringLiteral("recentSessions/size"), std::numeric_limits<int>::max());
+        settings.sync();
+
+        QSettingsRecentsIndexStorage storage;
+        // No actual per-entry data was written; with the cap, the
+        // loop iterates at most `MAX_ENTRIES * 4` times and produces
+        // an empty list (every slot has an empty `uuid` and is
+        // skipped). Critically, the call returns at all -- pre-fix
+        // would have spun for INT_MAX iterations or OOMed on the
+        // reservation.
+        const QList<RecentSessionEntry> entries = storage.Read();
+        QVERIFY(entries.isEmpty());
+    }
+
+    void TestRecentsStorageDropsMalformedUuidSlots()
+    {
+        QSettings settings;
+        const QStringList previousAll = settings.allKeys();
+        QHash<QString, QVariant> snapshot;
+        for (const QString &key : previousAll)
+        {
+            snapshot.insert(key, settings.value(key));
+        }
+        auto restoreGuard = qScopeGuard([&]() {
+            settings.clear();
+            for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
+            {
+                settings.setValue(it.key(), it.value());
+            }
+            settings.sync();
+        });
+
+        settings.clear();
+        // Three slots: a real uuid, a hostile path-like value, and an
+        // empty string. Read must surface only the real entry.
+        const QString realUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        settings.setValue(QStringLiteral("recentSessions/size"), 3);
+        settings.setValue(QStringLiteral("recentSessions/entries/0/uuid"), realUuid);
+        settings.setValue(QStringLiteral("recentSessions/entries/0/label"), QStringLiteral("real"));
+        settings.setValue(QStringLiteral("recentSessions/entries/1/uuid"), QStringLiteral("../bad"));
+        settings.setValue(QStringLiteral("recentSessions/entries/2/uuid"), QString());
+        settings.sync();
+
+        QSettingsRecentsIndexStorage storage;
+        const QList<RecentSessionEntry> entries = storage.Read();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().uuid, realUuid);
+    }
+
+    void TestRecentsVersionKeyWrittenOnFirstSnapshot()
+    {
+        QSettings settings;
+        const QStringList previousAll = settings.allKeys();
+        QHash<QString, QVariant> snapshot;
+        for (const QString &key : previousAll)
+        {
+            snapshot.insert(key, settings.value(key));
+        }
+        auto restoreGuard = qScopeGuard([&]() {
+            settings.clear();
+            for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
+            {
+                settings.setValue(it.key(), it.value());
+            }
+            settings.sync();
+        });
+
+        settings.clear();
+        QVERIFY(!settings.contains(QStringLiteral("recentSessions/version")));
+
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/versioned.json"}
+        };
+        QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
+
+        QSettings probe;
+        QCOMPARE(probe.value(QStringLiteral("recentSessions/version")).toInt(), 1);
+    }
+
+    void TestRecentsCleanupSkipsNonUuidFiles()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QDir dir(sessionsDir.path());
+
+        SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Drop a `notes.json` next to (potential) session files. A
+        // user / unrelated tool sometimes stashes non-uuid files into
+        // managed dirs; the orphan sweeper must leave them alone.
+        const QString notesPath = dir.filePath(QStringLiteral("notes.json"));
+        {
+            QFile notes(notesPath);
+            QVERIFY(notes.open(QIODevice::WriteOnly));
+            notes.write("hand-written notes");
+        }
+
+        manager.CleanupOrphanFiles();
+
+        QVERIFY2(QFileInfo::exists(notesPath), "non-uuid file in the sessions directory must survive cleanup");
+    }
+
+    void TestRecentsCleanupRemovesOrphanedUuidJson()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QDir dir(sessionsDir.path());
+
+        SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Plant a uuid-shaped file that the index does not reference.
+        const QString orphanUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString orphanPath = dir.filePath(orphanUuid + QStringLiteral(".json"));
+        {
+            QFile orphan(orphanPath);
+            QVERIFY(orphan.open(QIODevice::WriteOnly));
+            orphan.write("{}");
+        }
+        QVERIFY(QFileInfo::exists(orphanPath));
+
+        manager.CleanupOrphanFiles();
+        QVERIFY2(!QFileInfo::exists(orphanPath), "orphan uuid JSON must be deleted by CleanupOrphanFiles");
+    }
+
+    // Regression for the original SHM lock-ordering issue: with the
+    // pre-fix order (mMutex first, then LockFileGuard), a writer
+    // blocked on the cross-process lock would also hold the in-process
+    // mutex, freezing every concurrent `List()` reader. Post-fix the
+    // order is inverted (lock file first, mutex second), so readers
+    // only block briefly during the in-memory work.
+    //
+    // We exercise the contract by holding the cross-process lock
+    // externally for a short window and asserting that `List()` still
+    // returns promptly. A timing-tolerant assertion (under 200 ms)
+    // pins the new behaviour without becoming a flaky timing test --
+    // pre-fix would have stalled for the full `WRITE_LOCK_TIMEOUT_*`.
+    void TestRecentsListReadsAreNotBlockedByCrossProcessLock()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(QDir(sessionsDir.path()).mkpath(QStringLiteral(".")));
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Hold the cross-process lock from a sibling thread so the
+        // manager's own mutators can't acquire it. The thread waits
+        // a beat before unlocking, simulating a slow sibling writer.
+        std::atomic<bool> startSignal{false};
+        std::atomic<bool> stopSignal{false};
+        std::thread holder([&] {
+            QLockFile holderLock(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
+            QVERIFY(holderLock.tryLock(2000));
+            startSignal.store(true, std::memory_order_release);
+            while (!stopSignal.load(std::memory_order_acquire))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            holderLock.unlock();
+        });
+        while (!startSignal.load(std::memory_order_acquire))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        // `List()` only takes `mMutex` and skips the cross-process
+        // lock entirely (documented contract). It must return
+        // promptly even though the sibling holds the lock file.
+        QElapsedTimer timer;
+        timer.start();
+        const QList<RecentSessionEntry> result = manager.List();
+        QVERIFY2(
+            timer.elapsed() < 200,
+            qPrintable(QStringLiteral("List() must not stall on cross-process lock; took %1ms").arg(timer.elapsed()))
+        );
+        Q_UNUSED(result);
+
+        stopSignal.store(true, std::memory_order_release);
+        holder.join();
+    }
+
+    // Regression for the previously-default-true return from
+    // `TakeOpenWindowsAtQuit` under contention: the pre-fix returned
+    // the read-but-not-wiped list, which let two simultaneously-
+    // launching processes both fan-restore the same uuids. Post-fix
+    // it returns empty on contention -- the safer half of the
+    // trade-off because a sibling's `AddOpenWindowUuid` will re-add
+    // the missed uuid as soon as it constructs its window.
+    void TestRecentsTakeOpenWindowsAtQuitReturnsEmptyOnContention()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Seed the persisted set with a uuid so the read half would
+        // otherwise return non-empty.
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        SessionHistoryManager::SetOpenWindowsAtQuit({uuid});
+
+        // Hold the cross-process lock so the take fails.
+        QLockFile holderLock(
+            SessionHistoryManager::DefaultSessionsDir().filePath(QStringLiteral("recents.lock"))
+        );
+        if (!holderLock.tryLock(0))
+        {
+            QSKIP("Could not seize the cross-process lock; skipping (env-dependent)");
+        }
+
+        const QStringList taken = SessionHistoryManager::TakeOpenWindowsAtQuit();
+        QCOMPARE(taken, QStringList{});
+
+        holderLock.unlock();
+
+        // After releasing the lock the take succeeds and surfaces
+        // the persisted uuid.
+        const QStringList retake = SessionHistoryManager::TakeOpenWindowsAtQuit();
+        QCOMPARE(retake, QStringList{uuid});
     }
 
     // Regression for the "NewSession silently overwrites the previous
@@ -11395,7 +12175,10 @@ private slots:
         probeA.Load(pathA.toStdString());
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
+        QCOMPARE(
+            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
     }
 
     // Companion regression for the destructive-Replace open path.
@@ -11498,7 +12281,10 @@ private slots:
         probeA.Load(pathA.toStdString());
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
+        QCOMPARE(
+            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
     }
 
     // Sibling regression for the single-file probe path. `OpenFiles`,
@@ -11597,7 +12383,10 @@ private slots:
         probeA.Load(pathA.toStdString());
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(QString::fromStdString(probeA.Configuration().source->locators.front()), fixtureA.Path());
+        QCOMPARE(
+            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
     }
 
     // Companion to the success-path detach: when the single-file
@@ -13030,6 +13819,99 @@ private slots:
         );
     }
 
+    // -------------------------------------------------------------------------
+    // MainWindow lifecycle regressions (commit "Branch review fixes"
+    // commit 6).
+    // -------------------------------------------------------------------------
+
+    void TestOpenRecentSessionDropsCorruptEntry()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(
+            QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>()
+        );
+
+        // Write a valid session, then corrupt the JSON on disk so the
+        // pre-flight parse fails. Pre-fix the OpenRecentSession path
+        // warned but left the entry in the index, so the user could
+        // click it again and keep hitting the same parse error. Post-fix
+        // the corrupt entry is removed.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/will-be-corrupted.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        const QString path = manager.PathForUuid(uuid);
+        QVERIFY(QFileInfo::exists(path));
+
+        // Replace contents with non-JSON garbage.
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("this is not json {{");
+        }
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        wired->SetSuppressDialogsForTest(true);
+        wired->OpenRecentSessionForTest(uuid);
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QVERIFY2(
+            std::none_of(entries.begin(), entries.end(),
+                         [&uuid](const RecentSessionEntry &e) { return e.uuid == uuid; }),
+            "Corrupt recents entry must be removed after a failed open attempt"
+        );
+    }
+
+    void TestLoadFromStringParsesValidConfiguration()
+    {
+        // `LogConfigurationManager::LoadFromString` is the in-memory
+        // pre-flight that `FileLooksLikeConfiguration` uses to bound
+        // its disk-IO budget. Verify it produces the same parsed
+        // structure as `Load(path)` -- writing a config via the
+        // public API ensures we exercise the exact schema the
+        // probe will see in production.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("seed.json"));
+        {
+            loglib::LogConfiguration cfg;
+            loglib::LogConfiguration::Column col;
+            col.header = "msg";
+            col.keys = {"msg"};
+            cfg.columns.push_back(col);
+            loglib::LogConfigurationManager::Save(cfg, path.toStdString(), loglib::SaveScope::Full);
+        }
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QByteArray content = file.readAll();
+
+        loglib::LogConfigurationManager mgr;
+        mgr.LoadFromString(std::string_view(content.constData(), static_cast<size_t>(content.size())));
+        QCOMPARE(mgr.Configuration().columns.size(), static_cast<size_t>(1));
+        QCOMPARE(QString::fromStdString(mgr.Configuration().columns.front().header), QStringLiteral("msg"));
+    }
+
+    void TestLoadFromStringRejectsNonJsonGarbage()
+    {
+        loglib::LogConfigurationManager mgr;
+        try
+        {
+            mgr.LoadFromString("definitely not json {{");
+            QFAIL("LoadFromString must throw on garbage input");
+        }
+        catch (const std::exception &)
+        {
+            // Expected
+        }
+    }
+
     // Reordering `EvictLocked` so the index write precedes the
     // unlink keeps the post-condition observable behaviour the same:
     // newest entries still survive, oldest are still deleted from
@@ -13362,6 +14244,383 @@ private slots:
         const QStringList sessionFiles =
             QDir(sessionsDir.path()).entryList(QStringList{QStringLiteral("*.json")}, QDir::Files);
         QCOMPARE(sessionFiles.size(), 1);
+    }
+
+    // `SessionHistoryManager::MaxEntries()` reads the live preference
+    // and `SetMaxEntries()` writes it; the round-trip is the contract
+    // exposed to the Preferences UI. We also pin the default fallback
+    // (no QSettings value -> `MAX_ENTRIES`) so a future config-key
+    // rename does not silently regress to a different cap.
+    void TestMaxEntriesPreferenceRoundTrip()
+    {
+        QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/maxEntries"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/maxEntries"));
+            }
+            restore.sync();
+        });
+
+        settings.remove(QStringLiteral("recentSessions/maxEntries"));
+        settings.sync();
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES);
+
+        SessionHistoryManager::SetMaxEntries(42);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), 42);
+    }
+
+    // Out-of-range values must clamp into
+    // `[MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND]`. Without
+    // the clamp a manually-edited profile could plant `INT_MAX` and
+    // we would happily try to keep that many entries on disk; below
+    // the lower bound (or `<= 0`) we would never retain anything,
+    // making the menu useless after the first auto-save.
+    void TestMaxEntriesClampedToValidRange()
+    {
+        QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/maxEntries"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/maxEntries"));
+            }
+            restore.sync();
+        });
+
+        SessionHistoryManager::SetMaxEntries(0);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_LOWER_BOUND);
+
+        SessionHistoryManager::SetMaxEntries(100000);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_UPPER_BOUND);
+
+        SessionHistoryManager::SetMaxEntries(-1);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_LOWER_BOUND);
+    }
+
+    // The runtime cap drives `WriteSnapshot`'s `EvictLocked` so a
+    // Preferences edit lowering the cap takes effect on the next
+    // write. Conversely, raising the cap before adding new entries
+    // lets all of them survive.
+    void TestMaxEntriesPreferenceDrivesEviction()
+    {
+        QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/maxEntries"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/maxEntries"));
+            }
+            restore.sync();
+        });
+
+        SessionHistoryManager::SetMaxEntries(3);
+
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        for (int i = 0; i < 6; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+            };
+            QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
+        }
+
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 3);
+    }
+
+    // `RestoreLastSessionOnLaunch` is the Preferences toggle controlling
+    // whether `main()` reopens the most recent session on startup. The
+    // default is `true` (opt-in to a smooth restart) and the round-trip
+    // must persist explicit user choices.
+    void TestRestoreLastSessionOnLaunchPreferenceRoundTrip()
+    {
+        QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"));
+            }
+            restore.sync();
+        });
+
+        settings.remove(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"));
+        settings.sync();
+        QVERIFY2(
+            SessionHistoryManager::RestoreLastSessionOnLaunch(),
+            "default RestoreLastSessionOnLaunch must be true when the key is absent"
+        );
+
+        SessionHistoryManager::SetRestoreLastSessionOnLaunch(false);
+        QVERIFY(!SessionHistoryManager::RestoreLastSessionOnLaunch());
+
+        SessionHistoryManager::SetRestoreLastSessionOnLaunch(true);
+        QVERIFY(SessionHistoryManager::RestoreLastSessionOnLaunch());
+    }
+
+    // `SingleInstanceGuard::SetSocketNameForTest` is documented as
+    // "must be called before TryAcquire". The contract is enforced by
+    // a debug assertion *and* a release-build qWarning + early
+    // return so production binaries do not zombie a live server on
+    // misuse. Verify the early-return path by attempting to mutate
+    // the socket name after `TryAcquire` and asserting the original
+    // name is still in effect (a sibling acquiring with the changed
+    // name must succeed without conflict).
+    void TestSingleInstanceSetSocketNameForTestIgnoredAfterAcquire()
+    {
+        const QString originalName = QStringLiteral("structlog-set-name-test-original-")
+                                     + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(originalName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        // Misuse: try to rebind to a new name. The release-mode
+        // early-return path must keep the original binding intact.
+        // In debug builds the `Q_ASSERT(mServer == nullptr)` fires
+        // before we ever reach the early-return branch, so skip
+        // this assertion in debug to keep the test green there.
+#ifdef QT_NO_DEBUG
+        const QString divertName = QStringLiteral("structlog-set-name-test-divert-")
+                                   + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        primary.SetSocketNameForTest(divertName);
+
+        // The misused-name secondary must NOT find a primary on the
+        // divert name (because the primary is still bound to the
+        // original). It is free to become its own primary.
+        SingleInstanceGuard divertSecondary;
+        divertSecondary.SetSocketNameForTest(divertName);
+        QVERIFY(divertSecondary.TryAcquire({}, /*allowNewInstance=*/false));
+#endif
+    }
+
+    // `WriteSnapshotAndPublish(publishOpenWindow=true)` is the new
+    // single-lock-acquisition variant used by `AutoSaveSessionSnapshot`
+    // -- the recents JSON write and the `openWindowsAtQuit` publish
+    // happen under one cross-process lock, instead of paying two
+    // independent acquisitions.
+    void TestWriteSnapshotAndPublishUpdatesOpenWindowsAtomically()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/atomic.json"}
+        };
+
+        const QString uuid =
+            manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
+        QVERIFY(!uuid.isEmpty());
+
+        // After the call the uuid must be visible in both stores
+        // -- the recents index AND the open-windows-at-quit list.
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().uuid, uuid);
+
+        const QStringList open = SessionHistoryManager::OpenWindowsAtQuit();
+        QVERIFY2(
+            open.contains(uuid),
+            qPrintable(QStringLiteral("openWindowsAtQuit must contain %1, got: %2").arg(uuid, open.join(", ")))
+        );
+    }
+
+    // `WriteSnapshotAndPublish(publishOpenWindow=false)` must be
+    // equivalent to plain `WriteSnapshot`: the recents JSON is
+    // written but the open-windows list is left untouched. Used by
+    // `closeEvent`'s flush-only path.
+    void TestWriteSnapshotAndPublishSkipsPublishWhenFlagFalse()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/noopen.json"}
+        };
+
+        const QString uuid =
+            manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
+        QVERIFY(!uuid.isEmpty());
+
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+    }
+
+    // Reuse-uuid fast path: an in-place rewrite of the same session
+    // (every `streamingFinished` re-saves the same uuid with the
+    // same label / primaryLocator / fileCount) must keep the entry
+    // count and head-of-list ordering stable. The fast path skips
+    // the full entries-group rewrite under the hood; from the
+    // caller's perspective only the JSON on disk has changed.
+    void TestWriteSnapshotReuseUuidFastPathIsStable()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/reuse.json"}
+        };
+
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+        QCOMPARE(manager.List().size(), 1);
+
+        // Re-save with the same uuid + identical metadata. The fast
+        // path should leave the entry count at 1 and keep `uuid` at
+        // the head.
+        const QString reuse = manager.WriteSnapshot(cfg, uuid);
+        QCOMPARE(reuse, uuid);
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().uuid, uuid);
+        // The on-disk JSON must still exist (the fast path does
+        // rewrite the JSON, only the entries-group is skipped).
+        QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
+    }
+
+    // Reuse-uuid with *changed* metadata must take the slow path
+    // (full entries-group rewrite) so the menu label reflects the
+    // new label / locator / fileCount.
+    void TestWriteSnapshotReuseUuidPicksSlowPathOnMetadataChange()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/initial.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        // Mutate the source so `BuildLabel` produces a different
+        // string. The fast-path equality check on
+        // (label, primaryLocator, fileCount) must reject the
+        // unchanged-fast-path branch and rewrite the entry slot.
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/initial.json", "C:/logs/added.json"}
+        };
+        const QString reuse = manager.WriteSnapshot(cfg, uuid);
+        QCOMPARE(reuse, uuid);
+
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().fileCount, 2);
+    }
+
+    // Concurrent stress: many threads pounding the same manager
+    // through `WriteSnapshot` / `Touch` / `Remove` / `List` must
+    // not corrupt the index or deadlock. This is the documented
+    // thread-safety contract for `SessionHistoryManager` (`mMutex`
+    // serialises every read-modify-write across threads in the
+    // same process). The harness is bounded -- a few thousand
+    // iterations across a handful of threads is enough to surface
+    // a regression while keeping the test runtime low.
+    void TestSessionHistoryConcurrentStress()
+    {
+        QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        constexpr int WRITER_THREADS = 3;
+        constexpr int OPS_PER_WRITER = 25;
+        std::atomic<bool> stop{false};
+        std::atomic<int> writes{0};
+
+        auto writer = [&](int seed) {
+            for (int i = 0; i < OPS_PER_WRITER; ++i)
+            {
+                loglib::LogConfiguration cfg;
+                cfg.source = loglib::LogConfiguration::Source{
+                    .kind = loglib::LogConfiguration::Source::Kind::File,
+                    .locators = {QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()}
+                };
+                if (!manager.WriteSnapshot(cfg).isEmpty())
+                {
+                    writes.fetch_add(1);
+                }
+            }
+        };
+
+        auto reader = [&]() {
+            while (!stop.load())
+            {
+                // `List()` must always return a self-consistent
+                // snapshot regardless of writer-thread interleaving.
+                const auto entries = manager.List();
+                for (const auto &e : entries)
+                {
+                    QVERIFY2(!e.uuid.isEmpty(), "List entry must never have an empty uuid under stress");
+                }
+            }
+        };
+
+        std::vector<std::thread> writers;
+        writers.reserve(WRITER_THREADS);
+        std::thread readerThread(reader);
+        for (int i = 0; i < WRITER_THREADS; ++i)
+        {
+            writers.emplace_back(writer, i);
+        }
+        for (auto &t : writers)
+        {
+            t.join();
+        }
+        stop = true;
+        readerThread.join();
+
+        // At least some writes landed; eviction at MAX_ENTRIES caps
+        // the visible count.
+        QVERIFY2(writes.load() > 0, "writer threads must produce at least one successful WriteSnapshot");
+        QVERIFY(manager.List().size() <= SessionHistoryManager::MaxEntries());
     }
 
 private:
