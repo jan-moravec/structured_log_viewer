@@ -646,6 +646,15 @@ private:
     /// errors accumulate in `mPendingOpenErrors`.
     void StreamNextPendingFile();
 
+    /// Slot connected to `LogModel::streamingFinished`. Hoisted out
+    /// of an inline lambda so crash-dump stack frames identify the
+    /// member by name (and so tests can exercise the post-streaming
+    /// reset logic without having to drive a full BeginStreaming
+    /// cycle). Owns the per-result branching for queue draining,
+    /// session-mode reset, auto-save publishing, and parse-error
+    /// surfacing.
+    void OnStreamingFinished(StreamingResult result);
+
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
 
     /// Pop a warning dialog summarising filters dropped on load.
@@ -713,6 +722,16 @@ private:
     /// explicitly once the load returns true.
     void DoSaveConfiguration(const QString &path, loglib::SaveScope scope);
     bool DoLoadConfiguration(const QString &path);
+
+    /// Apply an already-parsed `LogConfiguration` to the live model.
+    /// Shared tail of `DoLoadConfiguration` (which parses from a
+    /// path) and any future caller that already holds a parsed
+    /// value. Destructive: clears proxy rules + sort, resets the
+    /// model, replaces the configuration, and rebuilds filters.
+    /// Surfaces a `QMessageBox` and returns false if the *apply*
+    /// step throws (rare -- the parse half is the common failure
+    /// mode and is checked upstream).
+    bool ApplyLoadedConfiguration(loglib::LogConfiguration parsed);
 
     /// Re-validate every saved filter against the freshly-loaded
     /// columns and revive survivors via `AddLogFilter`. Shared by
@@ -897,6 +916,32 @@ private:
     /// re-fires `sectionMoved` while resetting visual order, and
     /// we swallow that volley.
     bool mApplyingSectionMove = false;
+
+    /// Re-entrancy guard for the `enumColumnsChanged -> UpdateFilters`
+    /// rebuild. `UpdateFilters` rebuilds the proxy's compiled rules
+    /// from `mFilters` and re-asserts the model; in pathological
+    /// cases (`Demoted -> EnumDictionary destruction -> sort
+    /// invalidation -> filter re-evaluation`) the rebuild can fire
+    /// the model's `enumColumnsChanged` signal again before the
+    /// outer call returns, which would re-enter the lambda and
+    /// rebuild on a half-updated state. The guard short-circuits
+    /// the re-entry; the outer call finishes its rebuild against
+    /// the post-mutation state and the queued signal becomes a
+    /// no-op.
+    bool mApplyingEnumRebuild = false;
+
+    /// Latch set by `NewSession` / `OpenRecentSession` /
+    /// `OpenLogStreamFromPath` and friends across the destructive
+    /// `mModel->Reset()` call, then cleared once the new session
+    /// has either started streaming or settled into Idle.
+    /// `OnStreamingFinished` consults this flag on the `Cancelled`
+    /// branch and returns early -- the `Reset()` synchronously
+    /// emits `streamingFinished(Cancelled)` and the default branch
+    /// would otherwise re-run UI bookkeeping (status bar clear,
+    /// follow-tail reset, ...) on the *outgoing* session right as
+    /// the *incoming* session is being wired up. The flicker is
+    /// subtle but visible on slow machines.
+    bool mSessionSwitchInProgress = false;
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Skip `ShowDroppedFiltersDialog`'s modal so the test thread

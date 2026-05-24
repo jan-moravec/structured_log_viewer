@@ -6,10 +6,12 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "session_history_manager.hpp"
 #include "streaming_control.hpp"
+#include "uuid_utils.hpp"
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
@@ -31,6 +33,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -63,6 +66,57 @@
 
 namespace
 {
+
+/// Format a millisecond-epoch timestamp as a human-readable
+/// "x time ago" string. Used by the Recent Sessions menu tooltip
+/// so siblings sharing a label / locator stay distinguishable.
+/// Returns an empty string when the timestamp is zero / negative
+/// (the legacy on-disk shape before we started stamping entries)
+/// so callers can skip the line entirely instead of showing a
+/// confusing "57 years ago".
+QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
+{
+    if (timestampMsEpoch <= 0)
+    {
+        return {};
+    }
+    qint64 diffMs = nowMs - timestampMsEpoch;
+    if (diffMs < 0)
+    {
+        // Clock skew: a sibling running with a faster clock saved
+        // a session "in the future" relative to us. Treat as "just
+        // now" rather than showing a negative duration -- the user
+        // does not need to debug NTP from a tooltip.
+        diffMs = 0;
+    }
+    constexpr qint64 SECOND_MS = 1000;
+    constexpr qint64 MINUTE_MS = 60 * SECOND_MS;
+    constexpr qint64 HOUR_MS = 60 * MINUTE_MS;
+    constexpr qint64 DAY_MS = 24 * HOUR_MS;
+    if (diffMs < MINUTE_MS)
+    {
+        return QStringLiteral("just now");
+    }
+    if (diffMs < HOUR_MS)
+    {
+        const qint64 minutes = diffMs / MINUTE_MS;
+        return QStringLiteral("%1 %2 ago").arg(minutes).arg(minutes == 1 ? "minute" : "minutes");
+    }
+    if (diffMs < DAY_MS)
+    {
+        const qint64 hours = diffMs / HOUR_MS;
+        return QStringLiteral("%1 %2 ago").arg(hours).arg(hours == 1 ? "hour" : "hours");
+    }
+    const qint64 days = diffMs / DAY_MS;
+    if (days < 30)
+    {
+        return QStringLiteral("%1 %2 ago").arg(days).arg(days == 1 ? "day" : "days");
+    }
+    // Past a month, the absolute date is more useful than "1
+    // months ago" -- pin to the local-time date so the user can
+    // correlate it with shell history / build logs.
+    return QDateTime::fromMSecsSinceEpoch(timestampMsEpoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd"));
+}
 
 // Locate the staged `tzdata/` directory. Tries (in order) the binary
 // directory, the macOS Resources bundle, $APPDIR/usr/share/tzdata, then
@@ -144,6 +198,18 @@ constexpr int STATUS_BAR_MESSAGE_TIMEOUT_MS = 5000;
 // must not be misclassified as a configuration. Any parse
 // exception also returns false. Pinned by
 // `TestTryLoadAsConfigurationRejectsEmptyJsonObject`.
+/// Bounded read budget for the "could this file be a configuration?"
+/// probe. A configuration JSON is small by design (column /
+/// filter / sort tables + a `Source` descriptor); 1 MiB is two
+/// orders of magnitude above the largest legitimate config we
+/// have observed in production. Pre-fix, the probe streamed the
+/// entire file through `LogConfigurationManager::Load`, which on
+/// a multi-gigabyte log that happened to start with
+/// `{"columns":...}` (e.g. a JSON-formatted dump with a column
+/// summary line) would block the GUI thread for seconds while
+/// reading + failing to parse.
+constexpr qint64 CONFIG_PROBE_MAX_BYTES = 1024 * 1024;
+
 bool FileLooksLikeConfiguration(const QString &file)
 {
     if (file.isEmpty())
@@ -155,8 +221,16 @@ bool FileLooksLikeConfiguration(const QString &file)
     {
         return false;
     }
+    // Reject anything past the probe budget before reading further.
+    // This is the test that fixes the "log file masquerading as a
+    // configuration" hang -- a >1 MiB file has no chance of being a
+    // valid configuration regardless of how it starts.
+    if (probeFile.size() > CONFIG_PROBE_MAX_BYTES)
+    {
+        return false;
+    }
     const QByteArray head = probeFile.read(4096);
-    probeFile.close();
+    probeFile.seek(0);
 
     int cursor = 0;
     if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xEF
@@ -180,10 +254,17 @@ bool FileLooksLikeConfiguration(const QString &file)
         return false;
     }
 
+    // Read the whole bounded prefix (we already capped it at the
+    // file-size check above, but the explicit `read(BUDGET)` call
+    // is the belt-and-braces -- a future refactor that drops the
+    // size pre-check would still be safe).
+    const QByteArray contentBytes = probeFile.read(CONFIG_PROBE_MAX_BYTES);
+    probeFile.close();
+
     try
     {
         loglib::LogConfigurationManager probe;
-        probe.Load(file.toStdString());
+        probe.LoadFromString(std::string_view(contentBytes.constData(), static_cast<size_t>(contentBytes.size())));
         return !probe.Configuration().columns.empty();
     }
     catch (...)
@@ -501,7 +582,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     //   quit-on-last-window-closed default); a redundant `quit()`
     //   would just walk a second no-op fan over already-cleared
     //   state.
-    connect(ui->actionExit, &QAction::triggered, qApp, [] { QApplication::closeAllWindows(); });
+    connect(ui->actionExit, &QAction::triggered, this, [] { QApplication::closeAllWindows(); });
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
@@ -648,94 +729,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         mStreamingErrorCount = count;
         UpdateStreamingStatus();
     });
-    connect(mModel, &LogModel::streamingFinished, this, [this](StreamingResult result) {
-        // Clear the `Source unavailable` latch.
-        mSourceWaiting = false;
-
-        // Multi-file static open: Success advances the queue. Keep
-        // `mSessionMode == Static` across `StreamNextPendingFile` so
-        // it routes follow-up files through `AppendStreaming`.
-        if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
-        {
-            StreamNextPendingFile();
-            if (mModel->IsStreamingActive())
-            {
-                return;
-            }
-            // Fallthrough: queue drained without a new active session.
-        }
-        else if (!mPendingOpenFiles.isEmpty())
-        {
-            mPendingOpenFiles.clear();
-        }
-
-        // Snapshot the just-finished mode before resetting it so the
-        // auto-save gate below can distinguish "static load completed"
-        // (worth recording in Recent Sessions) from "live-tail /
-        // network stream completed" (transient, never re-openable
-        // from a JSON snapshot). The same value is mirrored into
-        // `mLastTerminalSessionMode` so `closeEvent` -> `AutoSave`
-        // (which runs strictly after the live `mSessionMode` has
-        // already been reset to `Idle`) still sees the real mode.
-        const SessionMode justFinishedMode = mSessionMode;
-        mLastTerminalSessionMode = mSessionMode;
-        mSessionMode = SessionMode::Idle;
-
-        // Reset Pause / Follow-tail to defaults for the next session.
-        if (ui->actionPauseStream->isChecked())
-        {
-            const QSignalBlocker blocker(ui->actionPauseStream);
-            ui->actionPauseStream->setChecked(false);
-        }
-        if (!ui->actionFollowTail->isChecked())
-        {
-            const QSignalBlocker blocker(ui->actionFollowTail);
-            ui->actionFollowTail->setChecked(true);
-        }
-        SetConfigurationUiEnabled(true);
-        UpdateStreamToolbarVisibility();
-        UpdateUi();
-        UpdateStreamingStatus();
-        // Refresh the column-health snapshot now that parsing has
-        // settled. Drives the header warning glyph and the status-bar
-        // mismatch summary via `columnHealthChanged`.
-        mModel->RefreshColumnHealth();
-        // Only Success produces a post-parse error summary.
-        if (result == StreamingResult::Success)
-        {
-            std::vector<std::string> errors = mModel->StreamingErrors();
-            errors.insert(
-                errors.end(),
-                std::make_move_iterator(mPendingOpenErrors.begin()),
-                std::make_move_iterator(mPendingOpenErrors.end())
-            );
-            mPendingOpenErrors.clear();
-            ShowParseErrors("Error Parsing Logs", errors);
-        }
-        else
-        {
-            mPendingOpenErrors.clear();
-        }
-        mStreamingFileName.clear();
-        // Keep `mCurrentSource` on Success / Cancelled (rows are
-        // still present, descriptor still describes them); drop it
-        // on Failed where there is nothing left to describe.
-        if (result == StreamingResult::Failed)
-        {
-            mCurrentSource.reset();
-        }
-
-        // Auto-save the session snapshot on successful completion so
-        // the user can reopen this exact view through Recent Sessions
-        // and so the restore-on-launch flow has something to load.
-        // `ShouldAutoSaveSession` filters out the cases where the
-        // snapshot would never be re-openable -- no manager, no
-        // source, network streams, live-tail file sessions.
-        if (result == StreamingResult::Success && ShouldAutoSaveSession(justFinishedMode))
-        {
-            AutoSaveSessionSnapshot();
-        }
-    });
+    connect(mModel, &LogModel::streamingFinished, this, &MainWindow::OnStreamingFinished);
     connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
     // Keep enum filter bitsets and sort ranks in sync with the live
@@ -866,6 +860,18 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         }
         if (rebuild)
         {
+            // Re-entrancy guard: an inner `UpdateFilters` that
+            // re-enters this slot (e.g. through a sort that
+            // synchronously emits `enumColumnsChanged`) must not
+            // rebuild on a half-updated state. The flag is local to
+            // the slot, so a queued signal that arrives after the
+            // outer call returns will rebuild normally.
+            if (mApplyingEnumRebuild)
+            {
+                return;
+            }
+            mApplyingEnumRebuild = true;
+            const auto guard = qScopeGuard([this]() { mApplyingEnumRebuild = false; });
             UpdateFilters();
         }
     });
@@ -1086,6 +1092,7 @@ void MainWindow::RebuildRecentSessionsMenu()
         return;
     }
 
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     for (const RecentSessionEntry &entry : entries)
     {
         QString label = entry.label;
@@ -1095,11 +1102,23 @@ void MainWindow::RebuildRecentSessionsMenu()
         }
         QAction *action = ui->menuRecentSessions->addAction(label);
         // Tooltip carries the primary locator + total file count so
-        // the user can disambiguate two entries that share a label.
+        // the user can disambiguate two entries that share a label,
+        // plus a relative timestamp so the user can tell at a glance
+        // which entry is the most-recently-saved among siblings with
+        // the same locator.
         QString tooltip = entry.primaryLocator;
         if (entry.fileCount > 1)
         {
             tooltip += QStringLiteral(" (+ %1 more)").arg(entry.fileCount - 1);
+        }
+        const QString relativeTimestamp = FormatRelativeTimestamp(entry.timestampMsEpoch, nowMs);
+        if (!relativeTimestamp.isEmpty())
+        {
+            if (!tooltip.isEmpty())
+            {
+                tooltip += QStringLiteral("\n");
+            }
+            tooltip += relativeTimestamp;
         }
         if (!tooltip.isEmpty())
         {
@@ -1161,6 +1180,20 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
         const QString message =
             tr("Loaded '%1' as a configuration. Open log files (File -> Open...) to populate the view.")
                 .arg(files.front());
+        statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        qInfo().noquote() << "OpenFilesForCli:" << message;
+    }
+    else if (result == MixedInputDispatch::AppliedConfigThenLogs)
+    {
+        // Mirror the `AppliedConfigOnly` hint for the
+        // configuration-plus-logs branch. The view *will* populate
+        // (the logs are queued for streaming) but the user still
+        // benefits from explicit confirmation that the binary
+        // recognised the configuration arg, especially when the
+        // first log file is large and the row stream takes a beat
+        // to start.
+        const QString message =
+            tr("Loaded '%1' as a configuration; streaming queued log files into it.").arg(files.front());
         statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         qInfo().noquote() << "OpenFilesForCli:" << message;
     }
@@ -1250,11 +1283,16 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         // backing JSON) between the menu rebuild and the click.
         // Surface a clear error and remove the dangling entry so the
         // next menu rebuild is clean.
-        QMessageBox::warning(
-            this,
-            QStringLiteral("Recent Session Unavailable"),
-            QStringLiteral("The JSON for this recent session has been removed. Dropping it from the list.")
-        );
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mSuppressDialogsForTest)
+#endif
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Recent Session Unavailable"),
+                QStringLiteral("The JSON for this recent session has been removed. Dropping it from the list.")
+            );
+        }
         mHistoryManager->Remove(uuid);
         return;
     }
@@ -1263,19 +1301,42 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // recents file does not destroy the user's current view for
     // nothing. `NewSession` + `DoLoadConfiguration` below are both
     // destructive; calling them upfront would leave the window
-    // blank-but-broken on parse failure.
+    // blank-but-broken on parse failure. We hand the already-parsed
+    // configuration to `ApplyLoadedConfiguration` so the commit
+    // path does not re-read the file -- pre-fix the second `Load`
+    // call inside `DoLoadConfiguration` opened a TOCTOU window
+    // where a sibling process could `Remove(uuid)` between the
+    // pre-flight and the commit, leaving the user staring at a
+    // half-loaded view.
+    loglib::LogConfiguration parsed;
     try
     {
         loglib::LogConfigurationManager probe;
         probe.Load(jsonPath.toStdString());
+        parsed = probe.Configuration();
     }
     catch (const std::exception &e)
     {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("Cannot Open Recent Session"),
-            QStringLiteral("Failed to parse '%1':\n%2").arg(jsonPath, QString::fromStdString(e.what()))
-        );
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mSuppressDialogsForTest)
+#endif
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Cannot Open Recent Session"),
+                QStringLiteral("Failed to parse '%1':\n%2\n\nDropping this entry from Recent Sessions.")
+                    .arg(jsonPath, QString::fromStdString(e.what()))
+            );
+        }
+        // Drop the corrupt entry from the index so the next menu
+        // rebuild is clean. The on-disk JSON is left in place --
+        // `CleanupOrphanFiles` on next launch will reap it. Removing
+        // the index entry is enough to keep the user out of a loop
+        // of clicking-the-same-broken-entry.
+        if (logapp::LooksLikeUuid(uuid))
+        {
+            mHistoryManager->Remove(uuid);
+        }
         return;
     }
 
@@ -1287,12 +1348,12 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // below once the load succeeds.
     NewSession();
 
-    // Step 2: load the configuration (this also seeds the source
-    // descriptor + filter list + sort).
-    if (!DoLoadConfiguration(jsonPath))
+    // Step 2: apply the already-parsed configuration. Failure here
+    // is exceptional (the apply step itself, not the parse) and
+    // surfaces a `QMessageBox`; we bail without queueing files so
+    // the half-loaded view is at least empty rather than mixed.
+    if (!ApplyLoadedConfiguration(std::move(parsed)))
     {
-        // Defensive: pre-flight already accepted the file; failing
-        // here implies a TOCTOU race. Bail without queueing files.
         return;
     }
 
@@ -1412,6 +1473,16 @@ void MainWindow::NewSession()
     // future refactors of `ClearAllFilters`.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
     mSortFilterProxyModel->SetFilterRules({});
+
+    // Latch the session-switch flag so the synchronous
+    // `streamingFinished(Cancelled)` emitted by `mModel->Reset()`
+    // does not run the full `OnStreamingFinished` cleanup against
+    // the about-to-be-rebuilt session. The scope guard clears the
+    // flag on every return path below, including exceptions out of
+    // `ClearAllFilters` (unlikely but technically possible if a
+    // proxy hook throws).
+    mSessionSwitchInProgress = true;
+    const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
 
     mModel->Reset();
     ClearAllFilters();
@@ -1735,6 +1806,109 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
     StreamNextPendingFile();
 }
 
+void MainWindow::OnStreamingFinished(StreamingResult result)
+{
+    // Session-switch short-circuit: a `mModel->Reset()` from
+    // `NewSession` / `OpenLogStream` / `OpenLogStreamFromPath`
+    // synchronously emits `streamingFinished(Cancelled)` while the
+    // *incoming* session is being wired up. Running the full
+    // cleanup (status-bar clear, follow-tail reset, pause toggle,
+    // ...) on the outgoing session causes a visible UI flicker on
+    // slow machines. The latched flag tells us we're inside that
+    // synchronous emission and the outer caller will finalize the
+    // UI state itself once the new session is ready.
+    if (result == StreamingResult::Cancelled && mSessionSwitchInProgress)
+    {
+        return;
+    }
+
+    // Clear the `Source unavailable` latch.
+    mSourceWaiting = false;
+
+    // Multi-file static open: Success advances the queue. Keep
+    // `mSessionMode == Static` across `StreamNextPendingFile` so
+    // it routes follow-up files through `AppendStreaming`.
+    if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
+    {
+        StreamNextPendingFile();
+        if (mModel->IsStreamingActive())
+        {
+            return;
+        }
+    }
+    else if (!mPendingOpenFiles.isEmpty())
+    {
+        mPendingOpenFiles.clear();
+    }
+
+    // Snapshot the just-finished mode before resetting it so the
+    // auto-save gate below can distinguish "static load completed"
+    // (worth recording in Recent Sessions) from "live-tail /
+    // network stream completed" (transient, never re-openable
+    // from a JSON snapshot). The same value is mirrored into
+    // `mLastTerminalSessionMode` so `closeEvent` -> `AutoSave`
+    // (which runs strictly after the live `mSessionMode` has
+    // already been reset to `Idle`) still sees the real mode.
+    const SessionMode justFinishedMode = mSessionMode;
+    mLastTerminalSessionMode = mSessionMode;
+    mSessionMode = SessionMode::Idle;
+
+    // Reset Pause / Follow-tail to defaults for the next session.
+    if (ui->actionPauseStream->isChecked())
+    {
+        const QSignalBlocker blocker(ui->actionPauseStream);
+        ui->actionPauseStream->setChecked(false);
+    }
+    if (!ui->actionFollowTail->isChecked())
+    {
+        const QSignalBlocker blocker(ui->actionFollowTail);
+        ui->actionFollowTail->setChecked(true);
+    }
+    SetConfigurationUiEnabled(true);
+    UpdateStreamToolbarVisibility();
+    UpdateUi();
+    UpdateStreamingStatus();
+    // Refresh the column-health snapshot now that parsing has
+    // settled. Drives the header warning glyph and the status-bar
+    // mismatch summary via `columnHealthChanged`.
+    mModel->RefreshColumnHealth();
+    // Only Success produces a post-parse error summary.
+    if (result == StreamingResult::Success)
+    {
+        std::vector<std::string> errors = mModel->StreamingErrors();
+        errors.insert(
+            errors.end(),
+            std::make_move_iterator(mPendingOpenErrors.begin()),
+            std::make_move_iterator(mPendingOpenErrors.end())
+        );
+        mPendingOpenErrors.clear();
+        ShowParseErrors("Error Parsing Logs", errors);
+    }
+    else
+    {
+        mPendingOpenErrors.clear();
+    }
+    mStreamingFileName.clear();
+    // Keep `mCurrentSource` on Success / Cancelled (rows are
+    // still present, descriptor still describes them); drop it
+    // on Failed where there is nothing left to describe.
+    if (result == StreamingResult::Failed)
+    {
+        mCurrentSource.reset();
+    }
+
+    // Auto-save the session snapshot on successful completion so
+    // the user can reopen this exact view through Recent Sessions
+    // and so the restore-on-launch flow has something to load.
+    // `ShouldAutoSaveSession` filters out the cases where the
+    // snapshot would never be re-openable -- no manager, no
+    // source, network streams, live-tail file sessions.
+    if (result == StreamingResult::Success && ShouldAutoSaveSession(justFinishedMode))
+    {
+        AutoSaveSessionSnapshot();
+    }
+}
+
 void MainWindow::StreamNextPendingFile()
 {
     while (!mPendingOpenFiles.isEmpty())
@@ -1764,16 +1938,36 @@ void MainWindow::StreamNextPendingFile()
         // Multi-file sessions record every appended file path in load
         // order so SaveSession + RecentSessions can reopen the full
         // set. The first file initialises the descriptor; subsequent
-        // files push onto the existing locators vector.
+        // files push onto the existing locators vector. We
+        // canonicalise the path (absolute + slash + case normalised
+        // on Windows) before recording it so dedup against
+        // already-streamed locators -- both here and in
+        // `MirrorSessionStateToConfiguration` -- works regardless of
+        // how the user typed the path. The streaming worker uses
+        // the original `file` for the open call; only the persisted
+        // descriptor sees the canonical form.
+        const std::string canonical = logapp::CanonicalLocator(file).toStdString();
         if (isFirstFileInSession)
         {
             mCurrentSource = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {file.toStdString()}
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {canonical}
             };
         }
         else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
         {
-            mCurrentSource->locators.push_back(file.toStdString());
+            // Skip the push if the canonical form already appears in
+            // the locators vector. Pre-fix a user opening the same
+            // file twice (e.g. via two CLI args, or "Append" twice
+            // on the same path) would record duplicates that would
+            // round-trip into the recents UI as repeated labels.
+            const bool alreadyPresent = std::any_of(
+                mCurrentSource->locators.begin(), mCurrentSource->locators.end(),
+                [&canonical](const std::string &existing) { return existing == canonical; }
+            );
+            if (!alreadyPresent)
+            {
+                mCurrentSource->locators.push_back(canonical);
+            }
         }
         if (isFirstFileInSession)
         {
@@ -1891,6 +2085,15 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mPendingOpenFiles.clear();
     }
 
+    // Latch the session-switch flag: `mModel->Reset()` below emits
+    // `streamingFinished(Cancelled)` synchronously and the outer
+    // `OnStreamingFinished` cleanup must skip the outgoing-session
+    // UI bookkeeping or we briefly flash the wrong toolbar / status
+    // state at the user. The scope guard clears it once the new
+    // session is fully wired up below.
+    mSessionSwitchInProgress = true;
+    const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
+
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
     ClearAllFilters();
@@ -2000,6 +2203,13 @@ void MainWindow::OpenNetworkStream()
         );
         mPendingOpenFiles.clear();
     }
+
+    // Mirror the OpenLogStream session-switch latch: suppress the
+    // outgoing-session cleanup that `mModel->Reset()`'s synchronous
+    // `streamingFinished(Cancelled)` would otherwise run, since we
+    // are mid-way through wiring up the incoming network stream.
+    mSessionSwitchInProgress = true;
+    const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
 
     // Mirror the OpenLogStream reset.
     mModel->Reset();
@@ -2509,7 +2719,43 @@ void MainWindow::MirrorSessionStateToConfiguration()
     // `SetSource(nullopt)` keeps the loaded configuration shape
     // consistent with the snapshots `WriteSnapshot` would later
     // index against.
-    if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    //
+    // Multi-file restore truncation fix: when `mPendingOpenFiles` is
+    // non-empty, the mirrored `Source` must include both the
+    // already-streamed locators *and* the locators still queued for
+    // streaming. The auto-save handler runs from `aboutToQuit` (and
+    // from per-file `streamingFinished`), and a quit mid-stream
+    // would otherwise persist a `Source` that lists only the files
+    // streamed before the quit -- the next launch would replay a
+    // strictly smaller fan-out and the user would have to manually
+    // re-add the remaining files. Concatenating + de-duping via
+    // `CanonicalLocator` keeps the persisted shape stable across
+    // identical paths (`C:\foo\bar.json` vs `c:/foo/bar.json` on
+    // Windows are the same file).
+    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File
+        && !mPendingOpenFiles.isEmpty())
+    {
+        loglib::LogConfiguration::Source mirrored = *mCurrentSource;
+        // Seed the dedup set with the already-streamed locators so
+        // a pending file that duplicates one already on disk does
+        // not get appended a second time.
+        std::unordered_set<std::string> seen;
+        seen.reserve(mirrored.locators.size() + static_cast<size_t>(mPendingOpenFiles.size()));
+        for (const std::string &loc : mirrored.locators)
+        {
+            seen.insert(logapp::CanonicalLocator(QString::fromStdString(loc)).toStdString());
+        }
+        for (const QString &pending : mPendingOpenFiles)
+        {
+            const std::string key = logapp::CanonicalLocator(pending).toStdString();
+            if (seen.insert(key).second)
+            {
+                mirrored.locators.push_back(pending.toStdString());
+            }
+        }
+        mModel->ConfigurationManager().SetSource(std::move(mirrored));
+    }
+    else if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
     {
         mModel->ConfigurationManager().SetSource(mCurrentSource);
     }
@@ -2517,6 +2763,18 @@ void MainWindow::MirrorSessionStateToConfiguration()
     {
         mModel->ConfigurationManager().SetSource(std::nullopt);
     }
+
+    // Belt-and-braces: every path above either dropped the source
+    // to `nullopt` or wrote a `Source` with at least one locator.
+    // A `Source{kind: ..., locators: {}}` would round-trip into
+    // recents as a label-less entry pointing at nothing, and
+    // `RestoreLastSessionFromPath` would happily pin a uuid for it
+    // on launch. The assertion fires in debug builds; release
+    // builds rely on the if/else above keeping the invariant.
+    Q_ASSERT(
+        !mModel->ConfigurationManager().Configuration().source.has_value()
+        || !mModel->ConfigurationManager().Configuration().source->locators.empty()
+    );
 }
 
 bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
@@ -2576,7 +2834,12 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     MirrorSessionStateToConfiguration();
 
     const loglib::LogConfiguration &configuration = mModel->ConfigurationManager().Configuration();
-    const QString uuid = mHistoryManager->WriteSnapshot(configuration, mAutoSaveUuid);
+    // `WriteSnapshotAndPublish` folds the open-windows publish under
+    // the same cross-process lock acquisition used for the snapshot
+    // write -- one acquisition instead of two, and no race window
+    // between "recents JSON updated" and "openWindowsAtQuit updated".
+    const QString uuid =
+        mHistoryManager->WriteSnapshotAndPublish(configuration, mAutoSaveUuid, /*publishOpenWindow=*/publishOpenWindow);
     if (uuid.isEmpty())
     {
         // Save failed (serialization error, lock acquisition timeout,
@@ -2594,12 +2857,6 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     mAutoSaveUuid = uuid;
     if (publishOpenWindow)
     {
-        // Eagerly publish ourselves into the open-windows set so a
-        // crash / OS quit between now and `closeEvent` restores this
-        // window on next launch. The `closeEvent` flush passes
-        // `publishOpenWindow=false` because it immediately removes
-        // the uuid again.
-        SessionHistoryManager::AddOpenWindowUuid(uuid);
         mAutoSaveUuidPublished = true;
     }
 }
@@ -2669,6 +2926,23 @@ QString MainWindow::RestorableActiveSessionUuid() const noexcept
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // Let the base class run first. `QMainWindow::closeEvent`
+    // accepts by default but a subclass (or installed event filter
+    // -- the macOS file-open filter is a top-level example, though
+    // it does not currently `ignore()`) might decide to refuse the
+    // close. Pre-fix we performed the destructive teardown before
+    // consulting the base, so an `ignore()` from any future
+    // override would leave the window visually open but with its
+    // auto-save uuid detached and its session-mode reset -- a
+    // subsequent save would write a fresh recents entry as if the
+    // user had started a new session, and the open-windows uuid
+    // would have already been removed.
+    QMainWindow::closeEvent(event);
+    if (!event->isAccepted())
+    {
+        return;
+    }
+
     // Final flush so the close-to-restore loop captures the exact
     // state the user left the window in (any column moves / filter
     // tweaks made after the last `streamingFinished`). Best-effort:
@@ -2710,7 +2984,6 @@ void MainWindow::closeEvent(QCloseEvent *event)
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
     mLastTerminalSessionMode = SessionMode::Idle;
-    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::SaveConfiguration()
@@ -2982,14 +3255,40 @@ void MainWindow::UpdateDiagnosticsStatus()
 
 bool MainWindow::DoLoadConfiguration(const QString &path)
 {
+    // Parse first into a temporary so a parse failure does not
+    // destroy the user's current session. Pre-fix, the destructive
+    // `mModel->Reset()` ran before the `Load` call -- a corrupt
+    // recents entry therefore wiped the live view and left the
+    // window blank-but-broken, which surfaced as
+    // `OpenRecentSession`'s explicit pre-flight parse (a second
+    // file read of the same JSON, racing the commit path for a
+    // TOCTOU window). With the temporary in place, callers can
+    // drop their pre-flight and we still preserve the
+    // "don't destroy the current view on parse failure" guarantee.
+    loglib::LogConfiguration parsed;
     try
     {
-        // Drop the previous session's recents pin: a
-        // `Load Configuration or Session...` is a session boundary,
-        // and we must not let the next AutoSave silently overwrite
-        // an unrelated session's JSON in place.
-        // The callers that *do* want to re-pin a uuid after the
-        // load (`OpenRecentSession`, `RestoreLastSessionFromPath`)
+        loglib::LogConfigurationManager probe;
+        probe.Load(path.toStdString());
+        parsed = probe.Configuration();
+    }
+    catch (std::exception &e)
+    {
+        QMessageBox::warning(this, "Error Parsing Configuration", e.what());
+        return false;
+    }
+    return ApplyLoadedConfiguration(std::move(parsed));
+}
+
+bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
+{
+    try
+    {
+        // Drop the previous session's recents pin *before* the
+        // destructive clears so an exception below does not leave a
+        // stale auto-save uuid pinned to a half-loaded view. The
+        // callers that *do* want to re-pin a uuid after the load
+        // (`OpenRecentSession`, `RestoreLastSessionFromPath`)
         // explicitly set `mAutoSaveUuid` once this function returns.
         DetachAutoSaveUuid();
 
@@ -2999,12 +3298,22 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
         mSortFilterProxyModel->SetFilterRules({});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
+        // Latch the session-switch flag for the same reason as
+        // `NewSession` / `OpenLogStream*`: skip the outgoing-session
+        // cleanup that the synchronous
+        // `streamingFinished(Cancelled)` from `mModel->Reset()`
+        // would otherwise run while we are mid-way through wiring
+        // up the loaded session.
+        mSessionSwitchInProgress = true;
+        const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
+
         mModel->Reset();
-        mModel->ConfigurationManager().Load(path.toStdString());
-        // `Load` rewrites the configuration without emitting any
-        // model signal; the reset re-initialises the header section
-        // count and the wired `modelReset -> ApplyColumnVisibility`
-        // pushes the freshly-loaded `visible` flags.
+        mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
+        // `SetConfiguration` rewrites the configuration without
+        // emitting any model signal; the reset re-initialises the
+        // header section count and the wired
+        // `modelReset -> ApplyColumnVisibility` pushes the
+        // freshly-loaded `visible` flags.
         mModel->NotifyConfigurationReplaced();
         UpdateUi();
 
@@ -3031,6 +3340,16 @@ bool MainWindow::DoLoadConfiguration(const QString &path)
     }
     catch (std::exception &e)
     {
+        // The destructive `mModel->Reset()` above has already wiped
+        // the previous view by the time we get here. We surface the
+        // diagnostic so the user can recover via a fresh load and
+        // leave the window in its current (empty) state -- a full
+        // rollback would require snapshotting every cell of the
+        // previous model, which is more expensive than the win.
+        // Pre-fix `DoLoadConfiguration` had this same property; the
+        // commit-3 parse-first protection in `DoLoadConfiguration`
+        // catches the common case (corrupt JSON) before we cross
+        // this destructive boundary.
         QMessageBox::warning(this, "Error Parsing Configuration", e.what());
         return false;
     }
