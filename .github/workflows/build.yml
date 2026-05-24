@@ -310,19 +310,20 @@ jobs:
           # to a symbol name.
           echo "--- direct-launch (bailout) under gdb with disasm ---"
           set +e
+          cat > /tmp/diag.gdb <<'GDB'
+          set pagination off
+          handle SIG33 nostop noprint
+          set print pretty on
+          run
+          info registers
+          info symbol $rip
+          info symbol $rip-1
+          x/16i $rip-32
+          thread apply all bt full
+          info sharedlibrary libQt6Core
+          GDB
           QT_QPA_PLATFORM=offscreen LOGAPP_SMOKE_TEST_BAIL_OUT=1 \
-            gdb -batch \
-              -ex 'set pagination off' \
-              -ex 'handle SIG33 nostop noprint' \
-              -ex 'set print pretty on' \
-              -ex run \
-              -ex 'info registers' \
-              -ex 'info symbol $rip' \
-              -ex 'info symbol $rip-1' \
-              -ex 'x/16i $rip-32' \
-              -ex 'thread apply all bt full' \
-              -ex 'info sharedlibrary libQt6Core' \
-              --args "$EXTRACTED_BIN" 2>&1 | tail -n 300
+            gdb -batch -x /tmp/diag.gdb --args "$EXTRACTED_BIN" 2>&1 | tail -n 300
           set -e
 
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
