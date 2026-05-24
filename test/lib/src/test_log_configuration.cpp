@@ -1524,3 +1524,232 @@ TEST_CASE("ResolveLevel honours per-column alias overrides", "[log_level]")
     CHECK(ResolveLevel("i", overrides) == LogLevel::Info);
     CHECK(ResolveLevel("ftl", overrides) == LogLevel::Fatal);
 }
+
+// -----------------------------------------------------------------------------
+// Schema back-compat / forward-compat regression tests.
+//
+// The `Source` widening (from a single `"locator"` string to a
+// `"locators"` array) shipped with no migration shim because Glaze
+// 7.x defaults to `error_on_unknown_keys=true`, which would have
+// made every pre-widening session JSON throw on load. The fix is in
+// `loglib/internal/log_configuration_glaze_opts.hpp`: read/write
+// now go through `LOG_CONFIG_OPTS` with the option flipped off.
+// These tests pin the new behaviour so a future refactor that
+// shadows or removes the option fails here loudly instead of
+// silently breaking every user's recents store on next launch.
+// -----------------------------------------------------------------------------
+
+TEST_CASE(
+    "Legacy `\"locator\"` session JSON loads with columns and filters intact (source rebind drops to nullopt)",
+    "[log_configuration][session][source][compat]"
+)
+{
+    const TestLogConfiguration legacyFile("test_log_configuration_legacy_locator.json");
+
+    // Hand-rolled fixture matching the pre-widening wire shape: the
+    // session-only `source` block carries a single-string `"locator"`
+    // instead of the current `"locators"` array. Columns / filters /
+    // sort are valid against the new schema; only the source's inner
+    // field is renamed.
+    // Hand-rolled minimal shape -- defaults fill in the optional /
+    // sparse fields glaze tolerates as missing. The point is to spell
+    // the pre-widening `"locator":"..."` shape and prove it loads.
+    constexpr std::string_view LEGACY_JSON = R"({
+   "columns": [
+      {
+         "header": "timestamp",
+         "keys": ["timestamp"],
+         "printFormat": "%F %H:%M:%S",
+         "type": "time",
+         "parseFormats": ["%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"]
+      },
+      {
+         "header": "msg",
+         "keys": ["msg"],
+         "printFormat": "{}",
+         "type": "string",
+         "parseFormats": []
+      }
+   ],
+   "filters": [
+      {
+         "type": "string",
+         "row": 1,
+         "filterString": "boot",
+         "matchType": "contains"
+      }
+   ],
+   "sort": {
+      "columnIndex": 0,
+      "descending": true
+   },
+   "source": {
+      "kind": "file",
+      "locator": "C:/logs/legacy.json"
+   }
+})";
+
+    {
+        std::ofstream stream(legacyFile.GetFilePath(), std::ios::binary);
+        REQUIRE(stream.is_open());
+        stream << LEGACY_JSON;
+    }
+
+    LogConfigurationManager manager;
+    REQUIRE_NOTHROW(manager.Load(legacyFile.GetFilePath()));
+
+    // Critical assertion: columns / filters / sort survive even though
+    // the source field was renamed in the schema. Pre-fix behaviour
+    // raised `std::runtime_error` here and threw the user's session
+    // away in its entirety.
+    REQUIRE(manager.Configuration().columns.size() == 2);
+    CHECK(manager.Configuration().columns[0].header == "timestamp");
+    CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
+    CHECK(manager.Configuration().columns[1].header == "msg");
+
+    REQUIRE(manager.Configuration().filters.size() == 1);
+    CHECK(manager.Configuration().filters[0].row == 1);
+    REQUIRE(manager.Configuration().filters[0].filterString.has_value());
+    CHECK(*manager.Configuration().filters[0].filterString == "boot");
+
+    CHECK(manager.Configuration().sort.columnIndex == 0);
+    CHECK(manager.Configuration().sort.descending);
+
+    // The legacy single-`locator` field is silently dropped: glaze parses
+    // the `"source"` block (the `kind` is recognised) but the renamed
+    // inner field is unknown, so the inner field is skipped and the
+    // outer `source` shows up as default-constructed -- file kind, empty
+    // locators. `HasLocators` correctly reports "not actionable" so
+    // downstream rebind paths fall through to the "loaded configuration
+    // without a source" branch.
+    CHECK_FALSE(loglib::HasLocators(manager.Configuration().source));
+}
+
+TEST_CASE(
+    "Unknown top-level field in a session JSON does not abort the load",
+    "[log_configuration][session][source][compat]"
+)
+{
+    const TestLogConfiguration futureFile("test_log_configuration_future_field.json");
+
+    // Simulates a future build that added a new top-level field (`hooks`)
+    // we don't understand yet. The current build must read everything it
+    // does understand and ignore the rest -- the forward-compat half of
+    // the back-compat fix.
+    constexpr std::string_view FUTURE_JSON = R"({
+   "columns": [
+      {
+         "header": "msg",
+         "keys": ["msg"],
+         "printFormat": "{}",
+         "type": "string",
+         "parseFormats": []
+      }
+   ],
+   "filters": [],
+   "sort": {
+      "columnIndex": -1,
+      "descending": false
+   },
+   "source": {
+      "kind": "file",
+      "locators": ["C:/logs/example.json"]
+   },
+   "hooks": {
+      "onLoad": "future-thing",
+      "onSave": "another-future-thing"
+   }
+})";
+
+    {
+        std::ofstream stream(futureFile.GetFilePath(), std::ios::binary);
+        REQUIRE(stream.is_open());
+        stream << FUTURE_JSON;
+    }
+
+    LogConfigurationManager manager;
+    REQUIRE_NOTHROW(manager.Load(futureFile.GetFilePath()));
+
+    REQUIRE(manager.Configuration().columns.size() == 1);
+    CHECK(manager.Configuration().columns[0].header == "msg");
+    REQUIRE(loglib::HasLocators(manager.Configuration().source));
+    CHECK(manager.Configuration().source->locators.front() == "C:/logs/example.json");
+}
+
+TEST_CASE(
+    "Empty `locators` round-trips through Save / Load as an empty array",
+    "[log_configuration][session][source]"
+)
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File, .locators = {}
+    };
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.source.has_value());
+    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(loaded.source->locators.empty());
+
+    // `HasLocators` is the predicate every accessor must check: an
+    // empty-locator source is `has_value() && locators.empty()`, which
+    // would slip through a half-checked test (`has_value()` alone).
+    CHECK_FALSE(loglib::HasLocators(loaded.source));
+}
+
+TEST_CASE(
+    "Pretty-write emits `locators` as a JSON array (wire-format snapshot)",
+    "[log_configuration][session][source]"
+)
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File,
+        .locators = {"C:/logs/a.json", "C:/logs/b.json"}
+    };
+
+    const TestLogConfiguration file("test_log_configuration_pretty_locators.json");
+    LogConfigurationManager::Save(original, file.GetFilePath(), SaveScope::Full);
+
+    std::ifstream readBack(file.GetFilePath());
+    REQUIRE(readBack.is_open());
+    const std::string raw((std::istreambuf_iterator<char>(readBack)), std::istreambuf_iterator<char>());
+
+    // Wire-format guarantees: the field is named `locators` and is an
+    // array (not a single string). A future field-rename would break
+    // every user's recents store, so we pin the exact key here.
+    CHECK(raw.contains("\"locators\""));
+    // No residual reference to the pre-widening `"locator"` field.
+    // (Word-boundary trick: `locators` strictly contains `locator`, so
+    // a naive substring search would always pass.)
+    CHECK_FALSE(raw.contains("\"locator\":"));
+    CHECK_FALSE(raw.contains("\"locator\" :"));
+    CHECK(raw.contains("\"C:/logs/a.json\""));
+    CHECK(raw.contains("\"C:/logs/b.json\""));
+}
+
+TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log_configuration][session][source]")
+{
+    // nullopt -> false (the canonical "no source bound" sentinel).
+    CHECK_FALSE(loglib::HasLocators(std::nullopt));
+
+    // Present but locators-empty -> false. The session-state mirror
+    // is required to surface this as "no source"; the half-checked
+    // form `has_value()` would erroneously claim a binding.
+    LogConfiguration::Source emptyLocators;
+    emptyLocators.kind = LogConfiguration::Source::Kind::File;
+    CHECK_FALSE(loglib::HasLocators(std::optional<LogConfiguration::Source>{emptyLocators}));
+
+    // Present with at least one entry -> true.
+    LogConfiguration::Source oneLocator;
+    oneLocator.kind = LogConfiguration::Source::Kind::File;
+    oneLocator.locators.emplace_back("C:/x.json");
+    CHECK(loglib::HasLocators(std::optional<LogConfiguration::Source>{oneLocator}));
+}

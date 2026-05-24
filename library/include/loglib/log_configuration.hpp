@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -134,7 +135,12 @@ struct LogConfiguration
 
     /// Persisted source descriptor. `nullopt` means "no source bound".
     /// On load the app may re-open this; rebind failure is non-fatal
-    /// (columns and filters still apply).
+    /// (columns and filters still apply). The non-fatal promise also
+    /// covers schema drift: legacy session JSON that used the pre-
+    /// widening `"locator":"..."` shape loses its source binding on
+    /// load but keeps columns / filters / sort, courtesy of the
+    /// `error_on_unknown_keys=false` option configured for the read
+    /// path (`loglib/internal/log_configuration_glaze_opts.hpp`).
     struct Source
     {
         enum class Kind
@@ -167,6 +173,19 @@ struct LogConfiguration
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
+/// Inline helper for the recurring `source.has_value() &&
+/// !source->locators.empty()` shape -- the "source descriptor is
+/// actionable" predicate. Centralising the gate prevents a half-checked
+/// form (`has_value()` without `empty()`) from sneaking through one
+/// call site at a time: a `Source{kind: File, locators: {}}` parses
+/// but is not actionable, so every accessor that wants "do we have a
+/// rebindable source" must check both. `noexcept` because both
+/// operations on `std::optional` / `std::vector` are noexcept.
+[[nodiscard]] inline bool HasLocators(const std::optional<LogConfiguration::Source> &source) noexcept
+{
+    return source.has_value() && !source->locators.empty();
+}
+
 /// Selects which fields `Save` writes. Both shapes share one JSON
 /// schema -- a `ColumnsOnly` file is a `Full` file with the
 /// session-only members defaulted.
@@ -186,6 +205,15 @@ public:
 
     /// Throws `std::runtime_error` on open failure.
     void Load(const std::filesystem::path &path);
+
+    /// Parse a configuration directly from an in-memory buffer.
+    /// Throws `std::runtime_error` on parse failure. Used by the
+    /// app-side "could this file be a configuration?" probe so it
+    /// can read a bounded prefix from disk rather than streaming
+    /// the entire file through the IO path -- protects against
+    /// pathological multi-gigabyte log files that happen to start
+    /// with a `{"columns":[...]}` line.
+    void LoadFromString(std::string_view content);
     /// Writes the full struct (equivalent to `SaveScope::Full`).
     void Save(const std::filesystem::path &path) const;
     /// Writes the subset selected by @p scope.
@@ -215,6 +243,13 @@ public:
     /// sort / source attached to an otherwise empty view, which
     /// did not match the user's "fresh window" mental model.
     void Reset();
+
+    /// Replace the held `LogConfiguration` wholesale. Lets callers
+    /// pre-parse a configuration from disk (e.g. `MainWindow`'s
+    /// recents pre-flight) and apply it atomically without paying
+    /// the second file read that `Load(path)` would. Invalidates
+    /// the key cache so the next `Keys()` call rebuilds.
+    void SetConfiguration(LogConfiguration configuration);
 
     /// Append-only: adds keys not already configured, auto-promoting
     /// timestamp-named ones. Existing column indices stay put.

@@ -2,6 +2,7 @@
 
 #include "loglib/internal/ascii_case.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
+#include "loglib/internal/log_configuration_glaze_opts.hpp"
 #include "loglib/log_data.hpp"
 
 #include <glaze/glaze.hpp>
@@ -88,12 +89,11 @@ bool IsLogLevelKey(const std::string &key)
 namespace
 {
 
-// Glaze 7.x: indentation_width is an inheritable option.
-struct PrettyOpts : glz::opts
-{
-    uint8_t indentation_width = 4;
-};
-constexpr PrettyOpts PRETTIFY_OPTS{{.prettify = true}};
+// Shared read/write opts: `error_on_unknown_keys=false` so legacy
+// schemas (and future fields added by newer builds) load instead of
+// throwing. See `log_configuration_glaze_opts.hpp` for the full
+// rationale.
+constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
 /// Wire-format shim for `SaveScope::ColumnsOnly`: emits only the
 /// `columns` array, skipping the default `filters` / `sort` blocks a
@@ -134,16 +134,27 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
     }
     std::ostringstream buffer;
     buffer << file.rdbuf();
-    const std::string content = buffer.str();
+    LoadFromString(buffer.str());
+}
 
+void LogConfigurationManager::LoadFromString(std::string_view content)
+{
     // Parse into a temporary first: Glaze writes member-by-member,
     // so reading directly into `mConfiguration` would leave it
     // half-populated if a parse error throws mid-file.
     LogConfiguration parsed;
-    const auto error = glz::read_json(parsed, content);
+    // Critical: use `LOG_CONFIG_OPTS` (not `glz::read_json`) so
+    // `error_on_unknown_keys=false` lets legacy sessions (containing
+    // the pre-widening `"locator"` field that has been replaced by
+    // `locators`) load with columns / filters / sort intact. The
+    // promise on `LogConfiguration::Source` -- "rebind failure is
+    // non-fatal" -- depends on this option being set.
+    const auto error = glz::read<LOG_CONFIG_OPTS>(parsed, content);
     if (error)
     {
-        throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
+        throw std::runtime_error(
+            "Failed to parse configuration file: " + glz::format_error(error, std::string(content))
+        );
     }
     mConfiguration = std::move(parsed);
     mCacheStale = true;
@@ -168,7 +179,7 @@ void LogConfigurationManager::Save(const LogConfiguration &configuration, const 
         // not the default `filters` / `sort` blocks the full struct
         // would emit.
         const ColumnsOnlyDocument document{.columns = configuration.columns};
-        const auto error = glz::write<PRETTIFY_OPTS>(document, json);
+        const auto error = glz::write<LOG_CONFIG_OPTS>(document, json);
         if (error)
         {
             throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
@@ -176,7 +187,7 @@ void LogConfigurationManager::Save(const LogConfiguration &configuration, const 
     }
     else
     {
-        const auto error = glz::write<PRETTIFY_OPTS>(configuration, json);
+        const auto error = glz::write<LOG_CONFIG_OPTS>(configuration, json);
         if (error)
         {
             throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
@@ -245,6 +256,12 @@ void LogConfigurationManager::Reset()
     // `mConfiguration.columns`, which is equivalent but keeps the
     // invalidation path identical to every other mutator.
     mConfiguration = LogConfiguration{};
+    mCacheStale = true;
+}
+
+void LogConfigurationManager::SetConfiguration(LogConfiguration configuration)
+{
+    mConfiguration = std::move(configuration);
     mCacheStale = true;
 }
 

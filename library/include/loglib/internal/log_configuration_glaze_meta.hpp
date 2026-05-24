@@ -47,4 +47,76 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
     static constexpr std::array keys{"file", "networkStream"};
     static constexpr std::array value{File, NetworkStream};
 };
+
+// Pinned object schemas for the nested wire types. Glaze's default
+// reflection would happily round-trip these without an explicit
+// `meta`, but the implicit form makes any field rename a silent
+// breaking schema change (old JSON parses with default-constructed
+// new field, written JSON loses the old name -- every previously-
+// written file becomes unrecoverable). Pinning the field names here
+// turns a rename into a compile-time conflict that has to be
+// addressed deliberately (e.g. via a migration shim or by
+// preserving the old field name explicitly).
+//
+// The names below are the current implicit-reflection field names;
+// switching to explicit `meta` here is a no-op for on-disk JSON.
+template <> struct glz::meta<loglib::LogConfiguration::Source>
+{
+    using T = loglib::LogConfiguration::Source;
+    static constexpr auto value = object("kind", &T::kind, "locators", &T::locators);
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::Column>
+{
+    using T = loglib::LogConfiguration::Column;
+    static constexpr auto value = object(
+        "header",
+        &T::header,
+        "keys",
+        &T::keys,
+        "printFormat",
+        &T::printFormat,
+        "type",
+        &T::type,
+        "parseFormats",
+        &T::parseFormats,
+        "visible",
+        &T::visible,
+        "levelMapping",
+        &T::levelMapping,
+        "autoDetect",
+        &T::autoDetect
+    );
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::LogFilter>
+{
+    using T = loglib::LogConfiguration::LogFilter;
+    static constexpr auto value = object(
+        "type",
+        &T::type,
+        "row",
+        &T::row,
+        "filterString",
+        &T::filterString,
+        "matchType",
+        &T::matchType,
+        "filterBegin",
+        &T::filterBegin,
+        "filterEnd",
+        &T::filterEnd,
+        "filterMinValue",
+        &T::filterMinValue,
+        "filterMaxValue",
+        &T::filterMaxValue,
+        "filterValues",
+        &T::filterValues
+    );
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::Sort>
+{
+    using T = loglib::LogConfiguration::Sort;
+    static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
+};
 // NOLINTEND(readability-identifier-naming)
