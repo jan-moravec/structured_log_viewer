@@ -51,7 +51,15 @@ constexpr int CORRUPT_PROFILE_SIZE_CAP_MULTIPLIER = 4;
 /// a long-running misconfigured peer) should not be allowed to wedge
 /// startup on a slow filesystem; we delete what we can and the rest
 /// gets swept up over subsequent launches.
-constexpr int CLEANUP_DELETIONS_PER_LAUNCH = 200;
+///
+/// 5000 is comfortable headroom: per-file unlink on an NVMe SSD
+/// completes in microseconds, so even a worst-case full-cap sweep
+/// stays well under one second. The pre-fix value of 200 was
+/// conservative to the point of leaving real backlogs on disk for
+/// dozens of launches; in practice users who actually accumulated
+/// orphans (long-lived `--new-instance` peers + frequent crashes)
+/// would never see the directory drain without manual intervention.
+constexpr int CLEANUP_DELETIONS_PER_LAUNCH = 5000;
 
 /// Once-per-process warning suppression for the "could not acquire
 /// the cross-process recents lock" diagnostic. The lock is queried
@@ -62,6 +70,19 @@ constexpr int CLEANUP_DELETIONS_PER_LAUNCH = 200;
 /// "this user is hitting lock contention" without flooding the
 /// log.
 std::atomic<bool> g_recents_lock_warned{false}; // NOLINT(readability-identifier-naming)
+
+/// Process-wide kill switch for `openWindowsAtQuit` mutations.
+/// Defaults to `true` (the canonical primary publishes / removes
+/// uuids); flipped to `false` by `--new-instance` peers via
+/// `SessionHistoryManager::SetPublishingEnabled` so their
+/// `AutoSaveSessionSnapshot` -> `AddOpenWindowUuid` and
+/// `DetachAutoSaveUuid` -> `RemoveOpenWindowUuid` calls never reach
+/// the persisted set. See the docstring on `SetPublishingEnabled`
+/// for the full rationale. We intentionally use a single bool
+/// rather than a per-instance flag because the `Add*` / `Remove*`
+/// API is static (no `this`) and the gate decision is made once
+/// per process in `main.cpp` -- not on a per-manager basis.
+std::atomic<bool> g_publishing_enabled{true}; // NOLINT(readability-identifier-naming)
 
 /// Log a once-per-process diagnostic when a `QSettings::sync()` call
 /// reports an error. `AccessError` covers "could not write to the
@@ -367,9 +388,21 @@ QString SessionHistoryManager::WriteSnapshot(const loglib::LogConfiguration &con
 }
 
 QString SessionHistoryManager::WriteSnapshotAndPublish(
-    const loglib::LogConfiguration &configuration, const QString &reuseUuid, bool publishOpenWindow
+    const loglib::LogConfiguration &configuration,
+    const QString &reuseUuid,
+    bool publishOpenWindow,
+    bool *publishedOut
 )
 {
+    // Default the out-flag to false; we only flip it true on the
+    // narrow path "snapshot succeeded AND publish landed". Every
+    // early return below leaves this at false, which matches the
+    // semantics callers expect (latch stays unpublished on
+    // failure / contention / disabled).
+    if (publishedOut != nullptr)
+    {
+        *publishedOut = false;
+    }
     QString uuid = reuseUuid;
     if (uuid.isEmpty())
     {
@@ -525,14 +558,29 @@ QString SessionHistoryManager::WriteSnapshotAndPublish(
             // QSettings key) and a same-process sibling could
             // otherwise race the same set from a parallel
             // `RemoveOpenWindowUuid` call.
-            if (publishOpenWindow)
+            if (publishOpenWindow && IsPublishingEnabled())
             {
+                // Honour the same process-wide gate as the standalone
+                // `AddOpenWindowUuid` path: `--new-instance` peers
+                // never publish into the canonical primary's
+                // persisted set, even via this batched-with-snapshot
+                // path. We still write the per-uuid JSON above
+                // (the peer's session JSON is its own; only the
+                // shared open-windows set is off-limits).
                 QMutexLocker openWindowsLock(&OpenWindowsMutex());
                 QStringList openUuids = ReadOpenWindowsAtQuit();
                 if (!openUuids.contains(uuid))
                 {
                     openUuids.append(uuid);
                     WriteOpenWindowsAtQuit(openUuids);
+                }
+                // Post-condition: uuid is in the persisted set
+                // (newly added or already present). Surface to the
+                // caller so its `mAutoSaveUuidPublished` latch is
+                // accurate for the next `DetachAutoSaveUuid`.
+                if (publishedOut != nullptr)
+                {
+                    *publishedOut = true;
                 }
             }
         }
@@ -987,11 +1035,21 @@ QStringList SessionHistoryManager::TakeOpenWindowsAtQuit()
     return uuids;
 }
 
-void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
+bool SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
 {
     if (uuid.isEmpty())
     {
-        return;
+        return false;
+    }
+    if (!IsPublishingEnabled())
+    {
+        // `--new-instance` peer isolation: the peer must not touch
+        // the canonical primary's persisted set. Return false so the
+        // caller's "we've published this uuid" latch stays false --
+        // a peer that observes its DetachAutoSaveUuid is a no-op
+        // (RemoveOpenWindowUuid is gated symmetrically below) and
+        // therefore has no published state to clean up.
+        return false;
     }
     QMutexLocker lock(&OpenWindowsMutex());
     LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_RUNTIME_MS);
@@ -1000,21 +1058,34 @@ void SessionHistoryManager::AddOpenWindowUuid(const QString &uuid)
         // Fail-closed: skip the publish. The next AutoSave (or the
         // `aboutToQuit` safety-net) will re-attempt to capture this
         // window for restore.
-        return;
+        return false;
     }
     QStringList uuids = ReadOpenWindowsAtQuit();
     if (uuids.contains(uuid))
     {
-        return;
+        // Post-condition already holds: the uuid is in the persisted
+        // set, even though no write happened on this call. Returning
+        // true keeps the caller's latch in sync with on-disk state --
+        // an idempotent re-publish is "successful" from the caller's
+        // perspective.
+        return true;
     }
     uuids.append(uuid);
     WriteOpenWindowsAtQuit(uuids);
+    return true;
 }
 
 void SessionHistoryManager::AddOpenWindowUuids(const QStringList &uuids)
 {
     if (uuids.isEmpty())
     {
+        return;
+    }
+    if (!IsPublishingEnabled())
+    {
+        // `--new-instance` peer isolation, batched variant. The
+        // peer's `aboutToQuit` fan still gathers restorable uuids
+        // but never writes them out.
         return;
     }
     QMutexLocker lock(&OpenWindowsMutex());
@@ -1054,6 +1125,20 @@ void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
     {
         return;
     }
+    if (!IsPublishingEnabled())
+    {
+        // `--new-instance` peer isolation, Remove side. Gating Add
+        // alone would leave a one-way leak: a peer that reopens an
+        // existing recents entry via OpenRecentSession does not
+        // re-publish (`Add` no-ops), but its closeEvent /
+        // DetachAutoSaveUuid would still strip that uuid out of the
+        // canonical primary's persisted set on the way out -- the
+        // canonical primary expecting its own session to survive
+        // would silently lose it on next launch. Returning here
+        // closes that hole and makes peer lifecycle truly
+        // side-effect-free with respect to the persisted set.
+        return;
+    }
     QMutexLocker lock(&OpenWindowsMutex());
     LockFileGuard crossProc = AcquireRecentsLock(DefaultSessionsDir(), WRITE_LOCK_TIMEOUT_RUNTIME_MS);
     if (!crossProc.locked)
@@ -1072,12 +1157,23 @@ void SessionHistoryManager::RemoveOpenWindowUuid(const QString &uuid)
     WriteOpenWindowsAtQuit(uuids);
 }
 
-void SessionHistoryManager::CleanupOrphanFiles()
+void SessionHistoryManager::SetPublishingEnabled(bool enabled) noexcept
 {
+    g_publishing_enabled.store(enabled, std::memory_order_release);
+}
+
+bool SessionHistoryManager::IsPublishingEnabled() noexcept
+{
+    return g_publishing_enabled.load(std::memory_order_acquire);
+}
+
+SessionHistoryManager::CleanupReport SessionHistoryManager::CleanupOrphanFiles()
+{
+    CleanupReport report;
     if (!mSessionsDir.exists())
     {
         // Nothing has been auto-saved yet -- no directory, no orphans.
-        return;
+        return report;
     }
 
     // Cross-process lock so we don't race a sibling `--new-instance`
@@ -1091,8 +1187,9 @@ void SessionHistoryManager::CleanupOrphanFiles()
     {
         // Fail-closed: an orphan that survives this launch will be
         // swept up on the next startup. The alternative (deleting
-        // a sibling's in-flight JSON) is worse.
-        return;
+        // a sibling's in-flight JSON) is worse. Report `{0, false}`:
+        // we did no work but also did not exhaust any budget.
+        return report;
     }
 
     QMutexLocker lock(&mMutex);
@@ -1121,23 +1218,24 @@ void SessionHistoryManager::CleanupOrphanFiles()
     catch (const std::exception &e)
     {
         LOGAPP_WARN() << "CleanupOrphanFiles: storage read failed:" << e.what();
-        return;
+        return report;
     }
 
     static const QString TMP_SUFFIX = QStringLiteral(".json.tmp");
     static const QString JSON_SUFFIX = QStringLiteral(".json");
-    int deletions = 0;
     for (const QString &fileName : jsonFiles)
     {
         // Hard cap on the per-launch deletion count: a pathological
         // sessions directory (hundreds of orphans from a long-running
         // misconfigured peer) should not be allowed to wedge startup
         // on a slow filesystem. Anything past the cap is left for the
-        // next launch to mop up.
-        if (deletions >= CLEANUP_DELETIONS_PER_LAUNCH)
+        // next launch to mop up. Flip `report.capped = true` so the
+        // caller can surface a "we throttled" status-bar hint.
+        if (report.deletedCount >= CLEANUP_DELETIONS_PER_LAUNCH)
         {
             LOGAPP_WARN() << "CleanupOrphanFiles: hit per-launch deletion cap of"
                           << CLEANUP_DELETIONS_PER_LAUNCH << "; the rest will be swept next launch.";
+            report.capped = true;
             break;
         }
         // Normalise the stem to the uuid: `QFileInfo::completeBaseName`
@@ -1183,9 +1281,10 @@ void SessionHistoryManager::CleanupOrphanFiles()
         // worst case is the orphan survives one more launch.
         if (QFile(mSessionsDir.filePath(fileName)).remove())
         {
-            ++deletions;
+            ++report.deletedCount;
         }
     }
+    return report;
 }
 
 // -----------------------------------------------------------------------------

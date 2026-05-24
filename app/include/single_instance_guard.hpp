@@ -65,11 +65,20 @@ public:
 
 signals:
     /// Fired on the primary process when a secondary launch arrives.
-    /// @p files is the (possibly empty) CLI file list that the
-    /// secondary forwarded; the primary should respond by spawning a
-    /// new `MainWindow` and opening those files. An empty list still
-    /// means "open a new empty window", per VS Code's UX.
-    void openWindowRequested(const QStringList &files);
+    /// @p files is the (possibly empty, post-truncation) CLI file
+    /// list that the secondary forwarded; the primary should respond
+    /// by spawning a new `MainWindow` and opening those files. An
+    /// empty list still means "open a new empty window", per VS
+    /// Code's UX.
+    ///
+    /// @p truncatedCount is the number of additional files the
+    /// secondary held but did not send because it hit
+    /// `MAX_FORWARDED_FILES` on its end. Always `>= 0`; `0` is the
+    /// common case ("no truncation"). The primary uses this to
+    /// surface a status-bar warning on the freshly-opened window so
+    /// the user is aware that part of their drop / argv was
+    /// silently dropped on the wire.
+    void openWindowRequested(const QStringList &files, int truncatedCount);
 
 private:
     /// Compute the default per-user socket name. Includes the

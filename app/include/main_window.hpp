@@ -91,6 +91,24 @@ public:
         RejectedMultiConfig,
     };
 
+    /// Full result of `DispatchMixedOpenInput`. Carries the outcome
+    /// enum plus the path that the dispatcher actually treated as
+    /// the configuration argument (non-empty iff @outcome is
+    /// `AppliedConfigOnly` or `AppliedConfigThenLogs`). Pre-fix
+    /// `OpenFilesForCli` interpolated `files.front()` into its
+    /// "Loaded '%1' as a configuration" status-bar message, which
+    /// silently lied when the config was not the first positional
+    /// (e.g. `app log1.log config.json` -> "Loaded 'log1.log' as a
+    /// configuration..."). Threading the chosen path back through
+    /// the dispatcher closes that hole at the source, so every
+    /// future caller naming the configuration in a user-facing
+    /// string is correct by construction.
+    struct MixedInputResult
+    {
+        MixedInputDispatch outcome = MixedInputDispatch::QueuedLogsOnly;
+        QString appliedConfigPath;
+    };
+
     /// Backwards-compatible constructor: no history manager wired in,
     /// so auto-save / Recent Sessions / restore-on-launch behave as
     /// no-ops. Used by the existing test fixture and by ad-hoc
@@ -624,7 +642,15 @@ private:
     /// branch (`Append` / `Replace`). The mixed branch always uses
     /// `Append` because `DoLoadConfiguration` already performed a
     /// full reset and `Replace` would be redundant.
-    MixedInputDispatch DispatchMixedOpenInput(const QStringList &files, OpenMode logMode);
+    ///
+    /// Returns a `MixedInputResult` carrying the outcome enum *and*
+    /// the path of the configuration that was actually applied
+    /// (the path picked from @p files, not necessarily
+    /// `files.front()`). Callers that need to name the applied
+    /// configuration in user-facing text -- currently
+    /// `OpenFilesForCli`'s status-bar hint -- read
+    /// `appliedConfigPath` rather than re-scanning the input list.
+    MixedInputResult DispatchMixedOpenInput(const QStringList &files, OpenMode logMode);
 
     /// Start a sequential streaming open of @p files.
     ///

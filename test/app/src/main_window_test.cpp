@@ -5878,12 +5878,25 @@ private slots:
         probe.Load(sessionPath.toStdString());
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        // `locators` now stores case-preserved display paths; the
+        // lower-cased dedup form is parallel-indexed under
+        // `locatorDedupKeys`. Assert both invariants so a future
+        // accidental "drop the dedup key" regression is caught here.
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators[0]),
-            logapp::CanonicalLocator(fixtureA.Path())
+            logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators[1]),
+            logapp::CanonicalDisplayPath(fixtureB.Path())
+        );
+        QCOMPARE(probe.Configuration().source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[0]),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[1]),
             logapp::CanonicalLocator(fixtureB.Path())
         );
     }
@@ -5963,11 +5976,11 @@ private slots:
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators[0]),
-            logapp::CanonicalLocator(fixtureA.Path())
+            logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators[1]),
-            logapp::CanonicalLocator(fixtureB.Path())
+            logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
 
@@ -6088,7 +6101,7 @@ private slots:
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators.front()),
-            logapp::CanonicalLocator(fixtureB.Path())
+            logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
 
@@ -11257,7 +11270,8 @@ private slots:
         // Drive the secondary side directly. The wire format
         // (matching `SingleInstanceGuard::TryAcquire`) is the 9-byte
         // ASCII magic `STRUCTLOG`, followed by a `quint8` version
-        // (currently `1`), followed by the file list, serialised via
+        // (currently `2`), followed by the file list and a
+        // `quint32 truncatedCount` tail, serialised via
         // `QDataStream::Qt_6_0`.
         QLocalSocket secondary;
         secondary.connectToServer(socketName);
@@ -11267,8 +11281,9 @@ private slots:
         QDataStream out(&payload, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_0);
         out << QByteArray("STRUCTLOG");
-        out << static_cast<quint8>(1);
+        out << static_cast<quint8>(2);
         out << forwardFiles;
+        out << static_cast<quint32>(0);
 
         const qint64 written = secondary.write(payload);
         QCOMPARE(written, payload.size());
@@ -11286,6 +11301,7 @@ private slots:
         const auto args = spy.takeFirst();
         const QStringList received = args.at(0).toStringList();
         QCOMPARE(received, forwardFiles);
+        QCOMPARE(args.at(1).toInt(), 0);
 
         secondary.disconnectFromServer();
         if (secondary.state() != QLocalSocket::UnconnectedState)
@@ -11409,6 +11425,7 @@ private slots:
         out << QByteArray("STRUCTLOG");
         out << static_cast<quint8>(255);
         out << QStringList{QStringLiteral("a.json")};
+        out << static_cast<quint32>(0);
 
         peer.write(payload);
         peer.flush();
@@ -11488,8 +11505,12 @@ private slots:
         QDataStream out(&payload, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_0);
         out << QByteArray("STRUCTLOG");
-        out << static_cast<quint8>(1);
+        out << static_cast<quint8>(2);
         out << paths;
+        // Truncation overrun is computed by the primary post-decode
+        // (paths.size() = 300, cap = 256, so it folds 44 dropped
+        // entries into the emitted `truncatedCount`).
+        out << static_cast<quint32>(0);
 
         // Drip the payload in chunks while pumping the primary's
         // event loop so its `readyRead` slot can drain the pipe
@@ -11519,10 +11540,16 @@ private slots:
             QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         }
         QCOMPARE(spy.count(), 1);
-        const QStringList received = spy.takeFirst().at(0).toStringList();
+        const auto args = spy.takeFirst();
+        const QStringList received = args.at(0).toStringList();
         QCOMPARE(received.size(), 256);
         QCOMPARE(received.first(), QStringLiteral("C:/logs/x-0.json"));
         QCOMPARE(received.last(), QStringLiteral("C:/logs/x-255.json"));
+        // The post-decode truncation rolls 300 - 256 = 44 dropped
+        // entries into `truncatedCount` so the user-facing message
+        // does not under-count when a hostile peer ignores the
+        // documented cap.
+        QCOMPARE(args.at(1).toInt(), 44);
 
         if (peer.state() != QLocalSocket::UnconnectedState)
         {
@@ -11559,8 +11586,12 @@ private slots:
             QDataStream out(&wire, QIODevice::WriteOnly);
             out.setVersion(QDataStream::Qt_6_0);
             out << QByteArray("STRUCTLOG");
-            out << static_cast<quint8>(1);
+            out << static_cast<quint8>(2);
             out << trimmed;
+            // Mirror the secondary's `truncatedCount` tail: 300 input
+            // paths, cap 256, so 44 were dropped on the secondary
+            // side before serialisation.
+            out << static_cast<quint32>(paths.size() - MAX_FORWARDED_FILES);
         }
         QVERIFY(wire.size() < 1024 * 1024);
     }
@@ -11597,8 +11628,9 @@ private slots:
         QDataStream out(&payload, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_0);
         out << QByteArray("STRUCTLOG");
-        out << static_cast<quint8>(1);
+        out << static_cast<quint8>(2);
         out << QStringList{QStringLiteral("drip-a.json"), QStringLiteral("drip-b.json")};
+        out << static_cast<quint32>(0);
 
         const int chunkSize = std::max(1, static_cast<int>(payload.size()) / 4);
         int sent = 0;
@@ -12001,7 +12033,7 @@ private slots:
             notes.write("hand-written notes");
         }
 
-        manager.CleanupOrphanFiles();
+        (void)manager.CleanupOrphanFiles();
 
         QVERIFY2(QFileInfo::exists(notesPath), "non-uuid file in the sessions directory must survive cleanup");
     }
@@ -12024,7 +12056,7 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(orphanPath));
 
-        manager.CleanupOrphanFiles();
+        (void)manager.CleanupOrphanFiles();
         QVERIFY2(!QFileInfo::exists(orphanPath), "orphan uuid JSON must be deleted by CleanupOrphanFiles");
     }
 
@@ -12177,7 +12209,7 @@ private slots:
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
             QString::fromStdString(probeA.Configuration().source->locators.front()),
-            logapp::CanonicalLocator(fixtureA.Path())
+            logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
 
@@ -12283,7 +12315,7 @@ private slots:
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
             QString::fromStdString(probeA.Configuration().source->locators.front()),
-            logapp::CanonicalLocator(fixtureA.Path())
+            logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
 
@@ -12385,7 +12417,7 @@ private slots:
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
             QString::fromStdString(probeA.Configuration().source->locators.front()),
-            logapp::CanonicalLocator(fixtureA.Path())
+            logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
 
@@ -13014,8 +13046,11 @@ private slots:
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
-        // Empty / null uuids are no-ops.
-        SessionHistoryManager::AddOpenWindowUuid(QString());
+        // Empty / null uuids are no-ops. `AddOpenWindowUuid` now
+        // reports the publish outcome via its bool return: empty
+        // input gets `false` (we didn't publish anything); a real
+        // uuid that lands gets `true`.
+        QVERIFY(!SessionHistoryManager::AddOpenWindowUuid(QString()));
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
         SessionHistoryManager::RemoveOpenWindowUuid(QString());
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
@@ -13023,7 +13058,7 @@ private slots:
         const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
-        SessionHistoryManager::AddOpenWindowUuid(uuidA);
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
         QStringList probe = SessionHistoryManager::OpenWindowsAtQuit();
         if (probe.isEmpty())
         {
@@ -13032,11 +13067,15 @@ private slots:
         QCOMPARE(probe, QStringList{uuidA});
 
         // Idempotent: re-adding the same uuid does not duplicate.
-        SessionHistoryManager::AddOpenWindowUuid(uuidA);
+        // The return is still `true` -- the post-condition "uuid is
+        // in the persisted set" holds either way (newly added or
+        // already present), and the caller's latch should remain
+        // accurate.
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidA});
 
         // Order-preserving append for a fresh uuid.
-        SessionHistoryManager::AddOpenWindowUuid(uuidB);
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidB));
         QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB}));
 
         // Remove the middle / head entry; the rest stay put.
@@ -13071,7 +13110,7 @@ private slots:
         // Pre-seed `uuidA` to model a `--new-instance` peer that
         // already published its own restorable window. The batched
         // call must merge with this rather than overwrite it.
-        SessionHistoryManager::AddOpenWindowUuid(uuidA);
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
         const QStringList preBatch = SessionHistoryManager::OpenWindowsAtQuit();
         if (preBatch.isEmpty())
         {
@@ -13139,7 +13178,7 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(staleTempPath));
 
-        manager.CleanupOrphanFiles();
+        (void)manager.CleanupOrphanFiles();
 
         QVERIFY2(QFileInfo::exists(keptPath), "indexed entries must survive cleanup");
         QVERIFY2(!QFileInfo::exists(orphanPath), "orphan JSON must be removed");
@@ -13189,7 +13228,7 @@ private slots:
         }
         QVERIFY(QFileInfo::exists(foreignTempPath));
 
-        manager.CleanupOrphanFiles();
+        (void)manager.CleanupOrphanFiles();
 
         QVERIFY2(QFileInfo::exists(foreignPath), "non-uuid `notes.json` must survive cleanup");
         QVERIFY2(QFileInfo::exists(foreignTempPath), "non-uuid `scratch.json.tmp` must survive cleanup");

@@ -52,17 +52,27 @@ constexpr int MAGIC_FRAME_PEEK_BYTES = static_cast<int>(sizeof(quint32)) + MAGIC
 /// `WIRE_MAGIC`. Bump on any breaking change to the payload schema
 /// so a primary running an updated build can reject older
 /// secondaries cleanly (instead of silently misinterpreting their
-/// payload). Today only version 1 exists; future revs may add
-/// fields after the file list. The primary checks that the
-/// received version is in
+/// payload). The primary checks that the received version is in
 /// `[WIRE_VERSION_MIN_SUPPORTED, WIRE_VERSION_MAX_SUPPORTED]` so a
 /// newer secondary against an older primary fails fast rather
 /// than producing surprising behaviour, and an older secondary
 /// whose schema we no longer accept can be rejected by bumping
 /// `WIRE_VERSION_MIN_SUPPORTED` past it.
-constexpr quint8 WIRE_VERSION = 1;
-constexpr quint8 WIRE_VERSION_MIN_SUPPORTED = 1;
-constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 1;
+///
+/// Version 2 (current): magic + version + QStringList files +
+/// quint32 truncatedCount. The trailing count carries how many
+/// files the secondary held but could not send because it hit
+/// `MAX_FORWARDED_FILES`, so the primary can surface a truncation
+/// warning on the spawned window. Version 1 lacked the count
+/// (silently truncated, no UI surface); we drop backward
+/// compatibility per the review plan -- old primaries cannot
+/// understand new secondaries and vice versa, but
+/// single-instance coordination only matters within a single
+/// rolling-installed product so a mixed-version pairing is not a
+/// realistic deployment shape.
+constexpr quint8 WIRE_VERSION = 2;
+constexpr quint8 WIRE_VERSION_MIN_SUPPORTED = 2;
+constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 2;
 
 /// Connection / write timeouts. Tight on purpose: a secondary that
 /// cannot reach the primary within a second should fall back to
@@ -235,11 +245,20 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     // no window open at all because the secondary exits as soon as
     // the forward returns. Mirrors the post-decode cap in
     // `HandleNewConnection` so the limit is symmetric.
+    //
+    // `truncatedCount` carries the dropped surplus so the primary
+    // can surface a "we silently dropped N files" hint on the
+    // spawned window. Pre-fix the only signal was the `qWarning`
+    // below, which is invisible to users who launched from the GUI
+    // shell -- the dropped files just never appeared.
     QStringList trimmed = forwardFiles;
+    quint32 truncatedCount = 0;
     if (trimmed.size() > MAX_FORWARDED_FILES)
     {
+        truncatedCount = static_cast<quint32>(trimmed.size() - MAX_FORWARDED_FILES);
         qWarning() << "SingleInstanceGuard: truncating forwarded file list from" << trimmed.size() << "to"
-                   << MAX_FORWARDED_FILES << "entries; the primary will not see the surplus.";
+                   << MAX_FORWARDED_FILES << "entries (" << truncatedCount
+                   << "dropped); the primary will be notified to surface a warning.";
         trimmed = trimmed.mid(0, MAX_FORWARDED_FILES);
     }
 
@@ -258,6 +277,7 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         stream << QByteArray(WIRE_MAGIC);
         stream << static_cast<quint8>(WIRE_VERSION);
         stream << trimmed;
+        stream << truncatedCount;
     }
     const bool payloadFits = payload.size() <= MAX_PAYLOAD_BYTES;
     if (!payloadFits)
@@ -511,22 +531,27 @@ void SingleInstanceGuard::HandleNewConnection()
             peek >> version;
             QStringList files;
             peek >> files;
+            quint32 truncatedCount = 0;
+            peek >> truncatedCount;
             if (peek.status() != QDataStream::Ok)
             {
                 return; // Wait for more bytes.
             }
             // Belt-and-braces post-decode cap matching the
-            // secondary-side trim in `TryAcquire::forwardTo`.
-            // `MAX_PAYLOAD_BYTES` already bounds the wire frame;
-            // this guards against a peer that ignored the documented
-            // limit and packed more files into a smaller payload
-            // (e.g. duplicate paths). The trimmed list still opens
-            // cleanly -- the surplus is silently dropped.
+            // secondary-side trim in `TryAcquire`. `MAX_PAYLOAD_BYTES`
+            // already bounds the wire frame; this guards against a
+            // peer that ignored the documented limit and packed more
+            // files into a smaller payload (e.g. duplicate paths).
+            // The trimmed list still opens cleanly; the surplus is
+            // folded into `truncatedCount` so the user-facing message
+            // accounts for it.
             if (files.size() > MAX_FORWARDED_FILES)
             {
+                const auto overrun = static_cast<quint32>(files.size() - MAX_FORWARDED_FILES);
+                truncatedCount += overrun;
                 files = files.mid(0, MAX_FORWARDED_FILES);
             }
-            emit openWindowRequested(files);
+            emit openWindowRequested(files, static_cast<int>(truncatedCount));
             socket->disconnectFromServer();
         };
 

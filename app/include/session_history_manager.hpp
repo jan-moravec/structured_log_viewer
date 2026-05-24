@@ -167,8 +167,25 @@ public:
     /// JSON updated but the openWindowsAtQuit set not yet
     /// reflecting it. Returns the assigned uuid (empty on failure)
     /// with the same semantics as `WriteSnapshot`.
+    ///
+    /// @p publishedOut (optional) receives whether the open-windows
+    /// publish actually landed in the persisted set. `true` means
+    /// the uuid is now in `openWindowsAtQuit` (either newly added or
+    /// already present); `false` means either @p publishOpenWindow
+    /// was false, the snapshot itself failed, the process-wide
+    /// `IsPublishingEnabled()` gate is off (a `--new-instance`
+    /// peer), or the snapshot succeeded but the publish was
+    /// skipped. Callers that maintain a `mAutoSaveUuidPublished`
+    /// latch should set it from @p publishedOut so the next save
+    /// can retry on contention without leaving the in-process flag
+    /// desynced from on-disk state. The default `nullptr` keeps
+    /// existing callers (tests + the few legacy snapshot paths)
+    /// allocation-free.
     QString WriteSnapshotAndPublish(
-        const loglib::LogConfiguration &configuration, const QString &reuseUuid, bool publishOpenWindow
+        const loglib::LogConfiguration &configuration,
+        const QString &reuseUuid,
+        bool publishOpenWindow,
+        bool *publishedOut = nullptr
     );
 
     /// Move @p uuid to the top of the recents list and refresh its
@@ -264,11 +281,20 @@ public:
     /// semantics (the caller still re-adds restored uuids via
     /// `AddOpenWindowUuid` as windows come up).
     ///
-    /// On lock-acquisition timeout this returns the read value but
-    /// performs no wipe -- losing the wipe on contention is the
-    /// strictly safer half (we'll just retry the restore on the
-    /// next launch) compared to losing the read and seeing an
-    /// empty restore set.
+    /// On lock-acquisition timeout this returns an empty list and
+    /// performs no wipe -- "fail-closed empty" rather than "return
+    /// what we managed to read". An earlier draft returned the read
+    /// value (and only suppressed the wipe), but that let two
+    /// sibling processes both see and act on the same persisted
+    /// uuid set, double-restoring every window. Returning empty
+    /// instead means the contended launch silently skips its
+    /// fan-restore -- the user re-opens files via the recents menu
+    /// -- which is strictly safer than two windows of the same
+    /// session fighting over the same `<uuid>.json` and racing each
+    /// other's `AddOpenWindowUuid` calls on quit. The non-contended
+    /// (overwhelmingly common) path is unchanged: read + wipe under
+    /// a single lock acquisition. Pinned by
+    /// `TestRecentsTakeOpenWindowsAtQuitReturnsEmptyOnContention`.
     static QStringList TakeOpenWindowsAtQuit();
 
     /// Incrementally add @p uuid to the persisted open-windows list.
@@ -277,6 +303,17 @@ public:
     /// currently-live sessions even when `aboutToQuit` runs after
     /// `WA_DeleteOnClose` has destroyed every peer window.
     ///
+    /// Returns true when, post-call, @p uuid is guaranteed to be in
+    /// the persisted set (either newly added by us or already present
+    /// from a prior call / sibling process). Returns false when the
+    /// publish did not land: cross-process lock contention timed out,
+    /// publishing is disabled process-wide via
+    /// `SetPublishingEnabled(false)` (the `--new-instance` isolation
+    /// gate), or the uuid string is empty. Callers gate their
+    /// "this window has been published" latch on the return value so
+    /// the next AutoSave retries on contention without leaving the
+    /// in-process flag desynced from the on-disk state.
+    ///
     /// Concurrency: serialised through `OpenWindowsMutex` in the
     /// .cpp (multi-window same-process) *and* a `QLockFile` at
     /// `DefaultSessionsDir()/recents.lock` (cross-process, e.g. when
@@ -284,7 +321,7 @@ public:
     /// Fail-closed on lock acquisition timeout: a sibling writer
     /// gets to finish, and the next AutoSave (or the `aboutToQuit`
     /// safety-net) re-attempts to publish this window.
-    static void AddOpenWindowUuid(const QString &uuid);
+    [[nodiscard]] static bool AddOpenWindowUuid(const QString &uuid);
 
     /// Batched variant of `AddOpenWindowUuid`: append every entry in
     /// @p uuids that is not already in the persisted list, under a
@@ -297,7 +334,9 @@ public:
     /// published by us in a previous call or by a sibling process --
     /// is left in place. Empty strings inside @p uuids are skipped.
     /// Fail-closed on lock acquisition timeout, same rationale as
-    /// `AddOpenWindowUuid`.
+    /// `AddOpenWindowUuid`. Honours `SetPublishingEnabled(false)`
+    /// the same way -- a `--new-instance` peer's `aboutToQuit` fan
+    /// is a silent no-op.
     static void AddOpenWindowUuids(const QStringList &uuids);
 
     /// Companion to `AddOpenWindowUuid`. Removes @p uuid if present;
@@ -305,8 +344,48 @@ public:
     /// and the destructive open / `NewSession` paths so a user-closed
     /// or user-discarded session is dropped from the next-launch
     /// restore set. Same cross-process locking story as
-    /// `AddOpenWindowUuid`.
+    /// `AddOpenWindowUuid`. Honours `SetPublishingEnabled(false)`
+    /// for symmetry with the Add side: a `--new-instance` peer that
+    /// briefly published into (or reopened an existing entry from)
+    /// the canonical primary's persisted set must not be able to
+    /// mutate that set on its way out either, because the canonical
+    /// primary might still be alive and expecting its own uuid to
+    /// survive the peer's lifecycle.
     static void RemoveOpenWindowUuid(const QString &uuid);
+
+    /// Process-wide gate for the `openWindowsAtQuit` mutators. The
+    /// canonical primary keeps the default `true`; a `--new-instance`
+    /// peer calls `SetPublishingEnabled(false)` immediately after
+    /// `SingleInstanceGuard::TryAcquire` so its sessions cannot
+    /// alter the persisted restore-on-launch set the canonical
+    /// primary owns. Affects `AddOpenWindowUuid`,
+    /// `AddOpenWindowUuids`, and `RemoveOpenWindowUuid`; the
+    /// startup-only `TakeOpenWindowsAtQuit` is unaffected because
+    /// `--new-instance` peers do not call it (the restore-on-launch
+    /// flow is gated separately in `main.cpp`).
+    ///
+    /// Thread-safety: backed by an atomic; safe to query / set from
+    /// any thread. Production sets it exactly once in `main.cpp`.
+    static void SetPublishingEnabled(bool enabled) noexcept;
+    [[nodiscard]] static bool IsPublishingEnabled() noexcept;
+
+    /// POD report from a single `CleanupOrphanFiles()` pass. The
+    /// caller (`main.cpp`) inspects @ref capped to decide whether to
+    /// surface a status-bar hint -- a capped sweep means the next
+    /// launch will pick up the remainder, and the user benefits from
+    /// knowing why the sessions directory hasn't fully drained yet.
+    struct CleanupReport
+    {
+        /// Number of files actually deleted on this pass. Already
+        /// excludes skipped files (non-uuid stems, ones that vanished
+        /// between listing and unlink).
+        int deletedCount = 0;
+        /// `true` when the deletion loop terminated because it hit
+        /// `CLEANUP_DELETIONS_PER_LAUNCH`; the remainder will be
+        /// swept on the next startup. `false` when the loop ran to
+        /// completion (the common case).
+        bool capped = false;
+    };
 
     /// One-shot housekeeping: remove every `<uuid>.json` under
     /// `sessionsDir` whose stem is not in the recents index. Called
@@ -314,7 +393,15 @@ public:
     /// `WriteSnapshot`'s file-write and index-update phases do not
     /// accumulate orphan files over time. Caller holds no lock; the
     /// method takes `mMutex` for the read-modify-delete cycle.
-    void CleanupOrphanFiles();
+    ///
+    /// Returns a `CleanupReport` so callers can surface a status-bar
+    /// hint when the per-launch cap was hit. Lock-contention or
+    /// missing-dir bail-outs return `{0, false}` (no work attempted,
+    /// no cap hit). Pre-fix this returned `void` and the cap was
+    /// only visible in the warning log; a user staring at a still-
+    /// large sessions directory had no in-app feedback that the
+    /// sweeper had been throttled.
+    [[nodiscard]] CleanupReport CleanupOrphanFiles();
 
 signals:
     /// Fired after a successful mutation (`WriteSnapshot`,

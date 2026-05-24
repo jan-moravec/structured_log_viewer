@@ -78,18 +78,24 @@ struct ParsedCli
         result.allowNewInstance = true;
     }
 
-    // `absoluteFilePath` (inside `CanonicalLocator`) resolves
+    // `absoluteFilePath` (inside `CanonicalDisplayPath`) resolves
     // against the caller's CWD without requiring the file to exist
     // (unlike `canonicalFilePath`, which would silently drop a user
-    // typo). The locator then has slashes + case normalised on
-    // Windows so dedup works across mixed-style paths.
+    // typo). The path returned here is the *display* form (case
+    // preserved on Windows): the user-visible `cliFiles` list
+    // flows through `OpenFilesForCli` -> `DispatchMixedOpenInput`
+    // -> `StreamNextPendingFile`, and the dedup key is computed
+    // by `StreamNextPendingFile` at the point where the path
+    // actually lands on a `Source`. Computing only the display
+    // form here keeps argv echoing (status bar, error messages)
+    // case-correct.
     for (const QString &positional : parser.positionalArguments())
     {
         if (positional.isEmpty())
         {
             continue;
         }
-        result.files.append(CanonicalLocator(positional));
+        result.files.append(CanonicalDisplayPath(positional));
     }
     return result;
 }

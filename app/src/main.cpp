@@ -16,6 +16,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QProcessEnvironment>
+#include <QStatusBar>
 #include <QString>
 #include <QStringList>
 
@@ -74,14 +75,19 @@ protected:
         {
             return true;
         }
-        const QString canonical = logapp::CanonicalLocator(path);
+        // Display form (case-preserving) so a Finder "Open With..."
+        // path appears in the status bar exactly as the user sees it.
+        // The downstream `StreamNextPendingFile` computes the dedup
+        // key at the point where the path actually lands on a
+        // `Source` descriptor.
+        const QString displayPath = logapp::CanonicalDisplayPath(path);
         if (mLiveWindow != nullptr)
         {
-            mLiveWindow->OpenFilesForCli({canonical});
+            mLiveWindow->OpenFilesForCli({displayPath});
         }
         else
         {
-            mPending.append(canonical);
+            mPending.append(displayPath);
         }
         return true;
     }
@@ -113,6 +119,29 @@ int main(int argc, char *argv[])
     QStringList cliFiles = parsed.files;
     const bool allowNewInstance = parsed.allowNewInstance;
 
+    // Drain pre-`TryAcquire` `QFileOpenEvent`s into `cliFiles` so a
+    // forwarding secondary actually forwards the file the user
+    // double-clicked in Finder. On macOS, double-clicking a `.log`
+    // while the app is already running launches a second process
+    // and delivers the path as a `QFileOpenEvent`; that event lands
+    // in `fileOpenFilter.mPending` during construction (or arrives
+    // while we are parsing CLI args). Without this drain, a
+    // secondary's `TryAcquire` would forward only the argv
+    // positionals -- typically empty for a Finder double-click --
+    // and the user's file would be silently dropped on the floor.
+    // The single `processEvents` pump lets any in-flight launch-
+    // services event reach the filter before we read it. The
+    // primary path keeps the post-`TryAcquire` drain below to catch
+    // events that arrived during `TryAcquire`'s server takeover.
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 0);
+    {
+        const QStringList preAcquirePending = fileOpenFilter.takePending();
+        if (!preAcquirePending.isEmpty())
+        {
+            cliFiles.append(preAcquirePending);
+        }
+    }
+
     // Single-instance coordinator: try to take the primary role. A
     // secondary launch forwards its parsed files to the primary and
     // returns immediately so the OS-launched process is gone before
@@ -125,6 +154,19 @@ int main(int argc, char *argv[])
         // double-clicked the binary twice.
         return 0;
     }
+
+    // `--new-instance` isolation: gate the persisted-set mutators so
+    // this process can neither publish into nor remove from the
+    // canonical primary's `openWindowsAtQuit` set. The user opted out
+    // of single-instance coordination ("don't disturb the running
+    // primary"); inheriting or polluting the canonical restore-set
+    // would silently violate that intent across launches (a peer
+    // session would either be fan-restored into the canonical
+    // primary's next launch or, worse, would strip the canonical
+    // primary's own uuid on the way out via DetachAutoSaveUuid).
+    // The gate applies process-wide via an atomic in
+    // session_history_manager.cpp; no per-window threading required.
+    SessionHistoryManager::SetPublishingEnabled(!allowNewInstance);
 
     // Initialise the IANA timezone database *before* any code path
     // that formats timestamps. The restore-on-launch flow below calls
@@ -172,10 +214,28 @@ int main(int argc, char *argv[])
     // be misclassified as an orphan; the `removeServer`-bounded
     // single-instance guarantee above means there is no such sibling
     // primary at this point.
-    historyManager.CleanupOrphanFiles();
+    //
+    // Capture the report so we can surface a status-bar hint on the
+    // primary window when the per-launch cap was hit -- otherwise the
+    // user has no in-app feedback that the sessions directory was
+    // throttled and is being drained across multiple launches.
+    const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
 
     MainWindow w(&historyManager, nullptr);
     w.show();
+    if (cleanupReport.capped)
+    {
+        // 8s mirrors the truncation hint in the forwarded-files slot
+        // (Improvement #11) so the two transient notices feel uniform
+        // to the user. After the message clears the status bar reverts
+        // to whatever the normal load flow puts there.
+        constexpr int CAPPED_MESSAGE_TIMEOUT_MS = 8000;
+        w.statusBar()->showMessage(
+            QObject::tr("Cleaned up %1 orphan session files; more will be removed on the next launch.")
+                .arg(cleanupReport.deletedCount),
+            CAPPED_MESSAGE_TIMEOUT_MS
+        );
+    }
     fileOpenFilter.setLiveWindow(&w);
 
     // Drain any `QFileOpenEvent`s that arrived during the
@@ -266,6 +326,24 @@ int main(int argc, char *argv[])
             if (!primaryPath.isEmpty() && QFileInfo::exists(primaryPath))
             {
                 w.RestoreLastSessionFromPath(primaryPath);
+            }
+            else
+            {
+                // Symmetric with the peer-loop cleanup below: the
+                // primary uuid had no backing JSON either (evicted
+                // by a sibling, removed by hand, never written due
+                // to a crash mid-WriteSnapshot). Pre-fix this branch
+                // silently skipped the entry, leaving the dangling
+                // uuid in the Recent Sessions menu until the user
+                // clicked it and got the "Recent Session Unavailable"
+                // dialog. Drop it here so the next menu rebuild is
+                // clean. `LooksLikeUuid` guard mirrors the peer
+                // branch -- defensive in case a future caller hands
+                // us a non-uuid-shaped string from QSettings.
+                if (logapp::LooksLikeUuid(primaryUuid))
+                {
+                    historyManager.Remove(primaryUuid);
+                }
             }
             for (const QString &uuid : previouslyOpen)
             {
@@ -370,6 +448,13 @@ int main(int argc, char *argv[])
         // tolerant of size changes under-foot. Using a `QList<QWidget*>`
         // captured upfront makes the iteration deterministic.
         const QList<QWidget *> topLevels = QApplication::topLevelWidgets();
+
+        // Phase 1: gather restorable uuids from every live window.
+        // The flush passes `publishOpenWindow=false` because we
+        // batch the publish in phase 3 below; per-window publishes
+        // here would pay N cross-process lock acquisitions for no
+        // benefit (any uuid not yet in the persisted set will be
+        // added in the single batched call).
         for (QWidget *widget : topLevels)
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -384,15 +469,30 @@ int main(int argc, char *argv[])
                 restorable.append(uuid);
             }
         }
-        SessionHistoryManager::AddOpenWindowUuids(restorable);
 
-        // Tear peer windows down explicitly so their `closeEvent`
-        // (which deref's `historyManager`) runs while the manager
-        // is still alive. `WA_DeleteOnClose` schedules a
-        // `deleteLater`, but `aboutToQuit` is the last event-loop
+        // Phase 2: tear peer windows down explicitly so their
+        // `closeEvent` (which deref's `historyManager`) runs while
+        // the manager is still alive. `WA_DeleteOnClose` schedules
+        // a `deleteLater`, but `aboutToQuit` is the last event-loop
         // turn -- without this explicit close, peers would be
         // destroyed during static destruction *after* the manager
         // already unwound.
+        //
+        // Critical ordering: this MUST run *before* the batched
+        // publish in phase 3, not after it. Each peer's `closeEvent`
+        // calls `DetachAutoSaveUuid` -> `RemoveOpenWindowUuid` to
+        // strip its pre-aboutToQuit publish (set by a prior per-save
+        // `AutoSaveSessionSnapshot(publishOpenWindow=true)`) out of
+        // the persisted set. Pre-fix this loop ran *after* a phase-3
+        // publish, and every peer's `RemoveOpenWindowUuid` then
+        // undid the batched publish for that peer's uuid. The
+        // primary survived because it is stack-allocated and never
+        // explicitly closed during `aboutToQuit`, so multi-window
+        // restore-on-launch silently degraded to single-window
+        // restore. Putting close first lets each peer self-detach
+        // its stale publish, and the phase-3 batch then re-adds
+        // every peer's uuid alongside the primary's in one
+        // cross-process lock acquisition.
         for (const QPointer<MainWindow> &peer : peers)
         {
             if (peer.isNull())
@@ -401,6 +501,16 @@ int main(int argc, char *argv[])
             }
             peer->close();
         }
+
+        // Phase 3: single batched publish for the primary + every
+        // peer captured in phase 1. `AddOpenWindowUuids` is
+        // idempotent so the primary's pre-aboutToQuit publish (if
+        // any) is harmlessly re-asserted, and peers re-enter the
+        // set fresh after their phase-2 self-detach. With the
+        // `--new-instance` publishing gate disabled, this entire
+        // call is a silent no-op (see
+        // `SessionHistoryManager::SetPublishingEnabled`).
+        SessionHistoryManager::AddOpenWindowUuids(restorable);
     });
 
     // Forwarded launches from secondary processes spawn a new
@@ -424,7 +534,7 @@ int main(int argc, char *argv[])
     // close it deterministically.
     QObject::connect(
         &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a,
-        [&historyManager, &peers](const QStringList &files) {
+        [&historyManager, &peers](const QStringList &files, int truncatedCount) {
             auto *child = new MainWindow(&historyManager, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();
@@ -433,6 +543,21 @@ int main(int argc, char *argv[])
             if (!files.isEmpty())
             {
                 child->OpenFilesForCli(files);
+            }
+            // Surface the secondary's "I dropped N files at the wire
+            // limit" hint on the spawned window. The status bar is
+            // already on screen by the time we get here (the window
+            // was `show()`-n above); 8 s is long enough for a
+            // operator to notice and short enough to clear before
+            // the next interaction.
+            if (truncatedCount > 0)
+            {
+                constexpr int TRUNCATION_MESSAGE_TIMEOUT_MS = 8000;
+                child->statusBar()->showMessage(
+                    QObject::tr("Opened forwarded files; %n additional file(s) were dropped (single-launch limit).",
+                                nullptr, truncatedCount),
+                    TRUNCATION_MESSAGE_TIMEOUT_MS
+                );
             }
             peers.append(QPointer<MainWindow>(child));
         }

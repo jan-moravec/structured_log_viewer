@@ -141,6 +141,20 @@ struct LogConfiguration
     /// load but keeps columns / filters / sort, courtesy of the
     /// `error_on_unknown_keys=false` option configured for the read
     /// path (`loglib/internal/log_configuration_glaze_opts.hpp`).
+    ///
+    /// `locators` and `locatorDedupKeys` are parallel arrays of equal
+    /// length (enforced via `AppendLocator` below): the former is
+    /// the human-facing path (display tooltip + the path actually
+    /// passed to `QFile::open`); the latter is the normalised form
+    /// used for byte-equality dedup. On Windows the two diverge
+    /// because the filesystem is case-insensitive but the user
+    /// expects to see the case they typed (a recents tooltip
+    /// reading "c:/users/jane/server.log" when the user typed
+    /// "C:/Users/Jane/Server.log" was the pre-fix bug). On
+    /// Linux / macOS the dedup key is identical to the display
+    /// path; the two-vector shape costs one extra `std::string` per
+    /// locator across all platforms, which is invisible against
+    /// session JSON sizes already dominated by columns / filters.
     struct Source
     {
         enum class Kind
@@ -149,13 +163,22 @@ struct LogConfiguration
             NetworkStream
         };
         Kind kind = Kind::File;
-        /// File paths for `Kind::File` (one entry per appended file in
-        /// load order); single-element for `Kind::NetworkStream`
-        /// (producer URI / display name). Empty is allowed but
-        /// indistinguishable from "no source" for UI purposes -- the
-        /// session-state mirror only writes a `Source` when at least
-        /// one locator is present.
+        /// Original-case absolute paths for `Kind::File` (one entry
+        /// per appended file in load order); single-element for
+        /// `Kind::NetworkStream` (producer URI / display name).
+        /// Always parallel to `locatorDedupKeys` -- both vectors
+        /// must be mutated together via `AppendLocator` /
+        /// `ClearLocators`; direct `push_back` on either alone
+        /// breaks the invariant.
         std::vector<std::string> locators;
+        /// Canonicalised dedup keys (lower-cased + forward-slashed
+        /// absolute paths on Windows; identical to `locators[i]`
+        /// on case-sensitive platforms). The "are these two paths
+        /// the same file?" check inside the open / append paths
+        /// compares this rather than `locators[i]`, so a user
+        /// dropping the same file with two different casings on
+        /// Windows still gets a single entry.
+        std::vector<std::string> locatorDedupKeys;
     };
 
     /// Required: drives the column layout for every consumer.
@@ -184,6 +207,34 @@ struct LogConfiguration
 [[nodiscard]] inline bool HasLocators(const std::optional<LogConfiguration::Source> &source) noexcept
 {
     return source.has_value() && !source->locators.empty();
+}
+
+/// Append a locator to @p target, keeping `locators` and
+/// `locatorDedupKeys` in lockstep. Every production call site that
+/// mutates `Source::locators` MUST go through here (or
+/// `ClearLocators` below) so the parallel-array invariant cannot be
+/// broken by a caller forgetting one half. The helper takes the
+/// already-computed @p dedupKey rather than re-computing it from
+/// @p displayPath because the canonicalisation lives in the
+/// application layer (`logapp::CanonicalLocator`) and the library
+/// deliberately has no Qt dependency. (Parameter is named `target`
+/// rather than `source` to avoid shadowing the `LogConfiguration::source`
+/// member at call sites that inline this helper.)
+inline void AppendLocator(LogConfiguration::Source &target, std::string displayPath, std::string dedupKey)
+{
+    target.locators.push_back(std::move(displayPath));
+    target.locatorDedupKeys.push_back(std::move(dedupKey));
+}
+
+/// Drop every locator on @p target, keeping `locators` and
+/// `locatorDedupKeys` in lockstep. Trivially short, but preserving
+/// the same chokepoint pattern as `AppendLocator` makes the
+/// invariant impossible to forget when a future refactor needs to
+/// wipe a source mid-flow.
+inline void ClearLocators(LogConfiguration::Source &target)
+{
+    target.locators.clear();
+    target.locatorDedupKeys.clear();
 }
 
 /// Selects which fields `Save` writes. Both shapes share one JSON

@@ -1163,7 +1163,7 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     // session. A future `--replace` flag could promote selected
     // launches to `OpenMode::Replace`, but the wire format does not
     // yet carry it.
-    const MixedInputDispatch result = DispatchMixedOpenInput(files, OpenMode::Append);
+    const MixedInputResult result = DispatchMixedOpenInput(files, OpenMode::Append);
 
     // CLI-only courtesy: a lone configuration argument applies but
     // never kicks off streaming (`TryLoadAsConfiguration` only
@@ -1175,15 +1175,23 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
     // on screen -- the source is mirrored into `mCurrentSource` so
     // File -> Open / Save Session round-trip it, but no parse runs
     // until the user picks a file.
-    if (result == MixedInputDispatch::AppliedConfigOnly)
+    //
+    // Name the path the dispatcher actually treated as the
+    // configuration (`result.appliedConfigPath`), NOT `files.front()`
+    // -- the latter silently lied when the config was not the first
+    // positional argument (e.g. `app log1.log config.json` ->
+    // "Loaded 'log1.log' as a configuration..."). The dispatcher
+    // does the classification once; piggybacking the chosen path
+    // onto its result avoids re-scanning the input list here.
+    if (result.outcome == MixedInputDispatch::AppliedConfigOnly)
     {
         const QString message =
             tr("Loaded '%1' as a configuration. Open log files (File -> Open...) to populate the view.")
-                .arg(files.front());
+                .arg(result.appliedConfigPath);
         statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         qInfo().noquote() << "OpenFilesForCli:" << message;
     }
-    else if (result == MixedInputDispatch::AppliedConfigThenLogs)
+    else if (result.outcome == MixedInputDispatch::AppliedConfigThenLogs)
     {
         // Mirror the `AppliedConfigOnly` hint for the
         // configuration-plus-logs branch. The view *will* populate
@@ -1193,7 +1201,8 @@ void MainWindow::OpenFilesForCli(const QStringList &files)
         // first log file is large and the row stream takes a beat
         // to start.
         const QString message =
-            tr("Loaded '%1' as a configuration; streaming queued log files into it.").arg(files.front());
+            tr("Loaded '%1' as a configuration; streaming queued log files into it.")
+                .arg(result.appliedConfigPath);
         statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         qInfo().noquote() << "OpenFilesForCli:" << message;
     }
@@ -1205,6 +1214,19 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     {
         return;
     }
+    // Belt-and-braces reset of `mLastTerminalSessionMode` even though
+    // the entry-point contract is "called on a freshly-constructed
+    // window". `DoLoadConfiguration` below does not touch this
+    // field (unlike `NewSession`, which does); a future caller
+    // that reuses an existing window would otherwise carry a stale
+    // `LiveTail` value into the restored session, and a subsequent
+    // `AutoSaveSessionSnapshot` (e.g. from `closeEvent`) would see
+    // a non-Idle effective mode, trip the live-tail guard in
+    // `ShouldAutoSaveSession`, and silently skip saving an
+    // otherwise-restorable static session. Cheap to do here once
+    // rather than rely on every future caller honouring the
+    // contract.
+    mLastTerminalSessionMode = SessionMode::Idle;
     if (!DoLoadConfiguration(jsonPath))
     {
         return;
@@ -1257,11 +1279,21 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
             //    predicate evaluates against the just-loaded state.
             //
             // `Touch` always runs (it updates the LRU / lastOpenedAt
-            // bookkeeping); only the publish is conditional.
+            // bookkeeping); only the publish is conditional. The
+            // latch follows the bool return of `AddOpenWindowUuid`:
+            // a contended cross-process lock (or the `--new-instance`
+            // publishing gate being off) leaves the uuid unpublished,
+            // so we must leave the latch unset and let the next
+            // AutoSave retry. Pre-fix this site unconditionally set
+            // the latch to `true`, which caused a later
+            // `DetachAutoSaveUuid` to attempt a `RemoveOpenWindowUuid`
+            // for a uuid that was never actually published.
             if (mHistoryManager->Touch(stem) && !RestorableActiveSessionUuid().isEmpty())
             {
-                SessionHistoryManager::AddOpenWindowUuid(stem);
-                mAutoSaveUuidPublished = true;
+                if (SessionHistoryManager::AddOpenWindowUuid(stem))
+                {
+                    mAutoSaveUuidPublished = true;
+                }
             }
         }
     }
@@ -1381,8 +1413,14 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     mAutoSaveUuid = uuid;
     if (mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
     {
-        SessionHistoryManager::AddOpenWindowUuid(uuid);
-        mAutoSaveUuidPublished = true;
+        // See the matching comment in `RestoreLastSessionFromPath`:
+        // the latch is gated on the bool return so contention /
+        // disabled-gate does not leave the in-process flag claiming
+        // a publish that never happened.
+        if (SessionHistoryManager::AddOpenWindowUuid(uuid))
+        {
+            mAutoSaveUuidPublished = true;
+        }
     }
 
     // Step 4: open the source locators captured in the configuration.
@@ -1395,7 +1433,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
 
 void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 {
-    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    if (!loglib::HasLocators(mCurrentSource))
     {
         // Configuration without a source: columns / filters are
         // installed but there is nothing to stream. Caller treats
@@ -1629,7 +1667,12 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
         // Mirror the loaded source descriptor so the next session
         // save round-trips it. We deliberately do not auto-bind.
+        // Backfill the parallel `locatorDedupKeys` array in case the
+        // loaded JSON pre-dates the schema split (older recents
+        // entries persisted only the `locators` vector, leaving the
+        // sibling key vector empty on parse).
         mCurrentSource = mModel->Configuration().source;
+        logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         RebuildFiltersFromConfiguration();
         return true;
@@ -1640,11 +1683,11 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
     }
 }
 
-MainWindow::MixedInputDispatch MainWindow::DispatchMixedOpenInput(const QStringList &files, OpenMode logMode)
+MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringList &files, OpenMode logMode)
 {
     if (files.isEmpty())
     {
-        return MixedInputDispatch::QueuedLogsOnly;
+        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
     }
 
     // Classify each file. `FileLooksLikeConfiguration` is cheap on
@@ -1689,13 +1732,13 @@ MainWindow::MixedInputDispatch MainWindow::DispatchMixedOpenInput(const QStringL
                     .arg(configPaths.join(QChar('\n')))
             );
         }
-        return MixedInputDispatch::RejectedMultiConfig;
+        return MixedInputResult{MixedInputDispatch::RejectedMultiConfig, QString()};
     }
 
     if (configPaths.isEmpty())
     {
         StartStreamingOpenQueue(files, logMode);
-        return MixedInputDispatch::QueuedLogsOnly;
+        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
     }
 
     // Exactly one configuration in the input.
@@ -1715,9 +1758,9 @@ MainWindow::MixedInputDispatch MainWindow::DispatchMixedOpenInput(const QStringL
         if (TryLoadAsConfiguration(configPath))
         {
             UpdateUi();
-            return MixedInputDispatch::AppliedConfigOnly;
+            return MixedInputResult{MixedInputDispatch::AppliedConfigOnly, configPath};
         }
-        return MixedInputDispatch::QueuedLogsOnly;
+        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
     }
 
     // Mixed: apply the configuration with a full reset, then
@@ -1734,10 +1777,10 @@ MainWindow::MixedInputDispatch MainWindow::DispatchMixedOpenInput(const QStringL
         // was reset by `DoLoadConfiguration` before the throw, so
         // streaming the logs against the unintended default columns
         // would mislead the user.
-        return MixedInputDispatch::QueuedLogsOnly;
+        return MixedInputResult{MixedInputDispatch::QueuedLogsOnly, QString()};
     }
     StartStreamingOpenQueue(logPaths, OpenMode::Append);
-    return MixedInputDispatch::AppliedConfigThenLogs;
+    return MixedInputResult{MixedInputDispatch::AppliedConfigThenLogs, configPath};
 }
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
@@ -1938,35 +1981,45 @@ void MainWindow::StreamNextPendingFile()
         // Multi-file sessions record every appended file path in load
         // order so SaveSession + RecentSessions can reopen the full
         // set. The first file initialises the descriptor; subsequent
-        // files push onto the existing locators vector. We
-        // canonicalise the path (absolute + slash + case normalised
-        // on Windows) before recording it so dedup against
-        // already-streamed locators -- both here and in
-        // `MirrorSessionStateToConfiguration` -- works regardless of
-        // how the user typed the path. The streaming worker uses
-        // the original `file` for the open call; only the persisted
-        // descriptor sees the canonical form.
-        const std::string canonical = logapp::CanonicalLocator(file).toStdString();
+        // files push onto the existing locators vector. We compute
+        // two forms of the path:
+        //   - `displayPath` (original case, slash-normalised on
+        //     Windows): what the user sees in the recents tooltip
+        //     and what `QFile::open` ultimately consumes.
+        //   - `dedupKey` (lower-cased on Windows, identical to
+        //     `displayPath` elsewhere): used for byte-equality dedup
+        //     against already-streamed locators so a user opening
+        //     "C:/Logs/File.json" then "c:/logs/file.json" gets a
+        //     single recents entry on Windows.
+        // The streaming worker uses the original `file` for the
+        // open call; only the persisted descriptor sees either
+        // canonical form.
+        const std::string displayPath = logapp::CanonicalDisplayPath(file).toStdString();
+        const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
         if (isFirstFileInSession)
         {
             mCurrentSource = loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {canonical}
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {displayPath}, .locatorDedupKeys = {dedupKey}
             };
         }
         else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
         {
-            // Skip the push if the canonical form already appears in
+            // Skip the push if the dedup-key form already appears in
             // the locators vector. Pre-fix a user opening the same
             // file twice (e.g. via two CLI args, or "Append" twice
             // on the same path) would record duplicates that would
             // round-trip into the recents UI as repeated labels.
+            // Comparing on `locatorDedupKeys` (not the
+            // case-preserving `locators`) is essential on Windows
+            // -- two paths with different casings hit the same file
+            // and should collapse to one entry.
             const bool alreadyPresent = std::any_of(
-                mCurrentSource->locators.begin(), mCurrentSource->locators.end(),
-                [&canonical](const std::string &existing) { return existing == canonical; }
+                mCurrentSource->locatorDedupKeys.begin(), mCurrentSource->locatorDedupKeys.end(),
+                [&dedupKey](const std::string &existing) { return existing == dedupKey; }
             );
             if (!alreadyPresent)
             {
-                mCurrentSource->locators.push_back(canonical);
+                loglib::AppendLocator(*mCurrentSource, displayPath, dedupKey);
             }
         }
         if (isFirstFileInSession)
@@ -2107,9 +2160,20 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     DetachAutoSaveUuid();
 
     mStreamingFileName = QFileInfo(file).fileName();
-    mCurrentSource = loglib::LogConfiguration::Source{
-        .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {file.toStdString()}
-    };
+    // Live-tail single-file open: thread both `locators` (display
+    // path, original case) and `locatorDedupKeys` (canonicalised
+    // form) so a future `MirrorSessionStateToConfiguration` -> save
+    // round-trip honours the parallel-array invariant. The display
+    // path here is the user-facing one (what we show in the title
+    // bar / tooltip); the dedup key is what cross-locator equality
+    // compares against.
+    {
+        const std::string displayPath = logapp::CanonicalDisplayPath(file).toStdString();
+        const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
+        mCurrentSource = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {displayPath}, .locatorDedupKeys = {dedupKey}
+        };
+    }
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -2221,8 +2285,18 @@ void MainWindow::OpenNetworkStream()
     DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
+    // Network-stream source: the "locator" is a producer URI /
+    // display name, not a filesystem path. No canonicalisation
+    // applies (there is no case-insensitive filesystem to
+    // normalise against), so the dedup key is identical to the
+    // display string. We still populate both arrays so the
+    // parallel-array invariant holds; downstream code never has
+    // to special-case "NetworkStream means the dedup-keys vector
+    // may be empty".
     mCurrentSource = loglib::LogConfiguration::Source{
-        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {displayName}
+        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+        .locators = {displayName},
+        .locatorDedupKeys = {displayName}
     };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
@@ -2591,6 +2665,13 @@ int MainWindow::LastDroppedFilterCountForTest() const
 void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source)
 {
     mCurrentSource = std::move(source);
+    // Test fixtures typically construct sources via designated
+    // initialisers (`.locators = {"C:/x.json"}`) without setting
+    // the parallel `locatorDedupKeys` array. Backfill here so the
+    // downstream dedup loops do not silently misbehave under test
+    // (the production wiring routes through `AppendLocator` /
+    // `BackfillLocatorDedupKeys` already).
+    logapp::BackfillLocatorDedupKeys(mCurrentSource);
 }
 
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
@@ -2600,7 +2681,12 @@ void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
 
 MainWindow::MixedInputDispatch MainWindow::OpenMixedFilesForTest(const QStringList &files, OpenMode logMode)
 {
-    return DispatchMixedOpenInput(files, logMode);
+    // Test seam preserves the original enum-only return: the
+    // `appliedConfigPath` field is interesting to production status-
+    // bar code only, and existing tests assert directly on the
+    // outcome value. A future test that needs the chosen path can
+    // call `DispatchMixedOpenInput` directly.
+    return DispatchMixedOpenInput(files, logMode).outcome;
 }
 #endif
 
@@ -2736,26 +2822,32 @@ void MainWindow::MirrorSessionStateToConfiguration()
         && !mPendingOpenFiles.isEmpty())
     {
         loglib::LogConfiguration::Source mirrored = *mCurrentSource;
-        // Seed the dedup set with the already-streamed locators so
-        // a pending file that duplicates one already on disk does
-        // not get appended a second time.
+        // Seed the dedup set with the already-streamed locators
+        // (using their precomputed dedup keys) so a pending file
+        // that duplicates one already on disk does not get appended
+        // a second time. The display path of an existing locator
+        // may differ from its dedup key (case-preserving display
+        // vs. lower-cased Windows key); always compare against the
+        // dedup form to keep equality consistent with the
+        // `StreamNextPendingFile` path.
         std::unordered_set<std::string> seen;
-        seen.reserve(mirrored.locators.size() + static_cast<size_t>(mPendingOpenFiles.size()));
-        for (const std::string &loc : mirrored.locators)
+        seen.reserve(mirrored.locatorDedupKeys.size() + static_cast<size_t>(mPendingOpenFiles.size()));
+        for (const std::string &key : mirrored.locatorDedupKeys)
         {
-            seen.insert(logapp::CanonicalLocator(QString::fromStdString(loc)).toStdString());
+            seen.insert(key);
         }
         for (const QString &pending : mPendingOpenFiles)
         {
-            const std::string key = logapp::CanonicalLocator(pending).toStdString();
-            if (seen.insert(key).second)
+            const std::string displayPath = logapp::CanonicalDisplayPath(pending).toStdString();
+            const std::string dedupKey = logapp::CanonicalLocator(pending).toStdString();
+            if (seen.insert(dedupKey).second)
             {
-                mirrored.locators.push_back(pending.toStdString());
+                loglib::AppendLocator(mirrored, displayPath, dedupKey);
             }
         }
         mModel->ConfigurationManager().SetSource(std::move(mirrored));
     }
-    else if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    else if (loglib::HasLocators(mCurrentSource))
     {
         mModel->ConfigurationManager().SetSource(mCurrentSource);
     }
@@ -2770,11 +2862,14 @@ void MainWindow::MirrorSessionStateToConfiguration()
     // recents as a label-less entry pointing at nothing, and
     // `RestoreLastSessionFromPath` would happily pin a uuid for it
     // on launch. The assertion fires in debug builds; release
-    // builds rely on the if/else above keeping the invariant.
-    Q_ASSERT(
-        !mModel->ConfigurationManager().Configuration().source.has_value()
-        || !mModel->ConfigurationManager().Configuration().source->locators.empty()
-    );
+    // builds rely on the if/else above keeping the invariant. The
+    // post-condition collapses to "either no source descriptor or
+    // a source descriptor with at least one locator", which is
+    // exactly `!source.has_value() || HasLocators(source)`.
+    {
+        const auto &mirrored = mModel->ConfigurationManager().Configuration().source;
+        Q_ASSERT(!mirrored.has_value() || loglib::HasLocators(mirrored));
+    }
 }
 
 bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
@@ -2783,7 +2878,7 @@ bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
     {
         return false;
     }
-    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    if (!loglib::HasLocators(mCurrentSource))
     {
         // Nothing to round-trip; a session entry without a source
         // can't be reopened by Recent Sessions and would just
@@ -2838,8 +2933,17 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     // the same cross-process lock acquisition used for the snapshot
     // write -- one acquisition instead of two, and no race window
     // between "recents JSON updated" and "openWindowsAtQuit updated".
-    const QString uuid =
-        mHistoryManager->WriteSnapshotAndPublish(configuration, mAutoSaveUuid, /*publishOpenWindow=*/publishOpenWindow);
+    // `publishLanded` reports whether the publish half actually
+    // reached the persisted `openWindowsAtQuit` set -- false on
+    // lock contention or when the `--new-instance` publishing gate
+    // is disabled. We use it (not `publishOpenWindow`) to drive the
+    // `mAutoSaveUuidPublished` latch so the next save retries
+    // cleanly on contention without leaving the in-process flag
+    // claiming we published when we didn't.
+    bool publishLanded = false;
+    const QString uuid = mHistoryManager->WriteSnapshotAndPublish(
+        configuration, mAutoSaveUuid, /*publishOpenWindow=*/publishOpenWindow, &publishLanded
+    );
     if (uuid.isEmpty())
     {
         // Save failed (serialization error, lock acquisition timeout,
@@ -2855,7 +2959,7 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     // Pin the uuid so subsequent auto-saves rewrite the same JSON
     // instead of cluttering recents with one entry per save.
     mAutoSaveUuid = uuid;
-    if (publishOpenWindow)
+    if (publishLanded)
     {
         mAutoSaveUuidPublished = true;
     }
@@ -2885,23 +2989,33 @@ void MainWindow::DetachAutoSaveUuid()
 
 QString MainWindow::RestorableActiveSessionUuid() const noexcept
 {
-    // Mirror the `ShouldAutoSaveSession` gates: a uuid is only
-    // worth persisting into `openWindowsAtQuit` if fan-restore can
-    // actually do something useful with it on the next launch.
-    // Live-tail (`SessionMode::LiveTail`) is intentionally accepted
-    // here even though `ShouldAutoSaveSession` rejects it -- the
-    // uuid was pinned by a previous static load (live-tail starts
-    // from a static `File` source), and the JSON on disk reflects
-    // that static state. Restoring it gives the user back the
-    // static view of the same file, which is closer to what they
-    // had than nothing. The auto-save gate's stricter rule is about
-    // not *creating* fresh stream snapshots; the restore gate's
-    // looser rule is about not *losing* state at OS-quit time.
+    // Predicate for "is this window worth fan-restoring on the next
+    // launch": pinned uuid + a `File`-kind source with at least one
+    // locator. Mirrors the `ShouldAutoSaveSession` gates with one
+    // key difference: a configuration-only session (no source, but
+    // a uuid pinned by `OpenRecentSession` /
+    // `RestoreLastSessionFromPath`) is restorable here even though
+    // it has no rows to stream -- the user explicitly clicked the
+    // entry, so restoring the columns / filters / sort layout on
+    // next launch is what they want.
+    //
+    // No live-tail accommodation: every path that transitions a
+    // window into `SessionMode::LiveTail` (currently only
+    // `OpenLogStreamFromPath`) calls `DetachAutoSaveUuid()` before
+    // wiring up the producer, which clears `mAutoSaveUuid`. The
+    // early empty-string return below short-circuits without ever
+    // observing `mSessionMode`. If a future code path introduces a
+    // live-tail transition that *preserves* the uuid (e.g.
+    // "promote a static file to live-tail without re-binding the
+    // recents entry"), revisit this -- restoring such a uuid would
+    // give the user back a static view of the file the live-tail
+    // was watching, which is reasonable, but currently no such
+    // path exists.
     if (mAutoSaveUuid.isEmpty())
     {
         return {};
     }
-    if (!mCurrentSource.has_value() || mCurrentSource->locators.empty())
+    if (!loglib::HasLocators(mCurrentSource))
     {
         // No-source configurations are intentionally restorable
         // (the user can pin a columns-only view), but only when a
@@ -3332,8 +3446,10 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
         // Mirror the loaded source descriptor so the next session
         // save round-trips it. Metadata only -- we do not auto-bind
-        // the file (a foreign session would be hostile).
+        // the file (a foreign session would be hostile). Same
+        // backfill rationale as `DoLoadConfiguration` above.
         mCurrentSource = mModel->Configuration().source;
+        logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         RebuildFiltersFromConfiguration();
         return true;

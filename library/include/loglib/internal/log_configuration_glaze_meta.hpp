@@ -63,7 +63,8 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 template <> struct glz::meta<loglib::LogConfiguration::Source>
 {
     using T = loglib::LogConfiguration::Source;
-    static constexpr auto value = object("kind", &T::kind, "locators", &T::locators);
+    static constexpr auto value =
+        object("kind", &T::kind, "locators", &T::locators, "locatorDedupKeys", &T::locatorDedupKeys);
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Column>
