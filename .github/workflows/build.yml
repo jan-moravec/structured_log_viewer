@@ -193,7 +193,11 @@ jobs:
     permissions:
       contents: write
     env:
-      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so"
+      # `libqminimal.so` is bundled so the headless smoke test below
+      # can run without an X server / display. `offscreen` is also
+      # ABI-fragile against host-Qt mixing (see smoke-test step
+      # comments).
+      EXTRA_PLATFORM_PLUGINS: "libqwayland-generic.so;libqwayland-egl.so;libqminimal.so"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -284,13 +288,23 @@ jobs:
           fi
           APPIMAGE="${APPIMAGES[0]}"
           chmod +x "$APPIMAGE"
-          QT_QPA_PLATFORM=offscreen "./$APPIMAGE" &
+          # `minimal` over `offscreen`: the offscreen plugin's startup
+          # path (screen emission during `QGuiApplicationPrivate::init`)
+          # is sensitive to a host-Qt-vs-bundled-Qt mix that the GitHub
+          # runner's `install-qt-action` environment forces on the
+          # AppImage. The `minimal` plugin stubs the same surface for
+          # the launch-and-kill smoke check without that crash.
+          QT_QPA_PLATFORM=minimal "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
             RC=0
             wait "$PID" || RC=$?
             echo "Packaged AppImage exited prematurely with code $RC" >&2
+            echo "--- stdout ---" >&2
+            cat appimage.stdout >&2 || true
+            echo "--- stderr (last 200 lines) ---" >&2
+            tail -n 200 appimage.stderr >&2 || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
