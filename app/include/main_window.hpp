@@ -162,19 +162,25 @@ public:
     /// `NewSession` teardown (the window is freshly constructed and
     /// has nothing to discard).
     ///
-    /// `mAutoSaveUuid` is pinned only when @p jsonPath's stem parses
-    /// as a `QUuid` (the convention for manager-owned per-uuid JSON
-    /// files under `sessionsDir`). For ad-hoc / external JSONs whose
-    /// stem is *not* uuid-shaped, the configuration loads but the
-    /// uuid pin is skipped on purpose: pinning a non-uuid stem would
-    /// let the next `AutoSaveSessionSnapshot` rewrite an unrelated
-    /// file outside the sessions directory. The trade-off is that a
-    /// subsequent auto-save mints a fresh uuid (a new entry in the
-    /// recents store backed by `sessionsDir/<new-uuid>.json`),
-    /// implicitly forking off the original ad-hoc file rather than
-    /// updating it. This matches the "external JSONs are read-only
-    /// in-place; saves go through the managed sessions store"
-    /// invariant -- the original file is never overwritten.
+    /// `mAutoSaveUuid` is pinned only when both conditions hold:
+    ///   (a) @p jsonPath's stem parses as a `QUuid`, AND
+    ///   (b) @p jsonPath lives in `mHistoryManager->SessionsDir()`.
+    /// The combined gate matches the on-disk convention for
+    /// manager-owned files (`sessionsDir/<uuid>.json`). For ad-hoc /
+    /// external JSONs whose stem is *not* uuid-shaped, or whose
+    /// stem happens to be uuid-shaped but lives outside the
+    /// managed dir, the configuration loads but the uuid pin is
+    /// skipped on purpose: pinning would let the next
+    /// `AutoSaveSessionSnapshot` write `sessionsDir/<stem>.json`
+    /// (a managed copy under that uuid) while leaving the user's
+    /// original external file untouched -- an implicit fork the
+    /// user did not request. The trade-off is that a subsequent
+    /// auto-save mints a fresh uuid (a new entry in the recents
+    /// store backed by `sessionsDir/<new-uuid>.json`), implicitly
+    /// forking off the original ad-hoc file rather than updating
+    /// it. This matches the "external JSONs are read-only in-place;
+    /// saves go through the managed sessions store" invariant --
+    /// the original file is never overwritten.
     void RestoreLastSessionFromPath(const QString &jsonPath);
 
     /// Open CLI-provided file paths into this window. Behaves like
@@ -598,6 +604,36 @@ private:
     /// redeclaration-mismatch diagnostic against this opaque-enum
     /// declaration rather than against the actual definition.
     enum class SessionMode : int;
+
+    /// RAII helper for the `mSessionSwitchInProgress` latch. Every
+    /// destructive open path (`NewSession`, `OpenRecentSession`,
+    /// `OpenLogStreamFromPath`, `OpenNetworkStream`, the recents-
+    /// clear branch in `ApplyLoadedConfiguration`) needs to flip
+    /// the flag on, run a `mModel->Reset()` that synchronously
+    /// emits `streamingFinished(Cancelled)`, then flip it back off
+    /// once the new session is wired up. Pre-fix each site used a
+    /// hand-rolled `qScopeGuard` pair, four nearly-identical copies
+    /// that drifted in subtle ways (one missed the `false` on early
+    /// return, another set the flag *after* the Reset). The RAII
+    /// helper makes the contract enforce-able at the type level:
+    /// instantiate, the flag is on; let the scope end, the flag is
+    /// off -- no early-return path can forget the reset.
+    ///
+    /// Non-copyable + non-movable so a copy / move can't accidentally
+    /// extend the scope past the destructor; pass by reference if a
+    /// helper needs the guard.
+    struct SessionSwitchScope
+    {
+        explicit SessionSwitchScope(MainWindow &owner) noexcept : mOwner(owner) { mOwner.mSessionSwitchInProgress = true; }
+        ~SessionSwitchScope() { mOwner.mSessionSwitchInProgress = false; }
+        SessionSwitchScope(const SessionSwitchScope &) = delete;
+        SessionSwitchScope &operator=(const SessionSwitchScope &) = delete;
+        SessionSwitchScope(SessionSwitchScope &&) = delete;
+        SessionSwitchScope &operator=(SessionSwitchScope &&) = delete;
+
+    private:
+        MainWindow &mOwner;
+    };
 
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a

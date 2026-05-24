@@ -11188,11 +11188,11 @@ private slots:
     void TestOpenWindowsAtQuitRoundTrip()
     {
         const QStringList expected{QStringLiteral("uuid-a"), QStringLiteral("uuid-b"), QStringLiteral("uuid-c")};
-        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previous); });
 
         SessionHistoryManager::SetOpenWindowsAtQuit(expected);
-        const QStringList actual = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList actual = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         // On Windows the registry-backed QSettings can swallow the
         // write in some test environments; treat that as a soft
         // skip rather than a failure (the production behaviour is
@@ -11204,7 +11204,7 @@ private slots:
         QCOMPARE(actual, expected);
 
         SessionHistoryManager::SetOpenWindowsAtQuit({});
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
     }
 
     // `TakeOpenWindowsAtQuit` is the atomic read-and-wipe used by
@@ -11212,18 +11212,18 @@ private slots:
     // (b) leave the persisted list empty in one critical section, so
     // a sibling writer (`--new-instance` peer running concurrently)
     // cannot disappear between the read and the wipe. The split
-    // `OpenWindowsAtQuit()` + `SetOpenWindowsAtQuit({})` pair this
+    // `OpenWindowsAtQuitUnlocked()` + `SetOpenWindowsAtQuit({})` pair this
     // method replaces was correct under single-process operation but
     // could race a sibling under multi-process.
     void TestTakeOpenWindowsAtQuitReadsAndWipesAtomically()
     {
         const QStringList expected{QStringLiteral("uuid-x"), QStringLiteral("uuid-y")};
-        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previous); });
 
         SessionHistoryManager::SetOpenWindowsAtQuit(expected);
         // QSettings-on-Windows soft-skip mirrors `TestOpenWindowsAtQuitRoundTrip`.
-        if (SessionHistoryManager::OpenWindowsAtQuit().isEmpty())
+        if (SessionHistoryManager::OpenWindowsAtQuitUnlocked().isEmpty())
         {
             QSKIP("QSettings did not honour the write in this environment");
         }
@@ -11232,7 +11232,7 @@ private slots:
         QCOMPARE(taken, expected);
 
         // Post-take: the persisted list is empty.
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
 
         // A second take returns empty and is a no-op (idempotent).
         QCOMPARE(SessionHistoryManager::TakeOpenWindowsAtQuit(), QStringList{});
@@ -11765,7 +11765,7 @@ private slots:
 
     void TestCliParserUnknownFlagDoesNotDropFiles()
     {
-        // Unknown long-form flags get logged via `LOGAPP_WARN` but the
+        // Unknown long-form flags get logged via `logapp::LogWarning` but the
         // parser still returns whatever positionals it could
         // recognise. Pre-fix the hand-rolled parser silently dropped
         // unknown flags + their following positional; the new
@@ -11785,6 +11785,44 @@ private slots:
         // expected-value gap -- both are acceptable; the test
         // exists to lock in "does not abort the launch".
         Q_UNUSED(parsed);
+    }
+
+    void TestCliParserPositionalsSurviveUnknownFlagMidArgv()
+    {
+        // Stronger version of `TestCliParserUnknownFlagDoesNotDropFiles`:
+        // when an unknown flag appears *between* two file positionals,
+        // both positionals must still reach `ParsedCli::files`. The
+        // pre-rewrite hand-rolled parser silently abandoned every
+        // positional after the unknown flag; `QCommandLineParser` in
+        // `ParseAsLongOptions` mode is documented to continue
+        // collecting positionals past an unknown option, and `ParseCli`
+        // relies on that recovery semantics to give the user a usable
+        // window even when their launcher passes a flag we don't know
+        // about (e.g. a third-party shell wrapper adding diagnostics).
+        // Locking the behaviour down here keeps a future Qt upgrade or
+        // `ParseCli` refactor from regressing the silent-drop bug.
+        //
+        // `--new-instance` is *not* set anywhere in the argv, so the
+        // gate must remain false despite the unknown-flag error.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("first.log"),
+            QStringLiteral("--this-flag-does-not-exist"),
+            QStringLiteral("second.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(!parsed.allowNewInstance);
+        QCOMPARE(parsed.files.size(), 2);
+        QVERIFY2(
+            parsed.files.front().endsWith(QStringLiteral("first.log"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("expected leading positional to be 'first.log', got '%1'")
+                           .arg(parsed.files.front()))
+        );
+        QVERIFY2(
+            parsed.files.back().endsWith(QStringLiteral("second.log"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("expected trailing positional to be 'second.log' (post unknown flag), got '%1'")
+                           .arg(parsed.files.back()))
+        );
     }
 
     // `Clear` empties the index, deletes every per-uuid JSON, and
@@ -12125,7 +12163,7 @@ private slots:
     // the missed uuid as soon as it constructs its window.
     void TestRecentsTakeOpenWindowsAtQuitReturnsEmptyOnContention()
     {
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -12870,7 +12908,7 @@ private slots:
 
         // Snapshot + restore the user's real openWindowsAtQuit so we
         // don't pollute the running profile.
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -12890,7 +12928,7 @@ private slots:
         // Some QSettings backends (Windows registry under
         // sandboxed CI runners) refuse the write outright; treat
         // that as a soft skip rather than a hard failure.
-        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (afterAuto.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -12907,7 +12945,7 @@ private slots:
             QCoreApplication::processEvents();
         }
 
-        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             !afterClose.contains(uuid),
             "closeEvent must remove the window from the open-windows set"
@@ -12926,7 +12964,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -12945,7 +12983,7 @@ private slots:
 
         const QString uuid = wired->ActiveSessionUuid();
         QVERIFY(!uuid.isEmpty());
-        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (afterAuto.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -12987,7 +13025,7 @@ private slots:
             "aboutToQuit snapshot must not see a uuid from a window whose closeEvent already ran"
         );
         QVERIFY2(
-            !SessionHistoryManager::OpenWindowsAtQuit().contains(uuid),
+            !SessionHistoryManager::OpenWindowsAtQuitUnlocked().contains(uuid),
             "the just-exited window's uuid must not be republished into openWindowsAtQuit"
         );
     }
@@ -13001,7 +13039,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -13017,7 +13055,7 @@ private slots:
 
         const QString uuid = wired->ActiveSessionUuid();
         QVERIFY(!uuid.isEmpty());
-        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (afterAuto.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -13031,7 +13069,7 @@ private slots:
             wired->ActiveSessionUuid().isEmpty(),
             "NewSession must drop the pinned uuid so the next AutoSave produces a fresh entry"
         );
-        const QStringList afterNew = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterNew = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             !afterNew.contains(uuid),
             "NewSession must remove the discarded session's uuid from openWindowsAtQuit"
@@ -13042,7 +13080,7 @@ private slots:
     // is idempotent and order-preserving for unaffected entries.
     void TestOpenWindowUuidAddRemoveRoundTrip()
     {
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -13051,15 +13089,15 @@ private slots:
         // input gets `false` (we didn't publish anything); a real
         // uuid that lands gets `true`.
         QVERIFY(!SessionHistoryManager::AddOpenWindowUuid(QString()));
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
         SessionHistoryManager::RemoveOpenWindowUuid(QString());
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
 
         const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
-        QStringList probe = SessionHistoryManager::OpenWindowsAtQuit();
+        QStringList probe = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (probe.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -13072,19 +13110,19 @@ private slots:
         // already present), and the caller's latch should remain
         // accurate.
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidA});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidA});
 
         // Order-preserving append for a fresh uuid.
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidB));
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB}));
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), (QStringList{uuidA, uuidB}));
 
         // Remove the middle / head entry; the rest stay put.
         SessionHistoryManager::RemoveOpenWindowUuid(uuidA);
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidB});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidB});
 
         // Removing a missing uuid is a no-op.
         SessionHistoryManager::RemoveOpenWindowUuid(uuidA);
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{uuidB});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidB});
     }
 
     // `AddOpenWindowUuids` is the batched companion to
@@ -13095,13 +13133,13 @@ private slots:
     // published by a `--new-instance` sibling) are preserved.
     void TestAddOpenWindowUuidsBatchedMerge()
     {
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         // Empty list is a no-op.
         SessionHistoryManager::AddOpenWindowUuids(QStringList{});
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
 
         const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -13111,7 +13149,7 @@ private slots:
         // already published its own restorable window. The batched
         // call must merge with this rather than overwrite it.
         QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
-        const QStringList preBatch = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList preBatch = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (preBatch.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -13122,12 +13160,12 @@ private slots:
         // (skipped -- idempotent), and two new uuids appended in
         // order.
         SessionHistoryManager::AddOpenWindowUuids(QStringList{QString(), uuidA, uuidB, uuidC});
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB, uuidC}));
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), (QStringList{uuidA, uuidB, uuidC}));
 
         // A subsequent batch with no new entries is also a no-op
         // (every uuid is already present).
         SessionHistoryManager::AddOpenWindowUuids(QStringList{uuidA, uuidB, uuidC});
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), (QStringList{uuidA, uuidB, uuidC}));
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), (QStringList{uuidA, uuidB, uuidC}));
     }
 
     // `CleanupOrphanFiles` deletes per-uuid JSONs that are not in the
@@ -13617,7 +13655,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -13668,7 +13706,7 @@ private slots:
             "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuids"
         );
 
-        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         if (afterQuit.isEmpty())
         {
             QSKIP("QSettings did not honour the open-windows write in this environment");
@@ -13679,27 +13717,32 @@ private slots:
         );
     }
 
-    // `RestoreLastSessionFromPath` must NOT publish a uuid into
-    // `openWindowsAtQuit` when the JSON lives outside the manager's
-    // sessions directory (the stem parses as a UUID but the entry is
-    // not in the recents index). The fix gates the publish on
-    // `Touch` confirming the index actually owns the stem; without
-    // it, the next launch's fan-restore has to filter the ghost via
-    // `QFileInfo::exists`.
+    // `RestoreLastSessionFromPath` must NOT pin OR publish a uuid
+    // when the JSON lives outside the manager's sessions directory.
+    // The pin gate is the stronger half: a uuid-shaped stem alone
+    // does not justify pinning `mAutoSaveUuid`, because a later
+    // AutoSave would silently fork the user's external file into a
+    // managed copy under `sessionsDir/<stem>.json` (the original
+    // external file stays untouched but the user's edits go to a
+    // new location). The publish gate is the weaker half: even if
+    // the pin slipped through, `Touch(stem)` would report
+    // not-in-index for an external file and `AddOpenWindowUuid`
+    // would never see the call.
     //
-    // We exercise the uuid-shape gate against a *no-source*
-    // configuration JSON: that path skips streaming (and therefore
-    // skips the legitimating `streamingFinished` -> auto-save which
-    // would have written the entry into the index after the fact).
-    // Without the fix the no-source restore window leaves a ghost
-    // uuid sitting in `openWindowsAtQuit` until the next launch's
-    // fan-restore filters it.
+    // We exercise both gates against a *no-source* configuration
+    // JSON: that path skips streaming (and therefore skips the
+    // legitimating `streamingFinished` -> auto-save which would
+    // have written the entry into the index after the fact).
+    // Without the fixes the no-source restore window would (a)
+    // pin the external uuid, and (b) leak a ghost uuid into
+    // `openWindowsAtQuit` until the next launch's fan-restore
+    // filtered it.
     void TestRestoreLastSessionDoesNotPublishGhostUuid()
     {
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -13707,11 +13750,11 @@ private slots:
 
         // Build a no-source session JSON with a uuid-shaped stem in
         // a directory that is NOT the manager's sessionsDir. The
-        // `Touch(stem)` call inside `RestoreLastSessionFromPath`
-        // reports not-in-index because the manager's store is empty
-        // here, and the no-source configuration short-circuits
-        // `StreamFromCurrentSourceOrSkip` so no auto-save legitimises
-        // the uuid afterwards.
+        // sessionsDir gate in `RestoreLastSessionFromPath` will
+        // notice the directory mismatch and skip the entire pin +
+        // publish block. The no-source configuration also
+        // short-circuits `StreamFromCurrentSourceOrSkip` so no
+        // auto-save legitimises the uuid afterwards.
         QTemporaryDir externalDir;
         QVERIFY(externalDir.isValid());
         const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -13731,15 +13774,22 @@ private slots:
         wired->RestoreLastSessionFromPath(externalPath);
         QCoreApplication::processEvents();
 
-        // mAutoSaveUuid is still pinned (so a hypothetical future
-        // auto-save would update the same uuid in the manager's
-        // sessionsDir rather than fork off a new entry). What must
-        // NOT happen is the publish into the persisted open-windows
-        // set, because the manager's recents index has no entry to
-        // back the uuid.
-        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+        // mAutoSaveUuid must NOT be pinned: the JSON is outside the
+        // manager's sessions directory, so pinning would let a
+        // future AutoSave silently fork the user's external file
+        // into a managed copy under `sessionsDir/<uuid>.json`. The
+        // configuration still loads (the window is usable) but the
+        // uuid stays unpinned, so any subsequent save mints a fresh
+        // uuid and writes to the managed location instead.
+        QVERIFY2(
+            wired->ActiveSessionUuid().isEmpty(),
+            qPrintable(
+                QStringLiteral("external uuid-shaped JSON must not pin mAutoSaveUuid (got '%1')")
+                    .arg(wired->ActiveSessionUuid())
+            )
+        );
 
-        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         // Do NOT QSKIP on empty here: an empty set is precisely
         // what the fix guarantees. The QSettings-honouring soft
         // skip used elsewhere is for tests that *expect* a write.
@@ -13769,7 +13819,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -13803,7 +13853,7 @@ private slots:
         QCOMPARE(wired->ActiveSessionUuid(), uuid);
         QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
 
-        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             !openSet.contains(uuid),
             "NetworkStream uuid must not be published into openWindowsAtQuit on restore"
@@ -13820,7 +13870,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -13851,7 +13901,7 @@ private slots:
         QCOMPARE(wired->ActiveSessionUuid(), uuid);
         QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
 
-        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             !openSet.contains(uuid),
             "NetworkStream uuid must not be published into openWindowsAtQuit on reopen"
@@ -14137,7 +14187,7 @@ private slots:
         // Snapshot + restore the persisted open-windows list so the
         // assertion below can rely on a clean slate without
         // disturbing developer-machine state.
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -14171,7 +14221,7 @@ private slots:
         wired->close();
         QCoreApplication::processEvents();
 
-        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             !afterClose.contains(uuid),
             "closeEvent must leave the open-windows set free of this window's uuid"
@@ -14202,7 +14252,7 @@ private slots:
         QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
 
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -14231,7 +14281,7 @@ private slots:
 
         // Sanity: the just-closed uuid should be out of the open
         // set (this is the existing 1.2 invariant).
-        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             !afterClose.contains(origUuid),
             "closeEvent should remove the window's uuid from openWindowsAtQuit"
@@ -14270,7 +14320,7 @@ private slots:
 
         // Assertion 2: the open-windows set must not gain a fresh
         // uuid. (The original uuid was already removed in stage 2.)
-        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             afterQuit.isEmpty() || (afterQuit.size() == 1 && afterQuit.front() == origUuid),
             qPrintable(QStringLiteral("aboutToQuit fan-flush must not resurrect the closed window via "
@@ -14467,7 +14517,7 @@ private slots:
     // independent acquisitions.
     void TestWriteSnapshotAndPublishUpdatesOpenWindowsAtomically()
     {
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -14491,7 +14541,7 @@ private slots:
         QCOMPARE(entries.size(), 1);
         QCOMPARE(entries.front().uuid, uuid);
 
-        const QStringList open = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList open = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             open.contains(uuid),
             qPrintable(QStringLiteral("openWindowsAtQuit must contain %1, got: %2").arg(uuid, open.join(", ")))
@@ -14504,7 +14554,7 @@ private slots:
     // `closeEvent`'s flush-only path.
     void TestWriteSnapshotAndPublishSkipsPublishWhenFlagFalse()
     {
-        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuit();
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
@@ -14523,7 +14573,7 @@ private slots:
         QVERIFY(!uuid.isEmpty());
 
         QCOMPARE(manager.List().size(), 1);
-        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuit(), QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
     }
 
     // Reuse-uuid fast path: an in-place rewrite of the same session

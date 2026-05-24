@@ -20,6 +20,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <algorithm>
 #include <memory>
 
 namespace
@@ -271,6 +272,23 @@ int main(int argc, char *argv[])
     // to flush its final auto-save snapshot).
     QList<QPointer<MainWindow>> peers;
 
+    // Append a peer to `peers` and compact any null `QPointer`s left
+    // behind by previously-closed peers. Without the compaction the
+    // list grew monotonically over the process lifetime -- one entry
+    // per forwarded launch / restore-time peer, never reclaimed --
+    // and the `aboutToQuit` iteration paid for an unbounded number
+    // of null-check skips on long-running primaries. The explicit
+    // erase-remove avoids depending on any specific Qt minor-version
+    // helper (`QList::removeIf` / `std::erase_if<QList>` overloads
+    // came in across several patch releases).
+    auto appendPeer = [&peers](MainWindow *peer) {
+        peers.erase(
+            std::remove_if(peers.begin(), peers.end(), [](const QPointer<MainWindow> &p) { return p.isNull(); }),
+            peers.end()
+        );
+        peers.append(QPointer<MainWindow>(peer));
+    };
+
     // Restore-on-launch: opt-in via Preferences. Only fires when no
     // CLI files were passed (so the user explicitly opening a file
     // does not race the restore) and only on the canonical primary
@@ -302,8 +320,8 @@ int main(int argc, char *argv[])
         // dominate the launch with cross-process lock waits.
         if (previouslyOpen.size() > MAX_RESTORE_PEERS)
         {
-            LOGAPP_WARN() << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
-                          << "peer windows; the surplus stays in the recents index and can be reopened manually.";
+            logapp::LogWarning() << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
+                                 << "peer windows; the surplus stays in the recents index and can be reopened manually.";
             previouslyOpen = previouslyOpen.mid(0, MAX_RESTORE_PEERS);
         }
 
@@ -353,7 +371,7 @@ int main(int argc, char *argv[])
                     // Pre-fix this branch silently dropped the entry
                     // and left it lingering in the recents index --
                     // every subsequent launch would see the same
-                    // dangling uuid in `OpenWindowsAtQuit`. Removing
+                    // dangling uuid in `OpenWindowsAtQuitUnlocked`. Removing
                     // it here both cleans the index and keeps the
                     // restore-loop cap meaningful.
                     if (logapp::LooksLikeUuid(uuid))
@@ -366,7 +384,7 @@ int main(int argc, char *argv[])
                 peer->setAttribute(Qt::WA_DeleteOnClose);
                 peer->show();
                 peer->RestoreLastSessionFromPath(peerPath);
-                peers.append(QPointer<MainWindow>(peer));
+                appendPeer(peer);
             }
         }
         else
@@ -534,7 +552,7 @@ int main(int argc, char *argv[])
     // close it deterministically.
     QObject::connect(
         &instanceGuard, &SingleInstanceGuard::openWindowRequested, &a,
-        [&historyManager, &peers](const QStringList &files, int truncatedCount) {
+        [&historyManager, &appendPeer](const QStringList &files, int truncatedCount) {
             auto *child = new MainWindow(&historyManager, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();
@@ -559,7 +577,7 @@ int main(int argc, char *argv[])
                     TRUNCATION_MESSAGE_TIMEOUT_MS
                 );
             }
-            peers.append(QPointer<MainWindow>(child));
+            appendPeer(child);
         }
     );
 

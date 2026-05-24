@@ -270,28 +270,55 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     // would see no window because the secondary exits regardless of
     // forward success). Now we fall through to the listen branch on
     // overrun so the user always gets *some* window.
-    QByteArray payload;
-    {
-        QDataStream stream(&payload, QIODevice::WriteOnly);
+    //
+    // Byte-budget tail trim: `MAX_FORWARDED_FILES` (count cap) alone
+    // does not guarantee the encoded payload fits under
+    // `MAX_PAYLOAD_BYTES`. On platforms with very long paths (Linux
+    // PATH_MAX = 4096, deep nested workspaces, ...) 256 entries can
+    // exceed 1 MiB. Pop entries from the tail and re-serialise until
+    // either the payload fits or the list is empty; the popped
+    // surplus is folded into `truncatedCount` so the primary's
+    // spawned-window hint accounts for both forms of truncation.
+    // Worst case is bounded by `MAX_FORWARDED_FILES` re-serialise
+    // iterations (each pops at least one entry); typical payloads
+    // succeed on the first attempt and pay zero retries.
+    auto serialise = [&trimmed, &truncatedCount]() {
+        QByteArray buf;
+        QDataStream stream(&buf, QIODevice::WriteOnly);
         stream.setVersion(QDataStream::Qt_6_0);
         stream << QByteArray(WIRE_MAGIC);
         stream << static_cast<quint8>(WIRE_VERSION);
         stream << trimmed;
         stream << truncatedCount;
+        return buf;
+    };
+    QByteArray payload = serialise();
+    while (payload.size() > MAX_PAYLOAD_BYTES && !trimmed.isEmpty())
+    {
+        trimmed.removeLast();
+        ++truncatedCount;
+        payload = serialise();
     }
-    const bool payloadFits = payload.size() <= MAX_PAYLOAD_BYTES;
+    // `payloadFits` is now "the bytes fit AND we have something to
+    // forward". An originally-empty `forwardFiles` is a valid
+    // operation (the secondary asks the primary to spawn an empty
+    // window) -- the second clause only rejects the pathological
+    // "tail trim emptied a non-empty input but the bytes still
+    // overrun" case.
+    const bool payloadFits = payload.size() <= MAX_PAYLOAD_BYTES && (forwardFiles.isEmpty() || !trimmed.isEmpty());
     if (!payloadFits)
     {
-        LOGAPP_WARN() << "SingleInstanceGuard: forward payload" << payload.size() << "bytes exceeds cap"
-                      << MAX_PAYLOAD_BYTES << "; falling through to listen so the user still gets a window.";
+        logapp::LogWarning() << "SingleInstanceGuard: forward payload" << payload.size() << "bytes exceeds cap"
+                             << MAX_PAYLOAD_BYTES
+                             << "even after tail trim; falling through to listen so the user still gets a window.";
     }
 
     auto forwardTo = [&payload](QLocalSocket &probe) -> bool {
         const qint64 written = probe.write(payload);
         if (written != payload.size())
         {
-            LOGAPP_WARN() << "SingleInstanceGuard: short write forwarding to primary; wrote" << written << "of"
-                          << payload.size() << "bytes; error:" << probe.error() << probe.errorString();
+            logapp::LogWarning() << "SingleInstanceGuard: short write forwarding to primary; wrote" << written
+                                 << "of" << payload.size() << "bytes; error:" << probe.error() << probe.errorString();
             return false;
         }
         // `flush()` and `waitForBytesWritten()` legitimately return
@@ -316,8 +343,8 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
             && probe.state() == QLocalSocket::ConnectedState
             && probe.bytesToWrite() > 0)
         {
-            LOGAPP_WARN() << "SingleInstanceGuard: forward stalled with" << probe.bytesToWrite()
-                          << "bytes still pending; error:" << probe.error() << probe.errorString();
+            logapp::LogWarning() << "SingleInstanceGuard: forward stalled with" << probe.bytesToWrite()
+                                 << "bytes still pending; error:" << probe.error() << probe.errorString();
             return false;
         }
         return true;
@@ -353,7 +380,7 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     takeover.setStaleLockTime(0);
     if (!takeover.tryLock(TAKEOVER_LOCK_TIMEOUT_MS))
     {
-        LOGAPP_WARN() << "SingleInstanceGuard: takeover lock contended; retrying forward path";
+        logapp::LogWarning() << "SingleInstanceGuard: takeover lock contended; retrying forward path";
         QLocalSocket retry;
         retry.connectToServer(mSocketName);
         if (retry.waitForConnected(CONNECT_TIMEOUT_MS))
@@ -484,7 +511,7 @@ void SingleInstanceGuard::HandleNewConnection()
             buffer.append(socket->readAll());
             if (buffer.size() > MAX_PAYLOAD_BYTES)
             {
-                LOGAPP_WARN() << "SingleInstanceGuard: dropping peer that exceeded MAX_PAYLOAD_BYTES";
+                logapp::LogWarning() << "SingleInstanceGuard: dropping peer that exceeded MAX_PAYLOAD_BYTES";
                 socket->disconnectFromServer();
                 return;
             }
@@ -516,8 +543,8 @@ void SingleInstanceGuard::HandleNewConnection()
                     || version < WIRE_VERSION_MIN_SUPPORTED
                     || version > WIRE_VERSION_MAX_SUPPORTED)
                 {
-                    LOGAPP_WARN() << "SingleInstanceGuard: rejecting peer with bad magic or unsupported version"
-                                  << version;
+                    logapp::LogWarning() << "SingleInstanceGuard: rejecting peer with bad magic or unsupported version"
+                                         << version;
                     socket->disconnectFromServer();
                     return;
                 }

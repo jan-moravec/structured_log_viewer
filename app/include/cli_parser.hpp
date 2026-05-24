@@ -66,7 +66,7 @@ struct ParsedCli
     // positional arguments + flags so the user sees a window.
     if (!parser.parse(args))
     {
-        LOGAPP_WARN() << "Unrecognised CLI argument:" << parser.errorText();
+        ::logapp::LogWarning() << "Unrecognised CLI argument:" << parser.errorText();
     }
 
     result.allowNewInstance = parser.isSet(newInstanceOption);

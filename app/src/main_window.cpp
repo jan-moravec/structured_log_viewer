@@ -901,6 +901,20 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // Defensive backstop: every production destruction path runs
+    // `closeEvent` first (which calls `DetachAutoSaveUuid`), so this
+    // is a no-op in the steady state. We keep it because the few
+    // edge paths that bypass `closeEvent` -- an exception in the
+    // constructor after `mAutoSaveUuid` was pinned but before the
+    // window was ever shown, a parent-driven destruction in some
+    // future refactor, or any Qt platform corner where the OS
+    // teardown sequence skips the close event -- would otherwise
+    // leak a published uuid into `openWindowsAtQuit`. The next
+    // launch's fan-restore would then resurrect a dead session.
+    // `DetachAutoSaveUuid()` is idempotent and cheap when the uuid
+    // is already empty.
+    DetachAutoSaveUuid();
+
     // Sever the snapshot windows' `destroyed -> remove` hooks before
     // our members go away. Without this, the inherited `~QWidget`
     // child-destruction would fire each `destroyed` against an
@@ -1238,10 +1252,16 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     // window on next launch. We compute the uuid by stripping the
     // directory and the `.json` suffix -- per-uuid files always live
     // under `sessionsDir/<uuid>.json`. The stem must parse as a real
-    // QUuid; otherwise the caller pointed us at an ad-hoc session
-    // file outside the managed sessions dir, and pinning would let
-    // the next AutoSave clobber that user file (or a future recents
-    // entry whose name happens to collide with the stem).
+    // QUuid *and* the file must live in the manager's sessions dir;
+    // otherwise the caller pointed us at an ad-hoc session file
+    // outside the managed sessions dir, and pinning would silently
+    // "fork" the user's external file into a managed copy on the
+    // next AutoSave (the external file is never overwritten because
+    // `PathForUuid` always resolves to `sessionsDir/<uuid>.json`,
+    // but the user's edits end up under that managed path instead
+    // of the file they loaded). The dir-equality gate keeps the
+    // pin restricted to files we manage; external uuid-named JSONs
+    // load read-only and any save forks a fresh uuid on first edit.
     //
     // We do this *unconditionally* (even when the loaded config has
     // no source, see below) for parity with `OpenRecentSession`: a
@@ -1253,7 +1273,9 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
         const QFileInfo info(jsonPath);
         const QString stem = info.completeBaseName();
         const QUuid parsed = QUuid::fromString(stem);
-        if (!parsed.isNull())
+        const QDir managedDir = mHistoryManager->SessionsDir();
+        const bool insideManagedDir = info.absoluteDir() == managedDir;
+        if (!parsed.isNull() && insideManagedDir)
         {
             mAutoSaveUuid = stem;
             // Gate the `AddOpenWindowUuid` publish on two checks:
@@ -1515,12 +1537,11 @@ void MainWindow::NewSession()
     // Latch the session-switch flag so the synchronous
     // `streamingFinished(Cancelled)` emitted by `mModel->Reset()`
     // does not run the full `OnStreamingFinished` cleanup against
-    // the about-to-be-rebuilt session. The scope guard clears the
+    // the about-to-be-rebuilt session. The RAII helper clears the
     // flag on every return path below, including exceptions out of
     // `ClearAllFilters` (unlikely but technically possible if a
     // proxy hook throws).
-    mSessionSwitchInProgress = true;
-    const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
+    SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
     ClearAllFilters();
@@ -1694,12 +1715,22 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
     // non-configs (4 KB peek vetoes typical JSONL logs before
     // Glaze ever sees them) so probing the entire input is fine
     // even for multi-gigabyte log selections.
+    //
+    // Empty strings are filtered up-front: `ParseCli` already drops
+    // empty positionals, but drag-drop / file dialog / test seam
+    // callers don't, and an empty string would otherwise classify
+    // as a log path and surface later as a "Failed to open ''"
+    // parse error.
     QStringList configPaths;
     QStringList logPaths;
     configPaths.reserve(files.size());
     logPaths.reserve(files.size());
     for (const QString &file : files)
     {
+        if (file.isEmpty())
+        {
+            continue;
+        }
         if (FileLooksLikeConfiguration(file))
         {
             configPaths.append(file);
@@ -2109,18 +2140,8 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         return;
     }
 
-    // Flush the *outgoing* session so any user edits made after its
-    // last `streamingFinished` (filter tweaks, sort changes) survive
-    // the destructive reset below. `AutoSaveSessionSnapshot` is a
-    // no-op when the previous session was itself live-tail or had no
-    // pinned uuid -- the only path that actually writes is "Static
-    // session with edits"; live-tail-to-live-tail switches stay
-    // free. `publishOpenWindow=false` because we immediately
-    // `DetachAutoSaveUuid()` afterwards.
-    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-
     // Surface (then drop) any queued multi-file-open continuation
-    // before the destructive reset. The `mModel->Reset()` below
+    // before the AutoSave below. The `mModel->Reset()` further down
     // emits `streamingFinished(Cancelled)` synchronously and the
     // shared finished-lambda quietly `clear()`s `mPendingOpenFiles`
     // on the Cancelled branch -- without this hint the user has no
@@ -2128,6 +2149,17 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // discarded the rest of their drag-drop selection. Explicit
     // clear here keeps the eventual cancel-handler clear a no-op
     // (idempotent) and makes the discard visible in the source.
+    //
+    // Ordering: this MUST run before the AutoSave below.
+    // `MirrorSessionStateToConfiguration` (invoked by AutoSave)
+    // unions `mPendingOpenFiles` into the persisted `Source.locators`
+    // for crash-recovery on the per-file `streamingFinished` /
+    // `aboutToQuit` paths. That union is correct there but wrong
+    // here: the user explicitly discarded the queue by invoking a
+    // destructive Open-Log-Stream gesture, so the prior session's
+    // recents entry must not silently capture the never-opened
+    // files. Clearing first guarantees the AutoSave snapshots only
+    // the actually-streamed locators.
     const int discardedQueuedFiles = mPendingOpenFiles.size();
     if (discardedQueuedFiles > 0)
     {
@@ -2138,14 +2170,23 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mPendingOpenFiles.clear();
     }
 
+    // Flush the *outgoing* session so any user edits made after its
+    // last `streamingFinished` (filter tweaks, sort changes) survive
+    // the destructive reset below. `AutoSaveSessionSnapshot` is a
+    // no-op when the previous session was itself live-tail or had no
+    // pinned uuid -- the only path that actually writes is "Static
+    // session with edits"; live-tail-to-live-tail switches stay
+    // free. `publishOpenWindow=false` because we immediately
+    // `DetachAutoSaveUuid()` afterwards.
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+
     // Latch the session-switch flag: `mModel->Reset()` below emits
     // `streamingFinished(Cancelled)` synchronously and the outer
     // `OnStreamingFinished` cleanup must skip the outgoing-session
     // UI bookkeeping or we briefly flash the wrong toolbar / status
-    // state at the user. The scope guard clears it once the new
+    // state at the user. The RAII helper clears it once the new
     // session is fully wired up below.
-    mSessionSwitchInProgress = true;
-    const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
+    SessionSwitchScope switchGuard(*this);
 
     // Mirror the static-open reset so residual state cannot leak in.
     mModel->Reset();
@@ -2250,14 +2291,16 @@ void MainWindow::OpenNetworkStream()
         return;
     }
 
-    // Same rationale as `OpenLogStream`: flush any unsaved edits to
-    // the outgoing static session before the destructive reset.
-    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-
     // Same rationale as `OpenLogStreamFromPath`: surface and drop
-    // any queued multi-file-open continuation before the
+    // any queued multi-file-open continuation before the AutoSave +
     // destructive reset so the cancel-handler clear is a visible
     // no-op rather than a silent discard.
+    //
+    // Ordering: this MUST run before the AutoSave below, mirroring
+    // `OpenLogStreamFromPath`. `MirrorSessionStateToConfiguration`
+    // would otherwise union the never-opened pending paths into the
+    // prior session's persisted `Source.locators`, polluting the
+    // recents entry with files the user explicitly discarded.
     const int discardedQueuedFiles = mPendingOpenFiles.size();
     if (discardedQueuedFiles > 0)
     {
@@ -2268,12 +2311,15 @@ void MainWindow::OpenNetworkStream()
         mPendingOpenFiles.clear();
     }
 
+    // Same rationale as `OpenLogStream`: flush any unsaved edits to
+    // the outgoing static session before the destructive reset.
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+
     // Mirror the OpenLogStream session-switch latch: suppress the
     // outgoing-session cleanup that `mModel->Reset()`'s synchronous
     // `streamingFinished(Cancelled)` would otherwise run, since we
     // are mid-way through wiring up the incoming network stream.
-    mSessionSwitchInProgress = true;
-    const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
+    SessionSwitchScope switchGuard(*this);
 
     // Mirror the OpenLogStream reset.
     mModel->Reset();
@@ -3418,8 +3464,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // `streamingFinished(Cancelled)` from `mModel->Reset()`
         // would otherwise run while we are mid-way through wiring
         // up the loaded session.
-        mSessionSwitchInProgress = true;
-        const auto switchGuard = qScopeGuard([this]() { mSessionSwitchInProgress = false; });
+        SessionSwitchScope switchGuard(*this);
 
         mModel->Reset();
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));

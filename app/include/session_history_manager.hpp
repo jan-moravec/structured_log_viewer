@@ -74,8 +74,9 @@ public:
 ///   `Clear`, `CleanupOrphanFiles`).
 /// - The static `OpenWindowsMutex` (file-local, one per process)
 ///   serialises every read / write of the `openWindowsAtQuit`
-///   QSettings key (`OpenWindowsAtQuit`, `SetOpenWindowsAtQuit`,
-///   `AddOpenWindowUuid`, `RemoveOpenWindowUuid`).
+///   QSettings key (`OpenWindowsAtQuitUnlocked`,
+///   `SetOpenWindowsAtQuit`, `AddOpenWindowUuid`,
+///   `RemoveOpenWindowUuid`).
 /// - The two mutexes are independent because the QSettings keys
 ///   they guard never alias. A caller never needs to hold both.
 /// - A cross-process `QLockFile` at `sessionsDir/recents.lock`
@@ -85,6 +86,23 @@ public:
 ///   the `WRITE_LOCK_TIMEOUT_*` docstrings in the .cpp for the
 ///   timeout split between GUI-thread mutators (1.5 s) and
 ///   shutdown / user-initiated mutators (5 s).
+///
+/// Lock-ordering invariant (every mutator obeys this):
+///
+///    crossProc (QLockFile)  ->  mMutex / OpenWindowsMutex
+///
+/// `crossProc` is *always* the outermost lock. The per-process
+/// mutexes are acquired strictly *after* a successful lock-file
+/// `tryLock`. Pre-fix the `openWindowsAtQuit` mutators acquired
+/// `OpenWindowsMutex` first and `crossProc` second, inverting the
+/// order used by `WriteSnapshotAndPublish` (the only path that
+/// holds both). The inversion was latent because production today
+/// only invokes the manager from the GUI thread, but a worker-
+/// thread caller would have stalled up to `WRITE_LOCK_TIMEOUT_*`
+/// on every contended write. The unified ordering removes that
+/// future footgun: no code path can produce an AB-BA cycle because
+/// every site goes through `crossProc` before any in-process
+/// mutex.
 class SessionHistoryManager : public QObject
 {
     Q_OBJECT
@@ -135,7 +153,7 @@ public:
     ///
     /// Cross-process consistency is best-effort: the read does
     /// *not* take the cross-process `QLockFile` (matches the
-    /// rationale in `OpenWindowsAtQuit`'s comment -- the GUI-thread
+    /// rationale in `OpenWindowsAtQuitUnlocked`'s comment -- the GUI-thread
     /// menu rebuild on `aboutToShow` cannot afford the worst-case
     /// 1.5 s acquire stall a sibling writer would force, and a
     /// torn read just shows a slightly stale recents menu rather
@@ -244,12 +262,12 @@ public:
     /// Shared by `main()` (constructs the production manager against
     /// this path) and by the static `AddOpenWindowUuid` /
     /// `RemoveOpenWindowUuid` / `SetOpenWindowsAtQuit` /
-    /// `OpenWindowsAtQuit` / `TakeOpenWindowsAtQuit` helpers (so the
-    /// cross-process lock file lands in the same well-known location
-    /// regardless of which process touches `openWindowsAtQuit`). The
-    /// `CleanupOrphanFiles` instance method also reads the directory
-    /// for its sweep, but it does so through the per-instance
-    /// `mSessionsDir` rather than this static helper.
+    /// `OpenWindowsAtQuitUnlocked` / `TakeOpenWindowsAtQuit` helpers
+    /// (so the cross-process lock file lands in the same well-known
+    /// location regardless of which process touches
+    /// `openWindowsAtQuit`). The `CleanupOrphanFiles` instance method
+    /// also reads the directory for its sweep, but it does so through
+    /// the per-instance `mSessionsDir` rather than this static helper.
     [[nodiscard]] static QDir DefaultSessionsDir();
 
     /// Read the `restoreLastSessionOnLaunch` user preference. Default
@@ -266,7 +284,25 @@ public:
     /// power loss or app crash does not lose the multi-window
     /// layout. Each uuid corresponds to a session JSON on disk in
     /// `SessionsDir()`.
-    static QStringList OpenWindowsAtQuit();
+    ///
+    /// `OpenWindowsAtQuitUnlocked` deliberately skips the
+    /// cross-process `QLockFile` (it still takes `OpenWindowsMutex`
+    /// for the in-process read). The trade-off is documented in the
+    /// implementation -- the read side never blocks on a sibling
+    /// writer's queue, and the worst observable outcome is a torn
+    /// list that gets corrected on the next mutation. The `Unlocked`
+    /// suffix is the API's flag that callers must accept that
+    /// trade-off; production code uses `TakeOpenWindowsAtQuit`
+    /// (which takes the cross-process lock and atomically wipes
+    /// after the read) instead.
+    ///
+    /// `SetOpenWindowsAtQuit` honours `SetPublishingEnabled(false)`
+    /// (the `--new-instance` peer isolation gate) -- a peer that
+    /// calls this with the gate disabled gets a silent no-op so it
+    /// cannot wipe / overwrite the canonical primary's persisted
+    /// restore set. The Add/Remove counterparts already honour the
+    /// gate; this keeps the Set side symmetric.
+    static QStringList OpenWindowsAtQuitUnlocked();
     static void SetOpenWindowsAtQuit(const QStringList &uuids);
 
     /// Atomic read-and-wipe of the `openWindowsAtQuit` list. Used by
