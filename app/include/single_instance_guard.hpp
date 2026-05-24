@@ -1,11 +1,16 @@
 #pragma once
 
+#include <QHash>
 #include <QLocalServer>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
 
 #include <memory>
+
+class QLocalSocket;
+class QTimer;
 
 /// Cross-process coordinator that funnels every launch of the
 /// application to the *first* running instance (mirrors the VS Code
@@ -21,6 +26,7 @@
 class SingleInstanceGuard : public QObject
 {
     Q_OBJECT
+    Q_DISABLE_COPY_MOVE(SingleInstanceGuard)
 public:
     explicit SingleInstanceGuard(QObject *parent = nullptr);
     ~SingleInstanceGuard() override;
@@ -74,6 +80,26 @@ private:
     /// Handle a freshly-connected secondary on the primary side.
     void HandleNewConnection();
 
+    /// Per-connection state held on the primary side. Replaces the
+    /// previous `socket->setProperty("structlog_buf", ...)` hack: the
+    /// dynamic-property roundtrip serialised the buffer through
+    /// `QVariant` on every `readyRead`, which is both wasteful and
+    /// fragile (silent type-erasure errors compile clean). A flat
+    /// `QHash` keyed on the socket pointer keeps the buffer + idle
+    /// timer next to the socket they belong to and is cleaned up
+    /// once on `disconnected`.
+    struct ConnState
+    {
+        QByteArray buffer;
+        QTimer *idleTimer = nullptr;
+    };
+
+    /// Forget a freshly-disconnected socket. Called from the
+    /// `disconnected` slot and from the destructor before the
+    /// `QLocalServer` is torn down.
+    void DropConnection(QLocalSocket *socket);
+
     QString mSocketName;
     std::unique_ptr<QLocalServer> mServer;
+    QHash<QLocalSocket *, ConnState> mConnections;
 };
