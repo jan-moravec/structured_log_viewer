@@ -105,6 +105,12 @@ int main(int argc, char *argv[])
     const QApplication a(argc, argv);
     DiagLog("QApplication constructed");
 
+    if (QString::fromLocal8Bit(qgetenv("LOGAPP_SMOKE_TEST_BAIL_OUT")) == "1")
+    {
+        DiagLog("smoke-test bailout requested, returning 0");
+        return 0;
+    }
+
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
 

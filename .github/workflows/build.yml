@@ -305,32 +305,26 @@ jobs:
           echo "--- ldd on bundled offscreen plugin ---"
           ldd "squashfs-root/usr/plugins/platforms/libqoffscreen.so" || true
 
-          # Test the EXTRACTED binary against the *host* Qt (keep
-          # install-qt-action's QT_PLUGIN_PATH / LD_LIBRARY_PATH in
-          # scope). This is what main's smoke test was effectively
-          # exercising. If this passes but the bundled-only run
-          # below fails, the problem is in linuxdeploy's library
-          # bundling, not in the binary itself.
-          echo "--- direct-launch against host Qt ---"
+          # Smoke-test against the host Qt as a sanity check for the
+          # bundled binary; LOGAPP_SMOKE_TEST_BAIL_OUT=1 returns from
+          # main() immediately after the QApplication constructor so
+          # we exercise just the static-init + QPA setup path.
+          echo "--- direct-launch (bailout) against host Qt ---"
           set +e
+          QT_QPA_PLATFORM=offscreen LOGAPP_SMOKE_TEST_BAIL_OUT=1 \
+            gdb -batch \
+              -ex 'set pagination off' \
+              -ex 'handle SIG33 nostop noprint' \
+              -ex run \
+              -ex 'thread apply all bt full' \
+              --args "$EXTRACTED_BIN" 2>&1 | tail -n 200
+          echo "--- direct-launch (full) against host Qt ---"
           QT_QPA_PLATFORM=offscreen gdb -batch \
             -ex 'set pagination off' \
             -ex 'handle SIG33 nostop noprint' \
             -ex run \
             -ex 'thread apply all bt full' \
             --args "$EXTRACTED_BIN" 2>&1 | tail -n 200
-          set -e
-
-          # Test the build-tree binary too (this is what ctest
-          # runs and what main's smoke test launched effectively).
-          echo "--- direct-launch from build tree against host Qt ---"
-          set +e
-          QT_QPA_PLATFORM=offscreen gdb -batch \
-            -ex 'set pagination off' \
-            -ex 'handle SIG33 nostop noprint' \
-            -ex run \
-            -ex 'thread apply all bt full' \
-            --args "build/release/bin/Release/${{ env.APP_NAME }}" 2>&1 | tail -n 200
           set -e
 
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
