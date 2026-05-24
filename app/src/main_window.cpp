@@ -2234,6 +2234,11 @@ QMenu *MainWindow::ViewMenu() const
     return ui->menuView;
 }
 
+QMenu *MainWindow::RecentSessionsMenu() const
+{
+    return ui->menuRecentSessions;
+}
+
 QMenu *MainWindow::FilterSubMenu(const QString &filterID) const
 {
     const auto it = mFilterSubMenus.find(filterID.toStdString());

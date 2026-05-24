@@ -10946,7 +10946,10 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 0);
 
         // Force the submenu rebuild + drive the entry action.
-        auto *recentsMenu = wired->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
+        // Reach for the menu via the explicit accessor: the Qt 6.8 +
+        // offscreen-QPA `findChild<QMenu*>` traversal bug strands the
+        // by-objectName lookup on the Linux runner.
+        auto *recentsMenu = wired->RecentSessionsMenu();
         QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist");
         emit recentsMenu->aboutToShow();
 
@@ -11118,7 +11121,7 @@ private slots:
     void TestSingleInstanceForwardsOpenRequest()
     {
         const QString socketName =
-            QStringLiteral("structlog-test-forward-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-fwd-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -11173,7 +11176,7 @@ private slots:
     void TestSingleInstanceNewInstanceFlagBypassesGuard()
     {
         const QString socketName =
-            QStringLiteral("structlog-test-newinst-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-new-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -11205,7 +11208,7 @@ private slots:
     void TestSingleInstanceMagicMismatchRejected()
     {
         const QString socketName =
-            QStringLiteral("structlog-test-magic-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-mag-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -11248,7 +11251,7 @@ private slots:
     void TestSingleInstanceVersionOutOfRangeRejected()
     {
         const QString socketName =
-            QStringLiteral("structlog-test-ver-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-ver-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -11291,7 +11294,7 @@ private slots:
     void TestSingleInstanceLargePayloadRejected()
     {
         const QString socketName =
-            QStringLiteral("structlog-test-big-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-big-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -11322,7 +11325,7 @@ private slots:
         // truncated by the primary post-decode. Stamp 300 entries
         // directly and assert the primary clamps to 256.
         const QString socketName =
-            QStringLiteral("structlog-test-postcap-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-cap-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -11446,7 +11449,7 @@ private slots:
         // is that we now also pin the per-readyRead reset behaviour
         // by completing the frame after a brief gap.
         const QString socketName =
-            QStringLiteral("structlog-test-idle-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QStringLiteral("slv-idle-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(socketName);
@@ -13874,8 +13877,8 @@ private slots:
     // original binding stays intact.
     void TestSingleInstanceSetSocketNameForTestIgnoredAfterAcquire()
     {
-        const QString originalName = QStringLiteral("structlog-set-name-test-original-") +
-                                     QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        const QString originalName =
+            QStringLiteral("slv-orig-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
 
         SingleInstanceGuard primary;
         primary.SetSocketNameForTest(originalName);
@@ -13884,8 +13887,8 @@ private slots:
         // Release-only: debug `Q_ASSERT` fires before the early
         // return, so skip the rebind attempt in debug builds.
 #ifdef QT_NO_DEBUG
-        const QString divertName = QStringLiteral("structlog-set-name-test-divert-") +
-                                   QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        const QString divertName =
+            QStringLiteral("slv-div-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         primary.SetSocketNameForTest(divertName);
 
         // The divert-name secondary becomes its own primary

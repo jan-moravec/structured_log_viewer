@@ -208,6 +208,10 @@ public:
     /// strands `findChild<QMenu*>("menuView")` on the Linux runner.
     [[nodiscard]] QMenu *ViewMenu() const;
 
+    /// Test-only `Recent Sessions` submenu accessor. Same Qt 6.8 +
+    /// offscreen-QPA traversal bug as `FiltersMenu()`.
+    [[nodiscard]] QMenu *RecentSessionsMenu() const;
+
     /// Toggle column visibility. Updates `Column::visible` and the
     /// header. No-op for an out-of-range index. Public for tests and
     /// the View menu.

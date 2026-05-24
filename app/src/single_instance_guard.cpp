@@ -267,6 +267,7 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     connect(mServer.get(), &QLocalServer::newConnection, this, &SingleInstanceGuard::HandleNewConnection);
     if (!mServer->listen(mSocketName))
     {
+        const QString listenError = mServer->errorString();
         // Another process bound between `removeServer` and
         // `listen`. Try one more forward before giving up.
         QLocalSocket retry;
@@ -278,7 +279,12 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
             takeover.unlock();
             return !forwarded;
         }
-        // No bind, nothing listening: run uncoordinated.
+        // Nothing listening either. Most often this is a too-long
+        // socket path (macOS: sun_path is 104 bytes, Linux: 108).
+        // Log loud so the user-visible "running uncoordinated"
+        // mode does not get blamed on something else.
+        logapp::LogWarning() << "SingleInstanceGuard: listen on" << mSocketName << "failed:" << listenError
+                             << "-- running uncoordinated (no primary).";
         mServer.reset();
         takeover.unlock();
         return true;
