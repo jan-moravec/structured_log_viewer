@@ -305,27 +305,37 @@ jobs:
           echo "--- ldd on bundled offscreen plugin ---"
           ldd "squashfs-root/usr/plugins/platforms/libqoffscreen.so" || true
 
-          # Direct run from the extracted tree under gdb so a crash
-          # produces an actual backtrace, not just an exit code.
-          echo "--- direct-launch from extracted tree under gdb ---"
+          # Test the EXTRACTED binary against the *host* Qt (keep
+          # install-qt-action's QT_PLUGIN_PATH / LD_LIBRARY_PATH in
+          # scope). This is what main's smoke test was effectively
+          # exercising. If this passes but the bundled-only run
+          # below fails, the problem is in linuxdeploy's library
+          # bundling, not in the binary itself.
+          echo "--- direct-launch against host Qt ---"
           set +e
-          env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QT_ROOT_DIR -u LD_LIBRARY_PATH \
-            QT_QPA_PLATFORM=offscreen \
-            LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" \
-            QT_PLUGIN_PATH="$PWD/squashfs-root/usr/plugins" \
-            gdb -batch \
-              -ex 'set pagination off' \
-              -ex 'handle SIG33 nostop noprint' \
-              -ex run \
-              -ex 'thread apply all bt full' \
-              --args "$EXTRACTED_BIN" 2>&1 | tail -n 400
+          QT_QPA_PLATFORM=offscreen gdb -batch \
+            -ex 'set pagination off' \
+            -ex 'handle SIG33 nostop noprint' \
+            -ex run \
+            -ex 'thread apply all bt full' \
+            --args "$EXTRACTED_BIN" 2>&1 | tail -n 200
+          set -e
+
+          # Test the build-tree binary too (this is what ctest
+          # runs and what main's smoke test launched effectively).
+          echo "--- direct-launch from build tree against host Qt ---"
+          set +e
+          QT_QPA_PLATFORM=offscreen gdb -batch \
+            -ex 'set pagination off' \
+            -ex 'handle SIG33 nostop noprint' \
+            -ex run \
+            -ex 'thread apply all bt full' \
+            --args "build/release/bin/Release/${{ env.APP_NAME }}" 2>&1 | tail -n 200
           set -e
 
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
           # in the workflow log instead of an opaque exit code.
-          env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QT_ROOT_DIR -u LD_LIBRARY_PATH \
-            QT_QPA_PLATFORM=offscreen QT_DEBUG_PLUGINS=1 \
-            "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
+          QT_QPA_PLATFORM=offscreen "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
