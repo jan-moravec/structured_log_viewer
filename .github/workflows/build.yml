@@ -294,10 +294,18 @@ jobs:
           fi
           APPIMAGE="${APPIMAGES[0]}"
           chmod +x "$APPIMAGE"
+          # Extract the AppImage so we can run the inner binary directly.
+          # That bypasses the (uninstrumentable) appimage runtime and lets
+          # us collect ldd / strace-style diagnostics if startup fails.
+          "./$APPIMAGE" --appimage-extract >/dev/null
+          EXTRACTED_BIN="squashfs-root/usr/bin/${{ env.APP_NAME }}"
+          echo "--- ldd on extracted binary ---"
+          ldd "$EXTRACTED_BIN" || true
           # Capture stdout/stderr so a startup crash leaves a useful diagnostic
           # in the workflow log instead of an opaque exit code.
           env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QT_ROOT_DIR -u LD_LIBRARY_PATH \
-            QT_QPA_PLATFORM=offscreen "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
+            QT_QPA_PLATFORM=offscreen QT_DEBUG_PLUGINS=1 \
+            "./$APPIMAGE" >appimage.stdout 2>appimage.stderr &
           PID=$!
           sleep 5
           if ! kill -0 "$PID" 2>/dev/null; then
