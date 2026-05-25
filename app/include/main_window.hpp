@@ -263,6 +263,19 @@ public:
     /// @p logicalColumn is out of range.
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
+    /// Build the right-click row menu for source-model row
+    /// @p sourceRow. Carries the inclusive "Show only logs at or
+    /// after this time" / "Show only logs at or before this time"
+    /// actions, both pinned to the first `Type::Time` column.
+    /// Caller owns the returned menu. Returns null when there is
+    /// nothing to show: no `Type::Time` column, the row's slot is
+    /// `std::monostate` (absent timestamp), an empty model, or
+    /// @p sourceRow out of range. Separated from
+    /// `ShowRowContextMenu` so tests can inspect the actions
+    /// without spawning a real popup, mirroring
+    /// `BuildHeaderContextMenu`.
+    [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
+
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
     {
@@ -509,6 +522,12 @@ private slots:
 
     /// Build and show the header context menu at @p pos.
     void ShowHeaderContextMenu(const QPoint &pos);
+
+    /// Build and show the row-level context menu at @p pos
+    /// (viewport coords). The menu adds an inclusive time-range
+    /// filter pinned to the first `Type::Time` column using the
+    /// clicked row's timestamp as the boundary.
+    void ShowRowContextMenu(const QPoint &pos);
 
     /// Rebuild the `View` menu on each `aboutToShow`. Each column
     /// gets a checkable action that toggles `Column::visible`.

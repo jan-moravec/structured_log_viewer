@@ -487,6 +487,15 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         this,
         &MainWindow::ShowHeaderContextMenu
     );
+
+    // Row-level context menu: offers an inclusive time-range
+    // filter pinned to the clicked row's timestamp. The header
+    // version above lives on the header widget; this one lives on
+    // the table view, so `customContextMenuRequested` fires with
+    // `pos` in viewport coords (mapped via `viewport()->mapToGlobal`
+    // in `ShowRowContextMenu`).
+    mTableView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
     // Catch every column move (header drag and implicit moves like
     // mid-stream timestamp bubbling) so the runtime filter map and
     // proxy rules stay aligned with the source layout.
@@ -4331,6 +4340,137 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     // hatch when *every* column is hidden, since no header section
     // is left to right-click).
     return result;
+}
+
+void MainWindow::ShowRowContextMenu(const QPoint &pos)
+{
+    if (mTableView == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    {
+        return;
+    }
+    const QModelIndex proxyIndex = mTableView->indexAt(pos);
+    if (!proxyIndex.isValid())
+    {
+        return;
+    }
+    const int sourceRow = MapProxyIndexToSourceRow(proxyIndex, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        return;
+    }
+    QMenu *menu = BuildRowContextMenu(sourceRow, mTableView);
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    // `customContextMenuRequested` on a `QAbstractItemView` delivers
+    // `pos` in viewport coords -- map via `viewport()` (not the
+    // table view) so the popup lands under the cursor. The header
+    // variant uses `header->mapToGlobal` because the header is its
+    // own widget.
+    menu->popup(mTableView->viewport()->mapToGlobal(pos));
+}
+
+QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
+{
+    if (mModel == nullptr || mModel->rowCount() <= 0 || sourceRow < 0
+        || static_cast<size_t>(sourceRow) >= static_cast<size_t>(mModel->rowCount()))
+    {
+        return nullptr;
+    }
+
+    // Use the first `Type::Time` column. Logs can carry several
+    // time columns (`FindTimeColumn` in `record_detail_widget.cpp`
+    // makes the same first-match choice), but the row context
+    // menu is intentionally simple: a single inclusive
+    // before/after pair pinned to the canonical time column.
+    const auto &columns = mModel->Configuration().columns;
+    int timeCol = -1;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].type == loglib::LogConfiguration::Type::Time)
+        {
+            timeCol = static_cast<int>(i);
+            break;
+        }
+    }
+    if (timeCol < 0)
+    {
+        return nullptr;
+    }
+
+    // Slot type follows the `TimeRangeRowPredicate` visitor at
+    // `library/src/log_filter.cpp`: `TimeStamp` is the dominant
+    // shape but the table also carries promoted-int / uint
+    // representations. `monostate` (no value on this row) returns
+    // null so the menu never advertises a no-op entry.
+    const loglib::LogValue value =
+        mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol));
+    std::optional<qint64> micros;
+    std::visit(
+        [&micros](const auto &alt) {
+            using T = std::decay_t<decltype(alt)>;
+            if constexpr (std::is_same_v<T, loglib::TimeStamp>)
+            {
+                micros = alt.time_since_epoch().count();
+            }
+            else if constexpr (std::is_same_v<T, int64_t>)
+            {
+                micros = alt;
+            }
+            else if constexpr (std::is_same_v<T, uint64_t>)
+            {
+                // Clamp out-of-range uint64 microseconds rather than
+                // wrapping; matches the int64 ceiling the predicate
+                // and the persisted `LogFilter::filterBegin/End`
+                // both use.
+                if (alt <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+                {
+                    micros = static_cast<int64_t>(alt);
+                }
+            }
+        },
+        value
+    );
+    if (!micros.has_value())
+    {
+        return nullptr;
+    }
+
+    auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+
+    // Capture stable column keys (not the index) so the action
+    // still hits the right column if a streaming reorder fires
+    // between menu build and click. The timestamp itself is a
+    // value capture; survives a `Reset` of the source row.
+    const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
+    const QString colLabel = QString::fromStdString(columns[static_cast<size_t>(timeCol)].header);
+    const qint64 boundary = *micros;
+
+    QAction *afterAction = menu->addAction(tr("Show only logs at or after this time (%1)").arg(colLabel));
+    // NOLINTNEXTLINE(bugprone-exception-escape)
+    connect(afterAction, &QAction::triggered, this, [this, timeKeys, boundary]() {
+        const int col = FindColumnIndexByKeys(timeKeys);
+        if (col < 0)
+        {
+            return;
+        }
+        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, boundary, std::numeric_limits<qint64>::max());
+    });
+
+    QAction *beforeAction = menu->addAction(tr("Show only logs at or before this time (%1)").arg(colLabel));
+    // NOLINTNEXTLINE(bugprone-exception-escape)
+    connect(beforeAction, &QAction::triggered, this, [this, timeKeys, boundary]() {
+        const int col = FindColumnIndexByKeys(timeKeys);
+        if (col < 0)
+        {
+            return;
+        }
+        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, std::numeric_limits<qint64>::min(), boundary);
+    });
+
+    return menu;
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
