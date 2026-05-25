@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <unistd.h>
+#include <vector>
 #endif
 
 namespace
@@ -88,7 +89,20 @@ QString CurrentUserId()
         return QString::fromWCharArray(name, static_cast<int>(size) - 1);
     }
 #else
-    if (const struct passwd *pwd = getpwuid(getuid()); pwd && pwd->pw_name)
+    // Use the reentrant `getpwuid_r` (rather than `getpwuid`) so the
+    // function is thread-safe -- `CurrentUserId` is currently called
+    // single-threaded from `main()`, but the MT-safe variant costs
+    // nothing extra and silences `concurrency-mt-unsafe`.
+    long bufSize = sysconf(_SC_GETPW_R_SIZE_MAX);
+    if (bufSize <= 0)
+    {
+        bufSize = 16384;
+    }
+    std::vector<char> buf(static_cast<size_t>(bufSize));
+    struct passwd pwdStorage{};
+    struct passwd *pwd = nullptr;
+    const int rc = getpwuid_r(getuid(), &pwdStorage, buf.data(), buf.size(), &pwd);
+    if (rc == 0 && pwd != nullptr && pwd->pw_name != nullptr)
     {
         return QString::fromLocal8Bit(pwd->pw_name);
     }
