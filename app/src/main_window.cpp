@@ -1253,7 +1253,9 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
         return;
     }
 
-    // Local ref so the optional-access analyser sees the gate.
+    // `HasLocators` already gated `has_value`; clang-tidy's optional
+    // analyser cannot trace through the helper.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto &source = *mCurrentSource;
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
@@ -2511,6 +2513,9 @@ bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
         // No source -> can't be reopened from Recent Sessions.
         return false;
     }
+    // `HasLocators` already gated `has_value`; clang-tidy's optional
+    // analyser cannot trace through the helper.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto &source = *mCurrentSource;
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
@@ -2601,6 +2606,9 @@ QString MainWindow::RestorableActiveSessionUuid() const noexcept
         // Pinned uuid + no source = columns-only restore.
         return mAutoSaveUuid;
     }
+    // `HasLocators` already gated `has_value`; clang-tidy's optional
+    // analyser cannot trace through the helper.
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto &source = *mCurrentSource;
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {

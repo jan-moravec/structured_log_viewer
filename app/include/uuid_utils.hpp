@@ -9,7 +9,7 @@
 
 #include <optional>
 
-#if defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
 #include <Qt>
 #endif
 
@@ -42,7 +42,7 @@ namespace logapp
         return locator;
     }
     QString absolute = QFileInfo(locator).absoluteFilePath();
-#if defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
     // Windows is case-insensitive and treats `\` and `/` as equivalent.
     absolute.replace(QLatin1Char('\\'), QLatin1Char('/'));
     absolute = absolute.toLower();
@@ -63,7 +63,7 @@ namespace logapp
         return locator;
     }
     QString absolute = QFileInfo(locator).absoluteFilePath();
-#if defined(Q_OS_WIN)
+#ifdef Q_OS_WIN
     absolute.replace(QLatin1Char('\\'), QLatin1Char('/'));
 #endif
     return absolute;

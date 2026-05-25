@@ -126,7 +126,6 @@ public:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
-    void closeEvent(QCloseEvent *event) override;
 
     /// Restore the auto-saved session at @p jsonPath. Same logic as
     /// the Recent Sessions reopen path, but starts from a JSON path
@@ -393,6 +392,7 @@ public:
 
 protected:
     bool event(QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
     /// Discard the current session and return to an empty view.

@@ -88,7 +88,7 @@ QString CurrentUserId()
         return QString::fromWCharArray(name, static_cast<int>(size) - 1);
     }
 #else
-    if (struct passwd *pwd = getpwuid(getuid()); pwd && pwd->pw_name)
+    if (const struct passwd *pwd = getpwuid(getuid()); pwd && pwd->pw_name)
     {
         return QString::fromLocal8Bit(pwd->pw_name);
     }
