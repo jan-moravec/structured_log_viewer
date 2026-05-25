@@ -4779,6 +4779,308 @@ private slots:
         }
     }
 
+    // Stream a small three-row fixture with a `timestamp` column
+    // (auto-detected as `Type::Time`) and a `msg` column into the
+    // window's live model. Returns the time-column index (post-
+    // bubble), or -1 on streaming failure. Mirrors
+    // `StreamFixtureForColumnTests` but tailored to the row-menu
+    // tests that need a `Type::Time` slot to read from.
+    int StreamFixtureWithTimeColumnForRowMenuTests()
+    {
+        auto *model = mWindow->Model();
+        Q_ASSERT(model != nullptr);
+
+        // Explicit `+00:00` timezone offsets rather than `Z`: the
+        // streaming parser's time-promotion picks up the explicit-
+        // offset shape reliably with as few as three rows, while the
+        // `Z` suffix lands the column at `Type::Time` but leaves the
+        // value as a raw `OwnedString` (see `mixed_tz_and_order.jsonl`
+        // for the canonical format used by `TestFixtureMixedTzAndOrder`).
+        const QStringList lines{
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:02+00:00","msg":"second"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:03+00:00","msg":"third"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (!finishedSpy.isValid())
+        {
+            return -1;
+        }
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+
+        return ColumnByHeader(*model, QStringLiteral("timestamp"));
+    }
+
+    // `BuildRowContextMenu` must offer exactly the two inclusive
+    // "at or after" / "at or before" actions, labelled with the
+    // time column's header. Pinned so a future entry that
+    // accidentally lands on the row menu (or a label rewrite that
+    // drops the "this time" phrasing the design pinned) trips
+    // here.
+    void TestRowContextMenuOffersAtOrAfterAndAtOrBefore()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        const QList<QAction *> actions = menu->actions();
+        QCOMPARE(actions.size(), 2);
+        QVERIFY2(actions[0]->text().startsWith(QStringLiteral("Show only logs at or after this time")), "first action must be the 'at or after' entry");
+        QVERIFY2(actions[1]->text().startsWith(QStringLiteral("Show only logs at or before this time")), "second action must be the 'at or before' entry");
+        // The column label is interpolated into both entries so
+        // users see which time column the filter will bind to.
+        QVERIFY2(actions[0]->text().contains(QStringLiteral("timestamp")), "label must reference the time column");
+        QVERIFY2(actions[1]->text().contains(QStringLiteral("timestamp")), "label must reference the time column");
+    }
+
+    // When no `Type::Time` column is present the menu must return
+    // null so the host never advertises an action with no column
+    // to bind to. The `StreamFixtureForColumnTests` fixture has
+    // only `category` and `msg`, neither of which auto-promotes
+    // to `Type::Time`.
+    void TestRowContextMenuReturnsNullWithoutTimeColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model has no Type::Time column");
+    }
+
+    // Empty model: nothing to bind a timestamp to, so the menu
+    // must return null. Mirrors the `model->rowCount() > 0` gate
+    // that `BuildHeaderContextMenu` applies to its Add-filter
+    // entry.
+    void TestRowContextMenuReturnsNullWhenModelEmpty()
+    {
+        // Fresh `mWindow` from `init()`; no streaming, no rows.
+        QCOMPARE(mWindow->Model()->rowCount(), 0);
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model is empty");
+    }
+
+    // Out-of-range rows must not crash and must not produce a
+    // menu. Defensive cover for the unlikely race where a
+    // streaming `Reset` shrinks the model between popup build and
+    // the action's source-row capture.
+    void TestRowContextMenuReturnsNullForOutOfRangeRow()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        const int rowCount = mWindow->Model()->rowCount();
+        QVERIFY2(rowCount > 0, "fixture must yield at least one row");
+
+        QVERIFY2(
+            mWindow->BuildRowContextMenu(/*sourceRow=*/-1, nullptr) == nullptr,
+            "BuildRowContextMenu must reject negative source rows"
+        );
+        QVERIFY2(
+            mWindow->BuildRowContextMenu(/*sourceRow=*/rowCount, nullptr) == nullptr,
+            "BuildRowContextMenu must reject source rows beyond the model"
+        );
+    }
+
+    // Triggering the "at or after" action installs an additive
+    // time filter on the time column, with the clicked row's
+    // microseconds as the lower (inclusive) bound and INT64_MAX
+    // as the open upper bound. The lower bound is read straight
+    // off the model's `SortRole`, which already normalises every
+    // `Type::Time` slot to `qint64` microseconds since epoch.
+    void TestRowContextMenuAtOrAfterAddsTimeFilter()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        QCOMPARE(model->rowCount(), 3);
+        const qint64 row1Micros = model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong();
+        QVERIFY2(row1Micros > 0, "row 1 must carry a positive epoch-microseconds timestamp");
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QAction *afterAction = menu->actions().at(0);
+        QVERIFY2(afterAction != nullptr, "menu must carry an `at or after` action");
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        afterAction->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const auto &installed = mWindow->Filters().begin()->second;
+        QCOMPARE(installed.type, loglib::LogConfiguration::LogFilter::Type::Time);
+        QCOMPARE(installed.row, timeCol);
+        QVERIFY(installed.filterBegin.has_value());
+        QVERIFY(installed.filterEnd.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access)
+        QCOMPARE(*installed.filterBegin, row1Micros);
+        QCOMPARE(*installed.filterEnd, std::numeric_limits<qint64>::max());
+        // NOLINTEND(bugprone-unchecked-optional-access)
+    }
+
+    // Symmetric to the "at or after" test: the lower bound goes
+    // to INT64_MIN, the upper bound is the clicked row's micros.
+    void TestRowContextMenuAtOrBeforeAddsTimeFilter()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        QCOMPARE(model->rowCount(), 3);
+        const qint64 row2Micros = model->data(model->index(2, timeCol), LogModelItemDataRole::SortRole).toLongLong();
+        QVERIFY2(row2Micros > 0, "row 2 must carry a positive epoch-microseconds timestamp");
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/2, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QAction *beforeAction = menu->actions().at(1);
+        QVERIFY2(beforeAction != nullptr, "menu must carry an `at or before` action");
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        beforeAction->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const auto &installed = mWindow->Filters().begin()->second;
+        QCOMPARE(installed.type, loglib::LogConfiguration::LogFilter::Type::Time);
+        QCOMPARE(installed.row, timeCol);
+        QVERIFY(installed.filterBegin.has_value());
+        QVERIFY(installed.filterEnd.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access)
+        QCOMPARE(*installed.filterBegin, std::numeric_limits<qint64>::min());
+        QCOMPARE(*installed.filterEnd, row2Micros);
+        // NOLINTEND(bugprone-unchecked-optional-access)
+    }
+
+    // Regression: the action lambdas must re-resolve the time
+    // column by its stable keys at trigger time, so a column
+    // reorder between menu build and click still targets the
+    // column's current index. Mirrors
+    // `TestHeaderContextMenuAddFilterAfterColumnReorderResolvesByKeys`.
+    void TestRowContextMenuAddTimeFilterAfterColumnReorderResolvesByKeys()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        // Move the time column to a different index after the
+        // menu was built but before its action is triggered. The
+        // captured keys must re-resolve to the new index.
+        const int src = timeCol;
+        const int dest = (src == 0) ? columnCount - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow, "OnHeaderSectionMoved", Qt::DirectConnection, Q_ARG(int, src), Q_ARG(int, src), Q_ARG(int, dest)
+            ),
+            "OnHeaderSectionMoved slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        const int timeColAfter = ColumnByHeader(*model, QStringLiteral("timestamp"));
+        QCOMPARE(timeColAfter, dest);
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QAction *afterAction = menu->actions().at(0);
+        QVERIFY2(afterAction != nullptr, "menu must carry an `at or after` action");
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        afterAction->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const auto &installed = mWindow->Filters().begin()->second;
+        QCOMPARE(installed.row, timeColAfter);
+    }
+
+    // Each click adds a brand-new filter UUID rather than
+    // replacing any existing time filter on the same column. The
+    // additive behaviour is the design contract: combining
+    // "at or after X" and "at or before Y" by issuing two clicks
+    // is how the user narrows a window without ever opening the
+    // FilterEditor.
+    void TestRowContextMenuAdditiveDoesNotReplaceExisting()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+
+        // Pre-seed an inert time-range filter on the same column
+        // (window-wide bounds so no rows are filtered out of the
+        // fixture).
+        const QString preSeededId = QStringLiteral("pre-seeded-time-filter");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterTimeStampSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, preSeededId),
+                Q_ARG(int, timeCol),
+                Q_ARG(qint64, std::numeric_limits<qint64>::min()),
+                Q_ARG(qint64, std::numeric_limits<qint64>::max())
+            ),
+            "FilterTimeStampSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QAction *afterAction = menu->actions().at(0);
+        QVERIFY2(afterAction != nullptr, "menu must carry an `at or after` action");
+
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        afterAction->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
+        // The pre-seeded filter is still present with its
+        // original bounds; the menu installed a sibling, not a
+        // replacement.
+        const auto it = mWindow->Filters().find(preSeededId.toStdString());
+        QVERIFY2(it != mWindow->Filters().end(), "pre-seeded filter must survive the menu trigger");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
+        QCOMPARE(it->second.type, loglib::LogConfiguration::LogFilter::Type::Time);
+        QVERIFY(it->second.filterBegin.has_value());
+        QVERIFY(it->second.filterEnd.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access)
+        QCOMPARE(*it->second.filterBegin, std::numeric_limits<qint64>::min());
+        QCOMPARE(*it->second.filterEnd, std::numeric_limits<qint64>::max());
+        // NOLINTEND(bugprone-unchecked-optional-access)
+    }
+
     // `Column::visible` survives the Save / Reset / Load round-trip
     // (driven through the manager directly so the file dialogs
     // don't pop).
