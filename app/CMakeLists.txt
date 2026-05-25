@@ -49,6 +49,13 @@ set(PROJECT_SOURCES
     include/record_detail_dock.hpp
     src/record_detail_window.cpp
     include/record_detail_window.hpp
+    src/session_history_manager.cpp
+    include/session_history_manager.hpp
+    src/single_instance_guard.cpp
+    include/single_instance_guard.hpp
+    include/uuid_utils.hpp
+    include/log_warning.hpp
+    include/cli_parser.hpp
 )
 
 qt_add_library(logapp STATIC ${PROJECT_SOURCES})

@@ -1367,61 +1367,100 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
 
 bool LogTable::FinalizeAutoDetection()
 {
-    // Permissive sweep over surviving candidate trackers; runs at
-    // end-of-static-parse and end-of-stream. Idempotent.
-    if (mEnumTrackers.empty())
-    {
-        mIsStreaming = false;
-        return false;
-    }
-
+    // Permissive sweep over surviving candidate trackers + a demote
+    // sweep over already-promoted auto-detect enum/level columns;
+    // runs at end-of-static-parse and end-of-stream. Idempotent.
     bool promoted = false;
     const auto &columns = mConfiguration.Configuration().columns;
-    for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
+    if (!mEnumTrackers.empty())
     {
-        const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::Any || !column.autoDetect || column.keys.empty())
+        for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
         {
-            continue;
+            const auto &column = columns[columnIndex];
+            if (column.type != LogConfiguration::Type::Any || !column.autoDetect || column.keys.empty())
+            {
+                continue;
+            }
+            // Trackers are keyed by canonical `KeyId`.
+            const KeyId trackerKey = mData.Keys().Find(column.keys.front());
+            if (trackerKey == INVALID_KEY_ID)
+            {
+                continue;
+            }
+            auto trackerIt = mEnumTrackers.find(trackerKey);
+            if (trackerIt == mEnumTrackers.end())
+            {
+                continue;
+            }
+            const EnumCandidateTracker &tracker = trackerIt->second;
+            if (tracker.killed)
+            {
+                mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+                continue;
+            }
+            if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
+            {
+                PromoteColumnToEnum(columnIndex);
+                promoted = true;
+                continue;
+            }
+            if (tracker.size == 0 && tracker.presenceCount > 0)
+            {
+                mConfiguration.SetColumnType(
+                    columnIndex,
+                    RouteNoStringBail(
+                        tracker.intObservations,
+                        tracker.uintObservations,
+                        tracker.doubleObservations,
+                        tracker.boolObservations
+                    )
+                );
+                continue;
+            }
+            // Insufficient evidence: leave at `Type::Any + autoDetect` for
+            // a future re-load.
         }
-        // Trackers are keyed by canonical `KeyId`.
-        const KeyId trackerKey = mData.Keys().Find(column.keys.front());
-        if (trackerKey == INVALID_KEY_ID)
+    }
+
+    // Demote sweep: per-batch `ShouldDemote` is gated by a
+    // 50-sample floor; small files whose column is genuinely not
+    // enum-shaped can stay stuck at `Enumeration`. At finalize
+    // we have every row, so re-check the ratio without the floor.
+    // User-pinned columns (`autoDetect == false`) are not touched.
+    //
+    // Re-read `columns` after the candidate sweep above:
+    // `PromoteColumnToEnum` mutates `mConfiguration`.
+    {
+        const auto &columnsForDemote = mConfiguration.Configuration().columns;
+        for (size_t columnIndex = 0; columnIndex < columnsForDemote.size(); ++columnIndex)
         {
-            continue;
+            const auto &column = columnsForDemote[columnIndex];
+            if ((column.type != LogConfiguration::Type::Enumeration && column.type != LogConfiguration::Type::Level) ||
+                !column.autoDetect || column.keys.empty())
+            {
+                continue;
+            }
+            const KeyId canonical = mData.Keys().Find(column.keys.front());
+            if (canonical == INVALID_KEY_ID)
+            {
+                continue;
+            }
+            const auto healthIt = mEnumColumnHealth.find(canonical);
+            if (healthIt == mEnumColumnHealth.end())
+            {
+                continue;
+            }
+            const EnumColumnHealth &health = healthIt->second;
+            if (health.totalSlots == 0)
+            {
+                continue;
+            }
+            // Same ratio as the per-batch check, minus the floor.
+            if (health.ShouldDemote(ENUM_HEALTH_TOLERANCE_RATIO, /*minSamples=*/1U))
+            {
+                DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
+            }
         }
-        auto trackerIt = mEnumTrackers.find(trackerKey);
-        if (trackerIt == mEnumTrackers.end())
-        {
-            continue;
-        }
-        const EnumCandidateTracker &tracker = trackerIt->second;
-        if (tracker.killed)
-        {
-            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
-            continue;
-        }
-        if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
-        {
-            PromoteColumnToEnum(columnIndex);
-            promoted = true;
-            continue;
-        }
-        if (tracker.size == 0 && tracker.presenceCount > 0)
-        {
-            mConfiguration.SetColumnType(
-                columnIndex,
-                RouteNoStringBail(
-                    tracker.intObservations,
-                    tracker.uintObservations,
-                    tracker.doubleObservations,
-                    tracker.boolObservations
-                )
-            );
-            continue;
-        }
-        // Insufficient evidence: leave at `Type::Any + autoDetect` for
-        // a future re-load.
     }
 
     mEnumTrackers.clear();

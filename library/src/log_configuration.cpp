@@ -2,6 +2,7 @@
 
 #include "loglib/internal/ascii_case.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
+#include "loglib/internal/log_configuration_glaze_opts.hpp"
 #include "loglib/log_data.hpp"
 
 #include <glaze/glaze.hpp>
@@ -88,12 +89,8 @@ bool IsLogLevelKey(const std::string &key)
 namespace
 {
 
-// Glaze 7.x: indentation_width is an inheritable option.
-struct PrettyOpts : glz::opts
-{
-    uint8_t indentation_width = 4;
-};
-constexpr PrettyOpts PRETTIFY_OPTS{{.prettify = true}};
+// See `log_configuration_glaze_opts.hpp` for the pinned options.
+constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
 /// Wire-format shim for `SaveScope::ColumnsOnly`: emits only the
 /// `columns` array, skipping the default `filters` / `sort` blocks a
@@ -134,16 +131,24 @@ void LogConfigurationManager::Load(const std::filesystem::path &path)
     }
     std::ostringstream buffer;
     buffer << file.rdbuf();
-    const std::string content = buffer.str();
+    LoadFromString(buffer.str());
+}
 
+void LogConfigurationManager::LoadFromString(std::string_view content)
+{
     // Parse into a temporary first: Glaze writes member-by-member,
-    // so reading directly into `mConfiguration` would leave it
-    // half-populated if a parse error throws mid-file.
+    // so reading directly into `mConfiguration` could leave it
+    // half-populated on a mid-file parse error.
     LogConfiguration parsed;
-    const auto error = glz::read_json(parsed, content);
+    // `LOG_CONFIG_OPTS` (not `glz::read_json`) so
+    // `error_on_unknown_keys=false` lets legacy / forward-compat
+    // schemas load. See the header for the rationale.
+    const auto error = glz::read<LOG_CONFIG_OPTS>(parsed, content);
     if (error)
     {
-        throw std::runtime_error("Failed to parse configuration file: " + glz::format_error(error, content));
+        throw std::runtime_error(
+            "Failed to parse configuration file: " + glz::format_error(error, std::string(content))
+        );
     }
     mConfiguration = std::move(parsed);
     mCacheStale = true;
@@ -156,14 +161,21 @@ void LogConfigurationManager::Save(const std::filesystem::path &path) const
 
 void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope scope) const
 {
+    Save(mConfiguration, path, scope);
+}
+
+void LogConfigurationManager::Save(
+    const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope
+)
+{
     std::string json;
     if (scope == SaveScope::ColumnsOnly)
     {
         // Use the glaze shim so the written JSON has only `columns`,
         // not the default `filters` / `sort` blocks the full struct
         // would emit.
-        const ColumnsOnlyDocument document{.columns = mConfiguration.columns};
-        const auto error = glz::write<PRETTIFY_OPTS>(document, json);
+        const ColumnsOnlyDocument document{.columns = configuration.columns};
+        const auto error = glz::write<LOG_CONFIG_OPTS>(document, json);
         if (error)
         {
             throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
@@ -171,22 +183,67 @@ void LogConfigurationManager::Save(const std::filesystem::path &path, SaveScope 
     }
     else
     {
-        const auto error = glz::write<PRETTIFY_OPTS>(mConfiguration, json);
+        const auto error = glz::write<LOG_CONFIG_OPTS>(configuration, json);
         if (error)
         {
             throw std::runtime_error("Failed to serialize configuration: " + glz::format_error(error));
         }
     }
 
-    std::ofstream file(path);
-    if (file.is_open())
+    // Atomic write: stream to `<path>.tmp`, flush + check stream
+    // state, then rename. Prevents a crash / ENOSPC mid-write from
+    // leaving a truncated `<uuid>.json` the recents index points at.
+    // Stale `.tmp` files are swept by `CleanupOrphanFiles`.
+    const std::filesystem::path tempPath = path.string() + ".tmp";
     {
+        std::ofstream file(tempPath);
+        if (!file.is_open())
+        {
+            throw std::runtime_error("Failed to open file '" + tempPath.string() + "'.");
+        }
         file << json;
+        file.flush();
+        if (!file.good())
+        {
+            std::error_code cleanupEc;
+            std::filesystem::remove(tempPath, cleanupEc);
+            throw std::runtime_error("Failed to write file '" + tempPath.string() + "'.");
+        }
+        // Explicit close + good() check so close-time failures
+        // (network shares, deferred-write filesystems) are observable
+        // -- the destructor would swallow them.
+        file.close();
+        if (!file.good())
+        {
+            std::error_code cleanupEc;
+            std::filesystem::remove(tempPath, cleanupEc);
+            throw std::runtime_error("Failed to close file '" + tempPath.string() + "'.");
+        }
     }
-    else
+    std::error_code ec;
+    std::filesystem::rename(tempPath, path, ec);
+    if (ec)
     {
-        throw std::runtime_error("Failed to open file '" + path.string() + "'.");
+        std::error_code cleanupEc;
+        std::filesystem::remove(tempPath, cleanupEc);
+        throw std::runtime_error(
+            "Failed to rename '" + tempPath.string() + "' to '" + path.string() + "': " + ec.message()
+        );
     }
+}
+
+void LogConfigurationManager::Reset()
+{
+    // Default-construct so all fields return to factory state in
+    // one assignment.
+    mConfiguration = LogConfiguration{};
+    mCacheStale = true;
+}
+
+void LogConfigurationManager::SetConfiguration(LogConfiguration configuration)
+{
+    mConfiguration = std::move(configuration);
+    mCacheStale = true;
 }
 
 void LogConfigurationManager::Update(const LogData &logData)

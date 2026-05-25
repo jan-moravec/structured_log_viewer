@@ -27,15 +27,26 @@
     <property name="title">
      <string>File</string>
     </property>
+    <addaction name="actionNewWindow"/>
+    <addaction name="actionNewSession"/>
     <addaction name="actionOpen"/>
     <addaction name="actionOpenLogStream"/>
     <addaction name="actionOpenNetworkStream"/>
     <addaction name="separator"/>
+    <addaction name="menuRecentSessions"/>
     <addaction name="separator"/>
     <addaction name="actionLoadConfiguration"/>
     <addaction name="actionSaveConfiguration"/>
     <addaction name="actionSaveSession"/>
     <addaction name="actionExit"/>
+   </widget>
+   <widget class="QMenu" name="menuRecentSessions">
+    <property name="title">
+     <string>Recent Sessions</string>
+    </property>
+    <property name="toolTip">
+     <string>Reopen sessions you have viewed before. The list is rebuilt every time the submenu is shown.</string>
+    </property>
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
@@ -79,12 +90,23 @@
    <addaction name="menuSettings"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
+  <action name="actionNewSession">
+   <property name="text">
+    <string>New Session</string>
+   </property>
+   <property name="toolTip">
+    <string>Discard the current session (rows, filters, sort, source) and return to an empty view. Shift on drop / Open... is the in-place equivalent for static sessions.</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+N</string>
+   </property>
+  </action>
   <action name="actionOpen">
    <property name="text">
     <string>Open...</string>
    </property>
    <property name="toolTip">
-    <string>Open log file</string>
+    <string>Open log file(s). Files are appended to the current static session by default; hold Shift to replace it instead.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>
@@ -199,7 +221,18 @@
     <string>Open Network Stream...</string>
    </property>
    <property name="toolTip">
-    <string>Listen on a TCP/UDP port for live log lines (Ctrl+Shift+N)</string>
+    <string>Listen on a TCP/UDP port for live log lines (Ctrl+Shift+L)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+L</string>
+   </property>
+  </action>
+  <action name="actionNewWindow">
+   <property name="text">
+    <string>New Window</string>
+   </property>
+   <property name="toolTip">
+    <string>Open a second main window with its own session, sharing the same recent-sessions list (Ctrl+Shift+N).</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+Shift+N</string>
@@ -241,10 +274,10 @@
     <string>Stop</string>
    </property>
    <property name="toolTip">
-    <string>Stop the stream and freeze the visible rows (Ctrl+Shift+S)</string>
+    <string>Stop the stream and freeze the visible rows (Ctrl+Shift+X)</string>
    </property>
    <property name="shortcut">
-    <string>Ctrl+Shift+S</string>
+    <string>Ctrl+Shift+X</string>
    </property>
   </action>
  </widget>

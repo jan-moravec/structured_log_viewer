@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -134,7 +135,21 @@ struct LogConfiguration
 
     /// Persisted source descriptor. `nullopt` means "no source bound".
     /// On load the app may re-open this; rebind failure is non-fatal
-    /// (columns and filters still apply).
+    /// (columns and filters still apply). Legacy JSON using the
+    /// pre-widening `"locator"` field loses its source binding but
+    /// keeps the rest, courtesy of
+    /// `error_on_unknown_keys=false` (see `log_configuration_glaze_opts.hpp`).
+    ///
+    /// `locators` and `locatorDedupKeys` are parallel arrays:
+    /// - `locators[i]` is the human-facing path (original case;
+    ///   what the user sees and what `QFile::open` consumes).
+    /// - `locatorDedupKeys[i]` is the normalised dedup form
+    ///   (lower-cased on Windows). Equality between locators is
+    ///   compared on the dedup key.
+    ///
+    /// Mutate both vectors together via `AppendLocator` /
+    /// `ClearLocators`; direct `push_back` on either alone breaks
+    /// the invariant.
     struct Source
     {
         enum class Kind
@@ -143,8 +158,8 @@ struct LogConfiguration
             NetworkStream
         };
         Kind kind = Kind::File;
-        /// File path, network URI, etc. Opaque to `loglib`.
-        std::string locator;
+        std::vector<std::string> locators;
+        std::vector<std::string> locatorDedupKeys;
     };
 
     /// Required: drives the column layout for every consumer.
@@ -161,6 +176,32 @@ struct LogConfiguration
 /// `severity`, ...). `LogTable` uses this to gate `Enumeration -> Level`
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
+
+/// "Source is actionable" predicate. Centralises the
+/// `has_value() && !locators.empty()` gate so the half-checked form
+/// can't sneak through one call site at a time.
+[[nodiscard]] inline bool HasLocators(const std::optional<LogConfiguration::Source> &source) noexcept
+{
+    return source.has_value() && !source->locators.empty();
+}
+
+/// Append a locator, keeping `locators` and `locatorDedupKeys` in
+/// lockstep. All call sites that mutate `Source::locators` MUST go
+/// through this helper (or `ClearLocators`). @p dedupKey is taken
+/// pre-computed because canonicalisation lives in the application
+/// layer (the library has no Qt dependency).
+inline void AppendLocator(LogConfiguration::Source &target, std::string displayPath, std::string dedupKey)
+{
+    target.locators.push_back(std::move(displayPath));
+    target.locatorDedupKeys.push_back(std::move(dedupKey));
+}
+
+/// Drop every locator, keeping the parallel arrays in lockstep.
+inline void ClearLocators(LogConfiguration::Source &target)
+{
+    target.locators.clear();
+    target.locatorDedupKeys.clear();
+}
 
 /// Selects which fields `Save` writes. Both shapes share one JSON
 /// schema -- a `ColumnsOnly` file is a `Full` file with the
@@ -181,13 +222,35 @@ public:
 
     /// Throws `std::runtime_error` on open failure.
     void Load(const std::filesystem::path &path);
+
+    /// Parse from an in-memory buffer. Throws on parse failure.
+    /// Used by the app-side configuration probe so a bounded
+    /// prefix can be read from disk without streaming a
+    /// multi-gigabyte log through the IO path.
+    void LoadFromString(std::string_view content);
     /// Writes the full struct (equivalent to `SaveScope::Full`).
     void Save(const std::filesystem::path &path) const;
     /// Writes the subset selected by @p scope.
     void Save(const std::filesystem::path &path, SaveScope scope) const;
 
+    /// Free-standing save for callers that already hold a
+    /// `LogConfiguration` value. Throws on serialization / open
+    /// failure. @p scope has no default so callers can't silently
+    /// drift between Columns-only and Full as the schema grows.
+    static void Save(const LogConfiguration &configuration, const std::filesystem::path &path, SaveScope scope);
+
     /// Rebuilds the configuration from @p logData. Not safe mid-stream.
     void Update(const LogData &logData);
+
+    /// Wipe to a default-constructed `LogConfiguration`. Invalidates
+    /// the key cache. Used by `MainWindow::NewSession` to produce a
+    /// true blank-window state.
+    void Reset();
+
+    /// Replace the held configuration wholesale. Lets callers
+    /// apply an already-parsed value atomically (no second file
+    /// read). Invalidates the key cache.
+    void SetConfiguration(LogConfiguration configuration);
 
     /// Append-only: adds keys not already configured, auto-promoting
     /// timestamp-named ones. Existing column indices stay put.

@@ -717,48 +717,116 @@ void LogModel::EndStreaming(bool cancelled)
 {
     mStreamingActive = false;
 
-    // Graceful end-of-stream: run the permissive auto-detection sweep so
-    // small/short streams still get enum filter chips. Cancellation
-    // skips the sweep. Emit `enumColumnsChanged` only when something
-    // actually promoted, before `streamingFinished` so the picker has
-    // a stable dictionary by the time the UI re-enables editing.
+    // End-of-stream sweep so small streams still get enum filter
+    // chips. Cancellation skips it. Emit `enumColumnsChanged` for
+    // every promote / demote that lands during finalize, before
+    // `streamingFinished` so the UI has a stable dictionary.
     if (!cancelled)
     {
-        // Snapshot per-column types so we can emit one scoped
-        // `Promoted` per transitioned column. The lib API only
-        // reports "anything promoted?", so the diff happens here.
+        // Snapshot per-column types pre-finalize, plus per-Level
+        // dictionary contents so a Level -> ... demote can populate
+        // `mLastBatchLevelDemoteMapping` the same way the per-batch
+        // path does.
         std::vector<loglib::LogConfiguration::Type> typesBefore;
+        std::unordered_map<int, std::unordered_map<loglib::LogLevel, std::vector<std::string>>> levelMappingsBefore;
         {
             const auto &columnsBefore = mLogTable.Configuration().Configuration().columns;
+            const auto &keysBefore = mLogTable.Keys();
+            const auto &registryBefore = mLogTable.EnumDictionaries();
             typesBefore.reserve(columnsBefore.size());
-            for (const auto &column : columnsBefore)
+            for (size_t i = 0; i < columnsBefore.size(); ++i)
             {
+                const auto &column = columnsBefore[i];
                 typesBefore.push_back(column.type);
-            }
-        }
-        if (mLogTable.FinalizeAutoDetection())
-        {
-            const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
-            const size_t commonCount = std::min(typesBefore.size(), columnsAfter.size());
-            for (size_t i = 0; i < commonCount; ++i)
-            {
-                const bool isEnumLikeAfter = columnsAfter[i].type == loglib::LogConfiguration::Type::Enumeration ||
-                                             columnsAfter[i].type == loglib::LogConfiguration::Type::Level;
-                const bool wasEnumLikeBefore = typesBefore[i] == loglib::LogConfiguration::Type::Enumeration ||
-                                               typesBefore[i] == loglib::LogConfiguration::Type::Level;
-                // Fresh promotion to any enum-like type.
-                if (!wasEnumLikeBefore && isEnumLikeAfter)
+                if (column.type != loglib::LogConfiguration::Type::Level || column.keys.empty())
                 {
-                    emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                     continue;
                 }
-                // Sub-promotion `Enumeration -> Level`: same signal so
-                // the filter UI re-renders against the level picker.
-                if (typesBefore[i] == loglib::LogConfiguration::Type::Enumeration &&
-                    columnsAfter[i].type == loglib::LogConfiguration::Type::Level)
+                const loglib::KeyId kid = keysBefore.Find(column.keys.front());
+                if (kid == loglib::INVALID_KEY_ID)
                 {
-                    emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
+                    continue;
                 }
+                const loglib::EnumDictionary *dict = registryBefore.Find(kid);
+                const std::vector<loglib::LogLevel> *ranks = mLogTable.LevelRankCache(i);
+                if (dict == nullptr || ranks == nullptr)
+                {
+                    continue;
+                }
+                std::unordered_map<loglib::LogLevel, std::vector<std::string>> mapping;
+                const size_t resolveCount = std::min<size_t>(ranks->size(), dict->Size());
+                for (size_t valueId = 0; valueId < resolveCount; ++valueId)
+                {
+                    const loglib::LogLevel level = (*ranks)[valueId];
+                    if (level == loglib::LogLevel::Unknown)
+                    {
+                        continue;
+                    }
+                    const std::string_view bytes = dict->Resolve(static_cast<loglib::EnumValueId>(valueId));
+                    mapping[level].emplace_back(bytes);
+                }
+                if (!mapping.empty())
+                {
+                    levelMappingsBefore.emplace(static_cast<int>(i), std::move(mapping));
+                }
+            }
+        }
+
+        // Drop per-batch demote translations; finalize repopulates.
+        mLastBatchLevelDemoteMapping.clear();
+
+        // The bool return only reports promotions; the diff loop
+        // below is the source of truth for both promote and demote.
+        (void)mLogTable.FinalizeAutoDetection();
+
+        const auto &columnsAfter = mLogTable.Configuration().Configuration().columns;
+        const size_t commonCount = std::min(typesBefore.size(), columnsAfter.size());
+        for (size_t i = 0; i < commonCount; ++i)
+        {
+            const auto typeAfter = columnsAfter[i].type;
+            const auto typeBefore = typesBefore[i];
+            const bool isEnumLikeAfter = typeAfter == loglib::LogConfiguration::Type::Enumeration ||
+                                         typeAfter == loglib::LogConfiguration::Type::Level;
+            const bool wasEnumLikeBefore = typeBefore == loglib::LogConfiguration::Type::Enumeration ||
+                                           typeBefore == loglib::LogConfiguration::Type::Level;
+            // Fresh promotion to any enum-like type.
+            if (!wasEnumLikeBefore && isEnumLikeAfter)
+            {
+                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
+                continue;
+            }
+            // Sub-promotion `Enumeration -> Level`: same signal so
+            // the filter UI re-renders against the level picker.
+            if (typeBefore == loglib::LogConfiguration::Type::Enumeration &&
+                typeAfter == loglib::LogConfiguration::Type::Level)
+            {
+                emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
+                continue;
+            }
+            // Demote out of the enum family. Stash any pre-finalize
+            // level mapping so the receiver can rewrite canonical-
+            // name Level filters into raw dictionary entries.
+            if (wasEnumLikeBefore && !isEnumLikeAfter)
+            {
+                auto mappingIt = levelMappingsBefore.find(static_cast<int>(i));
+                if (mappingIt != levelMappingsBefore.end())
+                {
+                    mLastBatchLevelDemoteMapping[static_cast<int>(i)] = std::move(mappingIt->second);
+                }
+                emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, static_cast<int>(i));
+                continue;
+            }
+            // Sub-demote `Level -> Enumeration`: same handling as a
+            // full demote so saved Level filters get rewritten.
+            if (typeBefore == loglib::LogConfiguration::Type::Level &&
+                typeAfter == loglib::LogConfiguration::Type::Enumeration)
+            {
+                auto mappingIt = levelMappingsBefore.find(static_cast<int>(i));
+                if (mappingIt != levelMappingsBefore.end())
+                {
+                    mLastBatchLevelDemoteMapping[static_cast<int>(i)] = std::move(mappingIt->second);
+                }
+                emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, static_cast<int>(i));
             }
         }
     }

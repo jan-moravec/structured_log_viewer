@@ -43,17 +43,141 @@ class MainWindow;
 class QMenu;
 QT_END_NAMESPACE
 
+class SessionHistoryManager;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
 public:
+    /// Selects how `StartStreamingOpenQueue` interacts with the
+    /// current state. `Append` queues new files onto the active
+    /// static session without clobbering its filters / sort / rows.
+    /// `Replace` resets the model, clears filters, and drops the
+    /// source descriptor first. Live-tail / network sessions are
+    /// single-source and always behave as `Replace`.
+    enum class OpenMode
+    {
+        Append,
+        Replace,
+    };
+
+    /// Outcome of `DispatchMixedOpenInput`. Lets callers attach
+    /// entry-point-specific tails (e.g. the CLI `AppliedConfigOnly`
+    /// status-bar hint) based on which branch the dispatcher took.
+    enum class MixedInputDispatch
+    {
+        /// No configs in the input -- streamed via
+        /// `StartStreamingOpenQueue` in the caller's `OpenMode`.
+        QueuedLogsOnly,
+        /// One config, no logs -- applied via `TryLoadAsConfiguration`
+        /// (no model reset; existing rows survive).
+        AppliedConfigOnly,
+        /// One config + N logs -- applied via `DoLoadConfiguration`
+        /// (full reset), then logs streamed in `Append` mode so the
+        /// freshly-loaded columns / filters / sort apply.
+        AppliedConfigThenLogs,
+        /// Two or more configs -- rejected with a warning dialog and
+        /// no state mutated.
+        RejectedMultiConfig,
+    };
+
+    /// Full result of `DispatchMixedOpenInput`. `appliedConfigPath`
+    /// is non-empty iff @outcome is `AppliedConfigOnly` or
+    /// `AppliedConfigThenLogs`. Threading the chosen path back to
+    /// the caller lets user-facing status messages name the actual
+    /// configuration argument (not `files.front()`, which silently
+    /// lies when the config is not the first positional).
+    struct MixedInputResult
+    {
+        MixedInputDispatch outcome = MixedInputDispatch::QueuedLogsOnly;
+        QString appliedConfigPath;
+    };
+
+    /// No-history constructor: auto-save / Recent Sessions /
+    /// restore-on-launch are all no-ops. Used by the test fixture
+    /// and ad-hoc instances that don't care about history.
     MainWindow(QWidget *parent = nullptr);
+
+    /// Production constructor. The history manager is owned by
+    /// `main()`; the window keeps a non-owning pointer and writes
+    /// snapshots through it on streaming completion / close.
+    MainWindow(SessionHistoryManager *historyManager, QWidget *parent);
+
     ~MainWindow();
+
+    /// Locate the staged `tzdata/` directory and initialise loglib's
+    /// timezone database from it. Idempotent.
+    ///
+    /// Must be called before any timestamp-formatting code path.
+    /// `main()` calls this before constructing the primary window
+    /// and before the restore-on-launch flow; the test fixture
+    /// mirrors the call in `initTestCase`. Without this ordering
+    /// the first `loglib::CurrentZone()` (triggered by loading a
+    /// session with a time-range filter) probes the date library's
+    /// platform default path (on Windows: `<profile>/Downloads/tzdata`)
+    /// and fails with a misleading "Error Parsing Configuration".
+    ///
+    /// Returns true on success. On failure logs a `qCritical`
+    /// diagnostic and returns false; `main()` propagates that as a
+    /// non-zero exit code.
+    [[nodiscard]] static bool InitializeTimezoneDatabase();
 
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+
+    /// Restore the auto-saved session at @p jsonPath. Same logic as
+    /// the Recent Sessions reopen path, but starts from a JSON path
+    /// so it can run before any menu wiring (used by `main()`'s
+    /// restore-on-launch flow).
+    ///
+    /// `mAutoSaveUuid` is pinned only when the stem parses as a
+    /// `QUuid` AND @p jsonPath lives in `mHistoryManager->SessionsDir()`.
+    /// For external / non-uuid JSONs the configuration loads but the
+    /// pin is skipped: pinning would let the next AutoSave write a
+    /// managed copy under that stem and silently fork the user's
+    /// original file. External JSONs stay read-only in place; the
+    /// next save mints a fresh uuid.
+    void RestoreLastSessionFromPath(const QString &jsonPath);
+
+    /// Open CLI-provided file paths. Behaves like `OpenFiles` but
+    /// bypasses the dialog; used by `main()` after parsing argv and
+    /// by the single-instance forward handler. Always Append mode
+    /// so pre-loaded configuration filters survive into the new
+    /// session.
+    void OpenFilesForCli(const QStringList &files);
+
+    /// The auto-save uuid pinned to this window, or empty if none.
+    /// Used by `main()`'s `aboutToQuit` snapshot.
+    [[nodiscard]] QString ActiveSessionUuid() const noexcept
+    {
+        return mAutoSaveUuid;
+    }
+
+    /// Like `ActiveSessionUuid`, but returns empty when the current
+    /// session cannot be fan-restored on next launch (no source,
+    /// network stream, ...). `main()`'s `aboutToQuit` handler uses
+    /// this to avoid publishing non-restorable uuids into
+    /// `openWindowsAtQuit` (which would otherwise loop the user on
+    /// the "Network Stream Session" info popup every launch).
+    [[nodiscard]] QString RestorableActiveSessionUuid() const noexcept;
+
+    /// Mirror runtime session state into the configuration manager,
+    /// then `WriteSnapshot` through the injected history manager.
+    /// Reuses `mAutoSaveUuid` so a single window updates one recents
+    /// entry across its lifetime. No-op when the manager is null or
+    /// there is no source descriptor.
+    ///
+    /// When @p publishOpenWindow is true (the default), adds
+    /// `mAutoSaveUuid` to `openWindowsAtQuit` so a crash between
+    /// AutoSave and `closeEvent` still restores this window. The
+    /// `closeEvent` flush passes false because it immediately
+    /// removes the uuid again.
+    ///
+    /// Public so `main()`'s `aboutToQuit` handler can flush every
+    /// live window before exit.
+    void AutoSaveSessionSnapshot(bool publishOpenWindow = true);
 
     void UpdateUi();
 
@@ -82,6 +206,10 @@ public:
     /// Qt 6.8 + offscreen-QPA `findChild<QMenu*>` traversal bug also
     /// strands `findChild<QMenu*>("menuView")` on the Linux runner.
     [[nodiscard]] QMenu *ViewMenu() const;
+
+    /// Test-only `Recent Sessions` submenu accessor. Same Qt 6.8 +
+    /// offscreen-QPA traversal bug as `FiltersMenu()`.
+    [[nodiscard]] QMenu *RecentSessionsMenu() const;
 
     /// Toggle column visibility. Updates `Column::visible` and the
     /// header. No-op for an out-of-range index. Public for tests and
@@ -234,12 +362,65 @@ public:
     {
         return mDiagnosticsButton;
     }
+
+    /// Test-only entry to the queued static-files open path,
+    /// bypassing the file dialog and modifier sniff.
+    void OpenFilesForTest(const QStringList &files, OpenMode mode);
+
+    /// Test-only entry to the mixed-input dispatcher. Returns the
+    /// branch the dispatcher took so tests can assert on the shape
+    /// without scraping the status bar.
+    MixedInputDispatch OpenMixedFilesForTest(const QStringList &files, OpenMode logMode);
+
+    /// Drive the post-dialog body of `OpenLogStream` with @p filePath.
+    /// Lets tests exercise the live-tail open path without a real
+    /// modal `QFileDialog`.
+    void OpenLogStreamForTest(const QString &filePath);
+
+    /// Test-only forwarder to `NewSession`.
+    void NewSessionForTest()
+    {
+        NewSession();
+    }
+
+    /// Test-only forwarder to the `OpenRecentSession` private slot.
+    void OpenRecentSessionForTest(const QString &uuid)
+    {
+        OpenRecentSession(uuid);
+    }
 #endif
 
 protected:
     bool event(QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
+    /// Discard the current session and return to an empty view.
+    /// Bound to `actionNewSession` (Ctrl+N).
+    void NewSession();
+    /// Spawn a new top-level `MainWindow` sharing this manager.
+    /// Heap-allocated with `Qt::WA_DeleteOnClose`. No-op in
+    /// no-history mode.
+    void NewWindow();
+    /// Rebuild the `File -> Recent Sessions` submenu from the
+    /// manager's live list. Connected to `aboutToShow` so we never
+    /// paint stale entries.
+    void RebuildRecentSessionsMenu();
+    /// Reopen the recents entry @p uuid. Pre-flights the parse,
+    /// then `NewSession` + `DoLoadConfiguration` to restore columns
+    /// / filters / sort / source. Locators are streamed in `Append`
+    /// mode (non-destructive on the now-empty model). On success
+    /// `mAutoSaveUuid` is pinned to @p uuid so further edits update
+    /// that recents entry instead of forking a new one.
+    void OpenRecentSession(const QString &uuid);
+
+    /// Shared tail of `RestoreLastSessionFromPath` and
+    /// `OpenRecentSession`: stream `mCurrentSource->locators` or
+    /// short-circuit on unsupported / empty sources.
+    /// @p informIfNonFile picks between a silent skip (restore-on-
+    /// launch, never pop a dialog on startup) and a
+    /// `QMessageBox::information` (user-initiated click).
+    void StreamFromCurrentSourceOrSkip(bool informIfNonFile);
     void OpenFiles();
     void OpenLogStream();
     /// Pop the `NetworkStreamDialog`, build the matching producer, and
@@ -336,6 +517,39 @@ private slots:
     void RebuildViewMenu();
 
 private:
+    /// Forward-declaration so the function signatures below can
+    /// reference `SessionMode` before the full definition appears
+    /// among the data members. The underlying type is pinned to
+    /// match the definition.
+    enum class SessionMode : int;
+
+    /// RAII helper for the `mSessionSwitchInProgress` latch. Every
+    /// destructive open path needs to flip the flag on, run a
+    /// `mModel->Reset()` that synchronously emits
+    /// `streamingFinished(Cancelled)`, then flip it back off once
+    /// the new session is wired up. The RAII helper enforces the
+    /// contract at the type level so no early-return path can
+    /// forget the reset.
+    struct SessionSwitchScope
+    {
+        explicit SessionSwitchScope(MainWindow &owner) noexcept
+            : mOwner(owner)
+        {
+            mOwner.mSessionSwitchInProgress = true;
+        }
+        ~SessionSwitchScope()
+        {
+            mOwner.mSessionSwitchInProgress = false;
+        }
+        SessionSwitchScope(const SessionSwitchScope &) = delete;
+        SessionSwitchScope &operator=(const SessionSwitchScope &) = delete;
+        SessionSwitchScope(SessionSwitchScope &&) = delete;
+        SessionSwitchScope &operator=(SessionSwitchScope &&) = delete;
+
+    private:
+        MainWindow &mOwner;
+    };
+
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a
     /// reorder; menu lambdas use it to re-resolve the target column
@@ -358,14 +572,48 @@ private:
     /// success.
     bool TryLoadAsConfiguration(const QString &file);
 
-    /// Reset state and start a sequential streaming open of @p files.
-    /// The first file uses `BeginStreaming`; subsequent files are
-    /// dispatched through `AppendStreaming` on `streamingFinished`.
-    void StartStreamingOpenQueue(QStringList files);
+    /// Funnel for drop / Open... / CLI inputs that may mix
+    /// configuration JSONs and log files. Each path is classified
+    /// via `FileLooksLikeConfiguration`:
+    ///
+    /// - Zero configs -> `StartStreamingOpenQueue(files, logMode)`.
+    /// - One config, no logs -> `TryLoadAsConfiguration` (no reset).
+    /// - One config + N logs -> `DoLoadConfiguration` (full reset)
+    ///   then `StartStreamingOpenQueue(logs, Append)`.
+    /// - Two or more configs -> warning dialog, no state mutated.
+    ///
+    /// @p logMode is used only for the no-config branch (the mixed
+    /// branch is always `Append` since `DoLoadConfiguration` already
+    /// did the reset).
+    ///
+    /// The returned `appliedConfigPath` names the configuration the
+    /// dispatcher actually picked (not necessarily `files.front()`),
+    /// so callers can name it correctly in user-facing text.
+    MixedInputResult DispatchMixedOpenInput(const QStringList &files, OpenMode logMode);
+
+    /// Start a sequential streaming open of @p files.
+    ///
+    /// `OpenMode::Replace`: reset the model, clear runtime filters,
+    /// drop `mCurrentSource`, then queue the files (first via
+    /// `BeginStreaming`, subsequent via `AppendStreaming`).
+    ///
+    /// `OpenMode::Append`: keep the active static session intact and
+    /// queue @p files onto the back. With no active session it
+    /// behaves like `Replace` minus the destructive reset (so
+    /// previously-loaded columns / filters survive into the new
+    /// session). Live-tail / network sessions always force `Replace`.
+    void StartStreamingOpenQueue(QStringList files, OpenMode mode);
 
     /// Pop the next file off `mPendingOpenFiles` and parse it. Open
     /// errors accumulate in `mPendingOpenErrors`.
     void StreamNextPendingFile();
+
+    /// Slot for `LogModel::streamingFinished`. Hoisted out of an
+    /// inline lambda so crash-dump frames identify it by name and
+    /// tests can exercise the post-streaming reset logic directly.
+    /// Owns queue draining, session-mode reset, auto-save publish,
+    /// and parse-error surfacing.
+    void OnStreamingFinished(StreamingResult result);
 
     void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
 
@@ -386,6 +634,21 @@ private:
     [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
     void UpdateFilters();
 
+    /// True iff the window is worth auto-saving: history manager
+    /// attached, `File`-kind source with at least one locator, and
+    /// a static (re-openable) session. Live-tail / stream sessions
+    /// can't be restored from a JSON snapshot (the producer is
+    /// stateful), so we skip them. Takes the just-finished mode
+    /// explicitly because `streamingFinished` resets `mSessionMode`
+    /// to `Idle` before the auto-save hook runs.
+    [[nodiscard]] bool ShouldAutoSaveSession(SessionMode justFinishedMode) const;
+
+    /// Drop `mAutoSaveUuid` from the persisted open-windows set and
+    /// clear the field. Called from every state-discarding path so
+    /// the next AutoSave produces a fresh entry instead of
+    /// overwriting the previous session's JSON.
+    void DetachAutoSaveUuid();
+
     /// Snapshot `mFilters`, the proxy's sort, and `mCurrentSource`
     /// into the wire-format fields on the configuration. Filters
     /// are sorted by `(row, type, payload)` so two saves of an
@@ -393,13 +656,32 @@ private:
     /// should `deferSync = true` and mirror once at the end.
     void MirrorSessionStateToConfiguration();
 
+    /// Shared tail of `OpenLogStream` and `OpenLogStreamForTest`:
+    /// runs the actual open (producer construction, flush-and-reset
+    /// of the previous session, BeginStreaming) on @p file. Pulled
+    /// out so tests can drive the post-dialog path without a modal
+    /// `QFileDialog`.
+    void OpenLogStreamFromPath(const QString &file);
+
     /// Path-based save / load shared by the dialog slots and the
     /// test seams. `DoSaveConfiguration` mirrors session state and
     /// writes the slice selected by @p scope; throws on failure.
-    /// `DoLoadConfiguration` resets the model, validates saved
-    /// filters, restores sort, and returns false on parse error.
+    /// `DoLoadConfiguration` parses the file, then resets the model,
+    /// validates saved filters, restores sort. Returns false on
+    /// parse error. Detaches `mAutoSaveUuid` so the next AutoSave
+    /// creates a fresh recents entry instead of overwriting an
+    /// unrelated prior session; callers that want to re-pin
+    /// (`OpenRecentSession`, `RestoreLastSessionFromPath`) must do
+    /// so explicitly after a successful load.
     void DoSaveConfiguration(const QString &path, loglib::SaveScope scope);
     bool DoLoadConfiguration(const QString &path);
+
+    /// Apply an already-parsed `LogConfiguration` to the live model.
+    /// Shared tail of `DoLoadConfiguration`. Destructive: clears
+    /// proxy rules + sort, resets the model, replaces the
+    /// configuration, and rebuilds filters. Returns false (with a
+    /// warning dialog) if the apply step throws.
+    bool ApplyLoadedConfiguration(loglib::LogConfiguration parsed);
 
     /// Re-validate every saved filter against the freshly-loaded
     /// columns and revive survivors via `AddLogFilter`. Shared by
@@ -506,21 +788,46 @@ private:
     /// `LogConfiguration::source` before a `SaveScope::Full` save.
     std::optional<loglib::LogConfiguration::Source> mCurrentSource;
 
+    /// Non-owning. Provided by `main()` for the production window;
+    /// `nullptr` for ad-hoc / test-only instances, in which case
+    /// auto-save / Recent Sessions / restore-on-launch are no-ops.
+    SessionHistoryManager *mHistoryManager = nullptr;
+
+    /// uuid of the recents entry this window owns. Set after the
+    /// first successful `WriteSnapshot` so subsequent saves rewrite
+    /// the same JSON instead of appending one entry per save.
+    QString mAutoSaveUuid;
+
+    /// True iff `mAutoSaveUuid` is currently in `openWindowsAtQuit`.
+    /// Lets `DetachAutoSaveUuid` skip the cross-process
+    /// `RemoveOpenWindowUuid` round-trip when nothing was
+    /// published. Must stay in lockstep with `AddOpenWindowUuid`
+    /// call sites.
+    bool mAutoSaveUuidPublished = false;
+
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.
     std::vector<std::string> mPendingOpenErrors;
 
-    /// Streaming session kind; gates UI variants. Set on open, cleared
-    /// in `streamingFinished`.
-    enum class SessionMode
+    /// Streaming session kind; gates UI variants. Set on open,
+    /// cleared in `streamingFinished`. Underlying type pinned to
+    /// match the forward declaration above.
+    enum class SessionMode : int
     {
         Idle,
         Static,
         LiveTail,
     };
     SessionMode mSessionMode = SessionMode::Idle;
+
+    /// Mirror of `mSessionMode` retained across `streamingFinished`
+    /// (which resets `mSessionMode` to `Idle` before the auto-save
+    /// hook runs). `closeEvent` -> `AutoSaveSessionSnapshot` reads
+    /// this so a close after a finished live-tail correctly sees
+    /// `LiveTail` (and bails) instead of `Idle`.
+    SessionMode mLastTerminalSessionMode = SessionMode::Idle;
 
     [[nodiscard]] bool IsSessionActive() const noexcept
     {
@@ -550,6 +857,21 @@ private:
     /// re-fires `sectionMoved` while resetting visual order, and
     /// we swallow that volley.
     bool mApplyingSectionMove = false;
+
+    /// Re-entrancy guard for `enumColumnsChanged -> UpdateFilters`.
+    /// `UpdateFilters` rebuilds the proxy rules and re-asserts the
+    /// model; an enum demote during the rebuild can re-fire the
+    /// signal against half-updated state. The outer call finishes
+    /// its rebuild and the queued re-entry becomes a no-op.
+    bool mApplyingEnumRebuild = false;
+
+    /// Latch held by the `SessionSwitchScope` RAII helper across a
+    /// destructive `mModel->Reset()`. `OnStreamingFinished` short-
+    /// circuits on the `Cancelled` branch when this is set, so the
+    /// synchronous `streamingFinished(Cancelled)` emitted by `Reset()`
+    /// does not run outgoing-session UI bookkeeping while the
+    /// incoming session is being wired up.
+    bool mSessionSwitchInProgress = false;
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Skip `ShowDroppedFiltersDialog`'s modal so the test thread

@@ -47,4 +47,69 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
     static constexpr std::array keys{"file", "networkStream"};
     static constexpr std::array value{File, NetworkStream};
 };
+
+// Pinned wire schemas for nested types. Explicit names turn a field
+// rename into a compile-time conflict instead of a silent breaking
+// schema change. The names match the current implicit reflection,
+// so adopting these meta declarations is a no-op for on-disk JSON.
+template <> struct glz::meta<loglib::LogConfiguration::Source>
+{
+    using T = loglib::LogConfiguration::Source;
+    static constexpr auto value =
+        object("kind", &T::kind, "locators", &T::locators, "locatorDedupKeys", &T::locatorDedupKeys);
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::Column>
+{
+    using T = loglib::LogConfiguration::Column;
+    static constexpr auto value = object(
+        "header",
+        &T::header,
+        "keys",
+        &T::keys,
+        "printFormat",
+        &T::printFormat,
+        "type",
+        &T::type,
+        "parseFormats",
+        &T::parseFormats,
+        "visible",
+        &T::visible,
+        "levelMapping",
+        &T::levelMapping,
+        "autoDetect",
+        &T::autoDetect
+    );
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::LogFilter>
+{
+    using T = loglib::LogConfiguration::LogFilter;
+    static constexpr auto value = object(
+        "type",
+        &T::type,
+        "row",
+        &T::row,
+        "filterString",
+        &T::filterString,
+        "matchType",
+        &T::matchType,
+        "filterBegin",
+        &T::filterBegin,
+        "filterEnd",
+        &T::filterEnd,
+        "filterMinValue",
+        &T::filterMinValue,
+        "filterMaxValue",
+        &T::filterMaxValue,
+        "filterValues",
+        &T::filterValues
+    );
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::Sort>
+{
+    using T = loglib::LogConfiguration::Sort;
+    static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
+};
 // NOLINTEND(readability-identifier-naming)

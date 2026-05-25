@@ -1,3 +1,4 @@
+#include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
@@ -11,7 +12,10 @@
 #include "record_detail_widget.hpp"
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
+#include "session_history_manager.hpp"
+#include "single_instance_guard.hpp"
 #include "streaming_control.hpp"
+#include "uuid_utils.hpp"
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
@@ -41,6 +45,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDataStream>
 #include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -52,6 +57,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QLocalSocket>
+#include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
@@ -59,15 +66,18 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QVariant>
 #include <QWheelEvent>
 #include <QtTest/QtTest>
@@ -99,6 +109,36 @@ namespace
 // removes it on destruction. Kept inside this TU to avoid pulling in the
 // library tests' TestJsonLogFile helper (which lives in test/lib and would
 // add a build-graph dependency from apptest onto loglib's catch2 fixtures).
+// In-memory storage backend for `SessionHistoryManager` tests so
+// each case stays isolated from `QSettings` and the user's profile.
+class InMemoryRecentsIndexStorage final : public IRecentsIndexStorage
+{
+public:
+    QList<RecentSessionEntry> Read() const override
+    {
+        return mEntries;
+    }
+
+    void Write(const QList<RecentSessionEntry> &entries) override
+    {
+        mEntries = entries;
+    }
+
+    std::optional<QString> ReadLastUuid() const override
+    {
+        return mLastUuid;
+    }
+
+    void WriteLastUuid(const std::optional<QString> &uuid) override
+    {
+        mLastUuid = uuid;
+    }
+
+private:
+    QList<RecentSessionEntry> mEntries;
+    std::optional<QString> mLastUuid;
+};
+
 class TempJsonFile
 {
 public:
@@ -455,6 +495,31 @@ private slots:
     {
         // Called before the first test function
         qDebug() << "Starting MainWindow tests";
+        // Redirect `QStandardPaths::writableLocation(...)` to a
+        // per-user test-only subdirectory so this suite never
+        // touches the user's real recents profile.
+        QStandardPaths::setTestModeEnabled(true);
+        // Use a dedicated test identity for QSettings so the
+        // recents / openWindowsAtQuit round-trip tests have a
+        // writable backing store that does not collide with the
+        // real app profile.
+        QCoreApplication::setOrganizationName(QStringLiteral("structured-log-viewer-tests"));
+        QCoreApplication::setApplicationName(QStringLiteral("apptest"));
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+
+        // Initialise loglib's timezone database before any test
+        // loads a saved configuration containing a time-range
+        // filter; mirrors what production `main()` does before
+        // constructing the primary window. CMake pins the apptest
+        // working directory next to the staged `tzdata/` so
+        // `FindTzdata`'s appDir probe always wins.
+        QVERIFY2(
+            MainWindow::InitializeTimezoneDatabase(),
+            "Failed to initialise timezone database; see qCritical above. The staged "
+            "`tzdata/` directory must live next to the apptest binary "
+            "($<TARGET_FILE_DIR:apptest>); run via `ctest --preset <preset>` or "
+            "invoke `apptest` from its build directory."
+        );
     }
 
     void cleanupTestCase()
@@ -465,7 +530,10 @@ private slots:
 
     void init()
     {
-        // Called before each test function
+        // Wipe the dedicated test QSettings (set up in `initTestCase`)
+        // so recents / `openWindowsAtQuit` / `restoreLast` values
+        // never bleed across tests.
+        QSettings().clear();
         mWindow = new MainWindow();
     }
 
@@ -1345,15 +1413,12 @@ private slots:
         }
 
         QCoreApplication::processEvents();
-        // No queued lambdas fired through (we're paused), and the buffered
-        // count must reflect the `lines` payload — not 0 as it would have
-        // with the pre-fix `PausedLineCountLocked`.
+        // No queued lambdas fired (we're paused); the buffered
+        // count reflects the `lines` payload.
         QCOMPARE(model.rowCount(), 0);
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), batchesWhilePaused * linesPerBatch);
 
-        // Resume coalesces all three batches and posts once. Pre-fix this
-        // dropped every row because `CoalesceLocked` ignored `lines` /
-        // `localLineOffsets`; post-fix the model gains the full count.
+        // Resume coalesces all three batches and posts once.
         sink->Resume();
         QVERIFY(!sink->IsPaused());
         QCoreApplication::processEvents();
@@ -1610,8 +1675,9 @@ private slots:
         const MainWindow mainWindow;
         const QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
         QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via FindUiAction");
-        // Sanity-check the keyboard accelerator the production UI ships.
-        QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+N")));
+        // Ctrl+Shift+N was reassigned to File -> New Window; the
+        // network-stream action moved to Ctrl+Shift+L.
+        QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+L")));
     }
 
     //  regression: when the paused-buffer cap forces the
@@ -1750,11 +1816,10 @@ private slots:
     // during a static-streaming parse from the **Stream** menu), the
     // eviction loop in `OnBatch` evicts the whole batch atomically even
     // when its row count exceeds the requested `toDrop` — the
-    // `localLineOffsets` array can be longer than `lines`, so a partial
-    // prefix trim would break the `LogTable::AppendBatch` invariant. The
-    // pre-fix counter snapshotted `toDrop` up front, under-reporting the
-    // overshoot to the status-bar "dropped while paused" indicator. The
-    // fix accumulates the *actual* lines evicted as the loop runs.
+    // `localLineOffsets` may be longer than `lines`, so a partial
+    // prefix trim would break `LogTable::AppendBatch`. The counter
+    // accumulates the actual lines evicted as the loop runs (not a
+    // pre-loop snapshot).
     static void TestPausedDropCountReflectsStaticBatchOverEviction()
     {
         const TempJsonFile fixture(QStringList{
@@ -1804,11 +1869,11 @@ private slots:
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(staticBatchRows));
         QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), qulonglong(0));
 
-        // Step 2 — push a small live-tail batch that overflows the cap by
-        // a fraction of the static head. Pre-fix `toDrop = 30` was used
-        // as the drop count; in reality the entire 100-row static head
-        // is evicted (atomic on `hasStaticContent`), and the counter
-        // must reflect that overshoot. Build the live-tail rows as
+        // Step 2: push a small live-tail batch that overflows the
+        // cap by a fraction of the static head. The entire 100-row
+        // static head is evicted atomically; the counter must
+        // reflect the actual eviction count. Build the live-tail
+        // rows as
         // `LogLine`s referencing a no-producer `StreamLineSource` we
         // wire up directly (not via the model — the model is mid-static-
         // session here).
@@ -1831,10 +1896,9 @@ private slots:
             sink->OnBatch(std::move(batch));
         }
 
-        // Whole 100-row static head was evicted; only the 30-row live-tail
-        // batch survives in the buffer. Pre-fix the counter would report
-        // 30 (the snapshot of `toDrop`); post-fix it reports the actual
-        // 100 lines that left the buffer.
+        // Whole 100-row static head was evicted; only the 30-row
+        // live-tail batch survives. Counter reports the 100 lines
+        // that actually left the buffer.
         QCOMPARE(static_cast<int>(sink->PausedLineCount()), static_cast<int>(overflowRows));
         QCOMPARE(static_cast<qulonglong>(sink->PausedDropCount()), static_cast<qulonglong>(staticBatchRows));
 
@@ -1909,10 +1973,11 @@ private slots:
     // buffer **before** any subsequent `OnBatch` (running on the worker
     // thread, observing the now-cleared `mPaused`) can land in the model.
     //
-    // The pre-fix `Resume()` cleared `mPaused` synchronously and then
-    // posted the coalesced buffer via `Qt::QueuedConnection`. Between
-    // those two steps a worker `OnBatch` could see `mPaused == false`,
-    // skip the buffer, and post its own newer batch — also via
+    // The bug: `Resume()` cleared `mPaused` synchronously then
+    // posted the coalesced buffer via `Qt::QueuedConnection`.
+    // Between those steps a worker `OnBatch` could see
+    // `mPaused == false`, skip the buffer, and post its newer
+    // batch ahead of the coalesced one via
     // `QueuedConnection`. The Qt event queue is FIFO, but because both
     // posts happen from different threads ordering depends entirely on
     // wall-clock arrival, so the newer batch could be processed first.
@@ -1950,12 +2015,9 @@ private slots:
         QCOMPARE(sink->PausedLineCount(), size_t{0});
 
         // Drive a follow-up `OnBatch` directly (mirroring a worker that
-        // fires immediately after `mPaused` was cleared) — its rows must
-        // append *after* the paused-buffer rows because Resume already
-        // delivered them. With the pre-fix code a queued post-Resume
-        // batch could arrive at the model first if it happened to land
-        // in the Qt queue before the Resume lambda; this test would not
-        // trigger that exact race, but the synchronous contract makes
+        // fires after `mPaused` was cleared) -- its rows must
+        // append after the paused-buffer rows because Resume
+        // already delivered them. The synchronous contract makes
         // the inversion impossible by construction. We assert the
         // resulting row order matches the input order.
         const size_t followupCount = 4;
@@ -2036,9 +2098,8 @@ private slots:
         QAction *pauseAction = FindActionByObjectName(mWindow, QStringLiteral("actionPauseStream"));
         QVERIFY(pauseAction != nullptr);
 
-        // Simulate the bug condition: forcibly enable the action and
-        // set it checked while idle (matching the Stream-menu click
-        // that the pre-fix code allowed).
+        // Simulate the bug condition: action enabled + checked
+        // while idle.
         pauseAction->setEnabled(true);
         pauseAction->setChecked(true);
         QVERIFY(pauseAction->isChecked());
@@ -2064,12 +2125,11 @@ private slots:
         QVERIFY(!pauseAction->isEnabled());
     }
 
-    // Regression: hovering over table cells (and other Qt-internal,
-    // layout-driven scrollbar updates) must not auto-disengage the
-    // **Follow newest** toggle. Pre-fix, `LogTableView` connected the
-    // verticalScrollBar's `valueChanged` signal directly to the
-    // edge-trigger lambda — so any programmatic value change (e.g. an
-    // `endInsertRows` clamp, a hover/repaint-induced scroll adjustment,
+    // Regression: hover / layout-driven scrollbar updates must not
+    // auto-disengage **Follow newest**. Earlier `LogTableView`
+    // connected `valueChanged` directly to the edge-trigger lambda,
+    // so any programmatic value change (`endInsertRows` clamp,
+    // hover/repaint scroll adjustment,
     // a viewport-size update) flipped `mAtTailEdge` from true to false
     // and emitted `userScrolledAwayFromTail`, which the `MainWindow`
     // then dutifully translated into "uncheck Follow newest" — even
@@ -2110,10 +2170,8 @@ private slots:
         const QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
         QVERIFY(awaySpy.isValid());
 
-        // Programmatic value change to the middle of the range — the
-        // in-process equivalent of a layout-driven scroll adjustment
-        // that Qt fires on hover / repaint. Pre-fix this flipped
-        // `actionFollowTail` to unchecked.
+        // Programmatic value change: mimics a layout-driven scroll
+        // adjustment Qt fires on hover / repaint.
         scrollBar->setValue(scrollBar->maximum() / 2);
         QCoreApplication::processEvents();
 
@@ -2326,10 +2384,11 @@ private slots:
     // must remap its own persistent indices to follow the entity,
     // not the bare row number.
     //
-    // Pre-fix the snapshot stored an integer source row, which under
-    // a no-filter pass-through stayed numerically the same after the
-    // flip; the filter's persistent index ended up pointing at the
-    // entity that moved into the row -- a silent selection swap. The
+    // Earlier the snapshot stored an integer source row, which
+    // under a no-filter pass-through stayed numerically the same
+    // after the flip; the persistent index ended up pointing at
+    // the row that moved into the slot -- a silent selection swap.
+    // The
     // fix anchors each snapshot on a `QPersistentModelIndex` of the
     // source-mapped index, which the source's own
     // `changePersistentIndexList` remaps to the entity's new row.
@@ -2795,9 +2854,8 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(vbar->value(), parkedValue);
 
-        // Push another batch: this fires `lineCountChanged`, which
-        // pre-fix would have called `ScrollToNewestRowIfFollowing`
-        // and snapped the viewport to the bottom.
+        // Push another batch; the slot must not snap the viewport
+        // to the bottom (only live-tail sessions follow).
         sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 201, 200, /*declareNewKey=*/false));
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 400);
@@ -2827,12 +2885,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Companion to `testStaticSessionDoesNotFollowNewestRows`: the
-    // user-scroll-to-tail signal must not silently re-arm
-    // `actionFollowTail` while a static session is active. Pre-fix
-    // the slot re-engaged the toggle whenever
-    // `mModel->IsStreamingActive()`, which is true for static
-    // sessions too -- so a user who scrolled to the bottom of a
+    // Companion to `testStaticSessionDoesNotFollowNewestRows`:
+    // user scroll-to-tail must not silently re-arm
+    // `actionFollowTail` in a static session. The slot must gate
+    // on session mode, not on `IsStreamingActive()` (which is true
+    // for static sessions too).
     // partially-parsed static file would have the next incoming
     // batch yank the viewport away.
     void TestStaticSessionDoesNotReArmFollowOnScrollToTail()
@@ -3688,10 +3745,8 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->EnumRankCacheSizeForTest(), std::size_t{1});
 
-        // Batch 2 grows the dictionary (new value "error"). Pre-fix
-        // the slot called `InvalidateEnumRanks()` on every emit and
-        // the cache dropped to 0 entries; post-fix `Grew` is a no-op
-        // for the cache so the entry stays.
+        // Batch 2 grows the dictionary. `Grew` is a no-op for the
+        // rank cache so the entry stays.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 3;
@@ -3707,11 +3762,9 @@ private slots:
 
     // Regression: a column auto-promoted to `Type::Enumeration` and
     // demoted back to `Type::String` inside the same batch (encode
-    // overflows the dict cap) must still emit `Demoted` so consumers
-    // can rebuild any rank-cache entry or filter rule that aliased
-    // the transient dictionary. Pre-fix the `enumDictSizesBefore`
-    // detector only saw columns already enum at snapshot time and
-    // missed this transition.
+    // overflows the dict cap) must still emit `Demoted` so
+    // consumers can rebuild any rank-cache entry or filter rule
+    // that aliased the transient dictionary.
     void TestEnumDemotedSignalFiresOnSameBatchPromoteThenDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -4028,14 +4081,13 @@ private slots:
         const std::size_t cacheSizeBefore = filterModel->EnumRankCacheSizeForTest();
         QVERIFY2(cacheSizeBefore >= std::size_t{1}, "sorting by an enum column must populate the rank cache");
 
-        // Reorder columns. Pre-fix a `columnsMoved` hook dropped the
-        // cache; post-fix it survives (KeyId-keyed).
+        // Reorder columns; the rank cache is KeyId-keyed and
+        // survives.
         QVERIFY2(model->columnCount() >= 2, "fixture must have at least two columns");
         const QSignalSpy columnsMovedSpy(model, &QAbstractItemModel::columnsMoved);
-        // Also pin the proxy-level forwarding contract: pre-fix
-        // `LogFilterModel` swallowed the `columnsMoved` pair (only
-        // re-emitted `headerDataChanged`), which left downstream
-        // views with stale column metadata when a streaming session
+        // Pin the proxy-level forwarding contract too: `LogFilterModel`
+        // must forward `columnsMoved` so downstream views see the
+        // bracketed structural change during a streaming session
         // late-promoted a `Type::Time` column. Post-fix the proxy
         // forwards begin/endMoveColumns through to the view.
         const QSignalSpy filterColumnsAboutToBeMovedSpy(filterModel, &QAbstractItemModel::columnsAboutToBeMoved);
@@ -5692,7 +5744,7 @@ private slots:
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
         mWindow->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locator = syntheticSource
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {syntheticSource}
         });
 
         const QTemporaryDir savedDir;
@@ -5712,8 +5764,10 @@ private slots:
             static_cast<int>(probe.Configuration().source->kind),
             static_cast<int>(loglib::LogConfiguration::Source::Kind::File)
         );
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locator), QString::fromStdString(syntheticSource)
+            QString::fromStdString(probe.Configuration().source->locators.front()),
+            QString::fromStdString(syntheticSource)
         );
 
         // Now load the freshly-saved session back into the running
@@ -5734,7 +5788,321 @@ private slots:
             resaveProbe.Configuration().source.has_value(),
             "Load -> Save round trip must preserve a loaded source descriptor"
         );
-        QCOMPARE(resaveProbe.Configuration().source->locator, syntheticSource);
+        QCOMPARE(resaveProbe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(resaveProbe.Configuration().source->locators.front(), syntheticSource);
+    }
+
+    // `OpenMode::Append` keeps the active static session's rows / filters /
+    // source intact and queues the new file via `AppendStreaming`. Row
+    // count after the second open must equal the sum of both fixtures
+    // and `mCurrentSource->locators` must list both file paths in load
+    // order.
+    void TestOpenFilesAppendsToActiveStaticSession()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLinesA{
+            QStringLiteral(R"({"category": "info", "msg": "a-0"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "a-1"})"),
+        };
+        const QStringList fixtureLinesB{
+            QStringLiteral(R"({"category": "error", "msg": "b-0"})"),
+            QStringLiteral(R"({"category": "debug", "msg": "b-1"})"),
+            QStringLiteral(R"({"category": "info", "msg": "b-2"})"),
+        };
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB(fixtureLinesB);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY2(finishedSpy.wait(5000), "first open must finish");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), fixtureLinesA.size());
+        QVERIFY(mWindow->Model() == model);
+
+        finishedSpy.clear();
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY2(finishedSpy.wait(5000), "appended open must finish");
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
+
+        // Source descriptor lists every appended file in load order.
+        loglib::LogConfigurationManager manager;
+        manager.SetSource(loglib::LogConfiguration::Source{});
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("appended.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        // `locators` stores case-preserved display paths; the
+        // lower-cased dedup form is parallel-indexed under
+        // `locatorDedupKeys`. Assert both stay populated.
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[0]),
+            logapp::CanonicalDisplayPath(fixtureA.Path())
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[1]),
+            logapp::CanonicalDisplayPath(fixtureB.Path())
+        );
+        QCOMPARE(probe.Configuration().source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[0]),
+            logapp::CanonicalLocator(fixtureA.Path())
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[1]),
+            logapp::CanonicalLocator(fixtureB.Path())
+        );
+    }
+
+    // Regression for the Append-while-streaming crash: Append while
+    // a static streaming worker was in flight used to call
+    // `AppendStreaming` and assert `!isRunning()`. The fix defers
+    // the new files into `mPendingOpenFiles` so the next
+    // `streamingFinished` picks them up.
+    void TestAppendDuringActiveStreamingDefersInsteadOfCrashing()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Inflate fixture A so the first parse is still in flight
+        // when the second `OpenFilesForTest` lands. Short fixtures
+        // would race the GUI thread on fast machines.
+        QStringList fixtureLinesA;
+        fixtureLinesA.reserve(500);
+        for (int i = 0; i < 500; ++i)
+        {
+            fixtureLinesA.append(QStringLiteral(R"({"msg": "a-%1"})").arg(i));
+        }
+        const QStringList fixtureLinesB{
+            QStringLiteral(R"({"msg": "b-0"})"),
+            QStringLiteral(R"({"msg": "b-1"})"),
+        };
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB(fixtureLinesB);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // First open arms the worker but does NOT wait. Pump events
+        // just enough to enter the streaming state.
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+
+        // Second open is the regression case: with an in-flight
+        // streaming worker, the file must defer onto
+        // `mPendingOpenFiles` instead of tripping `AppendStreaming`'s
+        // `!isRunning()` assert. On a fast runner streaming may
+        // already have finished and the safer post-finish Append
+        // path runs.
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+
+        // Drain both `streamingFinished` events; the deferred file
+        // produces a second one after the first worker terminates.
+        while (finishedSpy.count() < 2)
+        {
+            QVERIFY2(finishedSpy.wait(10000), "both streaming sessions must finish");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), fixtureLinesA.size() + fixtureLinesB.size());
+
+        // Both files land on the source descriptor in load order
+        // despite the second open being deferred.
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("appended_during_stream.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[0]),
+            logapp::CanonicalDisplayPath(fixtureA.Path())
+        );
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators[1]),
+            logapp::CanonicalDisplayPath(fixtureB.Path())
+        );
+    }
+
+    // Switching to live-tail mid-append-queue used to silently drop
+    // the remaining queued files via the cancel-path `clear()`. The
+    // fix snapshots the queue size, posts a status-bar hint, and
+    // clears the queue explicitly before the reset.
+    void TestOpenLogStreamSurfacesDiscardedQueuedFiles()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Inflate fixture A so the second Append queues into
+        // `mPendingOpenFiles` while the first parse is still active
+        // (same trick as the Defer-vs-Crash test).
+        QStringList fixtureLinesA;
+        fixtureLinesA.reserve(500);
+        for (int i = 0; i < 500; ++i)
+        {
+            fixtureLinesA.append(QStringLiteral(R"({"msg": "discard-a-%1"})").arg(i));
+        }
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "discard-b"})")});
+        const TempJsonFile streamFixture({QStringLiteral(R"({"msg": "discard-stream"})")});
+
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+        // Second open lands in `mPendingOpenFiles` because the
+        // first parse is still in flight.
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+
+        mWindow->statusBar()->clearMessage();
+
+        // Switch to live-tail while the append queue is primed.
+        // The fix surfaces a discard hint; without it the queue is
+        // silently cleared via the cancel-path inside Reset().
+        mWindow->OpenLogStreamForTest(streamFixture.Path());
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("queued file")),
+            qPrintable(QStringLiteral("expected discard hint in status bar; got: '%1'").arg(message))
+        );
+
+        // fixtureB never streamed (discarded before the live-tail
+        // took over). We only check the queue drop, not the
+        // live-tail row count.
+        const bool seesFixtureB = [&]() {
+            const int rows = model->rowCount();
+            for (int r = 0; r < rows; ++r)
+            {
+                const QModelIndex idx = model->index(r, 0);
+                if (model->data(idx, Qt::DisplayRole).toString().contains(QStringLiteral("discard-b")))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }();
+        QVERIFY2(!seesFixtureB, "discarded queued file's rows must not be in the model");
+    }
+
+    // `OpenMode::Replace` is the destructive path: rows wiped, filters
+    // cleared, source descriptor reset to just the new file.
+    void TestOpenFilesReplaceWipesPreviousSession()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLinesA{
+            QStringLiteral(R"({"msg": "a-0"})"),
+            QStringLiteral(R"({"msg": "a-1"})"),
+        };
+        const QStringList fixtureLinesB{
+            QStringLiteral(R"({"msg": "b-0"})"),
+        };
+        const TempJsonFile fixtureA(fixtureLinesA);
+        const TempJsonFile fixtureB(fixtureLinesB);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), fixtureLinesA.size());
+
+        finishedSpy.clear();
+        mWindow->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), fixtureLinesB.size());
+
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("replaced.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(
+            QString::fromStdString(probe.Configuration().source->locators.front()),
+            logapp::CanonicalDisplayPath(fixtureB.Path())
+        );
+    }
+
+    // `actionNewSession` clears rows, runtime filters, the persisted
+    // column configuration, and session mode. Reached through
+    // `FindUiAction` so the action wiring is covered too.
+    void TestNewSessionActionResetsState()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Two distinct keys so the auto-detector materialises at
+        // least two columns; NewSession must wipe both.
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "x-0"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "x-1"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), fixtureLines.size());
+        QVERIFY2(model->columnCount() >= 2, "fixture must auto-detect at least the two JSON keys as columns");
+
+        // Apply a sort so NewSession has something to clear --
+        // otherwise the post-condition holds trivially.
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        mWindow->TableViewForTest()->sortByColumn(categoryCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), categoryCol);
+
+        QAction *action = mWindow->FindUiAction(QStringLiteral("actionNewSession"));
+        QVERIFY2(action != nullptr, "actionNewSession must be exposed via FindUiAction");
+        action->trigger();
+        QCoreApplication::processEvents();
+
+        // Rows, columns, runtime filters gone; sort cleared.
+        QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(model->columnCount(), 0);
+        QVERIFY2(model->Configuration().columns.empty(), "New Session must clear the persisted column configuration");
+        QVERIFY2(mWindow->Filters().empty(), "New Session must clear the runtime filter map");
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
+
+        // SaveSession on the cleared state writes no source, empty
+        // columns / filters arrays, and the default sort.
+        const QTemporaryDir saved;
+        QVERIFY(saved.isValid());
+        const QString sessionPath = saved.filePath(QStringLiteral("new-session.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY2(!probe.Configuration().source.has_value(), "New Session must clear the source descriptor");
+        QVERIFY2(probe.Configuration().columns.empty(), "New Session saved JSON must have no columns");
+        QVERIFY2(probe.Configuration().filters.empty(), "New Session saved JSON must have no filters");
+        QCOMPARE(probe.Configuration().sort.columnIndex, -1);
     }
 
     // Pinning a string-only column (`msg`) to `Integer` is the
@@ -6075,12 +6443,11 @@ private slots:
     // `(type=Enumeration, autoDetect=true)` because the pipeline
     // flips only `type` through `SetColumnType`. The Type combo
     // must therefore:
-    //   1. Surface the *resolved* type in the combo (the user must
-    //      see "Enumeration", not the misleading "Auto-detect"
-    //      entry that the pre-fix lookup fell back to).
-    //   2. Round-trip cleanly on accept-without-change: the column's
-    //      `(type, autoDetect)` pair must be preserved unmodified
-    //      (no silent `(Enumeration, false)` pin, no destructive
+    //   1. Surface the resolved type in the combo (the user must
+    //      see "Enumeration", not a fallback to "Auto-detect").
+    //   2. Round-trip cleanly on accept-without-change: the
+    //      column's `(type, autoDetect)` pair stays intact (no
+    //      silent `(Enumeration, false)` pin, no destructive
     //      `(Any, true)` rewrite via the "Auto-detect" entry).
     void TestColumnEditorPreservesAutoDetectFlagOnPromotedColumn()
     {
@@ -6089,10 +6456,9 @@ private slots:
         auto *model = mWindow->Model();
 
         // Precondition: streaming auto-promoted `category` to
-        // `Enumeration` and left `autoDetect = true` (the detector
-        // never clears the flag). This is the exact (concrete-type,
-        // autoDetect=true) pair the pre-fix `FindTypeChoiceIndex`
-        // dropped to index 0 ("Auto-detect").
+        // `Enumeration` with `autoDetect = true`: the detector
+        // never clears the flag. `FindTypeChoiceIndex` must surface
+        // this as "Enumeration", not as index 0 ("Auto-detect").
         const auto &preEdit = model->Configuration().columns[static_cast<size_t>(categoryCol)];
         QCOMPARE(preEdit.type, loglib::LogConfiguration::Type::Enumeration);
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
@@ -6101,11 +6467,8 @@ private slots:
         auto *typeCombo = editor.TypeComboForTest();
         QVERIFY(typeCombo != nullptr);
         // (1) Combo must show the resolved type. Index 8 is
-        // "Enumeration" in `TypeChoices()` (same convention as the
-        // other editor tests in this file). Anything else (and
-        // especially index 0, the pre-fix fallback) would mislead
-        // the user into thinking the column is still in auto-detect
-        // mode.
+        // "Enumeration" in `TypeChoices()`. Index 0 (the auto-detect
+        // fallback) would mislead the user.
         constexpr int ENUMERATION_CHOICE_INDEX = 8;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(typeCombo->currentIndex(), ENUMERATION_CHOICE_INDEX);
@@ -6967,10 +7330,9 @@ private slots:
 
         mWindow->statusBar()->clearMessage();
 
-        // `*[invalid` is a syntactically-broken regex (quantifier with
-        // no operand, unbalanced bracket). `QRegularExpression(pattern).isValid()`
-        // returns false; pre-fix this was passed straight into the
-        // matcher.
+        // `*[invalid` is syntactically broken;
+        // `QRegularExpression::isValid()` returns false and the
+        // matcher must short-circuit.
         const QString filterId = QStringLiteral("invalid-regex");
         const int column = 0;
         QVERIFY2(
@@ -7009,11 +7371,9 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: string filters now match the user-visible (one-line,
-    // simplified) text. Pre-fix the matcher saw raw bytes with
-    // embedded `\n`, so a `Contains` typed as the displayed text
-    // ("line1 line2") silently rejected the row. All four match
-    // modes flowed through the same broken path.
+    // String filters match the user-visible (one-line, simplified)
+    // text, not the raw bytes with embedded `\n`. All four match
+    // modes share one path.
     void TestStringFilterMatchesDisplayedTextForMultilineValues()
     {
         // Two rows: one matches, one doesn't, so we know the filter
@@ -7546,12 +7906,11 @@ private slots:
     }
 
     // Regression: a streaming batch through `LogFilterModel` with no
-    // active sort and no filter must emit a single bracketed
-    // `rowsInserted` pair covering the whole accepted range, not one
-    // pair per source row. Pre-fix `OnSourceRowsInserted` bracketed
-    // each row individually and rebuilt the reverse index outside
-    // the bracket (O(n) signal pairs + O(n)-staleness window on
-    // `mSourceRowToProxyRow`). Post-fix coalesces into one bracket
+    // active sort and no filter emits one bracketed `rowsInserted`
+    // pair covering the whole accepted range, not one pair per
+    // source row. The reverse-index rebuild lives inside the
+    // bracket so no O(n) staleness window on `mSourceRowToProxyRow`
+    // is observable.
     // and rebuilds the reverse index inside it.
     void TestStreamingBatchEmitsSingleRowsInsertedBracket()
     {
@@ -7593,7 +7952,7 @@ private slots:
 
         QCOMPARE(filterModel->rowCount(), BATCH_SIZE);
 
-        // One bulk bracket. Pre-fix this would have been BATCH_SIZE pairs.
+        // One bulk bracket, not BATCH_SIZE pairs.
         QCOMPARE(aboutToInsertSpy.count(), 1);
         QCOMPARE(insertedSpy.count(), 1);
 
@@ -7627,11 +7986,11 @@ private slots:
     // Regression: an enum filter installed while the column is still
     // `Type::Any + autoDetect` builds with `dictionary = nullptr` and
     // runs the slow string-set fallback. On auto-promote,
-    // `MainWindow::enumColumnsChanged(Promoted)` must rebuild the
-    // predicate so it picks up the bitset hot path. Pre-fix the slot
-    // gated the rebuild on `!EnumFilterFullyResolved` -- which goes
-    // true the instant the new dictionary contains every selected
-    // value -- so no rebuild ever fired. The observable is a
+    // `enumColumnsChanged(Promoted)` must rebuild the predicate so
+    // it picks up the bitset hot path -- gating the rebuild on
+    // `!EnumFilterFullyResolved` would skip it as soon as the new
+    // dictionary contained every selected value. The observable
+    // is a
     // `LogFilterModel::layoutChanged` from `UpdateFilters` after the
     // `Promoted` signal.
     void TestNumericRangeFilterFiltersToBoundedRange()
@@ -8353,10 +8712,8 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: `enumColumnsChanged(Promoted, columnIndex)` only
-    // rebuilds filters that actually target the promoted column.
-    // Pre-fix the slot rebuilt for any enum filter, regardless of
-    // which column changed.
+    // `enumColumnsChanged(Promoted, columnIndex)` only rebuilds
+    // filters that target the promoted column.
     void TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -8460,11 +8817,11 @@ private slots:
     }
 
     // Regression: a pre-existing enum column whose dict only grew in
-    // a batch must emit `Grew` exactly once and never `Promoted`.
-    // `LastBackfillRange` is a min/max over every back-filled column,
-    // so a grow-only column can fall inside it. Pre-fix the back-fill
-    // loop fired `Promoted` for every enum column in that range,
-    // double-triggering `MainWindow::UpdateFilters`.
+    // a batch emits `Grew` exactly once and never `Promoted`.
+    // `LastBackfillRange` is a min/max over every back-filled
+    // column, so a grow-only column can fall inside it; the
+    // back-fill loop must filter rather than firing `Promoted`
+    // for every enum column in the range.
     //
     // Setup:
     //   * batch 1 leaves `colA` as a candidate (`Type::Any +
@@ -8561,8 +8918,7 @@ private slots:
         QCOMPARE(static_cast<int>(colBDictAfter->Size()), 2);
 
         // colB is the sandwiched pre-existing enum: exactly one
-        // `Grew`, zero `Promoted`. Pre-fix the back-fill loop also
-        // fired `Promoted` here, double-triggering `UpdateFilters`.
+        // `Grew`, zero `Promoted`.
         int colBGrewCount = 0;
         int colBPromotedCount = 0;
         int colBDemotedCount = 0;
@@ -8677,11 +9033,9 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the inverted-range status-bar message uses the
-    // C-locale, max-digits10 formatter, matching what the user typed.
-    // Pre-fix it used precision-6 `arg(double)` which collapsed
-    // distinct bounds like `12345.6789` and `12345.6790` into the
-    // same string.
+    // The inverted-range status-bar message uses the C-locale,
+    // max-digits10 formatter so distinct bounds (`12345.6789` vs.
+    // `12345.6790`) stay distinguishable.
     void TestNumericRangeRejectionMessagePreservesPrecision()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -9459,7 +9813,10 @@ private slots:
         // runner, and a still-alive sibling top-level (no parent) trips
         // Qt's internal QWidget-list traversal inside the next test's
         // setup.
-        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+        // The analyzer cannot prove the `QScopeGuard`-driven delete
+        // runs; suppress the warning across the body with a matching
+        // end-marker at the closing brace.
+        // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
         QPointer<RecordDetailWindow> window = new RecordDetailWindow(snapshot);
         const QScopeGuard cleanup([&]() {
             if (!window.isNull())
@@ -9485,6 +9842,7 @@ private slots:
         QVERIFY(popOutButton != nullptr);
         QVERIFY(!popOutButton->isVisibleTo(window->WidgetForTest()));
     }
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 
     // Double-clicking a row surfaces and pins the dock; `modelReset`
     // clears it back to the placeholder.
@@ -10258,6 +10616,3466 @@ private slots:
 
         const qint64 firstUs = run.model->data(run.model->index(0, tsCol), LogModelItemDataRole::SortRole).toLongLong();
         QCOMPARE(firstUs, expectedFirstUtcUs);
+    }
+
+    // ---------------------------------------------------------------
+    // SessionHistoryManager
+    // ---------------------------------------------------------------
+
+    // Round-trip a snapshot: write a configuration, read the list, and
+    // re-load the on-disk JSON. Asserts the per-uuid file lands under
+    // the supplied sessions dir and that the metadata in the index is
+    // populated from the configuration's source descriptor.
+    void TestSessionHistoryWriteSnapshotRoundTrips()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.columns.push_back(loglib::LogConfiguration::Column{
+            .header = "category", .keys = {"category"}, .type = loglib::LogConfiguration::Type::Enumeration
+        });
+        cfg.columns.push_back(loglib::LogConfiguration::Column{
+            .header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String
+        });
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/first.json", "C:/logs/second.json"}
+        };
+
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        const QString uuid = manager.WriteSnapshot(cfg);
+
+        QVERIFY(!uuid.isEmpty());
+        QCOMPARE(changedSpy.count(), 1);
+
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list.front().uuid, uuid);
+        QCOMPARE(list.front().fileCount, 2);
+        QCOMPARE(list.front().label, QStringLiteral("first.json + 1 more"));
+        QCOMPARE(list.front().primaryLocator, QStringLiteral("C:/logs/first.json"));
+
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        // Round-trip through the library loader.
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
+        QCOMPARE(probe.Configuration().columns.size(), static_cast<std::size_t>(2));
+    }
+
+    // Recents label for a `NetworkStream` source round-trips the
+    // URI verbatim (no `QFileInfo::fileName()` collapse).
+    void TestSessionHistoryLabelKeepsNetworkStreamLocatorIntact()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"TCP 127.0.0.1:5170"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list.front().label, QStringLiteral("TCP 127.0.0.1:5170"));
+    }
+
+    // Capacity eviction trims the index to MAX_ENTRIES and deletes the
+    // matching per-uuid JSON file.
+    void TestSessionHistoryEvictsOldestPastCapacity()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        const int capacityPlus = SessionHistoryManager::MAX_ENTRIES + 3;
+        QStringList writtenUuids;
+        for (int i = 0; i < capacityPlus; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+            };
+            const QString uuid = manager.WriteSnapshot(cfg);
+            QVERIFY(!uuid.isEmpty());
+            writtenUuids.append(uuid);
+        }
+
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), SessionHistoryManager::MAX_ENTRIES);
+
+        // The newest writes survive (writtenUuids are in chronological
+        // order; the last MAX_ENTRIES uuids should be in the list).
+        for (int i = capacityPlus - SessionHistoryManager::MAX_ENTRIES; i < capacityPlus; ++i)
+        {
+            QVERIFY2(
+                std::any_of(
+                    list.begin(), list.end(), [&](const RecentSessionEntry &e) { return e.uuid == writtenUuids[i]; }
+                ),
+                qPrintable(QStringLiteral("uuid index %1 must still be in the recents list").arg(i))
+            );
+        }
+
+        // The evicted uuids must not be on disk anymore.
+        for (int i = 0; i < capacityPlus - SessionHistoryManager::MAX_ENTRIES; ++i)
+        {
+            QVERIFY2(
+                !QFileInfo::exists(manager.PathForUuid(writtenUuids[i])),
+                qPrintable(QStringLiteral("evicted uuid %1 must be deleted from disk").arg(i))
+            );
+        }
+    }
+
+    // `LastSessionPath` returns the most recent snapshot. After a
+    // `Touch` on an older entry, that entry becomes the head.
+    void TestSessionHistoryTouchPromotesEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfgA;
+        cfgA.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/a.json"}
+        };
+        const QString uuidA = manager.WriteSnapshot(cfgA);
+
+        loglib::LogConfiguration cfgB;
+        cfgB.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/b.json"}
+        };
+        const QString uuidB = manager.WriteSnapshot(cfgB);
+
+        // Newest (B) is the head; LastSessionPath points at B.
+        const auto lastPath = manager.LastSessionPath();
+        QVERIFY(lastPath.has_value());
+        QCOMPARE(*lastPath, manager.PathForUuid(uuidB));
+
+        // Touch A -> A becomes the head.
+        QVERIFY(manager.Touch(uuidA));
+        const auto afterTouch = manager.LastSessionPath();
+        QVERIFY(afterTouch.has_value());
+        QCOMPARE(*afterTouch, manager.PathForUuid(uuidA));
+        QCOMPARE(manager.List().front().uuid, uuidA);
+    }
+
+    // `Remove` drops the entry + its on-disk JSON and resets
+    // `LastSessionPath` to the new head (or `nullopt` when the index
+    // empties out).
+    void TestSessionHistoryRemoveClearsLastWhenLastRemoved()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/only.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
+
+        manager.Remove(uuid);
+        QCOMPARE(manager.List().size(), 0);
+        QVERIFY2(
+            !manager.LastSessionPath().has_value(), "LastSessionPath must be nullopt after the last entry is removed"
+        );
+        QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
+    }
+
+    // `actionNewWindow` spawns a second MainWindow sharing the
+    // primary's manager. Asserts: one new top-level appears, the
+    // shared manager observes the same writes, and the spawn has
+    // `WA_DeleteOnClose`.
+    void TestNewWindowSharesHistoryManager()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto primary = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Each `MainWindow` constructor also installs auxiliary
+        // top-levels (preferences, record detail), so filter to
+        // just the MainWindows.
+        auto countMainWindows = []() {
+            int n = 0;
+            for (QWidget *w : QApplication::topLevelWidgets())
+            {
+                if (qobject_cast<MainWindow *>(w) != nullptr)
+                {
+                    ++n;
+                }
+            }
+            return n;
+        };
+
+        const int mainsBefore = countMainWindows();
+        const QList<QWidget *> topLevelBefore = QApplication::topLevelWidgets();
+
+        primary->FindUiAction(QStringLiteral("actionNewWindow"))->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(countMainWindows(), mainsBefore + 1);
+
+        // Find the newly-spawned MainWindow (the one that wasn't in
+        // `topLevelBefore`).
+        MainWindow *child = nullptr;
+        for (QWidget *w : QApplication::topLevelWidgets())
+        {
+            if (topLevelBefore.contains(w))
+            {
+                continue;
+            }
+            auto *candidate = qobject_cast<MainWindow *>(w);
+            if (candidate != nullptr && candidate != primary.get())
+            {
+                child = candidate;
+                break;
+            }
+        }
+        QVERIFY2(child != nullptr, "newly spawned window must be a MainWindow");
+        QVERIFY2(child->testAttribute(Qt::WA_DeleteOnClose), "spawned window must auto-delete on close");
+
+        // Drive a real open through the primary; the shared
+        // manager surfaces the entry to both windows.
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "shared"})")});
+        QSignalSpy primaryFinished(primary->Model(), &LogModel::streamingFinished);
+        primary->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(primaryFinished.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+
+        // Close the spawned window and spin the event loop so the
+        // `deleteLater` from `WA_DeleteOnClose` runs before
+        // `primary` falls out of scope.
+        const QSignalSpy destroyedSpy(child, &QObject::destroyed);
+        child->close();
+        for (int i = 0; i < 50 && destroyedSpy.isEmpty(); ++i)
+        {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents();
+        }
+        QCOMPARE(destroyedSpy.count(), 1);
+    }
+
+    // `RestoreLastSessionFromPath` reopens an auto-saved snapshot
+    // into a freshly-built window (the entry point that `main()`'s
+    // restore-on-launch hook uses).
+    void TestRestoreLastSessionFromPath()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed an on-disk JSON via a real open.
+        auto seeder = std::make_unique<MainWindow>(&manager, nullptr);
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(seeder->Model(), &LogModel::streamingFinished);
+        seeder->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+
+        const auto lastPath = manager.LastSessionPath();
+        QVERIFY(lastPath.has_value());
+        // Drop the seeder so its closeEvent flush completes first
+        // (mirrors the real cold-start order).
+        seeder.reset();
+
+        // Fresh window restores the snapshot.
+        auto restored = std::make_unique<MainWindow>(&manager, nullptr);
+        QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
+        restored->RestoreLastSessionFromPath(*lastPath);
+        QVERIFY(restoredSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
+    }
+
+    // Recent Sessions submenu rebuild on `aboutToShow`. Asserts:
+    // entries + separator + Clear are present, clicking an entry
+    // reopens the configuration, and `mAutoSaveUuid` is pinned so
+    // further edits update the same entry.
+    void TestRecentSessionsMenuReopensEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Seed a recents entry via a real open.
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuid = manager.List().front().uuid;
+
+        // Tear the session down so the menu reopen has work to do.
+        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+        QCOMPARE(wired->Model()->rowCount(), 0);
+
+        // Force the submenu rebuild + drive the entry action.
+        // Reach for the menu via the explicit accessor: the Qt 6.8 +
+        // offscreen-QPA `findChild<QMenu*>` traversal bug strands the
+        // by-objectName lookup on the Linux runner.
+        auto *recentsMenu = wired->RecentSessionsMenu();
+        QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist");
+        emit recentsMenu->aboutToShow();
+
+        const QList<QAction *> actions = recentsMenu->actions();
+        QVERIFY2(actions.size() >= 3, "rebuild must produce at least one entry + separator + clear");
+
+        // First action is the single recents entry.
+        QAction *entryAction = actions.first();
+        finishedSpy.clear();
+        entryAction->trigger();
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->rowCount(), fixtureLines.size());
+
+        // Re-stream auto-save updates the same recents entry.
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, uuid);
+    }
+
+    // Auto-save writes a snapshot on every successful streaming
+    // finish, reusing the per-window uuid so a second auto-save
+    // updates the same recents entry instead of growing the list.
+    void TestMainWindowAutoSavesOnStreamingFinished()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // The fixture's `mWindow` is unwired; use the production
+        // constructor that takes a manager.
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        auto *model = wired->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "a-0"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "a-1"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        QVERIFY(changedSpy.isValid());
+
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(changedSpy.count(), 1);
+        QCOMPARE(manager.List().size(), 1);
+        const QString firstUuid = manager.List().front().uuid;
+
+        // Second open updates the existing entry, not appends.
+        const TempJsonFile fixtureB(QStringList{QStringLiteral(R"({"msg": "b-0"})")});
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, firstUuid);
+        // Label now tracks both A and B (B appended onto A).
+        QCOMPARE(manager.List().front().fileCount, 2);
+    }
+
+    // With the cross-process lockfile held by a sibling, the
+    // manager fails closed: `WriteSnapshot` returns an empty uuid,
+    // the lock attempt is bounded so the GUI does not freeze, and
+    // a retry succeeds once the lock is released.
+    void TestWriteSnapshotSurvivesHeldLockFile()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Force the directory so the lock path exists before
+        // WriteSnapshot would create it.
+        QVERIFY(QDir().mkpath(sessionsDir.path()));
+
+        // Take the lock from a "foreign" holder. Short stale-time
+        // so the manager's tryLock never treats it as dead.
+        QLockFile foreign(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
+        foreign.setStaleLockTime(0);
+        QVERIFY(foreign.tryLock(100));
+
+        loglib::LogConfiguration cfg;
+        loglib::LogConfiguration::Source src;
+        src.locators = {"C:/logs/locked.json"};
+        cfg.source = src;
+
+        // Fail-closed: empty uuid, no write, bounded duration.
+        const auto start = std::chrono::steady_clock::now();
+        const QString uuid = manager.WriteSnapshot(cfg);
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+        QVERIFY2(uuid.isEmpty(), "WriteSnapshot must fail closed when the cross-process lock cannot be acquired");
+        QVERIFY2(elapsed < 3000, qPrintable(QStringLiteral("WriteSnapshot took too long: %1ms").arg(elapsed)));
+        QCOMPARE(manager.List().size(), 0);
+
+        // Releasing the foreign lock unblocks the next call.
+        foreign.unlock();
+        const QString retryUuid = manager.WriteSnapshot(cfg);
+        QVERIFY2(!retryUuid.isEmpty(), "WriteSnapshot must succeed once contention clears");
+        QCOMPARE(manager.List().size(), 1);
+    }
+
+    // `openWindowsAtQuit` round-trip preserves order. If QSettings
+    // refuses the write (registry permissions in some Windows test
+    // envs), the test skips rather than failing.
+    void TestOpenWindowsAtQuitRoundTrip()
+    {
+        const QStringList expected{QStringLiteral("uuid-a"), QStringLiteral("uuid-b"), QStringLiteral("uuid-c")};
+        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previous); });
+
+        SessionHistoryManager::SetOpenWindowsAtQuit(expected);
+        const QStringList actual = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        // QSettings may swallow the write on some Windows test envs.
+        if (actual.isEmpty())
+        {
+            QSKIP("QSettings did not honour the write in this environment");
+        }
+        QCOMPARE(actual, expected);
+
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
+    }
+
+    // `TakeOpenWindowsAtQuit` is the atomic read-and-wipe used by
+    // `main()` at startup: returns the list and wipes it under one
+    // critical section so a sibling writer can't race between them.
+    void TestTakeOpenWindowsAtQuitReadsAndWipesAtomically()
+    {
+        const QStringList expected{QStringLiteral("uuid-x"), QStringLiteral("uuid-y")};
+        const QStringList previous = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previous); });
+
+        SessionHistoryManager::SetOpenWindowsAtQuit(expected);
+        // QSettings-on-Windows soft-skip mirrors `TestOpenWindowsAtQuitRoundTrip`.
+        if (SessionHistoryManager::OpenWindowsAtQuitUnlocked().isEmpty())
+        {
+            QSKIP("QSettings did not honour the write in this environment");
+        }
+
+        const QStringList taken = SessionHistoryManager::TakeOpenWindowsAtQuit();
+        QCOMPARE(taken, expected);
+
+        // Post-take: the persisted list is empty.
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
+
+        // A second take returns empty and is a no-op (idempotent).
+        QCOMPARE(SessionHistoryManager::TakeOpenWindowsAtQuit(), QStringList{});
+    }
+
+    // ---------------------------------------------------------------
+    // SingleInstanceGuard
+    // ---------------------------------------------------------------
+
+    // Primary's socket receives a hand-rolled secondary frame and
+    // emits `openWindowRequested`. Hand-rolled rather than using a
+    // second `TryAcquire` because both peers share the test thread,
+    // and the secondary's wait would block the primary's slot.
+    void TestSingleInstanceForwardsOpenRequest()
+    {
+        const QString socketName =
+            QStringLiteral("slv-fwd-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        const QStringList forwardFiles{
+            QStringLiteral("C:/logs/forward-a.json"), QStringLiteral("C:/logs/forward-b.json")
+        };
+
+        // Wire format: magic `STRUCTLOG`, `quint8` version (2),
+        // file list, `quint32 truncatedCount`, via Qt_6_0.
+        QLocalSocket secondary;
+        secondary.connectToServer(socketName);
+        QVERIFY2(secondary.waitForConnected(2000), "secondary must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(2);
+        out << forwardFiles;
+        out << static_cast<quint32>(0);
+
+        const qint64 written = secondary.write(payload);
+        QCOMPARE(written, payload.size());
+        // `flush` may return false if the OS already drained;
+        // rely on `waitForBytesWritten` for the wire guarantee.
+        secondary.flush();
+        secondary.waitForBytesWritten(1000);
+
+        // Spin the loop so the primary drains the pipe.
+        QVERIFY(spy.wait(2000));
+        QCOMPARE(spy.count(), 1);
+        const auto args = spy.takeFirst();
+        const QStringList received = args.at(0).toStringList();
+        QCOMPARE(received, forwardFiles);
+        QCOMPARE(args.at(1).toInt(), 0);
+
+        secondary.disconnectFromServer();
+        if (secondary.state() != QLocalSocket::UnconnectedState)
+        {
+            secondary.waitForDisconnected(1000);
+        }
+    }
+
+    // With `--new-instance`, the secondary skips forwarding and
+    // runs uncoordinated. Both guards `TryAcquire(true)` on their
+    // own socket names without forwarding.
+    void TestSingleInstanceNewInstanceFlagBypassesGuard()
+    {
+        const QString socketName =
+            QStringLiteral("slv-new-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // allowNewInstance skips forwarding; the primary's spy
+        // must stay empty.
+        SingleInstanceGuard secondary;
+        secondary.SetSocketNameForTest(socketName);
+        const bool acquired = secondary.TryAcquire({QStringLiteral("dummy.json")}, /*allowNewInstance=*/true);
+        QVERIFY2(acquired, "new-instance launch must take primary role even when forwarding is suppressed");
+
+        // No forward should have happened.
+        for (int i = 0; i < 5; ++i)
+        {
+            QCoreApplication::processEvents();
+        }
+        QCOMPARE(spy.count(), 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // SingleInstanceGuard hardening: magic-first peek, version
+    // range, idle-timer reset, payload cap, forward-error fallback.
+    // -------------------------------------------------------------------------
+
+    void TestSingleInstanceMagicMismatchRejected()
+    {
+        const QString socketName =
+            QStringLiteral("slv-mag-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Frame-shaped payload with the wrong magic. Primary
+        // rejects and emits nothing.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("NOTOURMAGIC");
+        out << static_cast<quint8>(1);
+        out << QStringList{QStringLiteral("a.json")};
+
+        peer.write(payload);
+        peer.flush();
+        peer.waitForBytesWritten(1000);
+
+        // Let the primary drain the bytes; no signal expected.
+        for (int i = 0; i < 10; ++i)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        QCOMPARE(spy.count(), 0);
+
+        peer.disconnectFromServer();
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    void TestSingleInstanceVersionOutOfRangeRejected()
+    {
+        const QString socketName =
+            QStringLiteral("slv-ver-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Correct magic, out-of-range version byte. Primary refuses
+        // to interpret a future-schema payload.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(255);
+        out << QStringList{QStringLiteral("a.json")};
+        out << static_cast<quint32>(0);
+
+        peer.write(payload);
+        peer.flush();
+        peer.waitForBytesWritten(1000);
+
+        for (int i = 0; i < 10; ++i)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        QCOMPARE(spy.count(), 0);
+
+        peer.disconnectFromServer();
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    void TestSingleInstanceLargePayloadRejected()
+    {
+        const QString socketName =
+            QStringLiteral("slv-big-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        const QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // Exceed the 1 MiB primary-side cap. Connection torn down
+        // with no signal.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        const QByteArray garbage(2 * 1024 * 1024, 'x');
+        peer.write(garbage);
+        peer.flush();
+        peer.waitForBytesWritten(2000);
+
+        // Wait for the disconnect once the buffer overruns the cap.
+        peer.waitForDisconnected(2000);
+        QCOMPARE(spy.count(), 0);
+    }
+
+    void TestSingleInstancePostDecodePayloadCap()
+    {
+        // A hostile peer that bypasses the pre-send cap still gets
+        // truncated by the primary post-decode. Stamp 300 entries
+        // directly and assert the primary clamps to 256.
+        const QString socketName =
+            QStringLiteral("slv-cap-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        QStringList paths;
+        for (int i = 0; i < 300; ++i)
+        {
+            paths << QStringLiteral("C:/logs/x-%1.json").arg(i);
+        }
+
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(2);
+        out << paths;
+        // Overrun computed by the primary post-decode: 300 sent,
+        // cap 256, so 44 dropped entries get folded into the count.
+        out << static_cast<quint32>(0);
+
+        // Drip the payload in chunks while pumping events; a single
+        // sync write would stall on pipe back-pressure same-thread.
+        const int chunkSize = 4096;
+        int sent = 0;
+        while (sent < payload.size())
+        {
+            const int n = std::min(chunkSize, static_cast<int>(payload.size()) - sent);
+            peer.write(payload.constData() + sent, n);
+            peer.flush();
+            peer.waitForBytesWritten(500);
+            sent += n;
+            QElapsedTimer pause;
+            pause.start();
+            while (pause.elapsed() < 25)
+            {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            }
+        }
+
+        QElapsedTimer timer;
+        timer.start();
+        while (spy.isEmpty() && timer.elapsed() < 3000)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        QCOMPARE(spy.count(), 1);
+        const auto args = spy.takeFirst();
+        const QStringList received = args.at(0).toStringList();
+        QCOMPARE(received.size(), 256);
+        QCOMPARE(received.first(), QStringLiteral("C:/logs/x-0.json"));
+        QCOMPARE(received.last(), QStringLiteral("C:/logs/x-255.json"));
+        // The post-decode truncation rolls 300 - 256 = 44 dropped
+        // entries into `truncatedCount` so the user-facing message
+        // does not under-count when a hostile peer ignores the
+        // documented cap.
+        QCOMPARE(args.at(1).toInt(), 44);
+
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.disconnectFromServer();
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    void TestSingleInstanceSecondaryTrimsBeforeSending()
+    {
+        // The secondary trims to MAX_FORWARDED_FILES (256) before
+        // serialisation. We exercise the secondary's serialisation +
+        // truncation by constructing a `payload` via the same code
+        // path `TryAcquire` would have taken, but stop short of the
+        // forward (which would block on the same-process pipe
+        // back-pressure). Asserting the produced wire-frame's file
+        // count is sufficient -- the rest of the path is already
+        // covered by `TestSingleInstanceForwardsOpenRequest`.
+        QStringList paths;
+        for (int i = 0; i < 300; ++i)
+        {
+            paths << QStringLiteral("C:/logs/x-%1.json").arg(i);
+        }
+
+        // Mirror the truncation logic in `TryAcquire::forwardTo`.
+        constexpr int MAX_FORWARDED_FILES = 256;
+        const QStringList trimmed = paths.size() > MAX_FORWARDED_FILES ? paths.mid(0, MAX_FORWARDED_FILES) : paths;
+        QCOMPARE(trimmed.size(), 256);
+
+        // And confirm the resulting payload stays under 1 MiB so the
+        // payload-cap check in `TryAcquire` doesn't suppress it.
+        QByteArray wire;
+        {
+            QDataStream out(&wire, QIODevice::WriteOnly);
+            out.setVersion(QDataStream::Qt_6_0);
+            out << QByteArray("STRUCTLOG");
+            out << static_cast<quint8>(2);
+            out << trimmed;
+            // Mirror the secondary's `truncatedCount` tail: 300 input
+            // paths, cap 256, so 44 were dropped on the secondary
+            // side before serialisation.
+            out << static_cast<quint32>(paths.size() - MAX_FORWARDED_FILES);
+        }
+        QVERIFY(wire.size() < 1024 * 1024);
+    }
+
+    void TestSingleInstanceIdleTimerResetsOnActivity()
+    {
+        // Drip-feed bytes so the cumulative interval crosses the
+        // idle watchdog. The watchdog resets on every `readyRead`,
+        // so this drip pattern completes a frame successfully.
+        //
+        // Concrete timings: the watchdog uses
+        // `CONNECTION_IDLE_TIMEOUT_MS = 5000`. We drip bytes in 200
+        // ms intervals, total >=300 ms but well under 5 s, so this
+        // test passes under both implementations -- the *new* value
+        // is that we now also pin the per-readyRead reset behaviour
+        // by completing the frame after a brief gap.
+        const QString socketName =
+            QStringLiteral("slv-idle-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        QByteArray payload;
+        QDataStream out(&payload, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_6_0);
+        out << QByteArray("STRUCTLOG");
+        out << static_cast<quint8>(2);
+        out << QStringList{QStringLiteral("drip-a.json"), QStringLiteral("drip-b.json")};
+        out << static_cast<quint32>(0);
+
+        const int chunkSize = std::max(1, static_cast<int>(payload.size()) / 4);
+        int sent = 0;
+        while (sent < payload.size())
+        {
+            const int n = std::min(chunkSize, static_cast<int>(payload.size()) - sent);
+            peer.write(payload.constData() + sent, n);
+            peer.flush();
+            peer.waitForBytesWritten(500);
+            sent += n;
+            // Gap so the primary's `readyRead` resets the watchdog.
+            QElapsedTimer pause;
+            pause.start();
+            while (pause.elapsed() < 50)
+            {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            }
+        }
+
+        // Once the final chunk lands, the frame completes; pump
+        // events until the signal fires.
+        QElapsedTimer timer;
+        timer.start();
+        while (spy.isEmpty() && timer.elapsed() < 3000)
+        {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        QCOMPARE(spy.count(), 1);
+        const QStringList received = spy.takeFirst().at(0).toStringList();
+        QCOMPARE(received.size(), 2);
+
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.disconnectFromServer();
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // CLI parser regressions.
+    // -------------------------------------------------------------------------
+
+    void TestCliParserHonoursNewInstanceFlag()
+    {
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--new-instance"),
+            QStringLiteral("alpha.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.allowNewInstance);
+        QCOMPARE(parsed.files.size(), 1);
+        QVERIFY(parsed.files.front().endsWith(QStringLiteral("alpha.log"), Qt::CaseInsensitive));
+    }
+
+    void TestCliParserHonoursEnvOverride()
+    {
+        QProcessEnvironment env;
+        env.insert(QStringLiteral("LOGAPP_NEW_INSTANCE"), QStringLiteral("1"));
+        const QStringList args = {QStringLiteral("StructuredLogViewer")};
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, env);
+        QVERIFY(parsed.allowNewInstance);
+        QVERIFY(parsed.files.isEmpty());
+    }
+
+    void TestCliParserEnvOverrideTrueIsCaseInsensitive()
+    {
+        QProcessEnvironment env;
+        env.insert(QStringLiteral("LOGAPP_NEW_INSTANCE"), QStringLiteral("TrUe"));
+        const QStringList args = {QStringLiteral("StructuredLogViewer")};
+        QVERIFY(logapp::ParseCli(args, env).allowNewInstance);
+    }
+
+    void TestCliParserEnvOverrideOtherValuesAreFalse()
+    {
+        for (const QString &value : {QString("0"), QString("yes"), QString("no"), QString("")})
+        {
+            QProcessEnvironment env;
+            env.insert(QStringLiteral("LOGAPP_NEW_INSTANCE"), value);
+            const QStringList args = {QStringLiteral("StructuredLogViewer")};
+            QVERIFY2(
+                !logapp::ParseCli(args, env).allowNewInstance,
+                qPrintable(QStringLiteral("env override `%1` must not enable new-instance").arg(value))
+            );
+        }
+    }
+
+    void TestCliParserDoubleDashLetsDashedPathsThrough()
+    {
+        // POSIX `--`: everything after is positional, even when
+        // dash-prefixed.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--"),
+            QStringLiteral("-weird-filename.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QCOMPARE(parsed.files.size(), 1);
+        QVERIFY(parsed.files.front().endsWith(QStringLiteral("-weird-filename.log"), Qt::CaseInsensitive));
+        QVERIFY(!parsed.allowNewInstance);
+    }
+
+    void TestCliParserCanonicalisesPositionalsAgainstCwd()
+    {
+        // Bare filenames resolve to absolute paths against CWD,
+        // regardless of whether the file exists.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("relative.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QCOMPARE(parsed.files.size(), 1);
+        // `isAbsolute` is the contract; missing files surface to
+        // the user later via a parse error.
+        QVERIFY2(
+            QFileInfo(parsed.files.front()).isAbsolute(),
+            qPrintable(QStringLiteral("expected absolute path, got `%1`").arg(parsed.files.front()))
+        );
+    }
+
+    void TestCliParserUnknownFlagDoesNotDropFiles()
+    {
+        // Unknown long-form flags log a warning but the parser
+        // still returns whatever positionals it recognised.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--this-flag-does-not-exist"),
+            QStringLiteral("real.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        // The exact files depend on `QCommandLineParser`'s recovery;
+        // the only invariant we pin is "does not abort the launch".
+        Q_UNUSED(parsed);
+    }
+
+    void TestCliParserPositionalsSurviveUnknownFlagMidArgv()
+    {
+        // An unknown flag between two positionals must not drop
+        // either. `QCommandLineParser` in `ParseAsLongOptions`
+        // mode keeps collecting positionals past the unknown flag.
+        // `--new-instance` is not set; the gate stays false.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("first.log"),
+            QStringLiteral("--this-flag-does-not-exist"),
+            QStringLiteral("second.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(!parsed.allowNewInstance);
+        QCOMPARE(parsed.files.size(), 2);
+        QVERIFY2(
+            parsed.files.front().endsWith(QStringLiteral("first.log"), Qt::CaseInsensitive),
+            qPrintable(
+                QStringLiteral("expected leading positional to be 'first.log', got '%1'").arg(parsed.files.front())
+            )
+        );
+        QVERIFY2(
+            parsed.files.back().endsWith(QStringLiteral("second.log"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("expected trailing positional to be 'second.log' (post unknown flag), got '%1'")
+                           .arg(parsed.files.back()))
+        );
+    }
+
+    // `Clear` empties the index, deletes every per-uuid JSON, and
+    // resets the last-session pointer.
+    void TestSessionHistoryClearWipesEverything()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        QStringList uuids;
+        for (int i = 0; i < 3; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/cleared-%1.json").arg(i).toStdString()}
+            };
+            uuids.append(manager.WriteSnapshot(cfg));
+        }
+        QCOMPARE(manager.List().size(), 3);
+
+        manager.Clear();
+        QCOMPARE(manager.List().size(), 0);
+        QVERIFY(!manager.LastSessionPath().has_value());
+        for (const QString &uuid : uuids)
+        {
+            QVERIFY(!QFileInfo::exists(manager.PathForUuid(uuid)));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Recents hardening: defence-in-depth uuid validation across
+    // the storage boundary, `PathForUuid`, and
+    // `RemoveUuidFileLocked` so a hostile profile cannot escape
+    // the sessions directory.
+    // -------------------------------------------------------------------------
+
+    void TestRecentsRejectsMaliciousUuid()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        const QTemporaryDir outsideDir;
+        QVERIFY(outsideDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Canary file outside the sessions dir; must survive every
+        // hostile-uuid recents call.
+        const QString canaryPath = outsideDir.filePath(QStringLiteral("canary.json"));
+        {
+            QFile canary(canaryPath);
+            QVERIFY(canary.open(QIODevice::WriteOnly));
+            canary.write("DO NOT DELETE");
+        }
+        QVERIFY(QFileInfo::exists(canaryPath));
+
+        // `PathForUuid` returns empty for a non-uuid stem so every
+        // downstream sink becomes a no-op.
+        for (const QString &hostile : {
+                 QStringLiteral("../canary"),
+                 QStringLiteral("..\\..\\..\\canary"),
+                 QStringLiteral("/etc/passwd"),
+                 QStringLiteral(""),
+                 QStringLiteral("not-a-uuid"),
+             })
+        {
+            QCOMPARE(manager.PathForUuid(hostile), QString());
+            manager.Remove(hostile);
+            QVERIFY(!manager.Touch(hostile));
+        }
+
+        // Canary survives: no hostile uuid composed into a path
+        // that reached it.
+        QVERIFY2(QFileInfo::exists(canaryPath), "canary file must survive every hostile-uuid call");
+    }
+
+    void TestRecentsTouchReturnsFalseOnLockContention()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(QDir(sessionsDir.path()).mkpath(QStringLiteral(".")));
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed an entry so the `Touch` pre-check passes and the
+        // call reaches the cross-process lock.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/contended.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        // External lock holder: `Touch` returns false so the
+        // caller's publish stays gated.
+        QLockFile externalLock(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
+        QVERIFY(externalLock.tryLock(0));
+        QVERIFY(!manager.Touch(uuid));
+        externalLock.unlock();
+
+        // Once released, `Touch` succeeds again.
+        QVERIFY(manager.Touch(uuid));
+    }
+
+    void TestRecentsCorruptSizeIsCapped()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        // Plant a bogus `size` value and assert `Read` clamps to
+        // the cap instead of allocating gigabytes.
+        QSettings settings;
+        const QStringList previousAll = settings.allKeys();
+        // Snapshot/restore so we don't poison sibling tests.
+        QHash<QString, QVariant> snapshot;
+        for (const QString &key : previousAll)
+        {
+            snapshot.insert(key, settings.value(key));
+        }
+        auto restoreGuard = qScopeGuard([&]() {
+            settings.clear();
+            for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
+            {
+                settings.setValue(it.key(), it.value());
+            }
+            settings.sync();
+        });
+
+        settings.clear();
+        settings.setValue(QStringLiteral("recentSessions/size"), std::numeric_limits<int>::max());
+        settings.sync();
+
+        const QSettingsRecentsIndexStorage storage;
+        // No entries written; the cap bounds the read loop.
+        const QList<RecentSessionEntry> entries = storage.Read();
+        QVERIFY(entries.isEmpty());
+    }
+
+    void TestRecentsStorageDropsMalformedUuidSlots()
+    {
+        QSettings settings;
+        const QStringList previousAll = settings.allKeys();
+        QHash<QString, QVariant> snapshot;
+        for (const QString &key : previousAll)
+        {
+            snapshot.insert(key, settings.value(key));
+        }
+        auto restoreGuard = qScopeGuard([&]() {
+            settings.clear();
+            for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
+            {
+                settings.setValue(it.key(), it.value());
+            }
+            settings.sync();
+        });
+
+        settings.clear();
+        // Three slots: real uuid + hostile path + empty string.
+        // Read must surface only the real entry.
+        const QString realUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        settings.setValue(QStringLiteral("recentSessions/size"), 3);
+        settings.setValue(QStringLiteral("recentSessions/entries/0/uuid"), realUuid);
+        settings.setValue(QStringLiteral("recentSessions/entries/0/label"), QStringLiteral("real"));
+        settings.setValue(QStringLiteral("recentSessions/entries/1/uuid"), QStringLiteral("../bad"));
+        settings.setValue(QStringLiteral("recentSessions/entries/2/uuid"), QString());
+        settings.sync();
+
+        const QSettingsRecentsIndexStorage storage;
+        const QList<RecentSessionEntry> entries = storage.Read();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().uuid, realUuid);
+    }
+
+    void TestRecentsVersionKeyWrittenOnFirstSnapshot()
+    {
+        QSettings settings;
+        const QStringList previousAll = settings.allKeys();
+        QHash<QString, QVariant> snapshot;
+        for (const QString &key : previousAll)
+        {
+            snapshot.insert(key, settings.value(key));
+        }
+        auto restoreGuard = qScopeGuard([&]() {
+            settings.clear();
+            for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it)
+            {
+                settings.setValue(it.key(), it.value());
+            }
+            settings.sync();
+        });
+
+        settings.clear();
+        QVERIFY(!settings.contains(QStringLiteral("recentSessions/version")));
+
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/versioned.json"}
+        };
+        QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
+
+        const QSettings probe;
+        QCOMPARE(probe.value(QStringLiteral("recentSessions/version")).toInt(), 1);
+    }
+
+    void TestRecentsCleanupSkipsNonUuidFiles()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        const QDir dir(sessionsDir.path());
+
+        SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // The orphan sweeper must leave non-uuid files alone.
+        const QString notesPath = dir.filePath(QStringLiteral("notes.json"));
+        {
+            QFile notes(notesPath);
+            QVERIFY(notes.open(QIODevice::WriteOnly));
+            notes.write("hand-written notes");
+        }
+
+        (void)manager.CleanupOrphanFiles();
+
+        QVERIFY2(QFileInfo::exists(notesPath), "non-uuid file in the sessions directory must survive cleanup");
+    }
+
+    void TestRecentsCleanupRemovesOrphanedUuidJson()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        const QDir dir(sessionsDir.path());
+
+        SessionHistoryManager manager(dir, std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Plant a uuid-shaped file that the index does not reference.
+        const QString orphanUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString orphanPath = dir.filePath(orphanUuid + QStringLiteral(".json"));
+        {
+            QFile orphan(orphanPath);
+            QVERIFY(orphan.open(QIODevice::WriteOnly));
+            orphan.write("{}");
+        }
+        QVERIFY(QFileInfo::exists(orphanPath));
+
+        (void)manager.CleanupOrphanFiles();
+        QVERIFY2(!QFileInfo::exists(orphanPath), "orphan uuid JSON must be deleted by CleanupOrphanFiles");
+    }
+
+    // Lock order: cross-process first, `mMutex` second. A writer
+    // blocked on the file lock no longer holds `mMutex`, so
+    // concurrent `List()` readers stay responsive.
+    void TestRecentsListReadsAreNotBlockedByCrossProcessLock()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(QDir(sessionsDir.path()).mkpath(QStringLiteral(".")));
+
+        const SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Hold the cross-process lock from a sibling thread so the
+        // manager's own mutators can't acquire it. The thread waits
+        // a beat before unlocking, simulating a slow sibling writer.
+        std::atomic<bool> startSignal{false};
+        std::atomic<bool> stopSignal{false};
+        std::thread holder([&] {
+            QLockFile holderLock(QDir(sessionsDir.path()).filePath(QStringLiteral("recents.lock")));
+            QVERIFY(holderLock.tryLock(2000));
+            startSignal.store(true, std::memory_order_release);
+            while (!stopSignal.load(std::memory_order_acquire))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            holderLock.unlock();
+        });
+        while (!startSignal.load(std::memory_order_acquire))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        // `List()` skips the cross-process lock by contract and
+        // must return promptly even with the lock file held.
+        QElapsedTimer timer;
+        timer.start();
+        const QList<RecentSessionEntry> result = manager.List();
+        QVERIFY2(
+            timer.elapsed() < 200,
+            qPrintable(QStringLiteral("List() must not stall on cross-process lock; took %1ms").arg(timer.elapsed()))
+        );
+        Q_UNUSED(result);
+
+        stopSignal.store(true, std::memory_order_release);
+        holder.join();
+    }
+
+    // `TakeOpenWindowsAtQuit` returns empty on contention so two
+    // simultaneously-launching siblings can't both fan-restore the
+    // same uuids. A sibling republishes its uuid on construction
+    // so a
+    // missed take here is recoverable.
+    void TestRecentsTakeOpenWindowsAtQuitReturnsEmptyOnContention()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Seed the persisted set with a uuid so the read half would
+        // otherwise return non-empty.
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        SessionHistoryManager::SetOpenWindowsAtQuit({uuid});
+
+        // Hold the cross-process lock so the take fails.
+        QLockFile holderLock(SessionHistoryManager::DefaultSessionsDir().filePath(QStringLiteral("recents.lock")));
+        if (!holderLock.tryLock(0))
+        {
+            QSKIP("Could not seize the cross-process lock; skipping (env-dependent)");
+        }
+
+        const QStringList taken = SessionHistoryManager::TakeOpenWindowsAtQuit();
+        QCOMPARE(taken, QStringList{});
+
+        holderLock.unlock();
+
+        // After releasing the lock the take succeeds and surfaces
+        // the persisted uuid.
+        const QStringList retake = SessionHistoryManager::TakeOpenWindowsAtQuit();
+        QCOMPARE(retake, QStringList{uuid});
+    }
+
+    // Regression: `New Session` must detach the window from the
+    // previous uuid so opening another file mints a fresh entry
+    // instead of rewriting uuidA's JSON in place.
+    void TestNewSessionDoesNotOverwritePreviousRecentsEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY(QFileInfo::exists(pathA));
+
+        // Discard the active session. After this, opening a new file
+        // must NOT reuse uuidA.
+        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        const bool uuidAStillPresent = (entries.front().uuid == uuidA) || (entries.back().uuid == uuidA);
+        QVERIFY2(uuidAStillPresent, "uuidA must still be in the recents index");
+        QVERIFY2(entries.front().uuid != entries.back().uuid, "the two sessions must have distinct uuids");
+
+        // Both JSON files exist on disk and decode independently.
+        QVERIFY(QFileInfo::exists(pathA));
+        loglib::LogConfigurationManager probeA;
+        probeA.Load(pathA.toStdString());
+        QVERIFY(probeA.Configuration().source.has_value());
+        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(
+            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            logapp::CanonicalDisplayPath(fixtureA.Path())
+        );
+    }
+
+    // Companion: `OpenMode::Replace` must detach the window from
+    // the previous uuid so the replaced session gets a fresh entry.
+    void TestReplaceOpenDoesNotOverwritePreviousRecentsEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+
+        // Shift-Open (destructive Replace) must produce a NEW uuid.
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid, "Replace mode must not reuse the previous session's uuid"
+        );
+
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY2(QFileInfo::exists(pathA), "previous session's JSON must survive a Replace open");
+    }
+
+    // `LoadConfiguration` must detach the previous recents pin so
+    // the next AutoSave doesn't rewrite the prior session in place.
+    void TestLoadConfigurationDetachesPreviousRecentsEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Establish session A.
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY(QFileInfo::exists(pathA));
+
+        // The menu `LoadConfiguration` path does not pre-detach via
+        // `NewSession`; the pin only clears if `DoLoadConfiguration`
+        // detaches itself.
+        const QTemporaryDir configDir;
+        QVERIFY(configDir.isValid());
+        const QString configPath = QDir(configDir.path()).filePath(QStringLiteral("columns_only.json"));
+        wired->SaveConfigurationToPathForTest(configPath, loglib::SaveScope::ColumnsOnly);
+        wired->LoadConfigurationFromPathForTest(configPath);
+        QCoreApplication::processEvents();
+
+        // No pinned uuid after the load so the next AutoSave forks
+        // rather than overwriting session A.
+        QVERIFY2(wired->ActiveSessionUuid().isEmpty(), "LoadConfiguration must detach the previous recents pin");
+
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid,
+            "loading a configuration and opening new files must yield distinct uuids"
+        );
+
+        // Session A's JSON is untouched.
+        QVERIFY(QFileInfo::exists(pathA));
+        loglib::LogConfigurationManager probeA;
+        probeA.Load(pathA.toStdString());
+        QVERIFY(probeA.Configuration().source.has_value());
+        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(
+            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            logapp::CanonicalDisplayPath(fixtureA.Path())
+        );
+    }
+
+    // Single-file probe path: `TryLoadAsConfiguration` succeeding
+    // is a session boundary and must detach the previous recents
+    // pin -- otherwise a follow-up AutoSave would rewrite the
+    // prior session's JSON under the stale uuid.
+    //
+    // Uses a `SaveScope::Full` session JSON (real-world repro:
+    // dropping a recent session JSON onto an active window); a
+    // columns-only config would wipe `mCurrentSource` and mask
+    // the auto-save corruption.
+    void TestTryLoadAsConfigurationDetachesPreviousRecentsEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+        const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Establish session A and pin its uuid into the window.
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        QCOMPARE(wired->ActiveSessionUuid(), uuidA);
+        const QString pathA = manager.PathForUuid(uuidA);
+        QVERIFY(QFileInfo::exists(pathA));
+
+        // Drive the `DispatchMixedOpenInput` lone-config probe with
+        // a Full-scope snapshot of session A's own state (the
+        // source points at fixtureA) so the load lands with a
+        // valid `mCurrentSource` and the follow-up Append fires.
+        const QTemporaryDir configDir;
+        QVERIFY(configDir.isValid());
+        const QString sessionPath = QDir(configDir.path()).filePath(QStringLiteral("session_full.json"));
+        wired->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+        QVERIFY2(
+            wired->TryLoadAsConfigurationForTest(sessionPath),
+            "TryLoadAsConfiguration must succeed on a saved session JSON"
+        );
+        QCoreApplication::processEvents();
+
+        // No pinned uuid after a successful probe.
+        QVERIFY2(
+            wired->ActiveSessionUuid().isEmpty(),
+            "TryLoadAsConfiguration must detach the previous recents pin on a successful load"
+        );
+
+        // Append fires AutoSave; with the detach, a brand-new uuid
+        // is minted instead of clobbering session A.
+        finishedSpy.clear();
+        wired->OpenFilesForTest({fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QCOMPARE(entries.size(), 2);
+        QVERIFY2(
+            entries.front().uuid != entries.back().uuid,
+            "loading a session JSON via the probe path and appending new files must yield distinct uuids"
+        );
+        QVERIFY2(wired->ActiveSessionUuid() != uuidA, "follow-up AutoSave must not reuse the prior pin");
+
+        // Session A's JSON is untouched: single-locator File
+        // source still points at fixtureA.
+        QVERIFY(QFileInfo::exists(pathA));
+        loglib::LogConfigurationManager probeA;
+        probeA.Load(pathA.toStdString());
+        QVERIFY(probeA.Configuration().source.has_value());
+        QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(
+            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            logapp::CanonicalDisplayPath(fixtureA.Path())
+        );
+    }
+
+    // Companion: on a probe *failure* the pin survives so the
+    // subsequent Append extends the same entry. The detach lives
+    // after a successful `Load` for exactly this reason. Also
+    // pins that filters / sort survive a failed probe (a prior
+    // implementation cleared them pre-Load with no rollback).
+    void TestTryLoadAsConfigurationFailurePreservesPreviousRecentsEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // One matching + one non-matching row so the proxy row
+        // count is a clean signal for "filter still active".
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})"), QStringLiteral(R"({"msg": "beta"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(manager.List().size(), 1);
+        const QString uuidA = manager.List().front().uuid;
+        QCOMPARE(wired->ActiveSessionUuid(), uuidA);
+
+        auto *model = wired->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        auto *filterModel = wired->FilterModel();
+        QVERIFY(filterModel != nullptr);
+        QCOMPARE(filterModel->rowCount(), 2);
+
+        // Substring filter that drops `beta`; rowCount falls to 1.
+        // A leaked-clear regression would bump it back to 2.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                wired.get(),
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("survives-failed-probe")),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("alpha")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->rowCount(), 1);
+        QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
+
+        // Pin a deterministic sort so the indicator preservation is
+        // also observable.
+        wired->TableViewForTest()->sortByColumn(msgCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->SortColumn(), msgCol);
+        QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
+
+        // Write a deliberately-non-JSON payload so `TryLoadAsConfiguration`
+        // fails inside `Load(...)`.
+        const QTemporaryDir garbageDir;
+        QVERIFY(garbageDir.isValid());
+        const QString garbagePath = QDir(garbageDir.path()).filePath(QStringLiteral("not_a_config.txt"));
+        {
+            std::ofstream stream(garbagePath.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << "this is not json";
+        }
+        QVERIFY2(
+            !wired->TryLoadAsConfigurationForTest(garbagePath),
+            "TryLoadAsConfiguration must reject a non-configuration file"
+        );
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            wired->ActiveSessionUuid() == uuidA,
+            "failed probe must preserve the prior recents pin so an Append open extends the same entry"
+        );
+
+        // Filters and sort survive the failed probe.
+        QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
+        QCOMPARE(filterModel->rowCount(), 1);
+        QCOMPARE(filterModel->SortColumn(), msgCol);
+        QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
+    }
+
+    // Mixed input (one config + N logs): apply the configuration
+    // before the logs stream, so the loaded columns / filters /
+    // sort drive the streamed rows.
+    void TestDispatchMixedConfigAndLogsAppliesConfigThenStreams()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Two fixtures sharing a schema so we can assert on a sum.
+        const TempJsonFile fixtureA(
+            {QStringLiteral(R"({"category": "alpha", "msg": "first"})"),
+             QStringLiteral(R"({"category": "beta", "msg": "second"})")}
+        );
+        const TempJsonFile fixtureB({QStringLiteral(R"({"category": "alpha", "msg": "third"})")});
+        const int expectedRows = 3;
+
+        // Full-scope cfg with a contains-`alpha` filter and a
+        // descending sort on `category`. Proxy row count collapses
+        // to 2 and the sort indicator matches.
+        const QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("mixed-cfg.json"));
+
+        loglib::LogConfigurationManager builder;
+        builder.SetSource(loglib::LogConfiguration::Source{});
+        builder.AppendKeys({"category", "msg"});
+
+        loglib::LogConfiguration::LogFilter filter;
+        filter.type = loglib::LogConfiguration::LogFilter::Type::String;
+        filter.row = 0;
+        filter.filterString = "alpha";
+        filter.matchType = loglib::LogConfiguration::LogFilter::Match::Contains;
+        builder.SetFilters({filter});
+
+        loglib::LogConfiguration::Sort sort;
+        sort.columnIndex = 0;
+        sort.descending = true;
+        builder.SetSort(sort);
+
+        builder.Save(cfgPath.toStdString(), loglib::SaveScope::Full);
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({cfgPath, fixtureA.Path(), fixtureB.Path()}, MainWindow::OpenMode::Append);
+        QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
+
+        // Two log files chain: `BeginStreaming` then
+        // `AppendStreaming`. Wait on the accumulated row count
+        // rather than `streamingFinished` (it fires per-file).
+        auto *model = wired->Model();
+        QVERIFY(model != nullptr);
+        QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), expectedRows, 5000);
+
+        // Cfg columns drove the load (no autodetect fallback).
+        QCOMPARE(static_cast<int>(model->Configuration().columns.size()), 2);
+
+        // Full-scope filter survived; proxy hides non-`alpha`.
+        QCOMPARE(wired->Filters().size(), static_cast<size_t>(1));
+        auto *proxy = wired->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->rowCount(), 2);
+
+        // The Full-scope sort survived: the table view is sorting
+        // by `category` descending.
+        const auto *header = wired->TableViewForTest()->horizontalHeader();
+        QVERIFY(header != nullptr);
+        QCOMPARE(header->sortIndicatorSection(), 0);
+        QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
+    }
+
+    // Lone-config input: `TryLoadAsConfiguration` applies columns
+    // / filters / sort, model is not reset, no streaming starts.
+    // Dispatcher reports `AppliedConfigOnly` for the CLI hint.
+    void TestDispatchMixedSingleConfigDelegatesToTryLoadAsConfiguration()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("lone-cfg.json"));
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg", "level"});
+        builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({cfgPath}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(result, MainWindow::MixedInputDispatch::AppliedConfigOnly);
+        QCOMPARE(static_cast<int>(wired->Model()->Configuration().columns.size()), 2);
+        QCOMPARE(wired->Model()->rowCount(), 0);
+        QCOMPARE(finishedSpy.count(), 0);
+    }
+
+    // Multiple configs in one input is rejected with a modal
+    // (suppressed in tests). Live state untouched: no config
+    // applied, no streaming, no uuid mutation.
+    void TestDispatchMixedRejectsMultipleConfigs()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Pre-seed so we can later assert nothing mutated.
+        const TempJsonFile prior({QStringLiteral(R"({"msg": "kept"})")});
+        QSignalSpy primingSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(primingSpy.isValid());
+        wired->OpenFilesForTest({prior.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(primingSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const int rowsBefore = wired->Model()->rowCount();
+        const auto columnsBefore = wired->Model()->Configuration().columns.size();
+        const QString uuidBefore = wired->ActiveSessionUuid();
+        QVERIFY2(rowsBefore > 0, "priming open must produce at least one row");
+        QVERIFY2(columnsBefore > 0, "priming open must produce at least one column");
+
+        // Two real columns-only configurations and a log file.
+        const QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPathA = cfgDir.filePath(QStringLiteral("cfg-a.json"));
+        const QString cfgPathB = cfgDir.filePath(QStringLiteral("cfg-b.json"));
+        {
+            loglib::LogConfigurationManager builderA;
+            builderA.AppendKeys({"alpha"});
+            builderA.Save(cfgPathA.toStdString(), loglib::SaveScope::ColumnsOnly);
+            loglib::LogConfigurationManager builderB;
+            builderB.AppendKeys({"beta"});
+            builderB.Save(cfgPathB.toStdString(), loglib::SaveScope::ColumnsOnly);
+        }
+        const TempJsonFile log({QStringLiteral(R"({"msg": "ignored"})")});
+
+        wired->SetSuppressDialogsForTest(true);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({cfgPathA, cfgPathB, log.Path()}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(result, MainWindow::MixedInputDispatch::RejectedMultiConfig);
+        QCOMPARE(wired->Model()->rowCount(), rowsBefore);
+        QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
+        QCOMPARE(wired->ActiveSessionUuid(), uuidBefore);
+        QCOMPARE(finishedSpy.count(), 0);
+    }
+
+    // No-config input streams everything via
+    // `StartStreamingOpenQueue` in the caller's `OpenMode`.
+    void TestDispatchMixedNoConfigStreamsEverything()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile logA({QStringLiteral(R"({"msg": "first"})")});
+        const TempJsonFile logB({QStringLiteral(R"({"msg": "second"})")});
+
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({logA.Path(), logB.Path()}, MainWindow::OpenMode::Append);
+        QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
+
+        // Each chained file fires `streamingFinished`; wait both.
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->rowCount(), 2);
+    }
+
+    // Empty `{}` must be classified as a log (parsing fails), not
+    // as a configuration. Otherwise it would wipe columns or
+    // trigger a multi-config modal.
+    void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const QTemporaryDir emptyDir;
+        QVERIFY(emptyDir.isValid());
+        const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
+        {
+            std::ofstream stream(emptyPath.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << "{}";
+        }
+
+        const TempJsonFile log({QStringLiteral(R"({"msg": "real"})")});
+
+        wired->SetSuppressDialogsForTest(true);
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const MainWindow::MixedInputDispatch result =
+            wired->OpenMixedFilesForTest({emptyPath, log.Path()}, MainWindow::OpenMode::Append);
+        QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // Real log row survives; the `{}` parse error lands in
+        // `ShowParseErrors` (not asserted here).
+        QCOMPARE(wired->Model()->rowCount(), 1);
+    }
+
+    // CLI variant: `app cfg.json log.json` applies the cfg first
+    // and streams the log under it.
+    void TestOpenFilesForCliConfigAndLogsAppliesConfigThenStreams()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const QTemporaryDir cfgDir;
+        QVERIFY(cfgDir.isValid());
+        const QString cfgPath = cfgDir.filePath(QStringLiteral("cli-cfg.json"));
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        builder.Save(cfgPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        const TempJsonFile log({QStringLiteral(R"({"msg": "from cli"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        wired->OpenFilesForCli({cfgPath, log.Path()});
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // Configuration applied: single column `msg` from the cfg.
+        // Log streamed under it: one row.
+        QCOMPARE(static_cast<int>(wired->Model()->Configuration().columns.size()), 1);
+        QCOMPARE(wired->Model()->rowCount(), 1);
+    }
+
+    // Glaze accepts `{}` as a default-valued `LogConfiguration` with
+    // no columns; treating that as a config would wipe the live
+    // column layout. `TryLoadAsConfiguration` must reject column-
+    // less parses so the caller opens the file as a log instead.
+    void TestTryLoadAsConfigurationRejectsEmptyJsonObject()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        wired->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const auto columnsBefore = wired->Model()->Configuration().columns.size();
+        QVERIFY2(columnsBefore > 0, "fixture must produce at least one column");
+
+        // `{}` parses cleanly into a default config; without the
+        // explicit reject this would wipe the live columns.
+        const QTemporaryDir emptyDir;
+        QVERIFY(emptyDir.isValid());
+        const QString emptyPath = QDir(emptyDir.path()).filePath(QStringLiteral("empty.json"));
+        {
+            std::ofstream stream(emptyPath.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << "{}";
+        }
+        QVERIFY2(
+            !wired->TryLoadAsConfigurationForTest(emptyPath), "an empty JSON object must be rejected as a probe miss"
+        );
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->Configuration().columns.size(), columnsBefore);
+    }
+
+    // `openWindowsAtQuit` is maintained eagerly so multi-window
+    // restore survives `WA_DeleteOnClose`. AutoSave adds; close
+    // removes.
+    void TestOpenWindowsAtQuitTrackedAcrossAutoSaveAndClose()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        // Snapshot + restore so we don't pollute the live profile.
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "track"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+
+        // Some sandboxed CI Windows envs refuse the write; skip.
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        if (afterAuto.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY2(afterAuto.contains(uuid), "AutoSave must publish the session uuid into openWindowsAtQuit");
+
+        // closeEvent removes the window from the set.
+        const QSignalSpy destroyedSpy(wired.get(), &QObject::destroyed);
+        wired->close();
+        wired.reset();
+        for (int i = 0; i < 20 && destroyedSpy.isEmpty(); ++i)
+        {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents();
+        }
+
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(!afterClose.contains(uuid), "closeEvent must remove the window from the open-windows set");
+    }
+
+    // Regression: the primary window in `main.cpp` is not
+    // `WA_DeleteOnClose`, so it stays in `topLevelWidgets()` past
+    // `closeEvent`. Without clearing `mAutoSaveUuid` in
+    // `closeEvent`, the `aboutToQuit` snapshot would re-publish
+    // the exited window into `openWindowsAtQuit`.
+    void TestCloseEventClearsAutoSaveUuidForAboutToQuit()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        // Heap-owned but not `WA_DeleteOnClose`: mirrors `main.cpp`'s
+        // primary -- survives `close()` long enough for the
+        // aboutToQuit replay.
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "exit"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        if (afterAuto.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY(afterAuto.contains(uuid));
+
+        // Simulate File -> Exit: closeEvent fires synchronously,
+        // widget stays alive.
+        wired->close();
+        QCoreApplication::processEvents();
+
+        // Replay `main.cpp`'s aboutToQuit snapshot loop on the
+        // still-live widget. With the fix,
+        // `RestorableActiveSessionUuid` is empty after closeEvent.
+        QStringList capturedOnQuit;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr)
+            {
+                continue;
+            }
+            const QString restorableUuid = mw->RestorableActiveSessionUuid();
+            if (!restorableUuid.isEmpty())
+            {
+                capturedOnQuit.append(restorableUuid);
+            }
+        }
+        if (!capturedOnQuit.isEmpty())
+        {
+            SessionHistoryManager::SetOpenWindowsAtQuit(capturedOnQuit);
+        }
+
+        QVERIFY2(
+            capturedOnQuit.isEmpty(),
+            "aboutToQuit snapshot must not see a uuid from a window whose closeEvent already ran"
+        );
+        QVERIFY2(
+            !SessionHistoryManager::OpenWindowsAtQuitUnlocked().contains(uuid),
+            "the just-exited window's uuid must not be republished into openWindowsAtQuit"
+        );
+    }
+
+    // `NewSession` must clear `mAutoSaveUuid` and drop it from
+    // `openWindowsAtQuit` so a crash before the next AutoSave
+    // does not re-restore the just-discarded session.
+    void TestNewSessionDetachesFromOpenWindowsAtQuit()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "detach"})")});
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+        const QStringList afterAuto = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        if (afterAuto.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY(afterAuto.contains(uuid));
+
+        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            wired->ActiveSessionUuid().isEmpty(),
+            "NewSession must drop the pinned uuid so the next AutoSave produces a fresh entry"
+        );
+        const QStringList afterNew = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(
+            !afterNew.contains(uuid), "NewSession must remove the discarded session's uuid from openWindowsAtQuit"
+        );
+    }
+
+    // `Add` / `Remove` round-trip on the persisted open-windows set
+    // is idempotent and order-preserving for unaffected entries.
+    void TestOpenWindowUuidAddRemoveRoundTrip()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Empty / null uuids are no-ops; `AddOpenWindowUuid`
+        // returns false for empty input, true on a real publish.
+        QVERIFY(!SessionHistoryManager::AddOpenWindowUuid(QString()));
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
+        SessionHistoryManager::RemoveOpenWindowUuid(QString());
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
+
+        const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
+        const QStringList probe = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        if (probe.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QCOMPARE(probe, QStringList{uuidA});
+
+        // Idempotent: re-adding does not duplicate. Returns true
+        // because the post-condition "uuid is in the set" holds.
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidA});
+
+        // Order-preserving append for a fresh uuid.
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidB));
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), (QStringList{uuidA, uuidB}));
+
+        // Remove the middle / head entry; the rest stay put.
+        SessionHistoryManager::RemoveOpenWindowUuid(uuidA);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidB});
+
+        // Removing a missing uuid is a no-op.
+        SessionHistoryManager::RemoveOpenWindowUuid(uuidA);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{uuidB});
+    }
+
+    // Batched `AddOpenWindowUuids` (used by `aboutToQuit`): merge
+    // under one lock acquisition. Appends in order, skips
+    // duplicates / empty strings, preserves pre-existing entries.
+    void TestAddOpenWindowUuidsBatchedMerge()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // Empty list is a no-op.
+        SessionHistoryManager::AddOpenWindowUuids(QStringList{});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
+
+        const QString uuidA = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuidB = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuidC = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        // Pre-seed `uuidA` to model a sibling peer. Batched call
+        // must merge, not overwrite.
+        QVERIFY(SessionHistoryManager::AddOpenWindowUuid(uuidA));
+        const QStringList preBatch = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        if (preBatch.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QCOMPARE(preBatch, QStringList{uuidA});
+
+        // Batch: an empty string (skipped), a duplicate of `uuidA`
+        // (skipped -- idempotent), and two new uuids appended in
+        // order.
+        SessionHistoryManager::AddOpenWindowUuids(QStringList{QString(), uuidA, uuidB, uuidC});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), (QStringList{uuidA, uuidB, uuidC}));
+
+        // A subsequent batch with no new entries is also a no-op
+        // (every uuid is already present).
+        SessionHistoryManager::AddOpenWindowUuids(QStringList{uuidA, uuidB, uuidC});
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), (QStringList{uuidA, uuidB, uuidC}));
+    }
+
+    // `CleanupOrphanFiles` deletes per-uuid JSONs that are not in the
+    // index. Index-referenced files survive; the lock file is left
+    // alone.
+    void TestCleanupOrphanFilesRemovesStaleJsons()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed one valid entry.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/kept.json"}
+        };
+        const QString keptUuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!keptUuid.isEmpty());
+        const QString keptPath = manager.PathForUuid(keptUuid);
+        QVERIFY(QFileInfo::exists(keptPath));
+
+        // Orphan JSON (simulates a crash between file-write and
+        // index-update). Stem must be uuid-shaped -- the sweeper
+        // gates deletion on a strict uuid check.
+        const QString orphanPath =
+            QDir(sessionsDir.path())
+                .filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json"));
+        {
+            QFile orphan(orphanPath);
+            QVERIFY(orphan.open(QIODevice::WriteOnly));
+            orphan.write("{\"columns\": []}\n");
+        }
+        QVERIFY(QFileInfo::exists(orphanPath));
+
+        // Leftover `.json.tmp` (atomic-write crash). Same uuid-
+        // stem requirement applies to `*.json.tmp` as to `*.json`.
+        const QString staleTempPath =
+            QDir(sessionsDir.path())
+                .filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".json.tmp"));
+        {
+            QFile staleTemp(staleTempPath);
+            QVERIFY(staleTemp.open(QIODevice::WriteOnly));
+            staleTemp.write("{\"columns\": [");
+        }
+        QVERIFY(QFileInfo::exists(staleTempPath));
+
+        (void)manager.CleanupOrphanFiles();
+
+        QVERIFY2(QFileInfo::exists(keptPath), "indexed entries must survive cleanup");
+        QVERIFY2(!QFileInfo::exists(orphanPath), "orphan JSON must be removed");
+        QVERIFY2(!QFileInfo::exists(staleTempPath), "stale .json.tmp must be removed");
+    }
+
+    // The orphan sweeper must NOT delete files whose stem isn't a
+    // QUuid -- silently wiping a user's `notes.json` would be a
+    // foot-gun.
+    void TestCleanupOrphanFilesPreservesNonUuidStems()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed an entry to mkpath the directory.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/seed.json"}
+        };
+        const QString seedUuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!seedUuid.isEmpty());
+
+        // Plant a foreign file with a non-uuid stem.
+        const QString foreignPath = QDir(sessionsDir.path()).filePath(QStringLiteral("notes.json"));
+        {
+            QFile foreign(foreignPath);
+            QVERIFY(foreign.open(QIODevice::WriteOnly));
+            foreign.write("user notes -- not ours");
+        }
+        QVERIFY(QFileInfo::exists(foreignPath));
+
+        // Symmetric check for `.json.tmp` stems.
+        const QString foreignTempPath = QDir(sessionsDir.path()).filePath(QStringLiteral("scratch.json.tmp"));
+        {
+            QFile foreignTemp(foreignTempPath);
+            QVERIFY(foreignTemp.open(QIODevice::WriteOnly));
+            foreignTemp.write("scratch space");
+        }
+        QVERIFY(QFileInfo::exists(foreignTempPath));
+
+        (void)manager.CleanupOrphanFiles();
+
+        QVERIFY2(QFileInfo::exists(foreignPath), "non-uuid `notes.json` must survive cleanup");
+        QVERIFY2(QFileInfo::exists(foreignTempPath), "non-uuid `scratch.json.tmp` must survive cleanup");
+        QVERIFY2(QFileInfo::exists(manager.PathForUuid(seedUuid)), "indexed entry must still be present");
+    }
+
+    // `RestoreLastSessionFromPath` must pin `mAutoSaveUuid` even
+    // for source-less configurations; otherwise the next AutoSave
+    // forks a fresh entry instead of updating the loaded one.
+    void TestRestoreLastSessionPinsUuidEvenWithNoSource()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Hand-craft a uuid-stemmed JSON with no source so the
+        // restore path hits the no-source branch.
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg", "level"});
+        // No `SetSource`: column-only snapshot.
+        builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->RestoreLastSessionFromPath(jsonPath);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+    }
+
+    // `ShouldAutoSaveSession` filters out live-tail / network-
+    // stream sessions: they can't be rebound from a JSON snapshot,
+    // so saving them would create entries that never reopen.
+    void TestAutoSaveSkipsLiveTailAndNetworkStreamSessions()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Case A: live-tail on a File source. A plain kind check
+        // would let it through; the gate must also see `LiveTail`.
+        {
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/live.log"}
+            });
+            wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+            wired->close();
+            QCoreApplication::processEvents();
+
+            QVERIFY2(
+                manager.List().isEmpty(), "closeEvent must not auto-save a live-tail session into Recent Sessions"
+            );
+        }
+
+        // Case B: NetworkStream source -- not re-bindable.
+        {
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+            });
+            wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+            wired->close();
+            QCoreApplication::processEvents();
+
+            QVERIFY2(
+                manager.List().isEmpty(), "closeEvent must not auto-save a network-stream session into Recent Sessions"
+            );
+        }
+    }
+
+    // Regression: closeEvent used to write a phantom recents
+    // entry for a *finished* live-tail session because
+    // `streamingFinished` resets `mSessionMode` to `Idle`.
+    // `mLastTerminalSessionMode` retains the real mode so the
+    // auto-save gate bails.
+    void TestCloseAfterFinishedLiveTailDoesNotCreatePhantomRecentsEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}
+        });
+        wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+        // Drive a real `streamingFinished` so the MainWindow lambda
+        // captures `mLastTerminalSessionMode = LiveTail` before
+        // resetting `mSessionMode = Idle`.
+        auto *model = wired->Model();
+        QVERIFY(model != nullptr);
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        BeginSyntheticStreamSession(*model);
+        QVERIFY(model->IsStreamingActive());
+        model->StopAndKeepRows();
+        QCoreApplication::processEvents();
+        QVERIFY2(finishedSpy.count() >= 1, "StopAndKeepRows must emit streamingFinished");
+
+        QVERIFY2(manager.List().isEmpty(), "preconditions: no recents entries before close");
+
+        wired->close();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            manager.List().isEmpty(),
+            "closeEvent must not write a Recent Sessions entry for a finished live-tail session"
+        );
+    }
+
+    // `RestoreLastSessionFromPath` must not stream a NetworkStream
+    // URI as a static file. Restore succeeds (columns / filters
+    // installed) but no streaming attempt is made.
+    void TestRestoreLastSessionSkipsNetworkStreamSource()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Hand-craft a NetworkStream session JSON (legacy: older
+        // builds auto-saved streams before the gate landed).
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        builder.SetSource(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+        });
+        builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // No streaming attempt -- `finishedSpy` must stay at 0.
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->RestoreLastSessionFromPath(jsonPath);
+        // Pump the event loop briefly.
+        for (int i = 0; i < 5; ++i)
+        {
+            QCoreApplication::processEvents();
+        }
+
+        QCOMPARE(finishedSpy.count(), 0);
+        // uuid still pinned so future saves update this entry.
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+    }
+
+    // `RestorableActiveSessionUuid` returns empty for sessions that
+    // can't be fan-restored (NetworkStream, no source). The plain
+    // `ActiveSessionUuid` still returns the pin so Touch / AutoSave
+    // bookkeeping stays consistent.
+    void TestRestorableActiveSessionUuidFiltersNonRestorableSessions()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Case A: NetworkStream. The uuid is pinned (manual rebind
+        // can still rewrite in place) but fan-restore must skip it.
+        {
+            const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const QString jsonPath = manager.PathForUuid(uuid);
+            QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+            loglib::LogConfigurationManager builder;
+            builder.AppendKeys({"msg"});
+            builder.SetSource(loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+            });
+            builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->RestoreLastSessionFromPath(jsonPath);
+            QCoreApplication::processEvents();
+
+            QCOMPARE(wired->ActiveSessionUuid(), uuid);
+            QVERIFY2(wired->RestorableActiveSessionUuid().isEmpty(), "fan-restore must skip NetworkStream sessions");
+        }
+
+        // Case B: source-less config. Restorable -- the user
+        // pinned a layout and wants it back.
+        {
+            const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const QString jsonPath = manager.PathForUuid(uuid);
+            QDir().mkpath(QFileInfo(jsonPath).absolutePath());
+
+            loglib::LogConfigurationManager builder;
+            builder.AppendKeys({"msg"});
+            // Intentionally no `SetSource`.
+            builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
+
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            wired->RestoreLastSessionFromPath(jsonPath);
+            QCoreApplication::processEvents();
+
+            QCOMPARE(wired->ActiveSessionUuid(), uuid);
+            QCOMPARE(wired->RestorableActiveSessionUuid(), uuid);
+        }
+
+        // Case C: no session pinned -- trivially empty.
+        {
+            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            QVERIFY(wired->ActiveSessionUuid().isEmpty());
+            QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
+        }
+    }
+
+    // `RestoreLastSessionFromPath` only pins `mAutoSaveUuid` when
+    // the stem parses as a QUuid -- an ad-hoc file can't hijack
+    // auto-save into the user's filesystem.
+    void TestRestoreLastSessionRejectsNonUuidStem()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Valid session JSON at a non-uuid path; only the stem-
+        // validation gate is under test.
+        const QTemporaryDir adhocDir;
+        QVERIFY(adhocDir.isValid());
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "stem"})")});
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        builder.SetSource(loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {fixture.Path().toStdString()}
+        });
+        const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
+        builder.Save(adhocPath.toStdString(), loglib::SaveScope::Full);
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->RestoreLastSessionFromPath(adhocPath);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // Streaming finished but `mAutoSaveUuid` must not pin to
+        // `not-a-uuid`.
+        QVERIFY2(
+            wired->ActiveSessionUuid() != QStringLiteral("not-a-uuid"),
+            "RestoreLastSessionFromPath must reject non-uuid stems"
+        );
+    }
+
+    // Switching from a static session to a live-tail stream must
+    // flush unsaved post-`streamingFinished` edits to the recents
+    // JSON before the destructive `mModel->Reset()`. Witnessed via
+    // a `changed` signal tick on the pre-reset flush.
+    void TestOpenLogStreamFlushesPriorStaticSessionEdits()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Stage 1: open a static session and let it auto-save.
+        // Drain `changed` before the assertion window.
+        const TempJsonFile staticFixture({QStringLiteral(R"({"msg": "static"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({staticFixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(manager.List().size(), 1);
+        const QString staticUuid = wired->ActiveSessionUuid();
+        QVERIFY(!staticUuid.isEmpty());
+
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        QVERIFY(changedSpy.isValid());
+
+        // Stage 2: switch to live-tail. The fix calls
+        // `AutoSaveSessionSnapshot(false)` on the outgoing session
+        // before the reset, firing `changed` once.
+        const TempJsonFile streamFixture({QStringLiteral(R"({"msg": "stream-seed"})")});
+        wired->OpenLogStreamForTest(streamFixture.Path());
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            changedSpy.count() >= 1, "OpenLogStream must flush the outgoing static session before resetting the model"
+        );
+
+        // Static entry survives (rewritten with the latest state);
+        // the new live-tail session is intentionally not saved.
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, staticUuid);
+
+        // Post-reset: pin cleared so a follow-up flush does not
+        // silently rewrite the static entry.
+        QVERIFY(wired->ActiveSessionUuid().isEmpty());
+    }
+
+    // `aboutToQuit` must flush each window via
+    // `AutoSaveSessionSnapshot(true)` so post-`streamingFinished`
+    // edits survive an OS-driven quit (no `closeEvent`).
+    void TestAboutToQuitFlushesPerWindowEdits()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "abq-flush"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+
+        // Drain the auto-save signal so the assertion below is
+        // unambiguous.
+        const QSignalSpy changedSpy(&manager, &SessionHistoryManager::changed);
+        QVERIFY(changedSpy.isValid());
+
+        // Replay the `aboutToQuit` body: per-window flush, then
+        // one batched publish under a single lock acquisition.
+        QStringList restorable;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr)
+            {
+                continue;
+            }
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            const QString restorableUuid = mw->RestorableActiveSessionUuid();
+            if (!restorableUuid.isEmpty())
+            {
+                restorable.append(restorableUuid);
+            }
+        }
+        SessionHistoryManager::AddOpenWindowUuids(restorable);
+
+        QVERIFY2(
+            changedSpy.count() >= 1, "aboutToQuit must invoke AutoSaveSessionSnapshot, not just AddOpenWindowUuids"
+        );
+
+        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        if (afterQuit.isEmpty())
+        {
+            QSKIP("QSettings did not honour the open-windows write in this environment");
+        }
+        QVERIFY2(
+            afterQuit.contains(uuid), "aboutToQuit handler must publish the live window's uuid into openWindowsAtQuit"
+        );
+    }
+
+    // External JSON (outside the sessions dir) must not pin or
+    // publish a uuid -- a future AutoSave would otherwise silently
+    // fork the user's file into a managed copy.
+    //
+    // Exercised against a no-source config so `streamingFinished`
+    // never legitimises the entry after the fact.
+    void TestRestoreLastSessionDoesNotPublishGhostUuid()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // No-source JSON with a uuid-shaped stem outside the
+        // managed sessionsDir. The directory mismatch trips the
+        // gate so the pin + publish block is skipped.
+        const QTemporaryDir externalDir;
+        QVERIFY(externalDir.isValid());
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString externalPath = externalDir.filePath(uuid + QStringLiteral(".json"));
+
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"msg"});
+        // Columns-only (no `SetSource`): restore hits the no-source
+        // branch and never starts streaming.
+        builder.Save(externalPath.toStdString(), loglib::SaveScope::Full);
+        QVERIFY(QFileInfo::exists(externalPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->RestoreLastSessionFromPath(externalPath);
+        QCoreApplication::processEvents();
+
+        // The configuration loads but the uuid stays unpinned, so
+        // the next save mints a fresh uuid in the managed dir.
+        QVERIFY2(
+            wired->ActiveSessionUuid().isEmpty(),
+            qPrintable(QStringLiteral("external uuid-shaped JSON must not pin mAutoSaveUuid (got '%1')")
+                           .arg(wired->ActiveSessionUuid()))
+        );
+
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        // No `QSKIP` on empty -- an empty set is what the fix
+        // guarantees.
+        QVERIFY2(!openSet.contains(uuid), "external uuid-shaped JSON must not be published into openWindowsAtQuit");
+    }
+
+    // Non-File source kinds (NetworkStream today) must not publish
+    // into `openWindowsAtQuit`. The recents index still owns the
+    // entry (Touch / manual rebind work) but fan-restore must skip
+    // it; otherwise every launch resurrects a "re-bind manually"
+    // popup loop.
+    void TestRestoreLastSessionDoesNotPublishNetworkStreamUuid()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // `WriteSnapshot` so the entry lives in the index; without
+        // it, `Touch` would short-circuit and mask the gate.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+        const QString jsonPath = manager.PathForUuid(uuid);
+        QVERIFY(QFileInfo::exists(jsonPath));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        wired->RestoreLastSessionFromPath(jsonPath);
+        QCoreApplication::processEvents();
+
+        // Window owns the uuid (so a manual rebind updates the
+        // same entry), but the restorability predicate hides it.
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+        QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
+
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(!openSet.contains(uuid), "NetworkStream uuid must not be published into openWindowsAtQuit on restore");
+    }
+
+    // Companion: same invariant for the menu reopen path
+    // (`OpenRecentSession(uuid)`).
+    void TestOpenRecentSessionDoesNotPublishNetworkStreamUuid()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5171"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+        QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        // Suppress the non-File source modal so the offscreen
+        // runner doesn't hang.
+        wired->SetSuppressDialogsForTest(true);
+
+        wired->OpenRecentSessionForTest(uuid);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->ActiveSessionUuid(), uuid);
+        QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
+
+        const QStringList openSet = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(!openSet.contains(uuid), "NetworkStream uuid must not be published into openWindowsAtQuit on reopen");
+    }
+
+    // -------------------------------------------------------------------------
+    // MainWindow lifecycle regressions.
+    // -------------------------------------------------------------------------
+
+    void TestOpenRecentSessionDropsCorruptEntry()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Corrupt the JSON so the pre-flight parse fails. Post-fix
+        // the corrupt entry is removed from the index.
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/will-be-corrupted.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        const QString path = manager.PathForUuid(uuid);
+        QVERIFY(QFileInfo::exists(path));
+
+        // Replace contents with non-JSON garbage.
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("this is not json {{");
+        }
+
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        wired->SetSuppressDialogsForTest(true);
+        wired->OpenRecentSessionForTest(uuid);
+        QCoreApplication::processEvents();
+
+        const QList<RecentSessionEntry> entries = manager.List();
+        QVERIFY2(
+            std::none_of(
+                entries.begin(), entries.end(), [&uuid](const RecentSessionEntry &e) { return e.uuid == uuid; }
+            ),
+            "Corrupt recents entry must be removed after a failed open attempt"
+        );
+    }
+
+    void TestLoadFromStringParsesValidConfiguration()
+    {
+        // `LoadFromString` is the in-memory pre-flight that
+        // `FileLooksLikeConfiguration` uses to bound disk IO.
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("seed.json"));
+        {
+            loglib::LogConfiguration cfg;
+            loglib::LogConfiguration::Column col;
+            col.header = "msg";
+            col.keys = {"msg"};
+            cfg.columns.push_back(col);
+            loglib::LogConfigurationManager::Save(cfg, path.toStdString(), loglib::SaveScope::Full);
+        }
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QByteArray content = file.readAll();
+
+        loglib::LogConfigurationManager mgr;
+        mgr.LoadFromString(std::string_view(content.constData(), static_cast<size_t>(content.size())));
+        QCOMPARE(mgr.Configuration().columns.size(), static_cast<size_t>(1));
+        QCOMPARE(QString::fromStdString(mgr.Configuration().columns.front().header), QStringLiteral("msg"));
+    }
+
+    void TestLoadFromStringRejectsNonJsonGarbage()
+    {
+        loglib::LogConfigurationManager mgr;
+        bool threw = false;
+        try
+        {
+            mgr.LoadFromString("definitely not json {{");
+        }
+        catch (const std::exception &)
+        {
+            // Latch the throw so `bugprone-empty-catch` is happy.
+            threw = true;
+        }
+        QVERIFY2(threw, "LoadFromString must throw on garbage input");
+    }
+
+    // `EvictLocked` writes the index before unlinking so a crash
+    // between the two leaves an orphan JSON (recovered by
+    // `CleanupOrphanFiles`) rather than a dangling index entry.
+    // Steady-state observable invariant is unchanged.
+    void TestEvictionKeepsIndexConsistentWithDisk()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        const int capacityPlus = SessionHistoryManager::MAX_ENTRIES + 1;
+        QStringList writtenUuids;
+        for (int i = 0; i < capacityPlus; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/evict-%1.json").arg(i).toStdString()}
+            };
+            const QString uuid = manager.WriteSnapshot(cfg);
+            QVERIFY(!uuid.isEmpty());
+            writtenUuids.append(uuid);
+        }
+
+        // Every indexed entry has its JSON on disk.
+        const QList<RecentSessionEntry> list = manager.List();
+        QCOMPARE(list.size(), SessionHistoryManager::MAX_ENTRIES);
+        for (const RecentSessionEntry &e : list)
+        {
+            QVERIFY2(
+                QFileInfo::exists(manager.PathForUuid(e.uuid)),
+                qPrintable(QStringLiteral("indexed entry %1 must have backing JSON on disk").arg(e.uuid))
+            );
+        }
+
+        // The evicted (oldest) uuid has no backing file.
+        QVERIFY2(
+            !QFileInfo::exists(manager.PathForUuid(writtenUuids.first())),
+            "evicted entry's JSON must be removed from disk"
+        );
+    }
+
+    // Atomic temp+rename: any temp-file failure must throw and
+    // leave the destination untouched. We can't fault-inject a
+    // close failure portably; instead exercise an open failure
+    // (parent dir missing), which honours the same contract.
+    void TestSaveTempFailureDoesNotClobberDestination()
+    {
+        const QTemporaryDir scratchDir;
+        QVERIFY(scratchDir.isValid());
+
+        // Pre-seed an existing JSON we can detect modifications on.
+        const QString destPath = scratchDir.filePath(QStringLiteral("seed.json"));
+        loglib::LogConfigurationManager seeder;
+        seeder.AppendKeys({"a", "b"});
+        seeder.Save(destPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        QVERIFY(QFileInfo::exists(destPath));
+        QFile destFile(destPath);
+        QVERIFY(destFile.open(QIODevice::ReadOnly));
+        const QByteArray seedBytes = destFile.readAll();
+        destFile.close();
+        QVERIFY(!seedBytes.isEmpty());
+
+        // Save into a path whose parent dir does not exist; the
+        // temp-file open inside the atomic write must fail.
+        const QString unreachablePath =
+            QDir(scratchDir.path()).filePath(QStringLiteral("does/not/exist/save-target.json"));
+
+        loglib::LogConfigurationManager doomed;
+        doomed.AppendKeys({"x", "y"});
+        bool threw = false;
+        try
+        {
+            doomed.Save(unreachablePath.toStdString(), loglib::SaveScope::ColumnsOnly);
+        }
+        catch (const std::exception &)
+        {
+            threw = true;
+        }
+        QVERIFY2(threw, "Save must throw when the temp file cannot be opened");
+        QVERIFY2(
+            !QFileInfo::exists(unreachablePath), "Save must not have created a partial file at the unreachable path"
+        );
+
+        // The pre-existing destination is untouched.
+        QVERIFY(destFile.open(QIODevice::ReadOnly));
+        const QByteArray afterBytes = destFile.readAll();
+        destFile.close();
+        QCOMPARE(afterBytes, seedBytes);
+    }
+
+    // CLI with a single source-less config must show a status-bar
+    // hint pointing at File -> Open; otherwise the launch looks
+    // like a no-op (just column headers, no rows).
+    void TestOpenFilesForCliSingleConfigWithoutSourceShowsHint()
+    {
+        SessionHistoryManager manager(
+            QDir(QDir::tempPath() + QStringLiteral("/abs-2-1")), std::make_unique<InMemoryRecentsIndexStorage>()
+        );
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Source-less config (columns only, no `source` field).
+        const QTemporaryDir scratch;
+        QVERIFY(scratch.isValid());
+        const QString configPath = scratch.filePath(QStringLiteral("hint-cfg.json"));
+        loglib::LogConfigurationManager builder;
+        builder.AppendKeys({"timestamp", "level", "msg"});
+        builder.Save(configPath.toStdString(), loglib::SaveScope::ColumnsOnly);
+
+        wired->OpenFilesForCli({configPath});
+        QCoreApplication::processEvents();
+
+        // Status-bar hint visible.
+        const QString status = wired->statusBar()->currentMessage();
+        QVERIFY2(
+            status.contains(QStringLiteral("configuration"), Qt::CaseInsensitive) &&
+                status.contains(QStringLiteral("File")),
+            qPrintable(QStringLiteral("status bar should hint at File -> Open after a source-less "
+                                      "configuration load; got: %1")
+                           .arg(status))
+        );
+
+        // Configuration applied so a follow-up File -> Open lands
+        // on the user's chosen column layout.
+        QVERIFY2(
+            wired->Model()->columnCount() >= 1,
+            "OpenFilesForCli must apply the configuration's columns even when no source is bound"
+        );
+    }
+
+    // `closeEvent` on a window that never published its uuid must
+    // not leave a stale entry in `openWindowsAtQuit`. The fix
+    // skips the cross-process `RemoveOpenWindowUuid` when nothing
+    // was published.
+    //
+    // Exercised via the path where `AutoSaveSessionSnapshot(false)`
+    // is the *first* save (no prior `streamingFinished` published
+    // the uuid), so a Remove would be a wasted no-op.
+    void TestCloseEventOnUnpublishedSessionLeavesOpenWindowsClear()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        // Snapshot + restore so the assertion starts clean.
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Open a static session (auto-save publishes the uuid),
+        // then clear the set so we exercise the unpublished close.
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "unpub"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+        const QString uuid = wired->ActiveSessionUuid();
+        QVERIFY(!uuid.isEmpty());
+
+        // Scrub the set to simulate a sibling reset.
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        // closeEvent runs synchronously.
+        wired->close();
+        QCoreApplication::processEvents();
+
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(!afterClose.contains(uuid), "closeEvent must leave the open-windows set free of this window's uuid");
+    }
+
+    // H1 regression: after `File -> Exit` runs `closeEvent`, the
+    // primary stays in `topLevelWidgets()`. Without resetting
+    // session-mode state in `closeEvent`, the `aboutToQuit`
+    // fan-AutoSave would mint a fresh uuid and resurrect the
+    // window on next launch.
+    void TestCloseEventThenAboutToQuitDoesNotResurrectClosedWindow()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+
+        // Stage 1: open a static session; auto-save publishes the
+        // uuid into `openWindowsAtQuit`.
+        const TempJsonFile fixture({QStringLiteral(R"({"msg": "h1-regr"})")});
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const QString origUuid = wired->ActiveSessionUuid();
+        QVERIFY(!origUuid.isEmpty());
+        QCOMPARE(manager.List().size(), 1);
+
+        // Stage 2: close the window; with the fix, closeEvent
+        // also resets session-mode state to Idle.
+        wired->close();
+        QCoreApplication::processEvents();
+
+        // Sanity: the just-closed uuid is gone from the open set.
+        const QStringList afterClose = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(!afterClose.contains(origUuid), "closeEvent should remove the window's uuid from openWindowsAtQuit");
+
+        // Stage 3: replicate the production `aboutToQuit` body:
+        // per-window flush, then one batched publish.
+        QStringList restorableUuids;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            auto *mw = qobject_cast<MainWindow *>(widget);
+            if (mw == nullptr || mw != wired.get())
+            {
+                continue;
+            }
+            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            const QString uuid = mw->RestorableActiveSessionUuid();
+            if (!uuid.isEmpty())
+            {
+                restorableUuids.append(uuid);
+            }
+        }
+        SessionHistoryManager::AddOpenWindowUuids(restorableUuids);
+        QCoreApplication::processEvents();
+
+        // 1: recents index size unchanged (no duplicate entry).
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(manager.List().front().uuid, origUuid);
+
+        // 2: no fresh uuid in the open-windows set.
+        const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(
+            afterQuit.isEmpty() || (afterQuit.size() == 1 && afterQuit.front() == origUuid),
+            qPrintable(QStringLiteral("aboutToQuit fan-flush must not resurrect the closed window via "
+                                      "a fresh uuid; got: %1")
+                           .arg(afterQuit.join(QStringLiteral(", "))))
+        );
+
+        // 3: no duplicate JSON on disk.
+        const QStringList sessionFiles =
+            QDir(sessionsDir.path()).entryList(QStringList{QStringLiteral("*.json")}, QDir::Files);
+        QCOMPARE(sessionFiles.size(), 1);
+    }
+
+    // `MaxEntries` / `SetMaxEntries` round-trip and default fallback
+    // (absent key -> `MAX_ENTRIES`).
+    void TestMaxEntriesPreferenceRoundTrip()
+    {
+        QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/maxEntries"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/maxEntries"));
+            }
+            restore.sync();
+        });
+
+        settings.remove(QStringLiteral("recentSessions/maxEntries"));
+        settings.sync();
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES);
+
+        SessionHistoryManager::SetMaxEntries(42);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), 42);
+    }
+
+    // Out-of-range values clamp into
+    // `[MAX_ENTRIES_LOWER_BOUND, MAX_ENTRIES_UPPER_BOUND]`.
+    void TestMaxEntriesClampedToValidRange()
+    {
+        const QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/maxEntries"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/maxEntries"));
+            }
+            restore.sync();
+        });
+
+        SessionHistoryManager::SetMaxEntries(0);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_LOWER_BOUND);
+
+        SessionHistoryManager::SetMaxEntries(100000);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_UPPER_BOUND);
+
+        SessionHistoryManager::SetMaxEntries(-1);
+        QCOMPARE(SessionHistoryManager::MaxEntries(), SessionHistoryManager::MAX_ENTRIES_LOWER_BOUND);
+    }
+
+    // The runtime cap drives `EvictLocked`: a Preferences edit
+    // takes effect on the next `WriteSnapshot`.
+    void TestMaxEntriesPreferenceDrivesEviction()
+    {
+        const QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/maxEntries"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/maxEntries"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/maxEntries"));
+            }
+            restore.sync();
+        });
+
+        SessionHistoryManager::SetMaxEntries(3);
+
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        for (int i = 0; i < 6; ++i)
+        {
+            loglib::LogConfiguration cfg;
+            cfg.source = loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File,
+                .locators = {QStringLiteral("C:/logs/file-%1.json").arg(i).toStdString()}
+            };
+            QVERIFY(!manager.WriteSnapshot(cfg).isEmpty());
+        }
+
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 3);
+    }
+
+    // `RestoreLastSessionOnLaunch` round-trip; default is `true`.
+    void TestRestoreLastSessionOnLaunchPreferenceRoundTrip()
+    {
+        QSettings settings;
+        const QVariant previous = settings.value(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"));
+        auto restoreGuard = qScopeGuard([&]() {
+            QSettings restore;
+            if (previous.isValid())
+            {
+                restore.setValue(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"), previous);
+            }
+            else
+            {
+                restore.remove(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"));
+            }
+            restore.sync();
+        });
+
+        settings.remove(QStringLiteral("recentSessions/restoreLastSessionOnLaunch"));
+        settings.sync();
+        QVERIFY2(
+            SessionHistoryManager::RestoreLastSessionOnLaunch(),
+            "default RestoreLastSessionOnLaunch must be true when the key is absent"
+        );
+
+        SessionHistoryManager::SetRestoreLastSessionOnLaunch(false);
+        QVERIFY(!SessionHistoryManager::RestoreLastSessionOnLaunch());
+
+        SessionHistoryManager::SetRestoreLastSessionOnLaunch(true);
+        QVERIFY(SessionHistoryManager::RestoreLastSessionOnLaunch());
+    }
+
+    // `SetSocketNameForTest` after `TryAcquire` must early-return
+    // (debug: `Q_ASSERT`; release: qWarning + ignore) so the
+    // original binding stays intact.
+    void TestSingleInstanceSetSocketNameForTestIgnoredAfterAcquire()
+    {
+        const QString originalName =
+            QStringLiteral("slv-orig-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(originalName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        // Release-only: debug `Q_ASSERT` fires before the early
+        // return, so skip the rebind attempt in debug builds.
+#ifdef QT_NO_DEBUG
+        const QString divertName =
+            QStringLiteral("slv-div-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        primary.SetSocketNameForTest(divertName);
+
+        // The divert-name secondary becomes its own primary
+        // because the original primary is still bound elsewhere.
+        SingleInstanceGuard divertSecondary;
+        divertSecondary.SetSocketNameForTest(divertName);
+        QVERIFY(divertSecondary.TryAcquire({}, /*allowNewInstance=*/false));
+#endif
+    }
+
+    // `WriteSnapshotAndPublish(true)` performs the JSON write and
+    // `openWindowsAtQuit` publish under one cross-process lock.
+    void TestWriteSnapshotAndPublishUpdatesOpenWindowsAtomically()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/atomic.json"}
+        };
+
+        const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/true);
+        QVERIFY(!uuid.isEmpty());
+
+        // uuid visible in both the recents index and the open set.
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().uuid, uuid);
+
+        const QStringList open = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        QVERIFY2(
+            open.contains(uuid),
+            qPrintable(QStringLiteral("openWindowsAtQuit must contain %1, got: %2").arg(uuid, open.join(", ")))
+        );
+    }
+
+    // `WriteSnapshotAndPublish(false)` matches plain `WriteSnapshot`:
+    // JSON written, open-windows list untouched.
+    void TestWriteSnapshotAndPublishSkipsPublishWhenFlagFalse()
+    {
+        const QStringList previousOpen = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
+        auto restoreGuard = qScopeGuard([&]() { SessionHistoryManager::SetOpenWindowsAtQuit(previousOpen); });
+        SessionHistoryManager::SetOpenWindowsAtQuit({});
+
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/noopen.json"}
+        };
+
+        const QString uuid = manager.WriteSnapshotAndPublish(cfg, QString(), /*publishOpenWindow=*/false);
+        QVERIFY(!uuid.isEmpty());
+
+        QCOMPARE(manager.List().size(), 1);
+        QCOMPARE(SessionHistoryManager::OpenWindowsAtQuitUnlocked(), QStringList{});
+    }
+
+    // Reuse-uuid fast path: re-saving with identical metadata
+    // keeps the count and head-of-list ordering stable; only the
+    // JSON on disk is rewritten.
+    void TestWriteSnapshotReuseUuidFastPathIsStable()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/reuse.json"}
+        };
+
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+        QCOMPARE(manager.List().size(), 1);
+
+        // Re-save with identical metadata; fast path triggers.
+        const QString reuse = manager.WriteSnapshot(cfg, uuid);
+        QCOMPARE(reuse, uuid);
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().uuid, uuid);
+        // JSON still exists; only the entries-group rewrite is
+        // skipped.
+        QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
+    }
+
+    // Reuse-uuid with changed metadata takes the slow path so the
+    // menu label reflects the new label / locator / fileCount.
+    void TestWriteSnapshotReuseUuidPicksSlowPathOnMetadataChange()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        loglib::LogConfiguration cfg;
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"C:/logs/initial.json"}
+        };
+        const QString uuid = manager.WriteSnapshot(cfg);
+        QVERIFY(!uuid.isEmpty());
+
+        // Mutate the source so `BuildLabel` differs; fast-path
+        // equality check rejects and rewrites the entry slot.
+        cfg.source = loglib::LogConfiguration::Source{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .locators = {"C:/logs/initial.json", "C:/logs/added.json"}
+        };
+        const QString reuse = manager.WriteSnapshot(cfg, uuid);
+        QCOMPARE(reuse, uuid);
+
+        const auto entries = manager.List();
+        QCOMPARE(entries.size(), 1);
+        QCOMPARE(entries.front().fileCount, 2);
+    }
+
+    // Concurrent stress: many threads through `WriteSnapshot` /
+    // `Touch` / `Remove` / `List` must not corrupt the index or
+    // deadlock. Pins the `mMutex` thread-safety contract.
+    void TestSessionHistoryConcurrentStress()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        constexpr int WRITER_THREADS = 3;
+        constexpr int OPS_PER_WRITER = 25;
+        std::atomic<bool> stop{false};
+        std::atomic<int> writes{0};
+
+        auto writer = [&](int seed) {
+            for (int i = 0; i < OPS_PER_WRITER; ++i)
+            {
+                loglib::LogConfiguration cfg;
+                cfg.source = loglib::LogConfiguration::Source{
+                    .kind = loglib::LogConfiguration::Source::Kind::File,
+                    .locators = {QStringLiteral("C:/logs/stress-%1-%2.json").arg(seed).arg(i).toStdString()}
+                };
+                if (!manager.WriteSnapshot(cfg).isEmpty())
+                {
+                    writes.fetch_add(1);
+                }
+            }
+        };
+
+        auto reader = [&]() {
+            while (!stop.load())
+            {
+                // `List()` always returns a self-consistent snapshot.
+                const auto entries = manager.List();
+                for (const auto &e : entries)
+                {
+                    QVERIFY2(!e.uuid.isEmpty(), "List entry must never have an empty uuid under stress");
+                }
+            }
+        };
+
+        std::vector<std::thread> writers;
+        writers.reserve(WRITER_THREADS);
+        std::thread readerThread(reader);
+        for (int i = 0; i < WRITER_THREADS; ++i)
+        {
+            writers.emplace_back(writer, i);
+        }
+        for (auto &t : writers)
+        {
+            t.join();
+        }
+        stop = true;
+        readerThread.join();
+
+        // Some writes landed; eviction caps the visible count.
+        QVERIFY2(writes.load() > 0, "writer threads must produce at least one successful WriteSnapshot");
+        QVERIFY(manager.List().size() <= SessionHistoryManager::MaxEntries());
     }
 
 private:

@@ -988,11 +988,8 @@ void LogFilterModel::OnSourceColumnsAboutToBeMoved(
 )
 {
     // Forward the begin/end column-move pair so downstream views
-    // (header, persistent indices, delegates) see a properly bracketed
-    // structural change. Pre-fix this slot was unconnected and the
-    // post-move slot only emitted `headerDataChanged`, leaving column
-    // metadata out of sync with cell content (Time-column promotion
-    // during a streaming session was the production trigger).
+    // (header, persistent indices, delegates) see a properly
+    // bracketed structural change.
     //
     // Hierarchical moves and Qt-refused begins leave
     // `mInSourceColumnMove == false`; the post-move slot then skips
