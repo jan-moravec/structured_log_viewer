@@ -93,10 +93,16 @@ QString CurrentUserId()
     // function is thread-safe -- `CurrentUserId` is currently called
     // single-threaded from `main()`, but the MT-safe variant costs
     // nothing extra and silences `concurrency-mt-unsafe`.
+    //
+    // Fallback when `sysconf(_SC_GETPW_R_SIZE_MAX)` is unavailable
+    // (returns -1) or returns an unreasonably small hint. 16 KiB
+    // comfortably covers a `passwd` entry with long GECOS / shell
+    // fields on any realistic system.
+    constexpr long GETPW_R_FALLBACK_BUF_SIZE = 16L * 1024L;
     long bufSize = sysconf(_SC_GETPW_R_SIZE_MAX);
     if (bufSize <= 0)
     {
-        bufSize = 16384;
+        bufSize = GETPW_R_FALLBACK_BUF_SIZE;
     }
     std::vector<char> buf(static_cast<size_t>(bufSize));
     struct passwd pwdStorage{};
