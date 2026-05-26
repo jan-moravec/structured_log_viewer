@@ -235,6 +235,53 @@ TEST_CASE("LogValueEquivalent treats string and string_view byte-equal as equiva
     CHECK_FALSE(LogValueEquivalent(LogValue{1.0}, LogValue{int64_t{1}}));
 }
 
+TEST_CASE("AsEpochMicroseconds matches the TimeRangeRowPredicate slot acceptance set", "[log_line][helpers][time]")
+{
+    using namespace std::chrono;
+
+    // `TimeStamp` slot returns its `time_since_epoch().count()`. The
+    // helper's whole purpose is to feed predicate / filter
+    // construction sites a single `int64_t` that round-trips with the
+    // predicate's own visit, so this is the load-bearing arm.
+    const TimeStamp ts{microseconds{1'700'000'123'456'789LL}};
+    const auto fromTimestamp = AsEpochMicroseconds(LogValue{ts});
+    REQUIRE(fromTimestamp.has_value());
+    CHECK(*fromTimestamp == 1'700'000'123'456'789LL);
+
+    // Promoted-int slots (raw epoch microseconds parsed as integers
+    // before time promotion) ride along on the same path. Negative
+    // values pass through unchanged so pre-1970 timestamps survive.
+    CHECK(AsEpochMicroseconds(LogValue{int64_t{42}}) == int64_t{42});
+    CHECK(AsEpochMicroseconds(LogValue{int64_t{-7}}) == int64_t{-7});
+    CHECK(AsEpochMicroseconds(LogValue{int64_t{0}}) == int64_t{0});
+    CHECK(AsEpochMicroseconds(LogValue{std::numeric_limits<int64_t>::max()}) == std::numeric_limits<int64_t>::max());
+    CHECK(AsEpochMicroseconds(LogValue{std::numeric_limits<int64_t>::min()}) == std::numeric_limits<int64_t>::min());
+
+    // `uint64_t` <= INT64_MAX casts down. The ceiling matches the
+    // predicate's: out-of-range returns nullopt rather than wrapping
+    // to a negative int64, so callers see the same behaviour the
+    // persisted `LogFilter::filterBegin/End` enforce.
+    CHECK(AsEpochMicroseconds(LogValue{uint64_t{0}}) == int64_t{0});
+    CHECK(AsEpochMicroseconds(LogValue{uint64_t{12345}}) == int64_t{12345});
+    CHECK(
+        AsEpochMicroseconds(LogValue{static_cast<uint64_t>(std::numeric_limits<int64_t>::max())}) ==
+        std::numeric_limits<int64_t>::max()
+    );
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1}).has_value()
+    );
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{std::numeric_limits<uint64_t>::max()}).has_value());
+
+    // Non-time arms all return nullopt -- the contract the row
+    // right-click time-filter menu relies on to skip rows that
+    // can't carry a meaningful boundary.
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{std::monostate{}}).has_value());
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{std::string_view{"2024-01-01"}}).has_value());
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{std::string{"2024-01-01"}}).has_value());
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{1.5}).has_value());
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{true}).has_value());
+    CHECK_FALSE(AsEpochMicroseconds(LogValue{false}).has_value());
+}
+
 // Fast path (`GetValue(KeyId)` over the sorted-by-id flat vector) and slow
 // path (`GetValue(string)` routing through the back-pointer) must observe
 // the same value regardless of which alternative the parser chose.

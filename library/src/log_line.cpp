@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -50,6 +51,42 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
         return lhsString.has_value() && rhsString.has_value() && *lhsString == *rhsString;
     }
     return lhs == rhs;
+}
+
+std::optional<int64_t> AsEpochMicroseconds(const LogValue &value)
+{
+    // Mirrors `TimeRangeRowPredicate`'s slot-type acceptance set:
+    // `TimeStamp` is the dominant shape; `int64_t` / `uint64_t` ride
+    // along because promoted-int / uint micros also count as time
+    // values. `uint64_t` past `int64_t::max` is rejected (rather than
+    // wrapped) so callers see the same ceiling the predicate and the
+    // persisted `LogFilter::filterBegin/End` enforce.
+    return std::visit(
+        [](const auto &alt) -> std::optional<int64_t> {
+            using T = std::decay_t<decltype(alt)>;
+            if constexpr (std::is_same_v<T, TimeStamp>)
+            {
+                return alt.time_since_epoch().count();
+            }
+            else if constexpr (std::is_same_v<T, int64_t>)
+            {
+                return alt;
+            }
+            else if constexpr (std::is_same_v<T, uint64_t>)
+            {
+                if (alt <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+                {
+                    return static_cast<int64_t>(alt);
+                }
+                return std::nullopt;
+            }
+            else
+            {
+                return std::nullopt;
+            }
+        },
+        value
+    );
 }
 
 namespace

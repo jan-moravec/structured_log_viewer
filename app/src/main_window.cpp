@@ -4392,38 +4392,14 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         return nullptr;
     }
 
-    // Slot type follows the `TimeRangeRowPredicate` visitor at
-    // `library/src/log_filter.cpp`: `TimeStamp` is the dominant
-    // shape but the table also carries promoted-int / uint
-    // representations. `monostate` (no value on this row) returns
-    // null so the menu never advertises a no-op entry.
-    const loglib::LogValue value =
-        mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol));
-    std::optional<qint64> micros;
-    std::visit(
-        [&micros](const auto &alt) {
-            using T = std::decay_t<decltype(alt)>;
-            if constexpr (std::is_same_v<T, loglib::TimeStamp>)
-            {
-                micros = alt.time_since_epoch().count();
-            }
-            else if constexpr (std::is_same_v<T, int64_t>)
-            {
-                micros = alt;
-            }
-            else if constexpr (std::is_same_v<T, uint64_t>)
-            {
-                // Clamp out-of-range uint64 microseconds rather than
-                // wrapping; matches the int64 ceiling the predicate
-                // and the persisted `LogFilter::filterBegin/End`
-                // both use.
-                if (alt <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-                {
-                    micros = static_cast<int64_t>(alt);
-                }
-            }
-        },
-        value
+    // `monostate` (no value on this row) and non-time-shaped slots
+    // (raw strings, doubles, bools) return `nullopt` so the menu
+    // never advertises a no-op entry. The shared helper mirrors the
+    // `TimeRangeRowPredicate` visitor at
+    // `library/src/log_filter.cpp` exactly, so the menu and the
+    // predicate stay in lockstep on what counts as a "time" slot.
+    const std::optional<int64_t> micros = loglib::AsEpochMicroseconds(
+        mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
     );
     if (!micros.has_value())
     {
