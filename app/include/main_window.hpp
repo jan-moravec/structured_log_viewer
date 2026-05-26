@@ -263,24 +263,18 @@ public:
     /// @p logicalColumn is out of range.
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
-    /// Build the right-click row menu for source-model row
-    /// @p sourceRow. Carries the inclusive "Show only newer logs"
-    /// / "Show only older logs" actions (boundary is the clicked
-    /// row's timestamp; both bounds are inclusive `>= / <=`), both
-    /// pinned to the first `Type::Time` column.
-    /// Returns null when there is nothing to show: no `Type::Time`
-    /// column, the row's slot is `std::monostate` (absent
-    /// timestamp), an empty model, or @p sourceRow out of range.
-    /// Separated from `ShowRowContextMenu` so tests can inspect the
-    /// actions without spawning a real popup, mirroring
-    /// `BuildHeaderContextMenu`.
+    /// Build the row right-click menu for source-model row @p sourceRow:
+    /// inclusive "newer than" / "older than" actions pinned to the first
+    /// `Type::Time` column, using the row's timestamp as the boundary.
+    /// Returns null when there is no time column, the row's time slot is
+    /// `std::monostate`, the model is empty, or @p sourceRow is out of
+    /// range. Split out of `ShowRowContextMenu` so tests can inspect the
+    /// actions without spawning a popup.
     ///
-    /// Ownership: the returned `QMenu *` is parented to @p parent
-    /// (or `mTableView` when @p parent is null), so it is destroyed
-    /// alongside the parent. `ShowRowContextMenu` additionally sets
-    /// `Qt::WA_DeleteOnClose` on the popup itself; tests that take
-    /// the menu without showing it must `deleteLater()` it via a
-    /// `QScopeGuard` (every existing `TestRowContextMenu*` does).
+    /// Ownership: parented to @p parent (or `mTableView` if null). Tests
+    /// that take the menu without showing it should `deleteLater()` via
+    /// a `QScopeGuard`; `ShowRowContextMenu` instead sets
+    /// `Qt::WA_DeleteOnClose` on the live popup.
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.
@@ -485,11 +479,9 @@ private slots:
     /// so the mirror + rule rebuild only run once.
     void ClearFilter(const QString &filterID, bool deferSync = false);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
-    /// Slot for `FilterEditor::FilterTimeStampSubmitted`. Either
-    /// bound may be `std::nullopt` to leave that side unbounded
-    /// (mirrors `FilterNumericRangeSubmitted`); the predicate
-    /// substitutes its own min/max sentinels at construction time.
-    /// Both-nullopt is rejected (would match every row).
+    /// Slot for `FilterEditor::FilterTimeStampSubmitted`. `std::nullopt`
+    /// on a bound leaves that side unbounded (the predicate substitutes
+    /// INT64 sentinels at construction); both-nullopt is rejected.
     void FilterTimeStampSubmitted(
         const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
     );
@@ -537,10 +529,9 @@ private slots:
     /// Build and show the header context menu at @p pos.
     void ShowHeaderContextMenu(const QPoint &pos);
 
-    /// Build and show the row-level context menu at @p pos
-    /// (viewport coords). The menu adds an inclusive time-range
-    /// filter pinned to the first `Type::Time` column using the
-    /// clicked row's timestamp as the boundary.
+    /// Build and show the row right-click menu at @p pos (viewport
+    /// coords). Adds an inclusive time-range filter pinned to the first
+    /// `Type::Time` column, boundary = clicked row's timestamp.
     void ShowRowContextMenu(const QPoint &pos);
 
     /// Rebuild the `View` menu on each `aboutToShow`. Each column

@@ -55,12 +55,10 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
 
 std::optional<int64_t> AsEpochMicroseconds(const LogValue &value)
 {
-    // Mirrors `TimeRangeRowPredicate`'s slot-type acceptance set:
-    // `TimeStamp` is the dominant shape; `int64_t` / `uint64_t` ride
-    // along because promoted-int / uint micros also count as time
-    // values. `uint64_t` past `int64_t::max` is rejected (rather than
-    // wrapped) so callers see the same ceiling the predicate and the
-    // persisted `LogFilter::filterBegin/End` enforce.
+    // Slot acceptance set must stay in lockstep with
+    // `TimeRangeRowPredicate`: `TimeStamp`, `int64_t`, and `uint64_t`
+    // up to `int64_t::max`. Out-of-range `uint64_t` returns `nullopt`
+    // rather than wrapping.
     return std::visit(
         [](const auto &alt) -> std::optional<int64_t> {
             using T = std::decay_t<decltype(alt)>;

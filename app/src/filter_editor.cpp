@@ -137,9 +137,9 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         mBeginTimeEdit->setMaximumTime(time);
     });
 
-    // Unbounded checkboxes disable the matching date/time edits and
-    // clear any "both unbounded" warning border. The OK handler
-    // reads the checkbox state to decide whether to emit nullopt.
+    // Unbounded checkbox disables the matching date/time edits and clears
+    // any "both unbounded" warning border. OnOkClicked reads the checkbox
+    // to decide whether to emit nullopt.
     connect(mBeginUnboundedCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
         mBeginDateEdit->setEnabled(!checked);
         mBeginTimeEdit->setEnabled(!checked);
@@ -500,12 +500,10 @@ void FilterEditor::SetupLayout()
 
 void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64> end)
 {
-    // Compute the date/time pair to seed every edit with. When a side
-    // is unbounded we still want the date widget to show *something*
-    // sensible (the user may toggle the checkbox off and start
-    // picking), so seed the unbounded side with the bounded side's
-    // value. When both sides are unbounded, fall back to the current
-    // local time; the user picks a real date the moment they uncheck.
+    // Seed each edit with a sensible value even when its side is
+    // unbounded (the user may uncheck the checkbox and start picking):
+    // unbounded side reuses the other side's value, both-unbounded
+    // falls back to "now".
     auto pickSeed = [](std::optional<qint64> primary, std::optional<qint64> fallback) -> QDateTime {
         if (primary.has_value())
         {
@@ -520,31 +518,13 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
     const QDateTime beginDateTime = pickSeed(begin, end);
     const QDateTime endDateTime = pickSeed(end, begin);
 
-    // Per-widget seed + constraint application. The seed and the
-    // min/max-or-clear MUST stay paired per widget (not batched as
-    // "all setDateTime then all setMin/Max"), because each
-    // `setDateTime` fires the `dateChanged` / `timeChanged` cross-
-    // coupling that propagates begin <-> end constraints; reordering
-    // lets the cascade clamp values to unintended times.
-    //
-    // Bounded side: re-install the seed-derived constraint, matching
-    // the historic "you can only narrow within the loaded range" UX.
-    // Unbounded side: explicitly clear any constraint left over from
-    // a previous `SetBeginEnd` (e.g. `UpdateSelectedColumn` seeds
-    // bounded min/max from the model; `Load` then overwrites with an
-    // unbounded side). Without the explicit clear, an Edit on
-    // `(nullopt, X)` would seed `mBeginDateEdit` with the fallback
-    // `X` AND keep a previous `setMinimumDateTime(X)` in force,
-    // pinning begin to `[X, X]` and making it impossible to widen.
-    //
-    // Caveat (pre-existing UX): `setDateTime` clamps to whatever
-    // constraint was installed by the prior `UpdateSelectedColumn`
-    // call. The Edit -> OK round-trip is therefore only exact when
-    // the persisted bound is inside the model's current `[min, max]`;
-    // a bound outside that range (possible after row eviction or
-    // streaming growth) silently snaps to the model boundary on
-    // load. In practice the filter behaviour is unchanged because
-    // rows outside the range no longer exist in the table.
+    // Apply seed + constraint per widget. The two MUST stay paired
+    // (don't batch all setDateTime then all setMin/Max): each
+    // setDateTime fires the cross-coupling that propagates begin <-> end
+    // constraints, and reordering lets the cascade clamp to unintended
+    // values. The unbounded side must explicitly clear any stale
+    // constraint left over from `UpdateSelectedColumn` so an Edit on
+    // e.g. `(nullopt, X)` doesn't keep begin pinned to `[X, X]`.
     enum class Side
     {
         Lower,
@@ -581,8 +561,7 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
     applySeedAndBound(mEndDateEdit, endDateTime, end, Side::Upper);
     applySeedAndBound(mEndTimeEdit, endDateTime, end, Side::Upper);
 
-    // Drive the checkboxes from the optionals; the toggled handler
-    // disables the matching edits as a side effect.
+    // The toggled handler disables the matching edits as a side effect.
     mBeginUnboundedCheckBox->setChecked(!begin.has_value());
     mEndUnboundedCheckBox->setChecked(!end.has_value());
 }
@@ -611,9 +590,8 @@ void FilterEditor::OnOkClicked()
 
     if (column.type == LogConfiguration::Type::Time)
     {
-        // Mirrors the `Number` page below: at least one bound must
-        // stay engaged. Both checkboxes ticked would match every
-        // row, so paint the matching widgets red and stop.
+        // At least one bound must stay engaged; both unbounded would
+        // match every row, so paint the checkboxes red and stop.
         const bool beginUnbounded = mBeginUnboundedCheckBox->isChecked();
         const bool endUnbounded = mEndUnboundedCheckBox->isChecked();
         if (beginUnbounded && endUnbounded)

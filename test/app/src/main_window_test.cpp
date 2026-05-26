@@ -4779,23 +4779,17 @@ private slots:
         }
     }
 
-    // Stream a small three-row fixture with a `timestamp` column
-    // (auto-detected as `Type::Time`) and a `msg` column into the
-    // window's live model. Returns the time-column index (post-
-    // bubble), or -1 on streaming failure. Mirrors
-    // `StreamFixtureForColumnTests` but tailored to the row-menu
-    // tests that need a `Type::Time` slot to read from.
+    // Stream a three-row fixture with a `timestamp` column (promoted to
+    // `Type::Time`) and a `msg` column. Returns the time-column index
+    // post-bubble, or -1 on streaming failure.
     int StreamFixtureWithTimeColumnForRowMenuTests()
     {
         auto *model = mWindow->Model();
         Q_ASSERT(model != nullptr);
 
-        // Explicit `+00:00` timezone offsets rather than `Z`: the
-        // streaming parser's time-promotion picks up the explicit-
-        // offset shape reliably with as few as three rows, while the
-        // `Z` suffix lands the column at `Type::Time` but leaves the
-        // value as a raw `OwnedString` (see `mixed_tz_and_order.jsonl`
-        // for the canonical format used by `TestFixtureMixedTzAndOrder`).
+        // Use explicit `+00:00` offsets: streaming time-promotion picks
+        // them up reliably with only three rows. The `Z` suffix would
+        // type the column as Time but leave the value as a raw string.
         const QStringList lines{
             QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
             QStringLiteral(R"({"timestamp":"2024-04-28T10:00:02+00:00","msg":"second"})"),
@@ -4828,11 +4822,8 @@ private slots:
         return ColumnByHeader(*model, QStringLiteral("timestamp"));
     }
 
-    // `BuildRowContextMenu` must offer exactly the two inclusive
-    // "newer" / "older" actions, labelled with the time column's
-    // header. Pinned so a future entry that accidentally lands on
-    // the row menu (or a label rewrite that drops the "newer/older"
-    // phrasing) trips here.
+    // The row menu must offer exactly the two "newer"/"older" actions
+    // labelled with the time column's header.
     void TestRowContextMenuOffersAtOrAfterAndAtOrBefore()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -4845,30 +4836,20 @@ private slots:
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         const QList<QAction *> actions = menu->actions();
         QCOMPARE(actions.size(), 2);
-        // Round-trip via `MainWindow::tr` so the assertion survives
-        // a future `QTranslator` install: production builds the label
-        // through the same `tr(...).arg(colLabel)` shape, so an exact
-        // compare is both stricter and translation-safe (the prior
-        // `startsWith("Show only newer logs")` would silently break
-        // under any non-empty translator).
+        // Build labels via `tr` so the test survives a future
+        // `QTranslator` install.
         const QString newerLabel = MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp"));
         const QString olderLabel = MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp"));
         QCOMPARE(actions[0]->text(), newerLabel);
         QCOMPARE(actions[1]->text(), olderLabel);
     }
 
-    // When no `Type::Time` column is present the menu must return
-    // null so the host never advertises an action with no column
-    // to bind to. The `StreamFixtureForColumnTests` fixture has
-    // only `category` and `msg`, neither of which auto-promotes
-    // to `Type::Time`.
+    // Without a `Type::Time` column the menu has nothing to bind to and
+    // must return null. The `category`+`msg` fixture has no time column.
     void TestRowContextMenuReturnsNullWithoutTimeColumn()
     {
-        // `StreamFixtureForColumnTests` streams `category` + `msg`;
-        // the returned index is for `category`, used here only as a
-        // streaming-completed sentinel (the assertion below cares
-        // about the *absence* of a `Type::Time` column, not which
-        // non-time column landed where).
+        // The returned index is for `category`; used only as a
+        // streaming-completed sentinel.
         const int streamedColumn = StreamFixtureForColumnTests();
         QVERIFY2(streamedColumn >= 0, "streaming must complete before the row-menu probe");
 
@@ -4876,23 +4857,16 @@ private slots:
         QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model has no Type::Time column");
     }
 
-    // Empty model: nothing to bind a timestamp to, so the menu
-    // must return null. Mirrors the `model->rowCount() > 0` gate
-    // that `BuildHeaderContextMenu` applies to its Add-filter
-    // entry.
+    // Empty model: nothing to bind to, menu must be null.
     void TestRowContextMenuReturnsNullWhenModelEmpty()
     {
-        // Fresh `mWindow` from `init()`; no streaming, no rows.
         QCOMPARE(mWindow->Model()->rowCount(), 0);
 
         const QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model is empty");
     }
 
-    // Out-of-range rows must not crash and must not produce a
-    // menu. Defensive cover for the unlikely race where a
-    // streaming `Reset` shrinks the model between popup build and
-    // the action's source-row capture.
+    // Out-of-range rows must not crash and must not produce a menu.
     void TestRowContextMenuReturnsNullForOutOfRangeRow()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -4910,24 +4884,16 @@ private slots:
         );
     }
 
-    // A row that *has* a `Type::Time` column but whose slot is
-    // empty (the source JSON omitted the timestamp key) returns
-    // `std::monostate`. `AsEpochMicroseconds` rejects monostate, so
-    // the menu has no boundary to bind to and must return null.
-    // Without this gate the "newer/older" actions would trigger
-    // with `nullopt` boundaries, installing a degenerate
-    // `(nullopt, nullopt)` filter that `ValidateFilterAgainstColumns`
-    // would reject silently.
+    // A row with a `Type::Time` column but a `monostate` slot (source
+    // JSON omitted the key) must suppress the menu, otherwise the
+    // action would install a degenerate `(nullopt, nullopt)` filter.
     void TestRowContextMenuReturnsNullForMonostateTimeSlot()
     {
         auto *model = mWindow->Model();
         Q_ASSERT(model != nullptr);
 
-        // Three rows so the parser auto-promotes `timestamp` to
-        // `Type::Time`; the middle row omits the timestamp key so
-        // its slot lands as `std::monostate`. The first/last rows
-        // would still produce a usable menu — the assertion below
-        // is specifically about the middle row.
+        // Three rows so the parser promotes `timestamp` to `Type::Time`;
+        // the middle row omits the key so its slot is `monostate`.
         const QStringList lines{
             QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
             QStringLiteral(R"({"msg":"middle has no timestamp"})"),
@@ -4958,23 +4924,18 @@ private slots:
         QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
         QCOMPARE(model->rowCount(), 3);
 
-        // Rows with a real timestamp still get the menu.
         QMenu *first = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(first != nullptr, "row 0 has a timestamp slot, menu must be offered");
         first->deleteLater();
 
-        // The middle row's slot is monostate; the menu must be
-        // suppressed so the host never advertises a no-op action.
         const QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY2(middle == nullptr, "row 1's monostate time slot must suppress the menu");
     }
 
-    // Triggering the "newer" action (inclusive `>=`) installs an
-    // additive time filter on the time column, with the clicked
-    // row's microseconds as the lower (inclusive) bound and
-    // `nullopt` as the open upper bound. The lower bound is read
-    // straight off the model's `SortRole`, which already normalises
-    // every `Type::Time` slot to `qint64` microseconds since epoch.
+    // Triggering "newer" installs an inclusive time filter with the
+    // clicked row's micros as the lower bound and `nullopt` as the
+    // upper bound. Lower bound comes from `SortRole`, which normalises
+    // every `Type::Time` slot to epoch microseconds.
     void TestRowContextMenuAtOrAfterAddsTimeFilter()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5002,17 +4963,13 @@ private slots:
         QCOMPARE(installed.type, loglib::LogConfiguration::LogFilter::Type::Time);
         QCOMPARE(installed.row, timeCol);
         QVERIFY(installed.filterBegin.has_value());
-        // The open upper bound is encoded as `std::nullopt` so the
-        // title renders as "any" and the FilterEditor round-trips
-        // the open side faithfully.
+        // Open upper bound encoded as `std::nullopt` (not INT64_MAX).
         QVERIFY2(!installed.filterEnd.has_value(), "open upper bound must be std::nullopt, not INT64_MAX");
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(*installed.filterBegin, row1Micros);
     }
 
-    // Symmetric to the "newer" test: the lower bound is
-    // `std::nullopt` (open), the upper bound is the clicked row's
-    // micros (inclusive `<=`).
+    // Symmetric: "older" gives `(nullopt, micros)`.
     void TestRowContextMenuAtOrBeforeAddsTimeFilter()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5038,19 +4995,15 @@ private slots:
         const auto &installed = mWindow->Filters().begin()->second;
         QCOMPARE(installed.type, loglib::LogConfiguration::LogFilter::Type::Time);
         QCOMPARE(installed.row, timeCol);
-        // The open lower bound is encoded as `std::nullopt`; the
-        // upper bound is the clicked row's micros.
         QVERIFY2(!installed.filterBegin.has_value(), "open lower bound must be std::nullopt, not INT64_MIN");
         QVERIFY(installed.filterEnd.has_value());
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(*installed.filterEnd, row2Micros);
     }
 
-    // Regression: the action lambdas must re-resolve the time
-    // column by its stable keys at trigger time, so a column
-    // reorder between menu build and click still targets the
-    // column's current index. Mirrors
-    // `TestHeaderContextMenuAddFilterAfterColumnReorderResolvesByKeys`.
+    // Action lambdas must re-resolve the time column by its captured
+    // keys at trigger time so a reorder between build and click still
+    // targets the right column.
     void TestRowContextMenuAddTimeFilterAfterColumnReorderResolvesByKeys()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5063,9 +5016,9 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // Move the time column to a different index after the
-        // menu was built but before its action is triggered. The
-        // captured keys must re-resolve to the new index.
+        // Move the time column after building the menu, before
+        // triggering. The captured keys must re-resolve to the new
+        // index.
         const int src = timeCol;
         const int dest = (src == 0) ? columnCount - 1 : 0;
         QVERIFY(src != dest);
@@ -5097,11 +5050,9 @@ private slots:
         QCOMPARE(installed.row, timeColAfter);
     }
 
-    // Each click adds a brand-new filter UUID rather than
-    // replacing any existing time filter on the same column. The
-    // additive behaviour is the design contract: combining
-    // "newer than X" and "older than Y" by issuing two clicks is
-    // how the user narrows a window without ever opening the
+    // Each click adds a fresh-UUID filter rather than replacing an
+    // existing one on the same column. The additive behaviour lets the
+    // user combine "newer than X" + "older than Y" without opening the
     // FilterEditor.
     void TestRowContextMenuAdditiveDoesNotReplaceExisting()
     {
@@ -5109,9 +5060,8 @@ private slots:
         QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
 
         // Pre-seed a permissive bounded filter on the same column.
-        // Bounds are decades around the fixture timestamps so no
-        // rows are filtered out and the filter is identifiable
-        // (real values, not the predicate's INT64 sentinels).
+        // Bounds are decades around the fixture so it's identifiable
+        // (real values, not INT64 sentinels) and excludes no rows.
         const QString preSeededId = QStringLiteral("pre-seeded-time-filter");
         const std::optional<qint64> preBegin{1'000'000'000'000'000LL}; // 2001-09-09 UTC, micros.
         const std::optional<qint64> preEnd{4'000'000'000'000'000LL};   // 2096-10-02 UTC, micros.
@@ -5143,9 +5093,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
-        // The pre-seeded filter is still present with its
-        // original bounds; the menu installed a sibling, not a
-        // replacement.
+        // Pre-seeded filter survives unchanged; the menu added a sibling.
         const auto it = mWindow->Filters().find(preSeededId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "pre-seeded filter must survive the menu trigger");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
@@ -5158,12 +5106,9 @@ private slots:
         // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
-    // Regression for the "FilterEditor silently clamps unbounded
-    // bounds" bug: a time filter installed by the row context menu
-    // carries a `std::nullopt` upper bound. Editing it (Edit -> OK,
-    // no edits in between) must round-trip the open side, not
-    // silently rewrite it as `9999-12-31T23:59:59` because the
-    // `QDateTimeEdit`'s default ceiling clamped INT64_MAX.
+    // Regression: editing a `(begin, nullopt)` filter without changes
+    // must round-trip the open upper bound. The pre-fix code silently
+    // rewrote it to `9999-12-31T23:59:59` (the QDateTimeEdit ceiling).
     void TestRowContextMenuTimeFilterRoundTripsThroughEditor()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5172,9 +5117,8 @@ private slots:
         const qint64 row1Micros = model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong();
         QVERIFY2(row1Micros > 0, "row 1 must carry a positive epoch-microseconds timestamp");
 
-        // Step 1: install a `newer` filter via the row menu (the
-        // production code path that produces a `(row1Micros,
-        // nullopt)` filter).
+        // Step 1: install a `(row1Micros, nullopt)` filter via the
+        // row menu.
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
@@ -5224,20 +5168,15 @@ private slots:
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QCOMPARE(editor->GetRowToFilter(), timeCol);
 
-        // Step 3: click OK without touching anything. The editor
-        // must read the open-bound state from its checkboxes and
-        // emit `nullopt` back, leaving the filter unchanged.
+        // Step 3: click OK without touching anything. The editor must
+        // read the open-bound state and emit `nullopt` back.
         QPushButton *ok = editor->OkButton();
         QVERIFY2(ok != nullptr, "FilterEditor must expose its OK button");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         ok->click();
         QCoreApplication::processEvents();
 
-        // Step 4: the filter is still on the same column, with the
-        // same `(row1Micros, nullopt)` shape. The pre-fix code
-        // silently rewrote `filterEnd` to whatever the
-        // `QDateTimeEdit`'s upper ceiling produced (typically
-        // `9999-12-31`'s epoch micros), losing the open upper bound.
+        // Step 4: filter must keep its `(row1Micros, nullopt)` shape.
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const auto it = mWindow->Filters().find(filterId.toStdString());
         QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
@@ -5249,20 +5188,16 @@ private slots:
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(*it->second.filterBegin, row1Micros);
 
-        // The editor accepts on OK; nothing leaked. `accept()`
-        // schedules deletion via `Qt::WA_DeleteOnClose` so we don't
-        // need to delete explicitly, but spinning the loop here
-        // matches the rest of the editor-using tests.
+        // Editor deletes itself via `Qt::WA_DeleteOnClose` on accept;
+        // spin the loop to match other editor-using tests.
         QCoreApplication::processEvents();
     }
 
-    // Regression for the `SetBeginEnd` constraint-leak fix: opening
-    // Edit on a `(nullopt, X)` filter must let the user uncheck the
-    // begin-unbounded checkbox and pick a begin earlier than `X`.
-    // The pre-fix code installed `setMinimumDateTime(X)` on the
-    // begin edits (using `X` as the unbounded-side seed) and never
-    // cleared it, pinning the begin edit to `[X, X]` and making the
-    // open-bound filter effectively un-widenable.
+    // Regression: opening Edit on a `(nullopt, X)` filter must let the
+    // user uncheck the begin-unbounded checkbox and pick a begin
+    // earlier than `X`. The pre-fix code pinned begin to `[X, X]`
+    // because it set `setMinimumDateTime(X)` from the fallback seed
+    // and never cleared it.
     void TestRowContextMenuEditUncheckWidensOpenBeginBound()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5271,10 +5206,8 @@ private slots:
         const qint64 row2Micros = model->data(model->index(2, timeCol), LogModelItemDataRole::SortRole).toLongLong();
         QVERIFY2(row2Micros > 0, "row 2 must carry a positive epoch-microseconds timestamp");
 
-        // Step 1: install an `older` filter on row 2. Shape:
-        // `(nullopt, row2Micros)`. The row-menu code path is the
-        // production source of unbounded-side filters that reach
-        // the editor.
+        // Step 1: install a `(nullopt, row2Micros)` filter via the
+        // row menu's "older" action.
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/2, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
@@ -5323,7 +5256,7 @@ private slots:
         QVERIFY2(editor != nullptr, "Edit must open a FilterEditor");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
 
-        // Step 3: the editor must reflect the loaded shape -- begin
+        // Step 3: editor must reflect the loaded shape: begin
         // unbounded, end bounded.
         QCheckBox *beginUnbounded = editor->BeginUnboundedCheckBox();
         const QCheckBox *endUnbounded = editor->EndUnboundedCheckBox();
@@ -5341,14 +5274,9 @@ private slots:
         QVERIFY2(beginUnbounded->isChecked(), "begin checkbox must be checked for a (nullopt, X) load");
         QVERIFY2(!endUnbounded->isChecked(), "end checkbox must be unchecked when end is bounded");
 
-        // Step 4: assert the actual property the `SetBeginEnd` fix
-        // changes -- the begin edits' minimum constraint must NOT
-        // be pinned to the seed (which is the end's `X` value
-        // because the begin is unbounded). The pre-fix code called
-        // `setMinimumDateTime(beginDateTime)` unconditionally with
-        // `beginDateTime` falling back to `X`, leaving the begin
-        // edit clamped to `[X, X]` so a subsequent uncheck-and-pick
-        // could not pick anything earlier than `X`.
+        // Step 4: the property the `SetBeginEnd` fix changes: begin
+        // edits' minimum must NOT be pinned to the end seed, so the
+        // user can pick a value earlier than `X` after unchecking.
         const QDateTime endSeed = endDate->dateTime();
         QVERIFY2(
             beginDate->minimumDateTime() < endSeed,
@@ -5359,20 +5287,16 @@ private slots:
             "begin time edit's minimum must allow picking values earlier than the bounded end seed"
         );
 
-        // Step 5: simulate the user unchecking begin-unbounded; the
-        // edits must become enabled (no leftover disable from the
-        // initial checked state).
+        // Step 5: uncheck begin-unbounded; edits must become enabled.
         beginUnbounded->setChecked(false);
         QCoreApplication::processEvents();
         QVERIFY2(beginDate->isEnabled(), "begin date edit must be enabled after uncheck");
         QVERIFY2(beginTime->isEnabled(), "begin time edit must be enabled after uncheck");
 
-        // Step 6: clicking OK with begin still effectively at the
-        // seed must still emit a real begin (not nullopt), and the
-        // original end must round-trip unchanged. The point of the
-        // test is the *ability* to widen; the actual widen path is
-        // straightforward QDateTimeEdit usage once the minimum
-        // constraint is clear.
+        // Step 6: clicking OK now must emit a real begin (not
+        // nullopt) and round-trip the original end. The test asserts
+        // the *ability* to widen; the actual widening is straight
+        // QDateTimeEdit usage once the minimum is clear.
         QPushButton *ok = editor->OkButton();
         QVERIFY(ok != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.

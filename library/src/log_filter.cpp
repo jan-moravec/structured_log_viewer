@@ -147,12 +147,9 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
         return false;
     }
     const LogValue value = table.GetValue(row, mColumnIndex);
-    // Slot acceptance set mirrors `loglib::AsEpochMicroseconds` in
-    // `log_line.cpp`: `TimeStamp`, `int64_t`, in-range `uint64_t`.
-    // Keep the two visitors in lockstep so the row right-click time-
-    // filter menu (which uses the helper to decide whether to offer
-    // an action) never advertises a boundary the predicate would
-    // then reject.
+    // Slot acceptance set must stay in lockstep with
+    // `loglib::AsEpochMicroseconds`: `TimeStamp`, `int64_t`,
+    // in-range `uint64_t`.
     return std::visit(
         [this](const auto &alt) -> bool {
             using T = std::decay_t<decltype(alt)>;
@@ -167,13 +164,9 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             }
             else if constexpr (std::is_same_v<T, uint64_t>)
             {
-                // `uint64_t` past `int64_t::max` is rejected (rather
-                // than wrapped) so the predicate and
-                // `AsEpochMicroseconds` agree on what counts as a
-                // "time" slot. The `mBegin <= mEnd <= int64_t::max`
-                // bound means such a slot could never match anyway,
-                // but spelling it out keeps the contract obvious
-                // and survives future bound widenings.
+                // Reject (rather than wrap) `uint64_t` past
+                // `int64_t::max` so this stays in sync with
+                // `AsEpochMicroseconds`.
                 if (alt > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
                 {
                     return false;

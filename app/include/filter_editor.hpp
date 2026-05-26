@@ -33,10 +33,8 @@ public:
     FilterEditor(const LogModel &model, QString filterID, QWidget *parent = nullptr);
 
     void Load(int row, const QString &filterString, int matchType);
-    /// Restore a time-range filter. `std::nullopt` on either bound
-    /// leaves that side unbounded; the matching "No begin/end limit"
-    /// checkbox is checked and the corresponding date/time edits are
-    /// disabled. `OkClicked` will emit the same shape back out.
+    /// Restore a time-range filter. `std::nullopt` on a bound leaves
+    /// that side unbounded (checkbox checked, date/time edits disabled).
     void Load(int row, std::optional<qint64> begin, std::optional<qint64> end);
     /// Preselect @p selectedValues; values absent from the current
     /// dictionary are skipped.
@@ -86,9 +84,8 @@ public:
     {
         return mOkButton;
     }
-    /// Test-only accessors for the time page widgets. Same caveat
-    /// as the enum-picker accessors: `findChildren<...>()` is empty
-    /// under offscreen QPA on the Linux runner.
+    /// Test-only accessors for the time page widgets. Same offscreen-QPA
+    /// caveat as the enum-picker accessors above.
     [[nodiscard]] QDateEdit *BeginDateEdit() const
     {
         return mBeginDateEdit;
@@ -116,9 +113,8 @@ public:
 
 signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
-    /// Time-range filter. `std::nullopt` bounds are unbounded
-    /// (mirrors `FilterNumericRangeSubmitted`); the receiving slot
-    /// rejects the both-unbounded case (would match every row).
+    /// Time-range filter. `std::nullopt` bounds are unbounded; the slot
+    /// rejects both-unbounded (would match every row).
     void FilterTimeStampSubmitted(
         const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
     );
@@ -144,11 +140,10 @@ private:
     QDateEdit *mEndDateEdit;
     QTimeEdit *mEndTimeEdit;
 
-    /// Time page: when checked, the matching `QDateEdit`+`QTimeEdit`
-    /// pair is disabled and `OkClicked` emits `std::nullopt` for that
-    /// bound. The "open bound" representation is `nullopt` rather
-    /// than `INT64_MIN`/`INT64_MAX` so the title and the editor stay
-    /// faithful through Edit -> OK round-trips.
+    /// Time page: when checked, disables the matching date/time edits
+    /// and makes `OkClicked` emit `std::nullopt` for that bound. Using
+    /// `nullopt` (rather than INT64 sentinels) preserves the open bound
+    /// across Edit -> OK round-trips.
     QCheckBox *mBeginUnboundedCheckBox;
     QCheckBox *mEndUnboundedCheckBox;
 
@@ -179,9 +174,8 @@ private:
     QPushButton *mCancelButton;
 
     void SetupLayout();
-    /// Push @p begin / @p end into the Time page; `std::nullopt`
-    /// engages the matching unbounded checkbox and disables the
-    /// matching date/time edits.
+    /// Push @p begin / @p end into the Time page; `std::nullopt` checks
+    /// the matching unbounded checkbox and disables its date/time edits.
     void SetBeginEnd(std::optional<qint64> begin, std::optional<qint64> end);
     /// Repopulate the enum picker from the column's current dictionary.
     void PopulateEnumValues(int columnIndex);

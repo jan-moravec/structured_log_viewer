@@ -359,9 +359,8 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     switch (filter.type)
     {
     case LogFilter::Type::Time:
-        // Mirrors `Number` below: at least one bound must be populated;
-        // `nullopt` on the other side means "unbounded" and is fed to
-        // the predicate as INT64_MIN / INT64_MAX at construction.
+        // At least one bound must be set; `nullopt` on the other side is
+        // fed to the predicate as INT64_MIN / INT64_MAX at construction.
         if (!filter.filterBegin.has_value() && !filter.filterEnd.has_value())
         {
             return FilterValidationFailure{
@@ -491,12 +490,9 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         &MainWindow::ShowHeaderContextMenu
     );
 
-    // Row-level context menu: offers an inclusive time-range
-    // filter pinned to the clicked row's timestamp. The header
-    // version above lives on the header widget; this one lives on
-    // the table view, so `customContextMenuRequested` fires with
-    // `pos` in viewport coords (mapped via `viewport()->mapToGlobal`
-    // in `ShowRowContextMenu`).
+    // Row-level context menu: inclusive time-range filter pinned to the
+    // clicked row's timestamp. Installed on the table view itself, so
+    // `pos` arrives in viewport coords (see `ShowRowContextMenu`).
     mTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
     // Catch every column move (header drag and implicit moves like
@@ -2034,20 +2030,13 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionSaveSession->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
-    // Reorder + header right-click are gated mid-stream because
-    // `LogModel::MoveColumn` rotates `columns` while the streaming
-    // pipeline is busy mutating it through `AppendKeys`; a drag
-    // between batches would scramble the proxy chain's column-keyed
-    // state. The `View` menu stays reachable (only flips the
-    // `visible` flag).
+    // Header reorder + right-click are gated mid-stream because
+    // `LogModel::MoveColumn` would race with `AppendKeys` mutating
+    // `columns`. The View menu stays reachable (only flips `visible`).
     //
-    // Note: the *row* right-click menu (set up on `mTableView`
-    // itself in the constructor) is intentionally NOT gated here.
-    // Its only side effect is `AddLogFilter`, which mutates the
-    // `mFilters` map and rebuilds proxy rules -- neither of those
-    // races with the streaming pipeline's `columns` mutation. The
-    // mid-stream filter add is a useful workflow (narrow the view
-    // to "newer logs only" while live-tailing a growing file).
+    // The row right-click menu is NOT gated: its only effect is
+    // `AddLogFilter`, which doesn't race with the streaming pipeline,
+    // and "narrow to newer logs" is a useful live-tail workflow.
     if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
     {
         header->setSectionsMovable(enabled);
@@ -3238,9 +3227,8 @@ void MainWindow::AddFilter(
     {
         if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
         {
-            // Mirrors `FilterTimeStampSubmitted`'s validation: at least
-            // one bound must be set; the other side may be `nullopt`
-            // (rendered as "No begin/end limit" in the editor).
+            // At least one bound must be set; the other side may be
+            // `nullopt` (shown as "No begin/end limit" in the editor).
             if (!resolvedFilter->filterBegin.has_value() && !resolvedFilter->filterEnd.has_value())
             {
                 statusBar()->showMessage(
@@ -3412,11 +3400,9 @@ void MainWindow::FilterTimeStampSubmitted(
     const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
 )
 {
-    // Mirrors `FilterNumericRangeSubmitted`. `nullopt` means
-    // "unbounded" on that side; both-nullopt would match every row
-    // and is rejected up front. The predicate handles the open side
-    // via `value_or(INT64_MIN/MAX)` at construction; the editor and
-    // the title both keep `nullopt` as the canonical representation.
+    // `nullopt` means "unbounded" on that side. Both-nullopt would
+    // match every row and is rejected up front; the predicate
+    // substitutes INT64 sentinels for the open side at construction.
     if (!beginTimeStamp.has_value() && !endTimeStamp.has_value())
     {
         statusBar()->showMessage(
@@ -3426,8 +3412,7 @@ void MainWindow::FilterTimeStampSubmitted(
         ClearFilter(filterID);
         return;
     }
-    // Inversion only matters when both sides are bounded; an open
-    // side is always compatible with whatever the other side picks.
+    // Inversion only matters when both sides are bounded.
     if (beginTimeStamp.has_value() && endTimeStamp.has_value() && *beginTimeStamp > *endTimeStamp)
     {
         statusBar()->showMessage(
@@ -3547,16 +3532,11 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
     {
-        // `nullopt` on a side renders as the literal "any" rather
-        // than formatting the predicate's INT64_MIN/MAX sentinels
-        // (which produced absurd 294247 AD / 292277 BC dates and
-        // pushed the title past usable widths).
-        // `ValidateFilterAgainstColumns` rejects both-nullopt
-        // upstream, so well-formed flows always carry at least one
-        // bounded side. The both-`nullopt` branch renders as
-        // "any - any" so a hand-edited config or a future migration
-        // mid-flight surfaces in the UI rather than tripping a
-        // `Q_ASSERT` in Debug while Release falls through silently.
+        // `nullopt` renders as "any" rather than formatting the INT64
+        // sentinels (which produced absurd 294247 AD / 292277 BC dates).
+        // Validation rejects both-nullopt upstream, but render it as
+        // "any - any" rather than asserting so a hand-edited config
+        // surfaces visibly instead of crashing in Debug.
         const std::string beginStr =
             filter.filterBegin.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) : "any";
         const std::string endStr =
@@ -3895,14 +3875,10 @@ void MainWindow::UpdateFilters()
         switch (filter.type)
         {
         case LogFilterType::Time:
-            // `nullopt` on either side means "unbounded" (mirrors the
-            // `Number` filter's `filterMinValue`/`filterMaxValue`
-            // semantics). `value_or` substitutes the predicate's
-            // closed-range sentinels so the per-row visitor stays a
-            // simple `>=` / `<=` pair and the title / FilterEditor
-            // can keep `nullopt` as the canonical representation.
-            // `ValidateFilterAgainstColumns` rejects the both-null
-            // case, so at least one side is always bounded here.
+            // `nullopt` = unbounded; `value_or` feeds INT64 sentinels so
+            // the per-row visitor stays a simple `>=` / `<=` pair while
+            // the title and FilterEditor keep `nullopt` as canonical.
+            // Validation guarantees at least one side is bounded.
             rules.emplace_back(
                 std::in_place_type<loglib::TimeRangeRowPredicate>,
                 column,
@@ -4414,11 +4390,9 @@ void MainWindow::ShowRowContextMenu(const QPoint &pos)
         return;
     }
     menu->setAttribute(Qt::WA_DeleteOnClose);
-    // `customContextMenuRequested` on a `QAbstractItemView` delivers
-    // `pos` in viewport coords -- map via `viewport()` (not the
-    // table view) so the popup lands under the cursor. The header
-    // variant uses `header->mapToGlobal` because the header is its
-    // own widget.
+    // `customContextMenuRequested` from a `QAbstractItemView` delivers
+    // `pos` in viewport coords; map via `viewport()` so the popup lands
+    // under the cursor.
     menu->popup(mTableView->viewport()->mapToGlobal(pos));
 }
 
@@ -4430,11 +4404,8 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         return nullptr;
     }
 
-    // Use the first `Type::Time` column. Logs can carry several
-    // time columns; the row context menu is intentionally simple
-    // (a single inclusive before/after pair pinned to the canonical
-    // time column), so it shares `FirstTimeColumnIndex` with the
-    // Record Details summary in `record_detail_widget.cpp`.
+    // Pin to the first time column (shared with the Record Details
+    // summary via `FirstTimeColumnIndex`).
     const auto &config = mModel->Configuration();
     const auto &columns = config.columns;
     const int timeCol = loglib::FirstTimeColumnIndex(config);
@@ -4443,12 +4414,8 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         return nullptr;
     }
 
-    // `monostate` (no value on this row) and non-time-shaped slots
-    // (raw strings, doubles, bools) return `nullopt` so the menu
-    // never advertises a no-op entry. The shared helper mirrors the
-    // `TimeRangeRowPredicate` visitor at
-    // `library/src/log_filter.cpp` exactly, so the menu and the
-    // predicate stay in lockstep on what counts as a "time" slot.
+    // `nullopt` for `monostate` and non-time-shaped slots: skip the
+    // menu rather than advertise a no-op action.
     const std::optional<int64_t> micros = loglib::AsEpochMicroseconds(
         mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
     );
@@ -4459,32 +4426,24 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
 
     auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
 
-    // Capture stable column keys (not the index) so the action
-    // still hits the right column if a streaming reorder fires
-    // between menu build and click. The timestamp itself is a
-    // value capture; survives a `Reset` of the source row.
+    // Capture the stable column keys (not the index) so the action
+    // still targets the right column if a streaming reorder fires
+    // between menu build and click.
     const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
-    // `ColumnMenuLabel` disambiguates duplicate headers by
-    // appending `[key]`, matching `BuildHeaderContextMenu`. Without
-    // this, two `Type::Time` columns sharing a header name would
-    // produce ambiguous "Show only newer logs (ts)" entries.
+    // `ColumnMenuLabel` appends `[key]` to disambiguate duplicate
+    // headers, matching `BuildHeaderContextMenu`.
     const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
     const qint64 boundary = *micros;
 
-    // Both actions share the same shape: re-resolve the column by
-    // its captured keys at trigger time (so a streaming reorder
-    // between menu build and click still hits the right column),
-    // then dispatch a fresh-uuid `FilterTimeStampSubmitted`. The
-    // only thing that varies is which side carries the bound and
-    // which side is `nullopt`. `std::nullopt` for the open side: the
-    // predicate substitutes its INT64 sentinel at construction, but
-    // the title sees "any" and the editor round-trips the open
-    // bound faithfully.
+    // Each action re-resolves the column by its captured keys at
+    // trigger time, then dispatches a fresh-uuid time filter. Only
+    // which side carries the bound varies; the open side uses
+    // `nullopt` so the title shows "any" and the editor round-trips
+    // it faithfully.
     //
-    // `timeKeys` is reference-captured here (the local outlives
-    // every synchronous `addRangeAction(...)` call below) so we
-    // copy the vector only once -- into the inner connect lambda,
-    // which IS invoked asynchronously and so must own its keys.
+    // `timeKeys` is captured by reference here (the local outlives
+    // every synchronous call below), then copied into the connect
+    // lambda which is invoked asynchronously.
     auto addRangeAction = [this, menu, &timeKeys, boundary](
                               const QString &label, std::optional<qint64> begin, std::optional<qint64> end
                           ) {

@@ -1362,36 +1362,28 @@ TEST_CASE("FirstTimeColumnIndex returns the first Type::Time column or -1", "[lo
 {
     using Type = LogConfiguration::Type;
 
-    // Empty column list -> -1 (sentinel) so callers can branch on
-    // "no time column" without inspecting `columns.size()`.
     const LogConfiguration empty;
     CHECK(FirstTimeColumnIndex(empty) == -1);
 
-    // No time column among other types -> -1.
     LogConfiguration noTime;
     noTime.columns.push_back({.header = "msg", .type = Type::String});
     noTime.columns.push_back({.header = "level", .type = Type::Level});
     CHECK(FirstTimeColumnIndex(noTime) == -1);
 
-    // Single time column -> its index.
     LogConfiguration single;
     single.columns.push_back({.header = "msg", .type = Type::String});
     single.columns.push_back({.header = "ts", .type = Type::Time});
     single.columns.push_back({.header = "level", .type = Type::Level});
     CHECK(FirstTimeColumnIndex(single) == 1);
 
-    // Two time columns -> the first one wins; callers explicitly
-    // rely on this "canonical column" behaviour (Record Details
-    // summary, row right-click time-filter menu).
+    // First wins: callers rely on this "canonical column" behaviour.
     LogConfiguration twoTimes;
     twoTimes.columns.push_back({.header = "started_at", .type = Type::Time});
     twoTimes.columns.push_back({.header = "msg", .type = Type::String});
     twoTimes.columns.push_back({.header = "ended_at", .type = Type::Time});
     CHECK(FirstTimeColumnIndex(twoTimes) == 0);
 
-    // Time column at index 0 is also returned (regression: a naive
-    // implementation seeded with `int timeCol = 0` instead of `-1`
-    // would still pass the cases above but break "no time column").
+    // Index 0 is a real result, not the "not found" sentinel.
     LogConfiguration headTime;
     headTime.columns.push_back({.header = "ts", .type = Type::Time});
     CHECK(FirstTimeColumnIndex(headTime) == 0);
