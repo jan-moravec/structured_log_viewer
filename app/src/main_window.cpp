@@ -3431,9 +3431,7 @@ void MainWindow::FilterTimeStampSubmitted(
     if (beginTimeStamp.has_value() && endTimeStamp.has_value() && *beginTimeStamp > *endTimeStamp)
     {
         statusBar()->showMessage(
-            QString("Time-range filter rejected: begin (%1) is after end (%2)")
-                .arg(*beginTimeStamp)
-                .arg(*endTimeStamp),
+            QString("Time-range filter rejected: begin (%1) is after end (%2)").arg(*beginTimeStamp).arg(*endTimeStamp),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         ClearFilter(filterID);
@@ -4426,8 +4424,8 @@ void MainWindow::ShowRowContextMenu(const QPoint &pos)
 
 QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
 {
-    if (mModel == nullptr || mModel->rowCount() <= 0 || sourceRow < 0
-        || static_cast<size_t>(sourceRow) >= static_cast<size_t>(mModel->rowCount()))
+    if (mModel == nullptr || mModel->rowCount() <= 0 || sourceRow < 0 ||
+        static_cast<size_t>(sourceRow) >= static_cast<size_t>(mModel->rowCount()))
     {
         return nullptr;
     }

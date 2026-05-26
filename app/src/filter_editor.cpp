@@ -550,32 +550,31 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
         Lower,
         Upper
     };
-    auto applySeedAndBound =
-        [](QDateTimeEdit *edit, const QDateTime &seed, std::optional<qint64> bound, Side side) {
-            edit->setDateTime(seed);
-            if (bound.has_value())
+    auto applySeedAndBound = [](QDateTimeEdit *edit, const QDateTime &seed, std::optional<qint64> bound, Side side) {
+        edit->setDateTime(seed);
+        if (bound.has_value())
+        {
+            if (side == Side::Lower)
             {
-                if (side == Side::Lower)
-                {
-                    edit->setMinimumDateTime(seed);
-                }
-                else
-                {
-                    edit->setMaximumDateTime(seed);
-                }
+                edit->setMinimumDateTime(seed);
             }
             else
             {
-                if (side == Side::Lower)
-                {
-                    edit->clearMinimumDateTime();
-                }
-                else
-                {
-                    edit->clearMaximumDateTime();
-                }
+                edit->setMaximumDateTime(seed);
             }
-        };
+        }
+        else
+        {
+            if (side == Side::Lower)
+            {
+                edit->clearMinimumDateTime();
+            }
+            else
+            {
+                edit->clearMaximumDateTime();
+            }
+        }
+    };
 
     applySeedAndBound(mBeginDateEdit, beginDateTime, begin, Side::Lower);
     applySeedAndBound(mBeginTimeEdit, beginDateTime, begin, Side::Lower);

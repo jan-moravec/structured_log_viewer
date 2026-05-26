@@ -4969,12 +4969,12 @@ private slots:
         QVERIFY2(middle == nullptr, "row 1's monostate time slot must suppress the menu");
     }
 
-    // Triggering the "at or after" action installs an additive
-    // time filter on the time column, with the clicked row's
-    // microseconds as the lower (inclusive) bound and `nullopt`
-    // as the open upper bound. The lower bound is read straight
-    // off the model's `SortRole`, which already normalises every
-    // `Type::Time` slot to `qint64` microseconds since epoch.
+    // Triggering the "newer" action (inclusive `>=`) installs an
+    // additive time filter on the time column, with the clicked
+    // row's microseconds as the lower (inclusive) bound and
+    // `nullopt` as the open upper bound. The lower bound is read
+    // straight off the model's `SortRole`, which already normalises
+    // every `Type::Time` slot to `qint64` microseconds since epoch.
     void TestRowContextMenuAtOrAfterAddsTimeFilter()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -4989,12 +4989,12 @@ private slots:
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *afterAction = menu->actions().at(0);
-        QVERIFY2(afterAction != nullptr, "menu must carry an `at or after` action");
+        QAction *newerAction = menu->actions().at(0);
+        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        afterAction->trigger();
+        newerAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -5010,9 +5010,9 @@ private slots:
         QCOMPARE(*installed.filterBegin, row1Micros);
     }
 
-    // Symmetric to the "at or after" test: the lower bound is
+    // Symmetric to the "newer" test: the lower bound is
     // `std::nullopt` (open), the upper bound is the clicked row's
-    // micros.
+    // micros (inclusive `<=`).
     void TestRowContextMenuAtOrBeforeAddsTimeFilter()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5027,11 +5027,11 @@ private slots:
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *beforeAction = menu->actions().at(1);
-        QVERIFY2(beforeAction != nullptr, "menu must carry an `at or before` action");
+        QAction *olderAction = menu->actions().at(1);
+        QVERIFY2(olderAction != nullptr, "menu must carry an `older` action at index 1");
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        beforeAction->trigger();
+        olderAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -5071,7 +5071,12 @@ private slots:
         QVERIFY(src != dest);
         QVERIFY2(
             QMetaObject::invokeMethod(
-                mWindow, "OnHeaderSectionMoved", Qt::DirectConnection, Q_ARG(int, src), Q_ARG(int, src), Q_ARG(int, dest)
+                mWindow,
+                "OnHeaderSectionMoved",
+                Qt::DirectConnection,
+                Q_ARG(int, src),
+                Q_ARG(int, src),
+                Q_ARG(int, dest)
             ),
             "OnHeaderSectionMoved slot must be invocable via meta-object"
         );
@@ -5080,11 +5085,11 @@ private slots:
         QCOMPARE(timeColAfter, dest);
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *afterAction = menu->actions().at(0);
-        QVERIFY2(afterAction != nullptr, "menu must carry an `at or after` action");
+        QAction *newerAction = menu->actions().at(0);
+        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        afterAction->trigger();
+        newerAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -5095,8 +5100,8 @@ private slots:
     // Each click adds a brand-new filter UUID rather than
     // replacing any existing time filter on the same column. The
     // additive behaviour is the design contract: combining
-    // "at or after X" and "at or before Y" by issuing two clicks
-    // is how the user narrows a window without ever opening the
+    // "newer than X" and "older than Y" by issuing two clicks is
+    // how the user narrows a window without ever opening the
     // FilterEditor.
     void TestRowContextMenuAdditiveDoesNotReplaceExisting()
     {
@@ -5108,8 +5113,8 @@ private slots:
         // rows are filtered out and the filter is identifiable
         // (real values, not the predicate's INT64 sentinels).
         const QString preSeededId = QStringLiteral("pre-seeded-time-filter");
-        const std::optional<qint64> preBegin{1'000'000'000'000'000LL};      // 2001-09-09 UTC, micros.
-        const std::optional<qint64> preEnd{4'000'000'000'000'000LL};        // 2096-10-02 UTC, micros.
+        const std::optional<qint64> preBegin{1'000'000'000'000'000LL}; // 2001-09-09 UTC, micros.
+        const std::optional<qint64> preEnd{4'000'000'000'000'000LL};   // 2096-10-02 UTC, micros.
         QVERIFY2(
             QMetaObject::invokeMethod(
                 mWindow,
@@ -5130,11 +5135,11 @@ private slots:
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *afterAction = menu->actions().at(0);
-        QVERIFY2(afterAction != nullptr, "menu must carry an `at or after` action");
+        QAction *newerAction = menu->actions().at(0);
+        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
 
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        afterAction->trigger();
+        newerAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
@@ -5167,9 +5172,9 @@ private slots:
         const qint64 row1Micros = model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong();
         QVERIFY2(row1Micros > 0, "row 1 must carry a positive epoch-microseconds timestamp");
 
-        // Step 1: install an `at or after` filter via the row menu.
-        // This is the production code path that produces a
-        // `(row1Micros, nullopt)` filter.
+        // Step 1: install a `newer` filter via the row menu (the
+        // production code path that produces a `(row1Micros,
+        // nullopt)` filter).
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
@@ -5179,7 +5184,10 @@ private slots:
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const QString filterId = QString::fromStdString(mWindow->Filters().begin()->first);
-        QVERIFY2(!mWindow->Filters().begin()->second.filterEnd.has_value(), "installed filter must carry an open upper bound (nullopt)");
+        QVERIFY2(
+            !mWindow->Filters().begin()->second.filterEnd.has_value(),
+            "installed filter must carry an open upper bound (nullopt)"
+        );
 
         // Step 2: trigger Edit from the column-header sub-menu.
         auto built = mWindow->BuildHeaderContextMenu(timeCol, nullptr);
@@ -5263,20 +5271,23 @@ private slots:
         const qint64 row2Micros = model->data(model->index(2, timeCol), LogModelItemDataRole::SortRole).toLongLong();
         QVERIFY2(row2Micros > 0, "row 2 must carry a positive epoch-microseconds timestamp");
 
-        // Step 1: install an `at or before` filter on row 2.
-        // Shape: `(nullopt, row2Micros)`. The row-menu code path
-        // is the production source of unbounded-side filters that
-        // reach the editor.
+        // Step 1: install an `older` filter on row 2. Shape:
+        // `(nullopt, row2Micros)`. The row-menu code path is the
+        // production source of unbounded-side filters that reach
+        // the editor.
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/2, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        rowMenu->actions().at(1)->trigger(); // "at or before"
+        rowMenu->actions().at(1)->trigger(); // "older" (index 1)
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
         const QString filterId = QString::fromStdString(mWindow->Filters().begin()->first);
-        QVERIFY2(!mWindow->Filters().begin()->second.filterBegin.has_value(), "installed filter must carry an open lower bound (nullopt)");
+        QVERIFY2(
+            !mWindow->Filters().begin()->second.filterBegin.has_value(),
+            "installed filter must carry an open lower bound (nullopt)"
+        );
 
         // Step 2: open the editor via the column-header sub-menu's Edit action.
         auto built = mWindow->BuildHeaderContextMenu(timeCol, nullptr);

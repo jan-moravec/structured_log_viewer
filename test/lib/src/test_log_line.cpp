@@ -267,7 +267,8 @@ TEST_CASE("AsEpochMicroseconds matches the TimeRangeRowPredicate slot acceptance
         AsEpochMicroseconds(LogValue{static_cast<uint64_t>(std::numeric_limits<int64_t>::max())}) ==
         std::numeric_limits<int64_t>::max()
     );
-    CHECK_FALSE(AsEpochMicroseconds(LogValue{static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1}).has_value()
+    CHECK_FALSE(
+        AsEpochMicroseconds(LogValue{static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1}).has_value()
     );
     CHECK_FALSE(AsEpochMicroseconds(LogValue{std::numeric_limits<uint64_t>::max()}).has_value());
 
