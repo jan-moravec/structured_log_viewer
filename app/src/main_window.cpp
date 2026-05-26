@@ -2047,8 +2047,7 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     // `mFilters` map and rebuilds proxy rules -- neither of those
     // races with the streaming pipeline's `columns` mutation. The
     // mid-stream filter add is a useful workflow (narrow the view
-    // to "logs at or after this row's timestamp" while live-tailing
-    // a growing file).
+    // to "newer logs only" while live-tailing a growing file).
     if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
     {
         header->setSectionsMovable(enabled);
@@ -4470,8 +4469,7 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     // `ColumnMenuLabel` disambiguates duplicate headers by
     // appending `[key]`, matching `BuildHeaderContextMenu`. Without
     // this, two `Type::Time` columns sharing a header name would
-    // produce ambiguous "Show only logs at or after this time (ts)"
-    // entries.
+    // produce ambiguous "Show only newer logs (ts)" entries.
     const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
     const qint64 boundary = *micros;
 
@@ -4504,12 +4502,8 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         });
     };
 
-    addRangeAction(
-        tr("Show only logs at or after this time (%1)").arg(colLabel), boundary, std::nullopt
-    );
-    addRangeAction(
-        tr("Show only logs at or before this time (%1)").arg(colLabel), std::nullopt, boundary
-    );
+    addRangeAction(tr("Show only newer logs (%1)").arg(colLabel), boundary, std::nullopt);
+    addRangeAction(tr("Show only older logs (%1)").arg(colLabel), std::nullopt, boundary);
 
     return menu;
 }

@@ -264,9 +264,10 @@ public:
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
     /// Build the right-click row menu for source-model row
-    /// @p sourceRow. Carries the inclusive "Show only logs at or
-    /// after this time" / "Show only logs at or before this time"
-    /// actions, both pinned to the first `Type::Time` column.
+    /// @p sourceRow. Carries the inclusive "Show only newer logs"
+    /// / "Show only older logs" actions (boundary is the clicked
+    /// row's timestamp; both bounds are inclusive `>= / <=`), both
+    /// pinned to the first `Type::Time` column.
     /// Returns null when there is nothing to show: no `Type::Time`
     /// column, the row's slot is `std::monostate` (absent
     /// timestamp), an empty model, or @p sourceRow out of range.

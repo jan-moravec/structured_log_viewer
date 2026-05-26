@@ -4829,11 +4829,10 @@ private slots:
     }
 
     // `BuildRowContextMenu` must offer exactly the two inclusive
-    // "at or after" / "at or before" actions, labelled with the
-    // time column's header. Pinned so a future entry that
-    // accidentally lands on the row menu (or a label rewrite that
-    // drops the "this time" phrasing the design pinned) trips
-    // here.
+    // "newer" / "older" actions, labelled with the time column's
+    // header. Pinned so a future entry that accidentally lands on
+    // the row menu (or a label rewrite that drops the "newer/older"
+    // phrasing) trips here.
     void TestRowContextMenuOffersAtOrAfterAndAtOrBefore()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -4850,14 +4849,12 @@ private slots:
         // a future `QTranslator` install: production builds the label
         // through the same `tr(...).arg(colLabel)` shape, so an exact
         // compare is both stricter and translation-safe (the prior
-        // `startsWith("Show only logs...")` would silently break under
-        // any non-empty translator).
-        const QString afterLabel =
-            MainWindow::tr("Show only logs at or after this time (%1)").arg(QStringLiteral("timestamp"));
-        const QString beforeLabel =
-            MainWindow::tr("Show only logs at or before this time (%1)").arg(QStringLiteral("timestamp"));
-        QCOMPARE(actions[0]->text(), afterLabel);
-        QCOMPARE(actions[1]->text(), beforeLabel);
+        // `startsWith("Show only newer logs")` would silently break
+        // under any non-empty translator).
+        const QString newerLabel = MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp"));
+        const QString olderLabel = MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp"));
+        QCOMPARE(actions[0]->text(), newerLabel);
+        QCOMPARE(actions[1]->text(), olderLabel);
     }
 
     // When no `Type::Time` column is present the menu must return
@@ -4917,8 +4914,8 @@ private slots:
     // empty (the source JSON omitted the timestamp key) returns
     // `std::monostate`. `AsEpochMicroseconds` rejects monostate, so
     // the menu has no boundary to bind to and must return null.
-    // Without this gate the "at or after / before" actions would
-    // trigger with `nullopt` boundaries, installing a degenerate
+    // Without this gate the "newer/older" actions would trigger
+    // with `nullopt` boundaries, installing a degenerate
     // `(nullopt, nullopt)` filter that `ValidateFilterAgainstColumns`
     // would reject silently.
     void TestRowContextMenuReturnsNullForMonostateTimeSlot()
