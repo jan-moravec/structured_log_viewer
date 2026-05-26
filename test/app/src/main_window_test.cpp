@@ -4861,8 +4861,13 @@ private slots:
     // to `Type::Time`.
     void TestRowContextMenuReturnsNullWithoutTimeColumn()
     {
-        const int levelCol = StreamFixtureForColumnTests();
-        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        // `StreamFixtureForColumnTests` streams `category` + `msg`;
+        // the returned index is for `category`, used here only as a
+        // streaming-completed sentinel (the assertion below cares
+        // about the *absence* of a `Type::Time` column, not which
+        // non-time column landed where).
+        const int streamedColumn = StreamFixtureForColumnTests();
+        QVERIFY2(streamedColumn >= 0, "streaming must complete before the row-menu probe");
 
         QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model has no Type::Time column");

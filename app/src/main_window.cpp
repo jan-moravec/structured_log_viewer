@@ -4429,8 +4429,9 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     // (a single inclusive before/after pair pinned to the canonical
     // time column), so it shares `FirstTimeColumnIndex` with the
     // Record Details summary in `record_detail_widget.cpp`.
-    const auto &columns = mModel->Configuration().columns;
-    const int timeCol = loglib::FirstTimeColumnIndex(mModel->Configuration());
+    const auto &config = mModel->Configuration();
+    const auto &columns = config.columns;
+    const int timeCol = loglib::FirstTimeColumnIndex(config);
     if (timeCol < 0)
     {
         return nullptr;
