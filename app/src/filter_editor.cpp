@@ -520,15 +520,60 @@ void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64
     const QDateTime beginDateTime = pickSeed(begin, end);
     const QDateTime endDateTime = pickSeed(end, begin);
 
+    // Bounded side: re-install the seed-derived min/max constraint,
+    // matching the historic "you can only narrow within the loaded
+    // range" UX. Unbounded side: explicitly clear any constraint
+    // left over from a previous `SetBeginEnd` (e.g.
+    // `UpdateSelectedColumn` seeds bounded min/max from the model;
+    // `Load` then overwrites with an unbounded side). Without the
+    // explicit clear, an Edit on `(nullopt, X)` would seed
+    // `mBeginDateEdit` with the fallback `X` AND keep a previous
+    // `setMinimumDateTime(X)` in force, pinning begin to `[X, X]`
+    // and making it impossible to widen the range.
+    //
+    // setDateTime / setMinimumDateTime are interleaved per widget
+    // (not batched) so the `dateChanged` / `timeChanged` cross-
+    // coupling between begin and end fires against an already-
+    // constrained widget; reordering to "all setDateTime then all
+    // setMin/Max" lets the cross-coupling cascade clamp values to
+    // unintended times.
     mBeginDateEdit->setDateTime(beginDateTime);
-    mBeginDateEdit->setMinimumDateTime(beginDateTime);
+    if (begin.has_value())
+    {
+        mBeginDateEdit->setMinimumDateTime(beginDateTime);
+    }
+    else
+    {
+        mBeginDateEdit->clearMinimumDateTime();
+    }
     mBeginTimeEdit->setDateTime(beginDateTime);
-    mBeginTimeEdit->setMinimumDateTime(beginDateTime);
+    if (begin.has_value())
+    {
+        mBeginTimeEdit->setMinimumDateTime(beginDateTime);
+    }
+    else
+    {
+        mBeginTimeEdit->clearMinimumDateTime();
+    }
 
     mEndDateEdit->setDateTime(endDateTime);
-    mEndDateEdit->setMaximumDateTime(endDateTime);
+    if (end.has_value())
+    {
+        mEndDateEdit->setMaximumDateTime(endDateTime);
+    }
+    else
+    {
+        mEndDateEdit->clearMaximumDateTime();
+    }
     mEndTimeEdit->setDateTime(endDateTime);
-    mEndTimeEdit->setMaximumDateTime(endDateTime);
+    if (end.has_value())
+    {
+        mEndTimeEdit->setMaximumDateTime(endDateTime);
+    }
+    else
+    {
+        mEndTimeEdit->clearMaximumDateTime();
+    }
 
     // Drive the checkboxes from the optionals; the toggled handler
     // disables the matching edits as a side effect.
