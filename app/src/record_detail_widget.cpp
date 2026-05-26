@@ -91,20 +91,6 @@ QString FormatRawLineForDisplay(const std::string &raw)
     return QString::fromUtf8(bytes);
 }
 
-/// Index of the first `Type::Time` column, or -1 if none. Used to
-/// append the formatted timestamp to the summary label.
-int FindTimeColumn(const loglib::LogConfiguration &configuration)
-{
-    for (size_t i = 0; i < configuration.columns.size(); ++i)
-    {
-        if (configuration.columns[i].type == loglib::LogConfiguration::Type::Time)
-        {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
 /// C-style escape (`\n`, `\r`, `\t`, `\\`) for the `header: value`
 /// clipboard output so each pair stays on one line. Other characters
 /// pass through unchanged.
@@ -258,7 +244,7 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     content.formattedJson = FormatRawLineForDisplay(rawLineBytes);
 
     QString summary = RecordDetailWidget::tr("Row %1").arg(sourceRow + 1);
-    if (const int timeCol = FindTimeColumn(configuration); timeCol >= 0)
+    if (const int timeCol = loglib::FirstTimeColumnIndex(configuration); timeCol >= 0)
     {
         const QString timeText = QString::fromStdString(table.GetFormattedValue(row, static_cast<size_t>(timeCol)));
         if (!timeText.isEmpty())

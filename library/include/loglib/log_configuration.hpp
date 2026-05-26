@@ -177,6 +177,13 @@ struct LogConfiguration
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
+/// Index of the first `Type::Time` column in @p configuration, or -1
+/// if none. Centralised so every "where is the canonical timestamp"
+/// caller (Record Details summary, the row right-click time-filter
+/// menu, ...) makes the same first-match choice without each one
+/// re-implementing the loop.
+[[nodiscard]] int FirstTimeColumnIndex(const LogConfiguration &configuration);
+
 /// "Source is actionable" predicate. Centralises the
 /// `has_value() && !locators.empty()` gate so the half-checked form
 /// can't sneak through one call site at a time.
