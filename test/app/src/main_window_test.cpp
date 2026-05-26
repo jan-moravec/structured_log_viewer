@@ -4902,6 +4902,65 @@ private slots:
         );
     }
 
+    // A row that *has* a `Type::Time` column but whose slot is
+    // empty (the source JSON omitted the timestamp key) returns
+    // `std::monostate`. `AsEpochMicroseconds` rejects monostate, so
+    // the menu has no boundary to bind to and must return null.
+    // Without this gate the "at or after / before" actions would
+    // trigger with `nullopt` boundaries, installing a degenerate
+    // `(nullopt, nullopt)` filter that `ValidateFilterAgainstColumns`
+    // would reject silently.
+    void TestRowContextMenuReturnsNullForMonostateTimeSlot()
+    {
+        auto *model = mWindow->Model();
+        Q_ASSERT(model != nullptr);
+
+        // Three rows so the parser auto-promotes `timestamp` to
+        // `Type::Time`; the middle row omits the timestamp key so
+        // its slot lands as `std::monostate`. The first/last rows
+        // would still produce a usable menu — the assertion below
+        // is specifically about the middle row.
+        const QStringList lines{
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
+            QStringLiteral(R"({"msg":"middle has no timestamp"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:03+00:00","msg":"third"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+
+        const int timeCol = ColumnByHeader(*model, QStringLiteral("timestamp"));
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        QCOMPARE(model->rowCount(), 3);
+
+        // Rows with a real timestamp still get the menu.
+        QMenu *first = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY2(first != nullptr, "row 0 has a timestamp slot, menu must be offered");
+        first->deleteLater();
+
+        // The middle row's slot is monostate; the menu must be
+        // suppressed so the host never advertises a no-op action.
+        QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(middle == nullptr, "row 1's monostate time slot must suppress the menu");
+    }
+
     // Triggering the "at or after" action installs an additive
     // time filter on the time column, with the clicked row's
     // microseconds as the lower (inclusive) bound and `nullopt`
