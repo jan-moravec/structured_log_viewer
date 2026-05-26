@@ -693,6 +693,32 @@ TEST_CASE("NumericRangeRowPredicate treats NaN bounds as unbounded", "[log_filte
     CHECK(predicate.MatchesRow(table, 2));
 }
 
+TEST_CASE("TimeRangeRowPredicate rejects uint64_t slots above int64_t::max", "[log_filter][time]")
+{
+    // Mirrors `loglib::AsEpochMicroseconds`: a `uint64_t` slot past
+    // `int64_t::max` can never represent a `TimeRangeRowPredicate`
+    // boundary (bounds are `int64_t`), so the predicate rejects it
+    // explicitly rather than relying on `uint64_t` arithmetic to
+    // accidentally produce the right answer. Keeps the row right-
+    // click time-filter menu and the predicate in lockstep on what
+    // counts as a "time" slot.
+    const TestLogFile fixture("log_filter_time_uint64_overflow.json");
+    fixture.Write("");
+    const std::vector<LogValue> values = {
+        uint64_t{500},                                                       // in range
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()),          // boundary
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1U,     // just past
+        std::numeric_limits<uint64_t>::max()                                 // far past
+    };
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values);
+
+    const TimeRangeRowPredicate predicate(0, /*begin=*/0, /*end=*/std::numeric_limits<int64_t>::max());
+    CHECK(predicate.MatchesRow(table, 0));        // in-range slot inside [0, INT64_MAX]
+    CHECK(predicate.MatchesRow(table, 1));        // INT64_MAX exactly
+    CHECK_FALSE(predicate.MatchesRow(table, 2));  // INT64_MAX + 1 -> nullopt-equivalent reject
+    CHECK_FALSE(predicate.MatchesRow(table, 3));  // UINT64_MAX -> rejected
+}
+
 TEST_CASE("BoolRowPredicate selects by side", "[log_filter][boolean]")
 {
     const TestLogFile fixture("log_filter_boolean.json");
