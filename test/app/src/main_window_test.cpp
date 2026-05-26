@@ -5240,6 +5240,140 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    // Regression for the `SetBeginEnd` constraint-leak fix: opening
+    // Edit on a `(nullopt, X)` filter must let the user uncheck the
+    // begin-unbounded checkbox and pick a begin earlier than `X`.
+    // The pre-fix code installed `setMinimumDateTime(X)` on the
+    // begin edits (using `X` as the unbounded-side seed) and never
+    // cleared it, pinning the begin edit to `[X, X]` and making the
+    // open-bound filter effectively un-widenable.
+    void TestRowContextMenuEditUncheckWidensOpenBeginBound()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        const qint64 row2Micros = model->data(model->index(2, timeCol), LogModelItemDataRole::SortRole).toLongLong();
+        QVERIFY2(row2Micros > 0, "row 2 must carry a positive epoch-microseconds timestamp");
+
+        // Step 1: install an `at or before` filter on row 2.
+        // Shape: `(nullopt, row2Micros)`. The row-menu code path
+        // is the production source of unbounded-side filters that
+        // reach the editor.
+        QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/2, nullptr);
+        QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        rowMenu->actions().at(1)->trigger(); // "at or before"
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const QString filterId = QString::fromStdString(mWindow->Filters().begin()->first);
+        QVERIFY2(!mWindow->Filters().begin()->second.filterBegin.has_value(), "installed filter must carry an open lower bound (nullopt)");
+
+        // Step 2: open the editor via the column-header sub-menu's Edit action.
+        auto built = mWindow->BuildHeaderContextMenu(timeCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard headerMenuDeleter([&built]() { built.menu->deleteLater(); });
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
+        QAction *editAction = nullptr;
+        const QString editLabel = MainWindow::tr("Edit");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (QAction *act : subMenu->actions())
+        {
+            if (act->text() == editLabel)
+            {
+                editAction = act;
+                break;
+            }
+        }
+        QVERIFY2(editAction != nullptr, "sub-menu must contain an Edit action");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        editAction->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "Edit must open a FilterEditor");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+
+        // Step 3: the editor must reflect the loaded shape -- begin
+        // unbounded, end bounded.
+        QCheckBox *beginUnbounded = editor->BeginUnboundedCheckBox();
+        QCheckBox *endUnbounded = editor->EndUnboundedCheckBox();
+        QDateEdit *beginDate = editor->BeginDateEdit();
+        QTimeEdit *beginTime = editor->BeginTimeEdit();
+        QDateEdit *endDate = editor->EndDateEdit();
+        QTimeEdit *endTime = editor->EndTimeEdit();
+        QVERIFY(beginUnbounded != nullptr);
+        QVERIFY(endUnbounded != nullptr);
+        QVERIFY(beginDate != nullptr);
+        QVERIFY(beginTime != nullptr);
+        QVERIFY(endDate != nullptr);
+        QVERIFY(endTime != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
+        QVERIFY2(beginUnbounded->isChecked(), "begin checkbox must be checked for a (nullopt, X) load");
+        QVERIFY2(!endUnbounded->isChecked(), "end checkbox must be unchecked when end is bounded");
+
+        // Step 4: assert the actual property the `SetBeginEnd` fix
+        // changes -- the begin edits' minimum constraint must NOT
+        // be pinned to the seed (which is the end's `X` value
+        // because the begin is unbounded). The pre-fix code called
+        // `setMinimumDateTime(beginDateTime)` unconditionally with
+        // `beginDateTime` falling back to `X`, leaving the begin
+        // edit clamped to `[X, X]` so a subsequent uncheck-and-pick
+        // could not pick anything earlier than `X`.
+        const QDateTime endSeed = endDate->dateTime();
+        QVERIFY2(
+            beginDate->minimumDateTime() < endSeed,
+            "begin date edit's minimum must allow picking values earlier than the bounded end seed"
+        );
+        QVERIFY2(
+            beginTime->minimumDateTime() < endSeed,
+            "begin time edit's minimum must allow picking values earlier than the bounded end seed"
+        );
+
+        // Step 5: simulate the user unchecking begin-unbounded; the
+        // edits must become enabled (no leftover disable from the
+        // initial checked state).
+        beginUnbounded->setChecked(false);
+        QCoreApplication::processEvents();
+        QVERIFY2(beginDate->isEnabled(), "begin date edit must be enabled after uncheck");
+        QVERIFY2(beginTime->isEnabled(), "begin time edit must be enabled after uncheck");
+
+        // Step 6: clicking OK with begin still effectively at the
+        // seed must still emit a real begin (not nullopt), and the
+        // original end must round-trip unchanged. The point of the
+        // test is the *ability* to widen; the actual widen path is
+        // straightforward QDateTimeEdit usage once the minimum
+        // constraint is clear.
+        QPushButton *ok = editor->OkButton();
+        QVERIFY(ok != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
+        ok->click();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const auto it = mWindow->Filters().find(filterId.toStdString());
+        QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
+        QCOMPARE(it->second.type, loglib::LogConfiguration::LogFilter::Type::Time);
+        QCOMPARE(it->second.row, timeCol);
+        QVERIFY2(it->second.filterBegin.has_value(), "uncheck must promote begin from nullopt to the seed value");
+        QVERIFY(it->second.filterEnd.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QCOMPARE(*it->second.filterEnd, row2Micros);
+
+        QCoreApplication::processEvents();
+    }
+
     // `Column::visible` survives the Save / Reset / Load round-trip
     // (driven through the manager directly so the file dialogs
     // don't pop).

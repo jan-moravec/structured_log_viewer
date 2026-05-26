@@ -86,6 +86,33 @@ public:
     {
         return mOkButton;
     }
+    /// Test-only accessors for the time page widgets. Same caveat
+    /// as the enum-picker accessors: `findChildren<...>()` is empty
+    /// under offscreen QPA on the Linux runner.
+    [[nodiscard]] QDateEdit *BeginDateEdit() const
+    {
+        return mBeginDateEdit;
+    }
+    [[nodiscard]] QTimeEdit *BeginTimeEdit() const
+    {
+        return mBeginTimeEdit;
+    }
+    [[nodiscard]] QDateEdit *EndDateEdit() const
+    {
+        return mEndDateEdit;
+    }
+    [[nodiscard]] QTimeEdit *EndTimeEdit() const
+    {
+        return mEndTimeEdit;
+    }
+    [[nodiscard]] QCheckBox *BeginUnboundedCheckBox() const
+    {
+        return mBeginUnboundedCheckBox;
+    }
+    [[nodiscard]] QCheckBox *EndUnboundedCheckBox() const
+    {
+        return mEndUnboundedCheckBox;
+    }
 
 signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
