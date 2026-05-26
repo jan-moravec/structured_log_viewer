@@ -2034,12 +2034,21 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionSaveSession->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
-    // Reorder + right-click are gated mid-stream because
+    // Reorder + header right-click are gated mid-stream because
     // `LogModel::MoveColumn` rotates `columns` while the streaming
     // pipeline is busy mutating it through `AppendKeys`; a drag
     // between batches would scramble the proxy chain's column-keyed
     // state. The `View` menu stays reachable (only flips the
     // `visible` flag).
+    //
+    // Note: the *row* right-click menu (set up on `mTableView`
+    // itself in the constructor) is intentionally NOT gated here.
+    // Its only side effect is `AddLogFilter`, which mutates the
+    // `mFilters` map and rebuilds proxy rules -- neither of those
+    // races with the streaming pipeline's `columns` mutation. The
+    // mid-stream filter add is a useful workflow (narrow the view
+    // to "logs at or after this row's timestamp" while live-tailing
+    // a growing file).
     if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
     {
         header->setSectionsMovable(enabled);
@@ -4458,7 +4467,12 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     // between menu build and click. The timestamp itself is a
     // value capture; survives a `Reset` of the source row.
     const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
-    const QString colLabel = QString::fromStdString(columns[static_cast<size_t>(timeCol)].header);
+    // `ColumnMenuLabel` disambiguates duplicate headers by
+    // appending `[key]`, matching `BuildHeaderContextMenu`. Without
+    // this, two `Type::Time` columns sharing a header name would
+    // produce ambiguous "Show only logs at or after this time (ts)"
+    // entries.
+    const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
     const qint64 boundary = *micros;
 
     // Both actions share the same shape: re-resolve the column by
@@ -4470,7 +4484,12 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     // predicate substitutes its INT64 sentinel at construction, but
     // the title sees "any" and the editor round-trips the open
     // bound faithfully.
-    auto addRangeAction = [this, menu, timeKeys, boundary](
+    //
+    // `timeKeys` is reference-captured here (the local outlives
+    // every synchronous `addRangeAction(...)` call below) so we
+    // copy the vector only once -- into the inner connect lambda,
+    // which IS invoked asynchronously and so must own its keys.
+    auto addRangeAction = [this, menu, &timeKeys, boundary](
                               const QString &label, std::optional<qint64> begin, std::optional<qint64> end
                           ) {
         QAction *action = menu->addAction(label);

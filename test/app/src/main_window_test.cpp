@@ -4846,12 +4846,18 @@ private slots:
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         const QList<QAction *> actions = menu->actions();
         QCOMPARE(actions.size(), 2);
-        QVERIFY2(actions[0]->text().startsWith(QStringLiteral("Show only logs at or after this time")), "first action must be the 'at or after' entry");
-        QVERIFY2(actions[1]->text().startsWith(QStringLiteral("Show only logs at or before this time")), "second action must be the 'at or before' entry");
-        // The column label is interpolated into both entries so
-        // users see which time column the filter will bind to.
-        QVERIFY2(actions[0]->text().contains(QStringLiteral("timestamp")), "label must reference the time column");
-        QVERIFY2(actions[1]->text().contains(QStringLiteral("timestamp")), "label must reference the time column");
+        // Round-trip via `MainWindow::tr` so the assertion survives
+        // a future `QTranslator` install: production builds the label
+        // through the same `tr(...).arg(colLabel)` shape, so an exact
+        // compare is both stricter and translation-safe (the prior
+        // `startsWith("Show only logs...")` would silently break under
+        // any non-empty translator).
+        const QString afterLabel =
+            MainWindow::tr("Show only logs at or after this time (%1)").arg(QStringLiteral("timestamp"));
+        const QString beforeLabel =
+            MainWindow::tr("Show only logs at or before this time (%1)").arg(QStringLiteral("timestamp"));
+        QCOMPARE(actions[0]->text(), afterLabel);
+        QCOMPARE(actions[1]->text(), beforeLabel);
     }
 
     // When no `Type::Time` column is present the menu must return
