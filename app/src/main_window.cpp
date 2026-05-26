@@ -3545,9 +3545,12 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
         // than formatting the predicate's INT64_MIN/MAX sentinels
         // (which produced absurd 294247 AD / 292277 BC dates and
         // pushed the title past usable widths).
-        // `ValidateFilterAgainstColumns` rejects both-nullopt, so at
-        // least one side is always a real timestamp here.
-        Q_ASSERT(filter.filterBegin.has_value() || filter.filterEnd.has_value());
+        // `ValidateFilterAgainstColumns` rejects both-nullopt
+        // upstream, so well-formed flows always carry at least one
+        // bounded side. The both-`nullopt` branch renders as
+        // "any - any" so a hand-edited config or a future migration
+        // mid-flight surfaces in the UI rather than tripping a
+        // `Q_ASSERT` in Debug while Release falls through silently.
         const std::string beginStr =
             filter.filterBegin.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) : "any";
         const std::string endStr =
