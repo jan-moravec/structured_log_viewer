@@ -478,7 +478,14 @@ private slots:
     /// so the mirror + rule rebuild only run once.
     void ClearFilter(const QString &filterID, bool deferSync = false);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
-    void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
+    /// Slot for `FilterEditor::FilterTimeStampSubmitted`. Either
+    /// bound may be `std::nullopt` to leave that side unbounded
+    /// (mirrors `FilterNumericRangeSubmitted`); the predicate
+    /// substitutes its own min/max sentinels at construction time.
+    /// Both-nullopt is rejected (would match every row).
+    void FilterTimeStampSubmitted(
+        const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
+    );
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
     /// Slot for `FilterEditor::FilterNumericRangeSubmitted`. Either bound
     /// may be `std::nullopt` to leave that side unbounded.

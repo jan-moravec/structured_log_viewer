@@ -33,7 +33,11 @@ public:
     FilterEditor(const LogModel &model, QString filterID, QWidget *parent = nullptr);
 
     void Load(int row, const QString &filterString, int matchType);
-    void Load(int row, qint64 begin, qint64 end);
+    /// Restore a time-range filter. `std::nullopt` on either bound
+    /// leaves that side unbounded; the matching "No begin/end limit"
+    /// checkbox is checked and the corresponding date/time edits are
+    /// disabled. `OkClicked` will emit the same shape back out.
+    void Load(int row, std::optional<qint64> begin, std::optional<qint64> end);
     /// Preselect @p selectedValues; values absent from the current
     /// dictionary are skipped.
     void Load(int row, const QStringList &selectedValues);
@@ -85,7 +89,12 @@ public:
 
 signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
-    void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
+    /// Time-range filter. `std::nullopt` bounds are unbounded
+    /// (mirrors `FilterNumericRangeSubmitted`); the receiving slot
+    /// rejects the both-unbounded case (would match every row).
+    void FilterTimeStampSubmitted(
+        const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
+    );
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
     /// Numeric range filter. `std::nullopt` bounds are unbounded.
     void FilterNumericRangeSubmitted(
@@ -107,6 +116,14 @@ private:
     QTimeEdit *mBeginTimeEdit;
     QDateEdit *mEndDateEdit;
     QTimeEdit *mEndTimeEdit;
+
+    /// Time page: when checked, the matching `QDateEdit`+`QTimeEdit`
+    /// pair is disabled and `OkClicked` emits `std::nullopt` for that
+    /// bound. The "open bound" representation is `nullopt` rather
+    /// than `INT64_MIN`/`INT64_MAX` so the title and the editor stay
+    /// faithful through Edit -> OK round-trips.
+    QCheckBox *mBeginUnboundedCheckBox;
+    QCheckBox *mEndUnboundedCheckBox;
 
     /// Multi-select picker for `Type::Enumeration` columns. Items are
     /// alphabetised; Select/Clear All operate on visible rows only.
@@ -135,7 +152,10 @@ private:
     QPushButton *mCancelButton;
 
     void SetupLayout();
-    void SetBeginEnd(qint64 begin, qint64 end);
+    /// Push @p begin / @p end into the Time page; `std::nullopt`
+    /// engages the matching unbounded checkbox and disables the
+    /// matching date/time edits.
+    void SetBeginEnd(std::optional<qint64> begin, std::optional<qint64> end);
     /// Repopulate the enum picker from the column's current dictionary.
     void PopulateEnumValues(int columnIndex);
     /// Populate the enum picker with the six canonical level names

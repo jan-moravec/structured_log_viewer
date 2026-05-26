@@ -3230,7 +3230,10 @@ void MainWindow::AddFilter(
     {
         if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
         {
-            if (!resolvedFilter->filterBegin.has_value() || !resolvedFilter->filterEnd.has_value())
+            // Mirrors `FilterTimeStampSubmitted`'s validation: at least
+            // one bound must be set; the other side may be `nullopt`
+            // (rendered as "No begin/end limit" in the editor).
+            if (!resolvedFilter->filterBegin.has_value() && !resolvedFilter->filterEnd.has_value())
             {
                 statusBar()->showMessage(
                     QString("Filter '%1' was dropped because its time range is missing").arg(filterId),
@@ -3240,11 +3243,15 @@ void MainWindow::AddFilter(
                 delete filterEditor;
                 return;
             }
-            filterEditor->Load(
-                resolvedFilter->row,
-                static_cast<qint64>(*resolvedFilter->filterBegin),
-                static_cast<qint64>(*resolvedFilter->filterEnd)
-            );
+            const std::optional<qint64> begin =
+                resolvedFilter->filterBegin.has_value()
+                    ? std::optional<qint64>{static_cast<qint64>(*resolvedFilter->filterBegin)}
+                    : std::nullopt;
+            const std::optional<qint64> end =
+                resolvedFilter->filterEnd.has_value()
+                    ? std::optional<qint64>{static_cast<qint64>(*resolvedFilter->filterEnd)}
+                    : std::nullopt;
+            filterEditor->Load(resolvedFilter->row, begin, end);
         }
         else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration)
         {
@@ -3393,15 +3400,32 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     AddLogFilter(filterID, filter);
 }
 
-void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp)
+void MainWindow::FilterTimeStampSubmitted(
+    const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
+)
 {
-    // Reject an inverted range up front; the predicate would
-    // otherwise hide every row silently. Mirrors the regex probe
-    // in `FilterSubmitted`.
-    if (beginTimeStamp > endTimeStamp)
+    // Mirrors `FilterNumericRangeSubmitted`. `nullopt` means
+    // "unbounded" on that side; both-nullopt would match every row
+    // and is rejected up front. The predicate handles the open side
+    // via `value_or(INT64_MIN/MAX)` at construction; the editor and
+    // the title both keep `nullopt` as the canonical representation.
+    if (!beginTimeStamp.has_value() && !endTimeStamp.has_value())
     {
         statusBar()->showMessage(
-            QString("Time-range filter rejected: begin (%1) is after end (%2)").arg(beginTimeStamp).arg(endTimeStamp),
+            QString("Time-range filter rejected: at least one bound (begin or end) must be set"),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+    // Inversion only matters when both sides are bounded; an open
+    // side is always compatible with whatever the other side picks.
+    if (beginTimeStamp.has_value() && endTimeStamp.has_value() && *beginTimeStamp > *endTimeStamp)
+    {
+        statusBar()->showMessage(
+            QString("Time-range filter rejected: begin (%1) is after end (%2)")
+                .arg(*beginTimeStamp)
+                .arg(*endTimeStamp),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         ClearFilter(filterID);
@@ -3516,11 +3540,20 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
-        Q_ASSERT(filter.filterBegin.has_value() && filter.filterEnd.has_value());
-        return QString::fromStdString(
-            loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
-            loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
-        );
+    {
+        // `nullopt` on a side renders as the literal "any" rather
+        // than formatting the predicate's INT64_MIN/MAX sentinels
+        // (which produced absurd 294247 AD / 292277 BC dates and
+        // pushed the title past usable widths).
+        // `ValidateFilterAgainstColumns` rejects both-nullopt, so at
+        // least one side is always a real timestamp here.
+        Q_ASSERT(filter.filterBegin.has_value() || filter.filterEnd.has_value());
+        const std::string beginStr =
+            filter.filterBegin.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) : "any";
+        const std::string endStr =
+            filter.filterEnd.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd) : "any";
+        return QString::fromStdString(beginStr + " - " + endStr);
+    }
     case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
         Q_ASSERT(!filter.filterValues.empty());
@@ -4432,7 +4465,10 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         {
             return;
         }
-        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, boundary, std::numeric_limits<qint64>::max());
+        // `std::nullopt` for the upper bound: the predicate fills in
+        // INT64_MAX, but the title and the editor see "any" and
+        // round-trip the open bound faithfully.
+        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, boundary, std::nullopt);
     });
 
     QAction *beforeAction = menu->addAction(tr("Show only logs at or before this time (%1)").arg(colLabel));
@@ -4443,7 +4479,7 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         {
             return;
         }
-        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, std::numeric_limits<qint64>::min(), boundary);
+        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, std::nullopt, boundary);
     });
 
     return menu;

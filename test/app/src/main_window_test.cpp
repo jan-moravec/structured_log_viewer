@@ -4904,7 +4904,7 @@ private slots:
 
     // Triggering the "at or after" action installs an additive
     // time filter on the time column, with the clicked row's
-    // microseconds as the lower (inclusive) bound and INT64_MAX
+    // microseconds as the lower (inclusive) bound and `nullopt`
     // as the open upper bound. The lower bound is read straight
     // off the model's `SortRole`, which already normalises every
     // `Type::Time` slot to `qint64` microseconds since epoch.
@@ -4935,15 +4935,17 @@ private slots:
         QCOMPARE(installed.type, loglib::LogConfiguration::LogFilter::Type::Time);
         QCOMPARE(installed.row, timeCol);
         QVERIFY(installed.filterBegin.has_value());
-        QVERIFY(installed.filterEnd.has_value());
-        // NOLINTBEGIN(bugprone-unchecked-optional-access)
+        // The open upper bound is encoded as `std::nullopt` so the
+        // title renders as "any" and the FilterEditor round-trips
+        // the open side faithfully.
+        QVERIFY2(!installed.filterEnd.has_value(), "open upper bound must be std::nullopt, not INT64_MAX");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(*installed.filterBegin, row1Micros);
-        QCOMPARE(*installed.filterEnd, std::numeric_limits<qint64>::max());
-        // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
-    // Symmetric to the "at or after" test: the lower bound goes
-    // to INT64_MIN, the upper bound is the clicked row's micros.
+    // Symmetric to the "at or after" test: the lower bound is
+    // `std::nullopt` (open), the upper bound is the clicked row's
+    // micros.
     void TestRowContextMenuAtOrBeforeAddsTimeFilter()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -4969,12 +4971,12 @@ private slots:
         const auto &installed = mWindow->Filters().begin()->second;
         QCOMPARE(installed.type, loglib::LogConfiguration::LogFilter::Type::Time);
         QCOMPARE(installed.row, timeCol);
-        QVERIFY(installed.filterBegin.has_value());
+        // The open lower bound is encoded as `std::nullopt`; the
+        // upper bound is the clicked row's micros.
+        QVERIFY2(!installed.filterBegin.has_value(), "open lower bound must be std::nullopt, not INT64_MIN");
         QVERIFY(installed.filterEnd.has_value());
-        // NOLINTBEGIN(bugprone-unchecked-optional-access)
-        QCOMPARE(*installed.filterBegin, std::numeric_limits<qint64>::min());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         QCOMPARE(*installed.filterEnd, row2Micros);
-        // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
     // Regression: the action lambdas must re-resolve the time
@@ -5034,10 +5036,13 @@ private slots:
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
         QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
 
-        // Pre-seed an inert time-range filter on the same column
-        // (window-wide bounds so no rows are filtered out of the
-        // fixture).
+        // Pre-seed a permissive bounded filter on the same column.
+        // Bounds are decades around the fixture timestamps so no
+        // rows are filtered out and the filter is identifiable
+        // (real values, not the predicate's INT64 sentinels).
         const QString preSeededId = QStringLiteral("pre-seeded-time-filter");
+        const std::optional<qint64> preBegin{1'000'000'000'000'000LL};      // 2001-09-09 UTC, micros.
+        const std::optional<qint64> preEnd{4'000'000'000'000'000LL};        // 2096-10-02 UTC, micros.
         QVERIFY2(
             QMetaObject::invokeMethod(
                 mWindow,
@@ -5045,8 +5050,8 @@ private slots:
                 Qt::DirectConnection,
                 Q_ARG(QString, preSeededId),
                 Q_ARG(int, timeCol),
-                Q_ARG(qint64, std::numeric_limits<qint64>::min()),
-                Q_ARG(qint64, std::numeric_limits<qint64>::max())
+                Q_ARG(std::optional<qint64>, preBegin),
+                Q_ARG(std::optional<qint64>, preEnd)
             ),
             "FilterTimeStampSubmitted slot must be invocable via meta-object"
         );
@@ -5076,9 +5081,104 @@ private slots:
         QVERIFY(it->second.filterBegin.has_value());
         QVERIFY(it->second.filterEnd.has_value());
         // NOLINTBEGIN(bugprone-unchecked-optional-access)
-        QCOMPARE(*it->second.filterBegin, std::numeric_limits<qint64>::min());
-        QCOMPARE(*it->second.filterEnd, std::numeric_limits<qint64>::max());
+        QCOMPARE(*it->second.filterBegin, *preBegin);
+        QCOMPARE(*it->second.filterEnd, *preEnd);
         // NOLINTEND(bugprone-unchecked-optional-access)
+    }
+
+    // Regression for the "FilterEditor silently clamps unbounded
+    // bounds" bug: a time filter installed by the row context menu
+    // carries a `std::nullopt` upper bound. Editing it (Edit -> OK,
+    // no edits in between) must round-trip the open side, not
+    // silently rewrite it as `9999-12-31T23:59:59` because the
+    // `QDateTimeEdit`'s default ceiling clamped INT64_MAX.
+    void TestRowContextMenuTimeFilterRoundTripsThroughEditor()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        const qint64 row1Micros = model->data(model->index(1, timeCol), LogModelItemDataRole::SortRole).toLongLong();
+        QVERIFY2(row1Micros > 0, "row 1 must carry a positive epoch-microseconds timestamp");
+
+        // Step 1: install an `at or after` filter via the row menu.
+        // This is the production code path that produces a
+        // `(row1Micros, nullopt)` filter.
+        QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
+        const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        rowMenu->actions().at(0)->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const QString filterId = QString::fromStdString(mWindow->Filters().begin()->first);
+        QVERIFY2(!mWindow->Filters().begin()->second.filterEnd.has_value(), "installed filter must carry an open upper bound (nullopt)");
+
+        // Step 2: trigger Edit from the column-header sub-menu.
+        auto built = mWindow->BuildHeaderContextMenu(timeCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        const QScopeGuard headerMenuDeleter([&built]() { built.menu->deleteLater(); });
+        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
+        QAction *editAction = nullptr;
+        const QString editLabel = MainWindow::tr("Edit");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        for (QAction *act : subMenu->actions())
+        {
+            if (act->text() == editLabel)
+            {
+                editAction = act;
+                break;
+            }
+        }
+        QVERIFY2(editAction != nullptr, "sub-menu must contain an Edit action");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        editAction->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "Edit must open a FilterEditor");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QCOMPARE(editor->GetRowToFilter(), timeCol);
+
+        // Step 3: click OK without touching anything. The editor
+        // must read the open-bound state from its checkboxes and
+        // emit `nullopt` back, leaving the filter unchanged.
+        QPushButton *ok = editor->OkButton();
+        QVERIFY2(ok != nullptr, "FilterEditor must expose its OK button");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        ok->click();
+        QCoreApplication::processEvents();
+
+        // Step 4: the filter is still on the same column, with the
+        // same `(row1Micros, nullopt)` shape. The pre-fix code
+        // silently rewrote `filterEnd` to whatever the
+        // `QDateTimeEdit`'s upper ceiling produced (typically
+        // `9999-12-31`'s epoch micros), losing the open upper bound.
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        const auto it = mWindow->Filters().find(filterId.toStdString());
+        QVERIFY2(it != mWindow->Filters().end(), "filter id must survive Edit -> OK");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on .end().
+        QCOMPARE(it->second.type, loglib::LogConfiguration::LogFilter::Type::Time);
+        QCOMPARE(it->second.row, timeCol);
+        QVERIFY(it->second.filterBegin.has_value());
+        QVERIFY2(!it->second.filterEnd.has_value(), "open upper bound must round-trip as std::nullopt");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        QCOMPARE(*it->second.filterBegin, row1Micros);
+
+        // The editor accepts on OK; nothing leaked. `accept()`
+        // schedules deletion via `Qt::WA_DeleteOnClose` so we don't
+        // need to delete explicitly, but spinning the loop here
+        // matches the rest of the editor-using tests.
+        QCoreApplication::processEvents();
     }
 
     // `Column::visible` survives the Save / Reset / Load round-trip
