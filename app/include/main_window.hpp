@@ -267,13 +267,19 @@ public:
     /// @p sourceRow. Carries the inclusive "Show only logs at or
     /// after this time" / "Show only logs at or before this time"
     /// actions, both pinned to the first `Type::Time` column.
-    /// Caller owns the returned menu. Returns null when there is
-    /// nothing to show: no `Type::Time` column, the row's slot is
-    /// `std::monostate` (absent timestamp), an empty model, or
-    /// @p sourceRow out of range. Separated from
-    /// `ShowRowContextMenu` so tests can inspect the actions
-    /// without spawning a real popup, mirroring
+    /// Returns null when there is nothing to show: no `Type::Time`
+    /// column, the row's slot is `std::monostate` (absent
+    /// timestamp), an empty model, or @p sourceRow out of range.
+    /// Separated from `ShowRowContextMenu` so tests can inspect the
+    /// actions without spawning a real popup, mirroring
     /// `BuildHeaderContextMenu`.
+    ///
+    /// Ownership: the returned `QMenu *` is parented to @p parent
+    /// (or `mTableView` when @p parent is null), so it is destroyed
+    /// alongside the parent. `ShowRowContextMenu` additionally sets
+    /// `Qt::WA_DeleteOnClose` on the popup itself; tests that take
+    /// the menu without showing it must `deleteLater()` it via a
+    /// `QScopeGuard` (every existing `TestRowContextMenu*` does).
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.

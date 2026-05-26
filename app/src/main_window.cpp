@@ -4457,30 +4457,36 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     const QString colLabel = QString::fromStdString(columns[static_cast<size_t>(timeCol)].header);
     const qint64 boundary = *micros;
 
-    QAction *afterAction = menu->addAction(tr("Show only logs at or after this time (%1)").arg(colLabel));
-    // NOLINTNEXTLINE(bugprone-exception-escape)
-    connect(afterAction, &QAction::triggered, this, [this, timeKeys, boundary]() {
-        const int col = FindColumnIndexByKeys(timeKeys);
-        if (col < 0)
-        {
-            return;
-        }
-        // `std::nullopt` for the upper bound: the predicate fills in
-        // INT64_MAX, but the title and the editor see "any" and
-        // round-trip the open bound faithfully.
-        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, boundary, std::nullopt);
-    });
+    // Both actions share the same shape: re-resolve the column by
+    // its captured keys at trigger time (so a streaming reorder
+    // between menu build and click still hits the right column),
+    // then dispatch a fresh-uuid `FilterTimeStampSubmitted`. The
+    // only thing that varies is which side carries the bound and
+    // which side is `nullopt`. `std::nullopt` for the open side: the
+    // predicate substitutes its INT64 sentinel at construction, but
+    // the title sees "any" and the editor round-trips the open
+    // bound faithfully.
+    auto addRangeAction = [this, menu, timeKeys, boundary](
+                              const QString &label, std::optional<qint64> begin, std::optional<qint64> end
+                          ) {
+        QAction *action = menu->addAction(label);
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
+            const int col = FindColumnIndexByKeys(timeKeys);
+            if (col < 0)
+            {
+                return;
+            }
+            FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, begin, end);
+        });
+    };
 
-    QAction *beforeAction = menu->addAction(tr("Show only logs at or before this time (%1)").arg(colLabel));
-    // NOLINTNEXTLINE(bugprone-exception-escape)
-    connect(beforeAction, &QAction::triggered, this, [this, timeKeys, boundary]() {
-        const int col = FindColumnIndexByKeys(timeKeys);
-        if (col < 0)
-        {
-            return;
-        }
-        FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, std::nullopt, boundary);
-    });
+    addRangeAction(
+        tr("Show only logs at or after this time (%1)").arg(colLabel), boundary, std::nullopt
+    );
+    addRangeAction(
+        tr("Show only logs at or before this time (%1)").arg(colLabel), std::nullopt, boundary
+    );
 
     return menu;
 }
