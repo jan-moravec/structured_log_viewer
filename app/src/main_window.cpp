@@ -4488,7 +4488,7 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
     auto addRangeAction = [this, menu, &timeKeys, boundary](
                               const QString &label, std::optional<qint64> begin, std::optional<qint64> end
                           ) {
-        QAction *action = menu->addAction(label);
+        const QAction *action = menu->addAction(label);
         // NOLINTNEXTLINE(bugprone-exception-escape)
         connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
             const int col = FindColumnIndexByKeys(timeKeys);

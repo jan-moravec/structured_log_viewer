@@ -4872,7 +4872,7 @@ private slots:
         const int streamedColumn = StreamFixtureForColumnTests();
         QVERIFY2(streamedColumn >= 0, "streaming must complete before the row-menu probe");
 
-        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        const QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model has no Type::Time column");
     }
 
@@ -4885,7 +4885,7 @@ private slots:
         // Fresh `mWindow` from `init()`; no streaming, no rows.
         QCOMPARE(mWindow->Model()->rowCount(), 0);
 
-        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        const QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model is empty");
     }
 
@@ -4965,7 +4965,7 @@ private slots:
 
         // The middle row's slot is monostate; the menu must be
         // suppressed so the host never advertises a no-op action.
-        QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        const QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY2(middle == nullptr, "row 1's monostate time slot must suppress the menu");
     }
 
@@ -5211,7 +5211,7 @@ private slots:
         editAction->trigger();
         QCoreApplication::processEvents();
 
-        FilterEditor *editor = nullptr;
+        const FilterEditor *editor = nullptr;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             if (auto *e = qobject_cast<FilterEditor *>(widget))
@@ -5311,7 +5311,7 @@ private slots:
         editAction->trigger();
         QCoreApplication::processEvents();
 
-        FilterEditor *editor = nullptr;
+        const FilterEditor *editor = nullptr;
         for (QWidget *widget : QApplication::topLevelWidgets())
         {
             if (auto *e = qobject_cast<FilterEditor *>(widget))
@@ -5326,11 +5326,11 @@ private slots:
         // Step 3: the editor must reflect the loaded shape -- begin
         // unbounded, end bounded.
         QCheckBox *beginUnbounded = editor->BeginUnboundedCheckBox();
-        QCheckBox *endUnbounded = editor->EndUnboundedCheckBox();
-        QDateEdit *beginDate = editor->BeginDateEdit();
-        QTimeEdit *beginTime = editor->BeginTimeEdit();
-        QDateEdit *endDate = editor->EndDateEdit();
-        QTimeEdit *endTime = editor->EndTimeEdit();
+        const QCheckBox *endUnbounded = editor->EndUnboundedCheckBox();
+        const QDateEdit *beginDate = editor->BeginDateEdit();
+        const QTimeEdit *beginTime = editor->BeginTimeEdit();
+        const QDateEdit *endDate = editor->EndDateEdit();
+        const QTimeEdit *endTime = editor->EndTimeEdit();
         QVERIFY(beginUnbounded != nullptr);
         QVERIFY(endUnbounded != nullptr);
         QVERIFY(beginDate != nullptr);

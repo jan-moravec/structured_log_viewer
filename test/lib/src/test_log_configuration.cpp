@@ -1364,7 +1364,7 @@ TEST_CASE("FirstTimeColumnIndex returns the first Type::Time column or -1", "[lo
 
     // Empty column list -> -1 (sentinel) so callers can branch on
     // "no time column" without inspecting `columns.size()`.
-    LogConfiguration empty;
+    const LogConfiguration empty;
     CHECK(FirstTimeColumnIndex(empty) == -1);
 
     // No time column among other types -> -1.
