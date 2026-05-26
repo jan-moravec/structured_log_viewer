@@ -359,7 +359,10 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     switch (filter.type)
     {
     case LogFilter::Type::Time:
-        if (!filter.filterBegin.has_value() || !filter.filterEnd.has_value())
+        // Mirrors `Number` below: at least one bound must be populated;
+        // `nullopt` on the other side means "unbounded" and is fed to
+        // the predicate as INT64_MIN / INT64_MAX at construction.
+        if (!filter.filterBegin.has_value() && !filter.filterEnd.has_value())
         {
             return FilterValidationFailure{
                 .reason = FilterValidationReason::MissingTimeRange, .row = filter.row, .columnHeader = column.header
@@ -3850,14 +3853,19 @@ void MainWindow::UpdateFilters()
         switch (filter.type)
         {
         case LogFilterType::Time:
-            // `FilterTimeStampSubmitted` populates both bounds before the
-            // filter ever reaches `mFilters`, and the switch case pins
-            // `type == Time`, so the optionals are engaged here.
+            // `nullopt` on either side means "unbounded" (mirrors the
+            // `Number` filter's `filterMinValue`/`filterMaxValue`
+            // semantics). `value_or` substitutes the predicate's
+            // closed-range sentinels so the per-row visitor stays a
+            // simple `>=` / `<=` pair and the title / FilterEditor
+            // can keep `nullopt` as the canonical representation.
+            // `ValidateFilterAgainstColumns` rejects the both-null
+            // case, so at least one side is always bounded here.
             rules.emplace_back(
                 std::in_place_type<loglib::TimeRangeRowPredicate>,
                 column,
-                *filter.filterBegin, // NOLINT(bugprone-unchecked-optional-access)
-                *filter.filterEnd    // NOLINT(bugprone-unchecked-optional-access)
+                filter.filterBegin.value_or(std::numeric_limits<int64_t>::min()),
+                filter.filterEnd.value_or(std::numeric_limits<int64_t>::max())
             );
             break;
         case LogFilterType::Enumeration:
