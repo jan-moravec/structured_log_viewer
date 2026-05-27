@@ -5,6 +5,7 @@
 #include "log_warning.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
+#include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
 #include <QApplication>
@@ -102,6 +103,11 @@ int main(int argc, char *argv[])
     qApp->installEventFilter(&fileOpenFilter);
 
     AppearanceControl::LoadConfiguration();
+    // Loaded after AppearanceControl so the theme's `qtStyle` and
+    // font win over any legacy `appearance/*` values from QSettings.
+    // AppearanceControl will be deleted entirely in a follow-up
+    // commit once the migration smoke-tests clear.
+    ThemeControl::LoadConfiguration();
 
     const logapp::ParsedCli parsed =
         logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());

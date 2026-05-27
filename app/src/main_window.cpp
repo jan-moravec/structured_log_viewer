@@ -454,6 +454,11 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mTableView->setAlternatingRowColors(true);
 
+    // Live theme refresh: the Preferences dialog and OS palette
+    // changes both flow through `ThemeControl::themeChanged()`,
+    // and we repaint the table + reapply chrome QSS in one slot.
+    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, &MainWindow::OnThemeChanged);
+
     ApplyTableStyleSheet();
 
     // Proxy chain: `RowOrderProxyModel` mirrors row indices for
@@ -976,8 +981,19 @@ bool MainWindow::event(QEvent *event)
     }
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
+        // OS dark/light flip: re-evaluate Auto, which emits
+        // `themeChanged` if the resolved theme changes (covered by
+        // `OnThemeChanged`). When in Force mode the resolved theme
+        // is unchanged and the call is effectively a no-op.
+        ThemeControl::Reevaluate();
+        // QSS encodes palette-derived colours; refresh regardless
+        // of whether Reevaluate fired a signal so an OS palette
+        // change without a theme switch still re-applies.
+        ApplyTableStyleSheet();
+        break;
     case QEvent::StyleChange:
-        // Stylesheet encodes palette-derived colors; refresh on theme change.
+        // `qApp->setStyle` (called from `ThemeControl::ApplyTheme`)
+        // resets stylesheets across widgets; reapply ours.
         ApplyTableStyleSheet();
         break;
     default:
@@ -3645,6 +3661,31 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     const QAction *removeAction = menuItem->addAction(tr("Remove"));
     connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
+}
+
+void MainWindow::OnThemeChanged()
+{
+    ApplyTableStyleSheet();
+
+    // Repaint the table without a full model reset. dataChanged()
+    // across the whole model is cheap here because Qt only
+    // repaints visible cells; rows outside the viewport are
+    // re-queried lazily when scrolled into view.
+    if (mModel == nullptr)
+    {
+        return;
+    }
+    const int rows = mModel->rowCount();
+    const int cols = mModel->columnCount();
+    if (rows <= 0 || cols <= 0)
+    {
+        return;
+    }
+    emit mModel->dataChanged(
+        mModel->index(0, 0),
+        mModel->index(rows - 1, cols - 1),
+        {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}
+    );
 }
 
 void MainWindow::ApplyTableStyleSheet()

@@ -713,6 +713,13 @@ private:
     void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
+    /// Slot for `ThemeControl::themeChanged()`: re-applies the
+    /// table QSS, then emits `dataChanged` across the visible
+    /// rows / columns with Background/Foreground/Font roles so
+    /// the view repaints with the new per-level colours without a
+    /// full model reset.
+    void OnThemeChanged();
+
     /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
     /// column is not promoted or has no keys.
     [[nodiscard]] const loglib::EnumDictionary *ResolveEnumDictionary(int columnIndex) const;
