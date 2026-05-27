@@ -1,0 +1,20 @@
+{
+    "name": "Light",
+    "kind": "light",
+    "levels": {
+        "Trace": { "foreground": "#94A3B8" },
+        "Debug": { "foreground": "#64748B" },
+        "Info":  {},
+        "Warn":  { "foreground": "#D97706" },
+        "Error": { "foreground": "#B91C1C", "background": "#FECACA" },
+        "Fatal": { "foreground": "#7F1D1D", "background": "#FCA5A5", "bold": true }
+    },
+    "table": {
+        "alternateRowBackground": "#F3F4F6",
+        "selectionBackground": "#ADD4FF",
+        "selectionForeground": "#000000"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

@@ -1,0 +1,20 @@
+{
+    "name": "Dark",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#64748B" },
+        "Debug": { "foreground": "#94A3B8" },
+        "Info":  {},
+        "Warn":  { "foreground": "#FCD34D" },
+        "Error": { "foreground": "#FCA5A5", "background": "#4C1D1D" },
+        "Fatal": { "foreground": "#FECACA", "background": "#7F1D1D", "bold": true }
+    },
+    "table": {
+        "alternateRowBackground": "#2A2A2A",
+        "selectionBackground": "#00518F",
+        "selectionForeground": "#FFFFFF"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

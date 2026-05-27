@@ -2,5 +2,7 @@
     <qresource prefix="/">
         <file>icon-black.png</file>
         <file>icon-white.png</file>
+        <file>themes/light.json</file>
+        <file>themes/dark.json</file>
     </qresource>
 </RCC>
