@@ -10,6 +10,7 @@
         "Fatal": { "foreground": "#7F1D1D", "background": "#FCA5A5", "bold": true }
     },
     "table": {
+        "background": "#FFFFFF",
         "alternateRowBackground": "#F3F4F6",
         "selectionBackground": "#ADD4FF",
         "selectionForeground": "#000000"

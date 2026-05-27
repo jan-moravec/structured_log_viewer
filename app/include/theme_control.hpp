@@ -76,9 +76,14 @@ public:
     static QFont FontFor(loglib::LogLevel level, const QFont &base) noexcept;
     /// True iff the active theme specifies any styling at all for
     /// @p level (foreground, background, bold, or italic). Lets
-    /// the model short-circuit the `FontRole` branch when no
-    /// per-level font tweak is needed.
+    /// the model short-circuit role lookups for unstyled levels.
     static bool HasStyle(loglib::LogLevel level) noexcept;
+
+    /// True iff the active theme sets bold or italic for @p level.
+    /// Lets the model skip `FontRole` entirely when only colour
+    /// tweaks apply, avoiding a per-cell QFont copy on every
+    /// paint of a coloured-but-not-bold row.
+    static bool HasFontStyle(loglib::LogLevel level) noexcept;
 
     /// Active selection token from `QSettings`. Empty means Auto.
     static QString ActiveSelection();

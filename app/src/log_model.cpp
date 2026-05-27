@@ -1129,8 +1129,12 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             const QBrush brush = ThemeControl::ForegroundFor(*level);
             return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
         }
-        // FontRole.
-        if (!ThemeControl::HasStyle(*level))
+        // FontRole: gate on bold/italic only -- a level with just a
+        // foreground tint must NOT enter this branch because it
+        // would force Qt to recompute row heights for the cell on
+        // every repaint (per-cell font lookups invalidate the
+        // delegate's cached size hints).
+        if (!ThemeControl::HasFontStyle(*level))
         {
             return {};
         }

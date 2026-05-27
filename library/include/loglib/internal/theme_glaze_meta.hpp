@@ -32,6 +32,8 @@ template <> struct glz::meta<loglib::TableStyle>
 {
     using T = loglib::TableStyle;
     static constexpr auto value = object(
+        "background",
+        &T::background,
         "alternateRowBackground",
         &T::alternateRowBackground,
         "selectionBackground",

@@ -714,10 +714,16 @@ private:
     void ApplyTableStyleSheet();
 
     /// Slot for `ThemeControl::themeChanged()`: re-applies the
-    /// table QSS, then emits `dataChanged` across the visible
-    /// rows / columns with Background/Foreground/Font roles so
-    /// the view repaints with the new per-level colours without a
-    /// full model reset.
+    /// table QSS, then asks the table viewport to repaint so the
+    /// view re-queries `data()` for every visible cell and picks
+    /// up the new per-level brushes / fonts.
+    ///
+    /// Uses `viewport()->update()` instead of a model-wide
+    /// `dataChanged` because the latter has to walk the row range
+    /// through the proxy chain (`RowOrderProxyModel` ->
+    /// `LogFilterModel`), which is expensive on a multi-million-row
+    /// table even though only the viewport actually needs to
+    /// repaint.
     void OnThemeChanged();
 
     /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the

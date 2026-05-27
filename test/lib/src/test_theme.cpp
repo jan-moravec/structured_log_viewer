@@ -21,6 +21,7 @@ TEST_CASE("Theme JSON round-trip preserves all fields", "[Theme]")
         .background = "#7F1D1D",
         .bold = true,
     };
+    original.table.background = "#222222";
     original.table.alternateRowBackground = "#2A2A2A";
     original.table.selectionBackground = "#00518F";
     original.table.selectionForeground = "#FFFFFF";
@@ -37,6 +38,7 @@ TEST_CASE("Theme JSON round-trip preserves all fields", "[Theme]")
     CHECK(reloaded.levels.at("Trace").foreground == original.levels.at("Trace").foreground);
     CHECK(reloaded.levels.at("Error").background == original.levels.at("Error").background);
     CHECK(reloaded.levels.at("Fatal").bold == true);
+    CHECK(reloaded.table.background == original.table.background);
     CHECK(reloaded.table.alternateRowBackground == original.table.alternateRowBackground);
     CHECK(reloaded.app.qtStyle == original.app.qtStyle);
     CHECK(reloaded.app.fontFamily == original.app.fontFamily);

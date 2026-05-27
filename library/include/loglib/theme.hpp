@@ -34,11 +34,19 @@ struct LevelStyle
     bool italic = false;
 };
 
-/// Chrome around the rows: alternating background, selection
-/// rectangle, header. All optional; absent fields keep the Qt
-/// style defaults.
+/// Chrome around the rows: base background, alternating stripe,
+/// selection rectangle, header. All optional; absent fields keep
+/// the Qt style defaults.
+///
+/// `background` MUST be set alongside `alternateRowBackground`:
+/// the QTableView default `background-color` comes from the
+/// `QPalette::Base` role, which does not change when a theme
+/// switches, so a theme that only customises the alternate
+/// stripe ends up rendering mismatched light/dark rows when the
+/// system palette doesn't match the theme kind.
 struct TableStyle
 {
+    std::optional<std::string> background;
     std::optional<std::string> alternateRowBackground;
     std::optional<std::string> selectionBackground;
     std::optional<std::string> selectionForeground;

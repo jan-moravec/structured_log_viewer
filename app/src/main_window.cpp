@@ -3666,25 +3666,21 @@ void MainWindow::OnThemeChanged()
 {
     ApplyTableStyleSheet();
 
-    // Repaint the table without a full model reset. dataChanged()
-    // across the whole model is cheap here because Qt only
-    // repaints visible cells; rows outside the viewport are
-    // re-queried lazily when scrolled into view.
-    if (mModel == nullptr)
+    // Just repaint the viewport: Qt re-queries `data()` for every
+    // visible cell on the next paint event, picking up the new
+    // per-level brushes / fonts. Rows outside the viewport are
+    // re-queried lazily on scroll.
+    //
+    // Avoid emitting `dataChanged` across the whole model: that
+    // signal has to propagate through the proxy chain
+    // (`RowOrderProxyModel` -> `LogFilterModel`) and Qt's model
+    // index plumbing walks the row range, which is expensive for
+    // a multi-million-row table even though the actual repaint
+    // would only touch the viewport.
+    if (mTableView != nullptr)
     {
-        return;
+        mTableView->viewport()->update();
     }
-    const int rows = mModel->rowCount();
-    const int cols = mModel->columnCount();
-    if (rows <= 0 || cols <= 0)
-    {
-        return;
-    }
-    emit mModel->dataChanged(
-        mModel->index(0, 0),
-        mModel->index(rows - 1, cols - 1),
-        {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}
-    );
 }
 
 void MainWindow::ApplyTableStyleSheet()
@@ -3697,10 +3693,25 @@ void MainWindow::ApplyTableStyleSheet()
 
     QStringList rules;
 
+    // Compose `background-color` + `alternate-background-color` in
+    // one `QTableView { ... }` rule so a theme switch updates both
+    // atomically. Setting only the alternate background leaves the
+    // base background on the old `QPalette::Base`, which produces
+    // mismatched stripes when the system palette doesn't match the
+    // newly active theme kind.
+    QString tableRule;
+    if (theme.table.background.has_value() && !theme.table.background->empty())
+    {
+        tableRule += QStringLiteral("background-color: %1;").arg(QString::fromStdString(*theme.table.background));
+    }
     if (theme.table.alternateRowBackground.has_value() && !theme.table.alternateRowBackground->empty())
     {
-        rules << QStringLiteral("QTableView { alternate-background-color: %1; }")
-                     .arg(QString::fromStdString(*theme.table.alternateRowBackground));
+        tableRule += QStringLiteral(" alternate-background-color: %1;")
+                         .arg(QString::fromStdString(*theme.table.alternateRowBackground));
+    }
+    if (!tableRule.isEmpty())
+    {
+        rules << QStringLiteral("QTableView { %1 }").arg(tableRule);
     }
 
     // Selection rules: both `:selected` and `:selected:!active` so

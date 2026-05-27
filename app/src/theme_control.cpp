@@ -186,6 +186,16 @@ bool ThemeControl::HasStyle(loglib::LogLevel level) noexcept
     return Instance().mHasAnyStyle[idx];
 }
 
+bool ThemeControl::HasFontStyle(loglib::LogLevel level) noexcept
+{
+    const size_t idx = LevelIndex(level);
+    if (idx >= Instance().mBold.size())
+    {
+        return false;
+    }
+    return Instance().mBold[idx] || Instance().mItalic[idx];
+}
+
 QString ThemeControl::ActiveSelection()
 {
     return Instance().mActiveSelection;
