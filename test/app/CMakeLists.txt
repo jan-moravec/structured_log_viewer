@@ -67,3 +67,15 @@ target_link_libraries(apptest_queue PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp)
 target_include_directories(apptest_queue PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
 add_test(NAME apptest_queue COMMAND apptest_queue WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_queue>)
+
+# Unit tests for ThemeControl. Needs a QApplication (palette + setStyle)
+# and the built-in theme JSONs from resources.qrc, so it links the
+# resources separately.
+qt_add_resources(THEME_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
+qt_add_executable(apptest_theme src/test_theme_control.cpp ${THEME_RESOURCES})
+
+target_link_libraries(apptest_theme PRIVATE Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Widgets logapp)
+
+target_include_directories(apptest_theme PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(NAME apptest_theme COMMAND apptest_theme WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_theme>)
