@@ -1,6 +1,5 @@
 #include "main_window.hpp"
 
-#include "appearance_control.hpp"
 #include "cli_parser.hpp"
 #include "log_warning.hpp"
 #include "session_history_manager.hpp"
@@ -17,6 +16,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QProcessEnvironment>
+#include <QSettings>
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
@@ -102,12 +102,16 @@ int main(int argc, char *argv[])
     FileOpenEventFilter fileOpenFilter;
     qApp->installEventFilter(&fileOpenFilter);
 
-    AppearanceControl::LoadConfiguration();
-    // Loaded after AppearanceControl so the theme's `qtStyle` and
-    // font win over any legacy `appearance/*` values from QSettings.
-    // AppearanceControl will be deleted entirely in a follow-up
-    // commit once the migration smoke-tests clear.
     ThemeControl::LoadConfiguration();
+    // Best-effort cleanup of the legacy `appearance/*` keys so a
+    // user upgrading from a pre-theme build doesn't carry around
+    // dead settings (legacy values would have been overridden by
+    // the theme anyway). Safe to remove once a release ships.
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("appearance/style"));
+        settings.remove(QStringLiteral("appearance/font"));
+    }
 
     const logapp::ParsedCli parsed =
         logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());

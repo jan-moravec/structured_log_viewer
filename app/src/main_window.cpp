@@ -1,7 +1,6 @@
 #include "main_window.hpp"
 #include "./ui_main_window.h"
 
-#include "appearance_control.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
