@@ -298,6 +298,15 @@ void ThemeControl::DoReloadAll()
 
 void ThemeControl::DoReevaluate()
 {
+    // In Force mode the user explicitly picked a theme; an OS
+    // dark/light flip must not override that choice. Skip
+    // entirely so we also avoid re-running `ApplyTheme` (which
+    // would re-push the palette and re-trigger the very event
+    // that brought us here).
+    if (!mActiveSelection.isEmpty())
+    {
+        return;
+    }
     ResolveAndApplyActive(/*emitWhenUnchanged=*/false);
 }
 
@@ -394,6 +403,17 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
 
     const QString newName = QString::fromStdString(chosen.name);
     const bool unchanged = (newName == mActiveName);
+
+    // Skip the full re-apply when the resolved theme name hasn't
+    // changed and the caller doesn't insist. This is the second
+    // line of defence against the palette-change feedback loop:
+    // `qApp->setPalette` fires `ApplicationPaletteChange` ->
+    // `MainWindow::event` -> `Reevaluate` -> here.
+    if (unchanged && !emitWhenUnchanged)
+    {
+        return;
+    }
+
     mActive = std::move(chosen);
     mActiveName = newName;
     ApplyTheme(mActive);
@@ -405,8 +425,27 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
 
 void ThemeControl::ApplyTheme(const loglib::Theme &theme)
 {
+    // First-line re-entrancy guard. `qApp->setStyle` /
+    // `qApp->setPalette` fire `QEvent::StyleChange` /
+    // `ApplicationPaletteChange` which `MainWindow::event` routes
+    // back to `ThemeControl::Reevaluate`. The `unchanged` check in
+    // `ResolveAndApplyActive` already prevents re-entry from
+    // doing real work, but bailing early here also avoids
+    // rebuilding caches on the bounce-back.
+    if (mApplyingTheme)
+    {
+        return;
+    }
+    mApplyingTheme = true;
+
     BuildStyleCache(theme);
 
+    // Order matters: set the style FIRST so the standard palette
+    // we then mutate is the new style's standard palette, not the
+    // previous style's. Without this, switching from windows11 ->
+    // fusion on a dark-mode Windows system would briefly leave the
+    // dark windows11 palette in place even after we wrote the
+    // theme-derived light palette over it.
     if (theme.app.qtStyle.has_value())
     {
         const QString styleName = QString::fromStdString(*theme.app.qtStyle);
@@ -418,6 +457,8 @@ void ThemeControl::ApplyTheme(const loglib::Theme &theme)
             }
         }
     }
+
+    ApplyPalette(theme);
 
     if (theme.app.fontFamily.has_value() || theme.app.fontSize.has_value())
     {
@@ -432,6 +473,82 @@ void ThemeControl::ApplyTheme(const loglib::Theme &theme)
         }
         qApp->setFont(font);
     }
+
+    mApplyingTheme = false;
+}
+
+void ThemeControl::ApplyPalette(const loglib::Theme &theme)
+{
+    // Build a fully-formed palette per theme kind so that on a
+    // dark-mode OS with a forced Light theme (and vice versa) the
+    // QPalette agrees with `theme.table.background`. Without this
+    // the table renders Info-level cells with the OS palette's
+    // `QPalette::Text` (e.g. white on Windows dark mode) against
+    // the theme's `#FFFFFF` Base, producing invisible rows -- and
+    // worse, Qt does extra work reconciling the conflicting QSS
+    // and palette on every paint, which shows up as a parsing
+    // slowdown on multi-million-row tables.
+    const bool dark = (theme.kind == loglib::ThemeKind::Dark);
+
+    auto hexOr = [](const std::optional<std::string> &hex, const QColor &fallback) {
+        if (!hex.has_value() || hex->empty())
+        {
+            return fallback;
+        }
+        const QColor color(QString::fromStdString(*hex));
+        return color.isValid() ? color : fallback;
+    };
+
+    // Defaults derived from the theme kind. These match the
+    // built-in Light/Dark JSON values so themes that only define a
+    // subset still produce a self-consistent palette.
+    const QColor base = hexOr(theme.table.background, dark ? QColor(0x22, 0x22, 0x22) : QColor(0xFF, 0xFF, 0xFF));
+    const QColor altBase =
+        hexOr(theme.table.alternateRowBackground, dark ? QColor(0x2A, 0x2A, 0x2A) : QColor(0xF3, 0xF4, 0xF6));
+    const QColor text = dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A);
+    const QColor window = dark ? QColor(0x2A, 0x2A, 0x2A) : QColor(0xF7, 0xF7, 0xF7);
+    const QColor windowText = dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A);
+    const QColor button = dark ? QColor(0x37, 0x41, 0x51) : QColor(0xF3, 0xF4, 0xF6);
+    const QColor buttonText = dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A);
+    const QColor placeholder = dark ? QColor(0x9C, 0xA3, 0xAF) : QColor(0x6B, 0x72, 0x80);
+    const QColor highlight =
+        hexOr(theme.table.selectionBackground, dark ? QColor(0x00, 0x51, 0x8F) : QColor(0xAD, 0xD4, 0xFF));
+    const QColor highlightedText =
+        hexOr(theme.table.selectionForeground, dark ? QColor(0xFF, 0xFF, 0xFF) : QColor(0x00, 0x00, 0x00));
+
+    // Start from the style's standard palette so style-specific
+    // bits (Mid, Shadow, Light, etc.) carry through, then override
+    // the roles we actually care about.
+    QPalette palette = qApp->style()->standardPalette();
+
+    palette.setColor(QPalette::Base, base);
+    palette.setColor(QPalette::AlternateBase, altBase);
+    palette.setColor(QPalette::Text, text);
+    palette.setColor(QPalette::Window, window);
+    palette.setColor(QPalette::WindowText, windowText);
+    palette.setColor(QPalette::Button, button);
+    palette.setColor(QPalette::ButtonText, buttonText);
+    palette.setColor(QPalette::ToolTipBase, window);
+    palette.setColor(QPalette::ToolTipText, text);
+    palette.setColor(QPalette::PlaceholderText, placeholder);
+
+    // Apply highlight to both the Active and Inactive colour
+    // groups so a focused-elsewhere window keeps the same
+    // selection colour the user sees while interacting. Without
+    // this Qt grays the selection out when the window loses
+    // focus, which previously required QSS to override.
+    for (QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive})
+    {
+        palette.setColor(group, QPalette::Highlight, highlight);
+        palette.setColor(group, QPalette::HighlightedText, highlightedText);
+        palette.setColor(group, QPalette::Base, base);
+        palette.setColor(group, QPalette::AlternateBase, altBase);
+        palette.setColor(group, QPalette::Text, text);
+        palette.setColor(group, QPalette::Window, window);
+        palette.setColor(group, QPalette::WindowText, windowText);
+    }
+
+    qApp->setPalette(palette);
 }
 
 void ThemeControl::BuildStyleCache(const loglib::Theme &theme)

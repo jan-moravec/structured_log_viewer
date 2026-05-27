@@ -141,6 +141,7 @@ private:
     void DiscoverThemes();
     void ResolveAndApplyActive(bool emitWhenUnchanged);
     void ApplyTheme(const loglib::Theme &theme);
+    void ApplyPalette(const loglib::Theme &theme);
     void BuildStyleCache(const loglib::Theme &theme);
 
     /// Per-name index. User-dir entries override built-ins.
@@ -167,4 +168,14 @@ private:
     std::array<bool, LEVEL_SLOTS> mBold{};
     std::array<bool, LEVEL_SLOTS> mItalic{};
     std::array<bool, LEVEL_SLOTS> mHasAnyStyle{};
+
+    /// Re-entrancy guard for `ApplyTheme`. `qApp->setPalette` /
+    /// `qApp->setStyle` synchronously fan out
+    /// `QEvent::ApplicationPaletteChange` / `StyleChange`, which
+    /// `MainWindow::event` routes back to `ThemeControl::Reevaluate`.
+    /// Without this guard we would re-enter `ApplyTheme` from inside
+    /// itself (the resolved theme name is unchanged, so
+    /// `ResolveAndApplyActive` would early-out, but for safety we
+    /// short-circuit before any work is done).
+    bool mApplyingTheme = false;
 };

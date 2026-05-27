@@ -3685,54 +3685,17 @@ void MainWindow::OnThemeChanged()
 
 void MainWindow::ApplyTableStyleSheet()
 {
-    // QSS covers chrome only -- per-cell foreground / background /
-    // font come from `LogModel::data` via `ThemeControl`. The
-    // alternating-row colour stays in QSS because Qt does not
-    // surface the "alternate" stripe through a model role.
+    // The base / alternate / selection colours come from the
+    // active `QPalette` (pushed by `ThemeControl::ApplyTheme`), so
+    // the table-body stylesheet is now empty: Qt's standard
+    // delegate already uses the palette for those and gets the
+    // fast paint path that way. The only QSS we still need is the
+    // header `padding` + `bold` rule (which Qt has no palette role
+    // for) plus optional header colours from the theme.
     const loglib::Theme &theme = ThemeControl::Active();
 
-    QStringList rules;
+    mTableView->setStyleSheet(QString());
 
-    // Compose `background-color` + `alternate-background-color` in
-    // one `QTableView { ... }` rule so a theme switch updates both
-    // atomically. Setting only the alternate background leaves the
-    // base background on the old `QPalette::Base`, which produces
-    // mismatched stripes when the system palette doesn't match the
-    // newly active theme kind.
-    QString tableRule;
-    if (theme.table.background.has_value() && !theme.table.background->empty())
-    {
-        tableRule += QStringLiteral("background-color: %1;").arg(QString::fromStdString(*theme.table.background));
-    }
-    if (theme.table.alternateRowBackground.has_value() && !theme.table.alternateRowBackground->empty())
-    {
-        tableRule += QStringLiteral(" alternate-background-color: %1;")
-                         .arg(QString::fromStdString(*theme.table.alternateRowBackground));
-    }
-    if (!tableRule.isEmpty())
-    {
-        rules << QStringLiteral("QTableView { %1 }").arg(tableRule);
-    }
-
-    // Selection rules: both `:selected` and `:selected:!active` so
-    // the highlight survives the window losing focus.
-    if (theme.table.selectionBackground.has_value() && !theme.table.selectionBackground->empty())
-    {
-        const QString selBg = QString::fromStdString(*theme.table.selectionBackground);
-        QString selectionRule = QStringLiteral("background-color: %1;").arg(selBg);
-        if (theme.table.selectionForeground.has_value() && !theme.table.selectionForeground->empty())
-        {
-            selectionRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.selectionForeground));
-        }
-        rules << QStringLiteral("QTableView::item:selected { %1 }").arg(selectionRule);
-        rules << QStringLiteral("QTableView::item:selected:!active { %1 }").arg(selectionRule);
-    }
-
-    mTableView->setStyleSheet(rules.join(QLatin1Char('\n')));
-
-    // Header chrome is theme-driven too, but the existing bold +
-    // padding stays in the QSS so we layer optional theme colours
-    // on top instead of replacing the rule.
     QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
     if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
     {
