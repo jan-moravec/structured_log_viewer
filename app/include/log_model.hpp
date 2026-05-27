@@ -261,6 +261,20 @@ private:
     /// Shared implementation of `Reset()` / `StopAndKeepRows()`.
     void TeardownStreamingSessionInternal(bool resetTable);
 
+    /// Canonical level for @p row, looked up via the first
+    /// `Type::Level` column in the configuration. Returns nullopt
+    /// when no level column exists, when @p row has no resolvable
+    /// level value, or when the column index cache is stale.
+    /// Powers the `Background/Foreground/Font` role branches in
+    /// `data()`. Cheap enough for per-cell calls because the
+    /// inner lookup is `O(1)` via `LogTable::GetLevelForRow`.
+    [[nodiscard]] std::optional<loglib::LogLevel> LevelForRow(int row) const noexcept;
+
+    /// `mFirstLevelColumnCache` sentinel: not yet computed.
+    static constexpr int LEVEL_COLUMN_UNCACHED = -2;
+    /// `mFirstLevelColumnCache` sentinel: scanned, no level column found.
+    static constexpr int LEVEL_COLUMN_NONE = -1;
+
     loglib::LogTable mLogTable;
     QtStreamingLogSink *mSink = nullptr;
 
@@ -295,6 +309,15 @@ private:
     /// Per-column health cache, parallel to `Configuration().columns`.
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
+
+    /// Cached "first `Type::Level` column index" used by
+    /// `LevelForRow`. `LEVEL_COLUMN_UNCACHED` until populated;
+    /// `LEVEL_COLUMN_NONE` after a scan with no match; otherwise
+    /// the column index. Mutated from `const` paths via
+    /// `mutable`, and invalidated from every structural mutator
+    /// (`AppendBatch`, `MoveColumn`, `NotifyColumnEdited`,
+    /// `NotifyConfigurationReplaced`).
+    mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

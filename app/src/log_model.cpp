@@ -2,6 +2,7 @@
 
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
+#include "theme_control.hpp"
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
@@ -13,7 +14,9 @@
 #include <loglib/stream_line_source.hpp>
 
 #include <QApplication>
+#include <QBrush>
 #include <QCoreApplication>
+#include <QFont>
 #include <QFutureWatcher>
 #include <QIcon>
 #include <QMetaObject>
@@ -147,6 +150,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mLastBatchLevelDemoteMapping.clear();
         // Drop stale mismatch badges before the reset settles.
         RefreshColumnHealth();
+        mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
         endResetModel();
 
@@ -439,11 +443,21 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     if (columnsGrew)
     {
         beginInsertColumns(QModelIndex(), oldColumnCount, newColumnCount - 1);
+        // New columns may include a `Type::Level`; the next call to
+        // `LevelForRow` re-scans.
+        mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     }
     if (rowsGrew)
     {
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
+
+    // Auto-detection inside `LogTable::AppendBatch` can flip an
+    // existing column's `type` (Any -> Enumeration -> Level, or
+    // Level -> Enumeration on demotion). Invalidate unconditionally
+    // so the next `LevelForRow` re-scans against the post-batch
+    // configuration.
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
     // Discard the previous batch's capture so a batch without a
     // Demoted signal can't leak stale data through
@@ -968,11 +982,17 @@ void LogModel::NotifyColumnEdited(int columnIndex)
     {
         return;
     }
+    // A column type edit may have added or removed `Type::Level`.
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     emit headerDataChanged(Qt::Horizontal, columnIndex, columnIndex);
     const int rows = rowCount();
     if (rows > 0)
     {
-        emit dataChanged(index(0, columnIndex), index(rows - 1, columnIndex), {Qt::DisplayRole});
+        emit dataChanged(
+            index(0, columnIndex),
+            index(rows - 1, columnIndex),
+            {Qt::DisplayRole, Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}
+        );
     }
 }
 
@@ -1063,11 +1083,58 @@ void LogModel::RefreshColumnHealth()
     emit columnHealthChanged();
 }
 
+std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
+{
+    if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
+    {
+        mFirstLevelColumnCache = LEVEL_COLUMN_NONE;
+        const auto &columns = Configuration().columns;
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            if (columns[i].type == loglib::LogConfiguration::Type::Level)
+            {
+                mFirstLevelColumnCache = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (mFirstLevelColumnCache < 0 || row < 0)
+    {
+        return std::nullopt;
+    }
+    return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(mFirstLevelColumnCache));
+}
+
 QVariant LogModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.row() >= rowCount() || index.column() >= columnCount())
     {
         return {};
+    }
+
+    if (role == Qt::BackgroundRole || role == Qt::ForegroundRole || role == Qt::FontRole)
+    {
+        const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        if (role == Qt::BackgroundRole)
+        {
+            const QBrush brush = ThemeControl::BackgroundFor(*level);
+            return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
+        }
+        if (role == Qt::ForegroundRole)
+        {
+            const QBrush brush = ThemeControl::ForegroundFor(*level);
+            return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
+        }
+        // FontRole.
+        if (!ThemeControl::HasStyle(*level))
+        {
+            return {};
+        }
+        return ThemeControl::FontFor(*level, qApp->font());
     }
 
     if (role == Qt::DisplayRole)
@@ -1365,6 +1432,7 @@ void LogModel::NotifyConfigurationReplaced()
     // state. The row store is unchanged here.
     beginResetModel();
     mLogTable.OnConfigurationReloaded();
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     endResetModel();
 }
 
@@ -1404,6 +1472,7 @@ bool LogModel::MoveColumn(int srcIndex, int destIndex)
     // `LogTable::MoveColumn` rotates `columns` and remaps every
     // `LogFilter::row` via the configuration manager.
     mLogTable.MoveColumn(static_cast<size_t>(srcIndex), static_cast<size_t>(destIndex));
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     endMoveColumns();
     return true;
 }

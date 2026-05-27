@@ -11,6 +11,7 @@
 #include "qt_streaming_log_sink.hpp"
 #include "session_history_manager.hpp"
 #include "streaming_control.hpp"
+#include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
 #include <loglib/bytes_producer.hpp>
@@ -25,6 +26,7 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/theme.hpp>
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/udp_server_producer.hpp>
 
@@ -474,7 +476,8 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
 
     mTableView->resizeColumnsToContents();
 
-    mTableView->horizontalHeader()->setStyleSheet(R"(QHeaderView::section { padding: 8px; font-weight: bold; })");
+    // Header stylesheet is owned by `ApplyTableStyleSheet` so theme
+    // colours can layer onto the bold + padding rule.
     mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
     mTableView->horizontalHeader()->setStretchLastSection(true);
@@ -3646,22 +3649,50 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
 
 void MainWindow::ApplyTableStyleSheet()
 {
-    if (AppearanceControl::IsDarkTheme())
+    // QSS covers chrome only -- per-cell foreground / background /
+    // font come from `LogModel::data` via `ThemeControl`. The
+    // alternating-row colour stays in QSS because Qt does not
+    // surface the "alternate" stripe through a model role.
+    const loglib::Theme &theme = ThemeControl::Active();
+
+    QStringList rules;
+
+    if (theme.table.alternateRowBackground.has_value() && !theme.table.alternateRowBackground->empty())
     {
-        mTableView->setStyleSheet(R"(
-QTableView { background-color: #222222; alternate-background-color: #333333; }
-QTableView::item:selected { background-color: #00518F; }
-QTableView::item:selected:!active { background-color: #00518F; }
-)");
+        rules << QStringLiteral("QTableView { alternate-background-color: %1; }")
+                     .arg(QString::fromStdString(*theme.table.alternateRowBackground));
     }
-    else
+
+    // Selection rules: both `:selected` and `:selected:!active` so
+    // the highlight survives the window losing focus.
+    if (theme.table.selectionBackground.has_value() && !theme.table.selectionBackground->empty())
     {
-        mTableView->setStyleSheet(R"(
-QTableView { background-color: #FFFFFF; alternate-background-color: #F0F0F0; }
-QTableView::item:selected { background-color: #ADD4FF; color: black; }
-QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
-)");
+        const QString selBg = QString::fromStdString(*theme.table.selectionBackground);
+        QString selectionRule = QStringLiteral("background-color: %1;").arg(selBg);
+        if (theme.table.selectionForeground.has_value() && !theme.table.selectionForeground->empty())
+        {
+            selectionRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.selectionForeground));
+        }
+        rules << QStringLiteral("QTableView::item:selected { %1 }").arg(selectionRule);
+        rules << QStringLiteral("QTableView::item:selected:!active { %1 }").arg(selectionRule);
     }
+
+    mTableView->setStyleSheet(rules.join(QLatin1Char('\n')));
+
+    // Header chrome is theme-driven too, but the existing bold +
+    // padding stays in the QSS so we layer optional theme colours
+    // on top instead of replacing the rule.
+    QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
+    if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
+    {
+        headerRule += QStringLiteral(" background-color: %1;").arg(QString::fromStdString(*theme.table.headerBackground));
+    }
+    if (theme.table.headerForeground.has_value() && !theme.table.headerForeground->empty())
+    {
+        headerRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.headerForeground));
+    }
+    headerRule += QStringLiteral(" }");
+    mTableView->horizontalHeader()->setStyleSheet(headerRule);
 }
 
 const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex) const
