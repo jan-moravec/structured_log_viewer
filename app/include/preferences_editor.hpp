@@ -2,7 +2,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QFontComboBox>
+#include <QLabel>
 #include <QSpinBox>
 #include <QWidget>
 
@@ -31,9 +31,17 @@ signals:
     void staticDisplayOrderChanged(bool newestFirst);
 
 private:
-    QComboBox *mStyleComboBox;
-    QFontComboBox *mFontComboBox;
-    QSpinBox *mSizeSpinBox;
+    /// Repopulate `mThemeComboBox` from `ThemeControl::AvailableThemes`
+    /// and select the entry that matches the current active selection
+    /// (Auto becomes the first entry).
+    void RepopulateThemeCombo();
+
+    /// Refresh `mThemePreviewLabel` from the currently resolved
+    /// theme (after Auto / selection resolution).
+    void RefreshThemePreview();
+
+    QComboBox *mThemeComboBox;
+    QLabel *mThemePreviewLabel;
     QSpinBox *mStreamRetentionSpinBox;
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;

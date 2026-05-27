@@ -1,24 +1,49 @@
 #include "preferences_editor.hpp"
 
-#include "appearance_control.hpp"
 #include "session_history_manager.hpp"
 #include "streaming_control.hpp"
+#include "theme_control.hpp"
+
+#include <loglib/theme.hpp>
 
 #include <QApplication>
+#include <QFile>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
-#include <QStyleFactory>
+#include <QSignalBlocker>
+#include <QStringList>
 #include <QVBoxLayout>
+#include <QVariant>
 
 #include <cstddef>
+#include <exception>
 
 namespace
 {
 constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
-constexpr int FONT_POINT_SIZE_MIN = 6;
-constexpr int FONT_POINT_SIZE_MAX = 72;
 constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
+
+/// Label used for the synthetic "Auto" entry at the top of the
+/// theme combo. `ThemeControl::AUTO_TOKEN` (the empty string) is
+/// stored as the entry's `QVariant` userdata so a user-named
+/// theme that literally spells "Auto (follow system)" still
+/// round-trips correctly.
+constexpr char THEME_AUTO_LABEL[] = "Auto (follow system)";
+
+QString DescribeThemeKind(loglib::ThemeKind kind)
+{
+    switch (kind)
+    {
+    case loglib::ThemeKind::Light:
+        return QStringLiteral("light");
+    case loglib::ThemeKind::Dark:
+        return QStringLiteral("dark");
+    }
+    return QStringLiteral("?");
+}
 } // namespace
 
 PreferencesEditor::PreferencesEditor(QWidget *parent)
@@ -28,9 +53,79 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     setWindowTitle("Preferences");
     setMinimumWidth(PREFERENCES_MIN_WIDTH_PX);
 
-    mFontComboBox = new QFontComboBox(this);
-    mSizeSpinBox = new QSpinBox(this);
-    mStyleComboBox = new QComboBox(this);
+    mThemeComboBox = new QComboBox(this);
+    mThemeComboBox->setToolTip(
+        "Active theme. `Auto (follow system)` picks Light or Dark based on the OS "
+        "palette. User themes live in <AppData>/themes/*.json and shadow built-ins "
+        "with the same name."
+    );
+
+    mThemePreviewLabel = new QLabel(this);
+    mThemePreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mThemePreviewLabel->setWordWrap(true);
+
+    auto *openThemesButton = new QPushButton("Open themes folder", this);
+    openThemesButton->setToolTip("Reveal the user themes folder in the OS file manager.");
+    connect(openThemesButton, &QPushButton::clicked, this, []() { ThemeControl::RevealUserThemesDir(); });
+
+    auto *duplicateThemeButton = new QPushButton("Duplicate active theme...", this);
+    duplicateThemeButton->setToolTip(
+        "Copy the currently resolved theme into a new file under <AppData>/themes/ "
+        "as `<active>-copy.json`, then open the user themes folder so it can be edited."
+    );
+    connect(duplicateThemeButton, &QPushButton::clicked, this, [this]() {
+        try
+        {
+            const loglib::Theme &active = ThemeControl::Active();
+            QString baseName = QString::fromStdString(active.name);
+            if (baseName.isEmpty())
+            {
+                baseName = QStringLiteral("Theme");
+            }
+            // Pick the first unused `<base>-copy[ N].json` name so
+            // repeated clicks don't silently overwrite.
+            QString candidate = baseName + QStringLiteral("-copy");
+            int suffix = 2;
+            while (ThemeControl::Load(candidate).has_value())
+            {
+                candidate = baseName + QStringLiteral("-copy ") + QString::number(suffix);
+                ++suffix;
+            }
+            ThemeControl::SaveUserTheme(candidate, active);
+            ThemeControl::ReloadAll();
+            RepopulateThemeCombo();
+            ThemeControl::RevealUserThemesDir();
+        }
+        catch (const std::exception &ex)
+        {
+            QMessageBox::warning(this, tr("Duplicate theme"), QString::fromUtf8(ex.what()));
+        }
+    });
+
+    auto *reloadThemesButton = new QPushButton("Reload themes from disk", this);
+    reloadThemesButton->setToolTip(
+        "Re-scan the user themes folder and the built-in themes, then re-apply the "
+        "active theme. Use after editing a theme JSON file outside the app."
+    );
+    connect(reloadThemesButton, &QPushButton::clicked, this, [this]() {
+        ThemeControl::ReloadAll();
+        RepopulateThemeCombo();
+        RefreshThemePreview();
+    });
+
+    // Live-apply theme changes the moment the user picks an entry so
+    // the preview updates in place. Cancel reverts via the standard
+    // `ThemeControl::LoadConfiguration` round-trip.
+    connect(mThemeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        if (idx < 0)
+        {
+            return;
+        }
+        const QString selection = mThemeComboBox->itemData(idx).toString();
+        ThemeControl::SetActiveSelection(selection);
+        RefreshThemePreview();
+    });
+
     mStreamRetentionSpinBox = new QSpinBox(this);
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
@@ -50,8 +145,6 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         "automatically as new sessions are saved."
     );
 
-    mSizeSpinBox->setRange(FONT_POINT_SIZE_MIN, FONT_POINT_SIZE_MAX);
-
     mStreamRetentionSpinBox->setRange(
         static_cast<int>(StreamingControl::MIN_RETENTION_LINES), static_cast<int>(StreamingControl::MAX_RETENTION_LINES)
     );
@@ -70,40 +163,21 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         "at the top and the first line at the bottom."
     );
 
-    for (const auto &style : QStyleFactory::keys())
-    {
-        mStyleComboBox->addItem(style.toLower());
-    }
-
-    connect(mFontComboBox, &QFontComboBox::currentFontChanged, [this](const QFont &font) {
-        QFont newFont = font;
-        newFont.setPointSize(mSizeSpinBox->value());
-        qApp->setFont(newFont);
-    });
-
-    connect(mSizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), [=](int size) {
-        QFont newFont = qApp->font();
-        newFont.setPointSize(size);
-        qApp->setFont(newFont);
-    });
-
-    connect(mStyleComboBox, &QComboBox::currentTextChanged, [=](const QString &styleName) {
-        qApp->setStyle(QStyleFactory::create(styleName));
-    });
-
     // Stream retention is applied transactionally on Ok: the spinbox
     // does not push live updates, so Cancel reverts cleanly.
 
     auto *layout = new QVBoxLayout(this);
 
-    auto *appearanceGroup = new QGroupBox("Appearance", this);
+    auto *appearanceGroup = new QGroupBox("Theme", this);
     auto *appearanceLayout = new QVBoxLayout(appearanceGroup);
-    appearanceLayout->addWidget(new QLabel("Select Style:"));
-    appearanceLayout->addWidget(mStyleComboBox);
-    appearanceLayout->addWidget(new QLabel("Select Font:"));
-    appearanceLayout->addWidget(mFontComboBox);
-    appearanceLayout->addWidget(new QLabel("Select Font Size:"));
-    appearanceLayout->addWidget(mSizeSpinBox);
+    appearanceLayout->addWidget(new QLabel("Active theme:"));
+    appearanceLayout->addWidget(mThemeComboBox);
+    appearanceLayout->addWidget(mThemePreviewLabel);
+    auto *themeButtonLayout = new QHBoxLayout();
+    themeButtonLayout->addWidget(openThemesButton);
+    themeButtonLayout->addWidget(duplicateThemeButton);
+    themeButtonLayout->addWidget(reloadThemesButton);
+    appearanceLayout->addLayout(themeButtonLayout);
 
     auto *streamingGroup = new QGroupBox("Streaming", this);
     auto *streamingLayout = new QVBoxLayout(streamingGroup);
@@ -130,7 +204,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     auto *cancelButton = new QPushButton("Cancel", this);
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
-        AppearanceControl::SaveConfiguration();
+        // Theme selection is already live; Ok just persists it.
+        ThemeControl::SaveConfiguration();
         // Mirror dialog edits into `StreamingControl` and persist them
         // before notifying so observers querying the static accessors
         // from a slot see the committed values.
@@ -159,7 +234,9 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         close();
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
-        AppearanceControl::LoadConfiguration();
+        // Reload the on-disk theme selection so any live-applied
+        // preview is reverted before the dialog closes.
+        ThemeControl::LoadConfiguration();
         // Revert the spinbox-edited values to the persisted ones; no
         // emit needed because the on-disk values are unchanged.
         StreamingControl::LoadConfiguration();
@@ -171,16 +248,75 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     buttonLayout->addWidget(cancelButton);
     layout->addStretch(1);
     layout->addLayout(buttonLayout);
+
+    RepopulateThemeCombo();
+    RefreshThemePreview();
 }
 
 void PreferencesEditor::UpdateFields()
 {
-    mSizeSpinBox->setValue(QApplication::font().pointSize());
-    mStyleComboBox->setCurrentText(QApplication::style()->name());
-    mFontComboBox->setCurrentFont(qApp->font());
     mStreamRetentionSpinBox->setValue(static_cast<int>(StreamingControl::RetentionLines()));
     mStreamNewestFirstCheckBox->setChecked(StreamingControl::IsNewestFirst());
     mStaticNewestFirstCheckBox->setChecked(StreamingControl::IsStaticNewestFirst());
     mRestoreLastSessionCheckBox->setChecked(SessionHistoryManager::RestoreLastSessionOnLaunch());
     mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MaxEntries());
+    RepopulateThemeCombo();
+    RefreshThemePreview();
+}
+
+void PreferencesEditor::RepopulateThemeCombo()
+{
+    // Block signals so rebuilding the combo doesn't fire a spurious
+    // SetActiveSelection (which would flip the theme to the first
+    // entry mid-rebuild).
+    const QSignalBlocker blocker(mThemeComboBox);
+    mThemeComboBox->clear();
+    mThemeComboBox->addItem(QString::fromLatin1(THEME_AUTO_LABEL), QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+
+    const QList<ThemeControl::ThemeListing> themes = ThemeControl::AvailableThemes();
+    for (const ThemeControl::ThemeListing &t : themes)
+    {
+        QString label = t.name + QStringLiteral(" (") + DescribeThemeKind(t.kind) + QStringLiteral(")");
+        if (t.fromUser)
+        {
+            label += QStringLiteral(" [user]");
+        }
+        mThemeComboBox->addItem(label, t.name);
+    }
+
+    const QString selection = ThemeControl::ActiveSelection();
+    int matchIdx = 0; // Auto by default.
+    for (int i = 1; i < mThemeComboBox->count(); ++i)
+    {
+        if (mThemeComboBox->itemData(i).toString() == selection)
+        {
+            matchIdx = i;
+            break;
+        }
+    }
+    mThemeComboBox->setCurrentIndex(matchIdx);
+}
+
+void PreferencesEditor::RefreshThemePreview()
+{
+    const loglib::Theme &active = ThemeControl::Active();
+    QString preview = QStringLiteral("Active: %1 (%2)")
+                          .arg(QString::fromStdString(active.name), DescribeThemeKind(active.kind));
+    if (active.app.qtStyle.has_value() && !active.app.qtStyle->empty())
+    {
+        preview += QStringLiteral("\nStyle: ") + QString::fromStdString(*active.app.qtStyle);
+    }
+    if (active.app.fontFamily.has_value() && !active.app.fontFamily->empty())
+    {
+        preview += QStringLiteral("\nFont: ") + QString::fromStdString(*active.app.fontFamily);
+        if (active.app.fontSize.has_value())
+        {
+            preview += QStringLiteral(" ") + QString::number(*active.app.fontSize) + QStringLiteral(" pt");
+        }
+    }
+    else if (active.app.fontSize.has_value())
+    {
+        preview += QStringLiteral("\nFont size: ") + QString::number(*active.app.fontSize) + QStringLiteral(" pt");
+    }
+    mThemePreviewLabel->setText(preview);
 }
