@@ -1358,6 +1358,37 @@ TEST_CASE("IsLogLevelKey recognises canonical level aliases case-insensitively",
     CHECK_FALSE(IsLogLevelKey("level "));
 }
 
+TEST_CASE("FirstTimeColumnIndex returns the first Type::Time column or -1", "[log_configuration][time_column]")
+{
+    using Type = LogConfiguration::Type;
+
+    const LogConfiguration empty;
+    CHECK(FirstTimeColumnIndex(empty) == -1);
+
+    LogConfiguration noTime;
+    noTime.columns.push_back({.header = "msg", .type = Type::String});
+    noTime.columns.push_back({.header = "level", .type = Type::Level});
+    CHECK(FirstTimeColumnIndex(noTime) == -1);
+
+    LogConfiguration single;
+    single.columns.push_back({.header = "msg", .type = Type::String});
+    single.columns.push_back({.header = "ts", .type = Type::Time});
+    single.columns.push_back({.header = "level", .type = Type::Level});
+    CHECK(FirstTimeColumnIndex(single) == 1);
+
+    // First wins: callers rely on this "canonical column" behaviour.
+    LogConfiguration twoTimes;
+    twoTimes.columns.push_back({.header = "started_at", .type = Type::Time});
+    twoTimes.columns.push_back({.header = "msg", .type = Type::String});
+    twoTimes.columns.push_back({.header = "ended_at", .type = Type::Time});
+    CHECK(FirstTimeColumnIndex(twoTimes) == 0);
+
+    // Index 0 is a real result, not the "not found" sentinel.
+    LogConfiguration headTime;
+    headTime.columns.push_back({.header = "ts", .type = Type::Time});
+    CHECK(FirstTimeColumnIndex(headTime) == 0);
+}
+
 TEST_CASE(
     "LogConfiguration serialises Type::Level and Column::levelMapping round-trip",
     "[log_configuration][log_level][serialization]"

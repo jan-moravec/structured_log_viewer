@@ -84,6 +84,18 @@ bool IsLogLevelKey(const std::string &key)
     });
 }
 
+int FirstTimeColumnIndex(const LogConfiguration &configuration)
+{
+    for (size_t i = 0; i < configuration.columns.size(); ++i)
+    {
+        if (configuration.columns[i].type == LogConfiguration::Type::Time)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 } // namespace loglib
 
 namespace

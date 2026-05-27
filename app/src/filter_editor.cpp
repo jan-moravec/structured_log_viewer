@@ -51,6 +51,9 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     mEndDateEdit = new QDateEdit(this);
     mEndTimeEdit = new QTimeEdit(this);
 
+    mBeginUnboundedCheckBox = new QCheckBox("No begin limit", this);
+    mEndUnboundedCheckBox = new QCheckBox("No end limit", this);
+
     mStackedWidget = new QStackedWidget(this);
 
     // Picker model + proxy. `setUniformItemSizes(true)` keeps layout
@@ -134,6 +137,20 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
         mBeginTimeEdit->setMaximumTime(time);
     });
 
+    // Unbounded checkbox disables the matching date/time edits and clears
+    // any "both unbounded" warning border. OnOkClicked reads the checkbox
+    // to decide whether to emit nullopt.
+    connect(mBeginUnboundedCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        mBeginDateEdit->setEnabled(!checked);
+        mBeginTimeEdit->setEnabled(!checked);
+        ClearWarningStyles();
+    });
+    connect(mEndUnboundedCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        mEndDateEdit->setEnabled(!checked);
+        mEndTimeEdit->setEnabled(!checked);
+        ClearWarningStyles();
+    });
+
     connect(mEnumSearchEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
         mEnumValuesProxy->setFilterFixedString(text);
         ClearWarningStyles();
@@ -196,7 +213,7 @@ void FilterEditor::Load(int row, const QString &filterString, int matchType)
     mMatchTypeComboBox->setCurrentIndex(mMatchTypeComboBox->findData(QVariant(matchType)));
 }
 
-void FilterEditor::Load(int row, const qint64 begin, qint64 end)
+void FilterEditor::Load(int row, std::optional<qint64> begin, std::optional<qint64> end)
 {
     mRowComboBox->setCurrentIndex(row);
     SetBeginEnd(begin, end);
@@ -419,11 +436,13 @@ void FilterEditor::SetupLayout()
     beginLayout->addWidget(new QLabel("Begin Date and Time:", this));
     beginLayout->addWidget(mBeginDateEdit);
     beginLayout->addWidget(mBeginTimeEdit);
+    beginLayout->addWidget(mBeginUnboundedCheckBox);
 
     auto *endLayout = new QHBoxLayout;
     endLayout->addWidget(new QLabel("End Date and Time:", this));
     endLayout->addWidget(mEndDateEdit);
     endLayout->addWidget(mEndTimeEdit);
+    endLayout->addWidget(mEndUnboundedCheckBox);
 
     secondPageLayout->addLayout(beginLayout);
     secondPageLayout->addLayout(endLayout);
@@ -479,20 +498,72 @@ void FilterEditor::SetupLayout()
     mainLayout->addLayout(buttonLayout);
 }
 
-void FilterEditor::SetBeginEnd(qint64 begin, qint64 end)
+void FilterEditor::SetBeginEnd(std::optional<qint64> begin, std::optional<qint64> end)
 {
-    const QDateTime beginDateTime = ConvertToQDateTime(begin);
-    const QDateTime endDateTime = ConvertToQDateTime(end);
+    // Seed each edit with a sensible value even when its side is
+    // unbounded (the user may uncheck the checkbox and start picking):
+    // unbounded side reuses the other side's value, both-unbounded
+    // falls back to "now".
+    auto pickSeed = [](std::optional<qint64> primary, std::optional<qint64> fallback) -> QDateTime {
+        if (primary.has_value())
+        {
+            return ConvertToQDateTime(*primary);
+        }
+        if (fallback.has_value())
+        {
+            return ConvertToQDateTime(*fallback);
+        }
+        return QDateTime::currentDateTime();
+    };
+    const QDateTime beginDateTime = pickSeed(begin, end);
+    const QDateTime endDateTime = pickSeed(end, begin);
 
-    mBeginDateEdit->setDateTime(beginDateTime);
-    mBeginDateEdit->setMinimumDateTime(beginDateTime);
-    mBeginTimeEdit->setDateTime(beginDateTime);
-    mBeginTimeEdit->setMinimumDateTime(beginDateTime);
+    // Apply seed + constraint per widget. The two MUST stay paired
+    // (don't batch all setDateTime then all setMin/Max): each
+    // setDateTime fires the cross-coupling that propagates begin <-> end
+    // constraints, and reordering lets the cascade clamp to unintended
+    // values. The unbounded side must explicitly clear any stale
+    // constraint left over from `UpdateSelectedColumn` so an Edit on
+    // e.g. `(nullopt, X)` doesn't keep begin pinned to `[X, X]`.
+    enum class Side
+    {
+        Lower,
+        Upper
+    };
+    auto applySeedAndBound = [](QDateTimeEdit *edit, const QDateTime &seed, std::optional<qint64> bound, Side side) {
+        edit->setDateTime(seed);
+        if (bound.has_value())
+        {
+            if (side == Side::Lower)
+            {
+                edit->setMinimumDateTime(seed);
+            }
+            else
+            {
+                edit->setMaximumDateTime(seed);
+            }
+        }
+        else
+        {
+            if (side == Side::Lower)
+            {
+                edit->clearMinimumDateTime();
+            }
+            else
+            {
+                edit->clearMaximumDateTime();
+            }
+        }
+    };
 
-    mEndDateEdit->setDateTime(endDateTime);
-    mEndDateEdit->setMaximumDateTime(endDateTime);
-    mEndTimeEdit->setDateTime(endDateTime);
-    mEndTimeEdit->setMaximumDateTime(endDateTime);
+    applySeedAndBound(mBeginDateEdit, beginDateTime, begin, Side::Lower);
+    applySeedAndBound(mBeginTimeEdit, beginDateTime, begin, Side::Lower);
+    applySeedAndBound(mEndDateEdit, endDateTime, end, Side::Upper);
+    applySeedAndBound(mEndTimeEdit, endDateTime, end, Side::Upper);
+
+    // The toggled handler disables the matching edits as a side effect.
+    mBeginUnboundedCheckBox->setChecked(!begin.has_value());
+    mEndUnboundedCheckBox->setChecked(!end.has_value());
 }
 
 QDateTime FilterEditor::ConvertToQDateTime(qint64 timestamp)
@@ -519,12 +590,23 @@ void FilterEditor::OnOkClicked()
 
     if (column.type == LogConfiguration::Type::Time)
     {
-        emit FilterTimeStampSubmitted(
-            mFilterID,
-            index,
-            ConvertToTimeStamp(mBeginDateEdit->date(), mBeginTimeEdit->time()),
-            ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())
-        );
+        // At least one bound must stay engaged; both unbounded would
+        // match every row, so paint the checkboxes red and stop.
+        const bool beginUnbounded = mBeginUnboundedCheckBox->isChecked();
+        const bool endUnbounded = mEndUnboundedCheckBox->isChecked();
+        if (beginUnbounded && endUnbounded)
+        {
+            mBeginUnboundedCheckBox->setStyleSheet("QCheckBox { color: red; }");
+            mEndUnboundedCheckBox->setStyleSheet("QCheckBox { color: red; }");
+            return;
+        }
+        const std::optional<qint64> beginMicros =
+            beginUnbounded ? std::nullopt
+                           : std::optional<qint64>{ConvertToTimeStamp(mBeginDateEdit->date(), mBeginTimeEdit->time())};
+        const std::optional<qint64> endMicros =
+            endUnbounded ? std::nullopt
+                         : std::optional<qint64>{ConvertToTimeStamp(mEndDateEdit->date(), mEndTimeEdit->time())};
+        emit FilterTimeStampSubmitted(mFilterID, index, beginMicros, endMicros);
     }
     else if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
     {
@@ -846,4 +928,6 @@ void FilterEditor::ClearWarningStyles()
     mNumericMaxEdit->setStyleSheet(QString());
     mBoolIncludeTrue->setStyleSheet(QString());
     mBoolIncludeFalse->setStyleSheet(QString());
+    mBeginUnboundedCheckBox->setStyleSheet(QString());
+    mEndUnboundedCheckBox->setStyleSheet(QString());
 }

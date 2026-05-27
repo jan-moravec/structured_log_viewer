@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -50,6 +51,40 @@ bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs)
         return lhsString.has_value() && rhsString.has_value() && *lhsString == *rhsString;
     }
     return lhs == rhs;
+}
+
+std::optional<int64_t> AsEpochMicroseconds(const LogValue &value)
+{
+    // Slot acceptance set must stay in lockstep with
+    // `TimeRangeRowPredicate`: `TimeStamp`, `int64_t`, and `uint64_t`
+    // up to `int64_t::max`. Out-of-range `uint64_t` returns `nullopt`
+    // rather than wrapping.
+    return std::visit(
+        [](const auto &alt) -> std::optional<int64_t> {
+            using T = std::decay_t<decltype(alt)>;
+            if constexpr (std::is_same_v<T, TimeStamp>)
+            {
+                return alt.time_since_epoch().count();
+            }
+            else if constexpr (std::is_same_v<T, int64_t>)
+            {
+                return alt;
+            }
+            else if constexpr (std::is_same_v<T, uint64_t>)
+            {
+                if (alt <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+                {
+                    return static_cast<int64_t>(alt);
+                }
+                return std::nullopt;
+            }
+            else
+            {
+                return std::nullopt;
+            }
+        },
+        value
+    );
 }
 
 namespace

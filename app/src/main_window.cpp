@@ -359,7 +359,9 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     switch (filter.type)
     {
     case LogFilter::Type::Time:
-        if (!filter.filterBegin.has_value() || !filter.filterEnd.has_value())
+        // At least one bound must be set; `nullopt` on the other side is
+        // fed to the predicate as INT64_MIN / INT64_MAX at construction.
+        if (!filter.filterBegin.has_value() && !filter.filterEnd.has_value())
         {
             return FilterValidationFailure{
                 .reason = FilterValidationReason::MissingTimeRange, .row = filter.row, .columnHeader = column.header
@@ -487,6 +489,12 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
         this,
         &MainWindow::ShowHeaderContextMenu
     );
+
+    // Row-level context menu: inclusive time-range filter pinned to the
+    // clicked row's timestamp. Installed on the table view itself, so
+    // `pos` arrives in viewport coords (see `ShowRowContextMenu`).
+    mTableView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
     // Catch every column move (header drag and implicit moves like
     // mid-stream timestamp bubbling) so the runtime filter map and
     // proxy rules stay aligned with the source layout.
@@ -2022,12 +2030,13 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     ui->actionSaveConfiguration->setEnabled(enabled);
     ui->actionSaveSession->setEnabled(enabled);
     ui->actionPreferences->setEnabled(enabled);
-    // Reorder + right-click are gated mid-stream because
-    // `LogModel::MoveColumn` rotates `columns` while the streaming
-    // pipeline is busy mutating it through `AppendKeys`; a drag
-    // between batches would scramble the proxy chain's column-keyed
-    // state. The `View` menu stays reachable (only flips the
-    // `visible` flag).
+    // Header reorder + right-click are gated mid-stream because
+    // `LogModel::MoveColumn` would race with `AppendKeys` mutating
+    // `columns`. The View menu stays reachable (only flips `visible`).
+    //
+    // The row right-click menu is NOT gated: its only effect is
+    // `AddLogFilter`, which doesn't race with the streaming pipeline,
+    // and "narrow to newer logs" is a useful live-tail workflow.
     if (QHeaderView *header = mTableView->horizontalHeader(); header != nullptr)
     {
         header->setSectionsMovable(enabled);
@@ -3218,7 +3227,9 @@ void MainWindow::AddFilter(
     {
         if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
         {
-            if (!resolvedFilter->filterBegin.has_value() || !resolvedFilter->filterEnd.has_value())
+            // At least one bound must be set; the other side may be
+            // `nullopt` (shown as "No begin/end limit" in the editor).
+            if (!resolvedFilter->filterBegin.has_value() && !resolvedFilter->filterEnd.has_value())
             {
                 statusBar()->showMessage(
                     QString("Filter '%1' was dropped because its time range is missing").arg(filterId),
@@ -3228,11 +3239,15 @@ void MainWindow::AddFilter(
                 delete filterEditor;
                 return;
             }
-            filterEditor->Load(
-                resolvedFilter->row,
-                static_cast<qint64>(*resolvedFilter->filterBegin),
-                static_cast<qint64>(*resolvedFilter->filterEnd)
-            );
+            const std::optional<qint64> begin =
+                resolvedFilter->filterBegin.has_value()
+                    ? std::optional<qint64>{static_cast<qint64>(*resolvedFilter->filterBegin)}
+                    : std::nullopt;
+            const std::optional<qint64> end =
+                resolvedFilter->filterEnd.has_value()
+                    ? std::optional<qint64>{static_cast<qint64>(*resolvedFilter->filterEnd)}
+                    : std::nullopt;
+            filterEditor->Load(resolvedFilter->row, begin, end);
         }
         else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration)
         {
@@ -3381,15 +3396,27 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     AddLogFilter(filterID, filter);
 }
 
-void MainWindow::FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp)
+void MainWindow::FilterTimeStampSubmitted(
+    const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
+)
 {
-    // Reject an inverted range up front; the predicate would
-    // otherwise hide every row silently. Mirrors the regex probe
-    // in `FilterSubmitted`.
-    if (beginTimeStamp > endTimeStamp)
+    // `nullopt` means "unbounded" on that side. Both-nullopt would
+    // match every row and is rejected up front; the predicate
+    // substitutes INT64 sentinels for the open side at construction.
+    if (!beginTimeStamp.has_value() && !endTimeStamp.has_value())
     {
         statusBar()->showMessage(
-            QString("Time-range filter rejected: begin (%1) is after end (%2)").arg(beginTimeStamp).arg(endTimeStamp),
+            QString("Time-range filter rejected: at least one bound (begin or end) must be set"),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        ClearFilter(filterID);
+        return;
+    }
+    // Inversion only matters when both sides are bounded.
+    if (beginTimeStamp.has_value() && endTimeStamp.has_value() && *beginTimeStamp > *endTimeStamp)
+    {
+        statusBar()->showMessage(
+            QString("Time-range filter rejected: begin (%1) is after end (%2)").arg(*beginTimeStamp).arg(*endTimeStamp),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         ClearFilter(filterID);
@@ -3504,11 +3531,18 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
     switch (filter.type)
     {
     case loglib::LogConfiguration::LogFilter::Type::Time:
-        Q_ASSERT(filter.filterBegin.has_value() && filter.filterEnd.has_value());
-        return QString::fromStdString(
-            loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) + " - " +
-            loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd)
-        );
+    {
+        // `nullopt` renders as "any" rather than formatting the INT64
+        // sentinels (which produced absurd 294247 AD / 292277 BC dates).
+        // Validation rejects both-nullopt upstream, but render it as
+        // "any - any" rather than asserting so a hand-edited config
+        // surfaces visibly instead of crashing in Debug.
+        const std::string beginStr =
+            filter.filterBegin.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterBegin) : "any";
+        const std::string endStr =
+            filter.filterEnd.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd) : "any";
+        return QString::fromStdString(beginStr + " - " + endStr);
+    }
     case loglib::LogConfiguration::LogFilter::Type::Enumeration:
     {
         Q_ASSERT(!filter.filterValues.empty());
@@ -3841,14 +3875,15 @@ void MainWindow::UpdateFilters()
         switch (filter.type)
         {
         case LogFilterType::Time:
-            // `FilterTimeStampSubmitted` populates both bounds before the
-            // filter ever reaches `mFilters`, and the switch case pins
-            // `type == Time`, so the optionals are engaged here.
+            // `nullopt` = unbounded; `value_or` feeds INT64 sentinels so
+            // the per-row visitor stays a simple `>=` / `<=` pair while
+            // the title and FilterEditor keep `nullopt` as canonical.
+            // Validation guarantees at least one side is bounded.
             rules.emplace_back(
                 std::in_place_type<loglib::TimeRangeRowPredicate>,
                 column,
-                *filter.filterBegin, // NOLINT(bugprone-unchecked-optional-access)
-                *filter.filterEnd    // NOLINT(bugprone-unchecked-optional-access)
+                filter.filterBegin.value_or(std::numeric_limits<int64_t>::min()),
+                filter.filterEnd.value_or(std::numeric_limits<int64_t>::max())
             );
             break;
         case LogFilterType::Enumeration:
@@ -4331,6 +4366,103 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     // hatch when *every* column is hidden, since no header section
     // is left to right-click).
     return result;
+}
+
+void MainWindow::ShowRowContextMenu(const QPoint &pos)
+{
+    if (mTableView == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    {
+        return;
+    }
+    const QModelIndex proxyIndex = mTableView->indexAt(pos);
+    if (!proxyIndex.isValid())
+    {
+        return;
+    }
+    const int sourceRow = MapProxyIndexToSourceRow(proxyIndex, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        return;
+    }
+    QMenu *menu = BuildRowContextMenu(sourceRow, mTableView);
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    // `customContextMenuRequested` from a `QAbstractItemView` delivers
+    // `pos` in viewport coords; map via `viewport()` so the popup lands
+    // under the cursor.
+    menu->popup(mTableView->viewport()->mapToGlobal(pos));
+}
+
+QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
+{
+    if (mModel == nullptr || mModel->rowCount() <= 0 || sourceRow < 0 ||
+        static_cast<size_t>(sourceRow) >= static_cast<size_t>(mModel->rowCount()))
+    {
+        return nullptr;
+    }
+
+    // Pin to the first time column (shared with the Record Details
+    // summary via `FirstTimeColumnIndex`).
+    const auto &config = mModel->Configuration();
+    const auto &columns = config.columns;
+    const int timeCol = loglib::FirstTimeColumnIndex(config);
+    if (timeCol < 0)
+    {
+        return nullptr;
+    }
+
+    // `nullopt` for `monostate` and non-time-shaped slots: skip the
+    // menu rather than advertise a no-op action.
+    const std::optional<int64_t> micros = loglib::AsEpochMicroseconds(
+        mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
+    );
+    if (!micros.has_value())
+    {
+        return nullptr;
+    }
+
+    auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+
+    // Capture the stable column keys (not the index) so the action
+    // still targets the right column if a streaming reorder fires
+    // between menu build and click.
+    const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
+    // `ColumnMenuLabel` appends `[key]` to disambiguate duplicate
+    // headers, matching `BuildHeaderContextMenu`.
+    const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
+    const qint64 boundary = *micros;
+
+    // Each action re-resolves the column by its captured keys at
+    // trigger time, then dispatches a fresh-uuid time filter. Only
+    // which side carries the bound varies; the open side uses
+    // `nullopt` so the title shows "any" and the editor round-trips
+    // it faithfully.
+    //
+    // `timeKeys` is captured by reference here (the local outlives
+    // every synchronous call below), then copied into the connect
+    // lambda which is invoked asynchronously.
+    auto addRangeAction = [this, menu, &timeKeys, boundary](
+                              const QString &label, std::optional<qint64> begin, std::optional<qint64> end
+                          ) {
+        const QAction *action = menu->addAction(label);
+        // NOLINTNEXTLINE(bugprone-exception-escape)
+        connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
+            const int col = FindColumnIndexByKeys(timeKeys);
+            if (col < 0)
+            {
+                return;
+            }
+            FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, begin, end);
+        });
+    };
+
+    addRangeAction(tr("Show only newer logs (%1)").arg(colLabel), boundary, std::nullopt);
+    addRangeAction(tr("Show only older logs (%1)").arg(colLabel), std::nullopt, boundary);
+
+    return menu;
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)

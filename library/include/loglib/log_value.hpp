@@ -39,4 +39,9 @@ LogValue ToOwnedLogValue(const LogValue &value);
 /// Treats `string_view` and `string` alternatives as equal when bytes match.
 bool LogValueEquivalent(const LogValue &lhs, const LogValue &rhs);
 
+/// Epoch microseconds for time-shaped slots (`TimeStamp`, `int64_t`, or
+/// `uint64_t` <= `int64_t::max`); `nullopt` otherwise. Matches the slot
+/// acceptance set of `TimeRangeRowPredicate`.
+[[nodiscard]] std::optional<int64_t> AsEpochMicroseconds(const LogValue &value);
+
 } // namespace loglib

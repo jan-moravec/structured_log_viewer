@@ -263,6 +263,20 @@ public:
     /// @p logicalColumn is out of range.
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
+    /// Build the row right-click menu for source-model row @p sourceRow:
+    /// inclusive "newer than" / "older than" actions pinned to the first
+    /// `Type::Time` column, using the row's timestamp as the boundary.
+    /// Returns null when there is no time column, the row's time slot is
+    /// `std::monostate`, the model is empty, or @p sourceRow is out of
+    /// range. Split out of `ShowRowContextMenu` so tests can inspect the
+    /// actions without spawning a popup.
+    ///
+    /// Ownership: parented to @p parent (or `mTableView` if null). Tests
+    /// that take the menu without showing it should `deleteLater()` via
+    /// a `QScopeGuard`; `ShowRowContextMenu` instead sets
+    /// `Qt::WA_DeleteOnClose` on the live popup.
+    [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
+
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
     {
@@ -465,7 +479,12 @@ private slots:
     /// so the mirror + rule rebuild only run once.
     void ClearFilter(const QString &filterID, bool deferSync = false);
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
-    void FilterTimeStampSubmitted(const QString &filterID, int row, qint64 beginTimeStamp, qint64 endTimeStamp);
+    /// Slot for `FilterEditor::FilterTimeStampSubmitted`. `std::nullopt`
+    /// on a bound leaves that side unbounded (the predicate substitutes
+    /// INT64 sentinels at construction); both-nullopt is rejected.
+    void FilterTimeStampSubmitted(
+        const QString &filterID, int row, std::optional<qint64> beginTimeStamp, std::optional<qint64> endTimeStamp
+    );
     void FilterEnumSubmitted(const QString &filterID, int row, const QStringList &selectedValues);
     /// Slot for `FilterEditor::FilterNumericRangeSubmitted`. Either bound
     /// may be `std::nullopt` to leave that side unbounded.
@@ -509,6 +528,11 @@ private slots:
 
     /// Build and show the header context menu at @p pos.
     void ShowHeaderContextMenu(const QPoint &pos);
+
+    /// Build and show the row right-click menu at @p pos (viewport
+    /// coords). Adds an inclusive time-range filter pinned to the first
+    /// `Type::Time` column, boundary = clicked row's timestamp.
+    void ShowRowContextMenu(const QPoint &pos);
 
     /// Rebuild the `View` menu on each `aboutToShow`. Each column
     /// gets a checkable action that toggles `Column::visible`.

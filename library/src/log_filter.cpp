@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -146,6 +147,9 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
         return false;
     }
     const LogValue value = table.GetValue(row, mColumnIndex);
+    // Slot acceptance set must stay in lockstep with
+    // `loglib::AsEpochMicroseconds`: `TimeStamp`, `int64_t`,
+    // in-range `uint64_t`.
     return std::visit(
         [this](const auto &alt) -> bool {
             using T = std::decay_t<decltype(alt)>;
@@ -160,6 +164,13 @@ bool TimeRangeRowPredicate::MatchesRow(const LogTable &table, size_t row) const
             }
             else if constexpr (std::is_same_v<T, uint64_t>)
             {
+                // Reject (rather than wrap) `uint64_t` past
+                // `int64_t::max` so this stays in sync with
+                // `AsEpochMicroseconds`.
+                if (alt > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+                {
+                    return false;
+                }
                 // Clamp negative bounds to 0 so e.g. `[-1, 100]`
                 // still matches positive values.
                 const uint64_t lo = mBegin < 0 ? 0U : static_cast<uint64_t>(mBegin);
