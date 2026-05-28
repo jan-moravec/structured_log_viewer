@@ -2,10 +2,10 @@
     "name": "Light",
     "kind": "light",
     "levels": {
-        "Trace": { "foreground": "#94A3B8" },
-        "Debug": { "foreground": "#64748B" },
+        "Trace": { "foreground": "#94A3B8", "background": "#F8FAFC" },
+        "Debug": { "foreground": "#64748B", "background": "#EEF2F7" },
         "Info":  {},
-        "Warn":  { "foreground": "#D97706" },
+        "Warn":  { "foreground": "#D97706", "background": "#FEF8E0" },
         "Error": { "foreground": "#B91C1C", "background": "#FECACA" },
         "Fatal": { "foreground": "#7F1D1D", "background": "#FCA5A5", "bold": true }
     },

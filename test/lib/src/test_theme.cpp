@@ -12,9 +12,9 @@ TEST_CASE("Theme JSON round-trip preserves all fields", "[Theme]")
     Theme original;
     original.name = "Dark";
     original.kind = ThemeKind::Dark;
-    original.levels["Trace"] = LevelStyle{.foreground = "#64748B"};
+    original.levels["Trace"] = LevelStyle{.foreground = "#64748B", .background = "#1F2228"};
     original.levels["Info"] = LevelStyle{};
-    original.levels["Warn"] = LevelStyle{.foreground = "#FCD34D"};
+    original.levels["Warn"] = LevelStyle{.foreground = "#FCD34D", .background = "#2A2418"};
     original.levels["Error"] = LevelStyle{.foreground = "#FCA5A5", .background = "#4C1D1D"};
     original.levels["Fatal"] = LevelStyle{
         .foreground = "#FECACA",
@@ -36,6 +36,8 @@ TEST_CASE("Theme JSON round-trip preserves all fields", "[Theme]")
     CHECK(reloaded.kind == original.kind);
     REQUIRE(reloaded.levels.size() == original.levels.size());
     CHECK(reloaded.levels.at("Trace").foreground == original.levels.at("Trace").foreground);
+    CHECK(reloaded.levels.at("Trace").background == original.levels.at("Trace").background);
+    CHECK(reloaded.levels.at("Warn").background == original.levels.at("Warn").background);
     CHECK(reloaded.levels.at("Error").background == original.levels.at("Error").background);
     CHECK(reloaded.levels.at("Fatal").bold == true);
     CHECK(reloaded.table.background == original.table.background);
