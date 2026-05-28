@@ -1,5 +1,7 @@
 #include "filter_editor.hpp"
 
+#include "theme_control.hpp"
+
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
@@ -36,26 +38,17 @@ constexpr int PAGE_ENUM = 2;
 constexpr int PAGE_NUMERIC = 3;
 constexpr int PAGE_BOOLEAN = 4;
 
-/// Brightness threshold below which a colour is considered "dark"
-/// for the purpose of picking a contrast-appropriate warning
-/// tone. Matches the heuristic used in `ThemeControl::IsDarkPalette`.
-constexpr int MID_GRAY_BRIGHTNESS = 128;
-
 /// True iff @p widget paints onto a dark surface. Sampled from
 /// `QPalette::Base` (the role used by text-input backgrounds and
 /// list rows), which is the surface our validation feedback
-/// actually contrasts against -- not `QPalette::Window`.
+/// actually contrasts against -- not `QPalette::Window`. The
+/// dark / light threshold itself lives in `ThemeControl::IsDarkColor`
+/// so the auto theme switch and the validation feedback share the
+/// same line.
 [[nodiscard]] bool IsDarkBase(const QWidget *widget)
 {
     const QPalette palette = (widget != nullptr) ? widget->palette() : qApp->palette();
-    const QColor base = palette.color(QPalette::Base);
-    constexpr int RED_WEIGHT = 299;
-    constexpr int GREEN_WEIGHT = 587;
-    constexpr int BLUE_WEIGHT = 114;
-    constexpr int WEIGHT_DENOMINATOR = 1000;
-    const int brightness = ((base.red() * RED_WEIGHT) + (base.green() * GREEN_WEIGHT) + (base.blue() * BLUE_WEIGHT)) /
-                           WEIGHT_DENOMINATOR;
-    return brightness < MID_GRAY_BRIGHTNESS;
+    return ThemeControl::IsDarkColor(palette.color(QPalette::Base));
 }
 
 /// Foreground / border warning colour tuned to remain legible on

@@ -42,16 +42,28 @@ constexpr char BUILTIN_DARK_NAME[] = "Dark";
 constexpr char BUILTIN_LIGHT_PATH[] = ":/themes/light.json";
 constexpr char BUILTIN_DARK_PATH[] = ":/themes/dark.json";
 
-/// Same heuristic AppearanceControl used: a light system palette has
-/// a Window background brighter than this. Kept as a tunable so a
-/// future contrast policy can adjust without changing call sites.
-constexpr int K_MID_GRAY_BRIGHTNESS = 128;
-
 bool IsDarkPalette()
 {
-    const QColor bgColor = qApp->palette().color(QPalette::Window);
-    const int brightness = ((bgColor.red() * 299) + (bgColor.green() * 587) + (bgColor.blue() * 114)) / 1000;
-    return brightness < K_MID_GRAY_BRIGHTNESS;
+    return ThemeControl::IsDarkColor(qApp->palette().color(QPalette::Window));
+}
+
+/// Linear `lerp(@p fg, @p bg, @p t)` in sRGB. Used by `ApplyPalette`
+/// to dim the Disabled colour group's text-bearing roles toward
+/// their surrounding surface so disabled chrome reads as visibly
+/// dimmer without disappearing. Linear (rather than perceptual /
+/// HSL) interpolation is good enough at the 0.40-0.55 mix factors
+/// the call sites use; switching to HSL would not produce a
+/// perceptibly better result for "obviously disabled" feedback
+/// and would cost a colour-space round-trip per role.
+QColor BlendTowards(const QColor &fg, const QColor &bg, float t)
+{
+    const float clamped = std::clamp(t, 0.0F, 1.0F);
+    return QColor::fromRgbF(
+        (fg.redF() * (1.0F - clamped)) + (bg.redF() * clamped),
+        (fg.greenF() * (1.0F - clamped)) + (bg.greenF() * clamped),
+        (fg.blueF() * (1.0F - clamped)) + (bg.blueF() * clamped),
+        1.0F
+    );
 }
 
 size_t LevelIndex(loglib::LogLevel level) noexcept
@@ -180,33 +192,14 @@ QBrush ThemeControl::BackgroundFor(loglib::LogLevel level) noexcept
     return Instance().mBackground[idx];
 }
 
-QFont ThemeControl::FontFor(loglib::LogLevel level, const QFont &base) noexcept
+QFont ThemeControl::FontFor(loglib::LogLevel level) noexcept
 {
     const size_t idx = LevelIndex(level);
-    if (idx >= Instance().mBold.size())
+    if (idx >= Instance().mFonts.size())
     {
-        return base;
+        return qApp->font();
     }
-    QFont font = base;
-    if (Instance().mBold[idx])
-    {
-        font.setBold(true);
-    }
-    if (Instance().mItalic[idx])
-    {
-        font.setItalic(true);
-    }
-    return font;
-}
-
-bool ThemeControl::HasStyle(loglib::LogLevel level) noexcept
-{
-    const size_t idx = LevelIndex(level);
-    if (idx >= Instance().mHasAnyStyle.size())
-    {
-        return false;
-    }
-    return Instance().mHasAnyStyle[idx];
+    return Instance().mFonts[idx];
 }
 
 bool ThemeControl::HasFontStyle(loglib::LogLevel level) noexcept
@@ -276,6 +269,24 @@ bool ThemeControl::RevealUserThemesDir()
     return QDesktopServices::openUrl(QUrl::fromLocalFile(dir.absolutePath()));
 }
 
+bool ThemeControl::IsDarkColor(const QColor &color) noexcept
+{
+    // ITU-R BT.601 luma weights (`0.299*R + 0.587*G + 0.114*B`)
+    // applied to the 8-bit channels and compared against a
+    // mid-gray threshold. Kept as a single tunable so a future
+    // contrast policy can adjust without chasing duplicate
+    // constants in `filter_editor.cpp` etc.
+    constexpr int RED_WEIGHT = 299;
+    constexpr int GREEN_WEIGHT = 587;
+    constexpr int BLUE_WEIGHT = 114;
+    constexpr int WEIGHT_DENOMINATOR = 1000;
+    constexpr int MID_GRAY_BRIGHTNESS = 128;
+    const int brightness =
+        ((color.red() * RED_WEIGHT) + (color.green() * GREEN_WEIGHT) + (color.blue() * BLUE_WEIGHT)) /
+        WEIGHT_DENOMINATOR;
+    return brightness < MID_GRAY_BRIGHTNESS;
+}
+
 QString ThemeControl::SanitiseThemeName(const QString &name)
 {
     if (name.isEmpty())
@@ -313,6 +324,15 @@ QString ThemeControl::SanitiseThemeName(const QString &name)
     if (IsReservedWin32DeviceName(name))
     {
         throw std::runtime_error("Theme name matches a reserved Win32 device name");
+    }
+    // Win32 silently strips a trailing dot or space when creating a
+    // file. Rejecting those names up front keeps the saved on-disk
+    // basename byte-equal to the input, so a user theme called
+    // "Dark." can't surreptitiously land at "Dark.json" and shadow
+    // the built-in "Dark" entry on the next discovery scan.
+    if (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char(' ')))
+    {
+        throw std::runtime_error("Theme name must not end with a dot or space");
     }
     return name;
 }
@@ -356,6 +376,17 @@ void ThemeControl::SaveUserTheme(const QString &name, loglib::Theme theme)
             "Failed to commit user theme file: " + path.toStdString() + " (" + file.errorString().toStdString() + ")"
         );
     }
+
+    // Refresh the in-memory index so the just-saved theme is
+    // immediately discoverable via `AvailableThemes` / `Load` /
+    // `SetActiveSelection`. Without this, callers had to follow up
+    // with a manual `ReloadAll` -- a footgun that's now centralised
+    // here. The active theme is unaffected: the resolved name is
+    // unchanged, the byte-equal fast-path in `ResolveAndApplyActive`
+    // would skip the apply anyway, and we deliberately do NOT
+    // re-resolve here so a `SaveUserTheme` of an inactive theme
+    // doesn't surprise-emit `themeChanged`.
+    Instance().DiscoverThemes();
 }
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -367,6 +398,22 @@ bool ThemeControl::IsColorSchemeForcedForTest() noexcept
 
 void ThemeControl::DoLoadConfiguration()
 {
+    // One-shot capture of the process-default style + font BEFORE
+    // any `ApplyTheme` mutates them. Restored later when the active
+    // theme has no `app.qtStyle` / `app.font*` overrides, so a
+    // switch from a font-defining theme back to one that omits the
+    // field reverts to the startup defaults instead of inheriting
+    // the previous theme's font.
+    if (!mStartupCaptured)
+    {
+        if (qApp->style() != nullptr)
+        {
+            mStartupStyleName = qApp->style()->name();
+        }
+        mStartupFont = qApp->font();
+        mStartupCaptured = true;
+    }
+
     DiscoverThemes();
 
     QSettings settings;
@@ -414,50 +461,73 @@ void ThemeControl::DiscoverThemes()
 {
     mIndex.clear();
 
-    // Built-ins first, so a same-named user file overrides them.
-    constexpr std::array<const char *, 2> BUILTIN_PATHS = {BUILTIN_LIGHT_PATH, BUILTIN_DARK_PATH};
-    for (const char *path : BUILTIN_PATHS)
-    {
-        if (auto theme = ParseFileToTheme(QString::fromLatin1(path)); theme.has_value())
-        {
-            const QString name = QString::fromStdString(theme->name);
-            if (!name.isEmpty())
-            {
-                mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = false};
-            }
-        }
-    }
-
-    // User dir entries shadow built-ins by name.
-    const QDir userDir = UserThemesDir();
-    const QStringList userFiles = userDir.entryList(QStringList{QStringLiteral("*.json")}, QDir::Files);
-    for (const QString &file : userFiles)
-    {
-        const QString fullPath = userDir.filePath(file);
-        auto theme = ParseFileToTheme(fullPath);
+    // Single ingest helper shared between the built-in resource
+    // pass and the user-dir pass. When the JSON's `name` field is
+    // empty we fall back to the file basename and emit a
+    // `qWarning`, regardless of source: a corrupted built-in
+    // resource and a hand-edited user file have the same failure
+    // mode, and the basename fallback at least keeps the entry
+    // discoverable instead of silently dropping it.
+    //
+    // Within the user-dir pass we also warn when a second file
+    // lands on an already-taken `name` so the silent overwrite
+    // doesn't go unnoticed; we then skip the overwrite so the
+    // first file (alphabetical order, see below) wins
+    // deterministically.
+    auto ingest = [&](const QString &path, bool fromUser) {
+        auto theme = ParseFileToTheme(path);
         if (!theme.has_value())
         {
-            continue;
+            return;
         }
-        // If a user file omits or empties `name`, fall back to the
-        // file basename. That keeps the index keyed by something
-        // stable and matches the listing the user sees in the
-        // file manager. Warn so users notice when a missing `name`
-        // ends up shadowing a built-in (e.g. `Light.json` with an
-        // empty `name` would silently override the built-in Light).
         QString name = QString::fromStdString(theme->name);
         if (name.isEmpty())
         {
-            name = QFileInfo(file).completeBaseName();
+            name = QFileInfo(path).completeBaseName();
             qWarning(
-                "User theme %s has no `name` field; using file basename %s. Add a "
+                "%s theme %s has no `name` field; using file basename %s. Add a "
                 "`name` entry to suppress this warning.",
-                qUtf8Printable(file),
+                fromUser ? "User" : "Built-in",
+                qUtf8Printable(path),
                 qUtf8Printable(name)
             );
             theme->name = name.toStdString();
         }
-        mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = true};
+        if (fromUser)
+        {
+            if (const auto existing = mIndex.find(name); existing != mIndex.end() && existing->second.fromUser)
+            {
+                qWarning(
+                    "User theme name %s is already taken by a previously-loaded file; the "
+                    "second file %s is ignored. Rename one of the two `name` entries to "
+                    "make both discoverable.",
+                    qUtf8Printable(name),
+                    qUtf8Printable(path)
+                );
+                return;
+            }
+        }
+        mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = fromUser};
+    };
+
+    // Built-ins first, so a same-named user file overrides them.
+    constexpr std::array<const char *, 2> BUILTIN_PATHS = {BUILTIN_LIGHT_PATH, BUILTIN_DARK_PATH};
+    for (const char *path : BUILTIN_PATHS)
+    {
+        ingest(QString::fromLatin1(path), /*fromUser=*/false);
+    }
+
+    // User dir entries shadow built-ins by name. Sort the listing
+    // by basename first so the "first file in alphabetical order
+    // wins" tie-breaker for `name` collisions is deterministic
+    // across platforms (`QDir::entryList` order is filesystem-
+    // dependent without an explicit sort flag).
+    const QDir userDir = UserThemesDir();
+    const QStringList userFiles =
+        userDir.entryList(QStringList{QStringLiteral("*.json")}, QDir::Files, QDir::Name);
+    for (const QString &file : userFiles)
+    {
+        ingest(userDir.filePath(file), /*fromUser=*/true);
     }
 }
 
@@ -473,10 +543,24 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
             chosen = it->second.theme;
             found = true;
         }
+        else
+        {
+            // Stale selection (theme JSON deleted, settings copied
+            // from another machine, ...): coerce in-memory state
+            // back to Auto so callers asking `ActiveSelection()`
+            // see the same value they just saw resolve. We do NOT
+            // call `SaveConfiguration` here -- only user-driven
+            // saves should write `QSettings`, so the on-disk value
+            // stays as-is until the next Ok in the Preferences
+            // dialog. This matches what `RepopulateThemeCombo`
+            // used to do at the UI layer (now redundant).
+            qInfo("Theme selection %s no longer exists; reverting to Auto.", qUtf8Printable(mActiveSelection));
+            mActiveSelection.clear();
+        }
     }
     if (!found)
     {
-        // Auto (or selection is stale / unknown): pick by palette.
+        // Auto (or selection was just coerced above): pick by palette.
         const QString desiredName =
             IsDarkPalette() ? QString::fromLatin1(BUILTIN_DARK_NAME) : QString::fromLatin1(BUILTIN_LIGHT_NAME);
         if (const auto it = mIndex.find(desiredName); it != mIndex.end())
@@ -566,23 +650,34 @@ void ThemeControl::ApplyTheme(const loglib::Theme &theme)
     }
     mApplyingTheme = true;
 
-    BuildStyleCache(theme);
-
     // Order matters: set the style FIRST so the standard palette
     // we then mutate is the new style's standard palette, not the
     // previous style's. Without this, switching from windows11 ->
     // fusion on a dark-mode Windows system would briefly leave the
     // dark windows11 palette in place even after we wrote the
     // theme-derived light palette over it.
-    if (theme.app.qtStyle.has_value())
+    //
+    // When the active theme omits `app.qtStyle` (or names a style
+    // `QStyleFactory::create` can't resolve), fall back to the
+    // startup snapshot taken in `DoLoadConfiguration`. Without
+    // this, switching from a theme that pinned `qtStyle: "fusion"`
+    // back to one that omits it would leave Fusion in place
+    // forever, contradicting the docstring on `AppStyle::qtStyle`.
+    QString targetStyleName;
+    if (theme.app.qtStyle.has_value() && !theme.app.qtStyle->empty())
     {
-        const QString styleName = QString::fromStdString(*theme.app.qtStyle);
-        if (!styleName.isEmpty() && qApp->style()->name().compare(styleName, Qt::CaseInsensitive) != 0)
+        targetStyleName = QString::fromStdString(*theme.app.qtStyle);
+    }
+    else
+    {
+        targetStyleName = mStartupStyleName;
+    }
+    if (!targetStyleName.isEmpty() && qApp->style() != nullptr &&
+        qApp->style()->name().compare(targetStyleName, Qt::CaseInsensitive) != 0)
+    {
+        if (QStyle *newStyle = QStyleFactory::create(targetStyleName); newStyle != nullptr)
         {
-            if (QStyle *newStyle = QStyleFactory::create(styleName); newStyle != nullptr)
-            {
-                qApp->setStyle(newStyle);
-            }
+            qApp->setStyle(newStyle);
         }
     }
 
@@ -601,19 +696,39 @@ void ThemeControl::ApplyTheme(const loglib::Theme &theme)
 
     ApplyPalette(theme);
 
-    if (theme.app.fontFamily.has_value() || theme.app.fontSize.has_value())
+    // Font: same contract as `qtStyle` -- when the theme omits the
+    // override, restore the startup font instead of letting the
+    // previous theme's font carry through. The `app.fontFamily` /
+    // `app.fontSize` paths overlay onto the startup font so a
+    // theme that customises only the size keeps the startup family.
+    const bool hasFamily = theme.app.fontFamily.has_value() && !theme.app.fontFamily->empty();
+    const bool hasSize = theme.app.fontSize.has_value() && *theme.app.fontSize > 0;
+    if (hasFamily || hasSize)
     {
-        QFont font = qApp->font();
-        if (theme.app.fontFamily.has_value() && !theme.app.fontFamily->empty())
+        QFont font = mStartupFont;
+        if (hasFamily)
         {
             font.setFamily(QString::fromStdString(*theme.app.fontFamily));
         }
-        if (theme.app.fontSize.has_value() && *theme.app.fontSize > 0)
+        if (hasSize)
         {
             font.setPointSize(*theme.app.fontSize);
         }
-        qApp->setFont(font);
+        if (qApp->font() != font)
+        {
+            qApp->setFont(font);
+        }
     }
+    else if (qApp->font() != mStartupFont)
+    {
+        qApp->setFont(mStartupFont);
+    }
+
+    // Build the brush + font cache LAST so it sees the
+    // freshly-pushed `qApp->font()`. `LogModel::data` reads from
+    // these arrays per cell and they must agree with the
+    // application font in effect at paint time.
+    BuildStyleCache(theme);
 
     mApplyingTheme = false;
 }
@@ -751,33 +866,40 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
     // text-bearing roles here with values blended toward the
     // surrounding surface so disabled chrome dims visibly without
     // disappearing.
-    auto blend = [](const QColor &fg, const QColor &bg, float towardsBg) {
-        const float t = std::clamp(towardsBg, 0.0F, 1.0F);
-        return QColor::fromRgbF(
-            (fg.redF() * (1.0F - t)) + (bg.redF() * t),
-            (fg.greenF() * (1.0F - t)) + (bg.greenF() * t),
-            (fg.blueF() * (1.0F - t)) + (bg.blueF() * t),
-            1.0F
-        );
-    };
-    // 0.55 leaves enough contrast to read but lands comfortably in
-    // "obviously disabled" territory across both Light and Dark.
+    //
+    // We hand-roll the blend instead of reaching for
+    // `QPalette::setColorGroup(QPalette::Disabled, ...)`: that
+    // overload demands a positional `QBrush` per role (17 of
+    // them, including roles we want to leave at full strength),
+    // which would produce a less readable call site than the
+    // small loop below. `QColor::fromRgbF` linear interpolation
+    // is good enough at the 0.55 / 0.40 mix factors we use --
+    // perceptual (HSL / Lab) interpolation isn't worth the
+    // extra cost for "obviously disabled" feedback.
     constexpr float DISABLED_TEXT_MIX = 0.55F;
     constexpr float DISABLED_HIGHLIGHT_MIX = 0.40F;
-    const QColor disabledText = blend(text, base, DISABLED_TEXT_MIX);
-    const QColor disabledWindowText = blend(windowText, window, DISABLED_TEXT_MIX);
-    const QColor disabledButtonText = blend(buttonText, button, DISABLED_TEXT_MIX);
-    const QColor disabledPlaceholder = blend(placeholder, base, DISABLED_TEXT_MIX);
-    const QColor disabledHighlight = blend(highlight, window, DISABLED_HIGHLIGHT_MIX);
-    const QColor disabledHighlightedText = blend(highlightedText, disabledHighlight, DISABLED_TEXT_MIX);
+    const QColor disabledHighlight = BlendTowards(highlight, window, DISABLED_HIGHLIGHT_MIX);
 
-    palette.setColor(QPalette::Disabled, QPalette::Text, disabledText);
-    palette.setColor(QPalette::Disabled, QPalette::WindowText, disabledWindowText);
-    palette.setColor(QPalette::Disabled, QPalette::ButtonText, disabledButtonText);
-    palette.setColor(QPalette::Disabled, QPalette::ToolTipText, disabledText);
-    palette.setColor(QPalette::Disabled, QPalette::PlaceholderText, disabledPlaceholder);
-    palette.setColor(QPalette::Disabled, QPalette::Highlight, disabledHighlight);
-    palette.setColor(QPalette::Disabled, QPalette::HighlightedText, disabledHighlightedText);
+    struct DisabledOverride
+    {
+        QPalette::ColorRole role{QPalette::NoRole};
+        QColor foreground;
+        QColor background;
+        float mix{0.0F};
+    };
+    const std::array<DisabledOverride, 7> textOverrides = {
+        {{QPalette::Text, text, base, DISABLED_TEXT_MIX},
+         {QPalette::WindowText, windowText, window, DISABLED_TEXT_MIX},
+         {QPalette::ButtonText, buttonText, button, DISABLED_TEXT_MIX},
+         {QPalette::ToolTipText, text, base, DISABLED_TEXT_MIX},
+         {QPalette::PlaceholderText, placeholder, base, DISABLED_TEXT_MIX},
+         {QPalette::Highlight, highlight, window, DISABLED_HIGHLIGHT_MIX},
+         {QPalette::HighlightedText, highlightedText, disabledHighlight, DISABLED_TEXT_MIX}}
+    };
+    for (const DisabledOverride &override : textOverrides)
+    {
+        palette.setColor(QPalette::Disabled, override.role, BlendTowards(override.foreground, override.background, override.mix));
+    }
     // Surface-bearing roles stay at full strength so the chrome
     // itself remains recognisable; only the text-on-top dims.
     palette.setColor(QPalette::Disabled, QPalette::Base, base);
@@ -795,7 +917,12 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     mBackground.fill(QBrush{});
     mBold.fill(false);
     mItalic.fill(false);
-    mHasAnyStyle.fill(false);
+
+    // Snapshot `qApp->font()` once -- `ApplyTheme` calls us after
+    // `qApp->setFont` lands, so this picks up the theme-applied
+    // family / size. Per-level fonts overlay bold / italic on top.
+    const QFont appFont = qApp->font();
+    mFonts.fill(appFont);
 
     using loglib::LogLevel;
     // Iterate every enum value the model can produce, including the
@@ -816,6 +943,13 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         mBackground[idx] = BrushFromHex(style.background);
         mBold[idx] = style.bold;
         mItalic[idx] = style.italic;
-        mHasAnyStyle[idx] = style.foreground.has_value() || style.background.has_value() || style.bold || style.italic;
+        if (style.bold)
+        {
+            mFonts[idx].setBold(true);
+        }
+        if (style.italic)
+        {
+            mFonts[idx].setItalic(true);
+        }
     }
 }

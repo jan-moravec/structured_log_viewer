@@ -1015,6 +1015,13 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
     mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
     mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
 
+    // Type edit may have added or removed a `Type::Level` column,
+    // invalidating the cached "first level column" hint. Invalidate
+    // here (not only via the `column_editor.cpp` follow-up
+    // `NotifyColumnEdited` call) so direct callers cannot leave the
+    // cache pointing at a non-Level column.
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+
     // Picking "Auto-detect" on already-loaded rows parks at
     // `(Any, autoDetect)`; rescan so the column actually resolves
     // instead of rendering as raw `any` forever.
@@ -1136,7 +1143,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
-        return ThemeControl::FontFor(*level, qApp->font());
+        return ThemeControl::FontFor(*level);
     }
 
     if (role == Qt::DisplayRole)

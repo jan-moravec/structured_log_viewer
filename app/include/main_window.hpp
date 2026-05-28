@@ -713,6 +713,13 @@ private:
     void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
+    /// Pick `:/icon-white.png` for dark themes and `:/icon-black.png`
+    /// for light themes so the title-bar icon stays legible against
+    /// the chrome the OS paints. Called from the constructor and
+    /// from `OnThemeChanged` so an Auto-mode flip on an OS palette
+    /// change updates the icon too.
+    void ApplyThemedWindowIcon();
+
     /// Slot for `ThemeControl::themeChanged()`: re-applies the
     /// table QSS, then asks the table viewport to repaint so the
     /// view re-queries `data()` for every visible cell and picks

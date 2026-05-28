@@ -14,6 +14,8 @@
 #include <map>
 #include <optional>
 
+class QColor;
+
 /// Singleton that owns the active theme bundle, exposes per-`LogLevel`
 /// brushes / fonts to the table model, and drives the auto-switch
 /// between Light and Dark presets based on the OS palette.
@@ -68,16 +70,15 @@ public:
     /// default" by returning an empty `QVariant` to the view.
     static QBrush ForegroundFor(loglib::LogLevel level) noexcept;
     static QBrush BackgroundFor(loglib::LogLevel level) noexcept;
-    /// Returns @p base modified to honour the theme's bold/italic
-    /// flags for @p level. When neither flag is set this still
-    /// returns @p base unchanged, so the caller can pass the
-    /// view's current font and get back a font that matches the
-    /// view's family/size even after a font change.
-    static QFont FontFor(loglib::LogLevel level, const QFont &base) noexcept;
-    /// True iff the active theme specifies any styling at all for
-    /// @p level (foreground, background, bold, or italic). Lets
-    /// the model short-circuit role lookups for unstyled levels.
-    static bool HasStyle(loglib::LogLevel level) noexcept;
+    /// Pre-built `QFont` for @p level. Built off `qApp->font()` at
+    /// the time of the last `ApplyTheme`, with bold/italic applied
+    /// per the active theme. Callers that need the unmodified
+    /// app font for a level the theme leaves un-styled should gate
+    /// on `HasFontStyle(level)` first and skip the lookup -- this
+    /// returns `qApp->font()` unchanged in that case, but the
+    /// gating saves the per-cell `QVariant` round-trip in the
+    /// `LogModel::data` hot path.
+    static QFont FontFor(loglib::LogLevel level) noexcept;
 
     /// True iff the active theme sets bold or italic for @p level.
     /// Lets the model skip `FontRole` entirely when only colour
@@ -118,15 +119,28 @@ public:
     /// false on failure (e.g. when the folder couldn't be created).
     static bool RevealUserThemesDir();
 
-    /// Write @p theme to `<UserThemesDir>/<name>.json`. The on-disk
-    /// `name` field is the stable identity used by `DiscoverThemes`
-    /// to key the index; renaming the file on disk leaves the
-    /// in-app name pinned to @p name. Throws `std::runtime_error`
-    /// when @p name fails `SanitiseThemeName` (path separators,
-    /// `..`, reserved Win32 device names, control characters) or on
+    /// Write @p theme to `<UserThemesDir>/<name>.json` and refresh
+    /// the in-memory index so the new entry is immediately
+    /// discoverable via `AvailableThemes` / `Load` /
+    /// `SetActiveSelection`. The on-disk `name` field is the
+    /// stable identity used by `DiscoverThemes` to key the index;
+    /// renaming the file on disk leaves the in-app name pinned to
+    /// @p name. Throws `std::runtime_error` when @p name fails
+    /// `SanitiseThemeName` (path separators, `..`, reserved Win32
+    /// device names, control characters, trailing dot/space) or on
     /// serialise / write failure. The write is atomic
-    /// (`QSaveFile`).
+    /// (`QSaveFile`). Callers that want the freshly-saved theme to
+    /// become active still need to follow up with
+    /// `SetActiveSelection(name)`.
     static void SaveUserTheme(const QString &name, loglib::Theme theme);
+
+    /// True iff @p color has an ITU-R BT.601 luma below the
+    /// app-wide "dark surface" threshold. Single source of truth
+    /// for the dark/light heuristic used by the auto theme switch
+    /// (`QPalette::Window`) and by per-widget validation feedback
+    /// in `FilterEditor` (`QPalette::Base`), so every dark-mode
+    /// decision lands on the same threshold.
+    [[nodiscard]] static bool IsDarkColor(const QColor &color) noexcept;
 
     /// Reject @p name when it contains path separators, `..`,
     /// control characters, leading/trailing whitespace, or matches
@@ -194,15 +208,18 @@ private:
     /// flips would no longer drive `ApplicationPaletteChange`.
     QString mAppliedSelection;
 
-    /// Pre-built brushes / flags indexed by the `LogLevel` enum
-    /// (`Unknown=0 .. Fatal=6`). Sized to `Fatal + 1` so the enum
-    /// can index directly without a switch.
+    /// Pre-built brushes / fonts / flags indexed by the `LogLevel`
+    /// enum (`Unknown=0 .. Fatal=6`). Sized to `Fatal + 1` so the
+    /// enum can index directly without a switch. `mFonts` is
+    /// rebuilt off `qApp->font()` every `ApplyTheme` so a theme
+    /// that pins a font family / size flows into per-cell paints
+    /// without a per-cell `qApp->font()` copy.
     static constexpr size_t LEVEL_SLOTS = 7;
     std::array<QBrush, LEVEL_SLOTS> mForeground;
     std::array<QBrush, LEVEL_SLOTS> mBackground;
+    std::array<QFont, LEVEL_SLOTS> mFonts;
     std::array<bool, LEVEL_SLOTS> mBold{};
     std::array<bool, LEVEL_SLOTS> mItalic{};
-    std::array<bool, LEVEL_SLOTS> mHasAnyStyle{};
 
     /// Re-entrancy guard for `ApplyTheme`. `qApp->setPalette` /
     /// `qApp->setStyle` synchronously fan out
@@ -222,4 +239,16 @@ private:
     /// alone. Used to skip redundant `unsetColorScheme()` calls
     /// on Auto-mode re-evaluations after the first one.
     bool mColorSchemeForced = false;
+
+    /// One-shot snapshot of `qApp->style()->name()` and
+    /// `qApp->font()` taken at the very first `LoadConfiguration`,
+    /// before any theme has been applied. Restored by `ApplyTheme`
+    /// when the active theme omits `app.qtStyle` /
+    /// `app.fontFamily` / `app.fontSize`, so switching from a
+    /// theme that defines those fields back to one that doesn't
+    /// reverts to the process defaults instead of inheriting the
+    /// previous theme's values.
+    bool mStartupCaptured = false;
+    QString mStartupStyleName;
+    QFont mStartupFont;
 };

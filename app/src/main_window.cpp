@@ -435,7 +435,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
-    this->setWindowIcon(QIcon(":/icon-white.png"));
+    ApplyThemedWindowIcon();
 
     mTableView = new LogTableView(this);
     mLayout = new QVBoxLayout(ui->centralWidget);
@@ -987,16 +987,26 @@ bool MainWindow::event(QEvent *event)
     }
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
+    {
         // OS dark/light flip: re-evaluate Auto, which emits
-        // `themeChanged` if the resolved theme changes (covered by
-        // `OnThemeChanged`). When in Force mode the resolved theme
-        // is unchanged and the call is effectively a no-op.
+        // `themeChanged` if the resolved theme changes (and
+        // `OnThemeChanged` re-applies the table QSS as part of
+        // that fan-out). When the resolved theme is unchanged --
+        // Force mode, or Auto re-evaluating onto the same kind --
+        // we still need to refresh the QSS because it encodes
+        // palette-derived colours that the OS palette flip may
+        // have shifted. Comparing the resolved name before / after
+        // skips the redundant re-apply when `OnThemeChanged`
+        // already ran.
+        const QString priorName = QString::fromStdString(ThemeControl::Active().name);
         ThemeControl::Reevaluate();
-        // QSS encodes palette-derived colours; refresh regardless
-        // of whether Reevaluate fired a signal so an OS palette
-        // change without a theme switch still re-applies.
-        ApplyTableStyleSheet();
+        const QString currentName = QString::fromStdString(ThemeControl::Active().name);
+        if (priorName == currentName)
+        {
+            ApplyTableStyleSheet();
+        }
         break;
+    }
     case QEvent::StyleChange:
         // `qApp->setStyle` (called from `ThemeControl::ApplyTheme`)
         // resets stylesheets across widgets; reapply ours.
@@ -3675,6 +3685,7 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
 void MainWindow::OnThemeChanged()
 {
     ApplyTableStyleSheet();
+    ApplyThemedWindowIcon();
 
     // Just repaint the viewport: Qt re-queries `data()` for every
     // visible cell on the next paint event, picking up the new
@@ -3717,6 +3728,21 @@ void MainWindow::OnThemeChanged()
     }
 }
 
+void MainWindow::ApplyThemedWindowIcon()
+{
+    // Pick the icon variant by `Theme::ThemeKind`, not by sampling
+    // the current palette: in Force mode the user explicitly opts
+    // into a kind that may differ from the OS chrome, and the
+    // chrome the icon renders against is driven by the active
+    // theme rather than the system palette. Default to the white
+    // icon when the kind is missing -- conservative because most
+    // OS title bars are mid-to-dark.
+    const loglib::Theme &theme = ThemeControl::Active();
+    const QString iconPath = (theme.kind == loglib::ThemeKind::Light) ? QStringLiteral(":/icon-black.png")
+                                                                      : QStringLiteral(":/icon-white.png");
+    setWindowIcon(QIcon(iconPath));
+}
+
 void MainWindow::ApplyTableStyleSheet()
 {
     // The base / alternate / selection colours come from the
@@ -3728,7 +3754,13 @@ void MainWindow::ApplyTableStyleSheet()
     // for) plus optional header colours from the theme.
     const loglib::Theme &theme = ThemeControl::Active();
 
-    mTableView->setStyleSheet(QString());
+    // Skip the redundant write when the table-body stylesheet is
+    // already empty: an empty-but-explicit `setStyleSheet` still
+    // triggers Qt's full style polish cascade on every theme flip.
+    if (!mTableView->styleSheet().isEmpty())
+    {
+        mTableView->setStyleSheet(QString());
+    }
 
     QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
     if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())

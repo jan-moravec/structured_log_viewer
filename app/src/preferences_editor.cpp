@@ -93,8 +93,10 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
                 candidate = baseName + QStringLiteral("-copy ") + QString::number(suffix);
                 ++suffix;
             }
+            // `SaveUserTheme` refreshes the in-memory index for us;
+            // we just need to re-render the combo + reveal the file
+            // so the user can edit it.
             ThemeControl::SaveUserTheme(candidate, active);
-            ThemeControl::ReloadAll();
             RepopulateThemeCombo();
             ThemeControl::RevealUserThemesDir();
         }
@@ -298,31 +300,21 @@ void PreferencesEditor::RepopulateThemeCombo()
         mThemeComboBox->addItem(label, t.name);
     }
 
+    // `ResolveAndApplyActive` coerces stale / unknown selections
+    // back to Auto in-memory, so by the time we reach this point
+    // `ActiveSelection()` either names an entry that exists in
+    // the listing or is empty (Auto, the synthetic first entry).
     const QString selection = ThemeControl::ActiveSelection();
-    int matchIdx = 0; // Auto by default.
-    bool selectionFound = selection.isEmpty(); // Empty == Auto, always present.
+    int matchIdx = 0;
     for (int i = 1; i < mThemeComboBox->count(); ++i)
     {
         if (mThemeComboBox->itemData(i).toString() == selection)
         {
             matchIdx = i;
-            selectionFound = true;
             break;
         }
     }
     mThemeComboBox->setCurrentIndex(matchIdx);
-
-    // Stale persisted selection (theme JSON deleted or settings copied
-    // from another machine): coerce the in-memory state back to Auto so
-    // `ActiveSelection()` matches what the user sees in the combo. The
-    // resolved theme is unchanged because `ResolveAndApplyActive`
-    // already falls through to the palette-based pick for unknown
-    // selections, so this just brings persisted state into sync.
-    if (!selectionFound)
-    {
-        qInfo("Theme selection %s no longer exists; reverting to Auto.", qUtf8Printable(selection));
-        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
-    }
 }
 
 void PreferencesEditor::RefreshThemePreview()

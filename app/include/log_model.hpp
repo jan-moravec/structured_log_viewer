@@ -315,8 +315,9 @@ private:
     /// `LEVEL_COLUMN_NONE` after a scan with no match; otherwise
     /// the column index. Mutated from `const` paths via
     /// `mutable`, and invalidated from every structural mutator
-    /// (`AppendBatch`, `MoveColumn`, `NotifyColumnEdited`,
-    /// `NotifyConfigurationReplaced`).
+    /// (`AppendBatch`, `MoveColumn`, `ApplyColumnTypeEdit`,
+    /// `NotifyColumnEdited`, `NotifyConfigurationReplaced`,
+    /// `TeardownStreamingSessionInternal`).
     mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 };
 

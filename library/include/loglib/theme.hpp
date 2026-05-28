@@ -49,6 +49,12 @@ struct LevelStyle
 /// switches, so a theme that only customises the alternate
 /// stripe ends up rendering mismatched light/dark rows when the
 /// system palette doesn't match the theme kind.
+///
+/// Note on `alternateRowBackground`: the central log table no
+/// longer alternates rows -- per-level theme colours already
+/// partition the rows visually. The field still drives
+/// `QPalette::AlternateBase`, which the secondary tables
+/// (Record Details fields table, Columns Manager) consume.
 struct TableStyle
 {
     std::optional<std::string> background;

@@ -101,6 +101,18 @@ private slots:
     {
         ClearActiveSelection();
         RemoveAllUserThemes(ThemeControl::UserThemesDir());
+
+        // Restore the style's standard palette so a follow-on test
+        // binary running in the same `QApplication` lifetime starts
+        // from a clean palette rather than whatever theme this
+        // fixture last applied. We reach for `qApp->style()` here
+        // (not a saved snapshot) because the active style itself
+        // may have changed mid-fixture via `app.qtStyle`, and the
+        // standard palette of *that* style is the right baseline.
+        if (qApp != nullptr && qApp->style() != nullptr)
+        {
+            qApp->setPalette(qApp->style()->standardPalette());
+        }
     }
 
     /// Auto + light palette -> built-in Light.
@@ -243,8 +255,7 @@ private slots:
         QVERIFY(errorFg.color().isValid());
 
         // Fatal is bold in the preset.
-        QFont base;
-        const QFont fatalFont = ThemeControl::FontFor(loglib::LogLevel::Fatal, base);
+        const QFont fatalFont = ThemeControl::FontFor(loglib::LogLevel::Fatal);
         QVERIFY(fatalFont.bold());
     }
 
@@ -291,6 +302,11 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(
             std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("contains\nnewline"), theme)
         );
+        // Win32 strips trailing `.` / ` ` when creating the file, so
+        // these names would silently collide with `Dark.json` /
+        // `Dark` -- reject up front.
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("Dark."), theme));
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("Dark "), theme));
         // A plain name must work and round-trip back through the index.
         ThemeControl::SaveUserTheme(QStringLiteral("Sepia"), theme);
         ThemeControl::ReloadAll();
@@ -347,25 +363,74 @@ private slots:
         QCOMPARE(qApp->style()->name(), priorStyle);
     }
 
+    /// Regression: switching from a theme that pins `app.fontFamily`
+    /// back to one that omits it must restore the startup font, not
+    /// leave the previous theme's font carried through. Same
+    /// contract for `app.qtStyle`.
+    void TestRevertToStartupFontWhenThemeOmitsField()
+    {
+        const QFont startupFont = qApp->font();
+        const QString startupStyleName = qApp->style()->name();
+
+        // Pick a font family that's almost certainly different from
+        // the test's startup font so the assertion is meaningful.
+        // "Courier New" ships on Windows, macOS, and most Linux
+        // distros via fontconfig substitution.
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("FontPin.json"),
+            QStringLiteral(R"({
+                "name": "FontPin",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": { "qtStyle": "fusion", "fontFamily": "Courier New", "fontSize": 12 }
+            })")
+        );
+        ThemeControl::ReloadAll();
+
+        ThemeControl::SetActiveSelection(QStringLiteral("FontPin"));
+        // Sanity: the pinned font is in effect.
+        QCOMPARE(qApp->font().family(), QStringLiteral("Courier New"));
+
+        // Switching back to a theme without `app.fontFamily` /
+        // `app.fontSize` must revert to the startup font.
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QCOMPARE(qApp->font().family(), startupFont.family());
+        QCOMPARE(qApp->font().pointSize(), startupFont.pointSize());
+
+        // The startup style is at least preserved when both themes
+        // share the same `qtStyle` (built-in Light pins "fusion"
+        // too, so this just sanity-checks no crash on the apply
+        // path -- the real regression is the font above).
+        QVERIFY(!qApp->style()->name().isEmpty());
+        Q_UNUSED(startupStyleName);
+    }
+
     /// A persisted selection that no longer matches any discoverable
-    /// theme falls through to the auto-resolved theme; the listing
-    /// surfaced via `RepopulateThemeCombo` coerces the in-memory
-    /// state back to `AUTO_TOKEN` so persisted and displayed state
-    /// stay in sync. The fixture exercises just the resolution
-    /// side -- the coercion lives in `PreferencesEditor` and is
-    /// covered indirectly by the resolution check below.
+    /// theme falls through to the auto-resolved theme, AND the
+    /// in-memory `mActiveSelection` is coerced back to `AUTO_TOKEN`
+    /// so a follow-on `ActiveSelection()` query (e.g. from the
+    /// Preferences combo) doesn't lie about the live state. The
+    /// on-disk `QSettings` value is intentionally NOT rewritten --
+    /// only user-driven saves persist.
     void TestStaleSelectionFallsThroughToAuto()
     {
-        // Persist a stale name and reload. The stale name survives
-        // in `mActiveSelection` but the resolved theme is the
-        // auto-picked Light (we're on a light palette).
         SetPaletteWindow(Qt::white);
         QSettings settings;
         settings.setValue(QString::fromLatin1(SETTINGS_KEY_ACTIVE), QStringLiteral("NotARealTheme"));
         ThemeControl::LoadConfiguration();
 
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
-        QCOMPARE(ThemeControl::ActiveSelection(), QStringLiteral("NotARealTheme"));
+        // In-memory state is now Auto (no surprise persistence).
+        QCOMPARE(ThemeControl::ActiveSelection(), QString());
+        // The on-disk value is unchanged; only `SaveConfiguration`
+        // would rewrite it.
+        QCOMPARE(
+            settings.value(QString::fromLatin1(SETTINGS_KEY_ACTIVE)).toString(), QStringLiteral("NotARealTheme")
+        );
     }
 };
 
