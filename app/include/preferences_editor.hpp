@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QSpinBox>
+#include <QTimer>
 #include <QWidget>
 
 class PreferencesEditor : public QWidget
@@ -40,8 +41,18 @@ private:
     /// theme (after Auto / selection resolution).
     void RefreshThemePreview();
 
+    /// Show @p message in the transient `mThemeStatusLabel` and
+    /// arm `mThemeStatusClearTimer` to wipe it after a few
+    /// seconds. Used by the Duplicate / Reload buttons so user
+    /// actions get visible feedback even when the resolved theme
+    /// (and therefore the preview label) is unchanged. Pass an
+    /// empty string to clear immediately.
+    void ShowThemeStatus(const QString &message);
+
     QComboBox *mThemeComboBox;
     QLabel *mThemePreviewLabel;
+    QLabel *mThemeStatusLabel;
+    QTimer *mThemeStatusClearTimer;
     QSpinBox *mStreamRetentionSpinBox;
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;

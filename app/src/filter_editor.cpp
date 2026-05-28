@@ -72,10 +72,11 @@ constexpr int PAGE_BOOLEAN = 4;
 /// QSS snippet that paints @p widget's border in the
 /// palette-aware warning colour. Used for line / number edits
 /// where the input bytes stay legible but the chrome flags the
-/// problem.
+/// problem. Trailing `;` keeps the rule valid if a caller ever
+/// concatenates another declaration onto it.
 [[nodiscard]] QString WarningBorderStyle(const QWidget *widget)
 {
-    return QStringLiteral("border: 1px solid %1").arg(WarningColorHex(widget));
+    return QStringLiteral("border: 1px solid %1;").arg(WarningColorHex(widget));
 }
 
 /// `QListView` border-only warning style for the enum picker.
@@ -250,6 +251,18 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     // Boolean checkboxes: clear any warning border on toggle.
     connect(mBoolIncludeTrue, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
     connect(mBoolIncludeFalse, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
+
+    // Theme flip while the editor is open: the warning colour we
+    // baked into our QSS at OK-click time was tuned for the
+    // previous `QPalette::Base`. Drop the stale styles so the
+    // next validation failure picks the freshly-resolved warning
+    // colour. We don't try to re-stamp the warnings against the
+    // new palette: the user has a path to re-trigger them (click
+    // OK again with the same invalid input), and silently
+    // dropping is simpler than per-widget state tracking.
+    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() {
+        ClearWarningStyles();
+    });
 
     UpdateSelectedColumn(0);
 }

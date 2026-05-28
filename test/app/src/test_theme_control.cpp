@@ -20,6 +20,7 @@
 #include <QString>
 #include <QStringList>
 #include <QStyle>
+#include <QStyleFactory>
 #include <QTextStream>
 #include <QtTest/QtTest>
 
@@ -90,11 +91,34 @@ private slots:
         // `LoadConfiguration` re-reads `theme/active` from QSettings
         // (now empty -> Auto) AND re-discovers themes, so the
         // in-memory `mActiveSelection` from a previous test does
-        // not leak through.
+        // not leak through. Capture the style on entry so the
+        // matching `cleanup()` can restore it (some tests pin
+        // `app.qtStyle: "fusion"` via theme JSON).
+        if (qApp != nullptr && qApp->style() != nullptr)
+        {
+            mInitStyleName = qApp->style()->name();
+        }
         SetPaletteWindow(Qt::white);
         ClearActiveSelection();
         RemoveAllUserThemes(ThemeControl::UserThemesDir());
         ThemeControl::LoadConfiguration();
+    }
+
+    void cleanup()
+    {
+        // Restore the entry-time style so a follow-on test that
+        // never names `qtStyle` doesn't inherit the previous
+        // test's fusion override. `cleanupTestCase` does the same
+        // for the palette / standard palette; we mirror the
+        // contract per test so any single case runs in isolation.
+        if (qApp != nullptr && !mInitStyleName.isEmpty() && qApp->style() != nullptr &&
+            qApp->style()->name().compare(mInitStyleName, Qt::CaseInsensitive) != 0)
+        {
+            if (QStyle *style = QStyleFactory::create(mInitStyleName); style != nullptr)
+            {
+                qApp->setStyle(style);
+            }
+        }
     }
 
     void cleanupTestCase()
@@ -283,6 +307,47 @@ private slots:
         );
     }
 
+    /// Regression: switching from Force "Dark" to Auto on a light
+    /// OS must resolve to Light, NOT Dark. Before the fix,
+    /// `IsDarkPalette()` sampled `qApp->palette().color(Window)`
+    /// which was the Dark theme palette we had just pushed via
+    /// `ApplyPalette` -- so the Auto picker re-resolved to Dark
+    /// and the early-return path in `ResolveAndApplyActive`
+    /// (resolved name unchanged) only released the colour-scheme
+    /// override without ever re-applying the right theme. Pins
+    /// the cross-brightness Force->Auto contract that the
+    /// `TestForceToAutoSameResolvedName` sibling test couldn't
+    /// exercise (it forced the same kind as the OS palette).
+    void TestForceDarkToAutoLightOsPicksLight()
+    {
+        SetPaletteWindow(Qt::white);
+        ThemeControl::SetActiveSelection(QStringLiteral("Dark"));
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
+        QVERIFY(ThemeControl::IsColorSchemeForcedForTest());
+
+        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
+        QVERIFY2(
+            !ThemeControl::IsColorSchemeForcedForTest(),
+            "Auto mode must release the Force-mode colour-scheme override"
+        );
+    }
+
+    /// Symmetric regression: Force "Light" -> Auto on a dark OS
+    /// must resolve to Dark. Same root cause as the test above,
+    /// inverted.
+    void TestForceLightToAutoDarkOsPicksDark()
+    {
+        SetPaletteWindow(QColor(0x22, 0x22, 0x22));
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
+        QVERIFY(ThemeControl::IsColorSchemeForcedForTest());
+
+        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
+        QVERIFY(!ThemeControl::IsColorSchemeForcedForTest());
+    }
+
     /// `SanitiseThemeName` (and therefore `SaveUserTheme`) rejects
     /// path-escape attempts so a malicious or accidental name like
     /// `../evil` can't write outside `UserThemesDir`.
@@ -372,10 +437,12 @@ private slots:
         const QFont startupFont = qApp->font();
         const QString startupStyleName = qApp->style()->name();
 
-        // Pick a font family that's almost certainly different from
-        // the test's startup font so the assertion is meaningful.
-        // "Courier New" ships on Windows, macOS, and most Linux
-        // distros via fontconfig substitution.
+        // Pick a font family that resolves to something distinct
+        // from the startup family on the host. We bump the
+        // point-size deliberately too, so the revert assertion is
+        // observable even on a CI runner whose font substitution
+        // happens to land on the startup font's family.
+        const int pinnedPointSize = startupFont.pointSize() + 2;
         const QDir userDir = ThemeControl::UserThemesDir();
         WriteUserTheme(
             userDir,
@@ -386,14 +453,20 @@ private slots:
                 "levels": {},
                 "table": {},
                 "chrome": {},
-                "app": { "qtStyle": "fusion", "fontFamily": "Courier New", "fontSize": 12 }
+                "app": { "qtStyle": "fusion", "fontFamily": "Courier New", "fontSize": %1 }
             })")
+                .arg(pinnedPointSize)
         );
         ThemeControl::ReloadAll();
 
         ThemeControl::SetActiveSelection(QStringLiteral("FontPin"));
-        // Sanity: the pinned font is in effect.
-        QCOMPARE(qApp->font().family(), QStringLiteral("Courier New"));
+        // Sanity: the pinned point size is in effect. We assert on
+        // the size rather than the family because fontconfig
+        // substitution on minimal Linux CI images can land on a
+        // different family than "Courier New" -- the size is the
+        // unambiguous signal that the theme's font field flowed
+        // through.
+        QCOMPARE(qApp->font().pointSize(), pinnedPointSize);
 
         // Switching back to a theme without `app.fontFamily` /
         // `app.fontSize` must revert to the startup font.
@@ -432,6 +505,52 @@ private slots:
             settings.value(QString::fromLatin1(SETTINGS_KEY_ACTIVE)).toString(), QStringLiteral("NotARealTheme")
         );
     }
+
+    /// Regression for the `SaveUserTheme` staleness bug: when the
+    /// just-saved theme name matches the currently-resolved one,
+    /// `Active()` must return the freshly-saved bytes (and
+    /// `themeChanged` must fire) without a follow-up `ReloadAll`.
+    /// Saving an *inactive* theme must not re-resolve so unrelated
+    /// edits don't surprise-emit the signal.
+    void TestSaveUserThemeRefreshesActive()
+    {
+        // Build a baseline that activates the built-in Light, then
+        // save a user "Light" with a distinctive override colour.
+        SetPaletteWindow(Qt::white);
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
+
+        loglib::Theme override = ThemeControl::Active();
+        constexpr auto OVERRIDE_FG = "#C0FFEE";
+        override.levels["Info"] = loglib::LevelStyle{.foreground = OVERRIDE_FG};
+
+        QSignalSpy spy(&ThemeControl::Instance(), &ThemeControl::themeChanged);
+        QVERIFY(spy.isValid());
+        ThemeControl::SaveUserTheme(QStringLiteral("Light"), override);
+
+        // `Active()` is now the freshly-saved bytes, not a stale
+        // copy of the pre-save built-in.
+        const loglib::LevelStyle infoStyle = loglib::StyleForLevel(ThemeControl::Active(), loglib::LogLevel::Info);
+        QVERIFY(infoStyle.foreground.has_value());
+        QCOMPARE(QString::fromStdString(*infoStyle.foreground), QString::fromLatin1(OVERRIDE_FG));
+        QCOMPARE(spy.count(), 1);
+
+        // Saving an unrelated theme name (not active, not resolved
+        // by Auto) must NOT fire `themeChanged` -- the contract for
+        // inactive-theme edits stays surprise-free.
+        loglib::Theme inactive;
+        inactive.name = "Solarized";
+        inactive.kind = loglib::ThemeKind::Light;
+        spy.clear();
+        ThemeControl::SaveUserTheme(QStringLiteral("Solarized"), inactive);
+        QCOMPARE(spy.count(), 0);
+    }
+
+private:
+    /// Snapshot of `qApp->style()->name()` captured by `init()` so
+    /// `cleanup()` can restore the style any test mutated via a
+    /// theme JSON's `app.qtStyle` override.
+    QString mInitStyleName;
 };
 
 QTEST_MAIN(ThemeControlTest)

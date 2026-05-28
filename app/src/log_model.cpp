@@ -449,13 +449,15 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
-    // Auto-detection inside `LogTable::AppendBatch` can flip an
-    // existing column's `type` (Any -> Enumeration -> Level, or
-    // Level -> Enumeration on demotion); a `columnsGrew` batch can
-    // also add a fresh `Type::Level` column. One unconditional
-    // invalidation here covers both cases so the next call to
-    // `LevelForRow` re-scans against the post-batch configuration.
-    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+    // Snapshot the pre-batch first-level-column index so we can
+    // compare against the post-batch configuration and only
+    // invalidate `mFirstLevelColumnCache` when it actually shifts
+    // (column promoted to Level, demoted away from Level, or new
+    // earlier Level column appeared). On high-throughput streams
+    // an unconditional invalidation per batch makes every
+    // `data()` cell pay an O(columns) rescan on the next paint;
+    // gating keeps the cache hot across steady-state batches.
+    const int firstLevelColumnBefore = ComputeFirstLevelColumnIndex();
 
     // Discard the previous batch's capture so a batch without a
     // Demoted signal can't leak stale data through
@@ -543,6 +545,16 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     mLogTable.AppendBatch(std::move(batch));
+
+    // Invalidate the level-column cache only when the post-batch
+    // first-level-column index changed (auto-detect promoted /
+    // demoted, or `columnsGrew` introduced an earlier Level
+    // column). See the snapshot-capture comment above for why
+    // this matters on high-throughput streams.
+    if (ComputeFirstLevelColumnIndex() != firstLevelColumnBefore)
+    {
+        mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+    }
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
     // proxy connected to `rowsInserted` walks new rows against a
@@ -1088,20 +1100,24 @@ void LogModel::RefreshColumnHealth()
     emit columnHealthChanged();
 }
 
+int LogModel::ComputeFirstLevelColumnIndex() const noexcept
+{
+    const auto &columns = Configuration().columns;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].type == loglib::LogConfiguration::Type::Level)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return LEVEL_COLUMN_NONE;
+}
+
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
 {
     if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
     {
-        mFirstLevelColumnCache = LEVEL_COLUMN_NONE;
-        const auto &columns = Configuration().columns;
-        for (size_t i = 0; i < columns.size(); ++i)
-        {
-            if (columns[i].type == loglib::LogConfiguration::Type::Level)
-            {
-                mFirstLevelColumnCache = static_cast<int>(i);
-                break;
-            }
-        }
+        mFirstLevelColumnCache = ComputeFirstLevelColumnIndex();
     }
     if (mFirstLevelColumnCache < 0 || row < 0)
     {

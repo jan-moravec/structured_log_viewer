@@ -988,6 +988,16 @@ bool MainWindow::event(QEvent *event)
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
     {
+        // Skip during a self-induced apply: `ThemeControl::ApplyTheme`
+        // calls `qApp->setPalette` (this event) and `qApp->setStyle`
+        // (the case below) synchronously. The tail-end
+        // `themeChanged` -> `OnThemeChanged` slot reapplies the
+        // table QSS once for the whole apply, so the event
+        // bounce-backs would just repeat the work.
+        if (ThemeControl::IsApplyingTheme())
+        {
+            break;
+        }
         // OS dark/light flip: re-evaluate Auto, which emits
         // `themeChanged` if the resolved theme changes (and
         // `OnThemeChanged` re-applies the table QSS as part of
@@ -1008,8 +1018,14 @@ bool MainWindow::event(QEvent *event)
         break;
     }
     case QEvent::StyleChange:
-        // `qApp->setStyle` (called from `ThemeControl::ApplyTheme`)
-        // resets stylesheets across widgets; reapply ours.
+        // Same guard reason as above -- self-induced StyleChange
+        // from `qApp->setStyle` is covered by `OnThemeChanged`.
+        if (ThemeControl::IsApplyingTheme())
+        {
+            break;
+        }
+        // External `qApp->setStyle` (none today, but defensive):
+        // refresh the QSS so palette-derived colours follow.
         ApplyTableStyleSheet();
         break;
     default:
@@ -3734,9 +3750,8 @@ void MainWindow::ApplyThemedWindowIcon()
     // the current palette: in Force mode the user explicitly opts
     // into a kind that may differ from the OS chrome, and the
     // chrome the icon renders against is driven by the active
-    // theme rather than the system palette. Default to the white
-    // icon when the kind is missing -- conservative because most
-    // OS title bars are mid-to-dark.
+    // theme rather than the system palette. `ThemeKind` is a
+    // closed enum (`Light` / `Dark`), so the branch is exhaustive.
     const loglib::Theme &theme = ThemeControl::Active();
     const QString iconPath = (theme.kind == loglib::ThemeKind::Light) ? QStringLiteral(":/icon-black.png")
                                                                       : QStringLiteral(":/icon-white.png");
@@ -3772,7 +3787,15 @@ void MainWindow::ApplyTableStyleSheet()
         headerRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.headerForeground));
     }
     headerRule += QStringLiteral(" }");
-    mTableView->horizontalHeader()->setStyleSheet(headerRule);
+    // Skip the redundant write -- same rationale as the table-body
+    // guard above. Cached against our own string (not
+    // `header->styleSheet()`) so a stylesheet someone else might
+    // push onto the header still triggers our override.
+    if (headerRule != mLastHeaderStyleSheet)
+    {
+        mTableView->horizontalHeader()->setStyleSheet(headerRule);
+        mLastHeaderStyleSheet = headerRule;
+    }
 }
 
 const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex) const

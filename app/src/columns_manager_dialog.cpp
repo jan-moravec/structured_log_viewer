@@ -6,6 +6,7 @@
 
 #include <loglib/log_configuration.hpp>
 
+#include <QApplication>
 #include <QDialog>
 #include <QFont>
 #include <QFontMetrics>
@@ -411,8 +412,14 @@ void ColumnsManagerDialog::RefreshPalette()
     {
         return;
     }
+    // Sample `PlaceholderText` from the app palette rather than the
+    // label's own (overridden) palette -- once we've stamped a
+    // foreground-role override here, reading back through
+    // `mIntroLabel->palette()` can return the cached override for
+    // roles the resolve-mask flags as locally-set. The app
+    // palette is the source of truth for the theme-supplied value.
     QPalette introPalette = mIntroLabel->palette();
-    introPalette.setColor(mIntroLabel->foregroundRole(), introPalette.color(QPalette::PlaceholderText));
+    introPalette.setColor(mIntroLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mIntroLabel->setPalette(introPalette);
 }
 

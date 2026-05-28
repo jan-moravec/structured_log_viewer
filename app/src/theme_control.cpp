@@ -8,6 +8,7 @@
 #include <QDebug>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -30,6 +31,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -42,9 +44,13 @@ constexpr char BUILTIN_DARK_NAME[] = "Dark";
 constexpr char BUILTIN_LIGHT_PATH[] = ":/themes/light.json";
 constexpr char BUILTIN_DARK_PATH[] = ":/themes/dark.json";
 
-bool IsDarkPalette()
+/// Sample the cached OS palette (not `qApp->palette()`!) so the
+/// Auto picker reads the OS state rather than whatever Force-mode
+/// palette was last pushed by `ApplyPalette`. See `mOsPalette`
+/// and `ThemeControl::eventFilter` for the bookkeeping.
+bool IsDarkOsPalette(const QPalette &osPalette)
 {
-    return ThemeControl::IsDarkColor(qApp->palette().color(QPalette::Window));
+    return ThemeControl::IsDarkColor(osPalette.color(QPalette::Window));
 }
 
 /// Linear `lerp(@p fg, @p bg, @p t)` in sRGB. Used by `ApplyPalette`
@@ -96,6 +102,36 @@ std::optional<std::string> ReadFileUtf8(const QString &path)
     }
     const QByteArray bytes = file.readAll();
     return std::string(bytes.constData(), static_cast<size_t>(bytes.size()));
+}
+
+/// Emit a `qWarning` for every level key in @p theme that doesn't
+/// spell a canonical name (`Trace`..`Fatal`, or the literal
+/// `Unknown` sentinel). Hand-edited theme JSON typoes (`"Worn"`,
+/// `"warning"`) silently render nothing without this hint --
+/// users can't tell whether their override is unused because the
+/// theme didn't load or because the key didn't match.
+void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
+{
+    using loglib::LogLevel;
+    static constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
+        LogLevel::Unknown, LogLevel::Trace, LogLevel::Debug, LogLevel::Info,
+        LogLevel::Warn,    LogLevel::Error, LogLevel::Fatal
+    };
+    for (const auto &[key, value] : theme.levels)
+    {
+        const bool matchesCanonical = std::ranges::any_of(ALL_LEVELS, [&key](LogLevel level) {
+            return std::string_view(key) == loglib::CanonicalLevelName(level);
+        });
+        if (!matchesCanonical)
+        {
+            qWarning(
+                "Theme %s has unrecognised level key `%s`; expected one of "
+                "Trace/Debug/Info/Warn/Error/Fatal/Unknown. The entry is ignored.",
+                qUtf8Printable(source),
+                key.c_str()
+            );
+        }
+    }
 }
 
 bool IsReservedWin32DeviceName(const QString &name)
@@ -160,6 +196,32 @@ void ThemeControl::SaveConfiguration()
 void ThemeControl::Reevaluate()
 {
     Instance().DoReevaluate();
+}
+
+bool ThemeControl::IsApplyingTheme() noexcept
+{
+    return Instance().mApplyingTheme;
+}
+
+bool ThemeControl::eventFilter(QObject *watched, QEvent *event)
+{
+    // Only care about palette changes on `qApp`. Every other event
+    // (mouse, key, paint, ...) gets a no-op fall-through to the
+    // base implementation so the filter cost on the hot path is
+    // a single type compare per event.
+    if (watched == qApp && event != nullptr && event->type() == QEvent::ApplicationPaletteChange &&
+        !mApplyingTheme)
+    {
+        // External palette change -- either the OS theme flipped
+        // or some other code called `qApp->setPalette`. Refresh
+        // our OS snapshot so the next Auto-mode resolution picks
+        // the right kind. We skip when `mApplyingTheme` is true
+        // because the change is one we just pushed ourselves
+        // (`ApplyPalette`), and recording it would defeat the
+        // entire reason the snapshot exists.
+        mOsPalette = qApp->palette();
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 void ThemeControl::ReloadAll()
@@ -381,12 +443,23 @@ void ThemeControl::SaveUserTheme(const QString &name, loglib::Theme theme)
     // immediately discoverable via `AvailableThemes` / `Load` /
     // `SetActiveSelection`. Without this, callers had to follow up
     // with a manual `ReloadAll` -- a footgun that's now centralised
-    // here. The active theme is unaffected: the resolved name is
-    // unchanged, the byte-equal fast-path in `ResolveAndApplyActive`
-    // would skip the apply anyway, and we deliberately do NOT
-    // re-resolve here so a `SaveUserTheme` of an inactive theme
-    // doesn't surprise-emit `themeChanged`.
+    // here.
     Instance().DiscoverThemes();
+
+    // When the just-saved theme is also the currently-resolved one
+    // (either because the user is on Force-`sanitised` or because
+    // Auto picked it by kind), the cached `mActive` now holds the
+    // pre-write copy and `Active()` would lie until the next
+    // `ReloadAll`. Re-resolve so the new bytes flow through
+    // `ApplyTheme` + `themeChanged`. Inactive themes still skip
+    // the re-apply: `ResolveAndApplyActive`'s byte-equal fast-path
+    // (resolved name + theme contents both unchanged) returns
+    // without emitting, so saving an unrelated user theme stays
+    // surprise-free.
+    if (sanitised == Instance().mActiveName)
+    {
+        Instance().ResolveAndApplyActive(/*emitWhenUnchanged=*/true);
+    }
 }
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -404,6 +477,12 @@ void ThemeControl::DoLoadConfiguration()
     // switch from a font-defining theme back to one that omits the
     // field reverts to the startup defaults instead of inheriting
     // the previous theme's font.
+    //
+    // Also seeds `mOsPalette` from the still-pristine `qApp->palette()`
+    // and installs the OS-palette-tracking event filter (see
+    // `eventFilter` for the contract). Capture has to happen
+    // before the first `ApplyTheme` so the snapshot is the OS
+    // palette, not whatever theme we land on first.
     if (!mStartupCaptured)
     {
         if (qApp->style() != nullptr)
@@ -411,6 +490,11 @@ void ThemeControl::DoLoadConfiguration()
             mStartupStyleName = qApp->style()->name();
         }
         mStartupFont = qApp->font();
+        mOsPalette = qApp->palette();
+        if (qApp != nullptr)
+        {
+            qApp->installEventFilter(this);
+        }
         mStartupCaptured = true;
     }
 
@@ -435,6 +519,21 @@ void ThemeControl::DoReloadAll()
 
 void ThemeControl::DoReevaluate()
 {
+    // Re-entrancy guard. `ApplyTheme` synchronously fires
+    // `ApplicationPaletteChange` (via `qApp->setPalette`), which
+    // `MainWindow::event` routes back here. At that moment
+    // `qApp->palette()` already holds the theme palette we just
+    // pushed (not the OS palette), so sampling it would feed the
+    // auto-picker our own output. Bail before the sample so
+    // re-entry can never affect resolution. The outer
+    // `ResolveAndApplyActive` early-out and the `ApplyTheme`
+    // guard further down both happen to catch this today, but
+    // pinning the contract here keeps it robust to future
+    // refactors of either path.
+    if (mApplyingTheme)
+    {
+        return;
+    }
     // In Force mode the user explicitly picked a theme; an OS
     // dark/light flip must not override that choice. Skip
     // entirely so we also avoid re-running `ApplyTheme` (which
@@ -507,6 +606,7 @@ void ThemeControl::DiscoverThemes()
                 return;
             }
         }
+        WarnOnUnknownLevelKeys(path, *theme);
         mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = fromUser};
     };
 
@@ -560,9 +660,17 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
     }
     if (!found)
     {
-        // Auto (or selection was just coerced above): pick by palette.
+        // Auto (or selection was just coerced above): pick by the
+        // cached OS palette. Critically NOT `qApp->palette()`,
+        // which would still hold whatever Force-mode palette we
+        // pushed via `ApplyPalette` -- sampling that on a
+        // Force "Dark" -> Auto transition with a light OS would
+        // resolve to Dark and leave the user stuck on the wrong
+        // theme. The event filter keeps `mOsPalette` in sync with
+        // OS-level changes (`ApplicationPaletteChange` outside our
+        // apply path).
         const QString desiredName =
-            IsDarkPalette() ? QString::fromLatin1(BUILTIN_DARK_NAME) : QString::fromLatin1(BUILTIN_LIGHT_NAME);
+            IsDarkOsPalette(mOsPalette) ? QString::fromLatin1(BUILTIN_DARK_NAME) : QString::fromLatin1(BUILTIN_LIGHT_NAME);
         if (const auto it = mIndex.find(desiredName); it != mIndex.end())
         {
             chosen = it->second.theme;
@@ -891,14 +999,22 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
         {{QPalette::Text, text, base, DISABLED_TEXT_MIX},
          {QPalette::WindowText, windowText, window, DISABLED_TEXT_MIX},
          {QPalette::ButtonText, buttonText, button, DISABLED_TEXT_MIX},
-         {QPalette::ToolTipText, text, base, DISABLED_TEXT_MIX},
+         // ToolTipText must blend toward `toolTipBase`, NOT `base`:
+         // the `ChromeStyle` docstring in `theme.hpp` pins every
+         // text role to its own backing surface for the Disabled
+         // group, so a theme that customises `chrome.toolTipBase`
+         // (or `chrome.toolTipText`) to values distinct from
+         // `text`/`base` still gets a self-consistent disabled
+         // tooltip rather than dimming the body-text foreground
+         // toward the table-body surface.
+         {QPalette::ToolTipText, toolTipText, toolTipBase, DISABLED_TEXT_MIX},
          {QPalette::PlaceholderText, placeholder, base, DISABLED_TEXT_MIX},
          {QPalette::Highlight, highlight, window, DISABLED_HIGHLIGHT_MIX},
          {QPalette::HighlightedText, highlightedText, disabledHighlight, DISABLED_TEXT_MIX}}
     };
-    for (const DisabledOverride &override : textOverrides)
+    for (const DisabledOverride &entry : textOverrides)
     {
-        palette.setColor(QPalette::Disabled, override.role, BlendTowards(override.foreground, override.background, override.mix));
+        palette.setColor(QPalette::Disabled, entry.role, BlendTowards(entry.foreground, entry.background, entry.mix));
     }
     // Surface-bearing roles stay at full strength so the chrome
     // itself remains recognisable; only the text-on-top dims.

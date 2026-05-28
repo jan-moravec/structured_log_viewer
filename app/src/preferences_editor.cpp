@@ -27,6 +27,7 @@ namespace
 {
 constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
 constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
+constexpr int THEME_STATUS_CLEAR_MS = 5000;
 
 /// Label used for the synthetic "Auto" entry at the top of the
 /// theme combo. `ThemeControl::AUTO_TOKEN` (the empty string) is
@@ -66,6 +67,17 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     mThemePreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     mThemePreviewLabel->setWordWrap(true);
 
+    // Transient status line for theme button actions (Duplicate /
+    // Reload). Clears itself after `THEME_STATUS_CLEAR_MS` so the
+    // dialog doesn't accumulate stale "Saved as ..." messages
+    // across a session. The timer is `singleShot` and reset on
+    // every `ShowThemeStatus` call to debounce rapid clicks.
+    mThemeStatusLabel = new QLabel(this);
+    mThemeStatusLabel->setWordWrap(true);
+    mThemeStatusClearTimer = new QTimer(this);
+    mThemeStatusClearTimer->setSingleShot(true);
+    connect(mThemeStatusClearTimer, &QTimer::timeout, this, [this]() { mThemeStatusLabel->clear(); });
+
     auto *openThemesButton = new QPushButton("Open themes folder", this);
     openThemesButton->setToolTip("Reveal the user themes folder in the OS file manager.");
     connect(openThemesButton, &QPushButton::clicked, this, []() { ThemeControl::RevealUserThemesDir(); });
@@ -99,6 +111,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
             ThemeControl::SaveUserTheme(candidate, active);
             RepopulateThemeCombo();
             ThemeControl::RevealUserThemesDir();
+            ShowThemeStatus(tr("Saved as \"%1\". Edit the file in your themes folder, then "
+                               "click \"Reload themes from disk\" to apply.").arg(candidate));
         }
         catch (const std::exception &ex)
         {
@@ -115,6 +129,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         ThemeControl::ReloadAll();
         RepopulateThemeCombo();
         RefreshThemePreview();
+        ShowThemeStatus(tr("Reloaded themes from disk."));
     });
 
     // Live-apply theme changes when the user actually commits a
@@ -186,6 +201,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     themeButtonLayout->addWidget(duplicateThemeButton);
     themeButtonLayout->addWidget(reloadThemesButton);
     appearanceLayout->addLayout(themeButtonLayout);
+    appearanceLayout->addWidget(mThemeStatusLabel);
 
     auto *streamingGroup = new QGroupBox("Streaming", this);
     auto *streamingLayout = new QVBoxLayout(streamingGroup);
@@ -244,12 +260,23 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
         // Reload the on-disk theme selection so any live-applied
         // preview is reverted before the dialog closes. Cheap path:
-        // when the active in-memory selection matches what's
-        // persisted, no preview is in flight and we can skip the
-        // full DiscoverThemes + ResolveAndApplyActive round-trip.
+        // when the persisted value is something the current live
+        // selection would already resolve to (either byte-equal,
+        // or persisted-stale which `ResolveAndApplyActive` already
+        // coerced to empty / Auto), no preview is in flight and
+        // we can skip the full DiscoverThemes +
+        // ResolveAndApplyActive round-trip.
         QSettings settings;
         const QString persistedSelection = settings.value(QStringLiteral("theme/active")).toString();
-        if (ThemeControl::ActiveSelection() != persistedSelection)
+        const QString liveSelection = ThemeControl::ActiveSelection();
+        const bool persistedIsLive = (liveSelection == persistedSelection);
+        // Coercion case: persisted names a now-missing theme, so
+        // `ResolveAndApplyActive` already cleared `liveSelection`
+        // to empty (Auto). A re-load would re-coerce and emit
+        // nothing new; skip.
+        const bool persistedCoercedToAuto =
+            liveSelection.isEmpty() && !persistedSelection.isEmpty() && !ThemeControl::Load(persistedSelection).has_value();
+        if (!persistedIsLive && !persistedCoercedToAuto)
         {
             ThemeControl::LoadConfiguration();
         }
@@ -278,6 +305,10 @@ void PreferencesEditor::UpdateFields()
     mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MaxEntries());
     RepopulateThemeCombo();
     RefreshThemePreview();
+    // Wipe any stale "Saved as ..." / "Reloaded" message left over
+    // from the previous time the dialog was open. The user reopens
+    // for a new task and shouldn't see a half-expired toast.
+    ShowThemeStatus(QString());
 }
 
 void PreferencesEditor::RepopulateThemeCombo()
@@ -339,4 +370,15 @@ void PreferencesEditor::RefreshThemePreview()
         preview += QStringLiteral("\nFont size: ") + QString::number(*active.app.fontSize) + QStringLiteral(" pt");
     }
     mThemePreviewLabel->setText(preview);
+}
+
+void PreferencesEditor::ShowThemeStatus(const QString &message)
+{
+    mThemeStatusLabel->setText(message);
+    if (message.isEmpty())
+    {
+        mThemeStatusClearTimer->stop();
+        return;
+    }
+    mThemeStatusClearTimer->start(THEME_STATUS_CLEAR_MS);
 }

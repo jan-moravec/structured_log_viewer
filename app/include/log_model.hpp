@@ -263,12 +263,21 @@ private:
 
     /// Canonical level for @p row, looked up via the first
     /// `Type::Level` column in the configuration. Returns nullopt
-    /// when no level column exists, when @p row has no resolvable
-    /// level value, or when the column index cache is stale.
-    /// Powers the `Background/Foreground/Font` role branches in
-    /// `data()`. Cheap enough for per-cell calls because the
-    /// inner lookup is `O(1)` via `LogTable::GetLevelForRow`.
+    /// when no level column exists or when @p row has no resolvable
+    /// level value. Powers the `Background/Foreground/Font` role
+    /// branches in `data()`. `LogTable::GetLevelForRow` is itself
+    /// `O(1)`, so the per-cell cost on the hot path is dominated
+    /// by the cached column-index lookup -- which is `O(columns)`
+    /// the first call after each invalidation and `O(1)` for
+    /// every cell after that.
     [[nodiscard]] std::optional<loglib::LogLevel> LevelForRow(int row) const noexcept;
+
+    /// Linear scan of `Configuration().columns` for the first
+    /// `Type::Level` entry. Returns `LEVEL_COLUMN_NONE` when
+    /// nothing matches. Used both by `LevelForRow` (cache fill)
+    /// and by `AppendBatch` (post-batch comparison to detect
+    /// type churn before invalidating the cache).
+    [[nodiscard]] int ComputeFirstLevelColumnIndex() const noexcept;
 
     /// `mFirstLevelColumnCache` sentinel: not yet computed.
     static constexpr int LEVEL_COLUMN_UNCACHED = -2;

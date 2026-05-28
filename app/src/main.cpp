@@ -106,11 +106,20 @@ int main(int argc, char *argv[])
     // Best-effort cleanup of the legacy `appearance/*` keys so a
     // user upgrading from a pre-theme build doesn't carry around
     // dead settings (legacy values would have been overridden by
-    // the theme anyway). Safe to remove once a release ships.
+    // the theme anyway). `contains()` gates the writes so the
+    // steady-state common case (post-migration users) doesn't pay
+    // a `QSettings::sync` per launch. Safe to remove once a
+    // release ships.
     {
         QSettings settings;
-        settings.remove(QStringLiteral("appearance/style"));
-        settings.remove(QStringLiteral("appearance/font"));
+        if (settings.contains(QStringLiteral("appearance/style")))
+        {
+            settings.remove(QStringLiteral("appearance/style"));
+        }
+        if (settings.contains(QStringLiteral("appearance/font")))
+        {
+            settings.remove(QStringLiteral("appearance/font"));
+        }
     }
 
     const logapp::ParsedCli parsed =

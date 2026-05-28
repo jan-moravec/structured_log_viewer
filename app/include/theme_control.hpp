@@ -8,6 +8,7 @@
 #include <QFont>
 #include <QList>
 #include <QObject>
+#include <QPalette>
 #include <QString>
 
 #include <array>
@@ -15,6 +16,7 @@
 #include <optional>
 
 class QColor;
+class QEvent;
 
 /// Singleton that owns the active theme bundle, exposes per-`LogLevel`
 /// brushes / fonts to the table model, and drives the auto-switch
@@ -56,6 +58,14 @@ public:
     /// so OS-level dark-mode toggles flip the active theme.
     /// No-op when the resolved theme is unchanged.
     static void Reevaluate();
+
+    /// True iff an `ApplyTheme` call is currently in flight.
+    /// `qApp->setStyle` / `qApp->setPalette` synchronously fan
+    /// out `QEvent::StyleChange` / `ApplicationPaletteChange` to
+    /// every widget; `MainWindow::event` checks this flag so it
+    /// doesn't re-run the table QSS apply on those self-induced
+    /// events (the tail-end `themeChanged` slot covers them).
+    [[nodiscard]] static bool IsApplyingTheme() noexcept;
 
     /// Re-scan resources + user dir, then `Reevaluate()`. Surfaced
     /// to users via the Preferences "Reload themes from disk" button.
@@ -168,6 +178,19 @@ signals:
     /// re-apply table chrome.
     void themeChanged();
 
+protected:
+    /// `qApp`-installed event filter that tracks the OS-supplied
+    /// palette so the Auto picker can read it back later. Without
+    /// this, sampling `qApp->palette()` directly during Auto
+    /// resolution would return our previously-pushed Force-mode
+    /// palette and a Force "Dark" -> Auto transition on a light
+    /// OS would resolve back to Dark instead of Light. The filter
+    /// ignores `ApplicationPaletteChange` events emitted from
+    /// inside our own `ApplyTheme` (gated by `mApplyingTheme`),
+    /// so only external (OS / platform-plugin) palette changes
+    /// update `mOsPalette`.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     ThemeControl();
 
@@ -251,4 +274,14 @@ private:
     bool mStartupCaptured = false;
     QString mStartupStyleName;
     QFont mStartupFont;
+
+    /// Best-effort cache of the OS-supplied palette: seeded at the
+    /// first `LoadConfiguration` (before any `ApplyTheme` mutates
+    /// `qApp->palette()`) and refreshed by `eventFilter` whenever
+    /// Qt fires `ApplicationPaletteChange` from outside our apply
+    /// path (i.e. when the OS theme flips). The Auto picker
+    /// samples this -- NOT `qApp->palette()` -- so a Force-mode
+    /// palette we pushed earlier cannot mislead the next Auto
+    /// resolution into picking the wrong kind.
+    QPalette mOsPalette;
 };

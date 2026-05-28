@@ -497,10 +497,17 @@ void RecordDetailWidget::RefreshPalette()
 {
     // Refresh the placeholder label's foreground (it was set
     // explicitly to `QPalette::PlaceholderText` in the constructor,
-    // so it doesn't track palette changes on its own).
+    // so it doesn't track palette changes on its own). Read the
+    // source-of-truth value from `qApp->palette()` rather than
+    // the label's own (overridden) palette: once we've stamped an
+    // override on the foreground role, reading back through the
+    // label's `palette()` can return the cached override for any
+    // role the resolve-mask claims as locally-set. Sampling the
+    // app palette keeps this robust regardless of which roles
+    // anyone else has overridden on this label later.
     QPalette placeholderPalette = mPlaceholderLabel->palette();
     placeholderPalette.setColor(
-        mPlaceholderLabel->foregroundRole(), placeholderPalette.color(QPalette::PlaceholderText)
+        mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText)
     );
     mPlaceholderLabel->setPalette(placeholderPalette);
 

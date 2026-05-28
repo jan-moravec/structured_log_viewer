@@ -800,6 +800,14 @@ private:
     /// the float / dock / close chrome.
     RecordDetailDock *mRecordDetailDock = nullptr;
 
+    /// Last QSS string pushed to the table's horizontal header by
+    /// `ApplyTableStyleSheet`. Compared on every re-apply so we
+    /// can skip an unchanged `setStyleSheet(...)` -- Qt re-polishes
+    /// the entire header on every call even when the string is
+    /// byte-equal, which shows up as a noticeable hitch on theme
+    /// flips that fan out three event-bounce repaints.
+    QString mLastHeaderStyleSheet;
+
     /// One snapshot window plus the scoped `destroyed` connection
     /// installed by `OpenRecordDetailWindow`. The scoped handle lets
     /// `~MainWindow` disconnect only what we wired (a blanket
