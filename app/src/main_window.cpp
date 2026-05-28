@@ -451,7 +451,14 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    mTableView->setAlternatingRowColors(true);
+    // Alternating row colours are intentionally disabled on the log
+    // table: per-level theme colours already partition the rows
+    // visually, and the additional light/dark stripe makes two rows
+    // of the same level read as different (distracting). The
+    // RecordDetailWidget / ColumnsManagerDialog tables -- both
+    // level-less property lists -- still enable alternation as a
+    // genuine reading aid.
+    mTableView->setAlternatingRowColors(false);
 
     // Live theme refresh: the Preferences dialog and OS palette
     // changes both flow through `ThemeControl::themeChanged()`,
@@ -2374,9 +2381,12 @@ void MainWindow::ApplyDisplayOrder()
 
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
-    // Newest-first disables alternating colours: Qt keys alternation off
-    // the visual row index, so top-insertion would flicker every row.
-    mTableView->setAlternatingRowColors(!newestFirst);
+    // Note: we used to toggle `setAlternatingRowColors(!newestFirst)`
+    // here to dodge the newest-first row-parity flicker (Qt keys
+    // alternation off the visual row index). Alternation is now
+    // unconditionally off on the log table -- per-level theme
+    // colours already provide the reading aid and the stripe made
+    // two rows of the same level read as different.
 
     if (mModel->IsStreamingActive())
     {

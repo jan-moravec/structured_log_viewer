@@ -2666,27 +2666,23 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: the alternating-row colours used to flip on every
-    // newest-first batch arrival because Qt's stock `alternateRowColors`
-    // is keyed off the visual row index and a top-insert shifts every
-    // existing row's parity. We initially tried to pin the parity to
-    // the source row in a custom delegate, but the CSS-based table
-    // stylesheet (`alternate-background-color`) bypassed the
-    // delegate's `QStyleOptionViewItem::Alternate` override and the
-    // rows kept flickering. The accepted fallback is to disable
-    // alternating rows entirely while newest-first is active and let
-    // the table render with a single base tone there; the default
-    // bottom-tail mode keeps the visual reading aid because rows
-    // append at the bottom (visual parity is stable).
+    // Alternating row colours are unconditionally disabled on the log
+    // table -- per-level theme colours already partition the rows
+    // visually, and the additional light/dark stripe made two rows
+    // of the same level read as different (user feedback).
     //
-    // This test asserts the toggle in `MainWindow::ApplyDisplayOrder`
-    // mirrors the persisted `StreamingControl::IsNewestFirst()` value
-    // both ways while a **stream-mode** session is active. We stage the
-    // session mode via `BeginSyntheticStreamSession`, poke the
-    // preference, fire the apply path, and read back
-    // `QTableView::alternatingRowColors`. The companion
-    // `testAlternatingRowColoursDisabledInStaticNewestFirstMode`
-    // asserts the same contract for static-mode sessions.
+    // This test used to assert that newest-first mode toggled
+    // alternation off to dodge a row-parity flicker (Qt keys
+    // alternation off the visual row index, so top-insertion
+    // shifted every existing row's parity). Now that alternation
+    // is always off, the flicker problem is moot. The test is
+    // retained -- repurposed -- so a future regression that
+    // re-enables alternation on the log table (and re-introduces
+    // the flicker) gets caught.
+    //
+    // The test fires `ApplyDisplayOrder` in both stream-mode
+    // directions and asserts `QTableView::alternatingRowColors()`
+    // stays `false` regardless.
     void TestAlternatingRowColoursDisabledInNewestFirstMode()
     {
         const auto *tableView = mWindow->findChild<LogTableView *>();
@@ -2705,30 +2701,25 @@ private slots:
         static_cast<void>(BeginSyntheticStreamSession(*model));
         mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
-        // Default-mode baseline: alternation is on so users still get
-        // the lighter/darker reading aid while reading static logs or
-        // a bottom-tail stream.
         StreamingControl::SetNewestFirst(false);
         mWindow->ApplyDisplayOrder();
-        QVERIFY2(tableView->alternatingRowColors(), "default bottom-tail mode should keep alternating row colours on");
+        QVERIFY2(
+            !tableView->alternatingRowColors(),
+            "log table must keep alternating row colours off regardless of display order"
+        );
 
-        // Newest-first flips the toggle off — see the comment in
-        // `ApplyDisplayOrder` for the rationale.
         StreamingControl::SetNewestFirst(true);
         mWindow->ApplyDisplayOrder();
         QVERIFY2(
             !tableView->alternatingRowColors(),
-            "newest-first mode should disable alternating row colours to avoid the "
-            "row-parity flicker on every incoming batch"
+            "log table must keep alternating row colours off in newest-first mode"
         );
 
-        // Toggling back restores the reading aid (no-op for users who
-        // never enabled newest-first, but covers the "I tried it,
-        // didn't like it, switched back" path).
         StreamingControl::SetNewestFirst(false);
         mWindow->ApplyDisplayOrder();
         QVERIFY2(
-            tableView->alternatingRowColors(), "switching newest-first off should re-enable alternating row colours"
+            !tableView->alternatingRowColors(),
+            "log table must keep alternating row colours off after toggling newest-first back"
         );
 
         model->EndStreaming(false);
@@ -2761,12 +2752,14 @@ private slots:
 
         // Stream-mode flag has no effect on a static session: with the
         // stream flag ON and the static flag OFF, the proxy must stay
-        // in the identity orientation.
+        // in the identity orientation. Alternating row colours stay
+        // off regardless (per-level theme colours own the visual
+        // partitioning of the log table).
         StreamingControl::SetNewestFirst(true);
         StreamingControl::SetStaticNewestFirst(false);
         mWindow->ApplyDisplayOrder();
         QVERIFY2(!rowOrderProxy->IsReversed(), "static session must ignore the stream-mode newest-first flag");
-        QVERIFY(tableView->alternatingRowColors());
+        QVERIFY(!tableView->alternatingRowColors());
 
         // Flipping the static-mode flag drives the same proxy reversal
         // as the stream-mode flag does for live-tail sessions.
@@ -2778,7 +2771,7 @@ private slots:
         StreamingControl::SetStaticNewestFirst(false);
         mWindow->ApplyDisplayOrder();
         QVERIFY(!rowOrderProxy->IsReversed());
-        QVERIFY(tableView->alternatingRowColors());
+        QVERIFY(!tableView->alternatingRowColors());
 
         model->EndStreaming(false);
     }
