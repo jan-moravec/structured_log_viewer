@@ -119,10 +119,33 @@ public:
     static bool RevealUserThemesDir();
 
     /// Write @p theme to `<UserThemesDir>/<name>.json`. The on-disk
-    /// `name` field is also set to @p name so a later rename of the
-    /// file keeps the index consistent. Throws `std::runtime_error`
-    /// on serialise / write failure.
+    /// `name` field is the stable identity used by `DiscoverThemes`
+    /// to key the index; renaming the file on disk leaves the
+    /// in-app name pinned to @p name. Throws `std::runtime_error`
+    /// when @p name fails `SanitiseThemeName` (path separators,
+    /// `..`, reserved Win32 device names, control characters) or on
+    /// serialise / write failure. The write is atomic
+    /// (`QSaveFile`).
     static void SaveUserTheme(const QString &name, loglib::Theme theme);
+
+    /// Reject @p name when it contains path separators, `..`,
+    /// control characters, leading/trailing whitespace, or matches
+    /// a reserved Win32 device name (`CON`, `PRN`, `AUX`, `NUL`,
+    /// `COM1`-`COM9`, `LPT1`-`LPT9`, case-insensitive). Returns the
+    /// sanitised name (currently the input verbatim on acceptance)
+    /// or throws `std::runtime_error` on rejection. Exposed for
+    /// tests and any future "Save As..." flow.
+    [[nodiscard]] static QString SanitiseThemeName(const QString &name);
+
+#ifdef LOGAPP_BUILD_TESTING
+    /// Test-only: true iff the last `ApplyColorSchemeHint` call
+    /// left an explicit Force-mode `QStyleHints::colorScheme`
+    /// override active. `unsetColorScheme()` makes Qt report the
+    /// system value for `colorScheme()`, so this internal flag is
+    /// the only way to recover "is the override currently held?"
+    /// for the Force<->Auto regression test.
+    [[nodiscard]] static bool IsColorSchemeForcedForTest() noexcept;
+#endif
 
 signals:
     /// Emitted when the resolved active theme changes (selection
@@ -159,6 +182,17 @@ private:
 
     /// `theme/active` value (empty = Auto).
     QString mActiveSelection;
+
+    /// Snapshot of `mActiveSelection` at the time `ApplyTheme` last
+    /// ran. Compared against `mActiveSelection` in
+    /// `ResolveAndApplyActive` so a Force<->Auto flip that lands on
+    /// the same resolved theme name still re-runs
+    /// `ApplyColorSchemeHint` (which depends on the selection mode,
+    /// not on the theme name). Without this, switching from Force
+    /// "Light" to Auto on a light system would leave Qt's
+    /// `QStyleHints::colorScheme` pinned to `Light` and OS palette
+    /// flips would no longer drive `ApplicationPaletteChange`.
+    QString mAppliedSelection;
 
     /// Pre-built brushes / flags indexed by the `LogLevel` enum
     /// (`Unknown=0 .. Fatal=6`). Sized to `Fatal + 1` so the enum

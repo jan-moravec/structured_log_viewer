@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QDebug>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -12,6 +13,7 @@
 #include <QGuiApplication>
 #include <QLatin1String>
 #include <QPalette>
+#include <QSaveFile>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -25,7 +27,7 @@
 #include <QtGlobal>
 
 #include <algorithm>
-#include <fstream>
+#include <array>
 #include <stdexcept>
 #include <string>
 
@@ -82,6 +84,23 @@ std::optional<std::string> ReadFileUtf8(const QString &path)
     }
     const QByteArray bytes = file.readAll();
     return std::string(bytes.constData(), static_cast<size_t>(bytes.size()));
+}
+
+bool IsReservedWin32DeviceName(const QString &name)
+{
+    // Case-insensitive match against the Win32 reserved device set.
+    // Same names are reserved with or without an extension on
+    // Windows, and creating one of them under any path produces a
+    // device handle instead of a file. Reject up front so a user
+    // theme called "CON" doesn't silently swallow the write.
+    static constexpr std::array<const char *, 22> RESERVED = {"CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2",
+                                                              "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+                                                              "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+                                                              "LPT6", "LPT7", "LPT8", "LPT9"};
+    const QString upper = name.toUpper();
+    return std::ranges::any_of(RESERVED, [&upper](const char *reserved) {
+        return upper == QString::fromLatin1(reserved);
+    });
 }
 
 std::optional<loglib::Theme> ParseFileToTheme(const QString &path)
@@ -257,27 +276,94 @@ bool ThemeControl::RevealUserThemesDir()
     return QDesktopServices::openUrl(QUrl::fromLocalFile(dir.absolutePath()));
 }
 
+QString ThemeControl::SanitiseThemeName(const QString &name)
+{
+    if (name.isEmpty())
+    {
+        throw std::runtime_error("Theme name must not be empty");
+    }
+    if (name != name.trimmed())
+    {
+        throw std::runtime_error("Theme name must not have leading or trailing whitespace");
+    }
+    if (name == QStringLiteral(".") || name == QStringLiteral(".."))
+    {
+        throw std::runtime_error("Theme name must not be \".\" or \"..\"");
+    }
+    if (name.contains(QStringLiteral("..")))
+    {
+        throw std::runtime_error("Theme name must not contain \"..\"");
+    }
+    // Reject every byte the OS treats as a path separator or that
+    // produces an invalid filename on at least one supported
+    // platform. ASCII control characters (`<0x20`) are rejected
+    // too: even though POSIX allows them, they break the user's
+    // shell and Win32 fails on them outright.
+    constexpr char16_t FIRST_PRINTABLE_ASCII = 0x20U;
+    for (const QChar ch : name)
+    {
+        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
+            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('"') ||
+            ch == QLatin1Char('|') || ch == QLatin1Char('?') || ch == QLatin1Char('*') ||
+            ch.unicode() < FIRST_PRINTABLE_ASCII)
+        {
+            throw std::runtime_error("Theme name contains invalid character");
+        }
+    }
+    if (IsReservedWin32DeviceName(name))
+    {
+        throw std::runtime_error("Theme name matches a reserved Win32 device name");
+    }
+    return name;
+}
+
 void ThemeControl::SaveUserTheme(const QString &name, loglib::Theme theme)
 {
-    // Pin the on-disk `name` to the file basename so a later
-    // rename of the file keeps the index consistent with the
-    // declared name.
-    theme.name = name.toStdString();
+    const QString sanitised = SanitiseThemeName(name);
+
+    // Pin the on-disk `name` to the sanitised input. `DiscoverThemes`
+    // keys the index by this field, so renaming the file on disk
+    // later leaves the in-app name pinned to whatever was saved here.
+    theme.name = sanitised.toStdString();
     const std::string json = loglib::SerializeTheme(theme);
 
     const QDir dir = UserThemesDir();
-    const QString path = dir.filePath(name + QStringLiteral(".json"));
-    std::ofstream out(path.toStdString());
-    if (!out.is_open())
+    const QString path = dir.filePath(sanitised + QStringLiteral(".json"));
+
+    // `QSaveFile` writes to a sibling temp file and renames into
+    // place on `commit()`, so a crash mid-write can't leave a
+    // truncated theme JSON behind. The QFile API also honours
+    // Qt's UTF-8 path handling on Windows, where `std::ofstream`
+    // with `toStdString()` silently fails on non-ASCII profile
+    // paths (e.g. `C:\Users\Lukasz\AppData\...`).
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
-        throw std::runtime_error("Failed to open user theme file: " + path.toStdString());
+        throw std::runtime_error(
+            "Failed to open user theme file: " + path.toStdString() + " (" + file.errorString().toStdString() + ")"
+        );
     }
-    out << json;
-    if (!out.good())
+    const QByteArray bytes = QByteArray::fromStdString(json);
+    if (file.write(bytes) != bytes.size())
     {
-        throw std::runtime_error("Failed to write user theme file: " + path.toStdString());
+        throw std::runtime_error(
+            "Failed to write user theme file: " + path.toStdString() + " (" + file.errorString().toStdString() + ")"
+        );
+    }
+    if (!file.commit())
+    {
+        throw std::runtime_error(
+            "Failed to commit user theme file: " + path.toStdString() + " (" + file.errorString().toStdString() + ")"
+        );
     }
 }
+
+#ifdef LOGAPP_BUILD_TESTING
+bool ThemeControl::IsColorSchemeForcedForTest() noexcept
+{
+    return Instance().mColorSchemeForced;
+}
+#endif
 
 void ThemeControl::DoLoadConfiguration()
 {
@@ -356,11 +442,19 @@ void ThemeControl::DiscoverThemes()
         // If a user file omits or empties `name`, fall back to the
         // file basename. That keeps the index keyed by something
         // stable and matches the listing the user sees in the
-        // file manager.
+        // file manager. Warn so users notice when a missing `name`
+        // ends up shadowing a built-in (e.g. `Light.json` with an
+        // empty `name` would silently override the built-in Light).
         QString name = QString::fromStdString(theme->name);
         if (name.isEmpty())
         {
             name = QFileInfo(file).completeBaseName();
+            qWarning(
+                "User theme %s has no `name` field; using file basename %s. Add a "
+                "`name` entry to suppress this warning.",
+                qUtf8Printable(file),
+                qUtf8Printable(name)
+            );
             theme->name = name.toStdString();
         }
         mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = true};
@@ -408,6 +502,15 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
     const QString newName = QString::fromStdString(chosen.name);
     const bool unchanged = (newName == mActiveName);
 
+    // Selection-mode flip (Force <-> Auto) requires re-running
+    // `ApplyColorSchemeHint` even when the resolved theme is the
+    // same: in Force mode it pins `QStyleHints::colorScheme`, in
+    // Auto mode it unpins. Without this, switching from Force
+    // "Light" to Auto on a light system would leave Qt's color
+    // scheme pinned and the OS dark/light flip would no longer
+    // drive `ApplicationPaletteChange`.
+    const bool selectionModeChanged = mActiveSelection.isEmpty() != mAppliedSelection.isEmpty();
+
     // Skip the full re-apply when the resolved theme name hasn't
     // changed and the caller doesn't insist. This is the second
     // line of defence against the palette-change feedback loop:
@@ -415,11 +518,32 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
     // `MainWindow::event` -> `Reevaluate` -> here.
     if (unchanged && !emitWhenUnchanged)
     {
+        if (selectionModeChanged)
+        {
+            // Resolved theme stayed the same but the selection mode
+            // flipped; re-run just the colour-scheme hint so Qt's
+            // `QStyleHints` state matches the new mode. Palette /
+            // brush cache are unaffected so we skip them.
+            ApplyColorSchemeHint(mActive);
+            mAppliedSelection = mActiveSelection;
+        }
+        return;
+    }
+
+    // `emitWhenUnchanged` path (ReloadAll / explicit re-apply):
+    // when both the resolved name *and* every field of the new
+    // theme matches the active one, skip the expensive
+    // `ApplyTheme` (style + palette + cache rebuild) and the
+    // `themeChanged` fan-out. Reload-from-disk with no edits is
+    // a no-op; users who edited a file see the signal as expected.
+    if (unchanged && emitWhenUnchanged && chosen == mActive && !selectionModeChanged)
+    {
         return;
     }
 
     mActive = std::move(chosen);
     mActiveName = newName;
+    mAppliedSelection = mActiveSelection;
     ApplyTheme(mActive);
     if (!unchanged || emitWhenUnchanged)
     {
@@ -565,16 +689,24 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
 
     // Defaults derived from the theme kind. These match the
     // built-in Light/Dark JSON values so themes that only define a
-    // subset still produce a self-consistent palette.
+    // subset still produce a self-consistent palette. Each role is
+    // overridable through `theme.chrome` / `theme.table`; absent
+    // fields fall back to the corresponding kind-specific default
+    // below.
     const QColor base = hexOr(theme.table.background, dark ? QColor(0x22, 0x22, 0x22) : QColor(0xFF, 0xFF, 0xFF));
     const QColor altBase =
         hexOr(theme.table.alternateRowBackground, dark ? QColor(0x2A, 0x2A, 0x2A) : QColor(0xF3, 0xF4, 0xF6));
-    const QColor text = dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A);
-    const QColor window = dark ? QColor(0x2A, 0x2A, 0x2A) : QColor(0xF7, 0xF7, 0xF7);
-    const QColor windowText = dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A);
-    const QColor button = dark ? QColor(0x37, 0x41, 0x51) : QColor(0xF3, 0xF4, 0xF6);
-    const QColor buttonText = dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A);
-    const QColor placeholder = dark ? QColor(0x9C, 0xA3, 0xAF) : QColor(0x6B, 0x72, 0x80);
+    const QColor text = hexOr(theme.chrome.text, dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A));
+    const QColor window = hexOr(theme.chrome.window, dark ? QColor(0x2A, 0x2A, 0x2A) : QColor(0xF7, 0xF7, 0xF7));
+    const QColor windowText =
+        hexOr(theme.chrome.windowText, dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A));
+    const QColor button = hexOr(theme.chrome.button, dark ? QColor(0x37, 0x41, 0x51) : QColor(0xF3, 0xF4, 0xF6));
+    const QColor buttonText =
+        hexOr(theme.chrome.buttonText, dark ? QColor(0xE5, 0xE7, 0xEB) : QColor(0x0F, 0x17, 0x2A));
+    const QColor placeholder =
+        hexOr(theme.chrome.placeholderText, dark ? QColor(0x9C, 0xA3, 0xAF) : QColor(0x6B, 0x72, 0x80));
+    const QColor toolTipBase = hexOr(theme.chrome.toolTipBase, window);
+    const QColor toolTipText = hexOr(theme.chrome.toolTipText, text);
     const QColor highlight =
         hexOr(theme.table.selectionBackground, dark ? QColor(0x00, 0x51, 0x8F) : QColor(0xAD, 0xD4, 0xFF));
     const QColor highlightedText =
@@ -592,8 +724,8 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
     palette.setColor(QPalette::WindowText, windowText);
     palette.setColor(QPalette::Button, button);
     palette.setColor(QPalette::ButtonText, buttonText);
-    palette.setColor(QPalette::ToolTipBase, window);
-    palette.setColor(QPalette::ToolTipText, text);
+    palette.setColor(QPalette::ToolTipBase, toolTipBase);
+    palette.setColor(QPalette::ToolTipText, toolTipText);
     palette.setColor(QPalette::PlaceholderText, placeholder);
 
     // Apply highlight to both the Active and Inactive colour
@@ -652,7 +784,7 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
     palette.setColor(QPalette::Disabled, QPalette::AlternateBase, altBase);
     palette.setColor(QPalette::Disabled, QPalette::Window, window);
     palette.setColor(QPalette::Disabled, QPalette::Button, button);
-    palette.setColor(QPalette::Disabled, QPalette::ToolTipBase, window);
+    palette.setColor(QPalette::Disabled, QPalette::ToolTipBase, toolTipBase);
 
     qApp->setPalette(palette);
 }
@@ -666,10 +798,17 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     mHasAnyStyle.fill(false);
 
     using loglib::LogLevel;
-    constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT> CANONICAL = {
-        LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
+    // Iterate every enum value the model can produce, including the
+    // `Unknown` sentinel. Themes that want to tint rows whose level
+    // string didn't resolve via `ResolveLevel` can add a
+    // `"Unknown"` entry to their `levels` map; absent ones leave
+    // the brushes invalid and the model falls back to palette
+    // defaults.
+    constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
+        LogLevel::Unknown, LogLevel::Trace, LogLevel::Debug, LogLevel::Info,
+        LogLevel::Warn,    LogLevel::Error, LogLevel::Fatal
     };
-    for (const LogLevel level : CANONICAL)
+    for (const LogLevel level : ALL_LEVELS)
     {
         const loglib::LevelStyle style = loglib::StyleForLevel(theme, level);
         const size_t idx = LevelIndex(level);

@@ -443,9 +443,6 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     if (columnsGrew)
     {
         beginInsertColumns(QModelIndex(), oldColumnCount, newColumnCount - 1);
-        // New columns may include a `Type::Level`; the next call to
-        // `LevelForRow` re-scans.
-        mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     }
     if (rowsGrew)
     {
@@ -454,9 +451,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     // Auto-detection inside `LogTable::AppendBatch` can flip an
     // existing column's `type` (Any -> Enumeration -> Level, or
-    // Level -> Enumeration on demotion). Invalidate unconditionally
-    // so the next `LevelForRow` re-scans against the post-batch
-    // configuration.
+    // Level -> Enumeration on demotion); a `columnsGrew` batch can
+    // also add a fresh `Type::Level` column. One unconditional
+    // invalidation here covers both cases so the next call to
+    // `LevelForRow` re-scans against the post-batch configuration.
     mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
     // Discard the previous batch's capture so a batch without a

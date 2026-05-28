@@ -47,6 +47,29 @@ template <> struct glz::meta<loglib::TableStyle>
     );
 };
 
+template <> struct glz::meta<loglib::ChromeStyle>
+{
+    using T = loglib::ChromeStyle;
+    static constexpr auto value = object(
+        "window",
+        &T::window,
+        "windowText",
+        &T::windowText,
+        "text",
+        &T::text,
+        "button",
+        &T::button,
+        "buttonText",
+        &T::buttonText,
+        "placeholderText",
+        &T::placeholderText,
+        "toolTipBase",
+        &T::toolTipBase,
+        "toolTipText",
+        &T::toolTipText
+    );
+};
+
 template <> struct glz::meta<loglib::AppStyle>
 {
     using T = loglib::AppStyle;
@@ -56,7 +79,19 @@ template <> struct glz::meta<loglib::AppStyle>
 template <> struct glz::meta<loglib::Theme>
 {
     using T = loglib::Theme;
-    static constexpr auto value =
-        object("name", &T::name, "kind", &T::kind, "levels", &T::levels, "table", &T::table, "app", &T::app);
+    static constexpr auto value = object(
+        "name",
+        &T::name,
+        "kind",
+        &T::kind,
+        "levels",
+        &T::levels,
+        "table",
+        &T::table,
+        "chrome",
+        &T::chrome,
+        "app",
+        &T::app
+    );
 };
 // NOLINTEND(readability-identifier-naming)

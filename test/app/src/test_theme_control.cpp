@@ -19,6 +19,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QStyle>
 #include <QTextStream>
 #include <QtTest/QtTest>
 
@@ -245,6 +246,126 @@ private slots:
         QFont base;
         const QFont fatalFont = ThemeControl::FontFor(loglib::LogLevel::Fatal, base);
         QVERIFY(fatalFont.bold());
+    }
+
+    /// Regression: switching from Force "Light" to Auto on a light
+    /// palette must drop the `QStyleHints::colorScheme` override.
+    /// Before the fix, `ResolveAndApplyActive` early-returned when
+    /// the resolved theme name didn't change and `ApplyColorSchemeHint`
+    /// never ran, leaving Qt's color scheme pinned to Light and
+    /// breaking OS dark/light tracking.
+    void TestForceToAutoSameResolvedName()
+    {
+        SetPaletteWindow(Qt::white);
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QVERIFY2(ThemeControl::IsColorSchemeForcedForTest(), "Force-mode must pin the colour scheme");
+
+        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+        // Resolved theme is still "Light" (the auto picker matches
+        // the light palette), but the override must be gone so OS
+        // dark/light flips drive `ApplicationPaletteChange`.
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
+        QVERIFY2(
+            !ThemeControl::IsColorSchemeForcedForTest(),
+            "Auto mode must release the QStyleHints::colorScheme override even when the "
+            "resolved theme name didn't change"
+        );
+    }
+
+    /// `SanitiseThemeName` (and therefore `SaveUserTheme`) rejects
+    /// path-escape attempts so a malicious or accidental name like
+    /// `../evil` can't write outside `UserThemesDir`.
+    void TestSaveUserThemeRejectsBadName()
+    {
+        loglib::Theme theme;
+        theme.name = "ignored";
+
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("../evil"), theme));
+        QVERIFY_THROWS_EXCEPTION(
+            std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("sub/dir/theme"), theme)
+        );
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral(""), theme));
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("CON"), theme));
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("nul"), theme));
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral(".."), theme));
+        QVERIFY_THROWS_EXCEPTION(
+            std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("contains\nnewline"), theme)
+        );
+        // A plain name must work and round-trip back through the index.
+        ThemeControl::SaveUserTheme(QStringLiteral("Sepia"), theme);
+        ThemeControl::ReloadAll();
+        const auto listings = ThemeControl::AvailableThemes();
+        const bool present = std::any_of(listings.begin(), listings.end(), [](const auto &entry) {
+            return entry.name == QStringLiteral("Sepia") && entry.fromUser;
+        });
+        QVERIFY2(present, "valid user theme should round-trip through SaveUserTheme + ReloadAll");
+    }
+
+    /// `ReloadAll` with no on-disk edits must not emit
+    /// `themeChanged`. The fast path in `ResolveAndApplyActive`
+    /// short-circuits when the newly-discovered theme is byte-equal
+    /// to the active one, avoiding a redundant palette / cache
+    /// rebuild and the viewport-repaint fan-out.
+    void TestReloadAllSkipsWhenUnchanged()
+    {
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QSignalSpy spy(&ThemeControl::Instance(), &ThemeControl::themeChanged);
+        QVERIFY(spy.isValid());
+
+        ThemeControl::ReloadAll();
+        QCOMPARE(spy.count(), 0);
+    }
+
+    /// A theme whose `app.qtStyle` references a non-existent Qt
+    /// style must not crash and must leave the previous style intact.
+    /// `QStyleFactory::create` returns `nullptr` for unknown names;
+    /// the apply path checks for that.
+    void TestMissingStyleFactoryFallback()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("BadStyle.json"),
+            QStringLiteral(R"({
+                "name": "BadStyle",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": { "qtStyle": "NonexistentStyle12345" }
+            })")
+        );
+        ThemeControl::ReloadAll();
+
+        const QString priorStyle = qApp->style()->name();
+        ThemeControl::SetActiveSelection(QStringLiteral("BadStyle"));
+
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("BadStyle"));
+        // Unknown style name -> create() returns nullptr, the apply
+        // path skips setStyle, so the prior style is still in
+        // effect.
+        QCOMPARE(qApp->style()->name(), priorStyle);
+    }
+
+    /// A persisted selection that no longer matches any discoverable
+    /// theme falls through to the auto-resolved theme; the listing
+    /// surfaced via `RepopulateThemeCombo` coerces the in-memory
+    /// state back to `AUTO_TOKEN` so persisted and displayed state
+    /// stay in sync. The fixture exercises just the resolution
+    /// side -- the coercion lives in `PreferencesEditor` and is
+    /// covered indirectly by the resolution check below.
+    void TestStaleSelectionFallsThroughToAuto()
+    {
+        // Persist a stale name and reload. The stale name survives
+        // in `mActiveSelection` but the resolved theme is the
+        // auto-picked Light (we're on a light palette).
+        SetPaletteWindow(Qt::white);
+        QSettings settings;
+        settings.setValue(QString::fromLatin1(SETTINGS_KEY_ACTIVE), QStringLiteral("NotARealTheme"));
+        ThemeControl::LoadConfiguration();
+
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
+        QCOMPARE(ThemeControl::ActiveSelection(), QStringLiteral("NotARealTheme"));
     }
 };
 

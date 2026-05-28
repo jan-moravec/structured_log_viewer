@@ -7,12 +7,14 @@
 #include <loglib/theme.hpp>
 
 #include <QApplication>
+#include <QDebug>
 #include <QFile>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -113,10 +115,14 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         RefreshThemePreview();
     });
 
-    // Live-apply theme changes the moment the user picks an entry so
-    // the preview updates in place. Cancel reverts via the standard
+    // Live-apply theme changes when the user actually commits a
+    // pick. Wired to `activated` (not `currentIndexChanged`) so
+    // arrow-key browsing through the combo does not run a full
+    // `ApplyTheme` (palette push + style swap + cache rebuild) per
+    // intermediate item -- on long user-theme lists that visibly
+    // stutters. Cancel reverts via the standard
     // `ThemeControl::LoadConfiguration` round-trip.
-    connect(mThemeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+    connect(mThemeComboBox, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
         if (idx < 0)
         {
             return;
@@ -235,8 +241,16 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
         // Reload the on-disk theme selection so any live-applied
-        // preview is reverted before the dialog closes.
-        ThemeControl::LoadConfiguration();
+        // preview is reverted before the dialog closes. Cheap path:
+        // when the active in-memory selection matches what's
+        // persisted, no preview is in flight and we can skip the
+        // full DiscoverThemes + ResolveAndApplyActive round-trip.
+        QSettings settings;
+        const QString persistedSelection = settings.value(QStringLiteral("theme/active")).toString();
+        if (ThemeControl::ActiveSelection() != persistedSelection)
+        {
+            ThemeControl::LoadConfiguration();
+        }
         // Revert the spinbox-edited values to the persisted ones; no
         // emit needed because the on-disk values are unchanged.
         StreamingControl::LoadConfiguration();
@@ -286,15 +300,29 @@ void PreferencesEditor::RepopulateThemeCombo()
 
     const QString selection = ThemeControl::ActiveSelection();
     int matchIdx = 0; // Auto by default.
+    bool selectionFound = selection.isEmpty(); // Empty == Auto, always present.
     for (int i = 1; i < mThemeComboBox->count(); ++i)
     {
         if (mThemeComboBox->itemData(i).toString() == selection)
         {
             matchIdx = i;
+            selectionFound = true;
             break;
         }
     }
     mThemeComboBox->setCurrentIndex(matchIdx);
+
+    // Stale persisted selection (theme JSON deleted or settings copied
+    // from another machine): coerce the in-memory state back to Auto so
+    // `ActiveSelection()` matches what the user sees in the combo. The
+    // resolved theme is unchanged because `ResolveAndApplyActive`
+    // already falls through to the palette-based pick for unknown
+    // selections, so this just brings persisted state into sync.
+    if (!selectionFound)
+    {
+        qInfo("Theme selection %s no longer exists; reverting to Auto.", qUtf8Printable(selection));
+        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+    }
 }
 
 void PreferencesEditor::RefreshThemePreview()

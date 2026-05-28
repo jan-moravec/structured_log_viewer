@@ -493,6 +493,24 @@ void RecordDetailWidget::resizeEvent(QResizeEvent *event)
     }
 }
 
+void RecordDetailWidget::RefreshPalette()
+{
+    // Refresh the placeholder label's foreground (it was set
+    // explicitly to `QPalette::PlaceholderText` in the constructor,
+    // so it doesn't track palette changes on its own).
+    QPalette placeholderPalette = mPlaceholderLabel->palette();
+    placeholderPalette.setColor(
+        mPlaceholderLabel->foregroundRole(), placeholderPalette.color(QPalette::PlaceholderText)
+    );
+    mPlaceholderLabel->setPalette(placeholderPalette);
+
+    // Rebuild every cell so placeholder-row foregrounds re-pick the
+    // current `QPalette::PlaceholderText`. PopulateUi reads
+    // `mContent` directly, so this is a no-op render for an invalid
+    // / empty content.
+    PopulateUi();
+}
+
 void RecordDetailWidget::CopyAsJsonClicked() const
 {
     if (!mContent.valid || mContent.rawJson.isEmpty())

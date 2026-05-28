@@ -19,6 +19,12 @@ public:
     /// button is hidden -- this *is* a new window.
     explicit RecordDetailWindow(const RecordDetailContent &content, QWidget *parent = nullptr);
 
+    /// Re-render against the current palette. Used by `MainWindow`'s
+    /// theme-change broadcast so the snapshot's placeholder
+    /// foreground / em-dash cells re-pick the new palette colours.
+    /// Idempotent.
+    void RefreshPalette();
+
 #ifdef LOGAPP_BUILD_TESTING
     [[nodiscard]] RecordDetailWidget *WidgetForTest() const noexcept
     {

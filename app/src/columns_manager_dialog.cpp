@@ -117,21 +117,18 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     layout->setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN);
     layout->setSpacing(SECTION_SPACING);
 
-    auto *intro = new QLabel(
+    mIntroLabel = new QLabel(
         tr("Reorder columns with Move up / Move down, toggle visibility in the "
            "Visible column, or use Edit\u2026 for the full per-column editor."),
         this
     );
-    intro->setObjectName(QStringLiteral("introLabel"));
-    intro->setWordWrap(true);
+    mIntroLabel->setObjectName(QStringLiteral("introLabel"));
+    mIntroLabel->setWordWrap(true);
     // Use the palette's PlaceholderText role so the helper text picks
     // up the muted tone of the active theme (light or dark).
-    {
-        QPalette introPalette = intro->palette();
-        introPalette.setColor(intro->foregroundRole(), introPalette.color(QPalette::PlaceholderText));
-        intro->setPalette(introPalette);
-    }
-    layout->addWidget(intro);
+    // `RefreshPalette` re-applies this when the active theme flips.
+    RefreshPalette();
+    layout->addWidget(mIntroLabel);
 
     auto *body = new QHBoxLayout();
     body->setSpacing(SECTION_SPACING);
@@ -406,6 +403,17 @@ void ColumnsManagerDialog::MoveSelectedDown()
         Refresh();
         mTable->selectRow(row + 1);
     }
+}
+
+void ColumnsManagerDialog::RefreshPalette()
+{
+    if (mIntroLabel == nullptr)
+    {
+        return;
+    }
+    QPalette introPalette = mIntroLabel->palette();
+    introPalette.setColor(mIntroLabel->foregroundRole(), introPalette.color(QPalette::PlaceholderText));
+    mIntroLabel->setPalette(introPalette);
 }
 
 void ColumnsManagerDialog::EditSelected()

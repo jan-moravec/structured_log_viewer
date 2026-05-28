@@ -81,7 +81,7 @@ TEST_CASE("Theme parse rejects bad kind value", "[Theme]")
 TEST_CASE("StyleForLevel returns default when level missing", "[Theme]")
 {
     Theme theme;
-    theme.levels["Error"] = LevelStyle{.foreground = "#FF0000", .bold = true};
+    theme.levels["Error"] = LevelStyle{.foreground = "#FF0000", .background = std::nullopt, .bold = true};
 
     const LevelStyle errorStyle = StyleForLevel(theme, LogLevel::Error);
     CHECK(errorStyle.foreground == "#FF0000");
@@ -91,4 +91,69 @@ TEST_CASE("StyleForLevel returns default when level missing", "[Theme]")
     CHECK_FALSE(infoStyle.foreground.has_value());
     CHECK_FALSE(infoStyle.background.has_value());
     CHECK(infoStyle.bold == false);
+}
+
+TEST_CASE("ChromeStyle JSON round-trips every field", "[Theme]")
+{
+    Theme original;
+    original.name = "Chrome";
+    original.kind = ThemeKind::Light;
+    original.chrome.window = "#101820";
+    original.chrome.windowText = "#F0F0F0";
+    original.chrome.text = "#E5E7EB";
+    original.chrome.button = "#1F2937";
+    original.chrome.buttonText = "#FAFAFA";
+    original.chrome.placeholderText = "#9CA3AF";
+    original.chrome.toolTipBase = "#374151";
+    original.chrome.toolTipText = "#FFFFFF";
+
+    const std::string json = SerializeTheme(original);
+    const Theme reloaded = ParseTheme(json);
+
+    CHECK(reloaded.chrome.window == original.chrome.window);
+    CHECK(reloaded.chrome.windowText == original.chrome.windowText);
+    CHECK(reloaded.chrome.text == original.chrome.text);
+    CHECK(reloaded.chrome.button == original.chrome.button);
+    CHECK(reloaded.chrome.buttonText == original.chrome.buttonText);
+    CHECK(reloaded.chrome.placeholderText == original.chrome.placeholderText);
+    CHECK(reloaded.chrome.toolTipBase == original.chrome.toolTipBase);
+    CHECK(reloaded.chrome.toolTipText == original.chrome.toolTipText);
+    // Defaulted operator==: byte-identical themes compare equal so
+    // `ThemeControl::ReloadAll` can fast-path the skip.
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme parses an Unknown level entry", "[Theme]")
+{
+    constexpr std::string_view JSON = R"({
+        "name": "Unknown-aware",
+        "kind": "dark",
+        "levels": {
+            "Unknown": { "foreground": "#888888", "italic": true }
+        },
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    const LevelStyle unknownStyle = StyleForLevel(parsed, LogLevel::Unknown);
+    REQUIRE(unknownStyle.foreground.has_value());
+    CHECK(unknownStyle.foreground == "#888888");
+    CHECK(unknownStyle.italic == true);
+    CHECK(unknownStyle.bold == false);
+}
+
+TEST_CASE("Theme defaulted equality distinguishes one differing field", "[Theme]")
+{
+    Theme baseline;
+    baseline.name = "Same";
+    baseline.kind = ThemeKind::Light;
+    baseline.table.background = "#FFFFFF";
+
+    Theme other = baseline;
+    CHECK(baseline == other);
+
+    other.table.background = "#FEFEFE";
+    CHECK_FALSE(baseline == other);
 }

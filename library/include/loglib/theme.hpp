@@ -32,6 +32,11 @@ struct LevelStyle
     std::optional<std::string> background;
     bool bold = false;
     bool italic = false;
+
+    /// Defaulted equality so callers (e.g. `ThemeControl::ReloadAll`)
+    /// can skip a re-apply when a freshly-loaded theme is byte-equal
+    /// to the active one.
+    friend bool operator==(const LevelStyle &, const LevelStyle &) = default;
 };
 
 /// Chrome around the rows: base background, alternating stripe,
@@ -52,6 +57,36 @@ struct TableStyle
     std::optional<std::string> selectionForeground;
     std::optional<std::string> headerBackground;
     std::optional<std::string> headerForeground;
+
+    friend bool operator==(const TableStyle &, const TableStyle &) = default;
+};
+
+/// Chrome around the central view: window background, default
+/// text, buttons, tooltips. Drives the corresponding
+/// `QPalette` roles in the app's `ThemeControl`. All optional;
+/// absent fields fall back to per-`ThemeKind` defaults
+/// hand-tuned to match the built-in Light / Dark presets, so a
+/// theme that only customises the table chrome still gets a
+/// self-consistent palette.
+///
+/// Foreground / text roles always pair with their backing
+/// surface role for the `Disabled` colour group: `text` is
+/// blended toward `background` (from `TableStyle`),
+/// `windowText` toward `window`, etc. Theme authors who want
+/// to override one without the other should set both
+/// explicitly to keep the disabled-state blend predictable.
+struct ChromeStyle
+{
+    std::optional<std::string> window;
+    std::optional<std::string> windowText;
+    std::optional<std::string> text;
+    std::optional<std::string> button;
+    std::optional<std::string> buttonText;
+    std::optional<std::string> placeholderText;
+    std::optional<std::string> toolTipBase;
+    std::optional<std::string> toolTipText;
+
+    friend bool operator==(const ChromeStyle &, const ChromeStyle &) = default;
 };
 
 /// App-wide style fields that the theme bundle also owns (Qt style
@@ -63,6 +98,8 @@ struct AppStyle
     std::optional<std::string> qtStyle;
     std::optional<std::string> fontFamily;
     std::optional<int> fontSize;
+
+    friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
 /// One self-contained theme bundle. JSON keys mirror the C++
@@ -82,12 +119,19 @@ struct Theme
     ThemeKind kind = ThemeKind::Light;
 
     /// Per-level row styles. Keys must spell a canonical level
-    /// name (see `loglib::CanonicalLevelName`); unknown keys are
-    /// silently ignored at apply time.
+    /// name (see `loglib::CanonicalLevelName`) or the literal
+    /// `"Unknown"` for raw / unresolved level values. Unknown keys
+    /// are silently ignored at apply time.
     std::map<std::string, LevelStyle> levels;
 
     TableStyle table;
+    ChromeStyle chrome;
     AppStyle app;
+
+    /// Defaulted equality so `ThemeControl::ReloadAll` can skip the
+    /// expensive `ApplyTheme` + `themeChanged` round-trip when the
+    /// freshly-loaded theme is byte-equal to the active one.
+    friend bool operator==(const Theme &, const Theme &) = default;
 };
 
 /// Lookup helper: returns the style for @p level, or a default-

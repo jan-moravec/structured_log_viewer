@@ -15,6 +15,7 @@
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
 #include "streaming_control.hpp"
+#include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
 #include <loglib/enum_dictionary.hpp>
@@ -35,6 +36,7 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
+#include <loglib/theme.hpp>
 #include <loglib/tcp_server_producer.hpp>
 #include <loglib/udp_server_producer.hpp>
 
@@ -42,6 +44,7 @@
 
 #include <QAbstractItemModel>
 #include <QAction>
+#include <QBrush>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
@@ -51,6 +54,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QIcon>
@@ -3257,6 +3261,78 @@ private slots:
         QCOMPARE(run.model->Table().GetLevelForRow(3, col).value(), loglib::LogLevel::Debug);
         QCOMPARE(run.model->Table().GetLevelForRow(4, col).value(), loglib::LogLevel::Trace);
         QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
+    }
+
+    /// Integration: a streamed `Type::Level` column drives
+    /// `LogModel::data(Qt::BackgroundRole)` through
+    /// `ThemeControl::BackgroundFor` for the resolved level. Pins
+    /// the "model brushes track the active theme" contract for the
+    /// Error level (which the built-in Light theme styles); the Info
+    /// level (which Light leaves unstyled) must return an empty
+    /// QVariant so the view falls back to the palette.
+    void TestLogModelDataReturnsThemeBackground()
+    {
+        // The `MainWindowTest` fixture does not bootstrap
+        // `ThemeControl` (each `init()` builds a fresh `MainWindow`
+        // but the singleton is shared and never sees production's
+        // `LoadConfiguration` at app startup). Discover themes
+        // here so the index can resolve "Light" before we force it.
+        ThemeControl::ReloadAll();
+        // Force Light so the test is deterministic regardless of the
+        // CI runner's palette.
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        const QBrush expectedErrorBg = ThemeControl::BackgroundFor(loglib::LogLevel::Error);
+        QVERIFY2(
+            expectedErrorBg.style() != Qt::NoBrush, "the Light theme must define an Error background brush"
+        );
+        const QBrush expectedInfoBg = ThemeControl::BackgroundFor(loglib::LogLevel::Info);
+        QCOMPARE(expectedInfoBg.style(), Qt::NoBrush);
+
+        // Stream a tiny fixture so `level` promotes to `Type::Level`.
+        // Mix of levels so we can pick rows with known canonical
+        // values once the column has promoted.
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+            QStringLiteral("debug"),
+            QStringLiteral("trace"),
+            QStringLiteral("fatal"),
+        };
+        QStringList lines;
+        lines.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            lines.append(QStringLiteral(R"({"level": "%1"})").arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist");
+
+        // Row 0 is Info (cycle index 0) -> BackgroundRole returns an
+        // empty QVariant (palette fallback).
+        const QModelIndex infoIndex = run.model->index(0, levelCol);
+        const QVariant infoBg = run.model->data(infoIndex, Qt::BackgroundRole);
+        QVERIFY2(!infoBg.isValid(), "Info row must defer to the palette (empty QVariant)");
+
+        // Row 2 is Error (cycle index 2) -> BackgroundRole returns
+        // the cached theme brush.
+        const QModelIndex errorIndex = run.model->index(2, levelCol);
+        const QVariant errorBg = run.model->data(errorIndex, Qt::BackgroundRole);
+        QVERIFY2(errorBg.isValid(), "Error row must carry the theme background brush");
+        const QBrush actualErrorBg = qvariant_cast<QBrush>(errorBg);
+        QCOMPARE(actualErrorBg.color(), expectedErrorBg.color());
+
+        // Row 5 is Fatal -> bold flag must come through FontRole.
+        const QModelIndex fatalIndex = run.model->index(5, levelCol);
+        const QVariant fatalFont = run.model->data(fatalIndex, Qt::FontRole);
+        QVERIFY2(fatalFont.isValid(), "Fatal row must carry a bold font (theme sets bold=true)");
+        QVERIFY(qvariant_cast<QFont>(fatalFont).bold());
     }
 
     // End-to-end round-trip for `Column::levelMapping`. Saved config

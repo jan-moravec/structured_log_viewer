@@ -3691,6 +3691,30 @@ void MainWindow::OnThemeChanged()
     {
         mTableView->viewport()->update();
     }
+
+    // Satellite widgets that cache palette-derived state at
+    // construction or `SetContent` time need an explicit nudge.
+    // Pure `QPalette` consumers (which most of these are) also
+    // get the cascading `ApplicationPaletteChange` we just
+    // triggered via `qApp->setPalette` in `ThemeControl::ApplyTheme`,
+    // but the record-detail views explicitly stash
+    // `QPalette::PlaceholderText` on table items, so the cached
+    // brushes outlive a palette change.
+    if (mRecordDetailDock != nullptr && mRecordDetailDock->Widget() != nullptr)
+    {
+        mRecordDetailDock->Widget()->RefreshPalette();
+    }
+    for (const auto &tracked : mRecordDetailWindows)
+    {
+        if (RecordDetailWindow *window = tracked.window.data(); window != nullptr)
+        {
+            window->RefreshPalette();
+        }
+    }
+    if (mColumnsManagerDialog != nullptr)
+    {
+        mColumnsManagerDialog->RefreshPalette();
+    }
 }
 
 void MainWindow::ApplyTableStyleSheet()

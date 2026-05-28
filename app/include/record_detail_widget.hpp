@@ -78,6 +78,14 @@ public:
     /// visible; snapshot windows hide it.
     void SetOpenInNewWindowVisible(bool visible);
 
+    /// Re-render the displayed content against the current palette.
+    /// Cell foreground brushes are captured at `SetContent` time
+    /// (placeholder rows store `QPalette::PlaceholderText` on the
+    /// item directly) so a theme switch leaves them stale; calling
+    /// this rebuilds them. Idempotent and cheap when the displayed
+    /// content is invalid.
+    void RefreshPalette();
+
 #ifdef LOGAPP_BUILD_TESTING
     /// Direct accessors. `findChild<>` by object name is unreliable
     /// under Qt 6.8 + offscreen QPA on the Linux runner.

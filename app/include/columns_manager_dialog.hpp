@@ -5,6 +5,7 @@
 
 class LogModel;
 class MainWindow;
+class QLabel;
 class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
@@ -46,6 +47,13 @@ public:
     /// selection.
     void EditSelected();
 
+    /// Re-apply the intro label's muted foreground against the
+    /// current palette. Called from `MainWindow::OnThemeChanged`
+    /// because the constructor stamps the foreground brush
+    /// explicitly via `setPalette`, so a later palette change
+    /// leaves the cached colour stale. Idempotent.
+    void RefreshPalette();
+
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only direct accessor for the columns table widget.
     /// `findChild<QTableWidget*>("columnsTable")` is unreliable on
@@ -73,6 +81,13 @@ private:
     QPushButton *mMoveDownButton = nullptr;
     QPushButton *mEditButton = nullptr;
     QPushButton *mCloseButton = nullptr;
+    /// Intro / helper text at the top of the dialog. Held as a
+    /// member so `RefreshPalette` can re-apply the muted
+    /// `QPalette::PlaceholderText` foreground when the active
+    /// theme changes (the constructor stamps it once and Qt does
+    /// not re-evaluate the explicit palette override on later
+    /// `ApplicationPaletteChange` events).
+    QLabel *mIntroLabel = nullptr;
 
     /// Suppresses `OnItemChanged` while `Refresh` / `RebuildRow` are
     /// programmatically setting check states.
