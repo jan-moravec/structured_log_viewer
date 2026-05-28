@@ -24,6 +24,7 @@
 #include <QVariant>
 #include <QtGlobal>
 
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -610,6 +611,48 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
         palette.setColor(group, QPalette::Window, window);
         palette.setColor(group, QPalette::WindowText, windowText);
     }
+
+    // Disabled colour group: every group-less `setColor(role, c)`
+    // call above also wrote `c` into the Disabled group (Qt's API
+    // shorthand for "all groups"), which made disabled menu items,
+    // buttons, etc. read identically to enabled ones. Override the
+    // text-bearing roles here with values blended toward the
+    // surrounding surface so disabled chrome dims visibly without
+    // disappearing.
+    auto blend = [](const QColor &fg, const QColor &bg, float towardsBg) {
+        const float t = std::clamp(towardsBg, 0.0F, 1.0F);
+        return QColor::fromRgbF(
+            (fg.redF() * (1.0F - t)) + (bg.redF() * t),
+            (fg.greenF() * (1.0F - t)) + (bg.greenF() * t),
+            (fg.blueF() * (1.0F - t)) + (bg.blueF() * t),
+            1.0F
+        );
+    };
+    // 0.55 leaves enough contrast to read but lands comfortably in
+    // "obviously disabled" territory across both Light and Dark.
+    constexpr float DISABLED_TEXT_MIX = 0.55F;
+    constexpr float DISABLED_HIGHLIGHT_MIX = 0.40F;
+    const QColor disabledText = blend(text, base, DISABLED_TEXT_MIX);
+    const QColor disabledWindowText = blend(windowText, window, DISABLED_TEXT_MIX);
+    const QColor disabledButtonText = blend(buttonText, button, DISABLED_TEXT_MIX);
+    const QColor disabledPlaceholder = blend(placeholder, base, DISABLED_TEXT_MIX);
+    const QColor disabledHighlight = blend(highlight, window, DISABLED_HIGHLIGHT_MIX);
+    const QColor disabledHighlightedText = blend(highlightedText, disabledHighlight, DISABLED_TEXT_MIX);
+
+    palette.setColor(QPalette::Disabled, QPalette::Text, disabledText);
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, disabledWindowText);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, disabledButtonText);
+    palette.setColor(QPalette::Disabled, QPalette::ToolTipText, disabledText);
+    palette.setColor(QPalette::Disabled, QPalette::PlaceholderText, disabledPlaceholder);
+    palette.setColor(QPalette::Disabled, QPalette::Highlight, disabledHighlight);
+    palette.setColor(QPalette::Disabled, QPalette::HighlightedText, disabledHighlightedText);
+    // Surface-bearing roles stay at full strength so the chrome
+    // itself remains recognisable; only the text-on-top dims.
+    palette.setColor(QPalette::Disabled, QPalette::Base, base);
+    palette.setColor(QPalette::Disabled, QPalette::AlternateBase, altBase);
+    palette.setColor(QPalette::Disabled, QPalette::Window, window);
+    palette.setColor(QPalette::Disabled, QPalette::Button, button);
+    palette.setColor(QPalette::Disabled, QPalette::ToolTipBase, window);
 
     qApp->setPalette(palette);
 }
