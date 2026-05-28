@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QLatin1String>
 #include <QPalette>
 #include <QSettings>
@@ -17,9 +18,11 @@
 #include <QStringList>
 #include <QStyle>
 #include <QStyleFactory>
+#include <QStyleHints>
 #include <QTextStream>
 #include <QUrl>
 #include <QVariant>
+#include <QtGlobal>
 
 #include <fstream>
 #include <stdexcept>
@@ -458,6 +461,19 @@ void ThemeControl::ApplyTheme(const loglib::Theme &theme)
         }
     }
 
+    // Then push the colour-scheme hint so platform-native widgets
+    // (Windows menu bar, native dialogs, anything that consults
+    // `QStyleHints::colorScheme` rather than just `QPalette`)
+    // follow the active theme. The explicit `setColorScheme` call
+    // also makes Qt 6.8+ rebuild its default palette in the right
+    // colour scheme BEFORE we layer our overrides; without it,
+    // forcing Light on a dark-mode Windows system left platform
+    // chrome painted dark. In Auto mode we restore the OS default
+    // via `unsetColorScheme` so a system dark/light flip
+    // continues to drive `ApplicationPaletteChange` (which our
+    // event handler routes back into `Reevaluate`).
+    ApplyColorSchemeHint(theme);
+
     ApplyPalette(theme);
 
     if (theme.app.fontFamily.has_value() || theme.app.fontSize.has_value())
@@ -475,6 +491,53 @@ void ThemeControl::ApplyTheme(const loglib::Theme &theme)
     }
 
     mApplyingTheme = false;
+}
+
+void ThemeControl::ApplyColorSchemeHint([[maybe_unused]] const loglib::Theme &theme)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    QStyleHints *hints = QGuiApplication::styleHints();
+    if (hints == nullptr)
+    {
+        return;
+    }
+
+    // Auto mode: drop any prior Force-mode override so Qt tracks
+    // the system setting again. The auto-resolved theme's `kind`
+    // already matches the current system brightness (we picked it
+    // by sampling the palette), so we don't need to set anything
+    // here. Crucially, leaving the scheme unset is what lets a
+    // later system dark/light flip fire
+    // `ApplicationPaletteChange` through to `MainWindow::event`
+    // -> `Reevaluate`.
+    //
+    // We track `mColorSchemeForced` ourselves because after
+    // `unsetColorScheme()` Qt reports `colorScheme()` as the
+    // system's current value, not `Unknown`, so we can't recover
+    // "is this currently a forced override?" from Qt alone.
+    if (mActiveSelection.isEmpty())
+    {
+        if (mColorSchemeForced)
+        {
+            hints->unsetColorScheme();
+            mColorSchemeForced = false;
+        }
+        return;
+    }
+
+    // Force mode: explicit override so Qt's standard palette and
+    // platform-native chrome line up with the user's choice
+    // regardless of the OS setting. Per QStyleHints docs this
+    // also makes Qt ignore later system colour-scheme changes,
+    // which is exactly the contract Force mode promises.
+    const Qt::ColorScheme target =
+        (theme.kind == loglib::ThemeKind::Dark) ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light;
+    if (!mColorSchemeForced || hints->colorScheme() != target)
+    {
+        hints->setColorScheme(target);
+        mColorSchemeForced = true;
+    }
+#endif
 }
 
 void ThemeControl::ApplyPalette(const loglib::Theme &theme)

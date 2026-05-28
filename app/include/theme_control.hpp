@@ -141,6 +141,7 @@ private:
     void DiscoverThemes();
     void ResolveAndApplyActive(bool emitWhenUnchanged);
     void ApplyTheme(const loglib::Theme &theme);
+    void ApplyColorSchemeHint(const loglib::Theme &theme);
     void ApplyPalette(const loglib::Theme &theme);
     void BuildStyleCache(const loglib::Theme &theme);
 
@@ -178,4 +179,13 @@ private:
     /// `ResolveAndApplyActive` would early-out, but for safety we
     /// short-circuit before any work is done).
     bool mApplyingTheme = false;
+
+    /// True iff we currently hold a Force-mode override on
+    /// `QStyleHints::colorScheme`. Needed because once
+    /// `unsetColorScheme()` has run, `colorScheme()` reports the
+    /// system's current value (not `Unknown`), so we cannot
+    /// recover "is this currently a forced override?" from Qt
+    /// alone. Used to skip redundant `unsetColorScheme()` calls
+    /// on Auto-mode re-evaluations after the first one.
+    bool mColorSchemeForced = false;
 };
