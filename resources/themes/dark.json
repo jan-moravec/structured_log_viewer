@@ -15,6 +15,16 @@
         "selectionBackground": "#00518F",
         "selectionForeground": "#FFFFFF"
     },
+    "chrome": {
+        "window": "#2A2A2A",
+        "windowText": "#E5E7EB",
+        "text": "#E5E7EB",
+        "button": "#374151",
+        "buttonText": "#E5E7EB",
+        "placeholderText": "#9CA3AF",
+        "toolTipBase": "#2A2A2A",
+        "toolTipText": "#E5E7EB"
+    },
     "app": {
         "qtStyle": "fusion"
     }
