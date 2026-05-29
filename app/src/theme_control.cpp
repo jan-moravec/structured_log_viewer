@@ -89,7 +89,7 @@ QBrush BrushFromHex(const std::optional<std::string> &hex) noexcept
     {
         return QBrush{};
     }
-    return QBrush(color);
+    return QBrush{color};
 }
 
 /// Read a UTF-8 text file via Qt so the resource scheme (`:/...`)
@@ -115,8 +115,13 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
 {
     using loglib::LogLevel;
     static constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
-        LogLevel::Unknown, LogLevel::Trace, LogLevel::Debug, LogLevel::Info,
-        LogLevel::Warn,    LogLevel::Error, LogLevel::Fatal
+        LogLevel::Unknown,
+        LogLevel::Trace,
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+        LogLevel::Fatal
     };
     for (const auto &[key, value] : theme.levels)
     {
@@ -190,7 +195,7 @@ void ThemeControl::LoadConfiguration()
 
 QString ThemeControl::PersistedSelection()
 {
-    QSettings settings;
+    const QSettings settings;
     const QVariant raw = settings.value(QLatin1String(SETTINGS_KEY_ACTIVE));
     return raw.isValid() ? raw.toString() : QString();
 }
@@ -332,7 +337,7 @@ QDir ThemeControl::UserThemesDir()
         base = QDir::tempPath() + QStringLiteral("/StructuredLogViewer");
     }
     const QString themesPath = QDir(base).filePath(QStringLiteral("themes"));
-    QDir dir(themesPath);
+    const QDir dir(themesPath);
     if (!dir.exists())
     {
         dir.mkpath(QStringLiteral("."));
@@ -380,7 +385,7 @@ QString ThemeControl::SanitiseThemeName(const QString &name)
     }
     if (name == QStringLiteral(".") || name == QStringLiteral(".."))
     {
-        throw std::runtime_error("Theme name must not be \".\" or \"..\"");
+        throw std::runtime_error(R"(Theme name must not be "." or "..")");
     }
     if (name.contains(QStringLiteral("..")))
     {
@@ -394,10 +399,9 @@ QString ThemeControl::SanitiseThemeName(const QString &name)
     constexpr char16_t FIRST_PRINTABLE_ASCII = 0x20U;
     for (const QChar ch : name)
     {
-        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
-            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('"') ||
-            ch == QLatin1Char('|') || ch == QLatin1Char('?') || ch == QLatin1Char('*') ||
-            ch.unicode() < FIRST_PRINTABLE_ASCII)
+        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') || ch == QLatin1Char('<') ||
+            ch == QLatin1Char('>') || ch == QLatin1Char('"') || ch == QLatin1Char('|') || ch == QLatin1Char('?') ||
+            ch == QLatin1Char('*') || ch.unicode() < FIRST_PRINTABLE_ASCII)
         {
             throw std::runtime_error("Theme name contains invalid character");
         }
@@ -521,7 +525,7 @@ void ThemeControl::DoLoadConfiguration()
             mStartupStyleName = qApp->style()->name();
         }
         mStartupFont = qApp->font();
-        if (QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
+        if (const QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
         {
             mOsColorScheme = hints->colorScheme();
             // The signal carries the freshly-resolved scheme, so we
@@ -672,8 +676,7 @@ void ThemeControl::DiscoverThemes()
     // across platforms (`QDir::entryList` order is filesystem-
     // dependent without an explicit sort flag).
     const QDir userDir = UserThemesDir();
-    const QStringList userFiles =
-        userDir.entryList(QStringList{QStringLiteral("*.json")}, QDir::Files, QDir::Name);
+    const QStringList userFiles = userDir.entryList(QStringList{QStringLiteral("*.json")}, QDir::Files, QDir::Name);
     for (const QString &file : userFiles)
     {
         ingest(userDir.filePath(file), /*fromUser=*/true);
@@ -741,8 +744,8 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
             }
         }
         const bool osDark = (mOsColorScheme == Qt::ColorScheme::Dark);
-        const QString desiredName = osDark ? QString::fromLatin1(BUILTIN_DARK_NAME)
-                                           : QString::fromLatin1(BUILTIN_LIGHT_NAME);
+        const QString desiredName =
+            osDark ? QString::fromLatin1(BUILTIN_DARK_NAME) : QString::fromLatin1(BUILTIN_LIGHT_NAME);
         if (const auto it = mIndex.find(desiredName); it != mIndex.end())
         {
             chosen = it->second.theme;
@@ -1061,7 +1064,7 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
     // group-less `setColor(role, c)` calls above (that overload
     // is shorthand for "all groups"), so re-writing them per
     // group would be redundant.
-    for (QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive})
+    for (const QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive})
     {
         palette.setColor(group, QPalette::Highlight, highlight);
         palette.setColor(group, QPalette::HighlightedText, highlightedText);
@@ -1096,9 +1099,9 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
         float mix{0.0F};
     };
     const std::array<DisabledOverride, 7> textOverrides = {
-        {{QPalette::Text, text, base, DISABLED_TEXT_MIX},
-         {QPalette::WindowText, windowText, window, DISABLED_TEXT_MIX},
-         {QPalette::ButtonText, buttonText, button, DISABLED_TEXT_MIX},
+        {{.role = QPalette::Text, .foreground = text, .background = base, .mix = DISABLED_TEXT_MIX},
+         {.role = QPalette::WindowText, .foreground = windowText, .background = window, .mix = DISABLED_TEXT_MIX},
+         {.role = QPalette::ButtonText, .foreground = buttonText, .background = button, .mix = DISABLED_TEXT_MIX},
          // ToolTipText must blend toward `toolTipBase`, NOT `base`:
          // the `ChromeStyle` docstring in `theme.hpp` pins every
          // text role to its own backing surface for the Disabled
@@ -1107,10 +1110,14 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
          // `text`/`base` still gets a self-consistent disabled
          // tooltip rather than dimming the body-text foreground
          // toward the table-body surface.
-         {QPalette::ToolTipText, toolTipText, toolTipBase, DISABLED_TEXT_MIX},
-         {QPalette::PlaceholderText, placeholder, base, DISABLED_TEXT_MIX},
-         {QPalette::Highlight, highlight, window, DISABLED_HIGHLIGHT_MIX},
-         {QPalette::HighlightedText, highlightedText, disabledHighlight, DISABLED_TEXT_MIX}}
+         {.role = QPalette::ToolTipText, .foreground = toolTipText, .background = toolTipBase, .mix = DISABLED_TEXT_MIX
+         },
+         {.role = QPalette::PlaceholderText, .foreground = placeholder, .background = base, .mix = DISABLED_TEXT_MIX},
+         {.role = QPalette::Highlight, .foreground = highlight, .background = window, .mix = DISABLED_HIGHLIGHT_MIX},
+         {.role = QPalette::HighlightedText,
+          .foreground = highlightedText,
+          .background = disabledHighlight,
+          .mix = DISABLED_TEXT_MIX}}
     };
     for (const DisabledOverride &entry : textOverrides)
     {
@@ -1149,8 +1156,13 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     // the brushes invalid and the model falls back to palette
     // defaults.
     constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
-        LogLevel::Unknown, LogLevel::Trace, LogLevel::Debug, LogLevel::Info,
-        LogLevel::Warn,    LogLevel::Error, LogLevel::Fatal
+        LogLevel::Unknown,
+        LogLevel::Trace,
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+        LogLevel::Fatal
     };
     for (const LogLevel level : ALL_LEVELS)
     {

@@ -23,8 +23,8 @@
 #include <QStyleFactory>
 #include <QStyleHints>
 #include <QTextStream>
-#include <Qt>
 #include <QtTest/QtTest>
+#include <Qt>
 
 namespace
 {
@@ -234,17 +234,13 @@ private slots:
     void TestUserThemeAppearsInListing()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("Solarized.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("Solarized.json"), QStringLiteral(R"({
                 "name": "Solarized",
                 "kind": "light",
                 "levels": {},
                 "table": {},
                 "app": {}
-            })")
-        );
+            })"));
         ThemeControl::ReloadAll();
 
         const auto listings = ThemeControl::AvailableThemes();
@@ -270,7 +266,7 @@ private slots:
     void TestSelectionChangeFiresSignal()
     {
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
-        QSignalSpy spy(&ThemeControl::Instance(), &ThemeControl::themeChanged);
+        const QSignalSpy spy(&ThemeControl::Instance(), &ThemeControl::themeChanged);
         QVERIFY(spy.isValid());
 
         ThemeControl::SetActiveSelection(QStringLiteral("Dark"));
@@ -345,8 +341,7 @@ private slots:
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
         QVERIFY2(
-            !ThemeControl::IsColorSchemeForcedForTest(),
-            "Auto mode must release the Force-mode colour-scheme override"
+            !ThemeControl::IsColorSchemeForcedForTest(), "Auto mode must release the Force-mode colour-scheme override"
         );
     }
 
@@ -454,7 +449,7 @@ private slots:
     void TestReloadAllSkipsWhenUnchanged()
     {
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
-        QSignalSpy spy(&ThemeControl::Instance(), &ThemeControl::themeChanged);
+        const QSignalSpy spy(&ThemeControl::Instance(), &ThemeControl::themeChanged);
         QVERIFY(spy.isValid());
 
         ThemeControl::ReloadAll();
@@ -468,18 +463,14 @@ private slots:
     void TestMissingStyleFactoryFallback()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("BadStyle.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("BadStyle.json"), QStringLiteral(R"({
                 "name": "BadStyle",
                 "kind": "light",
                 "levels": {},
                 "table": {},
                 "chrome": {},
                 "app": { "qtStyle": "NonexistentStyle12345" }
-            })")
-        );
+            })"));
         ThemeControl::ReloadAll();
 
         const QString priorStyle = qApp->style()->name();

@@ -36,8 +36,8 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
-#include <loglib/theme.hpp>
 #include <loglib/tcp_server_producer.hpp>
+#include <loglib/theme.hpp>
 #include <loglib/udp_server_producer.hpp>
 
 #include <test_common/network_log_client.hpp>
@@ -2715,8 +2715,7 @@ private slots:
         StreamingControl::SetNewestFirst(true);
         mWindow->ApplyDisplayOrder();
         QVERIFY2(
-            !tableView->alternatingRowColors(),
-            "log table must keep alternating row colours off in newest-first mode"
+            !tableView->alternatingRowColors(), "log table must keep alternating row colours off in newest-first mode"
         );
 
         StreamingControl::SetNewestFirst(false);
@@ -3282,9 +3281,7 @@ private slots:
         // CI runner's palette.
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         const QBrush expectedErrorBg = ThemeControl::BackgroundFor(loglib::LogLevel::Error);
-        QVERIFY2(
-            expectedErrorBg.style() != Qt::NoBrush, "the Light theme must define an Error background brush"
-        );
+        QVERIFY2(expectedErrorBg.style() != Qt::NoBrush, "the Light theme must define an Error background brush");
         const QBrush expectedInfoBg = ThemeControl::BackgroundFor(loglib::LogLevel::Info);
         QCOMPARE(expectedInfoBg.style(), Qt::NoBrush);
 
@@ -3325,7 +3322,7 @@ private slots:
         const QModelIndex errorIndex = run.model->index(2, levelCol);
         const QVariant errorBg = run.model->data(errorIndex, Qt::BackgroundRole);
         QVERIFY2(errorBg.isValid(), "Error row must carry the theme background brush");
-        const QBrush actualErrorBg = qvariant_cast<QBrush>(errorBg);
+        const auto actualErrorBg = qvariant_cast<QBrush>(errorBg);
         QCOMPARE(actualErrorBg.color(), expectedErrorBg.color());
 
         // Row 5 is Fatal -> bold flag must come through FontRole.

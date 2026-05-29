@@ -56,11 +56,9 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     setMinimumWidth(PREFERENCES_MIN_WIDTH_PX);
 
     mThemeComboBox = new QComboBox(this);
-    mThemeComboBox->setToolTip(
-        "Active theme. `Auto (follow system)` picks Light or Dark based on the OS "
-        "palette. User themes live in <AppData>/themes/*.json and shadow built-ins "
-        "with the same name."
-    );
+    mThemeComboBox->setToolTip("Active theme. `Auto (follow system)` picks Light or Dark based on the OS "
+                               "palette. User themes live in <AppData>/themes/*.json and shadow built-ins "
+                               "with the same name.");
 
     mThemePreviewLabel = new QLabel(this);
     mThemePreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -86,18 +84,14 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         // for `file://` URLs on a headless Linux session).
         if (!ThemeControl::RevealUserThemesDir())
         {
-            ShowThemeStatus(
-                tr("Could not open the user themes folder. The folder is at: %1")
-                    .arg(ThemeControl::UserThemesDir().absolutePath())
-            );
+            ShowThemeStatus(tr("Could not open the user themes folder. The folder is at: %1")
+                                .arg(ThemeControl::UserThemesDir().absolutePath()));
         }
     });
 
     auto *duplicateThemeButton = new QPushButton("Duplicate active theme...", this);
-    duplicateThemeButton->setToolTip(
-        "Copy the currently resolved theme into a new file under <AppData>/themes/ "
-        "as `<active>-copy.json`, then open the user themes folder so it can be edited."
-    );
+    duplicateThemeButton->setToolTip("Copy the currently resolved theme into a new file under <AppData>/themes/ "
+                                     "as `<active>-copy.json`, then open the user themes folder so it can be edited.");
     connect(duplicateThemeButton, &QPushButton::clicked, this, [this]() {
         try
         {
@@ -123,7 +117,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
             RepopulateThemeCombo();
             ThemeControl::RevealUserThemesDir();
             ShowThemeStatus(tr("Saved as \"%1\". Edit the file in your themes folder, then "
-                               "click \"Reload themes from disk\" to apply.").arg(candidate));
+                               "click \"Reload themes from disk\" to apply.")
+                                .arg(candidate));
         }
         catch (const std::exception &ex)
         {
@@ -132,10 +127,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     });
 
     auto *reloadThemesButton = new QPushButton("Reload themes from disk", this);
-    reloadThemesButton->setToolTip(
-        "Re-scan the user themes folder and the built-in themes, then re-apply the "
-        "active theme. Use after editing a theme JSON file outside the app."
-    );
+    reloadThemesButton->setToolTip("Re-scan the user themes folder and the built-in themes, then re-apply the "
+                                   "active theme. Use after editing a theme JSON file outside the app.");
     connect(reloadThemesButton, &QPushButton::clicked, this, [this]() {
         // Snapshot the pre-reload selection so we can detect the
         // "user's pick was deleted on disk" case: `ReloadAll` ->
@@ -152,8 +145,7 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         if (!preReloadSelection.isEmpty() && postReloadSelection.isEmpty())
         {
             ShowThemeStatus(
-                tr("Reloaded themes. Active theme \"%1\" is gone from disk; reverted to Auto.")
-                    .arg(preReloadSelection)
+                tr("Reloaded themes. Active theme \"%1\" is gone from disk; reverted to Auto.").arg(preReloadSelection)
             );
         }
         else
@@ -378,8 +370,8 @@ void PreferencesEditor::RepopulateThemeCombo()
 void PreferencesEditor::RefreshThemePreview()
 {
     const loglib::Theme &active = ThemeControl::Active();
-    QString preview = QStringLiteral("Active: %1 (%2)")
-                          .arg(QString::fromStdString(active.name), DescribeThemeKind(active.kind));
+    QString preview =
+        QStringLiteral("Active: %1 (%2)").arg(QString::fromStdString(active.name), DescribeThemeKind(active.kind));
     if (active.app.qtStyle.has_value() && !active.app.qtStyle->empty())
     {
         preview += QStringLiteral("\nStyle: ") + QString::fromStdString(*active.app.qtStyle);

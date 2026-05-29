@@ -506,9 +506,7 @@ void RecordDetailWidget::RefreshPalette()
     // app palette keeps this robust regardless of which roles
     // anyone else has overridden on this label later.
     QPalette placeholderPalette = mPlaceholderLabel->palette();
-    placeholderPalette.setColor(
-        mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText)
-    );
+    placeholderPalette.setColor(mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mPlaceholderLabel->setPalette(placeholderPalette);
 
     // Rebuild every cell so placeholder-row foregrounds re-pick the

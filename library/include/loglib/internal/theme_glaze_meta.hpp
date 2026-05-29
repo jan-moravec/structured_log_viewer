@@ -73,7 +73,8 @@ template <> struct glz::meta<loglib::ChromeStyle>
 template <> struct glz::meta<loglib::AppStyle>
 {
     using T = loglib::AppStyle;
-    static constexpr auto value = object("qtStyle", &T::qtStyle, "fontFamily", &T::fontFamily, "fontSize", &T::fontSize);
+    static constexpr auto value =
+        object("qtStyle", &T::qtStyle, "fontFamily", &T::fontFamily, "fontSize", &T::fontSize);
 };
 
 template <> struct glz::meta<loglib::Theme>

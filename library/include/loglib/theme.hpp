@@ -144,7 +144,7 @@ struct Theme
 /// constructed `LevelStyle` when the theme does not define one.
 /// Centralises the canonical-name lookup so callers don't repeat
 /// the `CanonicalLevelName` + `map::find` dance.
-[[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level) noexcept;
+[[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);
 
 /// Parse a theme from JSON. Throws `std::runtime_error` on any
 /// parse error. `kind` is decoded from the string value `"light"`

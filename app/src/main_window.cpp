@@ -25,8 +25,8 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
-#include <loglib/theme.hpp>
 #include <loglib/tcp_server_producer.hpp>
+#include <loglib/theme.hpp>
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
@@ -3775,7 +3775,8 @@ void MainWindow::ApplyTableStyleSheet()
     QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
     if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
     {
-        headerRule += QStringLiteral(" background-color: %1;").arg(QString::fromStdString(*theme.table.headerBackground));
+        headerRule +=
+            QStringLiteral(" background-color: %1;").arg(QString::fromStdString(*theme.table.headerBackground));
     }
     if (theme.table.headerForeground.has_value() && !theme.table.headerForeground->empty())
     {

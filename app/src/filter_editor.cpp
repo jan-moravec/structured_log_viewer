@@ -260,9 +260,7 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     // new palette: the user has a path to re-trigger them (click
     // OK again with the same invalid input), and silently
     // dropping is simpler than per-widget state tracking.
-    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() {
-        ClearWarningStyles();
-    });
+    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() { ClearWarningStyles(); });
 
     UpdateSelectedColumn(0);
 }

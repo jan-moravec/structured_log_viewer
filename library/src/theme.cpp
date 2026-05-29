@@ -12,7 +12,7 @@
 namespace loglib
 {
 
-LevelStyle StyleForLevel(const Theme &theme, LogLevel level) noexcept
+LevelStyle StyleForLevel(const Theme &theme, LogLevel level)
 {
     const std::string_view canonical = CanonicalLevelName(level);
     const auto it = theme.levels.find(std::string(canonical));
