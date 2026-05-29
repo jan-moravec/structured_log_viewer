@@ -118,8 +118,7 @@ TEST_CASE("ChromeStyle JSON round-trips every field", "[Theme]")
     CHECK(reloaded.chrome.placeholderText == original.chrome.placeholderText);
     CHECK(reloaded.chrome.toolTipBase == original.chrome.toolTipBase);
     CHECK(reloaded.chrome.toolTipText == original.chrome.toolTipText);
-    // Defaulted operator==: byte-identical themes compare equal so
-    // `ThemeControl::ReloadAll` can fast-path the skip.
+    // Defaulted `operator==`: identical themes compare equal.
     CHECK(reloaded == original);
 }
 

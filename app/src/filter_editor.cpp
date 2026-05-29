@@ -38,48 +38,37 @@ constexpr int PAGE_ENUM = 2;
 constexpr int PAGE_NUMERIC = 3;
 constexpr int PAGE_BOOLEAN = 4;
 
-/// True iff @p widget paints onto a dark surface. Sampled from
-/// `QPalette::Base` (the role used by text-input backgrounds and
-/// list rows), which is the surface our validation feedback
-/// actually contrasts against -- not `QPalette::Window`. The
-/// dark / light threshold itself lives in `ThemeControl::IsDarkColor`
-/// so the auto theme switch and the validation feedback share the
-/// same line.
+/// True iff @p widget paints onto a dark `QPalette::Base` --
+/// the surface our validation feedback contrasts against.
 [[nodiscard]] bool IsDarkBase(const QWidget *widget)
 {
     const QPalette palette = (widget != nullptr) ? widget->palette() : qApp->palette();
     return ThemeControl::IsDarkColor(palette.color(QPalette::Base));
 }
 
-/// Foreground / border warning colour tuned to remain legible on
-/// both Light and Dark `QPalette::Base` backgrounds. Solid red
-/// (`#FF0000`) on a dark surface fails contrast badly; a soft
-/// salmon (`#FF8A80`) on a dark surface and a Material-style
-/// deep red (`#D32F2F`) on a light surface both pass.
+/// Palette-aware warning colour, legible on both Light and Dark
+/// backgrounds.
 [[nodiscard]] QString WarningColorHex(const QWidget *widget)
 {
     return IsDarkBase(widget) ? QStringLiteral("#FF8A80") : QStringLiteral("#D32F2F");
 }
 
-/// QSS snippet that paints @p widget's foreground in the
-/// palette-aware warning colour. For check boxes (which paint
-/// their label via the foreground role) and labels.
+/// QSS for the warning foreground colour, for check boxes /
+/// labels.
 [[nodiscard]] QString WarningTextStyle(const QWidget *widget)
 {
     return QStringLiteral("QCheckBox { color: %1; } QLabel { color: %1; }").arg(WarningColorHex(widget));
 }
 
-/// QSS snippet that paints @p widget's border in the
-/// palette-aware warning colour. Used for line / number edits
-/// where the input bytes stay legible but the chrome flags the
-/// problem. Trailing `;` keeps the rule valid if a caller ever
-/// concatenates another declaration onto it.
+/// QSS for the warning border colour, for line / number edits
+/// where the input itself stays legible. Trailing `;` so callers
+/// can concatenate further rules.
 [[nodiscard]] QString WarningBorderStyle(const QWidget *widget)
 {
     return QStringLiteral("border: 1px solid %1;").arg(WarningColorHex(widget));
 }
 
-/// `QListView` border-only warning style for the enum picker.
+/// Border-only warning style for the enum picker `QListView`.
 [[nodiscard]] QString WarningListBorderStyle(const QWidget *widget)
 {
     return QStringLiteral("QListView { border: 1px solid %1; }").arg(WarningColorHex(widget));
@@ -252,14 +241,9 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     connect(mBoolIncludeTrue, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
     connect(mBoolIncludeFalse, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
 
-    // Theme flip while the editor is open: the warning colour we
-    // baked into our QSS at OK-click time was tuned for the
-    // previous `QPalette::Base`. Drop the stale styles so the
-    // next validation failure picks the freshly-resolved warning
-    // colour. We don't try to re-stamp the warnings against the
-    // new palette: the user has a path to re-trigger them (click
-    // OK again with the same invalid input), and silently
-    // dropping is simpler than per-widget state tracking.
+    // On theme flip, drop the warning styles -- they were tuned
+    // for the previous palette. Re-clicking Ok with the same
+    // invalid input re-stamps them in the new theme's colour.
     connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() { ClearWarningStyles(); });
 
     UpdateSelectedColumn(0);

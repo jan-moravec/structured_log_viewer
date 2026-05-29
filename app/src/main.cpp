@@ -103,13 +103,10 @@ int main(int argc, char *argv[])
     qApp->installEventFilter(&fileOpenFilter);
 
     ThemeControl::LoadConfiguration();
-    // Best-effort cleanup of the legacy `appearance/*` keys so a
-    // user upgrading from a pre-theme build doesn't carry around
-    // dead settings (legacy values would have been overridden by
-    // the theme anyway). `contains()` gates the writes so the
-    // steady-state common case (post-migration users) doesn't pay
-    // a `QSettings::sync` per launch. Safe to remove once a
-    // release ships.
+    // Best-effort cleanup of the legacy `appearance/*` keys from
+    // the pre-theme build. The `contains()` gate keeps the
+    // post-migration steady state free of `QSettings::sync` cost.
+    // Safe to remove after one release ships.
     {
         QSettings settings;
         if (settings.contains(QStringLiteral("appearance/style")))

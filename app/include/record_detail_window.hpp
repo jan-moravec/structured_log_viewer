@@ -19,10 +19,8 @@ public:
     /// button is hidden -- this *is* a new window.
     explicit RecordDetailWindow(const RecordDetailContent &content, QWidget *parent = nullptr);
 
-    /// Re-render against the current palette. Used by `MainWindow`'s
-    /// theme-change broadcast so the snapshot's placeholder
-    /// foreground / em-dash cells re-pick the new palette colours.
-    /// Idempotent.
+    /// Re-render against the current palette. Called by
+    /// `MainWindow`'s theme-change broadcast. Idempotent.
     void RefreshPalette();
 
 #ifdef LOGAPP_BUILD_TESTING

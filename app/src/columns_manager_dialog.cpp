@@ -125,9 +125,8 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     );
     mIntroLabel->setObjectName(QStringLiteral("introLabel"));
     mIntroLabel->setWordWrap(true);
-    // Use the palette's PlaceholderText role so the helper text picks
-    // up the muted tone of the active theme (light or dark).
-    // `RefreshPalette` re-applies this when the active theme flips.
+    // Muted helper text via `PlaceholderText`. `RefreshPalette`
+    // re-applies it on theme change.
     RefreshPalette();
     layout->addWidget(mIntroLabel);
 
@@ -412,12 +411,9 @@ void ColumnsManagerDialog::RefreshPalette()
     {
         return;
     }
-    // Sample `PlaceholderText` from the app palette rather than the
-    // label's own (overridden) palette -- once we've stamped a
-    // foreground-role override here, reading back through
-    // `mIntroLabel->palette()` can return the cached override for
-    // roles the resolve-mask flags as locally-set. The app
-    // palette is the source of truth for the theme-supplied value.
+    // Read `PlaceholderText` from the app palette, not the label's
+    // own -- a prior override on the label can shadow theme
+    // changes via the resolve mask.
     QPalette introPalette = mIntroLabel->palette();
     introPalette.setColor(mIntroLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mIntroLabel->setPalette(introPalette);

@@ -449,17 +449,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
-    // Snapshot the pre-batch first-level-column index so we can
-    // (a) compare against the post-batch configuration to decide
-    // whether the cache really needs to stay invalidated, and (b)
-    // pre-invalidate before `mLogTable.AppendBatch` so any
-    // re-entrant `data()` call -- e.g. via a `DirectConnection`
-    // slot on `enumColumnsChanged` -- cannot read a stale column
-    // index from the cache. The "restore if unchanged" tail below
-    // keeps the hot path cheap on high-throughput steady-state
-    // batches: an unconditional invalidation per batch would
-    // force every `data()` cell to pay an O(columns) rescan on
-    // the next paint.
+    // Snapshot the pre-batch level-column index so we can restore
+    // the cache below if it didn't actually change. The
+    // pre-invalidation guards against re-entrant `data()` calls
+    // (e.g. via a `DirectConnection` slot) reading a stale value.
     const int firstLevelColumnBefore = ComputeFirstLevelColumnIndex();
     mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
@@ -550,21 +543,13 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    // Restore the cache when the post-batch first-level-column index
-    // matches what we snapshotted -- the pre-invalidation above was
-    // a defensive belt-and-braces against re-entry, not a sign of
-    // real churn. Compute once and assign directly; the next
-    // `LevelForRow` call would re-derive the same value but at the
-    // cost of an O(columns) scan per cell on the next paint.
+    // Restore the cache when the post-batch index didn't change;
+    // otherwise leave it invalidated for lazy rebuild.
     const int firstLevelColumnAfter = ComputeFirstLevelColumnIndex();
     if (firstLevelColumnAfter == firstLevelColumnBefore)
     {
         mFirstLevelColumnCache = firstLevelColumnAfter;
     }
-    // else: leave the cache invalidated; the column index genuinely
-    // shifted (auto-detect promoted / demoted, or `columnsGrew`
-    // introduced an earlier Level column), and `LevelForRow` will
-    // rebuild lazily on its next call.
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
     // proxy connected to `rowsInserted` walks new rows against a
@@ -1002,7 +987,7 @@ void LogModel::NotifyColumnEdited(int columnIndex)
     {
         return;
     }
-    // A column type edit may have added or removed `Type::Level`.
+    // Type edit may have added or removed `Type::Level`.
     mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     emit headerDataChanged(Qt::Horizontal, columnIndex, columnIndex);
     const int rows = rowCount();
@@ -1037,11 +1022,8 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
     mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
     mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
 
-    // Type edit may have added or removed a `Type::Level` column,
-    // invalidating the cached "first level column" hint. Invalidate
-    // here (not only via the `column_editor.cpp` follow-up
-    // `NotifyColumnEdited` call) so direct callers cannot leave the
-    // cache pointing at a non-Level column.
+    // Invalidate here too (not just in `NotifyColumnEdited`) so
+    // direct callers can't leave the cache stale.
     mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
     // Picking "Auto-detect" on already-loaded rows parks at
@@ -1143,14 +1125,10 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return {};
     }
 
-    // One switch covers every role we serve. Style-bearing roles
-    // (`Background`/`Foreground`/`Font`) each resolve the row's
-    // canonical level via `LevelForRow` -- Qt re-queries each role
-    // separately per cell, so a row with three styled roles pays
-    // three `LevelForRow` calls in the worst case (cache is O(1)
-    // after the first scan). `Qt::FontRole` is gated on
-    // `ThemeControl::HasAnyFontStyle()` so themes that don't bold
-    // or italicise any level skip the level resolve entirely.
+    // Style roles (Background / Foreground / Font) each resolve
+    // the row's level via `LevelForRow`. `Qt::FontRole` is gated
+    // on `HasAnyFontStyle()` so themes that style no level skip
+    // the resolve entirely.
     switch (role)
     {
     case Qt::DisplayRole:
@@ -1182,11 +1160,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::FontRole:
     {
-        // Global gate first: when no level in the active theme
-        // sets bold or italic, skip the per-cell `LevelForRow`
-        // resolve. Per-level `HasFontStyle` is still needed below
-        // for themes that style only some levels (the shipped
-        // `Light` / `Dark` presets bold only `Fatal`).
+        // Skip the per-cell resolve when no level is styled.
+        // Per-level check is still needed below for themes that
+        // style only some levels.
         if (!ThemeControl::HasAnyFontStyle())
         {
             return {};

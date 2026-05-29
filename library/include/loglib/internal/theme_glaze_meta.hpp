@@ -6,12 +6,11 @@
 
 #include <array>
 
-// Glaze meta-specialisations for `loglib::Theme` and friends. Out-of-
-// line so the public header does not pull in `<glaze/glaze.hpp>`.
+// Glaze meta-specialisations for `loglib::Theme`. Kept out of the
+// public header so it doesn't pull in `<glaze/glaze.hpp>`.
 //
-// `keys` and `value` are slot names mandated by glaze's reflection: its
-// template machinery looks them up by exact name, so they cannot adopt the
-// project-wide UPPER_CASE constexpr convention without breaking JSON I/O.
+// `keys` and `value` are slot names required by Glaze reflection,
+// so they keep their lowercase names.
 // NOLINTBEGIN(readability-identifier-naming)
 
 template <> struct glz::meta<loglib::ThemeKind>

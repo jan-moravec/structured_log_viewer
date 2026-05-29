@@ -11,21 +11,17 @@
 namespace loglib
 {
 
-/// Whether a theme is intended for use on a light or a dark desktop
-/// palette. Drives the auto-switch in the app's `ThemeControl`: the
-/// app picks the first built-in `Light` theme on a bright system
-/// palette, the first built-in `Dark` theme otherwise.
+/// Marks a theme as intended for a light or dark desktop palette.
+/// Used by the app's auto-switch to pick a sensible default.
 enum class ThemeKind : uint8_t
 {
     Light = 0,
     Dark,
 };
 
-/// Per-`LogLevel` row styling. All fields are optional; missing
-/// colors fall back to the active Qt palette, missing flags to
-/// `false`. Colors are stored as raw `#RRGGBB` (or `#AARRGGBB`)
-/// strings so the library has no Qt dependency; the app parses
-/// them via `QColor::fromString`.
+/// Per-`LogLevel` row styling. All fields optional; missing colours
+/// fall back to the active Qt palette. Colours are `#RRGGBB` (or
+/// `#AARRGGBB`) strings to keep this header Qt-free.
 struct LevelStyle
 {
     std::optional<std::string> foreground;
@@ -33,28 +29,19 @@ struct LevelStyle
     bool bold = false;
     bool italic = false;
 
-    /// Defaulted equality so callers (e.g. `ThemeControl::ReloadAll`)
-    /// can skip a re-apply when a freshly-loaded theme is byte-equal
-    /// to the active one.
     friend bool operator==(const LevelStyle &, const LevelStyle &) = default;
 };
 
-/// Chrome around the rows: base background, alternating stripe,
-/// selection rectangle, header. All optional; absent fields keep
-/// the Qt style defaults.
+/// Table chrome: base/alternate/selection/header colours. All
+/// optional; absent fields keep the Qt style defaults.
 ///
-/// `background` MUST be set alongside `alternateRowBackground`:
-/// the QTableView default `background-color` comes from the
-/// `QPalette::Base` role, which does not change when a theme
-/// switches, so a theme that only customises the alternate
-/// stripe ends up rendering mismatched light/dark rows when the
-/// system palette doesn't match the theme kind.
+/// Set `background` whenever `alternateRowBackground` is set --
+/// `QPalette::Base` does not change with the theme, so a partial
+/// override yields mismatched light/dark rows.
 ///
-/// Note on `alternateRowBackground`: the central log table no
-/// longer alternates rows -- per-level theme colours already
-/// partition the rows visually. The field still drives
-/// `QPalette::AlternateBase`, which the secondary tables
-/// (Record Details fields table, Columns Manager) consume.
+/// The main log table no longer alternates rows (per-level
+/// colours already partition them); `alternateRowBackground`
+/// still drives secondary tables like Record Details.
 struct TableStyle
 {
     std::optional<std::string> background;
@@ -67,20 +54,14 @@ struct TableStyle
     friend bool operator==(const TableStyle &, const TableStyle &) = default;
 };
 
-/// Chrome around the central view: window background, default
-/// text, buttons, tooltips. Drives the corresponding
-/// `QPalette` roles in the app's `ThemeControl`. All optional;
-/// absent fields fall back to per-`ThemeKind` defaults
-/// hand-tuned to match the built-in Light / Dark presets, so a
-/// theme that only customises the table chrome still gets a
-/// self-consistent palette.
+/// Window-level chrome (background, text, buttons, tooltips).
+/// All optional; absent fields fall back to per-`ThemeKind`
+/// defaults tuned to match the built-in presets.
 ///
-/// Foreground / text roles always pair with their backing
-/// surface role for the `Disabled` colour group: `text` is
-/// blended toward `background` (from `TableStyle`),
-/// `windowText` toward `window`, etc. Theme authors who want
-/// to override one without the other should set both
-/// explicitly to keep the disabled-state blend predictable.
+/// For the `Disabled` colour group, each text role is blended
+/// toward its backing surface (`text` toward `background`,
+/// `windowText` toward `window`, etc.). Override both sides
+/// together for predictable disabled-state colours.
 struct ChromeStyle
 {
     std::optional<std::string> window;
@@ -95,9 +76,8 @@ struct ChromeStyle
     friend bool operator==(const ChromeStyle &, const ChromeStyle &) = default;
 };
 
-/// App-wide style fields that the theme bundle also owns (Qt style
-/// name and base font). All optional; absent fields keep the
-/// process-global Qt defaults set at startup.
+/// App-wide style overrides. All optional; absent fields keep
+/// the process defaults captured at startup.
 struct AppStyle
 {
     /// e.g. "fusion", "windows". Resolved via `QStyleFactory::create`.
@@ -108,52 +88,40 @@ struct AppStyle
     friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
-/// One self-contained theme bundle. JSON keys mirror the C++
-/// field names (lowerCamelCase). The `levels` map is keyed by the
-/// canonical level name (`Trace`, `Debug`, `Info`, `Warn`,
-/// `Error`, `Fatal`); unknown keys are ignored.
+/// Self-contained theme bundle. JSON keys mirror the field names
+/// (lowerCamelCase). `levels` keys must be canonical level names
+/// (`Trace`..`Fatal`, or `Unknown`); other keys are ignored.
 struct Theme
 {
-    /// Display name, e.g. "Dark". Matched case-sensitively as the
-    /// stable theme identity; user themes whose name collides with
-    /// a built-in shadow the built-in.
+    /// Display name, e.g. "Dark". Case-sensitive identity; user
+    /// themes whose name matches a built-in shadow the built-in.
     std::string name;
 
-    /// Auto-switch hint. Built-in `Light` is `Light`, built-in
-    /// `Dark` is `Dark`; user themes pick one explicitly so the
-    /// auto-picker has a slot to put them in.
+    /// Auto-switch hint. User themes pick one so the auto-picker
+    /// knows which slot they belong to.
     ThemeKind kind = ThemeKind::Light;
 
-    /// Per-level row styles. Keys must spell a canonical level
-    /// name (see `loglib::CanonicalLevelName`) or the literal
-    /// `"Unknown"` for raw / unresolved level values. Unknown keys
-    /// are silently ignored at apply time.
+    /// Per-level row styles, keyed by canonical level name
+    /// (`Trace`..`Fatal`) or `"Unknown"`. Other keys are ignored.
     std::map<std::string, LevelStyle> levels;
 
     TableStyle table;
     ChromeStyle chrome;
     AppStyle app;
 
-    /// Defaulted equality so `ThemeControl::ReloadAll` can skip the
-    /// expensive `ApplyTheme` + `themeChanged` round-trip when the
-    /// freshly-loaded theme is byte-equal to the active one.
     friend bool operator==(const Theme &, const Theme &) = default;
 };
 
-/// Lookup helper: returns the style for @p level, or a default-
-/// constructed `LevelStyle` when the theme does not define one.
-/// Centralises the canonical-name lookup so callers don't repeat
-/// the `CanonicalLevelName` + `map::find` dance.
+/// Returns the style for @p level, or a default-constructed
+/// `LevelStyle` when the theme has no entry for it.
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);
 
 /// Parse a theme from JSON. Throws `std::runtime_error` on any
-/// parse error. `kind` is decoded from the string value `"light"`
-/// or `"dark"`; any other value fails the parse.
+/// parse error. `kind` must be `"light"` or `"dark"`.
 [[nodiscard]] Theme ParseTheme(std::string_view content);
 
 /// Serialise @p theme to pretty-printed JSON. Throws
-/// `std::runtime_error` if Glaze cannot encode the value
-/// (shouldn't happen for a well-formed `Theme`).
+/// `std::runtime_error` on encode failure.
 [[nodiscard]] std::string SerializeTheme(const Theme &theme);
 
 } // namespace loglib

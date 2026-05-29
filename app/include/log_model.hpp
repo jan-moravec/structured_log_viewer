@@ -261,27 +261,17 @@ private:
     /// Shared implementation of `Reset()` / `StopAndKeepRows()`.
     void TeardownStreamingSessionInternal(bool resetTable);
 
-    /// Canonical level for @p row, looked up via the first
-    /// `Type::Level` column in the configuration. Returns nullopt
-    /// when no level column exists or when @p row has no resolvable
-    /// level value. Powers the `Background/Foreground/Font` role
-    /// branches in `data()`. `LogTable::GetLevelForRow` is itself
-    /// `O(1)`, so the per-cell cost on the hot path is dominated
-    /// by the cached column-index lookup -- which is `O(columns)`
-    /// the first call after each invalidation and `O(1)` for
-    /// every cell after that.
+    /// Canonical level for @p row via the first `Type::Level`
+    /// column. Returns nullopt when there's no level column or the
+    /// row has no resolvable level. Drives the Background /
+    /// Foreground / Font role branches in `data()`.
     [[nodiscard]] std::optional<loglib::LogLevel> LevelForRow(int row) const noexcept;
 
-    /// Linear scan of `Configuration().columns` for the first
-    /// `Type::Level` entry. Returns `LEVEL_COLUMN_NONE` when
-    /// nothing matches. Used both by `LevelForRow` (cache fill)
-    /// and by `AppendBatch` (post-batch comparison to detect
-    /// type churn before invalidating the cache).
+    /// Linear scan for the first `Type::Level` column. Returns
+    /// `LEVEL_COLUMN_NONE` when none match.
     [[nodiscard]] int ComputeFirstLevelColumnIndex() const noexcept;
 
-    /// `mFirstLevelColumnCache` sentinel: not yet computed.
     static constexpr int LEVEL_COLUMN_UNCACHED = -2;
-    /// `mFirstLevelColumnCache` sentinel: scanned, no level column found.
     static constexpr int LEVEL_COLUMN_NONE = -1;
 
     loglib::LogTable mLogTable;
@@ -319,14 +309,10 @@ private:
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
 
-    /// Cached "first `Type::Level` column index" used by
-    /// `LevelForRow`. `LEVEL_COLUMN_UNCACHED` until populated;
-    /// `LEVEL_COLUMN_NONE` after a scan with no match; otherwise
-    /// the column index. Mutated from `const` paths via
-    /// `mutable`, and invalidated from every structural mutator
-    /// (`AppendBatch`, `MoveColumn`, `ApplyColumnTypeEdit`,
-    /// `NotifyColumnEdited`, `NotifyConfigurationReplaced`,
-    /// `TeardownStreamingSessionInternal`).
+    /// Cached first-`Type::Level` column index. Sentinel
+    /// `LEVEL_COLUMN_UNCACHED` before first scan, `LEVEL_COLUMN_NONE`
+    /// when no level column exists. Invalidated by every structural
+    /// mutator.
     mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 };
 

@@ -25,9 +25,8 @@ LevelStyle StyleForLevel(const Theme &theme, LogLevel level)
 
 Theme ParseTheme(std::string_view content)
 {
-    // Reuse `LOG_CONFIG_OPTS` (`prettify`, `error_on_unknown_keys=false`)
-    // so unknown JSON keys load instead of throwing -- lets future
-    // schema additions roll forward without breaking existing themes.
+    // `error_on_unknown_keys=false` lets new schema fields roll
+    // forward without breaking older themes.
     constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
     Theme parsed;

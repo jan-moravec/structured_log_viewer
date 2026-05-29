@@ -713,24 +713,13 @@ private:
     void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
-    /// Pick `:/icon-white.png` for dark themes and `:/icon-black.png`
-    /// for light themes so the title-bar icon stays legible against
-    /// the chrome the OS paints. Called from the constructor and
-    /// from `OnThemeChanged` so an Auto-mode flip on an OS palette
-    /// change updates the icon too.
+    /// Pick the light- or dark-variant title-bar icon to match the
+    /// active theme.
     void ApplyThemedWindowIcon();
 
-    /// Slot for `ThemeControl::themeChanged()`: re-applies the
-    /// table QSS, then asks the table viewport to repaint so the
-    /// view re-queries `data()` for every visible cell and picks
-    /// up the new per-level brushes / fonts.
-    ///
-    /// Uses `viewport()->update()` instead of a model-wide
-    /// `dataChanged` because the latter has to walk the row range
-    /// through the proxy chain (`RowOrderProxyModel` ->
-    /// `LogFilterModel`), which is expensive on a multi-million-row
-    /// table even though only the viewport actually needs to
-    /// repaint.
+    /// Slot for `ThemeControl::themeChanged()`. Re-applies the
+    /// table QSS and repaints the viewport so cells re-query
+    /// `data()` for the new per-level brushes / fonts.
     void OnThemeChanged();
 
     /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
@@ -800,19 +789,11 @@ private:
     /// the float / dock / close chrome.
     RecordDetailDock *mRecordDetailDock = nullptr;
 
-    /// Last QSS strings pushed to the table body and header by
-    /// `ApplyTableStyleSheet`. Compared on every re-apply so we
-    /// can skip an unchanged `setStyleSheet(...)` -- Qt re-polishes
-    /// the entire view on every call even when the string is
-    /// byte-equal, which shows up as a noticeable hitch on theme
-    /// flips that fan out three event-bounce repaints. Both
-    /// sides cache against our own snapshot (NOT
-    /// `widget->styleSheet()`) so anyone else who pushes a
-    /// stylesheet onto the same widget can't trip our diff. The
-    /// body string is currently always empty (palette drives table
-    /// chrome) but the cache pair stays paired-up so future theme
-    /// fields that need body QSS plug in without re-deriving the
-    /// "cache against our own snapshot" pattern.
+    /// Last QSS pushed to the table body / header. Compared on
+    /// re-apply so we can skip unchanged writes -- Qt re-polishes
+    /// the whole view on every `setStyleSheet`, even no-op ones.
+    /// We cache our own snapshot (not `widget->styleSheet()`) so
+    /// external writers can't trip the diff.
     QString mLastBodyStyleSheet;
     QString mLastHeaderStyleSheet;
 

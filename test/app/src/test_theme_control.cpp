@@ -1,10 +1,6 @@
-// Unit tests for `ThemeControl` -- the singleton that owns the active
-// theme bundle and drives the auto-switch between Light and Dark based
-// on the OS palette.
-//
-// Runs with `QTEST_MAIN` so a `QApplication` is alive; the cache
-// behind `qApp->palette()` and `qApp->setStyle()` is the production
-// path under test.
+// Unit tests for `ThemeControl`. Uses `QTEST_MAIN` so a real
+// `QApplication` is alive and the production palette / style code
+// path runs under test.
 
 #include "theme_control.hpp"
 
@@ -31,22 +27,16 @@ namespace
 
 constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 
-/// Pin the perceived OS colour scheme for the next Auto resolution.
-/// Tests run on a wide variety of host platforms (Windows desktop,
-/// minimal Linux CI image with no platform theme), so we cannot
-/// rely on `QStyleHints::colorScheme()` returning a deterministic
-/// value. `ThemeControl::SetOsColorSchemeForTest` writes the
-/// cached `mOsColorScheme` directly, bypassing the
-/// `setColorScheme()` path (which would also engage Force-mode
-/// bookkeeping).
+/// Pin the cached OS colour scheme for the next Auto resolution.
+/// Bypasses `setColorScheme()` (which would engage Force mode).
 void FakeOsColorScheme(Qt::ColorScheme scheme)
 {
     ThemeControl::SetOsColorSchemeForTest(scheme);
 }
 
-/// Drop the active selection so the next `LoadConfiguration` starts
-/// from Auto. Keeps tests independent of whatever was persisted by a
-/// previous run (CI workers reuse a user profile).
+/// Drop the persisted active selection so the next
+/// `LoadConfiguration` starts from Auto. Keeps tests independent
+/// of CI worker profile state.
 void ClearActiveSelection()
 {
     QSettings settings;
@@ -80,10 +70,8 @@ class ThemeControlTest : public QObject
 private slots:
     void initTestCase()
     {
-        // Sandbox QStandardPaths so the test never touches the
-        // real user profile. AppDataLocation will resolve to a
-        // per-test-binary temp folder that pytest-style ctest
-        // reuses across cases in this fixture.
+        // Sandbox QStandardPaths so AppDataLocation points to a
+        // per-test temp folder, not the real user profile.
         QStandardPaths::setTestModeEnabled(true);
         QCoreApplication::setOrganizationName("jan-moravec");
         QCoreApplication::setApplicationName("StructuredLogViewerTest");
@@ -91,14 +79,10 @@ private slots:
 
     void init()
     {
-        // Each test starts from a known faked OS colour scheme
-        // (Light) and an empty user-themes folder so cases stay
-        // independent. `LoadConfiguration` re-reads `theme/active`
-        // from QSettings (now empty -> Auto) AND re-discovers themes,
-        // so the in-memory `mActiveSelection` from a previous test
-        // does not leak through. Capture the style on entry so the
-        // matching `cleanup()` can restore it (some tests pin
-        // `app.qtStyle: "fusion"` via theme JSON).
+        // Reset to a known baseline: faked Light OS, empty user
+        // themes folder, persisted Auto selection. Capture the
+        // entry-time style so `cleanup()` can restore it after
+        // tests that pin `app.qtStyle`.
         if (qApp != nullptr && qApp->style() != nullptr)
         {
             mInitStyleName = qApp->style()->name();
@@ -106,21 +90,15 @@ private slots:
         ClearActiveSelection();
         RemoveAllUserThemes(ThemeControl::UserThemesDir());
         ThemeControl::LoadConfiguration();
-        // Seed AFTER LoadConfiguration: the first call captures the
-        // pristine OS scheme into `mOsColorScheme` and we then
-        // override it for the test. Force-mode tests further down
-        // also call `FakeOsColorScheme` to flip the perceived OS
-        // mid-test.
+        // Override the cached OS scheme AFTER LoadConfiguration
+        // (which captured the pristine value first).
         FakeOsColorScheme(Qt::ColorScheme::Light);
     }
 
     void cleanup()
     {
-        // Restore the entry-time style so a follow-on test that
-        // never names `qtStyle` doesn't inherit the previous
-        // test's fusion override. `cleanupTestCase` does the same
-        // for the palette / standard palette; we mirror the
-        // contract per test so any single case runs in isolation.
+        // Restore the entry-time style so a follow-on test doesn't
+        // inherit a `qtStyle: "fusion"` override.
         if (qApp != nullptr && !mInitStyleName.isEmpty() && qApp->style() != nullptr &&
             qApp->style()->name().compare(mInitStyleName, Qt::CaseInsensitive) != 0)
         {
@@ -129,13 +107,9 @@ private slots:
                 qApp->setStyle(style);
             }
         }
-        // We deliberately do NOT call `unsetColorScheme()` here even
-        // though tests may leave a Force-mode override active --
-        // doing so would desync `QStyleHints` from the singleton's
-        // `mColorSchemeForced` flag. The next test's `init()` ->
-        // `LoadConfiguration` -> `ResolveAndApplyActive` Auto-path
-        // releases the override through the singleton's own
-        // bookkeeping, which keeps both sides in sync.
+        // Don't `unsetColorScheme()` here -- it would desync
+        // `QStyleHints` from `mColorSchemeForced`. The next
+        // test's Auto path releases the override cleanly.
     }
 
     void cleanupTestCase()
@@ -143,13 +117,8 @@ private slots:
         ClearActiveSelection();
         RemoveAllUserThemes(ThemeControl::UserThemesDir());
 
-        // Restore the style's standard palette so a follow-on test
-        // binary running in the same `QApplication` lifetime starts
-        // from a clean palette rather than whatever theme this
-        // fixture last applied. We reach for `qApp->style()` here
-        // (not a saved snapshot) because the active style itself
-        // may have changed mid-fixture via `app.qtStyle`, and the
-        // standard palette of *that* style is the right baseline.
+        // Reset the palette to the current style's standard
+        // palette so a follow-on test binary starts clean.
         if (qApp != nullptr && qApp->style() != nullptr)
         {
             qApp->setPalette(qApp->style()->standardPalette());
@@ -187,9 +156,8 @@ private slots:
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
     }
 
-    /// A user-dir JSON whose `name` matches a built-in shadows it
-    /// everywhere -- including Auto mode -- so user overrides
-    /// apply without flipping the active selection.
+    /// A user file whose `name` matches a built-in shadows it
+    /// everywhere, including Auto mode.
     void TestUserThemeShadowsBuiltin()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -214,8 +182,8 @@ private slots:
         QVERIFY(infoStyle.foreground.has_value());
         QCOMPARE(QString::fromStdString(*infoStyle.foreground), QString::fromLatin1(OVERRIDE_FG));
 
-        // The listing should report the entry as fromUser=true so
-        // the Preferences combo can annotate it.
+        // The listing must mark the entry `fromUser` so the UI
+        // can annotate it.
         const auto listings = ThemeControl::AvailableThemes();
         bool foundUserLight = false;
         for (const auto &entry : listings)
@@ -229,8 +197,8 @@ private slots:
         QVERIFY2(foundUserLight, "user-authored Light theme should shadow the built-in");
     }
 
-    /// A user-named theme not colliding with a built-in becomes
-    /// available without affecting the auto resolution.
+    /// A non-colliding user theme appears in the listing without
+    /// affecting auto resolution.
     void TestUserThemeAppearsInListing()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -249,8 +217,8 @@ private slots:
         });
         QVERIFY2(present, "user theme should appear in AvailableThemes()");
 
-        // Auto resolution is unchanged: a light OS picks the
-        // built-in Light, not the new user theme.
+        // Auto still picks the built-in Light, not the new user
+        // theme.
         FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         ThemeControl::Reevaluate();
@@ -273,13 +241,13 @@ private slots:
         QCOMPARE(spy.count(), 1);
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
 
-        // Re-applying the same selection is a no-op.
+        // Re-selecting the same theme is a no-op.
         ThemeControl::SetActiveSelection(QStringLiteral("Dark"));
         QCOMPARE(spy.count(), 1);
     }
 
-    /// Brushes for Info on the Light preset are invalid (palette
-    /// default), while Error has a foreground brush.
+    /// On the Light preset: Info defers to the palette, Error has
+    /// a brush, Fatal is bold.
     void TestBrushLookups()
     {
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
@@ -291,17 +259,13 @@ private slots:
         QVERIFY(errorFg.style() != Qt::NoBrush);
         QVERIFY(errorFg.color().isValid());
 
-        // Fatal is bold in the preset.
         const QFont fatalFont = ThemeControl::FontFor(loglib::LogLevel::Fatal);
         QVERIFY(fatalFont.bold());
     }
 
-    /// Regression: switching from Force "Light" to Auto on a light
-    /// OS must drop the `QStyleHints::colorScheme` override. Before
-    /// the fix, `ResolveAndApplyActive` early-returned when the
-    /// resolved theme name didn't change and `ApplyColorSchemeHint`
-    /// never ran, leaving Qt's color scheme pinned to Light and
-    /// breaking OS dark/light tracking.
+    /// Regression: Force "Light" -> Auto on a light OS must drop
+    /// the `QStyleHints::colorScheme` override, even though the
+    /// resolved theme name doesn't change.
     void TestForceToAutoSameResolvedName()
     {
         FakeOsColorScheme(Qt::ColorScheme::Light);
@@ -309,9 +273,8 @@ private slots:
         QVERIFY2(ThemeControl::IsColorSchemeForcedForTest(), "Force-mode must pin the colour scheme");
 
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
-        // Resolved theme is still "Light" (the auto picker matches
-        // the light OS scheme), but the override must be gone so OS
-        // dark/light flips drive `colorSchemeChanged`.
+        // Resolved theme stays Light, but the override must drop
+        // so OS flips can drive `colorSchemeChanged`.
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
         QVERIFY2(
             !ThemeControl::IsColorSchemeForcedForTest(),
@@ -320,17 +283,9 @@ private slots:
         );
     }
 
-    /// Regression: switching from Force "Dark" to Auto on a light
-    /// OS must resolve to Light, NOT Dark. Before the fix,
-    /// `IsDarkPalette()` sampled `qApp->palette().color(Window)`
-    /// which was the Dark theme palette we had just pushed via
-    /// `ApplyPalette` -- so the Auto picker re-resolved to Dark
-    /// and the early-return path in `ResolveAndApplyActive`
-    /// (resolved name unchanged) only released the colour-scheme
-    /// override without ever re-applying the right theme. Pins
-    /// the cross-brightness Force->Auto contract that the
-    /// `TestForceToAutoSameResolvedName` sibling test couldn't
-    /// exercise (it forced the same kind as the OS palette).
+    /// Regression: Force "Dark" -> Auto on a light OS must resolve
+    /// to Light. The cross-kind variant of
+    /// `TestForceToAutoSameResolvedName`.
     void TestForceDarkToAutoLightOsPicksLight()
     {
         FakeOsColorScheme(Qt::ColorScheme::Light);
@@ -346,8 +301,7 @@ private slots:
     }
 
     /// Symmetric regression: Force "Light" -> Auto on a dark OS
-    /// must resolve to Dark. Same root cause as the test above,
-    /// inverted.
+    /// must resolve to Dark.
     void TestForceLightToAutoDarkOsPicksDark()
     {
         FakeOsColorScheme(Qt::ColorScheme::Dark);
@@ -360,44 +314,28 @@ private slots:
         QVERIFY(!ThemeControl::IsColorSchemeForcedForTest());
     }
 
-    /// Regression for bug "Force-mode + OS flip + back to Auto picks
-    /// the wrong kind": when the user is in Force-Light on a light
-    /// OS, then the OS flips to dark while we're still in Force
-    /// mode (Qt suppresses `colorSchemeChanged` because our override
-    /// pins the value), and then the user switches to Auto, the
-    /// resolved theme must be Dark. The fix snapshots the OS scheme
-    /// into `mOsColorScheme` BEFORE engaging the override, then
-    /// re-samples after `unsetColorScheme()` in the Auto path -- so
-    /// the cache is whatever the OS actually is at the time of the
-    /// transition.
+    /// Regression: Force-Light on light OS -> OS flips to dark
+    /// (suppressed by our override) -> back to Auto must resolve
+    /// to Dark, not stick on Light.
     void TestForceModeOsFlipResolvesAutoCorrectly()
     {
         FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QVERIFY(ThemeControl::IsColorSchemeForcedForTest());
-        // Force "Light" while OS is light. mOsColorScheme should
-        // still be Light at this point.
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
 
-        // OS flips to dark. In production Qt would fire
-        // `colorSchemeChanged(Dark)` but our slot would skip
-        // recording because `mColorSchemeForced` is true. The OS
-        // state lives "elsewhere" -- in production, in the
-        // platform theme; here, we encode it via the test setter
-        // so the Auto-path re-sample finds it.
+        // OS flips to dark while Force is held. In production our
+        // slot would skip recording it; the fake setter encodes
+        // the new OS state for the Auto-path re-sample.
         FakeOsColorScheme(Qt::ColorScheme::Dark);
 
-        // User switches back to Auto. The Auto picker must
-        // re-resolve to Dark, not stick on Light.
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
         QVERIFY(!ThemeControl::IsColorSchemeForcedForTest());
     }
 
-    /// Auto with no OS preference (`Qt::ColorScheme::Unknown` --
-    /// minimal Linux CI image without a platform theme) defaults to
-    /// Light. Pins that the fallback isn't accidentally Dark, which
-    /// would surprise users on bare-bones Linux desktops.
+    /// Auto with `Qt::ColorScheme::Unknown` (minimal Linux CI with
+    /// no platform theme) defaults to Light, not Dark.
     void TestAutoUnknownOsPicksLight()
     {
         FakeOsColorScheme(Qt::ColorScheme::Unknown);
@@ -407,8 +345,7 @@ private slots:
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
     }
 
-    /// `SanitiseThemeName` (and therefore `SaveUserTheme`) rejects
-    /// path-escape attempts so a malicious or accidental name like
+    /// `SaveUserTheme` rejects unsafe names so a path like
     /// `../evil` can't write outside `UserThemesDir`.
     void TestSaveUserThemeRejectsBadName()
     {
@@ -426,12 +363,10 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(
             std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("contains\nnewline"), theme)
         );
-        // Win32 strips trailing `.` / ` ` when creating the file, so
-        // these names would silently collide with `Dark.json` /
-        // `Dark` -- reject up front.
+        // Trailing `.` / ` ` would silently collide on Win32.
         QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("Dark."), theme));
         QVERIFY_THROWS_EXCEPTION(std::runtime_error, ThemeControl::SaveUserTheme(QStringLiteral("Dark "), theme));
-        // A plain name must work and round-trip back through the index.
+        // A plain name must round-trip through the index.
         ThemeControl::SaveUserTheme(QStringLiteral("Sepia"), theme);
         ThemeControl::ReloadAll();
         const auto listings = ThemeControl::AvailableThemes();
@@ -442,10 +377,7 @@ private slots:
     }
 
     /// `ReloadAll` with no on-disk edits must not emit
-    /// `themeChanged`. The fast path in `ResolveAndApplyActive`
-    /// short-circuits when the newly-discovered theme is byte-equal
-    /// to the active one, avoiding a redundant palette / cache
-    /// rebuild and the viewport-repaint fan-out.
+    /// `themeChanged` (byte-equal fast-path).
     void TestReloadAllSkipsWhenUnchanged()
     {
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
@@ -456,10 +388,8 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
-    /// A theme whose `app.qtStyle` references a non-existent Qt
-    /// style must not crash and must leave the previous style intact.
-    /// `QStyleFactory::create` returns `nullptr` for unknown names;
-    /// the apply path checks for that.
+    /// A theme with an unknown `app.qtStyle` must not crash and
+    /// must leave the previous style in place.
     void TestMissingStyleFactoryFallback()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -477,26 +407,20 @@ private slots:
         ThemeControl::SetActiveSelection(QStringLiteral("BadStyle"));
 
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("BadStyle"));
-        // Unknown style name -> create() returns nullptr, the apply
-        // path skips setStyle, so the prior style is still in
-        // effect.
+        // Unknown style -> apply path skips `setStyle`.
         QCOMPARE(qApp->style()->name(), priorStyle);
     }
 
-    /// Regression: switching from a theme that pins `app.fontFamily`
-    /// back to one that omits it must restore the startup font, not
-    /// leave the previous theme's font carried through. Same
-    /// contract for `app.qtStyle`.
+    /// Regression: a theme that omits `app.fontFamily` must
+    /// restore the startup font rather than inherit the previous
+    /// theme's. Same contract for `app.qtStyle`.
     void TestRevertToStartupFontWhenThemeOmitsField()
     {
         const QFont startupFont = qApp->font();
         const QString startupStyleName = qApp->style()->name();
 
-        // Pick a font family that resolves to something distinct
-        // from the startup family on the host. We bump the
-        // point-size deliberately too, so the revert assertion is
-        // observable even on a CI runner whose font substitution
-        // happens to land on the startup font's family.
+        // Bump the point size so the revert is observable even
+        // when CI font substitution lands on the startup family.
         const int pinnedPointSize = startupFont.pointSize() + 2;
         const QDir userDir = ThemeControl::UserThemesDir();
         WriteUserTheme(
@@ -515,82 +439,62 @@ private slots:
         ThemeControl::ReloadAll();
 
         ThemeControl::SetActiveSelection(QStringLiteral("FontPin"));
-        // Sanity: the pinned point size is in effect. We assert on
-        // the size rather than the family because fontconfig
-        // substitution on minimal Linux CI images can land on a
-        // different family than "Courier New" -- the size is the
-        // unambiguous signal that the theme's font field flowed
-        // through.
+        // Assert size, not family -- fontconfig substitution can
+        // remap "Courier New" on minimal Linux images.
         QCOMPARE(qApp->font().pointSize(), pinnedPointSize);
 
-        // Switching back to a theme without `app.fontFamily` /
-        // `app.fontSize` must revert to the startup font.
+        // Switch to a theme without font fields -> startup font.
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QCOMPARE(qApp->font().family(), startupFont.family());
         QCOMPARE(qApp->font().pointSize(), startupFont.pointSize());
 
-        // The startup style is at least preserved when both themes
-        // share the same `qtStyle` (built-in Light pins "fusion"
-        // too, so this just sanity-checks no crash on the apply
-        // path -- the real regression is the font above).
+        // Sanity-check the style apply path doesn't crash.
         QVERIFY(!qApp->style()->name().isEmpty());
         Q_UNUSED(startupStyleName);
     }
 
-    /// A persisted selection that no longer matches any discoverable
-    /// theme falls through to the auto-resolved theme, AND the
-    /// in-memory `mActiveSelection` is coerced back to `AUTO_TOKEN`
-    /// so a follow-on `ActiveSelection()` query (e.g. from the
-    /// Preferences combo) doesn't lie about the live state. The
-    /// on-disk `QSettings` value is intentionally NOT rewritten --
-    /// only user-driven saves persist.
+    /// A persisted selection that no longer matches anything in
+    /// the index falls through to the auto-resolved theme, and
+    /// the in-memory selection is coerced to Auto. The on-disk
+    /// `QSettings` value is left alone.
     void TestStaleSelectionFallsThroughToAuto()
     {
         QSettings settings;
         settings.setValue(QString::fromLatin1(SETTINGS_KEY_ACTIVE), QStringLiteral("NotARealTheme"));
         ThemeControl::LoadConfiguration();
-        // LoadConfiguration re-seeds mOsColorScheme from the host
-        // platform, which is unpredictable on CI. Reset the fake
-        // and re-resolve so the assertion below is deterministic.
+        // `LoadConfiguration` re-seeds the OS scheme; reset the
+        // fake and re-resolve for a deterministic assertion.
         FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::Reevaluate();
 
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
-        // In-memory state is now Auto (no surprise persistence).
         QCOMPARE(ThemeControl::ActiveSelection(), QString());
-        // `PersistedSelection()` still reports the stale value -- only
-        // `SaveConfiguration` would rewrite it. This is the public
-        // accessor that the Preferences `Cancel` handler consults.
+        // QSettings still holds the stale value -- only
+        // `SaveConfiguration` rewrites it.
         QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("NotARealTheme"));
     }
 
-    /// `PersistedSelection()` and `ActiveSelection()` can disagree --
-    /// the former is what's on disk, the latter is what's live.
+    /// `PersistedSelection()` and `ActiveSelection()` can diverge:
+    /// the former reflects disk, the latter the live state.
     void TestPersistedSelectionReadsQSettings()
     {
         QSettings settings;
         settings.setValue(QString::fromLatin1(SETTINGS_KEY_ACTIVE), QStringLiteral("Dark"));
         QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("Dark"));
-        // Changing the live selection does NOT touch QSettings until
-        // a SaveConfiguration() call.
+        // Live changes don't touch QSettings until SaveConfiguration().
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QCOMPARE(ThemeControl::ActiveSelection(), QStringLiteral("Light"));
         QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("Dark"));
-        // SaveConfiguration commits the live value.
         ThemeControl::SaveConfiguration();
         QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("Light"));
     }
 
-    /// Regression for the `SaveUserTheme` staleness bug: when the
-    /// just-saved theme name matches the currently-resolved one,
-    /// `Active()` must return the freshly-saved bytes (and
-    /// `themeChanged` must fire) without a follow-up `ReloadAll`.
-    /// Saving an *inactive* theme must not re-resolve so unrelated
-    /// edits don't surprise-emit the signal.
+    /// Regression: `SaveUserTheme` on the currently-resolved name
+    /// must surface the new bytes (and emit `themeChanged`)
+    /// without a manual `ReloadAll`. Saves of inactive themes
+    /// must not re-resolve.
     void TestSaveUserThemeRefreshesActive()
     {
-        // Build a baseline that activates the built-in Light, then
-        // save a user "Light" with a distinctive override colour.
         FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
@@ -603,16 +507,13 @@ private slots:
         QVERIFY(spy.isValid());
         ThemeControl::SaveUserTheme(QStringLiteral("Light"), override);
 
-        // `Active()` is now the freshly-saved bytes, not a stale
-        // copy of the pre-save built-in.
+        // `Active()` now reflects the freshly-saved bytes.
         const loglib::LevelStyle infoStyle = loglib::StyleForLevel(ThemeControl::Active(), loglib::LogLevel::Info);
         QVERIFY(infoStyle.foreground.has_value());
         QCOMPARE(QString::fromStdString(*infoStyle.foreground), QString::fromLatin1(OVERRIDE_FG));
         QCOMPARE(spy.count(), 1);
 
-        // Saving an unrelated theme name (not active, not resolved
-        // by Auto) must NOT fire `themeChanged` -- the contract for
-        // inactive-theme edits stays surprise-free.
+        // Saving an unrelated theme must not fire `themeChanged`.
         loglib::Theme inactive;
         inactive.name = "Solarized";
         inactive.kind = loglib::ThemeKind::Light;
@@ -622,9 +523,8 @@ private slots:
     }
 
 private:
-    /// Snapshot of `qApp->style()->name()` captured by `init()` so
-    /// `cleanup()` can restore the style any test mutated via a
-    /// theme JSON's `app.qtStyle` override.
+    /// Style name captured at `init()` so `cleanup()` can restore
+    /// it after tests that pin `app.qtStyle`.
     QString mInitStyleName;
 };
 

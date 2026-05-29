@@ -495,24 +495,16 @@ void RecordDetailWidget::resizeEvent(QResizeEvent *event)
 
 void RecordDetailWidget::RefreshPalette()
 {
-    // Refresh the placeholder label's foreground (it was set
-    // explicitly to `QPalette::PlaceholderText` in the constructor,
-    // so it doesn't track palette changes on its own). Read the
-    // source-of-truth value from `qApp->palette()` rather than
-    // the label's own (overridden) palette: once we've stamped an
-    // override on the foreground role, reading back through the
-    // label's `palette()` can return the cached override for any
-    // role the resolve-mask claims as locally-set. Sampling the
-    // app palette keeps this robust regardless of which roles
-    // anyone else has overridden on this label later.
+    // The placeholder label has an explicit foreground override
+    // so it doesn't track palette changes on its own. Read the
+    // theme colour from the app palette (not this label's own,
+    // which carries the override).
     QPalette placeholderPalette = mPlaceholderLabel->palette();
     placeholderPalette.setColor(mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mPlaceholderLabel->setPalette(placeholderPalette);
 
-    // Rebuild every cell so placeholder-row foregrounds re-pick the
-    // current `QPalette::PlaceholderText`. PopulateUi reads
-    // `mContent` directly, so this is a no-op render for an invalid
-    // / empty content.
+    // Rebuild cells so placeholder-row foregrounds re-pick the
+    // theme colour. No-op when there's no displayed content.
     PopulateUi();
 }
 

@@ -28,11 +28,9 @@ constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
 constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
 constexpr int THEME_STATUS_CLEAR_MS = 5000;
 
-/// Label used for the synthetic "Auto" entry at the top of the
-/// theme combo. `ThemeControl::AUTO_TOKEN` (the empty string) is
-/// stored as the entry's `QVariant` userdata so a user-named
-/// theme that literally spells "Auto (follow system)" still
-/// round-trips correctly.
+/// Label for the synthetic "Auto" combo entry. The entry's user
+/// data carries `ThemeControl::AUTO_TOKEN` (an empty string) so a
+/// real theme literally named "Auto..." still round-trips.
 constexpr char THEME_AUTO_LABEL[] = "Auto (follow system)";
 
 QString DescribeThemeKind(loglib::ThemeKind kind)
@@ -64,10 +62,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     mThemePreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     mThemePreviewLabel->setWordWrap(true);
 
-    // Transient status line for theme button actions (Duplicate /
-    // Reload). Clears itself after `THEME_STATUS_CLEAR_MS` so the
-    // dialog doesn't accumulate stale "Saved as ..." messages
-    // across a session. The timer is `singleShot` and reset on
+    // Transient status line for Duplicate / Reload actions. Auto-
+    // clears after `THEME_STATUS_CLEAR_MS`; the timer resets on
     // every `ShowThemeStatus` call to debounce rapid clicks.
     mThemeStatusLabel = new QLabel(this);
     mThemeStatusLabel->setWordWrap(true);
@@ -78,10 +74,9 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     auto *openThemesButton = new QPushButton("Open themes folder", this);
     openThemesButton->setToolTip("Reveal the user themes folder in the OS file manager.");
     connect(openThemesButton, &QPushButton::clicked, this, [this]() {
-        // Surface a status message on failure -- previously the call
-        // silently no-op'd (e.g. when AppData was unwritable on a
-        // locked-down host or when no file manager was registered
-        // for `file://` URLs on a headless Linux session).
+        // Surface failure (unwritable AppData, no file manager
+        // registered for file:// URLs, etc.) instead of silently
+        // no-op'ing.
         if (!ThemeControl::RevealUserThemesDir())
         {
             ShowThemeStatus(tr("Could not open the user themes folder. The folder is at: %1")
@@ -101,8 +96,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
             {
                 baseName = QStringLiteral("Theme");
             }
-            // Pick the first unused `<base>-copy[ N].json` name so
-            // repeated clicks don't silently overwrite.
+            // Find the first unused `-copy` suffix so repeated
+            // clicks don't overwrite.
             QString candidate = baseName + QStringLiteral("-copy");
             int suffix = 2;
             while (ThemeControl::Load(candidate).has_value())
@@ -110,9 +105,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
                 candidate = baseName + QStringLiteral("-copy ") + QString::number(suffix);
                 ++suffix;
             }
-            // `SaveUserTheme` refreshes the in-memory index for us;
-            // we just need to re-render the combo + reveal the file
-            // so the user can edit it.
+            // `SaveUserTheme` refreshes the index; we just need to
+            // re-render the combo and reveal the file for editing.
             ThemeControl::SaveUserTheme(candidate, active);
             RepopulateThemeCombo();
             ThemeControl::RevealUserThemesDir();
@@ -130,13 +124,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     reloadThemesButton->setToolTip("Re-scan the user themes folder and the built-in themes, then re-apply the "
                                    "active theme. Use after editing a theme JSON file outside the app.");
     connect(reloadThemesButton, &QPushButton::clicked, this, [this]() {
-        // Snapshot the pre-reload selection so we can detect the
-        // "user's pick was deleted on disk" case: `ReloadAll` ->
-        // `ResolveAndApplyActive` silently coerces missing names
-        // back to Auto, and without explicit feedback users who
-        // just edited their theme file see the selection move and
-        // can't tell whether the edit took effect or whether the
-        // file is broken.
+        // Detect "active theme was deleted on disk" so the silent
+        // coercion to Auto gets explicit feedback.
         const QString preReloadSelection = ThemeControl::ActiveSelection();
         ThemeControl::ReloadAll();
         RepopulateThemeCombo();
@@ -154,13 +143,9 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         }
     });
 
-    // Live-apply theme changes when the user actually commits a
-    // pick. Wired to `activated` (not `currentIndexChanged`) so
-    // arrow-key browsing through the combo does not run a full
-    // `ApplyTheme` (palette push + style swap + cache rebuild) per
-    // intermediate item -- on long user-theme lists that visibly
-    // stutters. Cancel reverts via the standard
-    // `ThemeControl::LoadConfiguration` round-trip.
+    // Wire to `activated` (not `currentIndexChanged`) so arrow-
+    // key browsing doesn't trigger a full apply per intermediate
+    // item. Cancel reverts via `LoadConfiguration`.
     connect(mThemeComboBox, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
         if (idx < 0)
         {
@@ -171,11 +156,8 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         RefreshThemePreview();
     });
 
-    // Track external theme changes (OS dark/light flip while the
-    // dialog is open, another window's `SetActiveSelection`, etc.)
-    // so the combo and preview don't silently go stale. The
-    // `themeChanged` signal coalesces all such paths into one
-    // refresh point.
+    // Keep combo + preview fresh on external theme changes (OS
+    // flip while the dialog is open, etc.).
     connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() {
         RepopulateThemeCombo();
         RefreshThemePreview();
@@ -290,14 +272,9 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         close();
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
-        // Revert any live-applied theme preview back to whatever is
-        // on disk. `SetActiveSelection` short-circuits when the
-        // requested value already matches the in-memory live one
-        // (no DiscoverThemes / ResolveAndApplyActive / signal
-        // fan-out), so the no-preview common case is free. We use
-        // it instead of `LoadConfiguration()` to keep the brush /
-        // font cache hot when the user opened Prefs without
-        // touching the theme combo.
+        // Revert any live-previewed theme to the persisted value.
+        // `SetActiveSelection` short-circuits when nothing changed,
+        // so the common no-preview case is free.
         ThemeControl::SetActiveSelection(ThemeControl::PersistedSelection());
         // Revert the spinbox-edited values to the persisted ones; no
         // emit needed because the on-disk values are unchanged.
@@ -324,17 +301,14 @@ void PreferencesEditor::UpdateFields()
     mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MaxEntries());
     RepopulateThemeCombo();
     RefreshThemePreview();
-    // Wipe any stale "Saved as ..." / "Reloaded" message left over
-    // from the previous time the dialog was open. The user reopens
-    // for a new task and shouldn't see a half-expired toast.
+    // Wipe any leftover status message from a previous open.
     ShowThemeStatus(QString());
 }
 
 void PreferencesEditor::RepopulateThemeCombo()
 {
-    // Block signals so rebuilding the combo doesn't fire a spurious
-    // SetActiveSelection (which would flip the theme to the first
-    // entry mid-rebuild).
+    // Block signals so the rebuild doesn't fire a spurious
+    // selection-change mid-clear.
     const QSignalBlocker blocker(mThemeComboBox);
     mThemeComboBox->clear();
     mThemeComboBox->addItem(QString::fromLatin1(THEME_AUTO_LABEL), QString::fromLatin1(ThemeControl::AUTO_TOKEN));
@@ -350,10 +324,8 @@ void PreferencesEditor::RepopulateThemeCombo()
         mThemeComboBox->addItem(label, t.name);
     }
 
-    // `ResolveAndApplyActive` coerces stale / unknown selections
-    // back to Auto in-memory, so by the time we reach this point
-    // `ActiveSelection()` either names an entry that exists in
-    // the listing or is empty (Auto, the synthetic first entry).
+    // `ActiveSelection()` is guaranteed valid here: stale picks
+    // are already coerced to Auto in `ResolveAndApplyActive`.
     const QString selection = ThemeControl::ActiveSelection();
     int matchIdx = 0;
     for (int i = 1; i < mThemeComboBox->count(); ++i)

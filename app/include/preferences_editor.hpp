@@ -32,21 +32,15 @@ signals:
     void staticDisplayOrderChanged(bool newestFirst);
 
 private:
-    /// Repopulate `mThemeComboBox` from `ThemeControl::AvailableThemes`
-    /// and select the entry that matches the current active selection
-    /// (Auto becomes the first entry).
+    /// Refill the theme combo from `ThemeControl::AvailableThemes`
+    /// and select the active entry (Auto is the first entry).
     void RepopulateThemeCombo();
 
-    /// Refresh `mThemePreviewLabel` from the currently resolved
-    /// theme (after Auto / selection resolution).
+    /// Update the preview label from the resolved theme.
     void RefreshThemePreview();
 
-    /// Show @p message in the transient `mThemeStatusLabel` and
-    /// arm `mThemeStatusClearTimer` to wipe it after a few
-    /// seconds. Used by the Duplicate / Reload buttons so user
-    /// actions get visible feedback even when the resolved theme
-    /// (and therefore the preview label) is unchanged. Pass an
-    /// empty string to clear immediately.
+    /// Show a transient status message that auto-clears after a
+    /// few seconds. Empty string clears immediately.
     void ShowThemeStatus(const QString &message);
 
     QComboBox *mThemeComboBox;

@@ -451,18 +451,15 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    // Alternating row colours are intentionally disabled on the log
-    // table: per-level theme colours already partition the rows
-    // visually, and the additional light/dark stripe makes two rows
-    // of the same level read as different (distracting). The
-    // RecordDetailWidget / ColumnsManagerDialog tables -- both
-    // level-less property lists -- still enable alternation as a
-    // genuine reading aid.
+    // Per-level theme colours already partition rows; an extra
+    // alternation stripe would make two rows of the same level
+    // read as different. Secondary tables (Record Details,
+    // Columns Manager) keep alternation since they're plain
+    // property lists.
     mTableView->setAlternatingRowColors(false);
 
-    // Live theme refresh: the Preferences dialog and OS palette
-    // changes both flow through `ThemeControl::themeChanged()`,
-    // and we repaint the table + reapply chrome QSS in one slot.
+    // Single entry point for both Preferences-driven and
+    // OS-driven theme refreshes.
     connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, &MainWindow::OnThemeChanged);
 
     ApplyTableStyleSheet();
@@ -487,7 +484,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
 
     mTableView->resizeColumnsToContents();
 
-    // Header stylesheet is owned by `ApplyTableStyleSheet` so theme
+    // Header stylesheet lives in `ApplyTableStyleSheet` so theme
     // colours can layer onto the bold + padding rule.
     mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
@@ -988,26 +985,16 @@ bool MainWindow::event(QEvent *event)
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
     {
-        // Skip during a self-induced apply: `ThemeControl::ApplyTheme`
-        // calls `qApp->setPalette` (this event) and `qApp->setStyle`
-        // (the case below) synchronously. The tail-end
-        // `themeChanged` -> `OnThemeChanged` slot reapplies the
-        // table QSS once for the whole apply, so the event
-        // bounce-backs would just repeat the work.
+        // Skip during our own apply -- `OnThemeChanged` handles
+        // the QSS re-apply once at the end.
         if (ThemeControl::IsApplyingTheme())
         {
             break;
         }
-        // OS dark/light flip: re-evaluate Auto, which emits
-        // `themeChanged` if the resolved theme changes (and
-        // `OnThemeChanged` re-applies the table QSS as part of
-        // that fan-out). When the resolved theme is unchanged --
-        // Force mode, or Auto re-evaluating onto the same kind --
-        // we still need to refresh the QSS because it encodes
-        // palette-derived colours that the OS palette flip may
-        // have shifted. Comparing the resolved name before / after
-        // skips the redundant re-apply when `OnThemeChanged`
-        // already ran.
+        // OS theme flip: re-evaluate Auto. If the resolved theme
+        // is unchanged (Force mode, or same kind on Auto),
+        // `OnThemeChanged` won't fire -- refresh the QSS manually
+        // so palette-derived colours follow.
         const QString priorName = QString::fromStdString(ThemeControl::Active().name);
         ThemeControl::Reevaluate();
         const QString currentName = QString::fromStdString(ThemeControl::Active().name);
@@ -1018,14 +1005,11 @@ bool MainWindow::event(QEvent *event)
         break;
     }
     case QEvent::StyleChange:
-        // Same guard reason as above -- self-induced StyleChange
-        // from `qApp->setStyle` is covered by `OnThemeChanged`.
         if (ThemeControl::IsApplyingTheme())
         {
             break;
         }
-        // External `qApp->setStyle` (none today, but defensive):
-        // refresh the QSS so palette-derived colours follow.
+        // External `qApp->setStyle` (defensive -- we have none).
         ApplyTableStyleSheet();
         break;
     default:
@@ -2407,12 +2391,9 @@ void MainWindow::ApplyDisplayOrder()
 
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
-    // Note: we used to toggle `setAlternatingRowColors(!newestFirst)`
-    // here to dodge the newest-first row-parity flicker (Qt keys
-    // alternation off the visual row index). Alternation is now
-    // unconditionally off on the log table -- per-level theme
-    // colours already provide the reading aid and the stripe made
-    // two rows of the same level read as different.
+    // Alternation is permanently off here -- per-level theme
+    // colours already partition rows, and toggling it per
+    // direction used to flicker on newest-first batches.
 
     if (mModel->IsStreamingActive())
     {
@@ -3703,30 +3684,17 @@ void MainWindow::OnThemeChanged()
     ApplyTableStyleSheet();
     ApplyThemedWindowIcon();
 
-    // Just repaint the viewport: Qt re-queries `data()` for every
-    // visible cell on the next paint event, picking up the new
-    // per-level brushes / fonts. Rows outside the viewport are
-    // re-queried lazily on scroll.
-    //
-    // Avoid emitting `dataChanged` across the whole model: that
-    // signal has to propagate through the proxy chain
-    // (`RowOrderProxyModel` -> `LogFilterModel`) and Qt's model
-    // index plumbing walks the row range, which is expensive for
-    // a multi-million-row table even though the actual repaint
-    // would only touch the viewport.
+    // Repaint just the viewport -- Qt will re-query `data()` for
+    // visible cells. Avoids the proxy-chain walk that a full
+    // `dataChanged` emit would force.
     if (mTableView != nullptr)
     {
         mTableView->viewport()->update();
     }
 
-    // Satellite widgets that cache palette-derived state at
-    // construction or `SetContent` time need an explicit nudge.
-    // Pure `QPalette` consumers (which most of these are) also
-    // get the cascading `ApplicationPaletteChange` we just
-    // triggered via `qApp->setPalette` in `ThemeControl::ApplyTheme`,
-    // but the record-detail views explicitly stash
-    // `QPalette::PlaceholderText` on table items, so the cached
-    // brushes outlive a palette change.
+    // These widgets cache palette-derived state (e.g. brushes
+    // stamped on table items) and won't update from a bare
+    // `ApplicationPaletteChange` alone.
     if (mRecordDetailDock != nullptr && mRecordDetailDock->Widget() != nullptr)
     {
         mRecordDetailDock->Widget()->RefreshPalette();
@@ -3746,12 +3714,8 @@ void MainWindow::OnThemeChanged()
 
 void MainWindow::ApplyThemedWindowIcon()
 {
-    // Pick the icon variant by `Theme::ThemeKind`, not by sampling
-    // the current palette: in Force mode the user explicitly opts
-    // into a kind that may differ from the OS chrome, and the
-    // chrome the icon renders against is driven by the active
-    // theme rather than the system palette. `ThemeKind` is a
-    // closed enum (`Light` / `Dark`), so the branch is exhaustive.
+    // Drive the icon off `ThemeKind` (not the OS palette) so the
+    // icon matches the theme even in Force mode.
     const loglib::Theme &theme = ThemeControl::Active();
     const QString iconPath = (theme.kind == loglib::ThemeKind::Light) ? QStringLiteral(":/icon-black.png")
                                                                       : QStringLiteral(":/icon-white.png");
@@ -3760,14 +3724,10 @@ void MainWindow::ApplyThemedWindowIcon()
 
 void MainWindow::ApplyTableStyleSheet()
 {
-    // The base / alternate / selection colours come from the
-    // active `QPalette` (pushed by `ThemeControl::ApplyTheme`), so
-    // the table-body stylesheet is currently always empty: Qt's
-    // standard delegate already uses the palette for those and
-    // gets the fast paint path that way. The only QSS we still
-    // need is the header `padding` + `bold` rule (which Qt has no
-    // palette role for) plus optional header colours from the
-    // theme.
+    // Body chrome comes from the palette pushed by
+    // `ThemeControl::ApplyTheme`, so the body QSS is empty. We
+    // only need QSS for the header (padding + bold + optional
+    // theme colours) since Qt has no palette role for those.
     const loglib::Theme &theme = ThemeControl::Active();
 
     const QString bodyRule;
@@ -3784,12 +3744,8 @@ void MainWindow::ApplyTableStyleSheet()
     }
     headerRule += QStringLiteral(" }");
 
-    // Skip the redundant write when neither rule changed. An empty
-    // `setStyleSheet` still triggers Qt's full style polish cascade,
-    // so the guard matters even for the body. Default-constructed
-    // `mLastBodyStyleSheet` is null and compares equal to an empty
-    // `bodyRule`, so the first call doesn't pay a polish on the
-    // common no-body-styling path either.
+    // Skip unchanged writes -- even an empty `setStyleSheet`
+    // triggers Qt's full polish cascade.
     if (bodyRule != mLastBodyStyleSheet)
     {
         mTableView->setStyleSheet(bodyRule);
