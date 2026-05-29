@@ -3762,20 +3762,15 @@ void MainWindow::ApplyTableStyleSheet()
 {
     // The base / alternate / selection colours come from the
     // active `QPalette` (pushed by `ThemeControl::ApplyTheme`), so
-    // the table-body stylesheet is now empty: Qt's standard
-    // delegate already uses the palette for those and gets the
-    // fast paint path that way. The only QSS we still need is the
-    // header `padding` + `bold` rule (which Qt has no palette role
-    // for) plus optional header colours from the theme.
+    // the table-body stylesheet is currently always empty: Qt's
+    // standard delegate already uses the palette for those and
+    // gets the fast paint path that way. The only QSS we still
+    // need is the header `padding` + `bold` rule (which Qt has no
+    // palette role for) plus optional header colours from the
+    // theme.
     const loglib::Theme &theme = ThemeControl::Active();
 
-    // Skip the redundant write when the table-body stylesheet is
-    // already empty: an empty-but-explicit `setStyleSheet` still
-    // triggers Qt's full style polish cascade on every theme flip.
-    if (!mTableView->styleSheet().isEmpty())
-    {
-        mTableView->setStyleSheet(QString());
-    }
+    const QString bodyRule;
 
     QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
     if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
@@ -3787,10 +3782,18 @@ void MainWindow::ApplyTableStyleSheet()
         headerRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.headerForeground));
     }
     headerRule += QStringLiteral(" }");
-    // Skip the redundant write -- same rationale as the table-body
-    // guard above. Cached against our own string (not
-    // `header->styleSheet()`) so a stylesheet someone else might
-    // push onto the header still triggers our override.
+
+    // Skip the redundant write when neither rule changed. An empty
+    // `setStyleSheet` still triggers Qt's full style polish cascade,
+    // so the guard matters even for the body. Default-constructed
+    // `mLastBodyStyleSheet` is null and compares equal to an empty
+    // `bodyRule`, so the first call doesn't pay a polish on the
+    // common no-body-styling path either.
+    if (bodyRule != mLastBodyStyleSheet)
+    {
+        mTableView->setStyleSheet(bodyRule);
+        mLastBodyStyleSheet = bodyRule;
+    }
     if (headerRule != mLastHeaderStyleSheet)
     {
         mTableView->horizontalHeader()->setStyleSheet(headerRule);

@@ -13,7 +13,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QFile>
-#include <QPalette>
+#include <QGuiApplication>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -21,7 +21,9 @@
 #include <QStringList>
 #include <QStyle>
 #include <QStyleFactory>
+#include <QStyleHints>
 #include <QTextStream>
+#include <Qt>
 #include <QtTest/QtTest>
 
 namespace
@@ -29,14 +31,17 @@ namespace
 
 constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 
-/// Force-set the application's `Window` colour so the dark-mode
-/// heuristic in `ThemeControl::Reevaluate` returns a deterministic
-/// value regardless of the OS palette running the tests.
-void SetPaletteWindow(const QColor &color)
+/// Pin the perceived OS colour scheme for the next Auto resolution.
+/// Tests run on a wide variety of host platforms (Windows desktop,
+/// minimal Linux CI image with no platform theme), so we cannot
+/// rely on `QStyleHints::colorScheme()` returning a deterministic
+/// value. `ThemeControl::SetOsColorSchemeForTest` writes the
+/// cached `mOsColorScheme` directly, bypassing the
+/// `setColorScheme()` path (which would also engage Force-mode
+/// bookkeeping).
+void FakeOsColorScheme(Qt::ColorScheme scheme)
 {
-    QPalette palette = qApp->palette();
-    palette.setColor(QPalette::Window, color);
-    qApp->setPalette(palette);
+    ThemeControl::SetOsColorSchemeForTest(scheme);
 }
 
 /// Drop the active selection so the next `LoadConfiguration` starts
@@ -86,22 +91,27 @@ private slots:
 
     void init()
     {
-        // Each test starts from a known palette (Light) and an
-        // empty user-themes folder so cases stay independent.
-        // `LoadConfiguration` re-reads `theme/active` from QSettings
-        // (now empty -> Auto) AND re-discovers themes, so the
-        // in-memory `mActiveSelection` from a previous test does
-        // not leak through. Capture the style on entry so the
+        // Each test starts from a known faked OS colour scheme
+        // (Light) and an empty user-themes folder so cases stay
+        // independent. `LoadConfiguration` re-reads `theme/active`
+        // from QSettings (now empty -> Auto) AND re-discovers themes,
+        // so the in-memory `mActiveSelection` from a previous test
+        // does not leak through. Capture the style on entry so the
         // matching `cleanup()` can restore it (some tests pin
         // `app.qtStyle: "fusion"` via theme JSON).
         if (qApp != nullptr && qApp->style() != nullptr)
         {
             mInitStyleName = qApp->style()->name();
         }
-        SetPaletteWindow(Qt::white);
         ClearActiveSelection();
         RemoveAllUserThemes(ThemeControl::UserThemesDir());
         ThemeControl::LoadConfiguration();
+        // Seed AFTER LoadConfiguration: the first call captures the
+        // pristine OS scheme into `mOsColorScheme` and we then
+        // override it for the test. Force-mode tests further down
+        // also call `FakeOsColorScheme` to flip the perceived OS
+        // mid-test.
+        FakeOsColorScheme(Qt::ColorScheme::Light);
     }
 
     void cleanup()
@@ -119,6 +129,13 @@ private slots:
                 qApp->setStyle(style);
             }
         }
+        // We deliberately do NOT call `unsetColorScheme()` here even
+        // though tests may leave a Force-mode override active --
+        // doing so would desync `QStyleHints` from the singleton's
+        // `mColorSchemeForced` flag. The next test's `init()` ->
+        // `LoadConfiguration` -> `ResolveAndApplyActive` Auto-path
+        // releases the override through the singleton's own
+        // bookkeeping, which keeps both sides in sync.
     }
 
     void cleanupTestCase()
@@ -139,10 +156,10 @@ private slots:
         }
     }
 
-    /// Auto + light palette -> built-in Light.
+    /// Auto + light OS scheme -> built-in Light.
     void TestAutoLightPalettePicksLight()
     {
-        SetPaletteWindow(Qt::white);
+        FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         ThemeControl::Reevaluate();
 
@@ -150,10 +167,10 @@ private slots:
         QCOMPARE(ThemeControl::Active().kind, loglib::ThemeKind::Light);
     }
 
-    /// Auto + dark palette -> built-in Dark.
+    /// Auto + dark OS scheme -> built-in Dark.
     void TestAutoDarkPalettePicksDark()
     {
-        SetPaletteWindow(QColor(0x22, 0x22, 0x22));
+        FakeOsColorScheme(Qt::ColorScheme::Dark);
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         ThemeControl::Reevaluate();
 
@@ -161,10 +178,10 @@ private slots:
         QCOMPARE(ThemeControl::Active().kind, loglib::ThemeKind::Dark);
     }
 
-    /// Explicit selection wins over the palette brightness.
+    /// Explicit selection wins over the OS scheme.
     void TestExplicitSelectionOverridesPalette()
     {
-        SetPaletteWindow(Qt::white);
+        FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QStringLiteral("Dark"));
 
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
@@ -236,9 +253,9 @@ private slots:
         });
         QVERIFY2(present, "user theme should appear in AvailableThemes()");
 
-        // Auto resolution is unchanged: light palette picks the
+        // Auto resolution is unchanged: a light OS picks the
         // built-in Light, not the new user theme.
-        SetPaletteWindow(Qt::white);
+        FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         ThemeControl::Reevaluate();
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
@@ -284,21 +301,21 @@ private slots:
     }
 
     /// Regression: switching from Force "Light" to Auto on a light
-    /// palette must drop the `QStyleHints::colorScheme` override.
-    /// Before the fix, `ResolveAndApplyActive` early-returned when
-    /// the resolved theme name didn't change and `ApplyColorSchemeHint`
+    /// OS must drop the `QStyleHints::colorScheme` override. Before
+    /// the fix, `ResolveAndApplyActive` early-returned when the
+    /// resolved theme name didn't change and `ApplyColorSchemeHint`
     /// never ran, leaving Qt's color scheme pinned to Light and
     /// breaking OS dark/light tracking.
     void TestForceToAutoSameResolvedName()
     {
-        SetPaletteWindow(Qt::white);
+        FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QVERIFY2(ThemeControl::IsColorSchemeForcedForTest(), "Force-mode must pin the colour scheme");
 
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         // Resolved theme is still "Light" (the auto picker matches
-        // the light palette), but the override must be gone so OS
-        // dark/light flips drive `ApplicationPaletteChange`.
+        // the light OS scheme), but the override must be gone so OS
+        // dark/light flips drive `colorSchemeChanged`.
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
         QVERIFY2(
             !ThemeControl::IsColorSchemeForcedForTest(),
@@ -320,7 +337,7 @@ private slots:
     /// exercise (it forced the same kind as the OS palette).
     void TestForceDarkToAutoLightOsPicksLight()
     {
-        SetPaletteWindow(Qt::white);
+        FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QStringLiteral("Dark"));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
         QVERIFY(ThemeControl::IsColorSchemeForcedForTest());
@@ -338,7 +355,7 @@ private slots:
     /// inverted.
     void TestForceLightToAutoDarkOsPicksDark()
     {
-        SetPaletteWindow(QColor(0x22, 0x22, 0x22));
+        FakeOsColorScheme(Qt::ColorScheme::Dark);
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
         QVERIFY(ThemeControl::IsColorSchemeForcedForTest());
@@ -346,6 +363,53 @@ private slots:
         ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
         QVERIFY(!ThemeControl::IsColorSchemeForcedForTest());
+    }
+
+    /// Regression for bug "Force-mode + OS flip + back to Auto picks
+    /// the wrong kind": when the user is in Force-Light on a light
+    /// OS, then the OS flips to dark while we're still in Force
+    /// mode (Qt suppresses `colorSchemeChanged` because our override
+    /// pins the value), and then the user switches to Auto, the
+    /// resolved theme must be Dark. The fix snapshots the OS scheme
+    /// into `mOsColorScheme` BEFORE engaging the override, then
+    /// re-samples after `unsetColorScheme()` in the Auto path -- so
+    /// the cache is whatever the OS actually is at the time of the
+    /// transition.
+    void TestForceModeOsFlipResolvesAutoCorrectly()
+    {
+        FakeOsColorScheme(Qt::ColorScheme::Light);
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QVERIFY(ThemeControl::IsColorSchemeForcedForTest());
+        // Force "Light" while OS is light. mOsColorScheme should
+        // still be Light at this point.
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
+
+        // OS flips to dark. In production Qt would fire
+        // `colorSchemeChanged(Dark)` but our slot would skip
+        // recording because `mColorSchemeForced` is true. The OS
+        // state lives "elsewhere" -- in production, in the
+        // platform theme; here, we encode it via the test setter
+        // so the Auto-path re-sample finds it.
+        FakeOsColorScheme(Qt::ColorScheme::Dark);
+
+        // User switches back to Auto. The Auto picker must
+        // re-resolve to Dark, not stick on Light.
+        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Dark"));
+        QVERIFY(!ThemeControl::IsColorSchemeForcedForTest());
+    }
+
+    /// Auto with no OS preference (`Qt::ColorScheme::Unknown` --
+    /// minimal Linux CI image without a platform theme) defaults to
+    /// Light. Pins that the fallback isn't accidentally Dark, which
+    /// would surprise users on bare-bones Linux desktops.
+    void TestAutoUnknownOsPicksLight()
+    {
+        FakeOsColorScheme(Qt::ColorScheme::Unknown);
+        ThemeControl::SetActiveSelection(QString::fromLatin1(ThemeControl::AUTO_TOKEN));
+        ThemeControl::Reevaluate();
+
+        QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
     }
 
     /// `SanitiseThemeName` (and therefore `SaveUserTheme`) rejects
@@ -491,19 +555,39 @@ private slots:
     /// only user-driven saves persist.
     void TestStaleSelectionFallsThroughToAuto()
     {
-        SetPaletteWindow(Qt::white);
         QSettings settings;
         settings.setValue(QString::fromLatin1(SETTINGS_KEY_ACTIVE), QStringLiteral("NotARealTheme"));
         ThemeControl::LoadConfiguration();
+        // LoadConfiguration re-seeds mOsColorScheme from the host
+        // platform, which is unpredictable on CI. Reset the fake
+        // and re-resolve so the assertion below is deterministic.
+        FakeOsColorScheme(Qt::ColorScheme::Light);
+        ThemeControl::Reevaluate();
 
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
         // In-memory state is now Auto (no surprise persistence).
         QCOMPARE(ThemeControl::ActiveSelection(), QString());
-        // The on-disk value is unchanged; only `SaveConfiguration`
-        // would rewrite it.
-        QCOMPARE(
-            settings.value(QString::fromLatin1(SETTINGS_KEY_ACTIVE)).toString(), QStringLiteral("NotARealTheme")
-        );
+        // `PersistedSelection()` still reports the stale value -- only
+        // `SaveConfiguration` would rewrite it. This is the public
+        // accessor that the Preferences `Cancel` handler consults.
+        QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("NotARealTheme"));
+    }
+
+    /// `PersistedSelection()` and `ActiveSelection()` can disagree --
+    /// the former is what's on disk, the latter is what's live.
+    void TestPersistedSelectionReadsQSettings()
+    {
+        QSettings settings;
+        settings.setValue(QString::fromLatin1(SETTINGS_KEY_ACTIVE), QStringLiteral("Dark"));
+        QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("Dark"));
+        // Changing the live selection does NOT touch QSettings until
+        // a SaveConfiguration() call.
+        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
+        QCOMPARE(ThemeControl::ActiveSelection(), QStringLiteral("Light"));
+        QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("Dark"));
+        // SaveConfiguration commits the live value.
+        ThemeControl::SaveConfiguration();
+        QCOMPARE(ThemeControl::PersistedSelection(), QStringLiteral("Light"));
     }
 
     /// Regression for the `SaveUserTheme` staleness bug: when the
@@ -516,7 +600,7 @@ private slots:
     {
         // Build a baseline that activates the built-in Light, then
         // save a user "Light" with a distinctive override colour.
-        SetPaletteWindow(Qt::white);
+        FakeOsColorScheme(Qt::ColorScheme::Light);
         ThemeControl::SetActiveSelection(QStringLiteral("Light"));
         QCOMPARE(QString::fromStdString(ThemeControl::Active().name), QStringLiteral("Light"));
 

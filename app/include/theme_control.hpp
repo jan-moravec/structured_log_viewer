@@ -8,23 +8,22 @@
 #include <QFont>
 #include <QList>
 #include <QObject>
-#include <QPalette>
 #include <QString>
+#include <Qt>
 
 #include <array>
 #include <map>
 #include <optional>
 
 class QColor;
-class QEvent;
 
 /// Singleton that owns the active theme bundle, exposes per-`LogLevel`
 /// brushes / fonts to the table model, and drives the auto-switch
 /// between Light and Dark presets based on the OS palette.
 ///
 /// Persistence: a single `theme/active` `QSettings` key. The empty
-/// string means "Auto" (follow OS brightness); any non-empty value
-/// selects that theme by name unconditionally. Theme JSON files
+/// string means "Auto" (follow the OS colour scheme); any non-empty
+/// value selects that theme by name unconditionally. Theme JSON files
 /// themselves are not stored in `QSettings`; they live in
 /// `resources/themes/*.json` (shipped read-only) and
 /// `<AppDataLocation>/themes/*.json` (user-writable). A user file
@@ -37,7 +36,7 @@ class ThemeControl : public QObject
 
 public:
     /// Sentinel value of the `theme/active` setting that means
-    /// "Auto: pick Light or Dark by palette brightness".
+    /// "Auto: pick Light or Dark by the OS colour scheme".
     static constexpr const char *AUTO_TOKEN = "";
 
     /// Process-wide instance. Connect signals against the instance,
@@ -49,6 +48,13 @@ public:
     /// build the brush cache. Call once at startup before
     /// `MainWindow` is constructed.
     static void LoadConfiguration();
+
+    /// Persisted `theme/active` value from `QSettings`. Empty string
+    /// means Auto. The single source of truth for "what's on disk";
+    /// use `ActiveSelection()` for the in-memory live value (which
+    /// may differ during a `PreferencesEditor` preview or after a
+    /// stale-selection coercion in `ResolveAndApplyActive`).
+    [[nodiscard]] static QString PersistedSelection();
 
     /// Commit the in-memory active selection to `QSettings`.
     static void SaveConfiguration();
@@ -169,6 +175,19 @@ public:
     /// the only way to recover "is the override currently held?"
     /// for the Force<->Auto regression test.
     [[nodiscard]] static bool IsColorSchemeForcedForTest() noexcept;
+
+    /// Test-only: fake the OS-reported colour scheme. CI runners
+    /// have unpredictable platform-theme state -- `QStyleHints::
+    /// colorScheme()` may return `Unknown` on a minimal Linux
+    /// image, and `QStyleHints::setColorScheme()` would trigger
+    /// our Force-mode bookkeeping. This setter writes
+    /// `mOsColorScheme` directly AND latches `mOsColorSchemeLocked`
+    /// so production code paths that would normally refresh the
+    /// cache from `hints->colorScheme()` (Force engagement, Force
+    /// -> Auto release) skip those reads and trust the cached
+    /// value instead. Pass `Qt::ColorScheme::Unknown` to clear
+    /// the lock and revert to platform reporting.
+    static void SetOsColorSchemeForTest(Qt::ColorScheme scheme) noexcept;
 #endif
 
 signals:
@@ -178,21 +197,18 @@ signals:
     /// re-apply table chrome.
     void themeChanged();
 
-protected:
-    /// `qApp`-installed event filter that tracks the OS-supplied
-    /// palette so the Auto picker can read it back later. Without
-    /// this, sampling `qApp->palette()` directly during Auto
-    /// resolution would return our previously-pushed Force-mode
-    /// palette and a Force "Dark" -> Auto transition on a light
-    /// OS would resolve back to Dark instead of Light. The filter
-    /// ignores `ApplicationPaletteChange` events emitted from
-    /// inside our own `ApplyTheme` (gated by `mApplyingTheme`),
-    /// so only external (OS / platform-plugin) palette changes
-    /// update `mOsPalette`.
-    bool eventFilter(QObject *watched, QEvent *event) override;
-
 private:
     ThemeControl();
+
+    /// Slot wired to `QStyleHints::colorSchemeChanged`. Caches the
+    /// OS-reported scheme into `mOsColorScheme` so the Auto picker
+    /// can recover it later even after we've installed a Force-mode
+    /// override (Qt suppresses OS-driven scheme updates while a
+    /// `setColorScheme()` override is active). Skipped when
+    /// `mApplyingTheme` is true (the change is one we just pushed
+    /// ourselves) or when we currently hold a Force override (Qt's
+    /// reported value is our own forced value, not the OS).
+    void OnPlatformColorSchemeChanged(Qt::ColorScheme scheme);
 
     void DoLoadConfiguration();
     void DoReloadAll();
@@ -227,8 +243,8 @@ private:
     /// `ApplyColorSchemeHint` (which depends on the selection mode,
     /// not on the theme name). Without this, switching from Force
     /// "Light" to Auto on a light system would leave Qt's
-    /// `QStyleHints::colorScheme` pinned to `Light` and OS palette
-    /// flips would no longer drive `ApplicationPaletteChange`.
+    /// `QStyleHints::colorScheme` pinned to `Light` and OS scheme
+    /// flips would no longer drive `colorSchemeChanged`.
     QString mAppliedSelection;
 
     /// Pre-built brushes / fonts / flags indexed by the `LogLevel`
@@ -275,13 +291,30 @@ private:
     QString mStartupStyleName;
     QFont mStartupFont;
 
-    /// Best-effort cache of the OS-supplied palette: seeded at the
-    /// first `LoadConfiguration` (before any `ApplyTheme` mutates
-    /// `qApp->palette()`) and refreshed by `eventFilter` whenever
-    /// Qt fires `ApplicationPaletteChange` from outside our apply
-    /// path (i.e. when the OS theme flips). The Auto picker
-    /// samples this -- NOT `qApp->palette()` -- so a Force-mode
-    /// palette we pushed earlier cannot mislead the next Auto
+#ifdef LOGAPP_BUILD_TESTING
+    /// Test-only lock: when true, `ResolveAndApplyActive` and
+    /// `ApplyColorSchemeHint` skip the "refresh `mOsColorScheme`
+    /// from `hints->colorScheme()`" steps and trust the cached
+    /// value. Set by `SetOsColorSchemeForTest` so a faked OS
+    /// scheme isn't immediately clobbered by Qt's platform-
+    /// reported value during a Force engagement or release.
+    /// Cleared when the test passes `Qt::ColorScheme::Unknown`.
+    bool mOsColorSchemeLocked = false;
+#endif
+
+    /// Best-effort cache of the OS-reported `Qt::ColorScheme`.
+    /// Seeded at the first `LoadConfiguration` (before any
+    /// `setColorScheme` override has been pushed) and refreshed in
+    /// two places: (1) `OnPlatformColorSchemeChanged` whenever Qt
+    /// fires `colorSchemeChanged` from outside our apply path AND
+    /// no Force override is held, and (2) right after we call
+    /// `unsetColorScheme()` in `ResolveAndApplyActive`'s Force ->
+    /// Auto path, since Qt suppresses OS-driven scheme updates
+    /// while we hold an override (so the cache can be stale by
+    /// many minutes when the user has been in Force mode through
+    /// an OS theme flip). The Auto picker reads this cache --
+    /// never `qApp->palette()` -- so a Force-mode palette / colour
+    /// scheme we pushed earlier cannot mislead the next Auto
     /// resolution into picking the wrong kind.
-    QPalette mOsPalette;
+    Qt::ColorScheme mOsColorScheme = Qt::ColorScheme::Unknown;
 };

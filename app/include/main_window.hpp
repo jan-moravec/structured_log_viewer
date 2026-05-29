@@ -800,12 +800,20 @@ private:
     /// the float / dock / close chrome.
     RecordDetailDock *mRecordDetailDock = nullptr;
 
-    /// Last QSS string pushed to the table's horizontal header by
+    /// Last QSS strings pushed to the table body and header by
     /// `ApplyTableStyleSheet`. Compared on every re-apply so we
     /// can skip an unchanged `setStyleSheet(...)` -- Qt re-polishes
-    /// the entire header on every call even when the string is
+    /// the entire view on every call even when the string is
     /// byte-equal, which shows up as a noticeable hitch on theme
-    /// flips that fan out three event-bounce repaints.
+    /// flips that fan out three event-bounce repaints. Both
+    /// sides cache against our own snapshot (NOT
+    /// `widget->styleSheet()`) so anyone else who pushes a
+    /// stylesheet onto the same widget can't trip our diff. The
+    /// body string is currently always empty (palette drives table
+    /// chrome) but the cache pair stays paired-up so future theme
+    /// fields that need body QSS plug in without re-deriving the
+    /// "cache against our own snapshot" pattern.
+    QString mLastBodyStyleSheet;
     QString mLastHeaderStyleSheet;
 
     /// One snapshot window plus the scoped `destroyed` connection

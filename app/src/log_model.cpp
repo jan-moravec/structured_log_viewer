@@ -450,14 +450,18 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     // Snapshot the pre-batch first-level-column index so we can
-    // compare against the post-batch configuration and only
-    // invalidate `mFirstLevelColumnCache` when it actually shifts
-    // (column promoted to Level, demoted away from Level, or new
-    // earlier Level column appeared). On high-throughput streams
-    // an unconditional invalidation per batch makes every
-    // `data()` cell pay an O(columns) rescan on the next paint;
-    // gating keeps the cache hot across steady-state batches.
+    // (a) compare against the post-batch configuration to decide
+    // whether the cache really needs to stay invalidated, and (b)
+    // pre-invalidate before `mLogTable.AppendBatch` so any
+    // re-entrant `data()` call -- e.g. via a `DirectConnection`
+    // slot on `enumColumnsChanged` -- cannot read a stale column
+    // index from the cache. The "restore if unchanged" tail below
+    // keeps the hot path cheap on high-throughput steady-state
+    // batches: an unconditional invalidation per batch would
+    // force every `data()` cell to pay an O(columns) rescan on
+    // the next paint.
     const int firstLevelColumnBefore = ComputeFirstLevelColumnIndex();
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
     // Discard the previous batch's capture so a batch without a
     // Demoted signal can't leak stale data through
@@ -546,15 +550,21 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    // Invalidate the level-column cache only when the post-batch
-    // first-level-column index changed (auto-detect promoted /
-    // demoted, or `columnsGrew` introduced an earlier Level
-    // column). See the snapshot-capture comment above for why
-    // this matters on high-throughput streams.
-    if (ComputeFirstLevelColumnIndex() != firstLevelColumnBefore)
+    // Restore the cache when the post-batch first-level-column index
+    // matches what we snapshotted -- the pre-invalidation above was
+    // a defensive belt-and-braces against re-entry, not a sign of
+    // real churn. Compute once and assign directly; the next
+    // `LevelForRow` call would re-derive the same value but at the
+    // cost of an O(columns) scan per cell on the next paint.
+    const int firstLevelColumnAfter = ComputeFirstLevelColumnIndex();
+    if (firstLevelColumnAfter == firstLevelColumnBefore)
     {
-        mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+        mFirstLevelColumnCache = firstLevelColumnAfter;
     }
+    // else: leave the cache invalidated; the column index genuinely
+    // shifted (auto-detect promoted / demoted, or `columnsGrew`
+    // introduced an earlier Level column), and `LevelForRow` will
+    // rebuild lazily on its next call.
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
     // proxy connected to `rowsInserted` walks new rows against a
@@ -1133,33 +1143,51 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return {};
     }
 
-    if (role == Qt::BackgroundRole || role == Qt::ForegroundRole || role == Qt::FontRole)
+    // Theme-driven style roles: branch first on role so cells that
+    // never enter this path (DisplayRole, SortRole, ToolTipRole, ...)
+    // don't pay the level lookup cost. Qt re-queries each style
+    // role separately per cell, so a row-with-3-styled-roles pays
+    // three `LevelForRow` calls in the worst case -- the cache is
+    // O(1) hit after the first scan, but we keep this inlined
+    // branch tight for the cold-cache path too.
+    switch (role)
+    {
+    case Qt::BackgroundRole:
     {
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
             return {};
         }
-        if (role == Qt::BackgroundRole)
+        const QBrush brush = ThemeControl::BackgroundFor(*level);
+        return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
+    }
+    case Qt::ForegroundRole:
+    {
+        const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
+        if (!level.has_value())
         {
-            const QBrush brush = ThemeControl::BackgroundFor(*level);
-            return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
+            return {};
         }
-        if (role == Qt::ForegroundRole)
-        {
-            const QBrush brush = ThemeControl::ForegroundFor(*level);
-            return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
-        }
-        // FontRole: gate on bold/italic only -- a level with just a
-        // foreground tint must NOT enter this branch because it
-        // would force Qt to recompute row heights for the cell on
-        // every repaint (per-cell font lookups invalidate the
-        // delegate's cached size hints).
-        if (!ThemeControl::HasFontStyle(*level))
+        const QBrush brush = ThemeControl::ForegroundFor(*level);
+        return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
+    }
+    case Qt::FontRole:
+    {
+        const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
+        // Gate the per-cell QFont copy on bold/italic only -- a
+        // level with just a foreground tint must NOT enter this
+        // branch because it would force Qt to recompute row
+        // heights for the cell on every repaint (per-cell font
+        // lookups invalidate the delegate's cached size hints).
+        if (!level.has_value() || !ThemeControl::HasFontStyle(*level))
         {
             return {};
         }
         return ThemeControl::FontFor(*level);
+    }
+    default:
+        break;
     }
 
     if (role == Qt::DisplayRole)

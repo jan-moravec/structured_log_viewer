@@ -8,7 +8,6 @@
 #include <QDebug>
 #include <QDesktopServices>
 #include <QDir>
-#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -54,15 +53,6 @@ constexpr char BUILTIN_MATERIAL_DARK_PATH[] = ":/themes/material_dark.json";
 constexpr char BUILTIN_MATERIAL_LIGHT_PATH[] = ":/themes/material_light.json";
 constexpr char BUILTIN_MONOKAI_DARK_PATH[] = ":/themes/monokai_dark.json";
 constexpr char BUILTIN_MONOKAI_LIGHT_PATH[] = ":/themes/monokai_light.json";
-
-/// Sample the cached OS palette (not `qApp->palette()`!) so the
-/// Auto picker reads the OS state rather than whatever Force-mode
-/// palette was last pushed by `ApplyPalette`. See `mOsPalette`
-/// and `ThemeControl::eventFilter` for the bookkeeping.
-bool IsDarkOsPalette(const QPalette &osPalette)
-{
-    return ThemeControl::IsDarkColor(osPalette.color(QPalette::Window));
-}
 
 /// Linear `lerp(@p fg, @p bg, @p t)` in sRGB. Used by `ApplyPalette`
 /// to dim the Disabled colour group's text-bearing roles toward
@@ -198,6 +188,13 @@ void ThemeControl::LoadConfiguration()
     Instance().DoLoadConfiguration();
 }
 
+QString ThemeControl::PersistedSelection()
+{
+    QSettings settings;
+    const QVariant raw = settings.value(QLatin1String(SETTINGS_KEY_ACTIVE));
+    return raw.isValid() ? raw.toString() : QString();
+}
+
 void ThemeControl::SaveConfiguration()
 {
     QSettings settings;
@@ -214,25 +211,27 @@ bool ThemeControl::IsApplyingTheme() noexcept
     return Instance().mApplyingTheme;
 }
 
-bool ThemeControl::eventFilter(QObject *watched, QEvent *event)
+void ThemeControl::OnPlatformColorSchemeChanged(Qt::ColorScheme scheme)
 {
-    // Only care about palette changes on `qApp`. Every other event
-    // (mouse, key, paint, ...) gets a no-op fall-through to the
-    // base implementation so the filter cost on the hot path is
-    // a single type compare per event.
-    if (watched == qApp && event != nullptr && event->type() == QEvent::ApplicationPaletteChange &&
-        !mApplyingTheme)
+    // Skip self-induced changes: `setColorScheme` /
+    // `unsetColorScheme` from inside `ApplyColorSchemeHint` /
+    // `ResolveAndApplyActive` both fire this signal. The Force ->
+    // Auto path inside `ResolveAndApplyActive` reads `colorScheme()`
+    // explicitly right after unsetting, so we don't need this slot
+    // for that case either.
+    if (mApplyingTheme)
     {
-        // External palette change -- either the OS theme flipped
-        // or some other code called `qApp->setPalette`. Refresh
-        // our OS snapshot so the next Auto-mode resolution picks
-        // the right kind. We skip when `mApplyingTheme` is true
-        // because the change is one we just pushed ourselves
-        // (`ApplyPalette`), and recording it would defeat the
-        // entire reason the snapshot exists.
-        mOsPalette = qApp->palette();
+        return;
     }
-    return QObject::eventFilter(watched, event);
+    // When we hold a Force-mode override, the value Qt reports here
+    // is the value WE forced (Qt suppresses OS-driven updates to
+    // `colorScheme()` while the override is active). Recording it
+    // would defeat the entire reason this cache exists.
+    if (mColorSchemeForced)
+    {
+        return;
+    }
+    mOsColorScheme = scheme;
 }
 
 void ThemeControl::ReloadAll()
@@ -478,6 +477,18 @@ bool ThemeControl::IsColorSchemeForcedForTest() noexcept
 {
     return Instance().mColorSchemeForced;
 }
+
+void ThemeControl::SetOsColorSchemeForTest(Qt::ColorScheme scheme) noexcept
+{
+    ThemeControl &self = Instance();
+    self.mOsColorScheme = scheme;
+    // Lock the override only when the caller passed a concrete
+    // value. `Unknown` is the "reset" sentinel -- it both clears
+    // the cached value and unblocks production-side refreshes
+    // from `hints->colorScheme()` so the next Auto resolution
+    // can fall back to real platform reporting.
+    self.mOsColorSchemeLocked = (scheme != Qt::ColorScheme::Unknown);
+}
 #endif
 
 void ThemeControl::DoLoadConfiguration()
@@ -489,11 +500,11 @@ void ThemeControl::DoLoadConfiguration()
     // field reverts to the startup defaults instead of inheriting
     // the previous theme's font.
     //
-    // Also seeds `mOsPalette` from the still-pristine `qApp->palette()`
-    // and installs the OS-palette-tracking event filter (see
-    // `eventFilter` for the contract). Capture has to happen
-    // before the first `ApplyTheme` so the snapshot is the OS
-    // palette, not whatever theme we land on first.
+    // Also seeds `mOsColorScheme` from `QStyleHints::colorScheme()`
+    // and wires the `colorSchemeChanged` signal so OS-driven scheme
+    // changes (dark/light flip from the system settings panel) get
+    // captured into the cache. Capture has to happen before the first
+    // `ApplyColorSchemeHint` so the snapshot is the unforced OS value.
     if (!mStartupCaptured)
     {
         if (qApp->style() != nullptr)
@@ -501,19 +512,28 @@ void ThemeControl::DoLoadConfiguration()
             mStartupStyleName = qApp->style()->name();
         }
         mStartupFont = qApp->font();
-        mOsPalette = qApp->palette();
-        if (qApp != nullptr)
+        if (QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
         {
-            qApp->installEventFilter(this);
+            mOsColorScheme = hints->colorScheme();
+            // The signal carries the freshly-resolved scheme, so we
+            // can just funnel it into the slot. `Qt::UniqueConnection`
+            // is defensive against accidental double-wires from tests
+            // re-running `LoadConfiguration` (though `mStartupCaptured`
+            // also gates that today).
+            connect(
+                hints,
+                &QStyleHints::colorSchemeChanged,
+                this,
+                &ThemeControl::OnPlatformColorSchemeChanged,
+                Qt::UniqueConnection
+            );
         }
         mStartupCaptured = true;
     }
 
     DiscoverThemes();
 
-    QSettings settings;
-    const QVariant raw = settings.value(QLatin1String(SETTINGS_KEY_ACTIVE));
-    mActiveSelection = raw.isValid() ? raw.toString() : QString();
+    mActiveSelection = PersistedSelection();
 
     // First apply -- always emit so any downstream listener that
     // connected before LoadConfiguration sees the initial state.
@@ -681,16 +701,39 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
     if (!found)
     {
         // Auto (or selection was just coerced above): pick by the
-        // cached OS palette. Critically NOT `qApp->palette()`,
-        // which would still hold whatever Force-mode palette we
-        // pushed via `ApplyPalette` -- sampling that on a
-        // Force "Dark" -> Auto transition with a light OS would
-        // resolve to Dark and leave the user stuck on the wrong
-        // theme. The event filter keeps `mOsPalette` in sync with
-        // OS-level changes (`ApplicationPaletteChange` outside our
-        // apply path).
-        const QString desiredName =
-            IsDarkOsPalette(mOsPalette) ? QString::fromLatin1(BUILTIN_DARK_NAME) : QString::fromLatin1(BUILTIN_LIGHT_NAME);
+        // cached `Qt::ColorScheme`. Before sampling, if we currently
+        // hold a Force-mode `setColorScheme()` override, release it
+        // and re-read so the cache reflects the actual OS state
+        // (Qt suppresses OS-driven `colorScheme()` updates while we
+        // hold an override -- so the cache could be many minutes
+        // stale if the user toggled the OS theme during a Force
+        // session). We gate the unset with `mApplyingTheme` so the
+        // resulting palette-change events don't recurse into us via
+        // `MainWindow::event` -> `Reevaluate` -> here.
+        if (mColorSchemeForced)
+        {
+            if (QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
+            {
+                const bool wasApplying = mApplyingTheme;
+                mApplyingTheme = true;
+                hints->unsetColorScheme();
+                mColorSchemeForced = false;
+#ifdef LOGAPP_BUILD_TESTING
+                // Tests can pre-pin `mOsColorScheme` via the test
+                // helper; honour the lock so the production-side
+                // refresh below doesn't clobber the fake with
+                // whatever the test host's real platform reports.
+                if (!mOsColorSchemeLocked)
+#endif
+                {
+                    mOsColorScheme = hints->colorScheme();
+                }
+                mApplyingTheme = wasApplying;
+            }
+        }
+        const bool osDark = (mOsColorScheme == Qt::ColorScheme::Dark);
+        const QString desiredName = osDark ? QString::fromLatin1(BUILTIN_DARK_NAME)
+                                           : QString::fromLatin1(BUILTIN_LIGHT_NAME);
         if (const auto it = mIndex.find(desiredName); it != mIndex.end())
         {
             chosen = it->second.theme;
@@ -872,12 +915,11 @@ void ThemeControl::ApplyColorSchemeHint([[maybe_unused]] const loglib::Theme &th
 
     // Auto mode: drop any prior Force-mode override so Qt tracks
     // the system setting again. The auto-resolved theme's `kind`
-    // already matches the current system brightness (we picked it
-    // by sampling the palette), so we don't need to set anything
-    // here. Crucially, leaving the scheme unset is what lets a
-    // later system dark/light flip fire
-    // `ApplicationPaletteChange` through to `MainWindow::event`
-    // -> `Reevaluate`.
+    // already matches the current OS scheme (we picked it from
+    // `mOsColorScheme` in `ResolveAndApplyActive`), so we don't
+    // need to set anything here. Crucially, leaving the scheme
+    // unset is what lets a later system dark/light flip fire
+    // `colorSchemeChanged` through to `OnPlatformColorSchemeChanged`.
     //
     // We track `mColorSchemeForced` ourselves because after
     // `unsetColorScheme()` Qt reports `colorScheme()` as the
@@ -889,11 +931,40 @@ void ThemeControl::ApplyColorSchemeHint([[maybe_unused]] const loglib::Theme &th
         {
             hints->unsetColorScheme();
             mColorSchemeForced = false;
+#ifdef LOGAPP_BUILD_TESTING
+            if (!mOsColorSchemeLocked)
+#endif
+            {
+                // Refresh the cache from the now-unforced OS value
+                // so a subsequent Auto re-resolution doesn't drift
+                // back through a stale `mOsColorScheme`. The Auto
+                // picker already does this preemptively, but
+                // mirroring it here keeps the cache invariant tight.
+                mOsColorScheme = hints->colorScheme();
+            }
         }
         return;
     }
 
-    // Force mode: explicit override so Qt's standard palette and
+    // Force mode: snapshot the current OS scheme into the cache
+    // BEFORE we install the override. Once `setColorScheme()` runs,
+    // Qt suppresses OS-driven scheme updates and `colorScheme()`
+    // returns our forced value -- so if we wait until "after",
+    // we lose the OS state and the next Auto resolution would
+    // pick the wrong kind. Skipped when we already hold an
+    // override (the cache is whatever it was when we entered
+    // Force mode the first time).
+    if (!mColorSchemeForced)
+    {
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mOsColorSchemeLocked)
+#endif
+        {
+            mOsColorScheme = hints->colorScheme();
+        }
+    }
+
+    // Then explicit override so Qt's standard palette and
     // platform-native chrome line up with the user's choice
     // regardless of the OS setting. Per QStyleHints docs this
     // also makes Qt ignore later system colour-scheme changes,
@@ -976,15 +1047,15 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
     // selection colour the user sees while interacting. Without
     // this Qt grays the selection out when the window loses
     // focus, which previously required QSS to override.
+    // Other roles (Base, AlternateBase, Text, Window, WindowText)
+    // are already written across all three groups by the
+    // group-less `setColor(role, c)` calls above (that overload
+    // is shorthand for "all groups"), so re-writing them per
+    // group would be redundant.
     for (QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive})
     {
         palette.setColor(group, QPalette::Highlight, highlight);
         palette.setColor(group, QPalette::HighlightedText, highlightedText);
-        palette.setColor(group, QPalette::Base, base);
-        palette.setColor(group, QPalette::AlternateBase, altBase);
-        palette.setColor(group, QPalette::Text, text);
-        palette.setColor(group, QPalette::Window, window);
-        palette.setColor(group, QPalette::WindowText, windowText);
     }
 
     // Disabled colour group: every group-less `setColor(role, c)`

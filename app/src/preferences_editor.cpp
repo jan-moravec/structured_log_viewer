@@ -14,7 +14,6 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QSettings>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -80,7 +79,19 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
 
     auto *openThemesButton = new QPushButton("Open themes folder", this);
     openThemesButton->setToolTip("Reveal the user themes folder in the OS file manager.");
-    connect(openThemesButton, &QPushButton::clicked, this, []() { ThemeControl::RevealUserThemesDir(); });
+    connect(openThemesButton, &QPushButton::clicked, this, [this]() {
+        // Surface a status message on failure -- previously the call
+        // silently no-op'd (e.g. when AppData was unwritable on a
+        // locked-down host or when no file manager was registered
+        // for `file://` URLs on a headless Linux session).
+        if (!ThemeControl::RevealUserThemesDir())
+        {
+            ShowThemeStatus(
+                tr("Could not open the user themes folder. The folder is at: %1")
+                    .arg(ThemeControl::UserThemesDir().absolutePath())
+            );
+        }
+    });
 
     auto *duplicateThemeButton = new QPushButton("Duplicate active theme...", this);
     duplicateThemeButton->setToolTip(
@@ -126,10 +137,29 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         "active theme. Use after editing a theme JSON file outside the app."
     );
     connect(reloadThemesButton, &QPushButton::clicked, this, [this]() {
+        // Snapshot the pre-reload selection so we can detect the
+        // "user's pick was deleted on disk" case: `ReloadAll` ->
+        // `ResolveAndApplyActive` silently coerces missing names
+        // back to Auto, and without explicit feedback users who
+        // just edited their theme file see the selection move and
+        // can't tell whether the edit took effect or whether the
+        // file is broken.
+        const QString preReloadSelection = ThemeControl::ActiveSelection();
         ThemeControl::ReloadAll();
         RepopulateThemeCombo();
         RefreshThemePreview();
-        ShowThemeStatus(tr("Reloaded themes from disk."));
+        const QString postReloadSelection = ThemeControl::ActiveSelection();
+        if (!preReloadSelection.isEmpty() && postReloadSelection.isEmpty())
+        {
+            ShowThemeStatus(
+                tr("Reloaded themes. Active theme \"%1\" is gone from disk; reverted to Auto.")
+                    .arg(preReloadSelection)
+            );
+        }
+        else
+        {
+            ShowThemeStatus(tr("Reloaded themes from disk."));
+        }
     });
 
     // Live-apply theme changes when the user actually commits a
@@ -146,6 +176,16 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         }
         const QString selection = mThemeComboBox->itemData(idx).toString();
         ThemeControl::SetActiveSelection(selection);
+        RefreshThemePreview();
+    });
+
+    // Track external theme changes (OS dark/light flip while the
+    // dialog is open, another window's `SetActiveSelection`, etc.)
+    // so the combo and preview don't silently go stale. The
+    // `themeChanged` signal coalesces all such paths into one
+    // refresh point.
+    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() {
+        RepopulateThemeCombo();
         RefreshThemePreview();
     });
 
@@ -258,28 +298,15 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         close();
     });
     connect(cancelButton, &QPushButton::clicked, this, [this]() {
-        // Reload the on-disk theme selection so any live-applied
-        // preview is reverted before the dialog closes. Cheap path:
-        // when the persisted value is something the current live
-        // selection would already resolve to (either byte-equal,
-        // or persisted-stale which `ResolveAndApplyActive` already
-        // coerced to empty / Auto), no preview is in flight and
-        // we can skip the full DiscoverThemes +
-        // ResolveAndApplyActive round-trip.
-        QSettings settings;
-        const QString persistedSelection = settings.value(QStringLiteral("theme/active")).toString();
-        const QString liveSelection = ThemeControl::ActiveSelection();
-        const bool persistedIsLive = (liveSelection == persistedSelection);
-        // Coercion case: persisted names a now-missing theme, so
-        // `ResolveAndApplyActive` already cleared `liveSelection`
-        // to empty (Auto). A re-load would re-coerce and emit
-        // nothing new; skip.
-        const bool persistedCoercedToAuto =
-            liveSelection.isEmpty() && !persistedSelection.isEmpty() && !ThemeControl::Load(persistedSelection).has_value();
-        if (!persistedIsLive && !persistedCoercedToAuto)
-        {
-            ThemeControl::LoadConfiguration();
-        }
+        // Revert any live-applied theme preview back to whatever is
+        // on disk. `SetActiveSelection` short-circuits when the
+        // requested value already matches the in-memory live one
+        // (no DiscoverThemes / ResolveAndApplyActive / signal
+        // fan-out), so the no-preview common case is free. We use
+        // it instead of `LoadConfiguration()` to keep the brush /
+        // font cache hot when the user opened Prefs without
+        // touching the theme combo.
+        ThemeControl::SetActiveSelection(ThemeControl::PersistedSelection());
         // Revert the spinbox-edited values to the persisted ones; no
         // emit needed because the on-disk values are unchanged.
         StreamingControl::LoadConfiguration();
