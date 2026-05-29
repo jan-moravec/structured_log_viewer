@@ -102,6 +102,13 @@ public:
     /// paint of a coloured-but-not-bold row.
     static bool HasFontStyle(loglib::LogLevel level) noexcept;
 
+    /// True iff any level in the active theme sets bold or italic.
+    /// Cheap top-of-`Qt::FontRole` gate so themes without any font
+    /// styling (every shipped theme except the ones tagging
+    /// `Fatal: bold`) skip the per-cell `LevelForRow` resolve
+    /// entirely. Recomputed once per `ApplyTheme`.
+    static bool HasAnyFontStyle() noexcept;
+
     /// Active selection token from `QSettings`. Empty means Auto.
     static QString ActiveSelection();
 
@@ -259,6 +266,14 @@ private:
     std::array<QFont, LEVEL_SLOTS> mFonts;
     std::array<bool, LEVEL_SLOTS> mBold{};
     std::array<bool, LEVEL_SLOTS> mItalic{};
+
+    /// OR-fold of `mBold` and `mItalic` across all level slots,
+    /// refreshed by `BuildStyleCache`. Powers the
+    /// `HasAnyFontStyle()` fast-path so `LogModel::data` can
+    /// short-circuit the `Qt::FontRole` branch without resolving
+    /// a level when the active theme leaves every level at
+    /// regular weight.
+    bool mHasAnyFontStyle = false;
 
     /// Re-entrancy guard for `ApplyTheme`. `qApp->setPalette` /
     /// `qApp->setStyle` synchronously fan out

@@ -1143,15 +1143,21 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return {};
     }
 
-    // Theme-driven style roles: branch first on role so cells that
-    // never enter this path (DisplayRole, SortRole, ToolTipRole, ...)
-    // don't pay the level lookup cost. Qt re-queries each style
-    // role separately per cell, so a row-with-3-styled-roles pays
-    // three `LevelForRow` calls in the worst case -- the cache is
-    // O(1) hit after the first scan, but we keep this inlined
-    // branch tight for the cold-cache path too.
+    // One switch covers every role we serve. Style-bearing roles
+    // (`Background`/`Foreground`/`Font`) each resolve the row's
+    // canonical level via `LevelForRow` -- Qt re-queries each role
+    // separately per cell, so a row with three styled roles pays
+    // three `LevelForRow` calls in the worst case (cache is O(1)
+    // after the first scan). `Qt::FontRole` is gated on
+    // `ThemeControl::HasAnyFontStyle()` so themes that don't bold
+    // or italicise any level skip the level resolve entirely.
     switch (role)
     {
+    case Qt::DisplayRole:
+        return ConvertToSingleLineCompactQString(
+            mLogTable.GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()))
+        );
+
     case Qt::BackgroundRole:
     {
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
@@ -1162,6 +1168,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         const QBrush brush = ThemeControl::BackgroundFor(*level);
         return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
     }
+
     case Qt::ForegroundRole:
     {
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
@@ -1172,31 +1179,27 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         const QBrush brush = ThemeControl::ForegroundFor(*level);
         return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
     }
+
     case Qt::FontRole:
     {
+        // Global gate first: when no level in the active theme
+        // sets bold or italic, skip the per-cell `LevelForRow`
+        // resolve. Per-level `HasFontStyle` is still needed below
+        // for themes that style only some levels (the shipped
+        // `Light` / `Dark` presets bold only `Fatal`).
+        if (!ThemeControl::HasAnyFontStyle())
+        {
+            return {};
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
-        // Gate the per-cell QFont copy on bold/italic only -- a
-        // level with just a foreground tint must NOT enter this
-        // branch because it would force Qt to recompute row
-        // heights for the cell on every repaint (per-cell font
-        // lookups invalidate the delegate's cached size hints).
         if (!level.has_value() || !ThemeControl::HasFontStyle(*level))
         {
             return {};
         }
         return ThemeControl::FontFor(*level);
     }
-    default:
-        break;
-    }
 
-    if (role == Qt::DisplayRole)
-    {
-        return ConvertToSingleLineCompactQString(
-            mLogTable.GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()))
-        );
-    }
-    if (role == LogModelItemDataRole::SortRole)
+    case LogModelItemDataRole::SortRole:
     {
         loglib::LogValue value =
             mLogTable.GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
@@ -1240,11 +1243,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             value
         );
     }
-    if (role == LogModelItemDataRole::InsertionOrderRole)
-    {
+
+    case LogModelItemDataRole::InsertionOrderRole:
         return {index.row()};
-    }
-    if (role == LogModelItemDataRole::CopyLine)
+
+    case LogModelItemDataRole::CopyLine:
     {
         // `LineSource *` distinguishes mmap arena vs. owned bytes.
         const auto row = static_cast<size_t>(index.row());
@@ -1253,7 +1256,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
         return {QString::fromStdString(raw)};
     }
-    if (role == LogModelItemDataRole::EnumValueRole)
+
+    case LogModelItemDataRole::EnumValueRole:
     {
         // `qint32` for `DictRef` slots; invalid for monostate /
         // unpromoted slots. Exposed for tests / external readers; the
@@ -1267,7 +1271,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return QVariant::fromValue<qint32>(static_cast<qint32>(*enumId));
     }
 
-    return {};
+    default:
+        return {};
+    }
 }
 
 template <typename T> std::optional<std::pair<T, T>> LogModel::GetMinMaxValues(int column) const

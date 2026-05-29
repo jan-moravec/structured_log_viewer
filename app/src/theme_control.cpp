@@ -246,42 +246,51 @@ const loglib::Theme &ThemeControl::Active()
 
 QBrush ThemeControl::ForegroundFor(loglib::LogLevel level) noexcept
 {
+    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= Instance().mForeground.size())
+    if (idx >= self.mForeground.size())
     {
         return {};
     }
-    return Instance().mForeground[idx];
+    return self.mForeground[idx];
 }
 
 QBrush ThemeControl::BackgroundFor(loglib::LogLevel level) noexcept
 {
+    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= Instance().mBackground.size())
+    if (idx >= self.mBackground.size())
     {
         return {};
     }
-    return Instance().mBackground[idx];
+    return self.mBackground[idx];
 }
 
 QFont ThemeControl::FontFor(loglib::LogLevel level) noexcept
 {
+    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= Instance().mFonts.size())
+    if (idx >= self.mFonts.size())
     {
         return qApp->font();
     }
-    return Instance().mFonts[idx];
+    return self.mFonts[idx];
 }
 
 bool ThemeControl::HasFontStyle(loglib::LogLevel level) noexcept
 {
+    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= Instance().mBold.size())
+    if (idx >= self.mBold.size())
     {
         return false;
     }
-    return Instance().mBold[idx] || Instance().mItalic[idx];
+    return self.mBold[idx] || self.mItalic[idx];
+}
+
+bool ThemeControl::HasAnyFontStyle() noexcept
+{
+    return Instance().mHasAnyFontStyle;
 }
 
 QString ThemeControl::ActiveSelection()
@@ -1124,6 +1133,7 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     mBackground.fill(QBrush{});
     mBold.fill(false);
     mItalic.fill(false);
+    mHasAnyFontStyle = false;
 
     // Snapshot `qApp->font()` once -- `ApplyTheme` calls us after
     // `qApp->setFont` lands, so this picks up the theme-applied
@@ -1158,5 +1168,6 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         {
             mFonts[idx].setItalic(true);
         }
+        mHasAnyFontStyle = mHasAnyFontStyle || style.bold || style.italic;
     }
 }
