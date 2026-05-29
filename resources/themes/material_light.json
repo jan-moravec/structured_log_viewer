@@ -1,0 +1,31 @@
+{
+    "name": "Material Light",
+    "kind": "light",
+    "levels": {
+        "Trace": { "foreground": "#90A4AE", "background": "#ECEFF1" },
+        "Debug": { "foreground": "#3A77B6", "background": "#E3F2FD" },
+        "Info":  {},
+        "Warn":  { "foreground": "#C17E00", "background": "#FFF8E1" },
+        "Error": { "foreground": "#E53935", "background": "#FFEBEE" },
+        "Fatal": { "foreground": "#B71C1C", "background": "#FFCDD2", "bold": true }
+    },
+    "table": {
+        "background": "#FAFAFA",
+        "alternateRowBackground": "#ECEFF1",
+        "selectionBackground": "#B2DFDB",
+        "selectionForeground": "#263238"
+    },
+    "chrome": {
+        "window": "#FAFAFA",
+        "windowText": "#37474F",
+        "text": "#37474F",
+        "button": "#ECEFF1",
+        "buttonText": "#37474F",
+        "placeholderText": "#90A4AE",
+        "toolTipBase": "#ECEFF1",
+        "toolTipText": "#37474F"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

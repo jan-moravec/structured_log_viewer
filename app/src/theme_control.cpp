@@ -41,8 +41,19 @@ constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 constexpr char BUILTIN_LIGHT_NAME[] = "Light";
 constexpr char BUILTIN_DARK_NAME[] = "Dark";
 
+// `Light` and `Dark` are the canonical Auto-mode targets (see
+// `ResolveAndApplyActive`); the rest are popular VS Code-flavoured
+// presets users can Force-select. Adding more dark-kind built-ins
+// does NOT change Auto resolution because the Auto picker keys off
+// the literal `Light` / `Dark` names, not `theme.kind`.
 constexpr char BUILTIN_LIGHT_PATH[] = ":/themes/light.json";
 constexpr char BUILTIN_DARK_PATH[] = ":/themes/dark.json";
+constexpr char BUILTIN_GITHUB_DARK_PATH[] = ":/themes/github_dark.json";
+constexpr char BUILTIN_GITHUB_LIGHT_PATH[] = ":/themes/github_light.json";
+constexpr char BUILTIN_MATERIAL_DARK_PATH[] = ":/themes/material_dark.json";
+constexpr char BUILTIN_MATERIAL_LIGHT_PATH[] = ":/themes/material_light.json";
+constexpr char BUILTIN_MONOKAI_DARK_PATH[] = ":/themes/monokai_dark.json";
+constexpr char BUILTIN_MONOKAI_LIGHT_PATH[] = ":/themes/monokai_light.json";
 
 /// Sample the cached OS palette (not `qApp->palette()`!) so the
 /// Auto picker reads the OS state rather than whatever Force-mode
@@ -611,7 +622,16 @@ void ThemeControl::DiscoverThemes()
     };
 
     // Built-ins first, so a same-named user file overrides them.
-    constexpr std::array<const char *, 2> BUILTIN_PATHS = {BUILTIN_LIGHT_PATH, BUILTIN_DARK_PATH};
+    constexpr std::array<const char *, 8> BUILTIN_PATHS = {
+        BUILTIN_LIGHT_PATH,
+        BUILTIN_DARK_PATH,
+        BUILTIN_GITHUB_DARK_PATH,
+        BUILTIN_GITHUB_LIGHT_PATH,
+        BUILTIN_MATERIAL_DARK_PATH,
+        BUILTIN_MATERIAL_LIGHT_PATH,
+        BUILTIN_MONOKAI_DARK_PATH,
+        BUILTIN_MONOKAI_LIGHT_PATH
+    };
     for (const char *path : BUILTIN_PATHS)
     {
         ingest(QString::fromLatin1(path), /*fromUser=*/false);

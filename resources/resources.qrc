@@ -4,5 +4,11 @@
         <file>icon-white.png</file>
         <file>themes/light.json</file>
         <file>themes/dark.json</file>
+        <file>themes/github_dark.json</file>
+        <file>themes/github_light.json</file>
+        <file>themes/material_dark.json</file>
+        <file>themes/material_light.json</file>
+        <file>themes/monokai_dark.json</file>
+        <file>themes/monokai_light.json</file>
     </qresource>
 </RCC>
