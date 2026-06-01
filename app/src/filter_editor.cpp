@@ -1,5 +1,7 @@
 #include "filter_editor.hpp"
 
+#include "theme_control.hpp"
+
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
@@ -35,9 +37,45 @@ constexpr int PAGE_TIME = 1;
 constexpr int PAGE_ENUM = 2;
 constexpr int PAGE_NUMERIC = 3;
 constexpr int PAGE_BOOLEAN = 4;
+
+/// True iff @p widget paints onto a dark `QPalette::Base` --
+/// the surface our validation feedback contrasts against.
+[[nodiscard]] bool IsDarkBase(const QWidget *widget)
+{
+    const QPalette palette = (widget != nullptr) ? widget->palette() : qApp->palette();
+    return ThemeControl::IsDarkColor(palette.color(QPalette::Base));
+}
+
+/// Palette-aware warning colour, legible on both Light and Dark
+/// backgrounds.
+[[nodiscard]] QString WarningColorHex(const QWidget *widget)
+{
+    return IsDarkBase(widget) ? QStringLiteral("#FF8A80") : QStringLiteral("#D32F2F");
+}
+
+/// QSS for the warning foreground colour, for check boxes /
+/// labels.
+[[nodiscard]] QString WarningTextStyle(const QWidget *widget)
+{
+    return QStringLiteral("QCheckBox { color: %1; } QLabel { color: %1; }").arg(WarningColorHex(widget));
+}
+
+/// QSS for the warning border colour, for line / number edits
+/// where the input itself stays legible. Trailing `;` so callers
+/// can concatenate further rules.
+[[nodiscard]] QString WarningBorderStyle(const QWidget *widget)
+{
+    return QStringLiteral("border: 1px solid %1;").arg(WarningColorHex(widget));
+}
+
+/// Border-only warning style for the enum picker `QListView`.
+[[nodiscard]] QString WarningListBorderStyle(const QWidget *widget)
+{
+    return QStringLiteral("QListView { border: 1px solid %1; }").arg(WarningColorHex(widget));
+}
 } // namespace
 
-FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
+FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl *theme, QWidget *parent)
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
 {
     setWindowTitle("Filter Editor");
@@ -202,6 +240,15 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     // Boolean checkboxes: clear any warning border on toggle.
     connect(mBoolIncludeTrue, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
     connect(mBoolIncludeFalse, &QCheckBox::toggled, this, [this](bool) { ClearWarningStyles(); });
+
+    // On theme flip, drop the warning styles -- they were tuned
+    // for the previous palette. Re-clicking Ok with the same
+    // invalid input re-stamps them in the new theme's colour.
+    // No-theme test path skips the connect (nothing emits).
+    if (theme != nullptr)
+    {
+        connect(theme, &ThemeControl::themeChanged, this, [this]() { ClearWarningStyles(); });
+    }
 
     UpdateSelectedColumn(0);
 }
@@ -596,8 +643,9 @@ void FilterEditor::OnOkClicked()
         const bool endUnbounded = mEndUnboundedCheckBox->isChecked();
         if (beginUnbounded && endUnbounded)
         {
-            mBeginUnboundedCheckBox->setStyleSheet("QCheckBox { color: red; }");
-            mEndUnboundedCheckBox->setStyleSheet("QCheckBox { color: red; }");
+            const QString warning = WarningTextStyle(mBeginUnboundedCheckBox);
+            mBeginUnboundedCheckBox->setStyleSheet(warning);
+            mEndUnboundedCheckBox->setStyleSheet(warning);
             return;
         }
         const std::optional<qint64> beginMicros =
@@ -614,7 +662,7 @@ void FilterEditor::OnOkClicked()
         if (selected.isEmpty())
         {
             // Empty selection would hide every row.
-            mEnumValuesView->setStyleSheet("QListView { border: 1px solid red; }");
+            mEnumValuesView->setStyleSheet(WarningListBorderStyle(mEnumValuesView));
             return;
         }
         // Level columns submit canonical level names; the predicate
@@ -631,8 +679,9 @@ void FilterEditor::OnOkClicked()
         const QString maxText = mNumericMaxEdit->text();
         if (minText.isEmpty() && maxText.isEmpty())
         {
-            mNumericMinEdit->setStyleSheet("border: 1px solid red");
-            mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+            const QString warning = WarningBorderStyle(mNumericMinEdit);
+            mNumericMinEdit->setStyleSheet(warning);
+            mNumericMaxEdit->setStyleSheet(warning);
             return;
         }
         // Reject `NaN` / `±inf`: `QLocale::toDouble` accepts them,
@@ -656,7 +705,7 @@ void FilterEditor::OnOkClicked()
             minValue = parseFinite(minText);
             if (!minValue.has_value())
             {
-                mNumericMinEdit->setStyleSheet("border: 1px solid red");
+                mNumericMinEdit->setStyleSheet(WarningBorderStyle(mNumericMinEdit));
                 return;
             }
         }
@@ -665,7 +714,7 @@ void FilterEditor::OnOkClicked()
             maxValue = parseFinite(maxText);
             if (!maxValue.has_value())
             {
-                mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+                mNumericMaxEdit->setStyleSheet(WarningBorderStyle(mNumericMaxEdit));
                 return;
             }
         }
@@ -673,8 +722,9 @@ void FilterEditor::OnOkClicked()
         {
             // `min == max` is a valid single-point filter; only
             // strict `>` is rejected.
-            mNumericMinEdit->setStyleSheet("border: 1px solid red");
-            mNumericMaxEdit->setStyleSheet("border: 1px solid red");
+            const QString warning = WarningBorderStyle(mNumericMinEdit);
+            mNumericMinEdit->setStyleSheet(warning);
+            mNumericMaxEdit->setStyleSheet(warning);
             return;
         }
         emit FilterNumericRangeSubmitted(mFilterID, index, minValue, maxValue);
@@ -685,8 +735,9 @@ void FilterEditor::OnOkClicked()
         const bool includeFalse = mBoolIncludeFalse->isChecked();
         if (!includeTrue && !includeFalse)
         {
-            mBoolIncludeTrue->setStyleSheet("QCheckBox { color: red; }");
-            mBoolIncludeFalse->setStyleSheet("QCheckBox { color: red; }");
+            const QString warning = WarningTextStyle(mBoolIncludeTrue);
+            mBoolIncludeTrue->setStyleSheet(warning);
+            mBoolIncludeFalse->setStyleSheet(warning);
             return;
         }
         emit FilterBooleanSubmitted(mFilterID, index, includeTrue, includeFalse);
@@ -695,7 +746,7 @@ void FilterEditor::OnOkClicked()
     {
         if (mStringLineEdit->text().isEmpty())
         {
-            mStringLineEdit->setStyleSheet("border: 1px solid red");
+            mStringLineEdit->setStyleSheet(WarningBorderStyle(mStringLineEdit));
             return;
         }
         emit FilterSubmitted(mFilterID, index, GetStringToFilter(), GetMatchType());

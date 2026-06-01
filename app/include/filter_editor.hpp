@@ -25,12 +25,20 @@
 
 #include <optional>
 
+class ThemeControl;
+
 class FilterEditor : public QDialog
 {
     Q_OBJECT
 
 public:
-    FilterEditor(const LogModel &model, QString filterID, QWidget *parent = nullptr);
+    /// @p theme drives the palette-aware warning colour and the
+    /// `themeChanged` signal that drops stale warning styles after
+    /// a theme flip. `nullptr` is supported for legacy test sites
+    /// that construct a `FilterEditor` without a theme; the
+    /// palette-derived fallback in `IsDarkBase` still picks a
+    /// legible warning colour, and no signal connect is wired.
+    FilterEditor(const LogModel &model, QString filterID, ThemeControl *theme = nullptr, QWidget *parent = nullptr);
 
     void Load(int row, const QString &filterString, int matchType);
     /// Restore a time-range filter. `std::nullopt` on a bound leaves

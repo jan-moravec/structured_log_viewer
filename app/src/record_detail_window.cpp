@@ -33,3 +33,11 @@ RecordDetailWindow::RecordDetailWindow(const RecordDetailContent &content, QWidg
     mWidget->SetOpenInNewWindowVisible(false);
     layout->addWidget(mWidget);
 }
+
+void RecordDetailWindow::RefreshPalette()
+{
+    if (mWidget != nullptr)
+    {
+        mWidget->RefreshPalette();
+    }
+}

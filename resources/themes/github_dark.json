@@ -1,0 +1,31 @@
+{
+    "name": "GitHub Dark",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#6E7681", "background": "#161B22" },
+        "Debug": { "foreground": "#79C0FF", "background": "#0D1F2D" },
+        "Info":  {},
+        "Warn":  { "foreground": "#D29922", "background": "#3D2E0A" },
+        "Error": { "foreground": "#F85149", "background": "#3D1212" },
+        "Fatal": { "foreground": "#FFDCD7", "background": "#7F1D1D", "bold": true }
+    },
+    "table": {
+        "background": "#0D1117",
+        "alternateRowBackground": "#161B22",
+        "selectionBackground": "#1F6FEB",
+        "selectionForeground": "#FFFFFF"
+    },
+    "chrome": {
+        "window": "#161B22",
+        "windowText": "#C9D1D9",
+        "text": "#C9D1D9",
+        "button": "#21262D",
+        "buttonText": "#C9D1D9",
+        "placeholderText": "#8B949E",
+        "toolTipBase": "#161B22",
+        "toolTipText": "#C9D1D9"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

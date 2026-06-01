@@ -44,6 +44,7 @@ class QMenu;
 QT_END_NAMESPACE
 
 class SessionHistoryManager;
+class ThemeControl;
 
 class MainWindow : public QMainWindow
 {
@@ -94,15 +95,26 @@ public:
         QString appliedConfigPath;
     };
 
-    /// No-history constructor: auto-save / Recent Sessions /
-    /// restore-on-launch are all no-ops. Used by the test fixture
-    /// and ad-hoc instances that don't care about history.
+    /// No-history, no-theme constructor: auto-save / Recent
+    /// Sessions / restore-on-launch are all no-ops, and the table
+    /// renders without per-level styling. Used by the legacy
+    /// `MainWindow mainWindow;` test sites that don't exercise
+    /// the theme system; pair the test fixture with a real
+    /// `ThemeControl` via the themed overload for theme-aware
+    /// assertions.
     MainWindow(QWidget *parent = nullptr);
 
-    /// Production constructor. The history manager is owned by
-    /// `main()`; the window keeps a non-owning pointer and writes
-    /// snapshots through it on streaming completion / close.
-    MainWindow(SessionHistoryManager *historyManager, QWidget *parent);
+    /// Themed, no-history constructor for test fixtures and
+    /// ad-hoc instances that need a live theme but don't care
+    /// about session history.
+    MainWindow(ThemeControl *theme, QWidget *parent = nullptr);
+
+    /// Production constructor. The theme controller and history
+    /// manager are owned by `main()`; the window keeps non-owning
+    /// pointers and writes snapshots through the history manager
+    /// on streaming completion / close. `theme` may be nullptr in
+    /// tests; theme-dependent code paths fall back to defaults.
+    MainWindow(ThemeControl *theme, SessionHistoryManager *historyManager, QWidget *parent = nullptr);
 
     ~MainWindow();
 
@@ -713,6 +725,15 @@ private:
     void RebuildFiltersFromConfiguration();
     void ApplyTableStyleSheet();
 
+    /// Pick the light- or dark-variant title-bar icon to match the
+    /// active theme.
+    void ApplyThemedWindowIcon();
+
+    /// Slot for `ThemeControl::themeChanged()`. Re-applies the
+    /// table QSS and repaints the viewport so cells re-query
+    /// `data()` for the new per-level brushes / fonts.
+    void OnThemeChanged();
+
     /// Canonical `EnumDictionary` for @p columnIndex; nullptr when the
     /// column is not promoted or has no keys.
     [[nodiscard]] const loglib::EnumDictionary *ResolveEnumDictionary(int columnIndex) const;
@@ -750,6 +771,10 @@ private:
     LogModel *mModel;
     FindRecordWidget *mFindRecord;
     PreferencesEditor *mPreferencesEditor;
+    /// Non-owning. Lives in `main()` (or the test fixture).
+    /// `nullptr` for legacy no-args construction; theme code paths
+    /// in this class check before dereferencing.
+    ThemeControl *mTheme;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
     /// Per-filter `Filters` sub-menu pointers, keyed by filter id.
@@ -779,6 +804,14 @@ private:
     /// via the View menu or a double-click. `QDockWidget` provides
     /// the float / dock / close chrome.
     RecordDetailDock *mRecordDetailDock = nullptr;
+
+    /// Last QSS pushed to the table body / header. Compared on
+    /// re-apply so we can skip unchanged writes -- Qt re-polishes
+    /// the whole view on every `setStyleSheet`, even no-op ones.
+    /// We cache our own snapshot (not `widget->styleSheet()`) so
+    /// external writers can't trip the diff.
+    QString mLastBodyStyleSheet;
+    QString mLastHeaderStyleSheet;
 
     /// One snapshot window plus the scoped `destroyed` connection
     /// installed by `OpenRecordDetailWindow`. The scoped handle lets

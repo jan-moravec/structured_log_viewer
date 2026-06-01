@@ -1,7 +1,6 @@
 #include "main_window.hpp"
 #include "./ui_main_window.h"
 
-#include "appearance_control.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
@@ -11,6 +10,7 @@
 #include "qt_streaming_log_sink.hpp"
 #include "session_history_manager.hpp"
 #include "streaming_control.hpp"
+#include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
 #include <loglib/bytes_producer.hpp>
@@ -26,6 +26,7 @@
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
 #include <loglib/tcp_server_producer.hpp>
+#include <loglib/theme.hpp>
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
@@ -425,23 +426,28 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-    : MainWindow(nullptr, parent)
+    : MainWindow(nullptr, nullptr, parent)
 {
 }
 
-MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager)
+MainWindow::MainWindow(ThemeControl *theme, QWidget *parent)
+    : MainWindow(theme, nullptr, parent)
+{
+}
+
+MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManager, QWidget *parent)
+    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager), mTheme(theme)
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
-    this->setWindowIcon(QIcon(":/icon-white.png"));
+    ApplyThemedWindowIcon();
 
     mTableView = new LogTableView(this);
     mLayout = new QVBoxLayout(ui->centralWidget);
     mLayout->addWidget(mTableView, 1);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-    mModel = new LogModel(mTableView);
+    mModel = new LogModel(mTableView, mTheme);
     mTableView->setModel(mModel);
     // `modelReset` clears the header's hidden flags, but
     // `Column::visible` survives. Re-apply on every reset so load /
@@ -450,7 +456,21 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    mTableView->setAlternatingRowColors(true);
+    // Per-level theme colours already partition rows; an extra
+    // alternation stripe would make two rows of the same level
+    // read as different. Secondary tables (Record Details,
+    // Columns Manager) keep alternation since they're plain
+    // property lists.
+    mTableView->setAlternatingRowColors(false);
+
+    // Single entry point for both Preferences-driven and
+    // OS-driven theme refreshes. Skipped in the no-theme test
+    // fixture path; theme-dependent assertions wire the themed
+    // overload of `MainWindow`.
+    if (mTheme != nullptr)
+    {
+        connect(mTheme, &ThemeControl::themeChanged, this, &MainWindow::OnThemeChanged);
+    }
 
     ApplyTableStyleSheet();
 
@@ -474,7 +494,8 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
 
     mTableView->resizeColumnsToContents();
 
-    mTableView->horizontalHeader()->setStyleSheet(R"(QHeaderView::section { padding: 8px; font-weight: bold; })");
+    // Header stylesheet lives in `ApplyTableStyleSheet` so theme
+    // colours can layer onto the bold + padding rule.
     mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
     mTableView->horizontalHeader()->setStretchLastSection(true);
@@ -630,7 +651,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     // The dock owns its own `modelReset -> Clear` wiring, so reuse
     // outside `MainWindow` stays correct.
 
-    mPreferencesEditor = new PreferencesEditor(this);
+    mPreferencesEditor = new PreferencesEditor(mTheme, this);
     connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
         mPreferencesEditor->UpdateFields();
         mPreferencesEditor->show();
@@ -973,8 +994,33 @@ bool MainWindow::event(QEvent *event)
     }
     case QEvent::ApplicationPaletteChange:
     case QEvent::ThemeChange:
+    {
+        // Skip during our own apply -- `OnThemeChanged` handles
+        // the QSS re-apply once at the end. No-theme test path
+        // also skips (nothing to re-evaluate).
+        if (mTheme == nullptr || mTheme->IsApplyingTheme())
+        {
+            break;
+        }
+        // OS theme flip: re-evaluate Auto. If the resolved theme
+        // is unchanged (Force mode, or same kind on Auto),
+        // `OnThemeChanged` won't fire -- refresh the QSS manually
+        // so palette-derived colours follow.
+        const QString priorName = QString::fromStdString(mTheme->Active().name);
+        mTheme->Reevaluate();
+        const QString currentName = QString::fromStdString(mTheme->Active().name);
+        if (priorName == currentName)
+        {
+            ApplyTableStyleSheet();
+        }
+        break;
+    }
     case QEvent::StyleChange:
-        // Stylesheet encodes palette-derived colors; refresh on theme change.
+        if (mTheme != nullptr && mTheme->IsApplyingTheme())
+        {
+            break;
+        }
+        // External `qApp->setStyle` (defensive -- we have none).
         ApplyTableStyleSheet();
         break;
     default:
@@ -992,7 +1038,7 @@ void MainWindow::NewWindow()
     }
 
     // Top-level peer with `WA_DeleteOnClose` so Qt owns lifetime.
-    auto *child = new MainWindow(mHistoryManager, nullptr);
+    auto *child = new MainWindow(mTheme, mHistoryManager, nullptr);
     child->setAttribute(Qt::WA_DeleteOnClose);
     child->show();
     child->raise();
@@ -2356,9 +2402,9 @@ void MainWindow::ApplyDisplayOrder()
 
     mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
-    // Newest-first disables alternating colours: Qt keys alternation off
-    // the visual row index, so top-insertion would flicker every row.
-    mTableView->setAlternatingRowColors(!newestFirst);
+    // Alternation is permanently off here -- per-level theme
+    // colours already partition rows, and toggling it per
+    // direction used to flicker on newest-first batches.
 
     if (mModel->IsStreamingActive())
     {
@@ -3200,7 +3246,7 @@ void MainWindow::AddFilter(
         return;
     }
 
-    auto *filterEditor = new FilterEditor(*mModel, filterId, this);
+    auto *filterEditor = new FilterEditor(*mModel, filterId, mTheme, this);
     // Without explicit cleanup, every Add / Edit click leaks a
     // `FilterEditor` (parented to `this`) until window teardown.
     // `WA_DeleteOnClose` handles the X-button; `accept()` /
@@ -3644,23 +3690,85 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     ui->actionClearAllFilters->setDisabled(false);
 }
 
+void MainWindow::OnThemeChanged()
+{
+    ApplyTableStyleSheet();
+    ApplyThemedWindowIcon();
+
+    // Repaint just the viewport -- Qt will re-query `data()` for
+    // visible cells. Avoids the proxy-chain walk that a full
+    // `dataChanged` emit would force.
+    if (mTableView != nullptr)
+    {
+        mTableView->viewport()->update();
+    }
+
+    // These widgets cache palette-derived state (e.g. brushes
+    // stamped on table items) and won't update from a bare
+    // `ApplicationPaletteChange` alone.
+    if (mRecordDetailDock != nullptr && mRecordDetailDock->Widget() != nullptr)
+    {
+        mRecordDetailDock->Widget()->RefreshPalette();
+    }
+    for (const auto &tracked : mRecordDetailWindows)
+    {
+        if (RecordDetailWindow *window = tracked.window.data(); window != nullptr)
+        {
+            window->RefreshPalette();
+        }
+    }
+    if (mColumnsManagerDialog != nullptr)
+    {
+        mColumnsManagerDialog->RefreshPalette();
+    }
+}
+
+void MainWindow::ApplyThemedWindowIcon()
+{
+    // Drive the icon off `ThemeKind` (not the OS palette) so the
+    // icon matches the theme even in Force mode. No-theme test
+    // path defaults to the light-OS icon.
+    const loglib::ThemeKind kind = (mTheme != nullptr) ? mTheme->Active().kind : loglib::ThemeKind::Light;
+    const QString iconPath =
+        (kind == loglib::ThemeKind::Light) ? QStringLiteral(":/icon-black.png") : QStringLiteral(":/icon-white.png");
+    setWindowIcon(QIcon(iconPath));
+}
+
 void MainWindow::ApplyTableStyleSheet()
 {
-    if (AppearanceControl::IsDarkTheme())
+    // Body chrome comes from the palette pushed by
+    // `ThemeControl::ApplyTheme`, so the body QSS is empty. We
+    // only need QSS for the header (padding + bold + optional
+    // theme colours) since Qt has no palette role for those.
+    const QString bodyRule;
+
+    QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
+    if (mTheme != nullptr)
     {
-        mTableView->setStyleSheet(R"(
-QTableView { background-color: #222222; alternate-background-color: #333333; }
-QTableView::item:selected { background-color: #00518F; }
-QTableView::item:selected:!active { background-color: #00518F; }
-)");
+        const loglib::Theme &theme = mTheme->Active();
+        if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
+        {
+            headerRule +=
+                QStringLiteral(" background-color: %1;").arg(QString::fromStdString(*theme.table.headerBackground));
+        }
+        if (theme.table.headerForeground.has_value() && !theme.table.headerForeground->empty())
+        {
+            headerRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.headerForeground));
+        }
     }
-    else
+    headerRule += QStringLiteral(" }");
+
+    // Skip unchanged writes -- even an empty `setStyleSheet`
+    // triggers Qt's full polish cascade.
+    if (bodyRule != mLastBodyStyleSheet)
     {
-        mTableView->setStyleSheet(R"(
-QTableView { background-color: #FFFFFF; alternate-background-color: #F0F0F0; }
-QTableView::item:selected { background-color: #ADD4FF; color: black; }
-QTableView::item:selected:!active { background-color: #ADD4FF; color: black; }
-)");
+        mTableView->setStyleSheet(bodyRule);
+        mLastBodyStyleSheet = bodyRule;
+    }
+    if (headerRule != mLastHeaderStyleSheet)
+    {
+        mTableView->horizontalHeader()->setStyleSheet(headerRule);
+        mLastHeaderStyleSheet = headerRule;
     }
 }
 

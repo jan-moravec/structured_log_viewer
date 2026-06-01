@@ -6,14 +6,32 @@ project(structured_log_viewer VERSION 0.9.0 LANGUAGES CXX)
 # let sanitizer presets override via the cache; a plain `set(... ON)` would
 # shadow that and re-enable thin-LTO, which breaks ASan+UBSan+PIE links
 # (PC-relative relocs into libstdc++ from `log_compare.cpp` thread_local dtors).
+#
+# Linux+GCC special case: default IPO OFF. GCC 13+ thin-LTO miscompiles
+# moc-generated Q_OBJECT staticMetaObject / qt_static_metacall machinery, so
+# any Qt-Widgets executable linking our `logapp.a` (transitively or directly)
+# SegFaults during QApplication construction when built with IPO ON. The new
+# `apptest_theme` unit test is the first thing in our suite that constructs a
+# real QApplication, so it tripped the latent bug. Disabling IPO on this
+# toolchain is the minimal workaround; a follow-up PR will replace this gate
+# with a per-target SHARED-libloglib.so containment that recovers full LTO --
+# see doc/linux-gcc-lto-investigation.md (untracked working note, intended to
+# be moved into the follow-up PR) for the full bisect + benchmark record.
+# macOS (Apple Clang) and Windows (MSVC /GL) are unaffected and keep IPO ON.
+# Linux+Clang sanitizer presets already override IPO via the cache.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT loglib_ipo_supported OUTPUT loglib_ipo_error LANGUAGES CXX)
 if(loglib_ipo_supported)
+    set(loglib_default_ipo ON)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(loglib_default_ipo OFF)
+        message(STATUS "IPO/LTO defaulted OFF on Linux+GCC (GCC 13+ moc-LTO miscompile).")
+    endif()
     if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ${loglib_default_ipo})
     endif()
     if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ${loglib_default_ipo})
     endif()
     message(
         STATUS

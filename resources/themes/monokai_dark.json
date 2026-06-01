@@ -1,0 +1,31 @@
+{
+    "name": "Monokai Dark",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#75715E", "background": "#2D2E27" },
+        "Debug": { "foreground": "#66D9EF", "background": "#1E2A2D" },
+        "Info":  {},
+        "Warn":  { "foreground": "#FD971F", "background": "#3A2F1A" },
+        "Error": { "foreground": "#F92672", "background": "#3A1A22" },
+        "Fatal": { "foreground": "#FFAAC1", "background": "#5C1B30", "bold": true }
+    },
+    "table": {
+        "background": "#272822",
+        "alternateRowBackground": "#2D2E27",
+        "selectionBackground": "#49483E",
+        "selectionForeground": "#F8F8F2"
+    },
+    "chrome": {
+        "window": "#272822",
+        "windowText": "#F8F8F2",
+        "text": "#F8F8F2",
+        "button": "#3E3D32",
+        "buttonText": "#F8F8F2",
+        "placeholderText": "#75715E",
+        "toolTipBase": "#3E3D32",
+        "toolTipText": "#F8F8F2"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

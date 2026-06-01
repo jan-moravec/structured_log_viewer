@@ -23,6 +23,7 @@
 
 template <typename T> class QFutureWatcher;
 class QtStreamingLogSink;
+class ThemeControl;
 
 enum LogModelItemDataRole
 {
@@ -71,10 +72,14 @@ class LogModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
-    explicit LogModel(QObject *parent = nullptr);
+    /// @p theme drives the per-`LogLevel` background / foreground /
+    /// font lookups in `data()`. `nullptr` is supported for plain
+    /// `LogModel model;` test sites that don't exercise per-level
+    /// styling; the colour / font roles return `{}` in that case.
+    explicit LogModel(QObject *parent = nullptr, ThemeControl *theme = nullptr);
     /// Test-only overload with a custom bounded-queue capacity for the
     /// embedded `QtStreamingLogSink`.
-    LogModel(QObject *parent, std::size_t pendingCapacity);
+    LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme = nullptr);
     ~LogModel() override;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
@@ -261,6 +266,19 @@ private:
     /// Shared implementation of `Reset()` / `StopAndKeepRows()`.
     void TeardownStreamingSessionInternal(bool resetTable);
 
+    /// Canonical level for @p row via the first `Type::Level`
+    /// column. Returns nullopt when there's no level column or the
+    /// row has no resolvable level. Drives the Background /
+    /// Foreground / Font role branches in `data()`.
+    [[nodiscard]] std::optional<loglib::LogLevel> LevelForRow(int row) const noexcept;
+
+    /// Linear scan for the first `Type::Level` column. Returns
+    /// `LEVEL_COLUMN_NONE` when none match.
+    [[nodiscard]] int ComputeFirstLevelColumnIndex() const noexcept;
+
+    static constexpr int LEVEL_COLUMN_UNCACHED = -2;
+    static constexpr int LEVEL_COLUMN_NONE = -1;
+
     loglib::LogTable mLogTable;
     QtStreamingLogSink *mSink = nullptr;
 
@@ -295,6 +313,18 @@ private:
     /// Per-column health cache, parallel to `Configuration().columns`.
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
+
+    /// Cached first-`Type::Level` column index. Sentinel
+    /// `LEVEL_COLUMN_UNCACHED` before first scan, `LEVEL_COLUMN_NONE`
+    /// when no level column exists. Invalidated by every structural
+    /// mutator.
+    mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+
+    /// Non-owning theme controller pointer. May be null when the
+    /// model is constructed via the legacy default ctor (test
+    /// fixtures that don't exercise theming); `data()` gates its
+    /// theme-derived branches on a null check.
+    ThemeControl *mTheme = nullptr;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

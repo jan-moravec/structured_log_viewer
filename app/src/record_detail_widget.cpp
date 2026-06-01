@@ -493,6 +493,21 @@ void RecordDetailWidget::resizeEvent(QResizeEvent *event)
     }
 }
 
+void RecordDetailWidget::RefreshPalette()
+{
+    // The placeholder label has an explicit foreground override
+    // so it doesn't track palette changes on its own. Read the
+    // theme colour from the app palette (not this label's own,
+    // which carries the override).
+    QPalette placeholderPalette = mPlaceholderLabel->palette();
+    placeholderPalette.setColor(mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
+    mPlaceholderLabel->setPalette(placeholderPalette);
+
+    // Rebuild cells so placeholder-row foregrounds re-pick the
+    // theme colour. No-op when there's no displayed content.
+    PopulateUi();
+}
+
 void RecordDetailWidget::CopyAsJsonClicked() const
 {
     if (!mContent.valid || mContent.rawJson.isEmpty())
