@@ -6,32 +6,21 @@ project(structured_log_viewer VERSION 0.9.0 LANGUAGES CXX)
 # let sanitizer presets override via the cache; a plain `set(... ON)` would
 # shadow that and re-enable thin-LTO, which breaks ASan+UBSan+PIE links
 # (PC-relative relocs into libstdc++ from `log_compare.cpp` thread_local dtors).
-#
-# Linux+GCC special case: default IPO OFF. GCC 13+ thin-LTO miscompiles
-# moc-generated Q_OBJECT staticMetaObject / qt_static_metacall machinery, so
-# any Qt-Widgets executable linking our `logapp.a` (transitively or directly)
-# SegFaults during QApplication construction when built with IPO ON. The new
-# `apptest_theme` unit test is the first thing in our suite that constructs a
-# real QApplication, so it tripped the latent bug. Disabling IPO on this
-# toolchain is the minimal workaround; a follow-up PR will replace this gate
-# with a per-target SHARED-libloglib.so containment that recovers full LTO --
-# see doc/linux-gcc-lto-investigation.md (untracked working note, intended to
-# be moved into the follow-up PR) for the full bisect + benchmark record.
-# macOS (Apple Clang) and Windows (MSVC /GL) are unaffected and keep IPO ON.
-# Linux+Clang sanitizer presets already override IPO via the cache.
+# This gate previously also defaulted OFF on Linux+GCC because IPO+STATIC was
+# reproducing the LLVM-189203 PIC/non-PIC LTO copy-relocation bug against Qt's
+# staticMetaObject (apptest_theme SegFault during QApplication construction);
+# the global CMAKE_POSITION_INDEPENDENT_CODE=ON set below (before any target
+# is created via FetchContent / add_subdirectory) eliminates that bug at the
+# source by ensuring no PIC/non-PIC mix ever reaches the LTO link. See
+# doc/linux-gcc-lto-investigation.md section 11 for the full evidence.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT loglib_ipo_supported OUTPUT loglib_ipo_error LANGUAGES CXX)
 if(loglib_ipo_supported)
-    set(loglib_default_ipo ON)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        set(loglib_default_ipo OFF)
-        message(STATUS "IPO/LTO defaulted OFF on Linux+GCC (GCC 13+ moc-LTO miscompile).")
-    endif()
     if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ${loglib_default_ipo})
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
     endif()
     if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ${loglib_default_ipo})
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
     endif()
     message(
         STATUS
@@ -41,6 +30,24 @@ if(loglib_ipo_supported)
 else()
     message(STATUS "IPO/LTO not supported: ${loglib_ipo_error}")
 endif()
+
+# Force every static input -- loglib (no Qt dep, so CMake doesn't auto-pick
+# PIC), every FetchContent third-party static lib (simdjson, fmt, efsw,
+# date-tz, ...), every test executable -- into the same PIC class as the
+# Qt-linked logapp / StructuredLogViewer / apptest_* targets that already get
+# PIC via Qt's INTERFACE_POSITION_INDEPENDENT_CODE. Mixing PIC and non-PIC
+# inputs into an LTO link triggers the toolchain-wide LLVM-189203 /
+# Arch FS#78006 defect where R_X86_64_COPY is wrongly emitted for data symbols
+# referenced from const globals -- Qt's staticMetaObject / qt_meta_data_*
+# tables are exactly such symbols, so the resulting binary has zero-initialised
+# metaobjects and SegFaults during QApplication construction in
+# QGuiApplication::screenAdded. Setting this BEFORE the FetchContent / library
+# / app subdirectories so every target picks up the property at creation time.
+# No-op on Windows (PE has no copy-relocations) and MSVC silently ignores the
+# property; default on macOS shared libraries; ~1 % cost on Linux x86-64
+# static deps, repaid many times over by the restored cross-TU LTO inlining
+# inside loglib. See doc/linux-gcc-lto-investigation.md section 11.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
