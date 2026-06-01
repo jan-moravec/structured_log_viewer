@@ -6,13 +6,6 @@ project(structured_log_viewer VERSION 0.9.0 LANGUAGES CXX)
 # let sanitizer presets override via the cache; a plain `set(... ON)` would
 # shadow that and re-enable thin-LTO, which breaks ASan+UBSan+PIE links
 # (PC-relative relocs into libstdc++ from `log_compare.cpp` thread_local dtors).
-# This gate previously also defaulted OFF on Linux+GCC because IPO+STATIC was
-# reproducing the LLVM-189203 PIC/non-PIC LTO copy-relocation bug against Qt's
-# staticMetaObject (apptest_theme SegFault during QApplication construction);
-# the global CMAKE_POSITION_INDEPENDENT_CODE=ON set below (before any target
-# is created via FetchContent / add_subdirectory) eliminates that bug at the
-# source by ensuring no PIC/non-PIC mix ever reaches the LTO link. See
-# doc/linux-gcc-lto-investigation.md section 11 for the full evidence.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT loglib_ipo_supported OUTPUT loglib_ipo_error LANGUAGES CXX)
 if(loglib_ipo_supported)
@@ -31,22 +24,13 @@ else()
     message(STATUS "IPO/LTO not supported: ${loglib_ipo_error}")
 endif()
 
-# Force every static input -- loglib (no Qt dep, so CMake doesn't auto-pick
-# PIC), every FetchContent third-party static lib (simdjson, fmt, efsw,
-# date-tz, ...), every test executable -- into the same PIC class as the
-# Qt-linked logapp / StructuredLogViewer / apptest_* targets that already get
-# PIC via Qt's INTERFACE_POSITION_INDEPENDENT_CODE. Mixing PIC and non-PIC
-# inputs into an LTO link triggers the toolchain-wide LLVM-189203 /
-# Arch FS#78006 defect where R_X86_64_COPY is wrongly emitted for data symbols
-# referenced from const globals -- Qt's staticMetaObject / qt_meta_data_*
-# tables are exactly such symbols, so the resulting binary has zero-initialised
-# metaobjects and SegFaults during QApplication construction in
-# QGuiApplication::screenAdded. Setting this BEFORE the FetchContent / library
-# / app subdirectories so every target picks up the property at creation time.
-# No-op on Windows (PE has no copy-relocations) and MSVC silently ignores the
-# property; default on macOS shared libraries; ~1 % cost on Linux x86-64
-# static deps, repaid many times over by the restored cross-TU LTO inlining
-# inside loglib. See doc/linux-gcc-lto-investigation.md section 11.
+# Set globally before any target exists so loglib + FetchContent third-party
+# static libs (simdjson, fmt, efsw, date-tz, ...) pick up PIC, matching the
+# PIC that Qt-linked targets already get via INTERFACE_POSITION_INDEPENDENT_CODE.
+# Mixing PIC and non-PIC bitcode in an LTO link triggers LLVM #189203:
+# spurious R_X86_64_COPY relocations against Qt's staticMetaObject leave the
+# metaobject zero-initialised at runtime -> SIGSEGV in QApplication
+# construction (QGuiApplication::screenAdded). No-op on Windows / MSVC.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CMAKE_CXX_STANDARD 23)

@@ -272,15 +272,9 @@ jobs:
           ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
 
       - name: Verify packaged AppImage is well-formed
-        # Smoke-launch the AppImage under the headless `offscreen` QPA. Hard
-        # failure: a missing dep, broken bundle, or runtime fault here means
-        # we'd ship a broken AppImage. Previously had `continue-on-error: true`
-        # because the launch was SegFaulting in `QGuiApplicationPrivate::init`,
-        # originally misattributed to a "Qt 6.8.3 + runner-image GLIBC mix";
-        # the actual cause was the LLVM-189203 PIC/non-PIC LTO copy-relocation
-        # bug against Qt's staticMetaObject, fixed at the source by the global
-        # CMAKE_POSITION_INDEPENDENT_CODE=ON in the top-level CMakeLists.txt.
-        # See doc/linux-gcc-lto-investigation.md section 11 for the full story.
+        # Smoke-launch the AppImage under the headless `offscreen` QPA so a
+        # missing dep / broken bundle / runtime fault fails CI before we
+        # ship a broken AppImage on a release tag.
         run: |
           set -euo pipefail
           shopt -s nullglob
