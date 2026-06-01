@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(structured_log_viewer VERSION 0.7.0 LANGUAGES CXX)
+project(structured_log_viewer VERSION 0.7.1 LANGUAGES CXX)
 
 # IPO/LTO for Release / RelWithDebInfo so the linker can inline across TUs.
 # Debug stays off for iteration speed.
@@ -28,6 +28,12 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/${CMAKE_BUILD_TYPE})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/${CMAKE_BUILD_TYPE})
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# PIC for every static input so the LTO link does not mix PIC / non-PIC bitcode
+# (LLVM #189203: spurious R_X86_64_COPY relocations against Qt's staticMetaObject
+# leave it zero-initialised -> SIGSEGV in QApplication construction). No-op on
+# Windows / MSVC. Must be set BEFORE FetchContent / add_subdirectory below.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(cmake/FetchDependencies.cmake)
 
