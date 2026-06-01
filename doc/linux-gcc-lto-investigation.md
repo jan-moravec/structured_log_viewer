@@ -8,34 +8,34 @@
 > hypotheses ruled out, the working fix, the measurements that validate it,
 > and a concrete implementation checklist the follow-up PR can use as a spec.
 
----
+______________________________________________________________________
 
 ## TL;DR
 
-* **Bug:** Any Qt-Widgets executable that links our `logapp.a` (transitively
+- **Bug:** Any Qt-Widgets executable that links our `logapp.a` (transitively
   or directly) SegFaults during `QApplication` construction when built with
   GCC 13+ and IPO/thin-LTO enabled. The crash is inside
   `QGuiApplication::screenAdded` → unsymbolised frame in `libQt6Core.so.6`,
   reached from `QApplicationPrivate::init`. Triggered for the first time on PR
   #42 by the new `apptest_theme` unit test, which is the only thing in the
   test suite that constructs a real `QApplication`.
-* **Root cause (best understanding):** GCC 13+'s thin-LTO miscompiles
+- **Root cause (best understanding):** GCC 13+'s thin-LTO miscompiles
   moc-generated `staticMetaObject` / `qt_static_metacall` machinery. The
   miscompile is reachable whenever GCC's linker plugin sees *any* LTO
   bitcode in the link line and runs IPA over inputs that include the
   moc TUs.
-* **Working fix:** Build `loglib` as a SHARED library on Linux + GCC only,
+- **Working fix:** Build `loglib` as a SHARED library on Linux + GCC only,
   keep IPO ON, and add two intra-`.so` inlining flags. The SHARED link
   consumes all of `loglib`'s LTO bitcode at the `libloglib.so` step, so no
   bitcode reaches the moc-bearing Qt consumers and the linker plugin has
   nothing to re-IPA over. The two flags eliminate the small intra-`.so`
   inlining penalty that the naïve SHARED conversion costs.
-* **Net effect vs current shipped Linux baseline (STATIC + IPO OFF):**
+- **Net effect vs current shipped Linux baseline (STATIC + IPO OFF):**
   +5 % to +44 % on hot `loglib` paths (LTO benefit recovered).
-* **Other platforms unchanged:** macOS / Windows / Linux + Clang keep the
+- **Other platforms unchanged:** macOS / Windows / Linux + Clang keep the
   STATIC + IPO ON configuration they already had.
 
----
+______________________________________________________________________
 
 ## 1. The Bug
 
@@ -46,7 +46,7 @@ that constructs a `QApplication` to exercise `ThemeControl`. Under the
 `build-linux` CI job (Ubuntu 22.04, GCC 13, Qt 6.8, offscreen QPA, IPO
 ON) the test SegFaults immediately:
 
-```
+```text
 QFATAL : TestThemeControl::initTestCase() ...
 SIGSEGV (exit 139) deep inside QApplication construction
 ```
@@ -78,7 +78,7 @@ bug never manifests even when IPO is forced on under Clang).
 
 ### Stack trace (GDB on the offscreen run)
 
-```
+```text
 Program received signal SIGSEGV.
 0x00007ffff7??????? in ?? () from libQt6Core.so.6
 #0  ?? ()                            from libQt6Core.so.6   <-- unsymbolised
@@ -109,7 +109,7 @@ metacall dispatch lands at an invalid PC.
 We did not produce a minimal upstream reproducer for the GCC bug, but
 the fingerprint matches multiple historical GCC LTO-vs-moc reports.
 
----
+______________________________________________________________________
 
 ## 2. Diagnostic Journey (what was tried and ruled out)
 
@@ -124,34 +124,34 @@ unchanged.
 
 ### Toolchain bisect (commit `9ba555d`)
 
-| Compiler | IPO | Result |
-|---|---|---|
-| gcc-13 | OFF | **PASS** |
-| gcc-14 | ON | SegFault |
+| Compiler | IPO | Result   |
+| -------- | --- | -------- |
+| gcc-13   | OFF | **PASS** |
+| gcc-14   | ON  | SegFault |
 
 This narrowed the trigger from "GCC 13 specifically" to "IPO on GCC ≥ 13".
 
 ### Toolchain + LTO-knob bisect (commit `255b338`, see `[experiment-2]` steps)
 
-| Configuration | Result |
-|---|---|
-| gcc-13 + IPO ON | SegFault |
-| gcc-14 + IPO ON | SegFault |
-| gcc-15 + IPO ON | SegFault (bug not fixed upstream) |
-| gcc-13 + `-flto-partition=none` + IPO ON | SegFault (not the partitioner) |
-| gcc-13 + `-fno-devirtualize-speculatively` + IPO ON | SegFault (not that pass alone) |
+| Configuration                                       | Result                            |
+| --------------------------------------------------- | --------------------------------- |
+| gcc-13 + IPO ON                                     | SegFault                          |
+| gcc-14 + IPO ON                                     | SegFault                          |
+| gcc-15 + IPO ON                                     | SegFault (bug not fixed upstream) |
+| gcc-13 + `-flto-partition=none` + IPO ON            | SegFault (not the partitioner)    |
+| gcc-13 + `-fno-devirtualize-speculatively` + IPO ON | SegFault (not that pass alone)    |
 
 Eliminated "wait for the GCC fix" and "narrow LTO knob" as paths forward.
 
 ### Per-target IPO disable (commits `7572089`, `eb45feb`)
 
-* Setting `INTERPROCEDURAL_OPTIMIZATION FALSE` on `apptest_theme`
+- Setting `INTERPROCEDURAL_OPTIMIZATION FALSE` on `apptest_theme`
   alone: **still SegFault**, because `apptest_theme` links `logapp.a`,
   which links `loglib.a` and the third-party FetchContent libs — all
   built with IPO ON. GCC's linker plugin re-enters LTO over any
   bitcode-bearing `.o` in the link regardless of the linking target's
   own `-fno-lto`.
-* Widening the disable to `logapp`, `StructuredLogViewer`, `test_common`,
+- Widening the disable to `logapp`, `StructuredLogViewer`, `test_common`,
   and all `apptest_*` *plus* adding `-ffat-lto-objects` to `loglib`:
   **still SegFault**. The slim LTO bitcode from the third-party libs
   (`simdjson.a`, `fmt.a`, `efsw.a`, `date-tz.a`, `glaze`, etc.) was
@@ -180,10 +180,10 @@ hard-green, AppImage smoke-launch hard-green.
 But the naïve SHARED conversion **regressed streaming throughput by
 14-24 %**:
 
-| Benchmark | STATIC + IPO OFF | SHARED + IPO ON (naïve) | Δ |
-|---|---|---|---|
-| Stream 1 M JSON entries | 744 MB/s | 566 MB/s | **−24 %** |
-| Stream 200 k wide JSON | 831 MB/s | 716 MB/s | **−14 %** |
+| Benchmark               | STATIC + IPO OFF | SHARED + IPO ON (naïve) | Δ         |
+| ----------------------- | ---------------- | ----------------------- | --------- |
+| Stream 1 M JSON entries | 744 MB/s         | 566 MB/s                | **−24 %** |
+| Stream 200 k wide JSON  | 831 MB/s         | 716 MB/s                | **−14 %** |
 
 So the naïve SHARED pivot was **rejected** on the user's explicit
 "must not hinder the performance" gate.
@@ -206,7 +206,7 @@ naïve SHARED conversion paid.)
 
 Numbers below.
 
----
+______________________________________________________________________
 
 ## 3. Measurements
 
@@ -218,25 +218,25 @@ comparable. The `Run parser benchmarks` step provides the baseline
 
 ### Streaming hot paths
 
-| Benchmark | Baseline<br>STATIC + IPO OFF | **F**<br>STATIC + IPO ON | **G**<br>SHARED + IPO ON + opts |
-|---|---|---|---|
-| Stream 1 M JSON entries → LogTable | 683.06 MB/s / 251.7 ms | **720.75 MB/s** / 238.6 ms (+5.5 %) | **722.03 MB/s** / 238.2 ms (+5.7 %) |
-| Stream 200 k wide JSON entries | 779.39 MB/s / 179.6 ms | **849.54 MB/s** / 164.8 ms (+9.0 %) | **814.51 MB/s** / 171.9 ms (+4.5 %) |
-| Parse 10 k JSON sync | 260.59 MB/s / 6.60 ms | **281.07 MB/s** / 6.11 ms (+7.9 %) | **291.26 MB/s** / 5.90 ms (+11.8 %) |
-| Stream write-to-row latency | p95 91.26 ms | p95 91.24 ms | p95 91.33 ms |
+| Benchmark                          | Baseline<br>STATIC + IPO OFF | **F**<br>STATIC + IPO ON            | **G**<br>SHARED + IPO ON + opts     |
+| ---------------------------------- | ---------------------------- | ----------------------------------- | ----------------------------------- |
+| Stream 1 M JSON entries → LogTable | 683.06 MB/s / 251.7 ms       | **720.75 MB/s** / 238.6 ms (+5.5 %) | **722.03 MB/s** / 238.2 ms (+5.7 %) |
+| Stream 200 k wide JSON entries     | 779.39 MB/s / 179.6 ms       | **849.54 MB/s** / 164.8 ms (+9.0 %) | **814.51 MB/s** / 171.9 ms (+4.5 %) |
+| Parse 10 k JSON sync               | 260.59 MB/s / 6.60 ms        | **281.07 MB/s** / 6.11 ms (+7.9 %)  | **291.26 MB/s** / 5.90 ms (+11.8 %) |
+| Stream write-to-row latency        | p95 91.26 ms                 | p95 91.24 ms                        | p95 91.33 ms                        |
 
 ### Lookup / filter / sort hot paths
 
-| Benchmark | Baseline | F | G |
-|---|---|---|---|
-| `LogLine::GetValue` (KeyId fast) | 0.574 ms | **0.402 ms** (+43 %) | **0.400 ms** (+44 %) |
-| `LogLine::GetValue` (DictRef) | 0.118 ms | **0.100 ms** (+18 %) | **0.102 ms** (+16 %) |
-| `LogLine::GetValue` (string slow) | 1.68 ms | **1.49 ms** (+13 %) | **1.47 ms** (+14 %) |
-| `FilterAcceptedRows` / 1 M enum rows | 32.72 ms | **24.43 ms** (+34 %) | 30.91 ms (+5.9 %) |
-| `CompareRows` enum sort / 1 M | 758.7 ms | **653.0 ms** (+16 %) | **645.9 ms** (+17 %) |
-| `CompareRows` level sort / 1 M | 2013.0 ms | **1842.1 ms** (+9 %) | **1806.7 ms** (+11 %) |
-| `CallbackStringRowPredicate` / 1 M | 68.4 ms | **61.4 ms** (+11 %) | **62.0 ms** (+10 %) |
-| `EnumRowPredicate` / 1 M | 16.64 ms | 19.39 ms (−17 %) | 19.72 ms (−19 %) |
+| Benchmark                            | Baseline  | F                    | G                     |
+| ------------------------------------ | --------- | -------------------- | --------------------- |
+| `LogLine::GetValue` (KeyId fast)     | 0.574 ms  | **0.402 ms** (+43 %) | **0.400 ms** (+44 %)  |
+| `LogLine::GetValue` (DictRef)        | 0.118 ms  | **0.100 ms** (+18 %) | **0.102 ms** (+16 %)  |
+| `LogLine::GetValue` (string slow)    | 1.68 ms   | **1.49 ms** (+13 %)  | **1.47 ms** (+14 %)   |
+| `FilterAcceptedRows` / 1 M enum rows | 32.72 ms  | **24.43 ms** (+34 %) | 30.91 ms (+5.9 %)     |
+| `CompareRows` enum sort / 1 M        | 758.7 ms  | **653.0 ms** (+16 %) | **645.9 ms** (+17 %)  |
+| `CompareRows` level sort / 1 M       | 2013.0 ms | **1842.1 ms** (+9 %) | **1806.7 ms** (+11 %) |
+| `CallbackStringRowPredicate` / 1 M   | 68.4 ms   | **61.4 ms** (+11 %)  | **62.0 ms** (+10 %)   |
+| `EnumRowPredicate` / 1 M             | 16.64 ms  | 19.39 ms (−17 %)     | 19.72 ms (−19 %)      |
 
 `EnumRowPredicate` regresses in both F and G. Almost certainly a single-
 sample noise outlier (every other lookup / filter benchmark improves
@@ -246,21 +246,21 @@ not change the overall conclusion.
 
 ### What this tells us
 
-* **LTO is worth 5-44 %** on the loglib hot paths. The biggest wins
+- **LTO is worth 5-44 %** on the loglib hot paths. The biggest wins
   are on the per-cell value accessors (`GetValue` fast path: +43 %)
   and on the filter / sort kernels (+11-34 %). Streaming throughput
   gains are more modest (+5-9 %).
-* **The naïve SHARED regression was 100 % intra-`.so` inlining loss,
+- **The naïve SHARED regression was 100 % intra-`.so` inlining loss,
   not cross-`.so` call cost.** G (SHARED + flags) matches F (STATIC +
   IPO ON) to within 0-4 % on the streaming hot paths and is identical
   on `GetValue` and the sort kernels. The previously hypothesised
   "cross-`.so` PLT cost on inner loops" is, for our call patterns, in
   the noise.
-* **G beats the currently shipped Linux baseline on every benchmark
+- **G beats the currently shipped Linux baseline on every benchmark
   except the `EnumRowPredicate` noise outlier.** The user's
   "must not hinder the performance" gate is satisfied with margin.
 
----
+______________________________________________________________________
 
 ## 4. Mechanic in one paragraph
 
@@ -277,16 +277,16 @@ STATIC linkage. Cross-`.so` calls from `logapp` / `tests` into
 `libloglib.so` still go through the PLT, but for our call patterns
 (parsers called per-batch, not per-line) that cost is unmeasurable.
 
----
+______________________________________________________________________
 
 ## 5. Why Linux + GCC only
 
-| Platform | LTO-blocking bug? | What SHARED would change |
-|---|---|---|
-| **Linux + GCC** | **YES** | Unblocks LTO → +5-44 % on hot paths. **Worth doing.** |
-| macOS + AppleClang | NO (LTO already on, no crash) | Adds `.dylib` indirection; loses cross-module LTO from loglib into consumer. **Net negative.** |
-| Windows + MSVC | NO (LTCG already on, no crash) | Adds DLL/IAT indirection; loses cross-module LTCG. `WINDOWS_EXPORT_ALL_SYMBOLS` auto-exports functions but **not data symbols**, so any future `extern const` in a loglib public header would silently break the link. **Net negative.** |
-| Linux + Clang (sanitizer presets) | NO (IPO already off for sanitizers) | No LTO to recover. **Net neutral, more deployment.** |
+| Platform                          | LTO-blocking bug?                   | What SHARED would change                                                                                                                                                                                                                 |
+| --------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Linux + GCC**                   | **YES**                             | Unblocks LTO → +5-44 % on hot paths. **Worth doing.**                                                                                                                                                                                    |
+| macOS + AppleClang                | NO (LTO already on, no crash)       | Adds `.dylib` indirection; loses cross-module LTO from loglib into consumer. **Net negative.**                                                                                                                                           |
+| Windows + MSVC                    | NO (LTCG already on, no crash)      | Adds DLL/IAT indirection; loses cross-module LTCG. `WINDOWS_EXPORT_ALL_SYMBOLS` auto-exports functions but **not data symbols**, so any future `extern const` in a loglib public header would silently break the link. **Net negative.** |
+| Linux + Clang (sanitizer presets) | NO (IPO already off for sanitizers) | No LTO to recover. **Net neutral, more deployment.**                                                                                                                                                                                     |
 
 Going SHARED universally would buy zero correctness (no equivalent bug
 exists on the other toolchains), cost small-but-real perf on macOS /
@@ -294,7 +294,7 @@ Windows hot paths, add Windows DLL export hassle, and remove zero CMake
 conditionals (the per-platform `if` would just flip from "Linux→SHARED"
 to "all→SHARED" — same line count, more deployment).
 
----
+______________________________________________________________________
 
 ## 6. Recommended fix (concrete diff for the follow-up PR)
 
@@ -364,27 +364,26 @@ generator-expression form is awkward).
 ### 6.3 `.github/workflows/build.yml`
 
 Refresh the comment on the `Run unit tests` step (currently references
-the IPO-OFF gate that's about to be removed) and the `Verify packaged
-AppImage is well-formed` step. Both should point at the SHARED-loglib
+the IPO-OFF gate that's about to be removed) and the `Verify packaged AppImage is well-formed` step. Both should point at the SHARED-loglib
 containment + this investigation doc instead.
 
 ### 6.4 No code changes needed in
 
-* `app/CMakeLists.txt` — `target_link_libraries(... loglib)` works
+- `app/CMakeLists.txt` — `target_link_libraries(... loglib)` works
   identically against STATIC and SHARED.
-* `test/lib/CMakeLists.txt`, `test/app/CMakeLists.txt`, etc. — same.
-* Any `.cpp` / `.hpp` file — no `LOGLIB_API` decoration is required
+- `test/lib/CMakeLists.txt`, `test/app/CMakeLists.txt`, etc. — same.
+- Any `.cpp` / `.hpp` file — no `LOGLIB_API` decoration is required
   because we keep default GCC visibility (everything exported). The
   third-party static deps baked into `libloglib.so` (simdjson, fmt,
   date-tz, efsw) are PRIVATE deps, so their symbols are kept inside
   the `.so` boundary.
-* AppImage packaging — `linuxdeploy` reads the
+- AppImage packaging — `linuxdeploy` reads the
   `StructuredLogViewer` binary's build-tree RPATH, finds
   `libloglib.so` in `build/release/lib/Release/`, and bundles it to
   `AppDir/usr/lib/` automatically. RUNPATH gets rewritten to
   `$ORIGIN/../lib` by `linuxdeploy`'s patchelf pass.
 
----
+______________________________________________________________________
 
 ## 7. Validation checklist for the follow-up PR
 
@@ -392,53 +391,52 @@ containment + this investigation doc instead.
    loglib SHARED. Verify `file build/release/lib/Release/libloglib.so`
    shows a regular ELF `.so` (no `.gnu.lto_*` sections via
    `readelf -S`).
-2. Local `./build/release/bin/Release/apptest_theme` runs to
+1. Local `./build/release/bin/Release/apptest_theme` runs to
    completion under `QT_QPA_PLATFORM=offscreen` without SegFault.
-3. CI `build-linux` job is hard-green (no `continue-on-error` on
+1. CI `build-linux` job is hard-green (no `continue-on-error` on
    `Run unit tests` or the AppImage smoke launch).
-4. CI `build-macos`, `build-windows`, `clang-ci (asan-ubsan / tsan /
-   coverage)` all stay green (no platform regression).
-5. AppImage extracted under `--appimage-extract` contains
+1. CI `build-macos`, `build-windows`, `clang-ci (asan-ubsan / tsan / coverage)` all stay green (no platform regression).
+1. AppImage extracted under `--appimage-extract` contains
    `usr/lib/libloglib.so` and `usr/bin/StructuredLogViewer`. The
    binary's `readelf -d` shows `RUNPATH` containing `$ORIGIN/../lib`
    and `NEEDED` containing `libloglib.so`.
-6. The `Run parser benchmarks` step's WARN lines are within ±3 % of
+1. The `Run parser benchmarks` step's WARN lines are within ±3 % of
    the F numbers in section 3 (Stream 1 M JSON ~720 MB/s, GetValue
    fast ~0.40 ms, etc.) — they should *not* be at the baseline
    numbers (683 MB/s, 0.57 ms), which would indicate LTO is silently
    off.
 
----
+______________________________________________________________________
 
 ## 8. Risks and mitigations
 
-| Risk | Mitigation |
-|---|---|
-| `-fno-semantic-interposition` changes semantics if someone `LD_PRELOAD`s a loglib symbol | We do not interpose any loglib symbol. If a future need arises, scope the flag to loglib only (already only meaningful when building loglib, which is the only SHARED target). |
-| `-Wl,-Bsymbolic-functions` prevents runtime symbol replacement inside libloglib.so | Same — we have no plugin mechanism that would need this. |
+| Risk                                                                                       | Mitigation                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-fno-semantic-interposition` changes semantics if someone `LD_PRELOAD`s a loglib symbol   | We do not interpose any loglib symbol. If a future need arises, scope the flag to loglib only (already only meaningful when building loglib, which is the only SHARED target).                                                                                                                    |
+| `-Wl,-Bsymbolic-functions` prevents runtime symbol replacement inside libloglib.so         | Same — we have no plugin mechanism that would need this.                                                                                                                                                                                                                                          |
 | Third-party static deps baked into libloglib.so duplicate symbols already linked elsewhere | All compiled third-party deps that loglib uses (`simdjson`, `fmt`, `date-tz`, `efsw`) are PRIVATE deps with no other consumers in the project. Header-only deps (`robin_map`, `mio`, `glaze`, `date`, `asio`) don't emit cross-TU symbols. Verified clean on the SHARED test in commit `a4e10d9`. |
-| AppImage bundling misses `libloglib.so` | `linuxdeploy` handled this correctly in commit `a4e10d9` (AppImage smoke launch passed). The structural sanity check step should be extended to assert `libloglib.so` is present in `usr/lib/`. |
-| Future loglib public header adds an `extern const` global | On Linux+GCC SHARED, default visibility exports it automatically. No-op on macOS/Windows STATIC. |
-| GCC upstream eventually fixes the moc-LTO bug | The Linux+GCC SHARED gate becomes load-bearing for performance (since SHARED + opts is at the STATIC + IPO ON ceiling, not above it) but loses its correctness justification. Can be lifted with a one-line CMake change. |
+| AppImage bundling misses `libloglib.so`                                                    | `linuxdeploy` handled this correctly in commit `a4e10d9` (AppImage smoke launch passed). The structural sanity check step should be extended to assert `libloglib.so` is present in `usr/lib/`.                                                                                                   |
+| Future loglib public header adds an `extern const` global                                  | On Linux+GCC SHARED, default visibility exports it automatically. No-op on macOS/Windows STATIC.                                                                                                                                                                                                  |
+| GCC upstream eventually fixes the moc-LTO bug                                              | The Linux+GCC SHARED gate becomes load-bearing for performance (since SHARED + opts is at the STATIC + IPO ON ceiling, not above it) but loses its correctness justification. Can be lifted with a one-line CMake change.                                                                         |
 
----
+______________________________________________________________________
 
 ## 9. Open follow-ups (out of scope for the fix PR)
 
-* File an upstream GCC bug against the GCC 13+ thin-LTO ↔ Qt moc
+- File an upstream GCC bug against the GCC 13+ thin-LTO ↔ Qt moc
   miscompile, with a reduced reproducer. Non-trivial — the moc TUs are
   generated and the IPA passes that trigger it require the full LTO
   link.
-* Re-test annually as new GCC versions ship. If a future GCC fixes it,
+- Re-test annually as new GCC versions ship. If a future GCC fixes it,
   lifting the SHARED gate is a single-line CMake change.
-* Add a machine-readable benchmark CSV emitter + a CI step that compares
+- Add a machine-readable benchmark CSV emitter + a CI step that compares
   against a checked-in baseline, so future PRs can catch perf
   regressions automatically instead of relying on human review of the
   WARN lines (already filed as a follow-up in `CONTRIBUTING.md`).
-* Extend the AppImage structural sanity-check step to assert
+- Extend the AppImage structural sanity-check step to assert
   `usr/lib/libloglib.so` is present (specifically on Linux+GCC builds).
 
----
+______________________________________________________________________
 
 ## 10. Commit-by-commit reference (for archaeologists)
 
@@ -447,28 +445,28 @@ were force-rebased out before merge so the theme-system PR could stay
 focused on the theme work. Their messages contain useful context if you
 want to reconstruct the bisects:
 
-| Commit | Purpose |
-|---|---|
-| `ca0c904`, `0aad109` | First destructor-order hypothesis (rejected) |
-| `5e8583c`, `f82ac06`, `65a5f74` | Variations of the destructor-order workaround |
-| `7cdaa72`, `732b2bf` | `std::_Exit` and `[[no_destroy]]` attempts |
-| `4542cdd` | First "skip apptest_theme on Linux" workaround |
-| `66130da`, `bc840b2` | `LOGAPP_BUILD_TESTING` QStyleHints bypass |
-| `c8386af`, `bd6b8e9`, `66b1d20` | Diagnostic instrumentation in apptest_theme |
-| `2123edb` | Hardened skip with rationale |
-| `0fa6d11` | Four CI diagnostic steps (gdb, QT_DEBUG_PLUGINS, minimal QPA, xvfb) |
-| `b795856` | Drop diagnostic steps once we had the GDB trace |
-| `9ba555d` | Toolchain bisect step (gcc-13 IPO OFF vs gcc-14 IPO ON) |
-| `7572089` | Per-target IPO disable on apptest_theme (insufficient) |
-| `eb45feb` | Wider per-target IPO disable + `-ffat-lto-objects` (still insufficient) |
-| `8bc608b` | gersemi formatting fix for the wider disable |
-| `3907037` | **Global Linux+GCC IPO=OFF gate (the "current shipped" fix)** |
-| `f17723c` | gersemi formatting fix for the gate's status message |
-| `255b338` | Three-knob bisect (gcc-15, `-flto-partition=none`, `-fno-devirtualize-speculatively`) — all failed |
-| `a4e10d9` | **SHARED-loglib pivot — correctness PASS but −14 to −24 % perf** |
-| `39f1427` | Revert of `a4e10d9` once the perf regression was measured |
-| `33b47e5` | Cleanup of experiment-2 steps + expanded comment |
-| `2ec7a34` | **F + G experiments that isolated LTO contribution and recovered SHARED perf — the data behind this doc** |
+| Commit                          | Purpose                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `ca0c904`, `0aad109`            | First destructor-order hypothesis (rejected)                                                              |
+| `5e8583c`, `f82ac06`, `65a5f74` | Variations of the destructor-order workaround                                                             |
+| `7cdaa72`, `732b2bf`            | `std::_Exit` and `[[no_destroy]]` attempts                                                                |
+| `4542cdd`                       | First "skip apptest_theme on Linux" workaround                                                            |
+| `66130da`, `bc840b2`            | `LOGAPP_BUILD_TESTING` QStyleHints bypass                                                                 |
+| `c8386af`, `bd6b8e9`, `66b1d20` | Diagnostic instrumentation in apptest_theme                                                               |
+| `2123edb`                       | Hardened skip with rationale                                                                              |
+| `0fa6d11`                       | Four CI diagnostic steps (gdb, QT_DEBUG_PLUGINS, minimal QPA, xvfb)                                       |
+| `b795856`                       | Drop diagnostic steps once we had the GDB trace                                                           |
+| `9ba555d`                       | Toolchain bisect step (gcc-13 IPO OFF vs gcc-14 IPO ON)                                                   |
+| `7572089`                       | Per-target IPO disable on apptest_theme (insufficient)                                                    |
+| `eb45feb`                       | Wider per-target IPO disable + `-ffat-lto-objects` (still insufficient)                                   |
+| `8bc608b`                       | gersemi formatting fix for the wider disable                                                              |
+| `3907037`                       | **Global Linux+GCC IPO=OFF gate (the "current shipped" fix)**                                             |
+| `f17723c`                       | gersemi formatting fix for the gate's status message                                                      |
+| `255b338`                       | Three-knob bisect (gcc-15, `-flto-partition=none`, `-fno-devirtualize-speculatively`) — all failed        |
+| `a4e10d9`                       | **SHARED-loglib pivot — correctness PASS but −14 to −24 % perf**                                          |
+| `39f1427`                       | Revert of `a4e10d9` once the perf regression was measured                                                 |
+| `33b47e5`                       | Cleanup of experiment-2 steps + expanded comment                                                          |
+| `2ec7a34`                       | **F + G experiments that isolated LTO contribution and recovered SHARED perf — the data behind this doc** |
 
 After this PR is reverted, the only material that survives is this
 document; the working fix is implemented from scratch in a separate
