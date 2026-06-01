@@ -272,15 +272,15 @@ jobs:
           ./linuxdeploy-x86_64.AppImage --appdir=$APP_DIR --plugin qt --output appimage
 
       - name: Verify packaged AppImage is well-formed
-        # Smoke-launch the AppImage under the headless `offscreen` /
-        # `minimal` QPA. The launch itself is `continue-on-error`
-        # because Qt 6.8.3 + the runner-image GLIBC mix is currently
-        # SIGSEGV-ing deep inside `QGuiApplicationPrivate::init`
-        # under both QPAs (the failure does not reproduce on end-
-        # user installations and is orthogonal to this branch's
-        # session-history / single-instance work; tracking
-        # separately).
-        continue-on-error: true
+        # Smoke-launch the AppImage under the headless `offscreen` QPA. Hard
+        # failure: a missing dep, broken bundle, or runtime fault here means
+        # we'd ship a broken AppImage. Previously had `continue-on-error: true`
+        # because the launch was SegFaulting in `QGuiApplicationPrivate::init`,
+        # originally misattributed to a "Qt 6.8.3 + runner-image GLIBC mix";
+        # the actual cause was the LLVM-189203 PIC/non-PIC LTO copy-relocation
+        # bug against Qt's staticMetaObject, fixed at the source by the global
+        # CMAKE_POSITION_INDEPENDENT_CODE=ON in the top-level CMakeLists.txt.
+        # See doc/linux-gcc-lto-investigation.md section 11 for the full story.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -297,7 +297,7 @@ jobs:
           if ! kill -0 "$PID" 2>/dev/null; then
             RC=0
             wait "$PID" || RC=$?
-            echo "Packaged AppImage exited prematurely with code $RC (continue-on-error)" >&2
+            echo "Packaged AppImage exited prematurely with code $RC" >&2
             echo "--- stdout ---" >&2
             cat appimage.stdout >&2 || true
             echo "--- stderr (last 200 lines) ---" >&2
