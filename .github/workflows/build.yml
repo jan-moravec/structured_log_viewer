@@ -234,6 +234,140 @@ jobs:
         # release preset excludes the `benchmark` label; benchmarks run below.
         run: ctest --preset release
 
+      # ----------------------------------------------------------------------
+      # [experiment-4] STATIC + IPO ON + global PIC
+      #
+      # Hypothesis: the apptest_theme SegFault tracked in
+      # doc/linux-gcc-lto-investigation.md is the LLVM-189203 / Arch FS#78006
+      # PIC-vs-non-PIC LTO mixing bug, not a moc-IPA wrongcode regression.
+      # Setting CMAKE_POSITION_INDEPENDENT_CODE=ON forces every static lib
+      # (loglib, third-party FetchContent deps) into PIC, so the LTO plugin
+      # no longer sees a PIC/non-PIC mix and should not emit R_X86_64_COPY
+      # relocations against Qt staticMetaObject / qt_meta_data_* symbols.
+      #
+      # Side-build into build/experiment-4/ so the main `release` build is
+      # untouched and the rest of the job stays green. continue-on-error on
+      # every experiment step for the same reason.
+      # ----------------------------------------------------------------------
+      - name: "[experiment-4] STATIC + IPO ON + global PIC: configure"
+        continue-on-error: true
+        run: |
+          cmake -S . -B build/experiment-4 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLOGLIB_NETWORK_TLS=ON \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+
+      - name: "[experiment-4] STATIC + IPO ON + global PIC: build"
+        continue-on-error: true
+        run: cmake --build build/experiment-4
+
+      - name: "[experiment-4] STATIC + IPO ON + global PIC: run apptest_theme"
+        continue-on-error: true
+        # set +e overrides bash -e from the runner default so we can capture
+        # the apptest_theme exit code instead of aborting the step on SIGSEGV.
+        # 139 = SIGSEGV (the bug the doc reproduced).
+        run: |
+          set +e
+          BIN=./build/experiment-4/bin/Release/apptest_theme
+          if [ ! -x "$BIN" ]; then
+            echo "[experiment-4] FAIL: $BIN not built"
+            exit 0
+          fi
+          QT_QPA_PLATFORM=offscreen "$BIN"
+          rc=$?
+          echo "[experiment-4] apptest_theme exit code: $rc (139 = SIGSEGV)"
+          if [ $rc -eq 0 ]; then
+            echo "[experiment-4] PASS"
+          else
+            echo "[experiment-4] FAIL"
+            echo "--- gdb backtrace ---"
+            QT_QPA_PLATFORM=offscreen gdb -batch -nx \
+              -ex 'set pagination off' \
+              -ex 'run' \
+              -ex 'bt' \
+              "$BIN" 2>&1 | tail -n 60 || true
+          fi
+
+      - name: "[experiment-4] STATIC + IPO ON + global PIC: relocation diagnostics"
+        continue-on-error: true
+        # The smoking gun for LLVM-189203 is R_X86_64_COPY relocations against
+        # Qt-defined data symbols (staticMetaObject, qt_meta_data_*). Hypothesis:
+        # E4 PASS => zero such relocations; E4 FAIL => the relocs are still
+        # there even with global PIC, indicating the mix lives elsewhere.
+        run: |
+          BIN=./build/experiment-4/bin/Release/apptest_theme
+          if [ ! -x "$BIN" ]; then
+            echo "[experiment-4] $BIN not built; skipping readelf"
+            exit 0
+          fi
+          echo "=== [experiment-4] all R_X86_64_COPY relocations in $BIN ==="
+          readelf -r "$BIN" | grep -E 'R_X86_64_COPY' || echo "(none)"
+          echo "=== [experiment-4] R_X86_64_COPY against Qt-prefixed symbols ==="
+          readelf -r "$BIN" | grep -E 'R_X86_64_COPY.*(QGuiApplication|QApplication|QObject|staticMetaObject|qt_meta_)' || echo "(none)"
+
+      # ----------------------------------------------------------------------
+      # [experiment-5] STATIC + IPO ON + global PIC + -mno-direct-extern-access
+      #
+      # If E4 fails, this is Qt's officially recommended modern fix
+      # (qtbase commit 19b7f854): -mno-direct-extern-access tells GCC to never
+      # emit direct extern references to symbols outside the current ELF
+      # module, routing every cross-module symbol through the GOT/PLT. That
+      # eliminates the R_X86_64_COPY opportunity entirely, regardless of PIC
+      # state of any input.
+      # ----------------------------------------------------------------------
+      - name: "[experiment-5] STATIC + IPO ON + global PIC + -mno-direct-extern-access: configure"
+        continue-on-error: true
+        run: |
+          cmake -S . -B build/experiment-5 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLOGLIB_NETWORK_TLS=ON \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CXX_FLAGS=-mno-direct-extern-access \
+            -DCMAKE_C_FLAGS=-mno-direct-extern-access
+
+      - name: "[experiment-5] STATIC + IPO ON + global PIC + -mno-direct-extern-access: build"
+        continue-on-error: true
+        run: cmake --build build/experiment-5
+
+      - name: "[experiment-5] STATIC + IPO ON + global PIC + -mno-direct-extern-access: run apptest_theme"
+        continue-on-error: true
+        run: |
+          set +e
+          BIN=./build/experiment-5/bin/Release/apptest_theme
+          if [ ! -x "$BIN" ]; then
+            echo "[experiment-5] FAIL: $BIN not built"
+            exit 0
+          fi
+          QT_QPA_PLATFORM=offscreen "$BIN"
+          rc=$?
+          echo "[experiment-5] apptest_theme exit code: $rc (139 = SIGSEGV)"
+          if [ $rc -eq 0 ]; then
+            echo "[experiment-5] PASS"
+          else
+            echo "[experiment-5] FAIL"
+            echo "--- gdb backtrace ---"
+            QT_QPA_PLATFORM=offscreen gdb -batch -nx \
+              -ex 'set pagination off' \
+              -ex 'run' \
+              -ex 'bt' \
+              "$BIN" 2>&1 | tail -n 60 || true
+          fi
+
+      - name: "[experiment-5] STATIC + IPO ON + global PIC + -mno-direct-extern-access: relocation diagnostics"
+        continue-on-error: true
+        run: |
+          BIN=./build/experiment-5/bin/Release/apptest_theme
+          if [ ! -x "$BIN" ]; then
+            echo "[experiment-5] $BIN not built; skipping readelf"
+            exit 0
+          fi
+          echo "=== [experiment-5] all R_X86_64_COPY relocations in $BIN ==="
+          readelf -r "$BIN" | grep -E 'R_X86_64_COPY' || echo "(none)"
+          echo "=== [experiment-5] R_X86_64_COPY against Qt-prefixed symbols ==="
+          readelf -r "$BIN" | grep -E 'R_X86_64_COPY.*(QGuiApplication|QApplication|QObject|staticMetaObject|qt_meta_)' || echo "(none)"
+
       - name: Run parser benchmarks
         run: ctest --preset release-benchmark
 
