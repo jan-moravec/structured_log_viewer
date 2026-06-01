@@ -472,3 +472,219 @@ After this PR is reverted, the only material that survives is this
 document; the working fix is implemented from scratch in a separate
 follow-up PR using section 6 as the spec and section 7 as the
 acceptance criteria.
+
+______________________________________________________________________
+
+## 11. PIC / `-mno-direct-extern-access` follow-up experiments
+
+> **Status:** added on branch `experiment/lto-pic-only` (draft PR #43)
+> after sections 1-10 were written. The two experiments below
+> **invalidate the section 1-2 root-cause framing** ("GCC 13+ thin-LTO
+> miscompiles moc-generated machinery via IPA passes") and replace the
+> section 6 SHARED-loglib recommendation with a much simpler 3-line
+> CMake change. Sections 1-10 are kept verbatim as the historical
+> bisect record; section 11 is what the follow-up fix PR should use as
+> its spec.
+
+### 11.1 Why a follow-up: the upstream fingerprint
+
+A targeted web search for the documented crash signature
+(`QGuiApplication::screenAdded` → unsymbolised frame, `sender=0x0`
+during `QApplication` construction with LTO) turned up a much more
+specific and well-documented failure mode than the one assumed in
+section 2:
+
+- [LLVM #189203](https://github.com/llvm/llvm-project/issues/189203)
+  ("Clang miscompiles when mixing pic and non-pic object files with lto
+  enabled") — the linker, when LTO merges PIC and non-PIC inputs, emits
+  `R_X86_64_COPY` relocations on data symbols that are referenced via
+  *const globals*. `QObject::staticMetaObject` and the moc-generated
+  `qt_meta_data_*` tables are exactly such symbols. The bug is
+  toolchain-agnostic (the LLVM-bug reproducer triggers the same
+  ld.bfd / ld.gold / ld.lld behavior; GCC's linker plugin is just
+  another front-end onto the same defect).
+- [Arch Linux FS#78006](https://bugs.archlinux.org/task/78006) — a
+  byte-for-byte match for our backtrace template
+  (`screenAdded` → `moc_qguiapplication.cpp:485` → SIGSEGV with
+  `sender=0x0`) on `qt6-tools` packaged with `-flto -pie -fPIE`.
+- [Qt commit 19b7f854](https://github.com/qt/qtbase/commit/19b7f854a274812d9c95fc7aaf134a12530c105f)
+  ("Enable `-mno-direct-extern-access` and ELF protected visibility")
+  and the [qt-devel December 2025 thread](https://lists.qt-project.org/pipermail/development/2025-December/046793.html)
+  by Thiago Macieira — Qt's official position is that
+  `-mno-direct-extern-access` is *required* for downstream code to link
+  against modern Qt without runtime failures of exactly this shape, and
+  is planned to become mandatory in Qt 7.
+
+This pointed at two cheap fixes that the section 2 bisect never tested
+in isolation:
+
+- **Global PIC.** `loglib` has no Qt dependency and so does not
+  auto-pick PIC; `logapp` does (Qt's `INTERFACE_POSITION_INDEPENDENT_CODE`).
+  Setting `CMAKE_POSITION_INDEPENDENT_CODE=ON` globally puts every
+  static input into the LTO link in the same PIC class, which should
+  eliminate the `R_X86_64_COPY` opportunity at the source.
+- **`-mno-direct-extern-access`.** Routes every cross-module reference
+  through the GOT/PLT regardless of input PIC state, eliminating the
+  copy-reloc opportunity unconditionally.
+
+The doc's section 6 fix already adds `CMAKE_POSITION_INDEPENDENT_CODE=ON`
+*as a side effect of the SHARED conversion* (otherwise `libloglib.so`
+fails to link with text-relocation errors), but never tests whether
+PIC alone is sufficient with the existing STATIC layout.
+
+### 11.2 Experiment design
+
+Two same-runner CI experiments were added to the `build-linux` job,
+each as a side-build into its own `build/experiment-N/` tree (so the
+main `release` build with the section-2 IPO=OFF gate is untouched). All
+experiment steps are `continue-on-error: true` so the outcome cannot
+block main CI.
+
+| Experiment | Configuration                                                                                |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| **E4**     | `STATIC + IPO ON + CMAKE_POSITION_INDEPENDENT_CODE=ON`                                       |
+| **E5**     | `STATIC + IPO ON + CMAKE_POSITION_INDEPENDENT_CODE=ON + -mno-direct-extern-access` (CXX + C) |
+
+For each experiment, CI runs `apptest_theme` under
+`QT_QPA_PLATFORM=offscreen`, captures the exit code (139 = SIGSEGV
+reproducing the original bug, 0 = fix), and dumps `readelf -r` output
+filtered for `R_X86_64_COPY` against Qt-prefixed symbols
+(`QGuiApplication`, `QApplication`, `QObject`, `staticMetaObject`,
+`qt_meta_`).
+
+### 11.3 Results — both experiments PASS
+
+CI run [26758590794](https://github.com/jan-moravec/structured_log_viewer/actions/runs/26758590794)
+on commit `7bf5de9` of `experiment/lto-pic-only`:
+
+| Experiment | `apptest_theme` exit code | `R_X86_64_COPY` (all) | `R_X86_64_COPY` (Qt symbols) | Verdict  |
+| ---------- | ------------------------- | --------------------- | ---------------------------- | -------- |
+| **E4**     | `0`                       | `(none)`              | `(none)`                     | **PASS** |
+| **E5**     | `0`                       | `(none)`              | `(none)`                     | **PASS** |
+
+Confirmation in the build-linux log:
+
+```text
+[experiment-4] apptest_theme exit code: 0 (139 = SIGSEGV)
+[experiment-4] PASS
+=== [experiment-4] all R_X86_64_COPY relocations in ./build/experiment-4/bin/Release/apptest_theme ===
+(none)
+=== [experiment-4] R_X86_64_COPY against Qt-prefixed symbols ===
+(none)
+
+[experiment-5] apptest_theme exit code: 0 (139 = SIGSEGV)
+[experiment-5] PASS
+=== [experiment-5] all R_X86_64_COPY relocations in ./build/experiment-5/bin/Release/apptest_theme ===
+(none)
+=== [experiment-5] R_X86_64_COPY against Qt-prefixed symbols ===
+(none)
+```
+
+E4 already fixes both the symptom (`apptest_theme` no longer SegFaults
+under IPO ON) and the underlying smoking gun (zero copy-relocs against
+any symbol — Qt-prefixed or otherwise — in the entire `apptest_theme`
+binary). E5 adds nothing on top: same exit code, same empty relocation
+set, just routed through the GOT instead.
+
+This is consistent with the LLVM-189203 hypothesis being the actual
+root cause: once every input to the LTO link is in the same PIC class,
+the linker has no reason to emit `R_X86_64_COPY` for any symbol, the
+moc metaobject pointers in the resulting binary are correctly
+relocated at runtime, and the QApplication construction path no longer
+dereferences a zero-initialised metaobject.
+
+### 11.4 What this means for sections 1-9
+
+- Section 1's "GCC 13+ thin-LTO miscompiles moc-generated machinery
+  via IPA passes" framing is **incorrect**. The bug is not a GCC IPA
+  wrongcode regression; it is the toolchain-wide PIC/non-PIC LTO
+  copy-reloc defect documented in LLVM #189203, and it would have
+  affected Linux+Clang too if our `clang-ci` presets didn't already
+  turn LTO off. The fact that gcc-13 / 14 / 15 all reproduce isn't
+  three independent regressions, it is the same long-standing
+  toolchain interaction reproducing every time.
+- Section 2's bisect ruled out specific GCC IPA passes
+  (`-fno-devirtualize-speculatively`, `-flto-partition=none`); none of
+  those would help, because none of them touch the PIC/non-PIC mix.
+  That is consistent — the failures of those flags were not
+  uninformative, they correctly told us we were looking in the wrong
+  place.
+- Section 6's recommended SHARED-loglib pivot **also works**, but
+  works for an unintended reason: it forces every input that goes into
+  `libloglib.so` to be PIC (via the implicit
+  `CMAKE_POSITION_INDEPENDENT_CODE ON` it adds, plus the
+  text-relocation hard-errors at the `.so` link step), AND it consumes
+  all the bitcode internally so no LTO link with a PIC mix ever
+  happens at the consumer link. It is structurally heavier than
+  necessary.
+- Sections 3-5's measurements are still useful: they show that LTO is
+  worth +5 % to +44 % on hot loglib paths, which is what we recover by
+  flipping the IPO=OFF gate back on. The intra-`.so` inlining flags
+  (`-fno-semantic-interposition`, `-Wl,-Bsymbolic-functions`) and the
+  SHARED conversion they were paired with are no longer needed in the
+  STATIC + global PIC configuration.
+
+### 11.5 Recommended fix (replaces section 6)
+
+The follow-up fix PR should make exactly two changes to
+[CMakeLists.txt](../CMakeLists.txt):
+
+1. **Restore IPO ON on Linux+GCC.** Drop the
+   `set(loglib_default_ipo OFF)` branch in the existing
+   `check_ipo_supported` block (lines 22-43 of the file at the time
+   of writing).
+1. **Add global PIC** before the `add_subdirectory(library)` /
+   `add_subdirectory(app)` calls:
+
+```cmake
+# loglib has no Qt dependency, so CMake does not auto-pick PIC for it,
+# while logapp (Qt-linked) gets PIC via Qt's INTERFACE_POSITION_INDEPENDENT_CODE.
+# Mixing PIC and non-PIC inputs into an LTO link triggers the well-known
+# linker defect (LLVM #189203, Arch FS#78006) where R_X86_64_COPY is
+# wrongly emitted for data symbols referenced from const globals --
+# Qt's staticMetaObject / qt_meta_data_* tables are exactly such symbols,
+# so the resulting binary has zero-initialised metaobjects and SegFaults
+# during QApplication construction in QGuiApplication::screenAdded.
+# Forcing every input into the same PIC class eliminates the copy-relocs
+# at the source. Verified via experiment-4 in CI run 26758590794
+# (apptest_theme PASS, zero R_X86_64_COPY relocations).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+```
+
+The inline rationale comment in the section currently around lines 5-21
+should be condensed and pointed at this section.
+
+That is the entire fix. No SHARED conversion, no
+`-fno-semantic-interposition`, no `-Wl,-Bsymbolic-functions`, no
+`-mno-direct-extern-access`, no `libloglib.so` to bundle in the
+AppImage. The STATIC link layout is preserved, all existing AppImage /
+windeployqt / macdeployqt machinery keeps working unchanged.
+
+Acceptance criteria for the fix PR:
+
+1. `apptest_theme` runs to completion under `QT_QPA_PLATFORM=offscreen`
+   on `build-linux` with no `continue-on-error` shielding.
+1. `Run parser benchmarks` reports throughput within ±3 % of the F
+   numbers in section 3 (Stream 1 M JSON ≈ 720 MB/s, GetValue fast
+   ≈ 0.40 ms) — a regression to the section-3 baseline (683 MB/s,
+   0.57 ms) would indicate LTO is silently off again.
+1. `build-macos`, `build-windows`, `clang-ci (asan-ubsan / tsan / coverage)` all stay green.
+1. The `[experiment-4]` and `[experiment-5]` steps added on the
+   investigation branch are removed from the workflow as part of the
+   same PR (their job is done; they would just add noise on every
+   subsequent CI run).
+
+### 11.6 Open follow-ups (still out of scope)
+
+- The unrelated AppImage smoke-launch SegFault (`continue-on-error: true`
+  on the `Verify packaged AppImage is well-formed` step) attributed to
+  "Qt 6.8.3 + the runner-image GLIBC mix" should be re-examined with
+  the new build. If it goes away, the `continue-on-error` guard can be
+  dropped; if it persists, it is genuinely orthogonal to this issue
+  (the `apptest_theme` and the AppImage smoke launch crashing through
+  the same code path was a coincidence of two distinct bugs sharing
+  the same Qt initialisation path).
+- The upstream-GCC-bug follow-up in section 9 is no longer applicable
+  — the bug is in the linker's choice of relocation type when given
+  mixed-PIC LTO inputs, not in any GCC IPA pass, and is already
+  tracked on the LLVM side (#189203) with a documented mechanism.
