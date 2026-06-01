@@ -38,13 +38,13 @@
 #include <utility>
 #include <vector>
 
-LogModel::LogModel(QObject *parent)
-    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT)
+LogModel::LogModel(QObject *parent, ThemeControl *theme)
+    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme)
 {
 }
 
-LogModel::LogModel(QObject *parent, std::size_t pendingCapacity)
-    : QAbstractTableModel{parent}
+LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme)
+    : QAbstractTableModel{parent}, mTheme(theme)
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
@@ -1138,23 +1138,31 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::BackgroundRole:
     {
+        if (mTheme == nullptr)
+        {
+            return {};
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
             return {};
         }
-        const QBrush brush = ThemeControl::BackgroundFor(*level);
+        const QBrush brush = mTheme->BackgroundFor(*level);
         return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
     }
 
     case Qt::ForegroundRole:
     {
+        if (mTheme == nullptr)
+        {
+            return {};
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
             return {};
         }
-        const QBrush brush = ThemeControl::ForegroundFor(*level);
+        const QBrush brush = mTheme->ForegroundFor(*level);
         return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
     }
 
@@ -1163,16 +1171,16 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         // Skip the per-cell resolve when no level is styled.
         // Per-level check is still needed below for themes that
         // style only some levels.
-        if (!ThemeControl::HasAnyFontStyle())
+        if (mTheme == nullptr || !mTheme->HasAnyFontStyle())
         {
             return {};
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
-        if (!level.has_value() || !ThemeControl::HasFontStyle(*level))
+        if (!level.has_value() || !mTheme->HasFontStyle(*level))
         {
             return {};
         }
-        return ThemeControl::FontFor(*level);
+        return mTheme->FontFor(*level);
     }
 
     case LogModelItemDataRole::SortRole:

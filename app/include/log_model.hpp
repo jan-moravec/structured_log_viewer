@@ -23,6 +23,7 @@
 
 template <typename T> class QFutureWatcher;
 class QtStreamingLogSink;
+class ThemeControl;
 
 enum LogModelItemDataRole
 {
@@ -71,10 +72,14 @@ class LogModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
-    explicit LogModel(QObject *parent = nullptr);
+    /// @p theme drives the per-`LogLevel` background / foreground /
+    /// font lookups in `data()`. `nullptr` is supported for plain
+    /// `LogModel model;` test sites that don't exercise per-level
+    /// styling; the colour / font roles return `{}` in that case.
+    explicit LogModel(QObject *parent = nullptr, ThemeControl *theme = nullptr);
     /// Test-only overload with a custom bounded-queue capacity for the
     /// embedded `QtStreamingLogSink`.
-    LogModel(QObject *parent, std::size_t pendingCapacity);
+    LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme = nullptr);
     ~LogModel() override;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
@@ -314,6 +319,12 @@ private:
     /// when no level column exists. Invalidated by every structural
     /// mutator.
     mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+
+    /// Non-owning theme controller pointer. May be null when the
+    /// model is constructed via the legacy default ctor (test
+    /// fixtures that don't exercise theming); `data()` gates its
+    /// theme-derived branches on a null check.
+    ThemeControl *mTheme = nullptr;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

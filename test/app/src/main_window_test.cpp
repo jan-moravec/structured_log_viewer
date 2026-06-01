@@ -69,6 +69,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
+#include <QScopedPointer>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalSpy>
@@ -232,10 +233,10 @@ struct StreamingRun
 // `JsonParser::ParseStreaming` + `QtStreamingLogSink`, mirroring
 // `MainWindow::OpenJsonStreaming` but on the calling thread. Pinned to
 // `threads=1` so per-batch newKeys / cell ordering is deterministic.
-StreamingRun RunStreaming(const QString &fixturePath)
+StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = nullptr)
 {
     StreamingRun run;
-    run.model = std::make_unique<LogModel>();
+    run.model = std::make_unique<LogModel>(nullptr, theme);
     QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
 
     auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
@@ -538,7 +539,15 @@ private slots:
         // so recents / `openWindowsAtQuit` / `restoreLast` values
         // never bleed across tests.
         QSettings().clear();
-        mWindow = new MainWindow();
+        // Fresh `ThemeControl` per test mirrors the production
+        // `main()` flow: the dependency is constructed after
+        // `QApplication` and outlives the window. The themed
+        // `MainWindow` overload threads the pointer down into
+        // `LogModel`, so theme-aware assertions (e.g.
+        // `TestLogModelDataReturnsThemeBackground`) see real
+        // brushes; theme-agnostic assertions are unaffected.
+        mTheme.reset(new ThemeControl());
+        mWindow = new MainWindow(mTheme.data());
     }
 
     void cleanup()
@@ -546,6 +555,11 @@ private slots:
         // Called after each test function
         delete mWindow;
         mWindow = nullptr;
+        // Theme controller must outlive the window during teardown:
+        // `MainWindow`'s `themeChanged` connect auto-disconnects on
+        // `delete mWindow`, so by the time we reset `mTheme` no
+        // dangling slots remain.
+        mTheme.reset();
     }
 
     void TestWindowTitle()
@@ -3255,13 +3269,13 @@ private slots:
     /// unstyled ones.
     void TestLogModelDataReturnsThemeBackground()
     {
-        // The fixture doesn't bootstrap `ThemeControl`, so discover
-        // themes here and force Light for determinism.
-        ThemeControl::ReloadAll();
-        ThemeControl::SetActiveSelection(QStringLiteral("Light"));
-        const QBrush expectedErrorBg = ThemeControl::BackgroundFor(loglib::LogLevel::Error);
+        // The fixture owns a `ThemeControl` and threads it into
+        // `MainWindow` + `LogModel`; force Light for determinism.
+        QVERIFY(mTheme != nullptr);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        const QBrush expectedErrorBg = mTheme->BackgroundFor(loglib::LogLevel::Error);
         QVERIFY2(expectedErrorBg.style() != Qt::NoBrush, "the Light theme must define an Error background brush");
-        const QBrush expectedInfoBg = ThemeControl::BackgroundFor(loglib::LogLevel::Info);
+        const QBrush expectedInfoBg = mTheme->BackgroundFor(loglib::LogLevel::Info);
         QCOMPARE(expectedInfoBg.style(), Qt::NoBrush);
 
         // Stream a tiny fixture so `level` promotes to `Type::Level`.
@@ -3281,7 +3295,7 @@ private slots:
         }
         const TempJsonFile fixture(lines);
 
-        const StreamingRun run = RunStreaming(fixture.Path());
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
 
@@ -11386,7 +11400,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto primary = std::make_unique<MainWindow>(&manager, nullptr);
+        auto primary = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Each `MainWindow` constructor also installs auxiliary
         // top-levels (preferences, record detail), so filter to
@@ -11463,7 +11477,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         // Seed an on-disk JSON via a real open.
-        auto seeder = std::make_unique<MainWindow>(&manager, nullptr);
+        auto seeder = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         const QStringList fixtureLines{
             QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
             QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
@@ -11483,7 +11497,7 @@ private slots:
         seeder.reset();
 
         // Fresh window restores the snapshot.
-        auto restored = std::make_unique<MainWindow>(&manager, nullptr);
+        auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->RestoreLastSessionFromPath(*lastPath);
         QVERIFY(restoredSpy.wait(5000));
@@ -11502,7 +11516,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Seed a recents entry via a real open.
         const QStringList fixtureLines{
@@ -11561,7 +11575,7 @@ private slots:
 
         // The fixture's `mWindow` is unwired; use the production
         // constructor that takes a manager.
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         auto *model = wired->Model();
         QVERIFY(model != nullptr);
@@ -12551,7 +12565,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
         const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
@@ -12603,7 +12617,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
         const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
@@ -12641,7 +12655,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
         const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
@@ -12711,7 +12725,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
         const TempJsonFile fixtureB({QStringLiteral(R"({"msg": "beta"})")});
@@ -12788,7 +12802,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // One matching + one non-matching row so the proxy row
         // count is a clean signal for "filter still active".
@@ -12872,7 +12886,7 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Two fixtures sharing a schema so we can assert on a sum.
         const TempJsonFile fixtureA(
@@ -12943,7 +12957,7 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
@@ -12973,7 +12987,7 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Pre-seed so we can later assert nothing mutated.
         const TempJsonFile prior({QStringLiteral(R"({"msg": "kept"})")});
@@ -13026,7 +13040,7 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile logA({QStringLiteral(R"({"msg": "first"})")});
         const TempJsonFile logB({QStringLiteral(R"({"msg": "second"})")});
@@ -13053,7 +13067,7 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const QTemporaryDir emptyDir;
         QVERIFY(emptyDir.isValid());
@@ -13088,7 +13102,7 @@ private slots:
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const QTemporaryDir cfgDir;
         QVERIFY(cfgDir.isValid());
@@ -13121,7 +13135,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixtureA({QStringLiteral(R"({"msg": "alpha"})")});
 
@@ -13166,7 +13180,7 @@ private slots:
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "track"})")});
 
@@ -13218,7 +13232,7 @@ private slots:
         // Heap-owned but not `WA_DeleteOnClose`: mirrors `main.cpp`'s
         // primary -- survives `close()` long enough for the
         // aboutToQuit replay.
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "exit"})")});
 
@@ -13286,7 +13300,7 @@ private slots:
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "detach"})")});
 
@@ -13517,7 +13531,7 @@ private slots:
         builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         wired->RestoreLastSessionFromPath(jsonPath);
         QCoreApplication::processEvents();
@@ -13538,7 +13552,7 @@ private slots:
         // Case A: live-tail on a File source. A plain kind check
         // would let it through; the gate must also see `LiveTail`.
         {
-            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
                 .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/live.log"}
             });
@@ -13554,7 +13568,7 @@ private slots:
 
         // Case B: NetworkStream source -- not re-bindable.
         {
-            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
                 .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
             });
@@ -13580,7 +13594,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}
@@ -13635,7 +13649,7 @@ private slots:
         builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // No streaming attempt -- `finishedSpy` must stay at 0.
         const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
@@ -13676,7 +13690,7 @@ private slots:
             });
             builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
 
-            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->RestoreLastSessionFromPath(jsonPath);
             QCoreApplication::processEvents();
 
@@ -13696,7 +13710,7 @@ private slots:
             // Intentionally no `SetSource`.
             builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
 
-            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             wired->RestoreLastSessionFromPath(jsonPath);
             QCoreApplication::processEvents();
 
@@ -13706,7 +13720,7 @@ private slots:
 
         // Case C: no session pinned -- trivially empty.
         {
-            auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+            auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
             QVERIFY(wired->ActiveSessionUuid().isEmpty());
             QVERIFY(wired->RestorableActiveSessionUuid().isEmpty());
         }
@@ -13736,7 +13750,7 @@ private slots:
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         builder.Save(adhocPath.toStdString(), loglib::SaveScope::Full);
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         wired->RestoreLastSessionFromPath(adhocPath);
@@ -13761,7 +13775,7 @@ private slots:
         QVERIFY(sessionsDir.isValid());
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Stage 1: open a static session and let it auto-save.
         // Drain `changed` before the assertion window.
@@ -13812,7 +13826,7 @@ private slots:
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile fixture({QStringLiteral(R"({"msg": "abq-flush"})")});
         QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
@@ -13893,7 +13907,7 @@ private slots:
         builder.Save(externalPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(externalPath));
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         wired->RestoreLastSessionFromPath(externalPath);
         QCoreApplication::processEvents();
@@ -13939,7 +13953,7 @@ private slots:
         const QString jsonPath = manager.PathForUuid(uuid);
         QVERIFY(QFileInfo::exists(jsonPath));
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         wired->RestoreLastSessionFromPath(jsonPath);
         QCoreApplication::processEvents();
@@ -13974,7 +13988,7 @@ private slots:
         QVERIFY(!uuid.isEmpty());
         QVERIFY(QFileInfo::exists(manager.PathForUuid(uuid)));
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         // Suppress the non-File source modal so the offscreen
         // runner doesn't hang.
         wired->SetSuppressDialogsForTest(true);
@@ -14019,7 +14033,7 @@ private slots:
             f.write("this is not json {{");
         }
 
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         wired->SetSuppressDialogsForTest(true);
         wired->OpenRecentSessionForTest(uuid);
         QCoreApplication::processEvents();
@@ -14174,7 +14188,7 @@ private slots:
         SessionHistoryManager manager(
             QDir(QDir::tempPath() + QStringLiteral("/abs-2-1")), std::make_unique<InMemoryRecentsIndexStorage>()
         );
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Source-less config (columns only, no `source` field).
         const QTemporaryDir scratch;
@@ -14224,7 +14238,7 @@ private slots:
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Open a static session (auto-save publishes the uuid),
         // then clear the set so we exercise the unpublished close.
@@ -14262,7 +14276,7 @@ private slots:
         SessionHistoryManager::SetOpenWindowsAtQuit({});
 
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
-        auto wired = std::make_unique<MainWindow>(&manager, nullptr);
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         // Stage 1: open a static session; auto-save publishes the
         // uuid into `openWindowsAtQuit`.
@@ -14659,6 +14673,12 @@ private slots:
 
 private:
     MainWindow *mWindow{};
+    /// Per-test theme controller, owned by the fixture and reset
+    /// in `cleanup()`. Constructed after `mWindow` is deleted in
+    /// `cleanup()` would invert the destruction order; we keep
+    /// the explicit `reset()` ordering instead of relying on
+    /// member-destruction ordering.
+    QScopedPointer<ThemeControl> mTheme;
 };
 
 QTEST_MAIN(MainWindowTest)

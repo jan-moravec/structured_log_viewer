@@ -426,12 +426,17 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-    : MainWindow(nullptr, parent)
+    : MainWindow(nullptr, nullptr, parent)
 {
 }
 
-MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager)
+MainWindow::MainWindow(ThemeControl *theme, QWidget *parent)
+    : MainWindow(theme, nullptr, parent)
+{
+}
+
+MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManager, QWidget *parent)
+    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager), mTheme(theme)
 {
     ui->setupUi(this);
     this->setWindowTitle("Structured Log Viewer");
@@ -442,7 +447,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mLayout->addWidget(mTableView, 1);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-    mModel = new LogModel(mTableView);
+    mModel = new LogModel(mTableView, mTheme);
     mTableView->setModel(mModel);
     // `modelReset` clears the header's hidden flags, but
     // `Column::visible` survives. Re-apply on every reset so load /
@@ -459,8 +464,13 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     mTableView->setAlternatingRowColors(false);
 
     // Single entry point for both Preferences-driven and
-    // OS-driven theme refreshes.
-    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, &MainWindow::OnThemeChanged);
+    // OS-driven theme refreshes. Skipped in the no-theme test
+    // fixture path; theme-dependent assertions wire the themed
+    // overload of `MainWindow`.
+    if (mTheme != nullptr)
+    {
+        connect(mTheme, &ThemeControl::themeChanged, this, &MainWindow::OnThemeChanged);
+    }
 
     ApplyTableStyleSheet();
 
@@ -641,7 +651,7 @@ MainWindow::MainWindow(SessionHistoryManager *historyManager, QWidget *parent)
     // The dock owns its own `modelReset -> Clear` wiring, so reuse
     // outside `MainWindow` stays correct.
 
-    mPreferencesEditor = new PreferencesEditor(this);
+    mPreferencesEditor = new PreferencesEditor(mTheme, this);
     connect(ui->actionPreferences, &QAction::triggered, this, [this]() {
         mPreferencesEditor->UpdateFields();
         mPreferencesEditor->show();
@@ -986,8 +996,9 @@ bool MainWindow::event(QEvent *event)
     case QEvent::ThemeChange:
     {
         // Skip during our own apply -- `OnThemeChanged` handles
-        // the QSS re-apply once at the end.
-        if (ThemeControl::IsApplyingTheme())
+        // the QSS re-apply once at the end. No-theme test path
+        // also skips (nothing to re-evaluate).
+        if (mTheme == nullptr || mTheme->IsApplyingTheme())
         {
             break;
         }
@@ -995,9 +1006,9 @@ bool MainWindow::event(QEvent *event)
         // is unchanged (Force mode, or same kind on Auto),
         // `OnThemeChanged` won't fire -- refresh the QSS manually
         // so palette-derived colours follow.
-        const QString priorName = QString::fromStdString(ThemeControl::Active().name);
-        ThemeControl::Reevaluate();
-        const QString currentName = QString::fromStdString(ThemeControl::Active().name);
+        const QString priorName = QString::fromStdString(mTheme->Active().name);
+        mTheme->Reevaluate();
+        const QString currentName = QString::fromStdString(mTheme->Active().name);
         if (priorName == currentName)
         {
             ApplyTableStyleSheet();
@@ -1005,7 +1016,7 @@ bool MainWindow::event(QEvent *event)
         break;
     }
     case QEvent::StyleChange:
-        if (ThemeControl::IsApplyingTheme())
+        if (mTheme != nullptr && mTheme->IsApplyingTheme())
         {
             break;
         }
@@ -1027,7 +1038,7 @@ void MainWindow::NewWindow()
     }
 
     // Top-level peer with `WA_DeleteOnClose` so Qt owns lifetime.
-    auto *child = new MainWindow(mHistoryManager, nullptr);
+    auto *child = new MainWindow(mTheme, mHistoryManager, nullptr);
     child->setAttribute(Qt::WA_DeleteOnClose);
     child->show();
     child->raise();
@@ -3235,7 +3246,7 @@ void MainWindow::AddFilter(
         return;
     }
 
-    auto *filterEditor = new FilterEditor(*mModel, filterId, this);
+    auto *filterEditor = new FilterEditor(*mModel, filterId, mTheme, this);
     // Without explicit cleanup, every Add / Edit click leaks a
     // `FilterEditor` (parented to `this`) until window teardown.
     // `WA_DeleteOnClose` handles the X-button; `accept()` /
@@ -3715,10 +3726,11 @@ void MainWindow::OnThemeChanged()
 void MainWindow::ApplyThemedWindowIcon()
 {
     // Drive the icon off `ThemeKind` (not the OS palette) so the
-    // icon matches the theme even in Force mode.
-    const loglib::Theme &theme = ThemeControl::Active();
-    const QString iconPath = (theme.kind == loglib::ThemeKind::Light) ? QStringLiteral(":/icon-black.png")
-                                                                      : QStringLiteral(":/icon-white.png");
+    // icon matches the theme even in Force mode. No-theme test
+    // path defaults to the light-OS icon.
+    const loglib::ThemeKind kind = (mTheme != nullptr) ? mTheme->Active().kind : loglib::ThemeKind::Light;
+    const QString iconPath =
+        (kind == loglib::ThemeKind::Light) ? QStringLiteral(":/icon-black.png") : QStringLiteral(":/icon-white.png");
     setWindowIcon(QIcon(iconPath));
 }
 
@@ -3728,19 +3740,21 @@ void MainWindow::ApplyTableStyleSheet()
     // `ThemeControl::ApplyTheme`, so the body QSS is empty. We
     // only need QSS for the header (padding + bold + optional
     // theme colours) since Qt has no palette role for those.
-    const loglib::Theme &theme = ThemeControl::Active();
-
     const QString bodyRule;
 
     QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
-    if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
+    if (mTheme != nullptr)
     {
-        headerRule +=
-            QStringLiteral(" background-color: %1;").arg(QString::fromStdString(*theme.table.headerBackground));
-    }
-    if (theme.table.headerForeground.has_value() && !theme.table.headerForeground->empty())
-    {
-        headerRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.headerForeground));
+        const loglib::Theme &theme = mTheme->Active();
+        if (theme.table.headerBackground.has_value() && !theme.table.headerBackground->empty())
+        {
+            headerRule +=
+                QStringLiteral(" background-color: %1;").arg(QString::fromStdString(*theme.table.headerBackground));
+        }
+        if (theme.table.headerForeground.has_value() && !theme.table.headerForeground->empty())
+        {
+            headerRule += QStringLiteral(" color: %1;").arg(QString::fromStdString(*theme.table.headerForeground));
+        }
     }
     headerRule += QStringLiteral(" }");
 

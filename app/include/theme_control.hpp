@@ -17,9 +17,15 @@
 
 class QColor;
 
-/// Singleton that owns the active theme, exposes per-`LogLevel`
-/// brushes and fonts to the table model, and auto-switches between
-/// Light and Dark based on the OS palette.
+/// Owns the active theme, exposes per-`LogLevel` brushes and
+/// fonts to the table model, and auto-switches between Light and
+/// Dark based on the OS palette.
+///
+/// One instance per process, constructed by `main()` after
+/// `QApplication` and passed by pointer through `MainWindow` to
+/// the widgets that need it (`LogModel`, `FilterEditor`,
+/// `PreferencesEditor`). Connecting to `themeChanged()` keeps
+/// dependent views in sync.
 ///
 /// Persistence: a single `theme/active` `QSettings` key. Empty
 /// means "Auto" (follow the OS); any other value forces that
@@ -34,67 +40,63 @@ public:
     /// `theme/active` value meaning "Auto: follow the OS scheme".
     static constexpr const char *AUTO_TOKEN = "";
 
-    /// Process-wide instance. Connect signals on it; use the static
-    /// helpers for everything else.
-    static ThemeControl &Instance();
-
     /// Discover themes, resolve the active selection, and push it
-    /// onto `qApp`. Call once at startup before constructing
-    /// `MainWindow`.
-    static void LoadConfiguration();
+    /// onto `qApp`. Construct after `QApplication` so the
+    /// startup-style/font snapshot reads the real defaults.
+    explicit ThemeControl(QObject *parent = nullptr);
 
     /// Active selection as persisted on disk (empty = Auto). May
     /// differ from `ActiveSelection()` during a Preferences
     /// preview or when the persisted name no longer exists.
-    [[nodiscard]] static QString PersistedSelection();
+    [[nodiscard]] QString PersistedSelection() const;
 
     /// Persist the in-memory active selection to `QSettings`.
-    static void SaveConfiguration();
+    void SaveConfiguration() const;
 
     /// Re-run the auto-switch (e.g. after an OS dark-mode toggle).
     /// No-op when the resolved theme is unchanged.
-    static void Reevaluate();
+    void Reevaluate();
 
     /// True while an `ApplyTheme` is in flight. `MainWindow::event`
     /// uses this to skip the table-QSS re-apply on our own
     /// self-induced `StyleChange` / `ApplicationPaletteChange`
     /// events.
-    [[nodiscard]] static bool IsApplyingTheme() noexcept;
+    [[nodiscard]] bool IsApplyingTheme() const noexcept;
 
     /// Re-scan disk and re-resolve. Surfaced by the Preferences
     /// "Reload themes from disk" button.
-    static void ReloadAll();
+    void ReloadAll();
 
     /// Currently resolved theme.
-    static const loglib::Theme &Active();
+    [[nodiscard]] const loglib::Theme &Active() const;
 
     /// Cached brushes / fonts for `LogModel::data()`. Returns an
     /// invalid brush when the theme doesn't style @p level, which
     /// the model converts to "use palette default".
-    static QBrush ForegroundFor(loglib::LogLevel level) noexcept;
-    static QBrush BackgroundFor(loglib::LogLevel level) noexcept;
+    [[nodiscard]] QBrush ForegroundFor(loglib::LogLevel level) const noexcept;
+    [[nodiscard]] QBrush BackgroundFor(loglib::LogLevel level) const noexcept;
 
     /// `QFont` for @p level, derived from `qApp->font()` at apply
     /// time with bold/italic applied per the theme. Returns
     /// `qApp->font()` unchanged when the level isn't styled, so
     /// callers in the paint hot path should gate on
     /// `HasFontStyle(level)` first.
-    static QFont FontFor(loglib::LogLevel level) noexcept;
+    [[nodiscard]] QFont FontFor(loglib::LogLevel level) const noexcept;
 
     /// True iff the active theme sets bold or italic for @p level.
-    static bool HasFontStyle(loglib::LogLevel level) noexcept;
+    [[nodiscard]] bool HasFontStyle(loglib::LogLevel level) const noexcept;
 
     /// True iff *any* level sets bold or italic. Lets the model
     /// skip the per-cell `FontRole` resolve when no theme entry
     /// changes the font.
-    static bool HasAnyFontStyle() noexcept;
+    [[nodiscard]] bool HasAnyFontStyle() const noexcept;
 
     /// In-memory active selection (empty = Auto).
-    static QString ActiveSelection();
+    [[nodiscard]] QString ActiveSelection() const;
 
     /// Update the in-memory selection (does not persist). Triggers
     /// `themeChanged()` when the resolved theme changes.
-    static void SetActiveSelection(const QString &nameOrAuto);
+    void SetActiveSelection(const QString &nameOrAuto);
 
     /// One discovered theme entry. `fromUser` lets the UI tag
     /// user themes.
@@ -107,11 +109,11 @@ public:
 
     /// Sorted alphabetically by name. Built-ins shadowed by a user
     /// file appear once, marked `fromUser=true`.
-    static QList<ThemeListing> AvailableThemes();
+    [[nodiscard]] QList<ThemeListing> AvailableThemes() const;
 
     /// Theme by name, or nullopt if no such entry. User files
     /// shadow built-ins.
-    static std::optional<loglib::Theme> Load(const QString &name);
+    [[nodiscard]] std::optional<loglib::Theme> Load(const QString &name) const;
 
     /// `<AppDataLocation>/themes`, created on demand. Falls back
     /// to `<temp>/StructuredLogViewer/themes` if AppData is empty.
@@ -126,7 +128,7 @@ public:
     /// the index. Throws `std::runtime_error` on invalid @p name
     /// (see `SanitiseThemeName`) or write failure. Does not change
     /// the active selection.
-    static void SaveUserTheme(const QString &name, loglib::Theme theme);
+    void SaveUserTheme(const QString &name, loglib::Theme theme);
 
     /// True iff @p color has an ITU-R BT.601 luma below mid-grey.
     /// Single source of truth for "is this surface dark?".
@@ -139,15 +141,17 @@ public:
     /// `std::runtime_error` on rejection.
     [[nodiscard]] static QString SanitiseThemeName(const QString &name);
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Test-only: true iff a Force-mode `QStyleHints::colorScheme`
-    /// override is currently held.
-    [[nodiscard]] static bool IsColorSchemeForcedForTest() noexcept;
+    /// True iff a Force-mode `QStyleHints::colorScheme` override
+    /// is currently held. Exposed as a public instance method so
+    /// tests can exercise the Force/Auto state machine without
+    /// build-flag gating.
+    [[nodiscard]] bool IsColorSchemeForcedForTest() const noexcept;
 
-    /// Test-only: pin the cached OS colour scheme. Pass
-    /// `Qt::ColorScheme::Unknown` to release the pin.
-    static void SetOsColorSchemeForTest(Qt::ColorScheme scheme) noexcept;
-#endif
+    /// Pin the cached OS colour scheme. Pass
+    /// `Qt::ColorScheme::Unknown` to release the pin. Test hook
+    /// for the Auto-mode resolver; production code lets
+    /// `QStyleHints::colorSchemeChanged` drive the cache.
+    void SetOsColorSchemeForTest(Qt::ColorScheme scheme) noexcept;
 
 signals:
     /// Emitted when the resolved active theme changes. Receivers
@@ -155,18 +159,13 @@ signals:
     void themeChanged();
 
 private:
-    ThemeControl();
-
     /// Slot for `QStyleHints::colorSchemeChanged`. Caches the
     /// OS-reported scheme. Skipped during our own apply path and
     /// while a Force override is held (Qt then reports our forced
     /// value, not the OS).
     void OnPlatformColorSchemeChanged(Qt::ColorScheme scheme);
 
-    void DoLoadConfiguration();
-    void DoReloadAll();
-    void DoReevaluate();
-    void DoSetActiveSelection(const QString &nameOrAuto);
+    void LoadConfiguration();
     void DiscoverThemes();
     void ResolveAndApplyActive(bool emitWhenUnchanged);
     void ApplyTheme(const loglib::Theme &theme);
@@ -225,12 +224,11 @@ private:
     QString mStartupStyleName;
     QFont mStartupFont;
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Test-only: when true, production code skips refreshing
+    /// Test hook: when true, production code skips refreshing
     /// `mOsColorScheme` from `QStyleHints`, trusting the test's
-    /// faked value instead.
+    /// faked value instead. Always false in production paths
+    /// because `SetOsColorSchemeForTest` is the only setter.
     bool mOsColorSchemeLocked = false;
-#endif
 
     /// Cached OS-reported colour scheme. Seeded at startup,
     /// refreshed by `colorSchemeChanged` (outside Force mode) and

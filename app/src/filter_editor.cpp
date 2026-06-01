@@ -75,7 +75,7 @@ constexpr int PAGE_BOOLEAN = 4;
 }
 } // namespace
 
-FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *parent)
+FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl *theme, QWidget *parent)
     : QDialog(parent), mModel(model), mFilterID(std::move(filterID))
 {
     setWindowTitle("Filter Editor");
@@ -244,7 +244,11 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, QWidget *par
     // On theme flip, drop the warning styles -- they were tuned
     // for the previous palette. Re-clicking Ok with the same
     // invalid input re-stamps them in the new theme's colour.
-    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() { ClearWarningStyles(); });
+    // No-theme test path skips the connect (nothing emits).
+    if (theme != nullptr)
+    {
+        connect(theme, &ThemeControl::themeChanged, this, [this]() { ClearWarningStyles(); });
+    }
 
     UpdateSelectedColumn(0);
 }

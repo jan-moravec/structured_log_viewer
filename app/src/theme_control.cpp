@@ -163,40 +163,44 @@ std::optional<loglib::Theme> ParseFileToTheme(const QString &path)
 
 } // namespace
 
-ThemeControl &ThemeControl::Instance()
+ThemeControl::ThemeControl(QObject *parent)
+    : QObject(parent)
 {
-    static ThemeControl instance;
-    return instance;
+    LoadConfiguration();
 }
 
-ThemeControl::ThemeControl() = default;
-
-void ThemeControl::LoadConfiguration()
-{
-    Instance().DoLoadConfiguration();
-}
-
-QString ThemeControl::PersistedSelection()
+QString ThemeControl::PersistedSelection() const
 {
     const QSettings settings;
     const QVariant raw = settings.value(QLatin1String(SETTINGS_KEY_ACTIVE));
     return raw.isValid() ? raw.toString() : QString();
 }
 
-void ThemeControl::SaveConfiguration()
+void ThemeControl::SaveConfiguration() const
 {
     QSettings settings;
-    settings.setValue(QLatin1String(SETTINGS_KEY_ACTIVE), Instance().mActiveSelection);
+    settings.setValue(QLatin1String(SETTINGS_KEY_ACTIVE), mActiveSelection);
 }
 
 void ThemeControl::Reevaluate()
 {
-    Instance().DoReevaluate();
+    // Re-entrancy guard: `ApplyTheme` fires palette events that
+    // round-trip back here via `MainWindow::event`.
+    if (mApplyingTheme)
+    {
+        return;
+    }
+    // Force mode honours the user's pick regardless of OS scheme.
+    if (!mActiveSelection.isEmpty())
+    {
+        return;
+    }
+    ResolveAndApplyActive(/*emitWhenUnchanged=*/false);
 }
 
-bool ThemeControl::IsApplyingTheme() noexcept
+bool ThemeControl::IsApplyingTheme() const noexcept
 {
-    return Instance().mApplyingTheme;
+    return mApplyingTheme;
 }
 
 void ThemeControl::OnPlatformColorSchemeChanged(Qt::ColorScheme scheme)
@@ -217,88 +221,90 @@ void ThemeControl::OnPlatformColorSchemeChanged(Qt::ColorScheme scheme)
 
 void ThemeControl::ReloadAll()
 {
-    Instance().DoReloadAll();
+    DiscoverThemes();
+    ResolveAndApplyActive(/*emitWhenUnchanged=*/true);
 }
 
-const loglib::Theme &ThemeControl::Active()
+const loglib::Theme &ThemeControl::Active() const
 {
-    return Instance().mActive;
+    return mActive;
 }
 
-QBrush ThemeControl::ForegroundFor(loglib::LogLevel level) noexcept
+QBrush ThemeControl::ForegroundFor(loglib::LogLevel level) const noexcept
 {
-    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= self.mForeground.size())
+    if (idx >= mForeground.size())
     {
         return {};
     }
-    return self.mForeground[idx];
+    return mForeground[idx];
 }
 
-QBrush ThemeControl::BackgroundFor(loglib::LogLevel level) noexcept
+QBrush ThemeControl::BackgroundFor(loglib::LogLevel level) const noexcept
 {
-    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= self.mBackground.size())
+    if (idx >= mBackground.size())
     {
         return {};
     }
-    return self.mBackground[idx];
+    return mBackground[idx];
 }
 
-QFont ThemeControl::FontFor(loglib::LogLevel level) noexcept
+QFont ThemeControl::FontFor(loglib::LogLevel level) const noexcept
 {
-    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= self.mFonts.size())
+    if (idx >= mFonts.size())
     {
         return qApp->font();
     }
-    return self.mFonts[idx];
+    return mFonts[idx];
 }
 
-bool ThemeControl::HasFontStyle(loglib::LogLevel level) noexcept
+bool ThemeControl::HasFontStyle(loglib::LogLevel level) const noexcept
 {
-    auto &self = Instance();
     const size_t idx = LevelIndex(level);
-    if (idx >= self.mBold.size())
+    if (idx >= mBold.size())
     {
         return false;
     }
-    return self.mBold[idx] || self.mItalic[idx];
+    return mBold[idx] || mItalic[idx];
 }
 
-bool ThemeControl::HasAnyFontStyle() noexcept
+bool ThemeControl::HasAnyFontStyle() const noexcept
 {
-    return Instance().mHasAnyFontStyle;
+    return mHasAnyFontStyle;
 }
 
-QString ThemeControl::ActiveSelection()
+QString ThemeControl::ActiveSelection() const
 {
-    return Instance().mActiveSelection;
+    return mActiveSelection;
 }
 
 void ThemeControl::SetActiveSelection(const QString &nameOrAuto)
 {
-    Instance().DoSetActiveSelection(nameOrAuto);
+    if (nameOrAuto == mActiveSelection)
+    {
+        return;
+    }
+    mActiveSelection = nameOrAuto;
+    ResolveAndApplyActive(/*emitWhenUnchanged=*/false);
 }
 
-QList<ThemeControl::ThemeListing> ThemeControl::AvailableThemes()
+QList<ThemeControl::ThemeListing> ThemeControl::AvailableThemes() const
 {
     QList<ThemeListing> out;
-    out.reserve(static_cast<int>(Instance().mIndex.size()));
-    for (const auto &[name, entry] : Instance().mIndex)
+    out.reserve(static_cast<int>(mIndex.size()));
+    for (const auto &[name, entry] : mIndex)
     {
         out.append(ThemeListing{.name = name, .kind = entry.theme.kind, .fromUser = entry.fromUser});
     }
     return out;
 }
 
-std::optional<loglib::Theme> ThemeControl::Load(const QString &name)
+std::optional<loglib::Theme> ThemeControl::Load(const QString &name) const
 {
-    const auto it = Instance().mIndex.find(name);
-    if (it == Instance().mIndex.end())
+    const auto it = mIndex.find(name);
+    if (it == mIndex.end())
     {
         return std::nullopt;
     }
@@ -424,35 +430,32 @@ void ThemeControl::SaveUserTheme(const QString &name, loglib::Theme theme)
     }
 
     // Refresh the index so the new entry is immediately visible.
-    Instance().DiscoverThemes();
+    DiscoverThemes();
 
     // If the saved theme is the active one, re-resolve so the
     // new bytes propagate via `themeChanged`. Unrelated themes
     // skip the re-apply through the byte-equal fast-path in
     // `ResolveAndApplyActive`.
-    if (sanitised == Instance().mActiveName)
+    if (sanitised == mActiveName)
     {
-        Instance().ResolveAndApplyActive(/*emitWhenUnchanged=*/true);
+        ResolveAndApplyActive(/*emitWhenUnchanged=*/true);
     }
 }
 
-#ifdef LOGAPP_BUILD_TESTING
-bool ThemeControl::IsColorSchemeForcedForTest() noexcept
+bool ThemeControl::IsColorSchemeForcedForTest() const noexcept
 {
-    return Instance().mColorSchemeForced;
+    return mColorSchemeForced;
 }
 
 void ThemeControl::SetOsColorSchemeForTest(Qt::ColorScheme scheme) noexcept
 {
-    ThemeControl &self = Instance();
-    self.mOsColorScheme = scheme;
+    mOsColorScheme = scheme;
     // `Unknown` releases the pin and re-enables refreshes from
     // `QStyleHints::colorScheme()`.
-    self.mOsColorSchemeLocked = (scheme != Qt::ColorScheme::Unknown);
+    mOsColorSchemeLocked = (scheme != Qt::ColorScheme::Unknown);
 }
-#endif
 
-void ThemeControl::DoLoadConfiguration()
+void ThemeControl::LoadConfiguration()
 {
     // Capture style/font/OS-scheme defaults before any apply
     // mutates them, so themes that omit those fields can revert
@@ -481,38 +484,6 @@ void ThemeControl::DoLoadConfiguration()
 
     DiscoverThemes();
     mActiveSelection = PersistedSelection();
-    ResolveAndApplyActive(/*emitWhenUnchanged=*/false);
-}
-
-void ThemeControl::DoReloadAll()
-{
-    DiscoverThemes();
-    ResolveAndApplyActive(/*emitWhenUnchanged=*/true);
-}
-
-void ThemeControl::DoReevaluate()
-{
-    // Re-entrancy guard: `ApplyTheme` fires palette events that
-    // round-trip back here via `MainWindow::event`.
-    if (mApplyingTheme)
-    {
-        return;
-    }
-    // Force mode honours the user's pick regardless of OS scheme.
-    if (!mActiveSelection.isEmpty())
-    {
-        return;
-    }
-    ResolveAndApplyActive(/*emitWhenUnchanged=*/false);
-}
-
-void ThemeControl::DoSetActiveSelection(const QString &nameOrAuto)
-{
-    if (nameOrAuto == mActiveSelection)
-    {
-        return;
-    }
-    mActiveSelection = nameOrAuto;
     ResolveAndApplyActive(/*emitWhenUnchanged=*/false);
 }
 
@@ -623,9 +594,7 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
                 mApplyingTheme = true;
                 hints->unsetColorScheme();
                 mColorSchemeForced = false;
-#ifdef LOGAPP_BUILD_TESTING
                 if (!mOsColorSchemeLocked)
-#endif
                 {
                     mOsColorScheme = hints->colorScheme();
                 }
@@ -777,9 +746,7 @@ void ThemeControl::ApplyColorSchemeHint([[maybe_unused]] const loglib::Theme &th
         {
             hints->unsetColorScheme();
             mColorSchemeForced = false;
-#ifdef LOGAPP_BUILD_TESTING
             if (!mOsColorSchemeLocked)
-#endif
             {
                 mOsColorScheme = hints->colorScheme();
             }
@@ -792,9 +759,7 @@ void ThemeControl::ApplyColorSchemeHint([[maybe_unused]] const loglib::Theme &th
     // next Auto resolution would lose the real OS state.
     if (!mColorSchemeForced)
     {
-#ifdef LOGAPP_BUILD_TESTING
         if (!mOsColorSchemeLocked)
-#endif
         {
             mOsColorScheme = hints->colorScheme();
         }

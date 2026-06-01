@@ -44,6 +44,7 @@ class QMenu;
 QT_END_NAMESPACE
 
 class SessionHistoryManager;
+class ThemeControl;
 
 class MainWindow : public QMainWindow
 {
@@ -94,15 +95,26 @@ public:
         QString appliedConfigPath;
     };
 
-    /// No-history constructor: auto-save / Recent Sessions /
-    /// restore-on-launch are all no-ops. Used by the test fixture
-    /// and ad-hoc instances that don't care about history.
+    /// No-history, no-theme constructor: auto-save / Recent
+    /// Sessions / restore-on-launch are all no-ops, and the table
+    /// renders without per-level styling. Used by the legacy
+    /// `MainWindow mainWindow;` test sites that don't exercise
+    /// the theme system; pair the test fixture with a real
+    /// `ThemeControl` via the themed overload for theme-aware
+    /// assertions.
     MainWindow(QWidget *parent = nullptr);
 
-    /// Production constructor. The history manager is owned by
-    /// `main()`; the window keeps a non-owning pointer and writes
-    /// snapshots through it on streaming completion / close.
-    MainWindow(SessionHistoryManager *historyManager, QWidget *parent);
+    /// Themed, no-history constructor for test fixtures and
+    /// ad-hoc instances that need a live theme but don't care
+    /// about session history.
+    MainWindow(ThemeControl *theme, QWidget *parent = nullptr);
+
+    /// Production constructor. The theme controller and history
+    /// manager are owned by `main()`; the window keeps non-owning
+    /// pointers and writes snapshots through the history manager
+    /// on streaming completion / close. `theme` may be nullptr in
+    /// tests; theme-dependent code paths fall back to defaults.
+    MainWindow(ThemeControl *theme, SessionHistoryManager *historyManager, QWidget *parent = nullptr);
 
     ~MainWindow();
 
@@ -759,6 +771,10 @@ private:
     LogModel *mModel;
     FindRecordWidget *mFindRecord;
     PreferencesEditor *mPreferencesEditor;
+    /// Non-owning. Lives in `main()` (or the test fixture).
+    /// `nullptr` for legacy no-args construction; theme code paths
+    /// in this class check before dereferencing.
+    ThemeControl *mTheme;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
     /// Per-filter `Filters` sub-menu pointers, keyed by filter id.

@@ -46,8 +46,8 @@ QString DescribeThemeKind(loglib::ThemeKind kind)
 }
 } // namespace
 
-PreferencesEditor::PreferencesEditor(QWidget *parent)
-    : QWidget{parent}
+PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
+    : QWidget{parent}, mTheme(theme)
 {
     setWindowFlags(Qt::Window);
     setWindowTitle("Preferences");
@@ -88,9 +88,13 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     duplicateThemeButton->setToolTip("Copy the currently resolved theme into a new file under <AppData>/themes/ "
                                      "as `<active>-copy.json`, then open the user themes folder so it can be edited.");
     connect(duplicateThemeButton, &QPushButton::clicked, this, [this]() {
+        if (mTheme == nullptr)
+        {
+            return;
+        }
         try
         {
-            const loglib::Theme &active = ThemeControl::Active();
+            const loglib::Theme &active = mTheme->Active();
             QString baseName = QString::fromStdString(active.name);
             if (baseName.isEmpty())
             {
@@ -100,14 +104,14 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
             // clicks don't overwrite.
             QString candidate = baseName + QStringLiteral("-copy");
             int suffix = 2;
-            while (ThemeControl::Load(candidate).has_value())
+            while (mTheme->Load(candidate).has_value())
             {
                 candidate = baseName + QStringLiteral("-copy ") + QString::number(suffix);
                 ++suffix;
             }
             // `SaveUserTheme` refreshes the index; we just need to
             // re-render the combo and reveal the file for editing.
-            ThemeControl::SaveUserTheme(candidate, active);
+            mTheme->SaveUserTheme(candidate, active);
             RepopulateThemeCombo();
             ThemeControl::RevealUserThemesDir();
             ShowThemeStatus(tr("Saved as \"%1\". Edit the file in your themes folder, then "
@@ -124,13 +128,17 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
     reloadThemesButton->setToolTip("Re-scan the user themes folder and the built-in themes, then re-apply the "
                                    "active theme. Use after editing a theme JSON file outside the app.");
     connect(reloadThemesButton, &QPushButton::clicked, this, [this]() {
+        if (mTheme == nullptr)
+        {
+            return;
+        }
         // Detect "active theme was deleted on disk" so the silent
         // coercion to Auto gets explicit feedback.
-        const QString preReloadSelection = ThemeControl::ActiveSelection();
-        ThemeControl::ReloadAll();
+        const QString preReloadSelection = mTheme->ActiveSelection();
+        mTheme->ReloadAll();
         RepopulateThemeCombo();
         RefreshThemePreview();
-        const QString postReloadSelection = ThemeControl::ActiveSelection();
+        const QString postReloadSelection = mTheme->ActiveSelection();
         if (!preReloadSelection.isEmpty() && postReloadSelection.isEmpty())
         {
             ShowThemeStatus(
@@ -145,23 +153,27 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
 
     // Wire to `activated` (not `currentIndexChanged`) so arrow-
     // key browsing doesn't trigger a full apply per intermediate
-    // item. Cancel reverts via `LoadConfiguration`.
+    // item. Cancel reverts via the persisted-selection round-trip
+    // in the Cancel slot.
     connect(mThemeComboBox, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
-        if (idx < 0)
+        if (idx < 0 || mTheme == nullptr)
         {
             return;
         }
         const QString selection = mThemeComboBox->itemData(idx).toString();
-        ThemeControl::SetActiveSelection(selection);
+        mTheme->SetActiveSelection(selection);
         RefreshThemePreview();
     });
 
     // Keep combo + preview fresh on external theme changes (OS
     // flip while the dialog is open, etc.).
-    connect(&ThemeControl::Instance(), &ThemeControl::themeChanged, this, [this]() {
-        RepopulateThemeCombo();
-        RefreshThemePreview();
-    });
+    if (mTheme != nullptr)
+    {
+        connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
+            RepopulateThemeCombo();
+            RefreshThemePreview();
+        });
+    }
 
     mStreamRetentionSpinBox = new QSpinBox(this);
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
@@ -243,7 +255,10 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
         // Theme selection is already live; Ok just persists it.
-        ThemeControl::SaveConfiguration();
+        if (mTheme != nullptr)
+        {
+            mTheme->SaveConfiguration();
+        }
         // Mirror dialog edits into `StreamingControl` and persist them
         // before notifying so observers querying the static accessors
         // from a slot see the committed values.
@@ -275,7 +290,10 @@ PreferencesEditor::PreferencesEditor(QWidget *parent)
         // Revert any live-previewed theme to the persisted value.
         // `SetActiveSelection` short-circuits when nothing changed,
         // so the common no-preview case is free.
-        ThemeControl::SetActiveSelection(ThemeControl::PersistedSelection());
+        if (mTheme != nullptr)
+        {
+            mTheme->SetActiveSelection(mTheme->PersistedSelection());
+        }
         // Revert the spinbox-edited values to the persisted ones; no
         // emit needed because the on-disk values are unchanged.
         StreamingControl::LoadConfiguration();
@@ -313,7 +331,13 @@ void PreferencesEditor::RepopulateThemeCombo()
     mThemeComboBox->clear();
     mThemeComboBox->addItem(QString::fromLatin1(THEME_AUTO_LABEL), QString::fromLatin1(ThemeControl::AUTO_TOKEN));
 
-    const QList<ThemeControl::ThemeListing> themes = ThemeControl::AvailableThemes();
+    if (mTheme == nullptr)
+    {
+        mThemeComboBox->setCurrentIndex(0);
+        return;
+    }
+
+    const QList<ThemeControl::ThemeListing> themes = mTheme->AvailableThemes();
     for (const ThemeControl::ThemeListing &t : themes)
     {
         QString label = t.name + QStringLiteral(" (") + DescribeThemeKind(t.kind) + QStringLiteral(")");
@@ -326,7 +350,7 @@ void PreferencesEditor::RepopulateThemeCombo()
 
     // `ActiveSelection()` is guaranteed valid here: stale picks
     // are already coerced to Auto in `ResolveAndApplyActive`.
-    const QString selection = ThemeControl::ActiveSelection();
+    const QString selection = mTheme->ActiveSelection();
     int matchIdx = 0;
     for (int i = 1; i < mThemeComboBox->count(); ++i)
     {
@@ -341,7 +365,12 @@ void PreferencesEditor::RepopulateThemeCombo()
 
 void PreferencesEditor::RefreshThemePreview()
 {
-    const loglib::Theme &active = ThemeControl::Active();
+    if (mTheme == nullptr)
+    {
+        mThemePreviewLabel->clear();
+        return;
+    }
+    const loglib::Theme &active = mTheme->Active();
     QString preview =
         QStringLiteral("Active: %1 (%2)").arg(QString::fromStdString(active.name), DescribeThemeKind(active.kind));
     if (active.app.qtStyle.has_value() && !active.app.qtStyle->empty())
