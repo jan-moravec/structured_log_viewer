@@ -2,6 +2,7 @@
 
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
+#include "theme_control.hpp"
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
@@ -13,7 +14,9 @@
 #include <loglib/stream_line_source.hpp>
 
 #include <QApplication>
+#include <QBrush>
 #include <QCoreApplication>
+#include <QFont>
 #include <QFutureWatcher>
 #include <QIcon>
 #include <QMetaObject>
@@ -35,13 +38,13 @@
 #include <utility>
 #include <vector>
 
-LogModel::LogModel(QObject *parent)
-    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT)
+LogModel::LogModel(QObject *parent, ThemeControl *theme)
+    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme)
 {
 }
 
-LogModel::LogModel(QObject *parent, std::size_t pendingCapacity)
-    : QAbstractTableModel{parent}
+LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme)
+    : QAbstractTableModel{parent}, mTheme(theme)
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
@@ -147,6 +150,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mLastBatchLevelDemoteMapping.clear();
         // Drop stale mismatch badges before the reset settles.
         RefreshColumnHealth();
+        mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
         endResetModel();
 
@@ -445,6 +449,13 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         beginInsertRows(QModelIndex(), currentRowCount, newRowCount - 1);
     }
 
+    // Snapshot the pre-batch level-column index so we can restore
+    // the cache below if it didn't actually change. The
+    // pre-invalidation guards against re-entrant `data()` calls
+    // (e.g. via a `DirectConnection` slot) reading a stale value.
+    const int firstLevelColumnBefore = ComputeFirstLevelColumnIndex();
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+
     // Discard the previous batch's capture so a batch without a
     // Demoted signal can't leak stale data through
     // `LastBatchLevelDemoteMappingFor`.
@@ -531,6 +542,14 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     mLogTable.AppendBatch(std::move(batch));
+
+    // Restore the cache when the post-batch index didn't change;
+    // otherwise leave it invalidated for lazy rebuild.
+    const int firstLevelColumnAfter = ComputeFirstLevelColumnIndex();
+    if (firstLevelColumnAfter == firstLevelColumnBefore)
+    {
+        mFirstLevelColumnCache = firstLevelColumnAfter;
+    }
 
     // `endInsertRows` fires before `enumColumnsChanged` below, so a
     // proxy connected to `rowsInserted` walks new rows against a
@@ -968,11 +987,17 @@ void LogModel::NotifyColumnEdited(int columnIndex)
     {
         return;
     }
+    // Type edit may have added or removed `Type::Level`.
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     emit headerDataChanged(Qt::Horizontal, columnIndex, columnIndex);
     const int rows = rowCount();
     if (rows > 0)
     {
-        emit dataChanged(index(0, columnIndex), index(rows - 1, columnIndex), {Qt::DisplayRole});
+        emit dataChanged(
+            index(0, columnIndex),
+            index(rows - 1, columnIndex),
+            {Qt::DisplayRole, Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}
+        );
     }
 }
 
@@ -996,6 +1021,10 @@ void LogModel::ApplyColumnTypeEdit(int columnIndex, loglib::LogConfiguration::Ty
 
     mLogTable.Configuration().SetColumnTypePair(static_cast<size_t>(columnIndex), newType, newAutoDetect);
     mLogTable.OnUserChangedColumnType(static_cast<size_t>(columnIndex), previousType);
+
+    // Invalidate here too (not just in `NotifyColumnEdited`) so
+    // direct callers can't leave the cache stale.
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
 
     // Picking "Auto-detect" on already-loaded rows parks at
     // `(Any, autoDetect)`; rescan so the column actually resolves
@@ -1063,6 +1092,32 @@ void LogModel::RefreshColumnHealth()
     emit columnHealthChanged();
 }
 
+int LogModel::ComputeFirstLevelColumnIndex() const noexcept
+{
+    const auto &columns = Configuration().columns;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].type == loglib::LogConfiguration::Type::Level)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return LEVEL_COLUMN_NONE;
+}
+
+std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
+{
+    if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
+    {
+        mFirstLevelColumnCache = ComputeFirstLevelColumnIndex();
+    }
+    if (mFirstLevelColumnCache < 0 || row < 0)
+    {
+        return std::nullopt;
+    }
+    return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(mFirstLevelColumnCache));
+}
+
 QVariant LogModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.row() >= rowCount() || index.column() >= columnCount())
@@ -1070,13 +1125,65 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return {};
     }
 
-    if (role == Qt::DisplayRole)
+    // Style roles (Background / Foreground / Font) each resolve
+    // the row's level via `LevelForRow`. `Qt::FontRole` is gated
+    // on `HasAnyFontStyle()` so themes that style no level skip
+    // the resolve entirely.
+    switch (role)
     {
+    case Qt::DisplayRole:
         return ConvertToSingleLineCompactQString(
             mLogTable.GetFormattedValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()))
         );
+
+    case Qt::BackgroundRole:
+    {
+        if (mTheme == nullptr)
+        {
+            return {};
+        }
+        const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        const QBrush brush = mTheme->BackgroundFor(*level);
+        return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
     }
-    if (role == LogModelItemDataRole::SortRole)
+
+    case Qt::ForegroundRole:
+    {
+        if (mTheme == nullptr)
+        {
+            return {};
+        }
+        const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        const QBrush brush = mTheme->ForegroundFor(*level);
+        return brush.style() != Qt::NoBrush ? QVariant(brush) : QVariant{};
+    }
+
+    case Qt::FontRole:
+    {
+        // Skip the per-cell resolve when no level is styled.
+        // Per-level check is still needed below for themes that
+        // style only some levels.
+        if (mTheme == nullptr || !mTheme->HasAnyFontStyle())
+        {
+            return {};
+        }
+        const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
+        if (!level.has_value() || !mTheme->HasFontStyle(*level))
+        {
+            return {};
+        }
+        return mTheme->FontFor(*level);
+    }
+
+    case LogModelItemDataRole::SortRole:
     {
         loglib::LogValue value =
             mLogTable.GetValue(static_cast<size_t>(index.row()), static_cast<size_t>(index.column()));
@@ -1120,11 +1227,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             value
         );
     }
-    if (role == LogModelItemDataRole::InsertionOrderRole)
-    {
+
+    case LogModelItemDataRole::InsertionOrderRole:
         return {index.row()};
-    }
-    if (role == LogModelItemDataRole::CopyLine)
+
+    case LogModelItemDataRole::CopyLine:
     {
         // `LineSource *` distinguishes mmap arena vs. owned bytes.
         const auto row = static_cast<size_t>(index.row());
@@ -1133,7 +1240,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         const std::string raw = source != nullptr ? source->RawLine(line.LineId()) : std::string{};
         return {QString::fromStdString(raw)};
     }
-    if (role == LogModelItemDataRole::EnumValueRole)
+
+    case LogModelItemDataRole::EnumValueRole:
     {
         // `qint32` for `DictRef` slots; invalid for monostate /
         // unpromoted slots. Exposed for tests / external readers; the
@@ -1147,7 +1255,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         return QVariant::fromValue<qint32>(static_cast<qint32>(*enumId));
     }
 
-    return {};
+    default:
+        return {};
+    }
 }
 
 template <typename T> std::optional<std::pair<T, T>> LogModel::GetMinMaxValues(int column) const
@@ -1365,6 +1475,7 @@ void LogModel::NotifyConfigurationReplaced()
     // state. The row store is unchanged here.
     beginResetModel();
     mLogTable.OnConfigurationReloaded();
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     endResetModel();
 }
 
@@ -1404,6 +1515,7 @@ bool LogModel::MoveColumn(int srcIndex, int destIndex)
     // `LogTable::MoveColumn` rotates `columns` and remaps every
     // `LogFilter::row` via the configuration manager.
     mLogTable.MoveColumn(static_cast<size_t>(srcIndex), static_cast<size_t>(destIndex));
+    mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     endMoveColumns();
     return true;
 }

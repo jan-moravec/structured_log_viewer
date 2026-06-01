@@ -26,6 +26,7 @@ add_executable(
     "src/test_stream_stop_teardown.cpp"
     "src/test_tailing_bytes_producer.cpp"
     "src/test_tcp_server_producer.cpp"
+    "src/test_theme.cpp"
     "src/test_udp_server_producer.cpp"
 )
 

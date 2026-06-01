@@ -5,6 +5,7 @@
 
 class LogModel;
 class MainWindow;
+class QLabel;
 class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
@@ -46,6 +47,12 @@ public:
     /// selection.
     void EditSelected();
 
+    /// Re-stamp the intro label's muted foreground against the
+    /// current palette. The constructor's explicit `setPalette`
+    /// freezes the colour, so palette changes need this nudge.
+    /// Idempotent.
+    void RefreshPalette();
+
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only direct accessor for the columns table widget.
     /// `findChild<QTableWidget*>("columnsTable")` is unreliable on
@@ -73,6 +80,9 @@ private:
     QPushButton *mMoveDownButton = nullptr;
     QPushButton *mEditButton = nullptr;
     QPushButton *mCloseButton = nullptr;
+    /// Intro text. Kept as a member so `RefreshPalette` can
+    /// re-apply its muted foreground on theme change.
+    QLabel *mIntroLabel = nullptr;
 
     /// Suppresses `OnItemChanged` while `Refresh` / `RebuildRow` are
     /// programmatically setting check states.

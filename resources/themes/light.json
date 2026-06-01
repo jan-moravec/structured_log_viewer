@@ -1,0 +1,31 @@
+{
+    "name": "Light",
+    "kind": "light",
+    "levels": {
+        "Trace": { "foreground": "#94A3B8", "background": "#F8FAFC" },
+        "Debug": { "foreground": "#64748B", "background": "#EEF2F7" },
+        "Info":  {},
+        "Warn":  { "foreground": "#D97706", "background": "#FEF8E0" },
+        "Error": { "foreground": "#B91C1C", "background": "#FECACA" },
+        "Fatal": { "foreground": "#7F1D1D", "background": "#FCA5A5", "bold": true }
+    },
+    "table": {
+        "background": "#FFFFFF",
+        "alternateRowBackground": "#F3F4F6",
+        "selectionBackground": "#ADD4FF",
+        "selectionForeground": "#000000"
+    },
+    "chrome": {
+        "window": "#F7F7F7",
+        "windowText": "#0F172A",
+        "text": "#0F172A",
+        "button": "#F3F4F6",
+        "buttonText": "#0F172A",
+        "placeholderText": "#6B7280",
+        "toolTipBase": "#F7F7F7",
+        "toolTipText": "#0F172A"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

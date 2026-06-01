@@ -1,0 +1,31 @@
+{
+    "name": "Material Dark",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#546E7A", "background": "#1F272A" },
+        "Debug": { "foreground": "#82AAFF", "background": "#1A2332" },
+        "Info":  {},
+        "Warn":  { "foreground": "#FFCB6B", "background": "#332A18" },
+        "Error": { "foreground": "#F07178", "background": "#3A1F22" },
+        "Fatal": { "foreground": "#FFCDD2", "background": "#5C1B25", "bold": true }
+    },
+    "table": {
+        "background": "#263238",
+        "alternateRowBackground": "#2A373D",
+        "selectionBackground": "#425B67",
+        "selectionForeground": "#EEFFFF"
+    },
+    "chrome": {
+        "window": "#263238",
+        "windowText": "#EEFFFF",
+        "text": "#EEFFFF",
+        "button": "#314549",
+        "buttonText": "#EEFFFF",
+        "placeholderText": "#546E7A",
+        "toolTipBase": "#314549",
+        "toolTipText": "#EEFFFF"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    }
+}

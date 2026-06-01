@@ -1,10 +1,10 @@
 #include "main_window.hpp"
 
-#include "appearance_control.hpp"
 #include "cli_parser.hpp"
 #include "log_warning.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
+#include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
 #include <QApplication>
@@ -16,6 +16,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QProcessEnvironment>
+#include <QSettings>
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
@@ -101,7 +102,26 @@ int main(int argc, char *argv[])
     FileOpenEventFilter fileOpenFilter;
     qApp->installEventFilter(&fileOpenFilter);
 
-    AppearanceControl::LoadConfiguration();
+    // `ThemeControl` outlives every `MainWindow`: it's declared
+    // here so windows die first (their `themeChanged` connections
+    // auto-disconnect), then the theme controller, then
+    // `QApplication`.
+    ThemeControl themeControl;
+    // Best-effort cleanup of the legacy `appearance/*` keys from
+    // the pre-theme build. The `contains()` gate keeps the
+    // post-migration steady state free of `QSettings::sync` cost.
+    // Safe to remove after one release ships.
+    {
+        QSettings settings;
+        if (settings.contains(QStringLiteral("appearance/style")))
+        {
+            settings.remove(QStringLiteral("appearance/style"));
+        }
+        if (settings.contains(QStringLiteral("appearance/font")))
+        {
+            settings.remove(QStringLiteral("appearance/font"));
+        }
+    }
 
     const logapp::ParsedCli parsed =
         logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());
@@ -150,7 +170,7 @@ int main(int argc, char *argv[])
     // result feeds a status-bar hint.
     const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
 
-    MainWindow w(&historyManager, nullptr);
+    MainWindow w(&themeControl, &historyManager, nullptr);
     w.show();
     if (cleanupReport.capped)
     {
@@ -234,7 +254,7 @@ int main(int argc, char *argv[])
                     }
                     continue;
                 }
-                auto *peer = new MainWindow(&historyManager, nullptr);
+                auto *peer = new MainWindow(&themeControl, &historyManager, nullptr);
                 peer->setAttribute(Qt::WA_DeleteOnClose);
                 peer->show();
                 peer->RestoreLastSessionFromPath(peerPath);
@@ -312,8 +332,8 @@ int main(int argc, char *argv[])
         &instanceGuard,
         &SingleInstanceGuard::openWindowRequested,
         &a,
-        [&historyManager, &appendPeer](const QStringList &files, int truncatedCount) {
-            auto *child = new MainWindow(&historyManager, nullptr);
+        [&themeControl, &historyManager, &appendPeer](const QStringList &files, int truncatedCount) {
+            auto *child = new MainWindow(&themeControl, &historyManager, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();
             child->raise();

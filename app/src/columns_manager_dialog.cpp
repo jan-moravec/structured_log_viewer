@@ -6,6 +6,7 @@
 
 #include <loglib/log_configuration.hpp>
 
+#include <QApplication>
 #include <QDialog>
 #include <QFont>
 #include <QFontMetrics>
@@ -117,21 +118,17 @@ ColumnsManagerDialog::ColumnsManagerDialog(LogModel *model, MainWindow *mainWind
     layout->setContentsMargins(OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN, OUTER_MARGIN);
     layout->setSpacing(SECTION_SPACING);
 
-    auto *intro = new QLabel(
+    mIntroLabel = new QLabel(
         tr("Reorder columns with Move up / Move down, toggle visibility in the "
            "Visible column, or use Edit\u2026 for the full per-column editor."),
         this
     );
-    intro->setObjectName(QStringLiteral("introLabel"));
-    intro->setWordWrap(true);
-    // Use the palette's PlaceholderText role so the helper text picks
-    // up the muted tone of the active theme (light or dark).
-    {
-        QPalette introPalette = intro->palette();
-        introPalette.setColor(intro->foregroundRole(), introPalette.color(QPalette::PlaceholderText));
-        intro->setPalette(introPalette);
-    }
-    layout->addWidget(intro);
+    mIntroLabel->setObjectName(QStringLiteral("introLabel"));
+    mIntroLabel->setWordWrap(true);
+    // Muted helper text via `PlaceholderText`. `RefreshPalette`
+    // re-applies it on theme change.
+    RefreshPalette();
+    layout->addWidget(mIntroLabel);
 
     auto *body = new QHBoxLayout();
     body->setSpacing(SECTION_SPACING);
@@ -406,6 +403,20 @@ void ColumnsManagerDialog::MoveSelectedDown()
         Refresh();
         mTable->selectRow(row + 1);
     }
+}
+
+void ColumnsManagerDialog::RefreshPalette()
+{
+    if (mIntroLabel == nullptr)
+    {
+        return;
+    }
+    // Read `PlaceholderText` from the app palette, not the label's
+    // own -- a prior override on the label can shadow theme
+    // changes via the resolve mask.
+    QPalette introPalette = mIntroLabel->palette();
+    introPalette.setColor(mIntroLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
+    mIntroLabel->setPalette(introPalette);
 }
 
 void ColumnsManagerDialog::EditSelected()

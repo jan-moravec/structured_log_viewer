@@ -31,8 +31,8 @@ set(PROJECT_SOURCES
     include/filter_editor.hpp
     src/preferences_editor.cpp
     include/preferences_editor.hpp
-    src/appearance_control.cpp
-    include/appearance_control.hpp
+    src/theme_control.cpp
+    include/theme_control.hpp
     src/streaming_control.cpp
     include/streaming_control.hpp
     src/network_stream_dialog.cpp
