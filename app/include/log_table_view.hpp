@@ -48,8 +48,9 @@ public:
     /// combinations the file-explorer idiom relies on (no modifier /
     /// Ctrl / Shift). Gated behind `LOGAPP_BUILD_TESTING` so the
     /// surface is only present in the test build.
-    [[nodiscard]] QItemSelectionModel::SelectionFlags
-    SelectionCommandForTest(const QModelIndex &index, const QEvent *event = nullptr) const
+    [[nodiscard]] QItemSelectionModel::SelectionFlags SelectionCommandForTest(
+        const QModelIndex &index, const QEvent *event = nullptr
+    ) const
     {
         return selectionCommand(index, event);
     }

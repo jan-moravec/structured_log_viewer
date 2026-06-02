@@ -2775,12 +2775,7 @@ private slots:
         // and dispatches on the configured `selectionMode`.
         auto makePress = [](Qt::KeyboardModifiers mods) {
             return QMouseEvent(
-                QEvent::MouseButtonPress,
-                QPointF(0, 0),
-                QPointF(0, 0),
-                Qt::LeftButton,
-                Qt::LeftButton,
-                mods
+                QEvent::MouseButtonPress, QPointF(0, 0), QPointF(0, 0), Qt::LeftButton, Qt::LeftButton, mods
             );
         };
 
@@ -2794,9 +2789,7 @@ private slots:
                 flags.testFlag(QItemSelectionModel::ClearAndSelect),
                 "Plain click on a row must replace the existing selection (ClearAndSelect)."
             );
-            QVERIFY2(
-                flags.testFlag(QItemSelectionModel::Rows), "Plain click must operate on whole rows (Rows flag)."
-            );
+            QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Plain click must operate on whole rows (Rows flag).");
             QVERIFY2(
                 !flags.testFlag(QItemSelectionModel::Toggle),
                 "Plain click must NOT merely toggle the row -- that is the MultiSelection regression."
@@ -2813,9 +2806,7 @@ private slots:
                 "Ctrl-click must toggle the clicked row in or out of the selection."
             );
             QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Ctrl-click must operate on whole rows (Rows flag).");
-            QVERIFY2(
-                !flags.testFlag(QItemSelectionModel::Clear), "Ctrl-click must NOT clear the existing selection."
-            );
+            QVERIFY2(!flags.testFlag(QItemSelectionModel::Clear), "Ctrl-click must NOT clear the existing selection.");
             QVERIFY2(
                 !flags.testFlag(QItemSelectionModel::ClearAndSelect),
                 "Ctrl-click must NOT replace the existing selection."
@@ -2832,9 +2823,7 @@ private slots:
                 "Shift-click must extend the current selection (SelectCurrent)."
             );
             QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Shift-click must operate on whole rows (Rows flag).");
-            QVERIFY2(
-                !flags.testFlag(QItemSelectionModel::Toggle), "Shift-click is a range extension, not a toggle."
-            );
+            QVERIFY2(!flags.testFlag(QItemSelectionModel::Toggle), "Shift-click is a range extension, not a toggle.");
         }
 
         model->EndStreaming(false);
