@@ -3194,13 +3194,13 @@ private slots:
         // runner with Qt 6.8 + offscreen QPA, `findChildren<QListView*>`
         // strands these widgets the same way it strands `QAction`s in
         // the `MainWindow` `.ui` (see `MainWindow::FindUiAction`).
-        const QListView *picker = editor.EnumPickerView();
-        const QSortFilterProxyModel *proxy = editor.EnumPickerProxy();
+        const QListView *picker = editor.findChild<QListView *>();
+        const QSortFilterProxyModel *proxy = editor.findChild<QSortFilterProxyModel *>();
         QVERIFY2(picker != nullptr, "FilterEditor must expose its enum picker QListView");
         QVERIFY2(proxy != nullptr, "picker must wrap a QSortFilterProxyModel");
         QCOMPARE(proxy->rowCount(), 5);
 
-        QLineEdit *searchBox = editor.EnumSearchEdit();
+        QLineEdit *searchBox = editor.findChild<QLineEdit *>(QStringLiteral("enumSearchEdit"));
         QVERIFY2(searchBox != nullptr, "FilterEditor must expose the picker search QLineEdit");
 
         searchBox->setText(QStringLiteral("err"));
@@ -5225,7 +5225,7 @@ private slots:
 
         // Step 3: click OK without touching anything. The editor must
         // read the open-bound state and emit `nullopt` back.
-        QPushButton *ok = editor->OkButton();
+        QPushButton *ok = editor->findChild<QPushButton *>(QStringLiteral("okButton"));
         QVERIFY2(ok != nullptr, "FilterEditor must expose its OK button");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         ok->click();
@@ -5313,12 +5313,12 @@ private slots:
 
         // Step 3: editor must reflect the loaded shape: begin
         // unbounded, end bounded.
-        QCheckBox *beginUnbounded = editor->BeginUnboundedCheckBox();
-        const QCheckBox *endUnbounded = editor->EndUnboundedCheckBox();
-        const QDateEdit *beginDate = editor->BeginDateEdit();
-        const QTimeEdit *beginTime = editor->BeginTimeEdit();
-        const QDateEdit *endDate = editor->EndDateEdit();
-        const QTimeEdit *endTime = editor->EndTimeEdit();
+        QCheckBox *beginUnbounded = editor->findChild<QCheckBox *>(QStringLiteral("beginUnboundedCheckBox"));
+        const QCheckBox *endUnbounded = editor->findChild<QCheckBox *>(QStringLiteral("endUnboundedCheckBox"));
+        const QDateEdit *beginDate = editor->findChild<QDateEdit *>(QStringLiteral("beginDateEdit"));
+        const QTimeEdit *beginTime = editor->findChild<QTimeEdit *>(QStringLiteral("beginTimeEdit"));
+        const QDateEdit *endDate = editor->findChild<QDateEdit *>(QStringLiteral("endDateEdit"));
+        const QTimeEdit *endTime = editor->findChild<QTimeEdit *>(QStringLiteral("endTimeEdit"));
         QVERIFY(beginUnbounded != nullptr);
         QVERIFY(endUnbounded != nullptr);
         QVERIFY(beginDate != nullptr);
@@ -5352,7 +5352,7 @@ private slots:
         // nullopt) and round-trip the original end. The test asserts
         // the *ability* to widen; the actual widening is straight
         // QDateTimeEdit usage once the minimum is clear.
-        QPushButton *ok = editor->OkButton();
+        QPushButton *ok = editor->findChild<QPushButton *>(QStringLiteral("okButton"));
         QVERIFY(ok != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         ok->click();
@@ -6823,7 +6823,7 @@ private slots:
         // Bypass `findChild` to dodge the Qt 6.8 + offscreen-QPA
         // traversal bug on the Linux runner (see the diagnostics-button
         // test for the same workaround applied to MainWindow).
-        const auto *table = dialog.TableForTest();
+        const auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -6875,9 +6875,9 @@ private slots:
         // Direct accessors instead of `findChild` -- Linux Qt 6.8 +
         // offscreen QPA strands the lookup for child widgets the same
         // way it does for QActions (see `FindActionByObjectName`).
-        auto *headerEdit = editor.HeaderEditForTest();
-        auto *typeCombo = editor.TypeComboForTest();
-        auto *visibleCheck = editor.VisibleCheckForTest();
+        auto *headerEdit = editor.findChild<QLineEdit *>();
+        auto *typeCombo = editor.findChild<QComboBox *>();
+        auto *visibleCheck = editor.findChild<QCheckBox *>();
         QVERIFY(headerEdit != nullptr);
         QVERIFY(typeCombo != nullptr);
         QVERIFY(visibleCheck != nullptr);
@@ -6947,7 +6947,7 @@ private slots:
             const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
-            auto *typeCombo = editor.TypeComboForTest();
+            auto *typeCombo = editor.findChild<QComboBox *>();
             QVERIFY(typeCombo != nullptr);
             // Index 2 is "String" -- mirrors TypeChoices() in
             // column_editor.cpp; same convention as the other editor
@@ -6984,7 +6984,7 @@ private slots:
             const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
-            auto *typeCombo = editor.TypeComboForTest();
+            auto *typeCombo = editor.findChild<QComboBox *>();
             QVERIFY(typeCombo != nullptr);
             constexpr int ENUMERATION_CHOICE_INDEX = 8;
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
@@ -7057,7 +7057,7 @@ private slots:
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
 
         ColumnEditor editor(model, categoryCol);
-        auto *typeCombo = editor.TypeComboForTest();
+        auto *typeCombo = editor.findChild<QComboBox *>();
         QVERIFY(typeCombo != nullptr);
         // (1) Combo must show the resolved type. Index 8 is
         // "Enumeration" in `TypeChoices()`. Index 0 (the auto-detect
@@ -7107,7 +7107,7 @@ private slots:
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
         ColumnEditor editor(model, msgCol);
-        auto *typeCombo = editor.TypeComboForTest();
+        auto *typeCombo = editor.findChild<QComboBox *>();
         QVERIFY(typeCombo != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         typeCombo->setCurrentIndex(0); // "Auto-detect"
@@ -7156,7 +7156,7 @@ private slots:
         );
 
         ColumnEditor editor(model, categoryCol);
-        auto *typeCombo = editor.TypeComboForTest();
+        auto *typeCombo = editor.findChild<QComboBox *>();
         QVERIFY(typeCombo != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         typeCombo->setCurrentIndex(0); // "Auto-detect"
@@ -7186,7 +7186,7 @@ private slots:
         const ConfigurationDiagnosticsDialog dialog(model);
         QSignalSpy editSpy(&dialog, &ConfigurationDiagnosticsDialog::editColumnRequested);
 
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         // Find the row corresponding to `msg` (sorting may rearrange
@@ -7226,7 +7226,7 @@ private slots:
 
         const ColumnsManagerDialog dialog(model, mWindow);
 
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -7262,7 +7262,7 @@ private slots:
         QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
 
         const ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         constexpr int VISIBLE_COL = 4;
@@ -7307,7 +7307,7 @@ private slots:
         QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");
 
         ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         table->selectRow(0);
@@ -7338,7 +7338,7 @@ private slots:
         QVERIFY2(initialColumns.size() >= 2, "fixture must yield at least two columns");
 
         ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         // Top row: Move up is a no-op.
@@ -7378,7 +7378,7 @@ private slots:
 
         ColumnsManagerDialog dialog(model, mWindow);
         dialog.show();
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         // Snapshot the pre-move dialog row 0 / row 1 headers so the
@@ -8329,14 +8329,14 @@ private slots:
         // Reach widgets via the explicit accessors: see the comment on
         // `MainWindow::FindUiAction` for why `findChildren<...>` is
         // unreliable on the Linux runner with Qt 6.8 + offscreen QPA.
-        const QPushButton *okButton = editor.OkButton();
+        const QPushButton *okButton = editor.findChild<QPushButton *>(QStringLiteral("okButton"));
         QVERIFY2(okButton != nullptr, "FilterEditor must expose an OK button");
         // clang-analyzer does not model `QVERIFY2`'s test-aborting behaviour,
         // so it still considers `okButton` potentially null on the next line.
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY2(!okButton->isEnabled(), "OK must be disabled when the picker dictionary is empty");
 
-        const QLabel *placeholder = editor.EnumEmptyPlaceholder();
+        const QLabel *placeholder = editor.findChild<QLabel *>(QStringLiteral("enumEmptyPlaceholder"));
         QVERIFY2(placeholder != nullptr, "FilterEditor must expose the empty-picker placeholder");
         QVERIFY2(
             placeholder->text().contains(QStringLiteral("No values observed"), Qt::CaseInsensitive),
@@ -9988,7 +9988,7 @@ private slots:
         content.formattedJson = QStringLiteral("{\n  \"level\": \"info\",\n  \"message\": \"hello\"\n}");
         widget.SetContent(content);
 
-        const QTableWidget *table = widget.FieldsTableForTest();
+        const QTableWidget *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 2);
         QCOMPARE(table->item(0, 0)->text(), QStringLiteral("level"));
@@ -10000,7 +10000,7 @@ private slots:
         QVERIFY2(!table->isHidden(), "fields table must be explicitly shown when content is valid");
 
         // The edit shows the *formatted* JSON, not the compact bytes.
-        const QPlainTextEdit *rawEdit = widget.RawEditForTest();
+        const QPlainTextEdit *rawEdit = widget.findChild<QPlainTextEdit *>();
         QVERIFY(rawEdit != nullptr);
         QCOMPARE(rawEdit->toPlainText(), content.formattedJson);
 
@@ -10013,7 +10013,7 @@ private slots:
         QCOMPARE(rawEdit->toPlainText(), QString());
 
         // Snapshot windows hide the "Open in new window" button.
-        const QPushButton *popOutButton = widget.OpenInNewWindowButtonForTest();
+        const QPushButton *popOutButton = widget.findChild<QPushButton *>(QStringLiteral("openInNewWindowButton"));
         QVERIFY(popOutButton != nullptr);
         QVERIFY(popOutButton->isVisibleTo(&widget));
         widget.SetOpenInNewWindowVisible(false);
@@ -10038,7 +10038,7 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        QPushButton *copyButton = widget.CopyJsonButtonForTest();
+        QPushButton *copyButton = widget.findChild<QPushButton *>(QStringLiteral("copyJsonButton"));
         QVERIFY(copyButton != nullptr);
 
         const QString pasted = ClickAndReadClipboardWithRetry(clipboard, copyButton, content.rawJson);
@@ -10066,7 +10066,7 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        QPushButton *copyButton = widget.CopyKeyValueButtonForTest();
+        QPushButton *copyButton = widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton"));
         QVERIFY(copyButton != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY(copyButton->isEnabled());
@@ -10091,8 +10091,8 @@ private slots:
         content.formattedJson = QString();
         widget.SetContent(content);
 
-        const QPushButton *rawButton = widget.CopyJsonButtonForTest();
-        const QPushButton *kvButton = widget.CopyKeyValueButtonForTest();
+        const QPushButton *rawButton = widget.findChild<QPushButton *>(QStringLiteral("copyJsonButton"));
+        const QPushButton *kvButton = widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton"));
         QVERIFY(rawButton != nullptr);
         QVERIFY(kvButton != nullptr);
         QVERIFY2(!rawButton->isEnabled(), "Copy raw JSON must be disabled when there's no raw text");
@@ -10102,7 +10102,7 @@ private slots:
         // a follow-up `SetContent` with bytes must restore both.
         // Direct accessor (not `findChild`) -- the latter is unreliable
         // under Qt 6.8 + offscreen QPA on the Linux runner.
-        const auto *rawGroup = widget.RawGroupForTest();
+        const auto *rawGroup = widget.findChild<QGroupBox *>();
         QVERIFY(rawGroup != nullptr);
         QVERIFY2(!rawGroup->isEnabled(), "Raw JSON group must be disabled when no raw bytes are available");
         QVERIFY2(
@@ -10149,7 +10149,9 @@ private slots:
         clipboard->clear();
 
         const QString pasted = ClickAndReadClipboardWithRetry(
-            clipboard, widget.CopyKeyValueButtonForTest(), QStringLiteral("multiline: line1\\nline2")
+            clipboard,
+            widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton")),
+            QStringLiteral("multiline: line1\\nline2")
         );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         // One line per field; no real newline mid-entry.
@@ -10180,7 +10182,9 @@ private slots:
         clipboard->clear();
 
         const QString pasted = ClickAndReadClipboardWithRetry(
-            clipboard, widget.CopyKeyValueButtonForTest(), QStringLiteral("key\\nwith\\nnewlines: v")
+            clipboard,
+            widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton")),
+            QStringLiteral("key\\nwith\\nnewlines: v")
         );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         QCOMPARE(lines.size(), content.fields.size());
@@ -10205,7 +10209,7 @@ private slots:
         content.fields.append({QStringLiteral("dashy"), QStringLiteral("\u2014")});
         widget.SetContent(content);
 
-        const QTableWidget *table = widget.FieldsTableForTest();
+        const QTableWidget *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 3);
 
@@ -10254,7 +10258,7 @@ private slots:
         withEmpty.fields.append({QStringLiteral("k"), QString()});
         widget.SetContent(withEmpty);
 
-        const QTableWidget *table = widget.FieldsTableForTest();
+        const QTableWidget *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 1);
         const QTableWidgetItem *valueItem = table->item(0, 1);
@@ -10300,7 +10304,7 @@ private slots:
         content.fields.append({QStringLiteral("gamma"), QStringLiteral("3")});
         widget.SetContent(content);
 
-        QTableWidget *table = widget.FieldsTableForTest();
+        QTableWidget *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 3);
 
@@ -10418,7 +10422,7 @@ private slots:
             }
         });
 
-        const RecordDetailContent &shown = window->WidgetForTest()->Content();
+        const RecordDetailContent &shown = window->findChild<RecordDetailWidget *>()->Content();
         QVERIFY(shown.valid);
         QCOMPARE(shown.fields.size(), snapshot.fields.size());
         bool sawMsg = false;
@@ -10431,9 +10435,11 @@ private slots:
         }
         QVERIFY(sawMsg);
         // Pop-outs hide their own "Open in new window" button.
-        const QPushButton *popOutButton = window->WidgetForTest()->OpenInNewWindowButtonForTest();
+        const QPushButton *popOutButton =
+            window->findChild<RecordDetailWidget *>()->findChild<QPushButton *>(QStringLiteral("openInNewWindowButton")
+            );
         QVERIFY(popOutButton != nullptr);
-        QVERIFY(!popOutButton->isVisibleTo(window->WidgetForTest()));
+        QVERIFY(!popOutButton->isVisibleTo(window->findChild<RecordDetailWidget *>()));
     }
     // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 
@@ -10591,7 +10597,7 @@ private slots:
         for (const RecordDetailWindow *window : windows)
         {
             QVERIFY(window->testAttribute(Qt::WA_DeleteOnClose));
-            QVERIFY(window->WidgetForTest()->Content().valid);
+            QVERIFY(window->findChild<RecordDetailWidget *>()->Content().valid);
         }
 
         // Out-of-range -> no-op.
