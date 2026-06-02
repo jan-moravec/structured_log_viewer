@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anchor_manager.hpp"
+
 #include <loglib/bytes_producer.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_level.hpp>
@@ -76,11 +78,33 @@ public:
     /// font lookups in `data()`. `nullptr` is supported for plain
     /// `LogModel model;` test sites that don't exercise per-level
     /// styling; the colour / font roles return `{}` in that case.
-    explicit LogModel(QObject *parent = nullptr, ThemeControl *theme = nullptr);
+    ///
+    /// @p anchors, when non-null, drives the per-row anchor colour
+    /// overlay: rows whose `(locator, lineId)` resolves to an entry
+    /// in the manager paint with the anchor brush regardless of
+    /// their level style. The model takes a non-owning reference
+    /// and listens for `anchorChanged` / `anchorsReset` to scope
+    /// its `dataChanged` emits. `nullptr` is supported (legacy
+    /// test fixtures); the anchor branch in `data()` is gated on
+    /// the pointer.
+    explicit LogModel(QObject *parent = nullptr, ThemeControl *theme = nullptr, AnchorManager *anchors = nullptr);
     /// Test-only overload with a custom bounded-queue capacity for the
     /// embedded `QtStreamingLogSink`.
-    LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme = nullptr);
+    LogModel(
+        QObject *parent,
+        std::size_t pendingCapacity,
+        ThemeControl *theme = nullptr,
+        AnchorManager *anchors = nullptr
+    );
     ~LogModel() override;
+
+    /// `(locator, lineId)` for @p row, or nullopt for an out-of-
+    /// range row or a row whose backing `LogLine` has no source.
+    /// `locator` is the canonical-form path string used by
+    /// `LogConfiguration::Source::locatorDedupKeys`. Public so the
+    /// table view's right-click anchor menu can address the row
+    /// without re-walking `LogTable`.
+    [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
@@ -325,6 +349,23 @@ private:
     /// fixtures that don't exercise theming); `data()` gates its
     /// theme-derived branches on a null check.
     ThemeControl *mTheme = nullptr;
+
+    /// Non-owning anchor manager pointer. May be null for legacy
+    /// test fixtures that don't exercise the anchor feature; the
+    /// `data()` anchor branch and the `anchorChanged` /
+    /// `anchorsReset` wiring are gated on a null check.
+    AnchorManager *mAnchors = nullptr;
+
+    /// Helper: re-emit `dataChanged` on every row whose backing
+    /// `LogLine` matches @p key (typically one row, but a multi-
+    /// file session could in principle have lineId collisions).
+    /// Background + Foreground roles only.
+    void RefreshRowsForAnchor(const AnchorManager::Key &key);
+
+    /// Helper: re-emit `dataChanged` across the entire visible
+    /// table, Background + Foreground roles only. Used by
+    /// `anchorsReset`.
+    void RefreshAllAnchorRows();
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

@@ -1,8 +1,10 @@
 #include "log_model.hpp"
 
+#include "anchor_manager.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
+#include "uuid_utils.hpp"
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
@@ -38,13 +40,13 @@
 #include <utility>
 #include <vector>
 
-LogModel::LogModel(QObject *parent, ThemeControl *theme)
-    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme)
+LogModel::LogModel(QObject *parent, ThemeControl *theme, AnchorManager *anchors)
+    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme, anchors)
 {
 }
 
-LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme)
-    : QAbstractTableModel{parent}, mTheme(theme)
+LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme, AnchorManager *anchors)
+    : QAbstractTableModel{parent}, mTheme(theme), mAnchors(anchors)
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
@@ -53,6 +55,17 @@ LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *t
 
     mSink = new QtStreamingLogSink(this, this, pendingCapacity);
     mStreamingWatcher = new QFutureWatcher<void>(this);
+
+    if (mAnchors != nullptr)
+    {
+        // Wire granular anchor changes to scoped repaint emits.
+        // The lambdas hold `this` only -- the manager outlives the
+        // model in `MainWindow`, but the connections are auto-
+        // disconnected on either side's destruction so a torn-down
+        // model can't be reached.
+        connect(mAnchors, &AnchorManager::anchorChanged, this, &LogModel::RefreshRowsForAnchor);
+        connect(mAnchors, &AnchorManager::anchorsReset, this, &LogModel::RefreshAllAnchorRows);
+    }
 }
 
 LogModel::~LogModel()
@@ -1105,6 +1118,74 @@ int LogModel::ComputeFirstLevelColumnIndex() const noexcept
     return LEVEL_COLUMN_NONE;
 }
 
+std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexcept
+{
+    if (row < 0)
+    {
+        return std::nullopt;
+    }
+    const auto unsignedRow = static_cast<std::size_t>(row);
+    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    if (unsignedRow >= lines.size())
+    {
+        return std::nullopt;
+    }
+    const loglib::LogLine &line = lines[unsignedRow];
+    const loglib::LineSource *source = line.Source();
+    AnchorManager::Key key{
+        .locator = "",
+        .lineId = static_cast<uint64_t>(line.LineId()),
+    };
+    if (source != nullptr && !source->Path().empty())
+    {
+        // Canonicalise the same way `LogConfiguration::Source::
+        // locatorDedupKeys` does (forward-slashed, lowercase on
+        // Windows) so anchor lookups stay byte-equal across the
+        // GUI / save / load round-trip.
+        key.locator = logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+    }
+    return key;
+}
+
+void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
+{
+    const int cols = columnCount();
+    if (cols <= 0)
+    {
+        return;
+    }
+    // Linear scan over the visible rows. Anchor toggles are rare
+    // (user action), so an O(n) walk on the GUI thread is cheaper
+    // than maintaining a reverse `(locator,lineId) -> row` map and
+    // keeping it in sync with batch appends / FIFO eviction.
+    // Typical hit count is 1 (a `lineId` is unique within a
+    // `LineSource`), but the loop covers the multi-file case where
+    // two sources share an id namespace.
+    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        const auto rowKey = AnchorKeyForRow(static_cast<int>(i));
+        if (!rowKey.has_value() || *rowKey != key)
+        {
+            continue;
+        }
+        const QModelIndex topLeft = index(static_cast<int>(i), 0);
+        const QModelIndex bottomRight = index(static_cast<int>(i), cols - 1);
+        emit dataChanged(topLeft, bottomRight, {Qt::BackgroundRole, Qt::ForegroundRole});
+    }
+}
+
+void LogModel::RefreshAllAnchorRows()
+{
+    const int rows = rowCount();
+    const int cols = columnCount();
+    if (rows <= 0 || cols <= 0)
+    {
+        return;
+    }
+    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole});
+}
+
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
 {
     if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
@@ -1142,6 +1223,24 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
+        // Anchor overlay wins over the level brush. Gated on
+        // `Empty()` so the no-anchor case (the common one) skips
+        // the per-row `AnchorKeyForRow` walk.
+        if (mAnchors != nullptr && !mAnchors->Empty())
+        {
+            const auto key = AnchorKeyForRow(index.row());
+            if (key.has_value())
+            {
+                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                {
+                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::BackgroundRole);
+                    if (brush.style() != Qt::NoBrush)
+                    {
+                        return QVariant(brush);
+                    }
+                }
+            }
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
@@ -1156,6 +1255,21 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         if (mTheme == nullptr)
         {
             return {};
+        }
+        if (mAnchors != nullptr && !mAnchors->Empty())
+        {
+            const auto key = AnchorKeyForRow(index.row());
+            if (key.has_value())
+            {
+                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                {
+                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::ForegroundRole);
+                    if (brush.style() != Qt::NoBrush)
+                    {
+                        return QVariant(brush);
+                    }
+                }
+            }
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())

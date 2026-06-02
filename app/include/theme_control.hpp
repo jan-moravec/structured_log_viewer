@@ -91,6 +91,23 @@ public:
     /// changes the font.
     [[nodiscard]] bool HasAnyFontStyle() const noexcept;
 
+    /// Cached brush for an anchored row's @p colorIndex slot. The
+    /// resolver consults the active theme's `anchorPalette` first
+    /// and falls back to a built-in palette for any empty / missing
+    /// slot, so every valid `colorIndex` always yields a paint-
+    /// ready brush regardless of how spartan a user theme is.
+    ///
+    /// @p role must be `Qt::BackgroundRole` or `Qt::ForegroundRole`.
+    /// Foreground brushes are picked per-slot via ITU-R BT.601 luma
+    /// (`IsDarkColor`) so the standard "white text on saturated bg"
+    /// reads cleanly on the dark slots and flips to black on any
+    /// lighter custom slot the user dropped in.
+    ///
+    /// Out-of-range @p colorIndex returns an invalid brush -- the
+    /// caller (`LogModel::data`) treats that as "fall through to
+    /// the level-style branch".
+    [[nodiscard]] QBrush AnchorBrushFor(std::uint8_t colorIndex, int role) const noexcept;
+
     /// In-memory active selection (empty = Auto).
     [[nodiscard]] QString ActiveSelection() const;
 
@@ -201,6 +218,14 @@ private:
     std::array<QFont, LEVEL_SLOTS> mFonts;
     std::array<bool, LEVEL_SLOTS> mBold{};
     std::array<bool, LEVEL_SLOTS> mItalic{};
+
+    /// Per-anchor-slot brush cache, indexed by colour index. Built
+    /// in `BuildStyleCache` from `theme.anchorPalette` with the
+    /// built-in palette filling gaps. Foregrounds are derived from
+    /// per-slot luma; both arrays carry valid brushes after the
+    /// first `BuildStyleCache`.
+    std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorBackground;
+    std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorForeground;
 
     /// Any-level bold-or-italic flag for the `HasAnyFontStyle`
     /// fast-path. Refreshed by `BuildStyleCache`.

@@ -1,3 +1,4 @@
+#include "anchor_manager.hpp"
 #include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
@@ -2827,6 +2828,252 @@ private slots:
         }
 
         model->EndStreaming(false);
+    }
+
+    // Anchor-manager unit coverage: the (locator, lineId) -> colour
+    // map drives every other piece of the anchor feature, so its
+    // mutation semantics need to be pinned independently of the
+    // model / view integration. Covers idempotent SetAnchor,
+    // RemoveAnchor's "did anything change" return, ClearAll's bulk
+    // signal, Replace's "drop bad slots" policy, and the stable
+    // `Entries()` ordering used for byte-stable session save.
+    void TestAnchorManagerCoreContract()
+    {
+        AnchorManager manager;
+        QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
+
+        const AnchorManager::Key keyA{.locator = "c:/logs/a.json", .lineId = 7};
+        const AnchorManager::Key keyB{.locator = "c:/logs/b.json", .lineId = 3};
+
+        QVERIFY(manager.Empty());
+        QCOMPARE(manager.Count(), std::size_t{0});
+
+        // First add: changes state, fires `anchorChanged` once.
+        QVERIFY(manager.SetAnchor(keyA, 2));
+        QCOMPARE(changedSpy.count(), 1);
+        QCOMPARE(manager.ColorFor(keyA).value_or(255U), uint8_t{2});
+
+        // Same key, same colour: must be idempotent (no signal,
+        // returns false). Cheap guard against the model bouncing
+        // a redundant emit through `RefreshRowsForAnchor`.
+        QVERIFY(!manager.SetAnchor(keyA, 2));
+        QCOMPARE(changedSpy.count(), 1);
+
+        // Same key, new colour: re-emits once.
+        QVERIFY(manager.SetAnchor(keyA, 5));
+        QCOMPARE(changedSpy.count(), 2);
+        QCOMPARE(manager.ColorFor(keyA).value_or(255U), uint8_t{5});
+
+        // Out-of-range colour is clamped, not rejected, so a future
+        // hotkey block that grew past 8 wouldn't silently produce
+        // a "no anchor" row.
+        QVERIFY(manager.SetAnchor(keyB, 99));
+        QCOMPARE(manager.ColorFor(keyB).value_or(255U), uint8_t{loglib::ANCHOR_PALETTE_SIZE - 1});
+        QCOMPARE(changedSpy.count(), 3);
+
+        // Stable sort order: locator-first, then lineId.
+        const auto entries = manager.Entries();
+        QCOMPARE(entries.size(), std::size_t{2});
+        QCOMPARE(entries[0].locator, std::string{"c:/logs/a.json"});
+        QCOMPARE(entries[1].locator, std::string{"c:/logs/b.json"});
+
+        // RemoveAnchor: emits exactly once when the key existed,
+        // no-ops + returns false otherwise.
+        QVERIFY(manager.RemoveAnchor(keyA));
+        QCOMPARE(changedSpy.count(), 4);
+        QVERIFY(!manager.RemoveAnchor(keyA));
+        QCOMPARE(changedSpy.count(), 4);
+
+        // ClearAll: bulk signal, only when the map was non-empty.
+        QVERIFY(manager.ClearAll());
+        QCOMPARE(resetSpy.count(), 1);
+        QVERIFY(!manager.ClearAll());
+        QCOMPARE(resetSpy.count(), 1);
+
+        // Replace skips out-of-range entries silently rather than
+        // clamping them -- a hand-edited session with a stale
+        // `colorIndex: 12` shouldn't quietly squash into slot 7.
+        std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
+        incoming.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0}
+        );
+        incoming.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
+        );
+        manager.Replace(incoming);
+        QCOMPARE(resetSpy.count(), 2);
+        QCOMPARE(manager.Count(), std::size_t{1});
+        QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), uint8_t{0});
+        QVERIFY(!manager.ColorFor({.locator = "c:/x.json", .lineId = 2}).has_value());
+    }
+
+    // ThemeControl::AnchorBrushFor's resolver: must produce a paint-
+    // ready brush for every valid index, populate from the active
+    // theme's palette when present, fall back to the built-in
+    // palette for empty / missing slots, and return an invalid
+    // brush for out-of-range indices (the model's "fall through to
+    // the level branch" signal).
+    void TestThemeControlAnchorBrushResolver()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Every valid slot must yield a paint-ready, valid brush
+        // for both BG and FG roles -- even on built-in themes that
+        // already provide an 8-entry palette.
+        for (uint8_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
+        {
+            const QBrush bg = mTheme->AnchorBrushFor(i, Qt::BackgroundRole);
+            const QBrush fg = mTheme->AnchorBrushFor(i, Qt::ForegroundRole);
+            QVERIFY2(bg.style() != Qt::NoBrush, qPrintable(QStringLiteral("anchor slot %1 BG was invalid").arg(i)));
+            QVERIFY2(fg.style() != Qt::NoBrush, qPrintable(QStringLiteral("anchor slot %1 FG was invalid").arg(i)));
+            QVERIFY(bg.color().isValid());
+            QVERIFY(fg.color().isValid());
+        }
+
+        // Two distinct slots must yield two distinct background
+        // colours -- otherwise the user can't tell them apart in
+        // the UI.
+        QVERIFY(mTheme->AnchorBrushFor(0, Qt::BackgroundRole).color() !=
+                mTheme->AnchorBrushFor(4, Qt::BackgroundRole).color());
+
+        // Out-of-range -> invalid brush, which the model treats as
+        // "fall through to the level branch".
+        const QBrush oob = mTheme->AnchorBrushFor(loglib::ANCHOR_PALETTE_SIZE, Qt::BackgroundRole);
+        QVERIFY(oob.style() == Qt::NoBrush);
+
+        // Any role other than Background / Foreground returns an
+        // invalid brush so the swatch is a no-op on roles it has
+        // no opinion about.
+        QVERIFY(mTheme->AnchorBrushFor(0, Qt::DisplayRole).style() == Qt::NoBrush);
+    }
+
+    // Anchor overlay in LogModel::data(): with an anchor active for
+    // a given row, the BackgroundRole / ForegroundRole branches must
+    // return the anchor brush (not the level brush). Removing the
+    // anchor reverts to the level brush. The single-anchor
+    // `anchorChanged` path also has to fire a scoped `dataChanged`
+    // so the view repaints just that row.
+    void TestLogModelAnchorOverlay()
+    {
+        ThemeControl theme;
+        AnchorManager anchors;
+        LogModel model(nullptr, &theme, &anchors);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), 3);
+
+        // Snapshot the level brush for row 0 so we have something
+        // concrete to compare the anchor brush against. The
+        // synthetic batch carries no `Type::Level` column, so the
+        // level brush comes back invalid (`{}`) -- that's exactly
+        // the case we want anchors to be *visible* against.
+        const QModelIndex row0 = model.index(0, 0);
+        const QVariant preAnchorBg = model.data(row0, Qt::BackgroundRole);
+
+        // Resolve row 0's AnchorKey through the model's own helper
+        // so the test exercises the same canonicalisation path the
+        // production code uses.
+        const auto key = model.AnchorKeyForRow(0);
+        QVERIFY(key.has_value());
+        QCOMPARE(key->lineId, uint64_t{1});
+
+        QSignalSpy dataSpy(&model, &LogModel::dataChanged);
+        anchors.SetAnchor(*key, /*colorIndex=*/3);
+        QCoreApplication::processEvents();
+
+        // The anchor branch must have fired one or more scoped
+        // `dataChanged` emits covering Background + Foreground.
+        QVERIFY(dataSpy.count() >= 1);
+        bool sawBackgroundRoleEmit = false;
+        for (const QList<QVariant> &args : dataSpy)
+        {
+            const QList<int> roles = args.at(2).value<QList<int>>();
+            if (roles.contains(Qt::BackgroundRole) && roles.contains(Qt::ForegroundRole))
+            {
+                sawBackgroundRoleEmit = true;
+                break;
+            }
+        }
+        QVERIFY2(sawBackgroundRoleEmit, "anchor change must emit dataChanged with Background+Foreground roles");
+
+        const QVariant anchoredBg = model.data(row0, Qt::BackgroundRole);
+        const QVariant anchoredFg = model.data(row0, Qt::ForegroundRole);
+        QVERIFY(anchoredBg.canConvert<QBrush>());
+        QVERIFY(anchoredFg.canConvert<QBrush>());
+        const QBrush bgBrush = anchoredBg.value<QBrush>();
+        const QBrush fgBrush = anchoredFg.value<QBrush>();
+        QCOMPARE(bgBrush.color(), theme.AnchorBrushFor(3, Qt::BackgroundRole).color());
+        QCOMPARE(fgBrush.color(), theme.AnchorBrushFor(3, Qt::ForegroundRole).color());
+
+        // Rows other than the anchored one must not pick up the
+        // anchor brush.
+        QVERIFY(model.data(model.index(1, 0), Qt::BackgroundRole) == preAnchorBg);
+
+        // RemoveAnchor reverts row 0 back to the level brush (the
+        // pre-anchor value).
+        dataSpy.clear();
+        anchors.RemoveAnchor(*key);
+        QCoreApplication::processEvents();
+        QVERIFY(dataSpy.count() >= 1);
+        QCOMPARE(model.data(row0, Qt::BackgroundRole), preAnchorBg);
+
+        model.EndStreaming(false);
+    }
+
+    // anchorsReset (bulk path) must repaint every visible row at
+    // once -- otherwise `ApplyLoadedConfiguration` would leave the
+    // pre-existing anchor colours stuck on screen until the user
+    // scrolled the view.
+    void TestLogModelAnchorBulkRefresh()
+    {
+        ThemeControl theme;
+        AnchorManager anchors;
+        LogModel model(nullptr, &theme, &anchors);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), 4);
+
+        const auto key0 = model.AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors.SetAnchor(*key0, 1);
+        QCoreApplication::processEvents();
+
+        QSignalSpy dataSpy(&model, &LogModel::dataChanged);
+        anchors.ClearAll();
+        QCoreApplication::processEvents();
+
+        // ClearAll routes through `RefreshAllAnchorRows`, which
+        // emits one `dataChanged` covering every visible row. The
+        // emit must cover row 0 (top-left) through row 3
+        // (bottom-right) so the view invalidates every cached row.
+        QVERIFY(dataSpy.count() >= 1);
+        bool sawWholeTableEmit = false;
+        for (const QList<QVariant> &args : dataSpy)
+        {
+            const QModelIndex topLeft = args.at(0).toModelIndex();
+            const QModelIndex bottomRight = args.at(1).toModelIndex();
+            if (topLeft.row() == 0 && bottomRight.row() == model.rowCount() - 1)
+            {
+                sawWholeTableEmit = true;
+                break;
+            }
+        }
+        QVERIFY2(sawWholeTableEmit, "anchorsReset must emit a whole-table dataChanged so cached rows refresh");
+
+        model.EndStreaming(false);
     }
 
     // Static-mode parallel of `testAlternatingRowColoursDisabledInNewestFirstMode`:

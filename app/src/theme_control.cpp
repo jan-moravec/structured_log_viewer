@@ -37,6 +37,16 @@ namespace
 
 constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 
+/// Built-in fallback for `ThemeControl::AnchorBrushFor` when the
+/// active theme has no `anchorPalette` (or its slot is empty).
+/// Matches the Default Dark palette so a sparse user theme still
+/// produces well-distinguished anchors on either light or dark
+/// chrome. Eight saturated, hue-distinct entries to match the
+/// `Ctrl+1..8` hotkey block.
+constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_PALETTE = {
+    "#B91C1C", "#C2410C", "#A16207", "#15803D", "#0F766E", "#0369A1", "#7E22CE", "#BE185D",
+};
+
 constexpr char BUILTIN_LIGHT_NAME[] = "Light";
 constexpr char BUILTIN_DARK_NAME[] = "Dark";
 
@@ -273,6 +283,27 @@ bool ThemeControl::HasFontStyle(loglib::LogLevel level) const noexcept
 bool ThemeControl::HasAnyFontStyle() const noexcept
 {
     return mHasAnyFontStyle;
+}
+
+QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noexcept
+{
+    if (colorIndex >= loglib::ANCHOR_PALETTE_SIZE)
+    {
+        return {};
+    }
+    switch (role)
+    {
+    case Qt::BackgroundRole:
+        return mAnchorBackground[colorIndex];
+    case Qt::ForegroundRole:
+        return mAnchorForeground[colorIndex];
+    default:
+        // Any other role -- including the model's `EditRole` /
+        // sort fallbacks -- is meaningless for an anchor swatch.
+        // Returning an invalid brush lets the caller fall through
+        // to its normal handling without a special case.
+        return {};
+    }
 }
 
 QString ThemeControl::ActiveSelection() const
@@ -922,5 +953,28 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
             mFonts[idx].setItalic(true);
         }
         mHasAnyFontStyle = mHasAnyFontStyle || style.bold || style.italic;
+    }
+
+    // Anchor palette cache: theme override per slot first, then
+    // the hard-coded fallback. Foreground is white on dark slots /
+    // black on light slots; chosen by ITU-R BT.601 luma so a user
+    // theme with pastel anchors still produces legible text.
+    for (size_t slot = 0; slot < loglib::ANCHOR_PALETTE_SIZE; ++slot)
+    {
+        QColor background;
+        if (slot < theme.anchorPalette.size() && !theme.anchorPalette[slot].empty())
+        {
+            background = QColor(QString::fromStdString(theme.anchorPalette[slot]));
+        }
+        if (!background.isValid())
+        {
+            background = QColor(QString::fromLatin1(ANCHOR_FALLBACK_PALETTE[slot]));
+        }
+        mAnchorBackground[slot] = QBrush{background};
+        // Pick the foreground per-slot so a user theme dropping a
+        // pastel into one slot does not force every other anchor
+        // to also flip to black.
+        mAnchorForeground[slot] =
+            QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
     }
 }

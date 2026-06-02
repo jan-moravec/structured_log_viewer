@@ -16,6 +16,8 @@ set(PROJECT_SOURCES
     include/main_window.hpp
     src/log_model.cpp
     include/log_model.hpp
+    src/anchor_manager.cpp
+    include/anchor_manager.hpp
     src/qt_streaming_log_sink.cpp
     include/qt_streaming_log_sink.hpp
     include/bounded_batch_queue.hpp
