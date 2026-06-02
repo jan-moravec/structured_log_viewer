@@ -1,5 +1,6 @@
 #pragma once
 
+#include "anchor_manager.hpp"
 #include "find_record_widget.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -10,6 +11,7 @@
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
+#include <loglib/theme.hpp>
 
 // `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
 // the full type comes in transitively through `log_filter_model.hpp`.
@@ -29,6 +31,7 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -275,11 +278,13 @@ public:
     /// @p logicalColumn is out of range.
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
-    /// Build the row right-click menu for source-model row @p sourceRow:
-    /// inclusive "newer than" / "older than" actions pinned to the first
-    /// `Type::Time` column, using the row's timestamp as the boundary.
-    /// Returns null when there is no time column, the row's time slot is
-    /// `std::monostate`, the model is empty, or @p sourceRow is out of
+    /// Build the row right-click menu for source-model row @p sourceRow.
+    /// Always includes the "Anchor" sub-menu (eight colour swatches +
+    /// "Remove anchor"). Additionally includes "Show only newer/older
+    /// logs" actions pinned to the first `Type::Time` column when the
+    /// row carries a non-`monostate` timestamp slot.
+    ///
+    /// Returns null when the model is empty or @p sourceRow is out of
     /// range. Split out of `ShowRowContextMenu` so tests can inspect the
     /// actions without spawning a popup.
     ///
@@ -288,6 +293,19 @@ public:
     /// a `QScopeGuard`; `ShowRowContextMenu` instead sets
     /// `Qt::WA_DeleteOnClose` on the live popup.
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
+
+private:
+    /// Append the "Anchor" sub-menu to @p menu. Always adds eight
+    /// colour entries plus a "Remove anchor" entry; the latter is
+    /// disabled when the right-clicked row carries no anchor. Each
+    /// colour entry's check state mirrors the right-clicked row's
+    /// existing colour but the triggered action operates on the
+    /// view's current selection -- consistent with the `Ctrl+1..8`
+    /// hotkeys. No-op if any of the three collaborators (model,
+    /// theme, anchor manager) is missing.
+    void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
+
+public:
 
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
@@ -310,6 +328,24 @@ public:
     {
         return mModel;
     }
+
+    /// Owned `AnchorManager`; non-null after construction. Public
+    /// so the right-click row menu and the (forthcoming) Anchors
+    /// dock can hand it the source of truth for the per-row colour
+    /// state without going through the model.
+    [[nodiscard]] AnchorManager *Anchors() const noexcept
+    {
+        return mAnchors;
+    }
+
+    /// Move the table view's selection to the next or previous
+    /// visible anchored row in `lineId` order. Wraps at the model
+    /// bounds (so the user always gets *some* feedback if at least
+    /// one anchor exists). Filters-out rows are skipped; if every
+    /// anchored row is currently filtered, the status bar carries
+    /// the explanation rather than a silent no-op. Wired to the
+    /// `F2` / `Shift+F2` shortcuts and (forthcoming) Anchors dock.
+    void JumpToAnchor(bool forward);
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only direct accessor for the Record Details dock.
@@ -775,6 +811,26 @@ private:
     /// `nullptr` for legacy no-args construction; theme code paths
     /// in this class check before dereferencing.
     ThemeControl *mTheme;
+
+    /// Owned by the window so its lifetime brackets the model and
+    /// table view that read from it. Non-null after construction.
+    /// Threaded into `mModel` (for the data() overlay) and
+    /// `mTableView` (for the selection-driven `AnchorSelection`
+    /// slots and the row right-click menu).
+    AnchorManager *mAnchors = nullptr;
+
+    /// Programmatic shortcut actions for the anchor feature; live
+    /// on the window via `addAction(...)` so the key combos fire
+    /// without the actions being placed in a menu. Indices match
+    /// `Ctrl+1..8` (so index 0 is colour 0). `mActionClearRowAnchor`
+    /// is `Ctrl+0`, `mActionJumpNextAnchor` is `F2`,
+    /// `mActionJumpPrevAnchor` is `Shift+F2`, and
+    /// `mActionClearAllAnchors` is `Ctrl+Shift+A`.
+    std::array<QAction *, loglib::ANCHOR_PALETTE_SIZE> mAnchorColorActions{};
+    QAction *mActionClearRowAnchor = nullptr;
+    QAction *mActionJumpNextAnchor = nullptr;
+    QAction *mActionJumpPrevAnchor = nullptr;
+    QAction *mActionClearAllAnchors = nullptr;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
     /// Per-filter `Filters` sub-menu pointers, keyed by filter id.

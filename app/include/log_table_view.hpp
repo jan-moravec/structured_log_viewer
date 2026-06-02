@@ -1,10 +1,15 @@
 #pragma once
 
+#include "anchor_manager.hpp"
+
 #include <QItemSelectionModel>
 #include <QList>
 #include <QMetaObject>
 #include <QPersistentModelIndex>
 #include <QTableView>
+
+#include <cstdint>
+#include <vector>
 
 class LogTableView : public QTableView
 {
@@ -35,8 +40,37 @@ public:
 
     [[nodiscard]] TailEdge GetTailEdge() const noexcept;
 
+    /// Non-owning hookup for the anchor pipeline. Without this call
+    /// the anchor slots and the resolved-keys helpers all no-op,
+    /// which keeps legacy two-arg test fixtures working. Pair with
+    /// `LogModel(theme, anchors)` so the model + view see the same
+    /// manager and the right-click menu's "is this row already
+    /// anchored?" check matches what the model painted.
+    void SetAnchorManager(AnchorManager *anchors) noexcept;
+
+    /// Anchor-key snapshot for every currently selected row. Walks
+    /// the proxy chain to the source-side `LogModel` and asks it
+    /// for the `(locator, lineId)` key. Returns an empty vector
+    /// when the selection is empty, no `LogModel` is reachable, or
+    /// the proxy chain doesn't resolve. Pure helper; exposed so the
+    /// right-click menu builder can read the selection's current
+    /// anchor state to label entries appropriately.
+    [[nodiscard]] std::vector<AnchorManager::Key> AnchorKeysForSelection() const;
+
 public slots:
     void CopySelectedRowsToClipboard();
+
+    /// Drop every row in the current selection into anchor slot
+    /// @p colorIndex. Adds new anchors and re-colours existing
+    /// ones in one pass. No-op when no `AnchorManager` is wired
+    /// or the selection is empty. @p colorIndex is forwarded as-
+    /// is to the manager, which clamps out-of-range values.
+    void AnchorSelection(int colorIndex);
+
+    /// Remove the anchor from every currently selected row. No-op
+    /// when the selection is empty or no `AnchorManager` is wired.
+    /// Rows that aren't anchored are silently skipped.
+    void ClearAnchorOnSelection();
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
@@ -119,4 +153,10 @@ private:
     /// Connections to the currently-attached model; dropped on
     /// `setModel` before re-wiring.
     QList<QMetaObject::Connection> mModelConnections;
+
+    /// Non-owning. Provided by `MainWindow` via `SetAnchorManager`
+    /// when the anchor feature is in play; null on legacy test
+    /// fixtures that drive the view standalone. Every anchor-
+    /// related slot null-checks before dereferencing.
+    AnchorManager *mAnchors = nullptr;
 };

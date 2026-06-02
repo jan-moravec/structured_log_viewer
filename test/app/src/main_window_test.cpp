@@ -489,6 +489,32 @@ QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
 // same gate without crashing. Production code is unaffected because
 // the main window is always shown before the user opens the dock.
 
+/// Walk @p menu's actions and return the first whose visible text
+/// (with mnemonic ampersands stripped) equals @p text. Returns
+/// nullptr if no match. Used by the row-context-menu tests after
+/// the anchor sub-menu shifted the time-range actions off index 0/1.
+[[nodiscard]] inline QAction *FindMenuActionByText(const QMenu *menu, const QString &text)
+{
+    if (menu == nullptr)
+    {
+        return nullptr;
+    }
+    for (QAction *action : menu->actions())
+    {
+        if (action == nullptr)
+        {
+            continue;
+        }
+        QString visible = action->text();
+        visible.remove(QChar('&'));
+        if (visible == text)
+        {
+            return action;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture; moc expects this declaration shape.
@@ -3027,6 +3053,204 @@ private slots:
         model.EndStreaming(false);
     }
 
+    // End-to-end: streaming a 4-row fixture, anchoring rows 0 and 2
+    // via the view-level `AnchorSelection` slot must:
+    //   - Route through the LogModel proxy chain into the source
+    //     model's `AnchorKeyForRow`.
+    //   - Register both rows in the AnchorManager at the requested
+    //     colour index.
+    //   - Skip rows that aren't selected.
+    // Stand-in for the right-click anchor menu (which delegates to
+    // the same view-level slot) and the Ctrl+1..8 hotkey
+    // (which is wired to the same slot on the live window).
+    void TestLogTableViewAnchorSelectionDrivesAnchorManager()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY2(anchors != nullptr, "MainWindow must own an AnchorManager after construction");
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        // Synthesize 4 rows on the live model + view selection.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        // Select rows 0 and 2 (proxy coords map 1:1 in identity orientation).
+        QItemSelectionModel *sel = view->selectionModel();
+        QVERIFY(sel != nullptr);
+        sel->clearSelection();
+        const QModelIndex idx0 = view->model()->index(0, 0);
+        const QModelIndex idx2 = view->model()->index(2, 0);
+        sel->select(idx0, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        sel->select(idx2, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+
+        view->AnchorSelection(/*colorIndex=*/3);
+        QCoreApplication::processEvents();
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key1 = model->AnchorKeyForRow(1);
+        const auto key2 = model->AnchorKeyForRow(2);
+        const auto key3 = model->AnchorKeyForRow(3);
+        QVERIFY(key0.has_value());
+        QVERIFY(key1.has_value());
+        QVERIFY(key2.has_value());
+        QVERIFY(key3.has_value());
+        QCOMPARE(anchors->ColorFor(*key0).value_or(255), static_cast<std::uint8_t>(3));
+        QCOMPARE(anchors->ColorFor(*key2).value_or(255), static_cast<std::uint8_t>(3));
+        QVERIFY2(!anchors->ColorFor(*key1).has_value(), "unselected row 1 must not be anchored");
+        QVERIFY2(!anchors->ColorFor(*key3).has_value(), "unselected row 3 must not be anchored");
+
+        // Now drop the anchors on the selection again and verify they
+        // disappear.
+        view->ClearAnchorOnSelection();
+        QCoreApplication::processEvents();
+        QVERIFY(!anchors->ColorFor(*key0).has_value());
+        QVERIFY(!anchors->ColorFor(*key2).has_value());
+
+        model->EndStreaming(false);
+    }
+
+    // MainWindow::JumpToAnchor walks anchored source rows in
+    // ascending order, wraps at the bottom, and skips filtered-out
+    // anchored rows. With four rows and anchors on rows 0 + 2, the
+    // sequence from "no current selection" should be 0 -> 2 -> 0 ...
+    void TestMainWindowJumpToAnchorVisits()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key2, 1);
+        QCoreApplication::processEvents();
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        mWindow->JumpToAnchor(/*forward=*/true);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 0);
+
+        mWindow->JumpToAnchor(/*forward=*/true);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 2);
+
+        // Wrap-around.
+        mWindow->JumpToAnchor(/*forward=*/true);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 0);
+
+        // Backwards from the wrap target steps back to row 2.
+        mWindow->JumpToAnchor(/*forward=*/false);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 2);
+
+        model->EndStreaming(false);
+    }
+
+    // BuildRowContextMenu always exposes the Anchor sub-menu when
+    // the model has rows; the swatch entry whose colour matches the
+    // right-clicked row's existing anchor is `checked`, the others
+    // aren't. The "Remove anchor" entry is enabled iff the row
+    // already has a colour.
+    void TestRowContextMenuAnchorSubMenuReflectsRowState()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto key1 = model->AnchorKeyForRow(1);
+        QVERIFY(key1.has_value());
+        anchors->SetAnchor(*key1, 4);
+        QCoreApplication::processEvents();
+
+        // Right-click row 1 (anchored at colour 4).
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY(menu != nullptr);
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+        QAction *anchorMenuAction = FindMenuActionByText(menu, MainWindow::tr("Anchor"));
+        QVERIFY2(anchorMenuAction != nullptr, "Anchor sub-menu must be present");
+        QMenu *anchorMenu = anchorMenuAction->menu();
+        QVERIFY(anchorMenu != nullptr);
+
+        int colour4ChecksSeen = 0;
+        int otherColourChecksSeen = 0;
+        for (int i = 0; i < static_cast<int>(loglib::ANCHOR_PALETTE_SIZE); ++i)
+        {
+            QAction *entry = FindMenuActionByText(anchorMenu, MainWindow::tr("Colour %1").arg(i + 1));
+            QVERIFY2(entry != nullptr, "every palette slot must have a sub-menu entry");
+            QVERIFY(entry->isCheckable());
+            if (i == 4)
+            {
+                if (entry->isChecked())
+                {
+                    ++colour4ChecksSeen;
+                }
+            }
+            else if (entry->isChecked())
+            {
+                ++otherColourChecksSeen;
+            }
+        }
+        QCOMPARE(colour4ChecksSeen, 1);
+        QCOMPARE(otherColourChecksSeen, 0);
+
+        QAction *clear = FindMenuActionByText(anchorMenu, MainWindow::tr("Remove anchor"));
+        QVERIFY2(clear != nullptr, "remove-anchor entry must be present");
+        QVERIFY2(clear->isEnabled(), "remove-anchor must be enabled when the right-clicked row carries a colour");
+
+        // Right-click an unanchored row -> no checked colour, remove
+        // disabled.
+        QMenu *menu0 = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY(menu0 != nullptr);
+        const QScopeGuard menu0Deleter([&menu0]() { menu0->deleteLater(); });
+        QAction *anchor0 = FindMenuActionByText(menu0, MainWindow::tr("Anchor"));
+        QVERIFY(anchor0 != nullptr);
+        QMenu *anchor0Menu = anchor0->menu();
+        QVERIFY(anchor0Menu != nullptr);
+        for (int i = 0; i < static_cast<int>(loglib::ANCHOR_PALETTE_SIZE); ++i)
+        {
+            QAction *entry = FindMenuActionByText(anchor0Menu, MainWindow::tr("Colour %1").arg(i + 1));
+            QVERIFY(entry != nullptr);
+            QVERIFY2(!entry->isChecked(), "unanchored row must have no checked colour");
+        }
+        QAction *clear0 = FindMenuActionByText(anchor0Menu, MainWindow::tr("Remove anchor"));
+        QVERIFY(clear0 != nullptr);
+        QVERIFY2(!clear0->isEnabled(), "remove-anchor must be disabled when the row carries no colour");
+
+        model->EndStreaming(false);
+    }
+
     // anchorsReset (bulk path) must repaint every visible row at
     // once -- otherwise `ApplyLoadedConfiguration` would leave the
     // pre-existing anchor colours stuck on screen until the user
@@ -5223,8 +5447,9 @@ private slots:
         return ColumnByHeader(*model, QStringLiteral("timestamp"));
     }
 
-    // The row menu must offer exactly the two "newer"/"older" actions
-    // labelled with the time column's header.
+    // The row menu must offer the "newer"/"older" actions labelled
+    // with the time column's header, plus the always-present Anchor
+    // sub-menu and the separator between the two sections.
     void TestRowContextMenuOffersAtOrAfterAndAtOrBefore()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -5234,28 +5459,44 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        const QList<QAction *> actions = menu->actions();
-        QCOMPARE(actions.size(), 2);
         // Build labels via `tr` so the test survives a future
         // `QTranslator` install.
         const QString newerLabel = MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp"));
         const QString olderLabel = MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp"));
-        QCOMPARE(actions[0]->text(), newerLabel);
-        QCOMPARE(actions[1]->text(), olderLabel);
+        QVERIFY2(FindMenuActionByText(menu, newerLabel) != nullptr, "menu must offer the newer-logs action");
+        QVERIFY2(FindMenuActionByText(menu, olderLabel) != nullptr, "menu must offer the older-logs action");
+
+        // The Anchor sub-menu lives next to the time-range actions
+        // and is always present; verify its menu-action title.
+        QVERIFY2(FindMenuActionByText(menu, MainWindow::tr("Anchor")) != nullptr, "menu must carry the Anchor sub-menu");
     }
 
-    // Without a `Type::Time` column the menu has nothing to bind to and
-    // must return null. The `category`+`msg` fixture has no time column.
-    void TestRowContextMenuReturnsNullWithoutTimeColumn()
+    // Without a `Type::Time` column the time-range actions are
+    // suppressed but the Anchor sub-menu still keeps the menu alive
+    // so the user can still anchor / clear anchors via right-click.
+    void TestRowContextMenuOffersAnchorOnlyWithoutTimeColumn()
     {
         // The returned index is for `category`; used only as a
         // streaming-completed sentinel.
         const int streamedColumn = StreamFixtureForColumnTests();
         QVERIFY2(streamedColumn >= 0, "streaming must complete before the row-menu probe");
 
-        const QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
-        QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model has no Type::Time column");
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return the anchor-only menu when no time column exists");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        QVERIFY2(
+            FindMenuActionByText(menu, MainWindow::tr("Anchor")) != nullptr,
+            "anchor-only menu must still expose the Anchor sub-menu"
+        );
+        // No "Show only ..." entries when there is no time column.
+        for (const QAction *action : menu->actions())
+        {
+            QVERIFY2(
+                !action->text().startsWith(MainWindow::tr("Show only")),
+                "menu must not expose time-range actions without a Type::Time column"
+            );
+        }
     }
 
     // Empty model: nothing to bind to, menu must be null.
@@ -5286,9 +5527,11 @@ private slots:
     }
 
     // A row with a `Type::Time` column but a `monostate` slot (source
-    // JSON omitted the key) must suppress the menu, otherwise the
-    // action would install a degenerate `(nullopt, nullopt)` filter.
-    void TestRowContextMenuReturnsNullForMonostateTimeSlot()
+    // JSON omitted the key) must suppress the *time-range* entries
+    // (otherwise the action would install a degenerate
+    // `(nullopt, nullopt)` filter), but the anchor sub-menu still
+    // keeps the menu live so anchoring stays available.
+    void TestRowContextMenuOffersAnchorOnlyForMonostateTimeSlot()
     {
         auto *model = mWindow->Model();
         Q_ASSERT(model != nullptr);
@@ -5327,10 +5570,27 @@ private slots:
 
         QMenu *first = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(first != nullptr, "row 0 has a timestamp slot, menu must be offered");
-        first->deleteLater();
+        const QScopeGuard firstDeleter([&first]() { first->deleteLater(); });
+        QVERIFY2(
+            FindMenuActionByText(first, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp"))) !=
+                nullptr,
+            "row 0's populated time slot must keep the time-range action"
+        );
 
-        const QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
-        QVERIFY2(middle == nullptr, "row 1's monostate time slot must suppress the menu");
+        QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(middle != nullptr, "row 1's anchor sub-menu must keep the row menu alive");
+        const QScopeGuard middleDeleter([&middle]() { middle->deleteLater(); });
+        QVERIFY2(
+            FindMenuActionByText(middle, MainWindow::tr("Anchor")) != nullptr,
+            "row 1's anchor sub-menu must still be present"
+        );
+        for (const QAction *action : middle->actions())
+        {
+            QVERIFY2(
+                !action->text().startsWith(MainWindow::tr("Show only")),
+                "row 1's monostate time slot must suppress time-range actions"
+            );
+        }
     }
 
     // Triggering "newer" installs an inclusive time filter with the
@@ -5350,12 +5610,11 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *newerAction = menu->actions().at(0);
-        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
+        QAction *newerAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "menu must carry the newer-logs action");
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         newerAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5384,11 +5643,10 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *olderAction = menu->actions().at(1);
-        QVERIFY2(olderAction != nullptr, "menu must carry an `older` action at index 1");
+        QAction *olderAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(olderAction != nullptr, "menu must carry the older-logs action");
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         olderAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5438,11 +5696,10 @@ private slots:
         const int timeColAfter = ColumnByHeader(*model, QStringLiteral("timestamp"));
         QCOMPARE(timeColAfter, dest);
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *newerAction = menu->actions().at(0);
-        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
+        QAction *newerAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "menu must carry the newer-logs action");
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         newerAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5485,11 +5742,10 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *newerAction = menu->actions().at(0);
-        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
+        QAction *newerAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "menu must carry the newer-logs action");
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         newerAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5523,8 +5779,10 @@ private slots:
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        rowMenu->actions().at(0)->trigger();
+        QAction *newerAction =
+            FindMenuActionByText(rowMenu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "row menu must carry the newer-logs action");
+        newerAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -5612,8 +5870,10 @@ private slots:
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/2, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        rowMenu->actions().at(1)->trigger(); // "older" (index 1)
+        QAction *olderAction =
+            FindMenuActionByText(rowMenu, MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(olderAction != nullptr, "row menu must carry the older-logs action");
+        olderAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));

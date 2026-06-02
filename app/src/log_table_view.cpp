@@ -1,8 +1,11 @@
 #include "log_table_view.hpp"
 
+#include "anchor_manager.hpp"
+
 #include <log_model.hpp>
 
 #include <QAbstractItemModel>
+#include <QAbstractProxyModel>
 #include <QApplication>
 #include <QClipboard>
 #include <QItemSelectionModel>
@@ -11,6 +14,8 @@
 #include <QRect>
 #include <QScrollBar>
 #include <QWheelEvent>
+
+#include <utility>
 
 LogTableView::LogTableView(QWidget *parent)
     : QTableView(parent)
@@ -251,4 +256,88 @@ void LogTableView::CopySelectedRowsToClipboard()
 
     QClipboard *clipboard = QApplication::clipboard();
     clipboard->setText(text);
+}
+
+void LogTableView::SetAnchorManager(AnchorManager *anchors) noexcept
+{
+    mAnchors = anchors;
+}
+
+std::vector<AnchorManager::Key> LogTableView::AnchorKeysForSelection() const
+{
+    std::vector<AnchorManager::Key> out;
+    if (selectionModel() == nullptr || model() == nullptr)
+    {
+        return out;
+    }
+    const QModelIndexList selected = selectionModel()->selectedRows();
+    if (selected.isEmpty())
+    {
+        return out;
+    }
+
+    // Walk the proxy chain down to the source model so we can ask
+    // the LogModel for an AnchorKey. The view's `model()` is the
+    // topmost proxy (filter, possibly above a row-order reverse).
+    // Each hop runs through `mapToSource` until we hit a model that
+    // is not a proxy; at the bottom we expect a `LogModel*`.
+    QAbstractItemModel *current = model();
+    QModelIndexList resolvedIndices = selected;
+    while (auto *proxy = qobject_cast<QAbstractProxyModel *>(current))
+    {
+        for (QModelIndex &idx : resolvedIndices)
+        {
+            idx = proxy->mapToSource(idx);
+        }
+        current = proxy->sourceModel();
+        if (current == nullptr)
+        {
+            return out;
+        }
+    }
+    const auto *logModel = qobject_cast<const LogModel *>(current);
+    if (logModel == nullptr)
+    {
+        return out;
+    }
+
+    out.reserve(static_cast<std::size_t>(resolvedIndices.size()));
+    for (const QModelIndex &sourceIndex : resolvedIndices)
+    {
+        if (!sourceIndex.isValid())
+        {
+            continue;
+        }
+        if (auto key = logModel->AnchorKeyForRow(sourceIndex.row()); key.has_value())
+        {
+            out.push_back(std::move(*key));
+        }
+    }
+    return out;
+}
+
+void LogTableView::AnchorSelection(int colorIndex)
+{
+    if (mAnchors == nullptr || colorIndex < 0)
+    {
+        return;
+    }
+    const auto keys = AnchorKeysForSelection();
+    for (const auto &key : keys)
+    {
+        mAnchors->SetAnchor(key, static_cast<uint8_t>(colorIndex));
+    }
+}
+
+void LogTableView::ClearAnchorOnSelection()
+{
+    if (mAnchors == nullptr)
+    {
+        return;
+    }
+    const auto keys = AnchorKeysForSelection();
+    for (const auto &key : keys)
+    {
+        mAnchors->RemoveAnchor(key);
+    }
 }
