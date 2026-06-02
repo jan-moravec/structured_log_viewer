@@ -112,4 +112,11 @@ template <> struct glz::meta<loglib::LogConfiguration::Sort>
     using T = loglib::LogConfiguration::Sort;
     static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
 };
+
+template <> struct glz::meta<loglib::LogConfiguration::AnchorEntry>
+{
+    using T = loglib::LogConfiguration::AnchorEntry;
+    static constexpr auto value =
+        object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex);
+};
 // NOLINTEND(readability-identifier-naming)

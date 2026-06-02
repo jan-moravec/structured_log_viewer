@@ -162,6 +162,28 @@ struct LogConfiguration
         std::vector<std::string> locatorDedupKeys;
     };
 
+    /// One persisted user "anchor" (bookmark + colour) on a log line.
+    ///
+    /// Anchors are addressed by the pair `(locator, lineId)`:
+    /// - `lineId` is the monotonic per-`LineSource` id assigned by
+    ///   the parser; survives FIFO eviction within a session but
+    ///   resets when the model is fully re-streamed.
+    /// - `locator` is a `Source::locatorDedupKeys` entry that
+    ///   disambiguates lines coming from different files in a
+    ///   multi-file session; empty for single-file / network
+    ///   streams.
+    /// `colorIndex` indexes into `Theme::anchorPalette`. Valid range
+    /// is `[0, ANCHOR_PALETTE_SIZE)`; out-of-range entries should
+    /// be dropped on load.
+    struct AnchorEntry
+    {
+        std::string locator;
+        uint64_t lineId = 0;
+        uint8_t colorIndex = 0;
+
+        friend bool operator==(const AnchorEntry &, const AnchorEntry &) = default;
+    };
+
     /// Required: drives the column layout for every consumer.
     std::vector<Column> columns;
 
@@ -170,6 +192,12 @@ struct LogConfiguration
     std::vector<LogFilter> filters;
     Sort sort;
     std::optional<Source> source;
+
+    /// Per-session anchor list (user-marked rows + colour). Sorted
+    /// by `(locator, lineId)` on save so JSON diffs are stable;
+    /// no ordering guarantee on read (the app rebuilds its hash
+    /// map regardless).
+    std::vector<AnchorEntry> anchors;
 };
 
 /// Case-insensitive match against known log-level field names (`level`,

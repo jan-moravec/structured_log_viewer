@@ -91,7 +91,9 @@ template <> struct glz::meta<loglib::Theme>
         "chrome",
         &T::chrome,
         "app",
-        &T::app
+        &T::app,
+        "anchorPalette",
+        &T::anchorPalette
     );
 };
 // NOLINTEND(readability-identifier-naming)

@@ -1752,3 +1752,83 @@ TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log
     oneLocator.locators.emplace_back("C:/x.json");
     CHECK(loglib::HasLocators(std::optional<LogConfiguration::Source>{oneLocator}));
 }
+
+TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_configuration][session][anchors]")
+{
+    // Two anchors in different palette slots; one carries a locator
+    // (multi-file session), the other doesn't. The list is preserved
+    // verbatim across a full Save / Load cycle.
+    const TestLogConfiguration testConfiguration;
+    {
+        LogConfiguration written;
+        written.anchors.push_back(LogConfiguration::AnchorEntry{
+            .locator = "",
+            .lineId = 17,
+            .colorIndex = 0,
+        });
+        written.anchors.push_back(LogConfiguration::AnchorEntry{
+            .locator = "c:/logs/two.json",
+            .lineId = 42,
+            .colorIndex = 5,
+        });
+        LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::Full);
+    }
+
+    LogConfigurationManager manager;
+    manager.Load(testConfiguration.GetFilePath());
+    const auto &anchors = manager.Configuration().anchors;
+    REQUIRE(anchors.size() == 2);
+    CHECK(anchors[0].locator.empty());
+    CHECK(anchors[0].lineId == 17u);
+    CHECK(anchors[0].colorIndex == 0u);
+    CHECK(anchors[1].locator == "c:/logs/two.json");
+    CHECK(anchors[1].lineId == 42u);
+    CHECK(anchors[1].colorIndex == 5u);
+}
+
+TEST_CASE(
+    "LogConfiguration without anchors loads as empty list",
+    "[log_configuration][session][anchors][forward_compat]"
+)
+{
+    // Pre-feature session JSON: no `anchors` key at all. Must load
+    // cleanly with an empty anchor vector so existing users' saved
+    // sessions are not invalidated by this release.
+    constexpr std::string_view JSON = R"({
+        "columns": [],
+        "filters": [],
+        "sort": { "columnIndex": -1, "descending": false }
+    })";
+
+    LogConfigurationManager manager;
+    manager.LoadFromString(JSON);
+    CHECK(manager.Configuration().anchors.empty());
+}
+
+TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[log_configuration][session][anchors]")
+{
+    // Wire-format snapshot: an entry rename would surface here as a
+    // missing key, not as a silent shape change.
+    LogConfiguration original;
+    original.anchors.push_back(LogConfiguration::AnchorEntry{
+        .locator = "c:/logs/app.jsonl",
+        .lineId = 123,
+        .colorIndex = 3,
+    });
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"anchors\""));
+    CHECK(json.contains("\"locator\""));
+    CHECK(json.contains("\"lineId\""));
+    CHECK(json.contains("\"colorIndex\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+    REQUIRE(loaded.anchors.size() == 1);
+    CHECK(loaded.anchors[0].locator == "c:/logs/app.jsonl");
+    CHECK(loaded.anchors[0].lineId == 123u);
+    CHECK(loaded.anchors[0].colorIndex == 3u);
+}

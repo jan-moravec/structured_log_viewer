@@ -15,6 +15,16 @@
         "selectionBackground": "#5E5BFF",
         "selectionForeground": "#FFFFFF"
     },
+    "anchorPalette": [
+        "#B62324",
+        "#D85A0F",
+        "#B58D00",
+        "#1A7F37",
+        "#1B7C83",
+        "#0969DA",
+        "#8250DF",
+        "#BF3989"
+    ],
     "chrome": {
         "window": "#161B22",
         "windowText": "#C9D1D9",
