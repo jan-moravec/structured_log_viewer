@@ -12,7 +12,7 @@
     "table": {
         "background": "#0D1117",
         "alternateRowBackground": "#161B22",
-        "selectionBackground": "#1F6FEB",
+        "selectionBackground": "#5E5BFF",
         "selectionForeground": "#FFFFFF"
     },
     "chrome": {
