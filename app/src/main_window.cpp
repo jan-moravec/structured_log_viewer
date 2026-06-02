@@ -457,6 +457,32 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mModel = new LogModel(mTableView, mTheme, mAnchors);
     mTableView->setModel(mModel);
     mTableView->SetAnchorManager(mAnchors);
+
+    mAnchorsDock = new AnchorsDock(mAnchors, mModel, mTheme, this);
+    addDockWidget(Qt::RightDockWidgetArea, mAnchorsDock);
+    mAnchorsDock->hide();
+    connect(mAnchorsDock, &AnchorsDock::jumpToAnchorRequested, this, &MainWindow::SelectSourceRow);
+
+    mActionToggleAnchors = new QAction(tr("Anchors"), this);
+    mActionToggleAnchors->setObjectName(QStringLiteral("actionToggleAnchors"));
+    mActionToggleAnchors->setCheckable(true);
+    mActionToggleAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
+    addAction(mActionToggleAnchors);
+    connect(mActionToggleAnchors, &QAction::toggled, this, [this](bool on) {
+        if (on && !isVisible())
+        {
+            return;
+        }
+        mAnchorsDock->setVisible(on);
+        if (on)
+        {
+            mAnchorsDock->raise();
+        }
+    });
+    connect(mAnchorsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        const QSignalBlocker blocker(mActionToggleAnchors);
+        mActionToggleAnchors->setChecked(visible);
+    });
     // `modelReset` clears the header's hidden flags, but
     // `Column::visible` survives. Re-apply on every reset so load /
     // re-stream / teardown all stay consistent with the saved config.
@@ -3167,6 +3193,37 @@ void MainWindow::Find()
     mFindRecord->SetEditFocus();
 }
 
+void MainWindow::SelectSourceRow(int sourceRow)
+{
+    if (sourceRow < 0 || mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
+        mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    if (sourceRow >= mModel->rowCount())
+    {
+        return;
+    }
+    const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+    const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+    if (!midIdx.isValid())
+    {
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
+    if (!proxyIdx.isValid())
+    {
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    mTableView->clearSelection();
+    mTableView->scrollTo(proxyIdx);
+    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+}
+
 void MainWindow::JumpToAnchor(bool forward)
 {
     if (mAnchors == nullptr || mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
@@ -4821,6 +4878,14 @@ void MainWindow::RebuildViewMenu()
     // Always reachable: opens the dock from cold and re-opens it
     // after the user dismissed it via the title-bar X.
     viewMenu->addAction(ui->actionToggleRecordDetails);
+
+    // Anchors dock toggle. Programmatic action (not in main_window.ui)
+    // so it has to be re-added on every rebuild -- the menu is cleared
+    // above.
+    if (mActionToggleAnchors != nullptr)
+    {
+        viewMenu->addAction(mActionToggleAnchors);
+    }
 
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())

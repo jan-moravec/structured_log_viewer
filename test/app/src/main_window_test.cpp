@@ -1,4 +1,5 @@
 #include "anchor_manager.hpp"
+#include "anchors_dock.hpp"
 #include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
@@ -67,6 +68,8 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -3247,6 +3250,121 @@ private slots:
         QAction *clear0 = FindMenuActionByText(anchor0Menu, MainWindow::tr("Remove anchor"));
         QVERIFY(clear0 != nullptr);
         QVERIFY2(!clear0->isEnabled(), "remove-anchor must be disabled when the row carries no colour");
+
+        model->EndStreaming(false);
+    }
+
+    // The Anchors dock must list every anchor in `Entries()` order,
+    // double-click resolves the AnchorManager::Key back to a source
+    // row, and the "Clear all" button drops every anchor. Together
+    // these three exercise the entire dock surface (the right-click
+    // remove path uses the same SourceRowForItem helper).
+    void TestAnchorsDockListsAndJumpsAndClearsAll()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own an AnchorsDock");
+        auto *list = dock->ListForTest();
+        QVERIFY(list != nullptr);
+        auto *clearBtn = dock->ClearAllButtonForTest();
+        QVERIFY(clearBtn != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key2, 5);
+        QCoreApplication::processEvents();
+
+        // Offscreen QPA keeps the dock hidden so signal-driven
+        // refreshes elide; invoke explicitly to mirror the user
+        // opening the dock.
+        dock->Refresh();
+        QCOMPARE(list->count(), 2);
+
+        // The dock emits `jumpToAnchorRequested(sourceRow)` on
+        // `itemActivated`. Spy on it to confirm the per-item
+        // source-row resolution lands on the same row the anchor
+        // originally targeted.
+        QSignalSpy jumpSpy(dock, &AnchorsDock::jumpToAnchorRequested);
+        QVERIFY(jumpSpy.isValid());
+
+        QListWidgetItem *firstItem = list->item(0);
+        QVERIFY(firstItem != nullptr);
+        emit list->itemActivated(firstItem);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), 1);
+        // Both anchored keys live in the model; the dock must
+        // resolve them back to a non-negative source row.
+        QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
+
+        QListWidgetItem *secondItem = list->item(1);
+        QVERIFY(secondItem != nullptr);
+        emit list->itemActivated(secondItem);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), 2);
+        QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
+
+        // The two emits must point to two distinct source rows --
+        // the dock ordered Entries() by (locator, lineId), so the
+        // first item maps to lineId 1 (row 0) and the second to
+        // lineId 3 (row 2).
+        QVERIFY(jumpSpy.at(0).at(0).toInt() != jumpSpy.at(1).at(0).toInt());
+
+        emit clearBtn->clicked();
+        QCoreApplication::processEvents();
+        QVERIFY2(anchors->Empty(), "Clear all button must wipe every anchor");
+        dock->Refresh();
+        QCOMPARE(list->count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // SelectSourceRow (used both by JumpToAnchor and the Anchors
+    // dock's `jumpToAnchorRequested` slot) must scroll + select the
+    // requested source-model row through the proxy chain and update
+    // the table's `currentIndex` so subsequent Ctrl+arrow operations
+    // start from there.
+    void TestMainWindowSelectSourceRowScrollsAndSelects()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        mWindow->SelectSourceRow(/*sourceRow=*/3);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 3);
+        QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
+        QCOMPARE(view->selectionModel()->selectedRows().first().row(), 3);
+
+        // Negative source rows must no-op without crashing.
+        mWindow->SelectSourceRow(/*sourceRow=*/-1);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 3);
 
         model->EndStreaming(false);
     }

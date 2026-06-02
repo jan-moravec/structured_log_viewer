@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anchor_manager.hpp"
+#include "anchors_dock.hpp"
 #include "find_record_widget.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -344,8 +345,16 @@ public:
     /// one anchor exists). Filters-out rows are skipped; if every
     /// anchored row is currently filtered, the status bar carries
     /// the explanation rather than a silent no-op. Wired to the
-    /// `F2` / `Shift+F2` shortcuts and (forthcoming) Anchors dock.
+    /// `F2` / `Shift+F2` shortcuts and the Anchors dock.
     void JumpToAnchor(bool forward);
+
+    /// Scroll the table view to source-model row @p sourceRow and
+    /// make it the sole selected row. No-op when @p sourceRow is
+    /// negative, the model isn't ready, or the row is currently
+    /// filtered out (in the last case the status bar carries the
+    /// explanation). Public because the Anchors dock dispatches
+    /// jumps through this slot.
+    void SelectSourceRow(int sourceRow);
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only direct accessor for the Record Details dock.
@@ -818,6 +827,18 @@ private:
     /// `mTableView` (for the selection-driven `AnchorSelection`
     /// slots and the row right-click menu).
     AnchorManager *mAnchors = nullptr;
+
+    /// Owned `AnchorsDock` displaying the list of anchored rows.
+    /// Hidden on construction; toggled via the View menu's
+    /// "Anchors" entry. Lives in the right dock area next to the
+    /// Record Details dock.
+    AnchorsDock *mAnchorsDock = nullptr;
+
+    /// Toggle action for the Anchors dock. Owned by the window;
+    /// re-added to the `View` menu on every `RebuildViewMenu`.
+    /// Constructed programmatically because there's no entry for
+    /// it in `main_window.ui`.
+    QAction *mActionToggleAnchors = nullptr;
 
     /// Programmatic shortcut actions for the anchor feature; live
     /// on the window via `addAction(...)` so the key combos fire

@@ -1147,6 +1147,20 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexc
     return key;
 }
 
+int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept
+{
+    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+        const auto rowKey = AnchorKeyForRow(static_cast<int>(i));
+        if (rowKey.has_value() && *rowKey == key)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
 {
     const int cols = columnCount();

@@ -106,6 +106,13 @@ public:
     /// without re-walking `LogTable`.
     [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const noexcept;
 
+    /// Inverse lookup. Linear scan over the visible rows -- same
+    /// O(n) tradeoff as `RefreshRowsForAnchor`. Returns the first
+    /// matching source-model row index, or -1 if @p key has no live
+    /// row in the current model (e.g. the anchored line was evicted
+    /// or the session was reopened with a different source file).
+    [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept;
+
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
     /// a session was still active.
