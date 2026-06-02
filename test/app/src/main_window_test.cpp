@@ -448,45 +448,24 @@ loglib::StreamedBatch MakeSyntheticBatch(
     return batch;
 }
 
-// Locate a UI-file-declared `QAction` by `objectName`.
-//
-// The primary path goes through `MainWindow::FindUiAction`, which
-// forwards directly to the `ui->actionXxx` pointer and bypasses the
-// QObject-tree lookup altogether. This is necessary because on the
-// GitHub-hosted Linux runner with Qt 6.8 + the offscreen QPA plugin,
-// `QObject::findChild<QAction*>` — and, in fact, every form of
-// QObject-tree traversal we tried (findChildren<QAction*>, walking
-// findChildren<QWidget*>() and inspecting each widget's actions(),
-// and even `QMainWindow::actions()`) — returns null for actions
-// declared inside `<widget class="QMainWindow">` even though the
-// `ui->actionXxx` pointer is valid and wired into menus / toolbars.
-// Windows and macOS with the same Qt build are unaffected.
-//
-// The `findChild` fallback remains as a safety net for QMainWindow
-// subclasses we don't know about (the helper is generic and might
-// be reused in other test TUs).
+// Locate a UI-file-declared `QAction` by `objectName`. Thin wrapper
+// over `findChild<QAction*>` so call sites read intent rather than the
+// generic Qt API.
 QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
 {
-    if (auto *mainWindow = qobject_cast<MainWindow *>(window))
-    {
-        if (QAction *uiAction = mainWindow->FindUiAction(name))
-        {
-            return uiAction;
-        }
-    }
     return window->findChild<QAction *>(name);
 }
 
-// Why tests drive `RecordDetailDock` visibility via `emit
-// visibilityChanged(...)` instead of `dock.show()` / `dock.hide()`:
-// the build-linux runner (Ubuntu 22.04 / Qt 6.8.3 / GCC-13 /
-// offscreen QPA) SIGSEGVs deep inside `QDockWidget::setVisible(true)`
-// when the host main window has never been `show()`n -- it walks an
-// uninitialised QMainWindowLayout dock-area. `RecordDetailDock`'s
-// refresh gate keys off `mPerceivedVisible`, which is fed by the
-// `visibilityChanged` signal, so emitting it directly exercises the
-// same gate without crashing. Production code is unaffected because
-// the main window is always shown before the user opens the dock.
+// Tests drive `RecordDetailDock` visibility via `emit
+// visibilityChanged(...)` instead of `dock.show()` / `dock.hide()`
+// because the dock's refresh gate keys off `mPerceivedVisible`, which
+// is fed by the `visibilityChanged` signal -- this lets tests simulate
+// "buried tab" transitions where the perceived-visible flag flips
+// without the explicit-hide flag flipping (the dock isn't actually
+// hidden, just covered). Tests that attach the dock to an unrealised
+// `QMainWindow` also avoid `QDockWidget::setVisible(true)` walking
+// `QMainWindowLayout`'s dock-area state, which is only wired up by
+// the host's first paint cycle.
 
 } // namespace
 
@@ -1682,17 +1661,16 @@ private slots:
         QVERIFY(!model.IsStreamingActive());
     }
 
-    // The `actionOpenNetworkStream` UI entry must be reachable via
-    // `FindUiAction` so apptest harnesses can locate it without going
-    // through the QObject tree (the workaround documented in
-    // `MainWindow::FindUiAction`).
+    // The `actionOpenNetworkStream` UI entry must be reachable by
+    // `objectName` so apptest harnesses (and any future tooling that
+    // walks the menu tree) can locate it without poking `ui->`.
     static void TestActionOpenNetworkStreamIsExposed()
     {
         // Local variable name avoids the `MainWindowTest::window`
         // member-shadow C4458 warning under MSVC.
         const MainWindow mainWindow;
-        const QAction *action = mainWindow.FindUiAction(QStringLiteral("actionOpenNetworkStream"));
-        QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via FindUiAction");
+        const auto *action = mainWindow.findChild<QAction *>(QStringLiteral("actionOpenNetworkStream"));
+        QVERIFY2(action != nullptr, "actionOpenNetworkStream must be reachable via objectName");
         // Ctrl+Shift+N was reassigned to File -> New Window; the
         // network-stream action moved to Ctrl+Shift+L.
         QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+Shift+L")));
@@ -3190,17 +3168,13 @@ private slots:
         FilterEditor editor(*run.model, QStringLiteral("test-filter"));
         editor.Load(levelCol, QStringList{});
 
-        // Reach the picker through the explicit accessor: on the Linux
-        // runner with Qt 6.8 + offscreen QPA, `findChildren<QListView*>`
-        // strands these widgets the same way it strands `QAction`s in
-        // the `MainWindow` `.ui` (see `MainWindow::FindUiAction`).
-        const QListView *picker = editor.EnumPickerView();
-        const QSortFilterProxyModel *proxy = editor.EnumPickerProxy();
+        const auto *picker = editor.findChild<QListView *>();
+        const auto *proxy = editor.findChild<QSortFilterProxyModel *>();
         QVERIFY2(picker != nullptr, "FilterEditor must expose its enum picker QListView");
         QVERIFY2(proxy != nullptr, "picker must wrap a QSortFilterProxyModel");
         QCOMPARE(proxy->rowCount(), 5);
 
-        QLineEdit *searchBox = editor.EnumSearchEdit();
+        auto *searchBox = editor.findChild<QLineEdit *>(QStringLiteral("enumSearchEdit"));
         QVERIFY2(searchBox != nullptr, "FilterEditor must expose the picker search QLineEdit");
 
         searchBox->setText(QStringLiteral("err"));
@@ -3469,12 +3443,8 @@ private slots:
         QCOMPARE(columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Enumeration);
 
         // Find the Filters-menu action whose data matches `filterId`.
-        // Reach the menu via `MainWindow::FiltersMenu()` rather than
-        // `findChild`: the Linux Qt 6.8 + offscreen-QPA traversal bug
-        // strands `findChild<QMenu*>("menuFilters")` the same way it
-        // strands `QAction` lookups (see `MainWindow::FindUiAction`).
         const auto findFilterMenuAction = [&](const QString &filterId) -> QAction * {
-            const auto *menu = mWindow->FiltersMenu();
+            const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
             if (menu == nullptr)
             {
                 return nullptr;
@@ -4492,11 +4462,12 @@ private slots:
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        QCOMPARE(built.filterSubMenus.size(), static_cast<size_t>(2));
-        QVERIFY2(built.filterSubMenus.contains(levelFilter1.toStdString()), "level-filter-1 submenu must be exposed");
-        QVERIFY2(built.filterSubMenus.contains(levelFilter2.toStdString()), "level-filter-2 submenu must be exposed");
+        const QList<QMenu *> subMenus = built.menu->findChildren<QMenu *>();
+        QCOMPARE(subMenus.size(), 2);
+        QVERIFY2(built.menu->findChild<QMenu *>(levelFilter1) != nullptr, "level-filter-1 submenu must be exposed");
+        QVERIFY2(built.menu->findChild<QMenu *>(levelFilter2) != nullptr, "level-filter-2 submenu must be exposed");
         QVERIFY2(
-            !built.filterSubMenus.contains(msgFilter.toStdString()),
+            built.menu->findChild<QMenu *>(msgFilter) == nullptr,
             "filters on a different column must not appear in this header menu"
         );
 
@@ -4505,7 +4476,7 @@ private slots:
         // this assertion.
         const QString editLabel = MainWindow::tr("Edit");
         const QString removeLabel = MainWindow::tr("Remove");
-        for (const auto &[id, subMenu] : built.filterSubMenus)
+        for (const QMenu *subMenu : subMenus)
         {
             QVERIFY2(subMenu != nullptr, "filter sub-menu pointer must be non-null");
             const QList<QAction *> actions = subMenu->actions();
@@ -4546,7 +4517,7 @@ private slots:
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.menu->findChild<QMenu *>(filterId);
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed via the struct");
         QAction *removeAction = nullptr;
         const QString removeLabel = MainWindow::tr("Remove");
@@ -4593,7 +4564,7 @@ private slots:
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
-        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.menu->findChild<QMenu *>(filterId);
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         QAction *editAction = nullptr;
         const QString editLabel = MainWindow::tr("Edit");
@@ -4816,7 +4787,7 @@ private slots:
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(!addFilterAction->isEnabled(), "Add filter must be disabled when the model has no rows");
 
-        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.menu->findChild<QMenu *>(filterId);
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         const QString editLabel = MainWindow::tr("Edit");
         const QString removeLabel = MainWindow::tr("Remove");
@@ -5192,7 +5163,7 @@ private slots:
         auto built = mWindow->BuildHeaderContextMenu(timeCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard headerMenuDeleter([&built]() { built.menu->deleteLater(); });
-        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.menu->findChild<QMenu *>(filterId);
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         QAction *editAction = nullptr;
         const QString editLabel = MainWindow::tr("Edit");
@@ -5225,7 +5196,7 @@ private slots:
 
         // Step 3: click OK without touching anything. The editor must
         // read the open-bound state and emit `nullopt` back.
-        QPushButton *ok = editor->OkButton();
+        auto *ok = editor->findChild<QPushButton *>(QStringLiteral("okButton"));
         QVERIFY2(ok != nullptr, "FilterEditor must expose its OK button");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         ok->click();
@@ -5281,7 +5252,7 @@ private slots:
         auto built = mWindow->BuildHeaderContextMenu(timeCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         const QScopeGuard headerMenuDeleter([&built]() { built.menu->deleteLater(); });
-        const QMenu *subMenu = built.filterSubMenus.at(filterId.toStdString());
+        const QMenu *subMenu = built.menu->findChild<QMenu *>(filterId);
         QVERIFY2(subMenu != nullptr, "filter sub-menu must be exposed");
         QAction *editAction = nullptr;
         const QString editLabel = MainWindow::tr("Edit");
@@ -5313,12 +5284,12 @@ private slots:
 
         // Step 3: editor must reflect the loaded shape: begin
         // unbounded, end bounded.
-        QCheckBox *beginUnbounded = editor->BeginUnboundedCheckBox();
-        const QCheckBox *endUnbounded = editor->EndUnboundedCheckBox();
-        const QDateEdit *beginDate = editor->BeginDateEdit();
-        const QTimeEdit *beginTime = editor->BeginTimeEdit();
-        const QDateEdit *endDate = editor->EndDateEdit();
-        const QTimeEdit *endTime = editor->EndTimeEdit();
+        auto *beginUnbounded = editor->findChild<QCheckBox *>(QStringLiteral("beginUnboundedCheckBox"));
+        const auto *endUnbounded = editor->findChild<QCheckBox *>(QStringLiteral("endUnboundedCheckBox"));
+        const auto *beginDate = editor->findChild<QDateEdit *>(QStringLiteral("beginDateEdit"));
+        const auto *beginTime = editor->findChild<QTimeEdit *>(QStringLiteral("beginTimeEdit"));
+        const auto *endDate = editor->findChild<QDateEdit *>(QStringLiteral("endDateEdit"));
+        const auto *endTime = editor->findChild<QTimeEdit *>(QStringLiteral("endTimeEdit"));
         QVERIFY(beginUnbounded != nullptr);
         QVERIFY(endUnbounded != nullptr);
         QVERIFY(beginDate != nullptr);
@@ -5352,7 +5323,7 @@ private slots:
         // nullopt) and round-trip the original end. The test asserts
         // the *ability* to widen; the actual widening is straight
         // QDateTimeEdit usage once the minimum is clear.
-        QPushButton *ok = editor->OkButton();
+        auto *ok = editor->findChild<QPushButton *>(QStringLiteral("okButton"));
         QVERIFY(ok != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         ok->click();
@@ -5733,11 +5704,7 @@ private slots:
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
         auto *model = mWindow->Model();
 
-        // The Qt 6.8 + offscreen-QPA `findChild<QMenu*>` traversal
-        // bug strands `findChild<QMenu*>("menuView")` on the Linux
-        // runner; reach the View menu through `ViewMenu()` instead
-        // (mirrors the `FiltersMenu()` workaround).
-        auto *viewMenu = mWindow->ViewMenu();
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
 
         emit viewMenu->aboutToShow();
@@ -5853,15 +5820,7 @@ private slots:
         QVERIFY2(mWindow->Filters().contains(filterKey), "filter must survive the reorder");
         QCOMPARE(mWindow->Filters().at(filterKey).row, dest);
 
-        // The Filters-menu lookup needs two test seams to work under
-        // the Linux Release offscreen-QPA toolchain:
-        //   * `FiltersMenu()` substitutes for `findChild<QMenu*>`,
-        //     which traverses no children there.
-        //   * `FilterSubMenu(id)` substitutes for `QAction::menu()`
-        //     and any `qobject_cast<QMenu*>(child)` walk -- both
-        //     return null on that toolchain even though the submenu
-        //     was wired by `ui->menuFilters->addMenu(title)`.
-        const QMenu *filtersMenu = mWindow->FiltersMenu();
+        const auto *filtersMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
         QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
         const QAction *filterMenuAction = nullptr;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -5875,7 +5834,7 @@ private slots:
         }
         QVERIFY2(filterMenuAction != nullptr, "active filter must have a Filters-menu entry");
 
-        const QMenu *filterSubMenu = mWindow->FilterSubMenu(filterId);
+        const auto *filterSubMenu = filtersMenu->findChild<QMenu *>(filterId);
         QVERIFY2(filterSubMenu != nullptr, "filter menu entry must own an Edit/Remove sub-menu");
         QAction *editAction = nullptr;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -6073,7 +6032,7 @@ private slots:
         QVERIFY2(sawEnum, "enum filter on level must revive");
 
         // Filters menu must hold one sub-menu per revived filter.
-        const QMenu *filtersMenu = mWindow->FiltersMenu();
+        const auto *filtersMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
         QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
         int subMenuCount = 0;
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
@@ -6642,7 +6601,8 @@ private slots:
 
     // `actionNewSession` clears rows, runtime filters, the persisted
     // column configuration, and session mode. Reached through
-    // `FindUiAction` so the action wiring is covered too.
+    // `findChild<QAction*>("actionNewSession")` so the action wiring
+    // is covered too.
     void TestNewSessionActionResetsState()
     {
         auto *model = mWindow->Model();
@@ -6668,12 +6628,12 @@ private slots:
         // otherwise the post-condition holds trivially.
         const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
         QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
-        mWindow->TableViewForTest()->sortByColumn(categoryCol, Qt::DescendingOrder);
+        mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::DescendingOrder);
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->FilterModel()->SortColumn(), categoryCol);
 
-        QAction *action = mWindow->FindUiAction(QStringLiteral("actionNewSession"));
-        QVERIFY2(action != nullptr, "actionNewSession must be exposed via FindUiAction");
+        auto *action = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        QVERIFY2(action != nullptr, "actionNewSession must be reachable via objectName");
         action->trigger();
         QCoreApplication::processEvents();
 
@@ -6771,12 +6731,7 @@ private slots:
         // auto-detected to a matching type or stayed Any; zero
         // mismatches.
         QCOMPARE(ConfigurationDiagnosticsDialog::MismatchedColumnCount(*model), 0);
-        // `findChild<QPushButton*>("diagnosticsButton")` is unreliable
-        // on the GitHub-hosted Linux runner with Qt 6.8 + offscreen QPA
-        // (same traversal bug that strands `findChild<QMenu*>` and
-        // `findChild<QAction*>`; see `FindActionByObjectName` above).
-        // Use the direct test-only accessor so the lookup is bypassed.
-        auto *button = mWindow->DiagnosticsButtonForTest();
+        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("diagnosticsButton"));
         QVERIFY2(button != nullptr, "MainWindow must own the diagnostics status-bar button");
         // Offscreen-QPA leaves the parent window hidden, which would
         // collapse `isVisible` to false regardless of the slot's
@@ -6820,10 +6775,7 @@ private slots:
         model->RefreshColumnHealth();
 
         const ConfigurationDiagnosticsDialog dialog(model);
-        // Bypass `findChild` to dodge the Qt 6.8 + offscreen-QPA
-        // traversal bug on the Linux runner (see the diagnostics-button
-        // test for the same workaround applied to MainWindow).
-        const auto *table = dialog.TableForTest();
+        const auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -6875,9 +6827,9 @@ private slots:
         // Direct accessors instead of `findChild` -- Linux Qt 6.8 +
         // offscreen QPA strands the lookup for child widgets the same
         // way it does for QActions (see `FindActionByObjectName`).
-        auto *headerEdit = editor.HeaderEditForTest();
-        auto *typeCombo = editor.TypeComboForTest();
-        auto *visibleCheck = editor.VisibleCheckForTest();
+        auto *headerEdit = editor.findChild<QLineEdit *>();
+        auto *typeCombo = editor.findChild<QComboBox *>();
+        auto *visibleCheck = editor.findChild<QCheckBox *>();
         QVERIFY(headerEdit != nullptr);
         QVERIFY(typeCombo != nullptr);
         QVERIFY(visibleCheck != nullptr);
@@ -6947,7 +6899,7 @@ private slots:
             const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
-            auto *typeCombo = editor.TypeComboForTest();
+            auto *typeCombo = editor.findChild<QComboBox *>();
             QVERIFY(typeCombo != nullptr);
             // Index 2 is "String" -- mirrors TypeChoices() in
             // column_editor.cpp; same convention as the other editor
@@ -6984,7 +6936,7 @@ private slots:
             const QSignalSpy enumSpy(model, &LogModel::enumColumnsChanged);
             QVERIFY(enumSpy.isValid());
             ColumnEditor editor(model, levelCol);
-            auto *typeCombo = editor.TypeComboForTest();
+            auto *typeCombo = editor.findChild<QComboBox *>();
             QVERIFY(typeCombo != nullptr);
             constexpr int ENUMERATION_CHOICE_INDEX = 8;
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
@@ -7057,7 +7009,7 @@ private slots:
         QVERIFY2(preEdit.autoDetect, "streaming auto-promotion must leave autoDetect=true");
 
         ColumnEditor editor(model, categoryCol);
-        auto *typeCombo = editor.TypeComboForTest();
+        auto *typeCombo = editor.findChild<QComboBox *>();
         QVERIFY(typeCombo != nullptr);
         // (1) Combo must show the resolved type. Index 8 is
         // "Enumeration" in `TypeChoices()`. Index 0 (the auto-detect
@@ -7107,7 +7059,7 @@ private slots:
         model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
 
         ColumnEditor editor(model, msgCol);
-        auto *typeCombo = editor.TypeComboForTest();
+        auto *typeCombo = editor.findChild<QComboBox *>();
         QVERIFY(typeCombo != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         typeCombo->setCurrentIndex(0); // "Auto-detect"
@@ -7156,7 +7108,7 @@ private slots:
         );
 
         ColumnEditor editor(model, categoryCol);
-        auto *typeCombo = editor.TypeComboForTest();
+        auto *typeCombo = editor.findChild<QComboBox *>();
         QVERIFY(typeCombo != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         typeCombo->setCurrentIndex(0); // "Auto-detect"
@@ -7186,7 +7138,7 @@ private slots:
         const ConfigurationDiagnosticsDialog dialog(model);
         QSignalSpy editSpy(&dialog, &ConfigurationDiagnosticsDialog::editColumnRequested);
 
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         // Find the row corresponding to `msg` (sorting may rearrange
@@ -7226,7 +7178,7 @@ private slots:
 
         const ColumnsManagerDialog dialog(model, mWindow);
 
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(table->rowCount(), static_cast<int>(model->Configuration().columns.size()));
@@ -7262,7 +7214,7 @@ private slots:
         QVERIFY(model->Configuration().columns[static_cast<size_t>(msgCol)].visible);
 
         const ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         constexpr int VISIBLE_COL = 4;
@@ -7307,7 +7259,7 @@ private slots:
         QVERIFY2(!firstKeys.empty() && !secondKeys.empty(), "fixture columns must carry stable keys");
 
         ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         table->selectRow(0);
@@ -7338,7 +7290,7 @@ private slots:
         QVERIFY2(initialColumns.size() >= 2, "fixture must yield at least two columns");
 
         ColumnsManagerDialog dialog(model, mWindow);
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         // Top row: Move up is a no-op.
@@ -7378,7 +7330,7 @@ private slots:
 
         ColumnsManagerDialog dialog(model, mWindow);
         dialog.show();
-        auto *table = dialog.TableForTest();
+        auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
 
         // Snapshot the pre-move dialog row 0 / row 1 headers so the
@@ -7423,7 +7375,7 @@ private slots:
         const int levelCol = StreamFixtureForColumnTests();
         QVERIFY2(levelCol >= 0, "level column must exist after streaming");
 
-        QMenu *viewMenu = mWindow->ViewMenu();
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
         QVERIFY2(viewMenu != nullptr, "MainWindow must expose its View menu");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         emit viewMenu->aboutToShow();
@@ -7597,10 +7549,7 @@ private slots:
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
         QCoreApplication::processEvents();
 
-        // Rebuild the View menu through the production path. The
-        // `findChild<QMenu*>` traversal is broken under the offscreen
-        // QPA on Linux; `ViewMenu()` reaches `ui->menuView` directly.
-        auto *viewMenu = mWindow->ViewMenu();
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
         QVERIFY2(viewMenu != nullptr, "View menu must exist");
         emit viewMenu->aboutToShow();
 
@@ -8326,17 +8275,14 @@ private slots:
         const FilterEditor editor(*model, QStringLiteral("test-empty-enum"));
         // `UpdateSelectedColumn(0)` settles the OK / placeholder state.
 
-        // Reach widgets via the explicit accessors: see the comment on
-        // `MainWindow::FindUiAction` for why `findChildren<...>` is
-        // unreliable on the Linux runner with Qt 6.8 + offscreen QPA.
-        const QPushButton *okButton = editor.OkButton();
+        const auto *okButton = editor.findChild<QPushButton *>(QStringLiteral("okButton"));
         QVERIFY2(okButton != nullptr, "FilterEditor must expose an OK button");
         // clang-analyzer does not model `QVERIFY2`'s test-aborting behaviour,
         // so it still considers `okButton` potentially null on the next line.
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY2(!okButton->isEnabled(), "OK must be disabled when the picker dictionary is empty");
 
-        const QLabel *placeholder = editor.EnumEmptyPlaceholder();
+        const auto *placeholder = editor.findChild<QLabel *>(QStringLiteral("enumEmptyPlaceholder"));
         QVERIFY2(placeholder != nullptr, "FilterEditor must expose the empty-picker placeholder");
         QVERIFY2(
             placeholder->text().contains(QStringLiteral("No values observed"), Qt::CaseInsensitive),
@@ -8416,14 +8362,11 @@ private slots:
         );
 
         // Unfiltered total: the empty enum filter never became active.
-        // Reach the proxy and menu via the explicit accessors: see
-        // `MainWindow::FindUiAction` for the offscreen-QPA traversal
-        // bug that strands `findChild`/`findChildren` here.
         const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY(filterModel != nullptr);
         QCOMPARE(filterModel->rowCount(), 320);
 
-        const auto *menu = mWindow->FiltersMenu();
+        const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
         QVERIFY(menu != nullptr);
         for (const QAction *action : menu->actions())
         {
@@ -9751,7 +9694,7 @@ private slots:
         QCoreApplication::processEvents();
 
         const auto findFilterMenuAction = [&](const QString &id) -> QAction * {
-            const auto *menu = mWindow->FiltersMenu();
+            const auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
             if (menu == nullptr)
             {
                 return nullptr;
@@ -9988,7 +9931,7 @@ private slots:
         content.formattedJson = QStringLiteral("{\n  \"level\": \"info\",\n  \"message\": \"hello\"\n}");
         widget.SetContent(content);
 
-        const QTableWidget *table = widget.FieldsTableForTest();
+        const auto *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 2);
         QCOMPARE(table->item(0, 0)->text(), QStringLiteral("level"));
@@ -10000,7 +9943,7 @@ private slots:
         QVERIFY2(!table->isHidden(), "fields table must be explicitly shown when content is valid");
 
         // The edit shows the *formatted* JSON, not the compact bytes.
-        const QPlainTextEdit *rawEdit = widget.RawEditForTest();
+        const auto *rawEdit = widget.findChild<QPlainTextEdit *>();
         QVERIFY(rawEdit != nullptr);
         QCOMPARE(rawEdit->toPlainText(), content.formattedJson);
 
@@ -10013,7 +9956,7 @@ private slots:
         QCOMPARE(rawEdit->toPlainText(), QString());
 
         // Snapshot windows hide the "Open in new window" button.
-        const QPushButton *popOutButton = widget.OpenInNewWindowButtonForTest();
+        const auto *popOutButton = widget.findChild<QPushButton *>(QStringLiteral("openInNewWindowButton"));
         QVERIFY(popOutButton != nullptr);
         QVERIFY(popOutButton->isVisibleTo(&widget));
         widget.SetOpenInNewWindowVisible(false);
@@ -10038,7 +9981,7 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        QPushButton *copyButton = widget.CopyJsonButtonForTest();
+        auto *copyButton = widget.findChild<QPushButton *>(QStringLiteral("copyJsonButton"));
         QVERIFY(copyButton != nullptr);
 
         const QString pasted = ClickAndReadClipboardWithRetry(clipboard, copyButton, content.rawJson);
@@ -10066,7 +10009,7 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        QPushButton *copyButton = widget.CopyKeyValueButtonForTest();
+        auto *copyButton = widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton"));
         QVERIFY(copyButton != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY(copyButton->isEnabled());
@@ -10091,8 +10034,8 @@ private slots:
         content.formattedJson = QString();
         widget.SetContent(content);
 
-        const QPushButton *rawButton = widget.CopyJsonButtonForTest();
-        const QPushButton *kvButton = widget.CopyKeyValueButtonForTest();
+        const auto *rawButton = widget.findChild<QPushButton *>(QStringLiteral("copyJsonButton"));
+        const auto *kvButton = widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton"));
         QVERIFY(rawButton != nullptr);
         QVERIFY(kvButton != nullptr);
         QVERIFY2(!rawButton->isEnabled(), "Copy raw JSON must be disabled when there's no raw text");
@@ -10100,9 +10043,7 @@ private slots:
 
         // Raw group is disabled + retitled when there are no bytes;
         // a follow-up `SetContent` with bytes must restore both.
-        // Direct accessor (not `findChild`) -- the latter is unreliable
-        // under Qt 6.8 + offscreen QPA on the Linux runner.
-        const auto *rawGroup = widget.RawGroupForTest();
+        const auto *rawGroup = widget.findChild<QGroupBox *>();
         QVERIFY(rawGroup != nullptr);
         QVERIFY2(!rawGroup->isEnabled(), "Raw JSON group must be disabled when no raw bytes are available");
         QVERIFY2(
@@ -10149,7 +10090,9 @@ private slots:
         clipboard->clear();
 
         const QString pasted = ClickAndReadClipboardWithRetry(
-            clipboard, widget.CopyKeyValueButtonForTest(), QStringLiteral("multiline: line1\\nline2")
+            clipboard,
+            widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton")),
+            QStringLiteral("multiline: line1\\nline2")
         );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         // One line per field; no real newline mid-entry.
@@ -10180,7 +10123,9 @@ private slots:
         clipboard->clear();
 
         const QString pasted = ClickAndReadClipboardWithRetry(
-            clipboard, widget.CopyKeyValueButtonForTest(), QStringLiteral("key\\nwith\\nnewlines: v")
+            clipboard,
+            widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton")),
+            QStringLiteral("key\\nwith\\nnewlines: v")
         );
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         QCOMPARE(lines.size(), content.fields.size());
@@ -10205,7 +10150,7 @@ private slots:
         content.fields.append({QStringLiteral("dashy"), QStringLiteral("\u2014")});
         widget.SetContent(content);
 
-        const QTableWidget *table = widget.FieldsTableForTest();
+        const auto *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 3);
 
@@ -10254,7 +10199,7 @@ private slots:
         withEmpty.fields.append({QStringLiteral("k"), QString()});
         widget.SetContent(withEmpty);
 
-        const QTableWidget *table = widget.FieldsTableForTest();
+        const auto *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 1);
         const QTableWidgetItem *valueItem = table->item(0, 1);
@@ -10300,7 +10245,7 @@ private slots:
         content.fields.append({QStringLiteral("gamma"), QStringLiteral("3")});
         widget.SetContent(content);
 
-        QTableWidget *table = widget.FieldsTableForTest();
+        auto *table = widget.findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
         QCOMPARE(table->rowCount(), 3);
 
@@ -10418,7 +10363,7 @@ private slots:
             }
         });
 
-        const RecordDetailContent &shown = window->WidgetForTest()->Content();
+        const RecordDetailContent &shown = window->findChild<RecordDetailWidget *>()->Content();
         QVERIFY(shown.valid);
         QCOMPARE(shown.fields.size(), snapshot.fields.size());
         bool sawMsg = false;
@@ -10431,9 +10376,11 @@ private slots:
         }
         QVERIFY(sawMsg);
         // Pop-outs hide their own "Open in new window" button.
-        const QPushButton *popOutButton = window->WidgetForTest()->OpenInNewWindowButtonForTest();
+        const QPushButton *popOutButton =
+            window->findChild<RecordDetailWidget *>()->findChild<QPushButton *>(QStringLiteral("openInNewWindowButton")
+            );
         QVERIFY(popOutButton != nullptr);
-        QVERIFY(!popOutButton->isVisibleTo(window->WidgetForTest()));
+        QVERIFY(!popOutButton->isVisibleTo(window->findChild<RecordDetailWidget *>()));
     }
     // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 
@@ -10446,11 +10393,6 @@ private slots:
             QStringLiteral(R"({"k": "beta"})"),
             QStringLiteral(R"({"k": "gamma"})"),
         });
-        // Direct accessors (not `findChild<...>()`). `findChild` walks
-        // the QObject child tree and that traversal is the path that
-        // segfaults inside Qt on the ubuntu-22.04 / Qt 6.8.3 release
-        // runner -- the existing `ViewMenu()` / `FilterSubMenu()`
-        // accessors hit the same toolchain bug for `QMenu`.
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
@@ -10470,14 +10412,14 @@ private slots:
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 3);
 
-        auto *dock = mWindow->RecordDetailDockForTest();
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
         QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
         // Probe `isHidden()` (parent is never `show()`n under
         // offscreen QPA, so `isVisible()` is always false).
         QVERIFY2(dock->isHidden(), "dock starts hidden");
 
         // Default sort (-1) -> proxy row == source row. Pick row 1.
-        auto *table = mWindow->TableViewForTest();
+        auto *table = mWindow->findChild<LogTableView *>();
         QVERIFY(table != nullptr);
         const QAbstractItemModel *proxyModel = table->model();
         QVERIFY(proxyModel != nullptr);
@@ -10513,7 +10455,7 @@ private slots:
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QVERIFY(toggleAction->isCheckable());
 
-        auto *dock = mWindow->RecordDetailDockForTest();
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
         QVERIFY2(dock != nullptr, "Record Details dock must be owned by MainWindow");
         // clang-analyzer doesn't model `QVERIFY2`'s fail-fast return.
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
@@ -10581,22 +10523,22 @@ private slots:
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 2);
 
-        QVERIFY(mWindow->RecordDetailWindowsForTest().isEmpty());
+        QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
 
         mWindow->OpenRecordDetailWindow(0);
         mWindow->OpenRecordDetailWindow(1);
 
-        const auto windows = mWindow->RecordDetailWindowsForTest();
+        const auto windows = mWindow->findChildren<RecordDetailWindow *>();
         QCOMPARE(windows.size(), 2);
         for (const RecordDetailWindow *window : windows)
         {
             QVERIFY(window->testAttribute(Qt::WA_DeleteOnClose));
-            QVERIFY(window->WidgetForTest()->Content().valid);
+            QVERIFY(window->findChild<RecordDetailWidget *>()->Content().valid);
         }
 
         // Out-of-range -> no-op.
         mWindow->OpenRecordDetailWindow(99);
-        QCOMPARE(mWindow->RecordDetailWindowsForTest().size(), 2);
+        QCOMPARE(mWindow->findChildren<RecordDetailWindow *>().size(), 2);
 
         for (RecordDetailWindow *window : windows)
         {
@@ -10629,8 +10571,8 @@ private slots:
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
 
-        auto *dock = mWindow->RecordDetailDockForTest();
-        auto *table = mWindow->TableViewForTest();
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *table = mWindow->findChild<LogTableView *>();
         QVERIFY(dock != nullptr);
         QVERIFY(table != nullptr);
         QVERIFY(dock->isHidden());
@@ -10844,11 +10786,11 @@ private slots:
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
 
-        QVERIFY(mWindow->RecordDetailWindowsForTest().isEmpty());
+        QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
 
         mWindow->OpenRecordDetailWindow(0);
         mWindow->OpenRecordDetailWindow(0);
-        auto windows = mWindow->RecordDetailWindowsForTest();
+        auto windows = mWindow->findChildren<RecordDetailWindow *>();
         QCOMPARE(windows.size(), 2);
         for (RecordDetailWindow *window : windows)
         {
@@ -10860,7 +10802,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            mWindow->RecordDetailWindowsForTest().isEmpty(),
+            mWindow->findChildren<RecordDetailWindow *>().isEmpty(),
             "closed snapshots must have been deleted, no live children remain"
         );
 
@@ -11003,8 +10945,8 @@ private slots:
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 3);
 
-        auto *dock = mWindow->RecordDetailDockForTest();
-        auto *table = mWindow->TableViewForTest();
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        auto *table = mWindow->findChild<LogTableView *>();
         QVERIFY(dock != nullptr);
         QVERIFY(table != nullptr);
 
@@ -11156,7 +11098,7 @@ private slots:
         QVERIFY2(toggleAction != nullptr, "actionToggleRecordDetails must be wired");
         QVERIFY(toggleAction->isCheckable());
 
-        auto *dock = mWindow->RecordDetailDockForTest();
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
         QVERIFY(dock != nullptr);
         QVERIFY2(dock->isHidden(), "dock starts hidden");
         QVERIFY(!toggleAction->isChecked());
@@ -11420,7 +11362,7 @@ private slots:
         const int mainsBefore = countMainWindows();
         const QList<QWidget *> topLevelBefore = QApplication::topLevelWidgets();
 
-        primary->FindUiAction(QStringLiteral("actionNewWindow"))->trigger();
+        primary->findChild<QAction *>(QStringLiteral("actionNewWindow"))->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(countMainWindows(), mainsBefore + 1);
@@ -11534,7 +11476,7 @@ private slots:
         const QString uuid = manager.List().front().uuid;
 
         // Tear the session down so the menu reopen has work to do.
-        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        wired->findChild<QAction *>(QStringLiteral("actionNewSession"))->trigger();
         QCoreApplication::processEvents();
         QCOMPARE(wired->Model()->rowCount(), 0);
 
@@ -11542,7 +11484,7 @@ private slots:
         // Reach for the menu via the explicit accessor: the Qt 6.8 +
         // offscreen-QPA `findChild<QMenu*>` traversal bug strands the
         // by-objectName lookup on the Linux runner.
-        auto *recentsMenu = wired->RecentSessionsMenu();
+        auto *recentsMenu = wired->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
         QVERIFY2(recentsMenu != nullptr, "menuRecentSessions must exist");
         emit recentsMenu->aboutToShow();
 
@@ -12583,7 +12525,7 @@ private slots:
 
         // Discard the active session. After this, opening a new file
         // must NOT reuse uuidA.
-        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        wired->findChild<QAction *>(QStringLiteral("actionNewSession"))->trigger();
         QCoreApplication::processEvents();
 
         finishedSpy.clear();
@@ -12845,7 +12787,7 @@ private slots:
 
         // Pin a deterministic sort so the indicator preservation is
         // also observable.
-        wired->TableViewForTest()->sortByColumn(msgCol, Qt::DescendingOrder);
+        wired->findChild<LogTableView *>()->sortByColumn(msgCol, Qt::DescendingOrder);
         QCoreApplication::processEvents();
         QCOMPARE(filterModel->SortColumn(), msgCol);
         QCOMPARE(filterModel->SortOrder(), Qt::DescendingOrder);
@@ -12943,7 +12885,7 @@ private slots:
 
         // The Full-scope sort survived: the table view is sorting
         // by `category` descending.
-        const auto *header = wired->TableViewForTest()->horizontalHeader();
+        const auto *header = wired->findChild<LogTableView *>()->horizontalHeader();
         QVERIFY(header != nullptr);
         QCOMPARE(header->sortIndicatorSection(), 0);
         QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
@@ -13318,7 +13260,7 @@ private slots:
         }
         QVERIFY(afterAuto.contains(uuid));
 
-        wired->FindUiAction(QStringLiteral("actionNewSession"))->trigger();
+        wired->findChild<QAction *>(QStringLiteral("actionNewSession"))->trigger();
         QCoreApplication::processEvents();
 
         QVERIFY2(

@@ -84,35 +84,6 @@ public:
     /// item), so theme changes need this nudge. Idempotent.
     void RefreshPalette();
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Direct accessors. `findChild<>` by object name is unreliable
-    /// under Qt 6.8 + offscreen QPA on the Linux runner.
-    [[nodiscard]] QTableWidget *FieldsTableForTest() const noexcept
-    {
-        return mFieldsTable;
-    }
-    [[nodiscard]] QPlainTextEdit *RawEditForTest() const noexcept
-    {
-        return mRawEdit;
-    }
-    [[nodiscard]] QGroupBox *RawGroupForTest() const noexcept
-    {
-        return mRawGroup;
-    }
-    [[nodiscard]] QPushButton *CopyJsonButtonForTest() const noexcept
-    {
-        return mCopyJsonButton;
-    }
-    [[nodiscard]] QPushButton *CopyKeyValueButtonForTest() const noexcept
-    {
-        return mCopyKvButton;
-    }
-    [[nodiscard]] QPushButton *OpenInNewWindowButtonForTest() const noexcept
-    {
-        return mOpenInNewWindowButton;
-    }
-#endif
-
 signals:
     /// User clicked "Open in new window". The owner builds a snapshot
     /// `RecordDetailWindow`.

@@ -23,13 +23,6 @@ public:
     /// `MainWindow`'s theme-change broadcast. Idempotent.
     void RefreshPalette();
 
-#ifdef LOGAPP_BUILD_TESTING
-    [[nodiscard]] RecordDetailWidget *WidgetForTest() const noexcept
-    {
-        return mWidget;
-    }
-#endif
-
 private:
     RecordDetailWidget *mWidget = nullptr;
 };

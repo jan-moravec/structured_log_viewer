@@ -199,29 +199,13 @@ public:
     /// Idempotent.
     void ApplyDisplayOrder();
 
-    /// Test-only `QAction` lookup by `objectName`; works around a Qt
-    /// 6.8 + offscreen-QPA `findChild<QAction*>` bug.
-    [[nodiscard]] QAction *FindUiAction(const QString &name) const;
-
-    /// Test-only accessors for the filter pipeline. The same Qt 6.8 +
-    /// offscreen-QPA traversal bug that motivates `FindUiAction` also
-    /// strands `findChild<QMenu*>("menuFilters")` and `findChildren<
-    /// QSortFilterProxyModel*>()` on the Linux runner; tests reach
-    /// these owned objects through the explicit getters instead.
+    /// Test-only direct accessor for the live filter proxy. Tests
+    /// inspect the filtered row count and column-rank state through
+    /// it; production wires the proxy into `mTableView` directly.
     [[nodiscard]] LogFilterModel *FilterModel() const
     {
         return mSortFilterProxyModel;
     }
-    [[nodiscard]] QMenu *FiltersMenu() const;
-
-    /// Test-only `View` menu accessor. Mirrors `FiltersMenu()`: the
-    /// Qt 6.8 + offscreen-QPA `findChild<QMenu*>` traversal bug also
-    /// strands `findChild<QMenu*>("menuView")` on the Linux runner.
-    [[nodiscard]] QMenu *ViewMenu() const;
-
-    /// Test-only `Recent Sessions` submenu accessor. Same Qt 6.8 +
-    /// offscreen-QPA traversal bug as `FiltersMenu()`.
-    [[nodiscard]] QMenu *RecentSessionsMenu() const;
 
     /// Toggle column visibility. Updates `Column::visible` and the
     /// header. No-op for an out-of-range index. Public for tests and
@@ -259,15 +243,10 @@ public:
     /// so. Idempotent.
     void ResetHeaderToIdentity();
 
-    /// Result of `BuildHeaderContextMenu`. `menu` is the caller-
-    /// owned root menu; `filterSubMenus` is a non-owning test seam
-    /// (the Linux Release offscreen-QPA toolchain strips `QMenu`
-    /// metaobject hooks, so tests can't recover submenus by walking
-    /// the tree). Production callers only need `menu`.
+    /// Result of `BuildHeaderContextMenu`. Caller owns `menu`.
     struct HeaderContextMenu
     {
         QMenu *menu = nullptr;
-        std::unordered_map<std::string, QMenu *> filterSubMenus;
     };
 
     /// Build the right-click header menu for @p logicalColumn.
@@ -295,16 +274,6 @@ public:
         return mFilters;
     }
 
-    /// Test-only direct lookup for a per-filter sub-menu by id.
-    /// Same Linux-Release-offscreen reason as `BuildHeaderContextMenu`'s
-    /// out-parameter: walking `ui->menuFilters->actions()` and calling
-    /// `QAction::menu()` -- or iterating `children()` and casting to
-    /// `QMenu*` -- both return null on that toolchain even though the
-    /// production code wires the submenu correctly. The map is
-    /// maintained by `AddLogFilter` / `ClearFilter` / `ClearAllFilters`
-    /// so the answer is the live submenu pointer.
-    [[nodiscard]] QMenu *FilterSubMenu(const QString &filterID) const;
-
     /// Owned `LogModel`; non-null after construction.
     [[nodiscard]] LogModel *Model() const
     {
@@ -312,32 +281,6 @@ public:
     }
 
 #ifdef LOGAPP_BUILD_TESTING
-    /// Test-only direct accessor for the Record Details dock.
-    /// Same Linux-Release-offscreen reason as `ViewMenu()` /
-    /// `FilterSubMenu()`: `findChild<RecordDetailDock*>()` on the
-    /// Linux Qt 6.8 + offscreen-QPA toolchain segfaults inside Qt's
-    /// child-traversal even though the dock is correctly parented to
-    /// `MainWindow` (production code never walks the tree this way).
-    [[nodiscard]] RecordDetailDock *RecordDetailDockForTest() const
-    {
-        return mRecordDetailDock;
-    }
-
-    /// Test-only direct accessor for the central log table view.
-    /// Same Linux-Release-offscreen reason as `RecordDetailDockForTest()`.
-    [[nodiscard]] LogTableView *TableViewForTest() const
-    {
-        return mTableView;
-    }
-
-    /// Test-only snapshot-window list. Same Linux-Release-offscreen
-    /// reason as `RecordDetailDockForTest()`: `findChildren` walks the
-    /// child tree and that path is the unreliable one. The internal
-    /// `QHash` is keyed by heap address; this view materialises the
-    /// live `RecordDetailWindow*` set in insertion order so tests can
-    /// observe both the count and the per-window state.
-    [[nodiscard]] QList<RecordDetailWindow *> RecordDetailWindowsForTest() const;
-
     /// Test-only session-mode override so display-order tests can
     /// exercise the `Static` branch without a real open flow.
     enum class TestSessionMode
@@ -366,8 +309,8 @@ public:
     void LoadConfigurationFromPathForTest(const QString &path);
 
     /// When true, `ShowDroppedFiltersDialog` skips the modal and
-    /// only updates the test counter (modals block the offscreen
-    /// QPA test thread). Default false.
+    /// only updates the test counter (modals block any headless
+    /// QtTest thread). Default false.
     void SetSuppressDialogsForTest(bool suppress);
 
     /// Filters dropped on the most recent
@@ -378,16 +321,6 @@ public:
     /// tests assert the descriptor round-trips through Save Session
     /// without running a real open path.
     void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
-
-    /// Test-only direct accessor for the diagnostics status-bar
-    /// button. `QObject::findChild<QPushButton*>("diagnosticsButton")`
-    /// is unreliable on the GitHub-hosted Linux runner with Qt 6.8 +
-    /// offscreen QPA (see `FindActionByObjectName` for the same
-    /// workaround applied to QActions); this bypasses the lookup.
-    [[nodiscard]] QPushButton *DiagnosticsButtonForTest() const noexcept
-    {
-        return mDiagnosticsButton;
-    }
 
     /// Test-only entry to the queued static-files open path,
     /// bypassing the file dialog and modifier sniff.
@@ -777,13 +710,6 @@ private:
     ThemeControl *mTheme;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
-    /// Per-filter `Filters` sub-menu pointers, keyed by filter id.
-    /// Maintained alongside `mFilters`; the test-only `FilterSubMenu()`
-    /// accessor reads from here because Qt 6.8 + offscreen QPA on the
-    /// Linux Release toolchain strips the metaobject hooks that make
-    /// `QAction::menu()` and `qobject_cast<QMenu*>(child)` work.
-    std::unordered_map<std::string, QMenu *> mFilterSubMenus;
-
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
 
@@ -931,8 +857,8 @@ private:
     bool mSessionSwitchInProgress = false;
 
 #ifdef LOGAPP_BUILD_TESTING
-    /// Skip `ShowDroppedFiltersDialog`'s modal so the test thread
-    /// is not blocked under offscreen QPA.
+    /// Skip `ShowDroppedFiltersDialog`'s modal so a headless test
+    /// thread is not blocked.
     bool mSuppressDialogsForTest = false;
     int mLastDroppedFilterCountForTest = 0;
 #endif
