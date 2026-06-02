@@ -2850,13 +2850,14 @@ void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
         return;
     }
     mRecordDetailDock->ShowSourceRow(sourceRow);
-    // `isHidden()` probes the dock's own explicit-hide flag (the
+    // `isHidden()` probes the dock's own explicit-hide flag; the
     // ancestor `isVisible()` is also false until `show()` has been
-    // called on the main window). The `isVisible()` guard on `this`
-    // avoids a Qt 6.8.3 + offscreen-QPA crash where
-    // `QDockWidget::setVisible(true)` dereferences uninitialised
-    // QMainWindowLayout dock-area state when the host has never been
-    // shown. Production callers always see a visible main window.
+    // called on the host. The `isVisible()` guard on `this` is
+    // defense-in-depth for unit tests that drive this slot without
+    // realising the main window: `QDockWidget::setVisible(true)`
+    // walks `QMainWindowLayout`'s dock-area state, which is only
+    // wired up by the host's first paint cycle. Production callers
+    // always see a visible main window.
     if (mRecordDetailDock->isHidden() && isVisible())
     {
         mRecordDetailDock->setVisible(true);
@@ -3657,10 +3658,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     const QString title = BuildFilterTitle(filter);
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
+    menuItem->setObjectName(id);
     menuItem->menuAction()->setData(QVariant(id));
-    // Track the submenu pointer so tests can find it without going
-    // through `QAction::menu()` or `qobject_cast<QMenu*>(child)` --
-    // both fail under the Linux Release offscreen-QPA toolchain.
     mFilterSubMenus[id.toStdString()] = menuItem;
 
     const QAction *editAction = menuItem->addAction(tr("Edit"));
@@ -4450,6 +4449,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         const QString filterId = QString::fromStdString(entry.id);
         QMenu *filterSubMenu = menu->addMenu(entry.title);
+        filterSubMenu->setObjectName(filterId);
         result.filterSubMenus[entry.id] = filterSubMenu;
         QAction *editAction = filterSubMenu->addAction(tr("Edit"));
         editAction->setEnabled(modelHasRows);
