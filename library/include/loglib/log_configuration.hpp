@@ -342,6 +342,11 @@ public:
     /// Replace `LogConfiguration::source`. `nullopt` clears the binding.
     void SetSource(std::optional<LogConfiguration::Source> source);
 
+    /// Replace `LogConfiguration::anchors`. The app mirrors its
+    /// runtime `AnchorManager` state through this before `Save`.
+    /// Pass an empty vector to drop every anchor.
+    void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
+
     /// Apply `(srcIndex -> destIndex)` to a stored column index.
     /// Out-of-range inputs (including negative sentinels like
     /// `Sort::columnIndex == -1`) pass through unchanged. Exposed

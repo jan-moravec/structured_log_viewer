@@ -1456,6 +1456,15 @@ void MainWindow::NewSession()
     mModel->ConfigurationManager().Reset();
     mModel->NotifyConfigurationReplaced();
 
+    // Anchors are session-scoped: a fresh window has none. Clear
+    // *after* the model reset so the manager's `anchorsReset`
+    // refresh runs against the now-empty row set (cheap no-op),
+    // not against the about-to-be-cleared rows.
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
+
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
     mLastTerminalSessionMode = SessionMode::Idle;
@@ -1550,6 +1559,16 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // pre-dates the parallel-array schema split.
         mCurrentSource = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
+
+        // Anchors: bulk-replace from the loaded vector before
+        // RebuildFiltersFromConfiguration (which mirrors session
+        // state back into the configuration and would otherwise
+        // overwrite the loaded `configuration.anchors` with the
+        // empty AnchorManager state).
+        if (mAnchors != nullptr)
+        {
+            mAnchors->Replace(mModel->Configuration().anchors);
+        }
 
         RebuildFiltersFromConfiguration();
         return true;
@@ -1659,6 +1678,12 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
         ClearAllFilters();
+        // Anchors are session-scoped; a destructive open is a new
+        // session. Preserved on append.
+        if (mAnchors != nullptr)
+        {
+            mAnchors->ClearAll();
+        }
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
@@ -1962,6 +1987,12 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
     mModel->Reset();
     ClearAllFilters();
+    // Anchors are session-scoped; opening a live-tail file is a
+    // new session, so the prior file's anchors must not bleed in.
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -2074,6 +2105,12 @@ void MainWindow::OpenNetworkStream()
 
     mModel->Reset();
     ClearAllFilters();
+    // Anchors are session-scoped; a network-stream open is a fresh
+    // session, so the prior session's anchors must not bleed in.
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
     DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
@@ -2639,6 +2676,15 @@ void MainWindow::MirrorSessionStateToConfiguration()
         const auto &mirrored = mModel->ConfigurationManager().Configuration().source;
         Q_ASSERT(!mirrored.has_value() || loglib::HasLocators(mirrored));
     }
+
+    // Anchors: pull the AnchorManager snapshot (sorted by
+    // (locator, lineId), so successive saves write byte-identical
+    // JSON) into `configuration.anchors`. Both autosave + manual
+    // SaveSession take this path.
+    if (mAnchors != nullptr)
+    {
+        mModel->ConfigurationManager().SetAnchors(mAnchors->Entries());
+    }
 }
 
 bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
@@ -3115,6 +3161,16 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // Backfill the parallel dedup-keys array for older JSON.
         mCurrentSource = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
+
+        // Anchors: bulk-replace from the loaded vector. `Replace`
+        // fires `anchorsReset` so the model overlay (and the dock,
+        // when visible) repaint every row. The previous session's
+        // anchors are dropped wholesale; a configuration without
+        // an `anchors` array yields an empty `Replace`.
+        if (mAnchors != nullptr)
+        {
+            mAnchors->Replace(mModel->Configuration().anchors);
+        }
 
         RebuildFiltersFromConfiguration();
         return true;

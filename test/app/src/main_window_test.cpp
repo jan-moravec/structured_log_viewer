@@ -3369,6 +3369,104 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Persistence round-trip: anchors set in the live AnchorManager
+    // must mirror into `LogConfiguration::anchors` (via
+    // MirrorSessionStateToConfiguration -> ConfigurationManager::
+    // SetAnchors), survive a Full save + load, and re-populate the
+    // AnchorManager via ApplyLoadedConfiguration -> Replace.
+    void TestAnchorPersistenceRoundTripsThroughSavedConfiguration()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+
+        // Stream a small static fixture so the model carries real
+        // (locator, lineId) keys.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+        model->EndStreaming(false);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 2);
+        anchors->SetAnchor(*key2, 6);
+        QCOMPARE(anchors->Count(), static_cast<std::size_t>(2));
+
+        // Save to a temp file via the test seam. The save path
+        // mirrors session state into the wire format first; the
+        // mirror must include `configuration.anchors`.
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QString cfgPath = tmp.filePath(QStringLiteral("anchors-roundtrip.json"));
+        mWindow->SaveConfigurationToPathForTest(cfgPath);
+        QCoreApplication::processEvents();
+
+        // Sanity: the on-disk JSON carries an `anchors` array of
+        // length 2 sorted by (locator, lineId).
+        QFile saved(cfgPath);
+        QVERIFY(saved.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString savedJson = QString::fromUtf8(saved.readAll());
+        saved.close();
+        QVERIFY2(savedJson.contains(QStringLiteral("\"anchors\"")), "saved JSON must carry an anchors key");
+
+        // Wipe the live state so the load is observable. New
+        // session clears anchors as part of the destructive reset.
+        QAction *newSessionAction = mWindow->FindUiAction(QStringLiteral("actionNewSession"));
+        QVERIFY(newSessionAction != nullptr);
+        newSessionAction->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY(anchors->Empty());
+
+        // Load the file back through the same path the
+        // "Load Configuration" menu uses. The applied configuration
+        // must re-populate the AnchorManager.
+        QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(anchors->Count(), static_cast<std::size_t>(2));
+        QCOMPARE(anchors->ColorFor(*key0).value_or(255U), uint8_t{2});
+        QCOMPARE(anchors->ColorFor(*key2).value_or(255U), uint8_t{6});
+    }
+
+    // NewSession must drop every anchor as part of its destructive
+    // tear-down. Without this, anchors from a now-replaced session
+    // would still appear in the dock + paint overlay even though
+    // the source rows are gone.
+    void TestNewSessionClearsAnchors()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 1);
+        QVERIFY(!anchors->Empty());
+
+        QAction *newSessionAction = mWindow->FindUiAction(QStringLiteral("actionNewSession"));
+        QVERIFY(newSessionAction != nullptr);
+        newSessionAction->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(anchors->Empty(), "NewSession must clear every anchor");
+    }
+
     // anchorsReset (bulk path) must repaint every visible row at
     // once -- otherwise `ApplyLoadedConfiguration` would leave the
     // pre-existing anchor colours stuck on screen until the user
