@@ -454,7 +454,12 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // re-stream / teardown all stay consistent with the saved config.
     connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
+    // `ExtendedSelection` gives the file-explorer / Excel idiom: plain
+    // click replaces, Ctrl-click toggles, Shift-click extends a range,
+    // drag selects a contiguous range. The previous `MultiSelection`
+    // mode toggled every plain click without a modifier, which had no
+    // analogue in any other tabular UI the user might be familiar with.
+    mTableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     // Per-level theme colours already partition rows; an extra
     // alternation stripe would make two rows of the same level

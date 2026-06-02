@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QItemSelectionModel>
 #include <QList>
 #include <QMetaObject>
 #include <QPersistentModelIndex>
@@ -36,6 +37,23 @@ public:
 
 public slots:
     void CopySelectedRowsToClipboard();
+
+#ifdef LOGAPP_BUILD_TESTING
+public:
+    /// Test seam over the protected `QAbstractItemView::selectionCommand`,
+    /// which is the function `QTableView`'s mouse handlers consult to
+    /// translate `(button, modifiers, index)` into selection-model
+    /// flags. The row-click-semantics regression test in `apptest`
+    /// reads it for synthetic press events under the three modifier
+    /// combinations the file-explorer idiom relies on (no modifier /
+    /// Ctrl / Shift). Gated behind `LOGAPP_BUILD_TESTING` so the
+    /// surface is only present in the test build.
+    [[nodiscard]] QItemSelectionModel::SelectionFlags
+    SelectionCommandForTest(const QModelIndex &index, const QEvent *event = nullptr) const
+    {
+        return selectionCommand(index, event);
+    }
+#endif
 
 signals:
     /// User manually scrolled away from the configured tail edge.

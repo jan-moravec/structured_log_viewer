@@ -2730,6 +2730,116 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Pins the log table's mouse-click selection semantics: the
+    // file-explorer / Excel idiom (plain click replaces, Ctrl-click
+    // toggles individual rows, Shift-click extends a range), all at
+    // whole-row granularity. The previous configuration used
+    // `QAbstractItemView::MultiSelection`, which toggled every plain
+    // click without a modifier and had no analogue in any other
+    // tabular UI -- a regression to that mode would flip plain click
+    // from `ClearAndSelect` to `Toggle` and fail this test.
+    //
+    // The contract is exercised through `selectionCommand()`, the
+    // function `QTableView`'s mouse handlers consult to translate
+    // (button, modifiers, index) into selection-model flags. Driving
+    // it directly avoids the offscreen-QPA shenanigans that prevent
+    // this fixture from `show()`ing the main window (see the comment
+    // above `RecordDetailDock`'s test-time visibility seam).
+    void TestTableExtendedSelectionRowClickSemantics()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+
+        QCOMPARE(tableView->selectionMode(), QAbstractItemView::ExtendedSelection);
+        QCOMPARE(tableView->selectionBehavior(), QAbstractItemView::SelectRows);
+
+        // Populate a handful of rows so the `selectionCommand`
+        // queries below run against a valid proxy index.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QVERIFY(tableView->model()->rowCount() >= 1);
+
+        const QModelIndex clickedIndex = tableView->model()->index(0, 0);
+        QVERIFY(clickedIndex.isValid());
+
+        // Synthesise a press of the left mouse button with the
+        // requested modifiers. Position is irrelevant -- the
+        // `selectionCommand` policy reads only the button + modifiers
+        // and dispatches on the configured `selectionMode`.
+        auto makePress = [](Qt::KeyboardModifiers mods) {
+            return QMouseEvent(
+                QEvent::MouseButtonPress,
+                QPointF(0, 0),
+                QPointF(0, 0),
+                Qt::LeftButton,
+                Qt::LeftButton,
+                mods
+            );
+        };
+
+        // Plain click: replaces the current selection at row
+        // granularity. `Toggle` here would be the `MultiSelection`
+        // regression bait.
+        {
+            const QMouseEvent ev = makePress(Qt::NoModifier);
+            const QItemSelectionModel::SelectionFlags flags = tableView->SelectionCommandForTest(clickedIndex, &ev);
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::ClearAndSelect),
+                "Plain click on a row must replace the existing selection (ClearAndSelect)."
+            );
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::Rows), "Plain click must operate on whole rows (Rows flag)."
+            );
+            QVERIFY2(
+                !flags.testFlag(QItemSelectionModel::Toggle),
+                "Plain click must NOT merely toggle the row -- that is the MultiSelection regression."
+            );
+        }
+
+        // Ctrl-click: adds or removes an individual row from the
+        // selection without disturbing the rest.
+        {
+            const QMouseEvent ev = makePress(Qt::ControlModifier);
+            const QItemSelectionModel::SelectionFlags flags = tableView->SelectionCommandForTest(clickedIndex, &ev);
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::Toggle),
+                "Ctrl-click must toggle the clicked row in or out of the selection."
+            );
+            QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Ctrl-click must operate on whole rows (Rows flag).");
+            QVERIFY2(
+                !flags.testFlag(QItemSelectionModel::Clear), "Ctrl-click must NOT clear the existing selection."
+            );
+            QVERIFY2(
+                !flags.testFlag(QItemSelectionModel::ClearAndSelect),
+                "Ctrl-click must NOT replace the existing selection."
+            );
+        }
+
+        // Shift-click: extends the current selection range from the
+        // anchor to the clicked row.
+        {
+            const QMouseEvent ev = makePress(Qt::ShiftModifier);
+            const QItemSelectionModel::SelectionFlags flags = tableView->SelectionCommandForTest(clickedIndex, &ev);
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::SelectCurrent),
+                "Shift-click must extend the current selection (SelectCurrent)."
+            );
+            QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Shift-click must operate on whole rows (Rows flag).");
+            QVERIFY2(
+                !flags.testFlag(QItemSelectionModel::Toggle), "Shift-click is a range extension, not a toggle."
+            );
+        }
+
+        model->EndStreaming(false);
+    }
+
     // Static-mode parallel of `testAlternatingRowColoursDisabledInNewestFirstMode`:
     // when the active session is static the apply path must read the
     // **static** preference (`StreamingControl::IsStaticNewestFirst`),
