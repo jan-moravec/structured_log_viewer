@@ -1331,19 +1331,35 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         // Anchor overlay wins over the level brush. Gated on
         // `Empty()` so the no-anchor case (the common one) skips
         // the per-row `AnchorKeyForRow` walk.
+        //
+        // `AnchorKeyForRow` may throw `std::bad_alloc` from its
+        // cold-path locator canonicalisation. Qt's painters call
+        // `data()` directly during a paint event and can't
+        // unwind cleanly through it, so swallow the exception
+        // and fall through to the level brush rather than tear
+        // down the view mid-frame.
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
-            const auto key = AnchorKeyForRow(index.row());
-            if (key.has_value())
+            try
             {
-                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                const auto key = AnchorKeyForRow(index.row());
+                if (key.has_value())
                 {
-                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::BackgroundRole);
-                    if (brush.style() != Qt::NoBrush)
+                    if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
                     {
-                        return QVariant(brush);
+                        const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::BackgroundRole);
+                        if (brush.style() != Qt::NoBrush)
+                        {
+                            return QVariant(brush);
+                        }
                     }
                 }
+            }
+            catch (const std::bad_alloc &) // NOLINT(bugprone-empty-catch)
+            {
+                // Intentionally empty: fall through to the
+                // level brush below. See the contract comment
+                // above.
             }
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
@@ -1361,19 +1377,30 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
+        // Same `std::bad_alloc` swallow as the BackgroundRole
+        // branch -- the paint stack above us is not
+        // exception-safe.
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
-            const auto key = AnchorKeyForRow(index.row());
-            if (key.has_value())
+            try
             {
-                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                const auto key = AnchorKeyForRow(index.row());
+                if (key.has_value())
                 {
-                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::ForegroundRole);
-                    if (brush.style() != Qt::NoBrush)
+                    if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
                     {
-                        return QVariant(brush);
+                        const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::ForegroundRole);
+                        if (brush.style() != Qt::NoBrush)
+                        {
+                            return QVariant(brush);
+                        }
                     }
                 }
+            }
+            catch (const std::bad_alloc &) // NOLINT(bugprone-empty-catch)
+            {
+                // Intentionally empty: fall through to the
+                // level brush below.
             }
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());

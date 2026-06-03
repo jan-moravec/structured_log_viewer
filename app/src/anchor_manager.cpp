@@ -170,7 +170,7 @@ void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEn
             // re-colouring to slot 7.
             continue;
         }
-        mAnchors[Key{.locator = entry.locator, .lineId = entry.lineId}] = entry.colorIndex;
+        mAnchors.insert_or_assign(Key{.locator = entry.locator, .lineId = entry.lineId}, entry.colorIndex);
     }
 
     // Compare by content, not by identity. `==` on unordered_map is

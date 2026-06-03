@@ -69,13 +69,19 @@ public:
     bool SetAnchor(const Key &key, uint8_t colorIndex);
 
     /// Bulk variant of `SetAnchor` for a multi-row selection.
-    /// Mutates the map in one pass and emits `anchorsReset` once
-    /// when anything changed -- listeners (the model overlay,
-    /// the dock) handle the bulk signal with one full refresh
-    /// instead of `keys.size()` per-row repaints, which makes
-    /// `Ctrl+1` over a thousand-row selection cheap. Same
-    /// clamping rule as `SetAnchor`. Returns true iff something
-    /// changed; empty @p keys is a no-op.
+    /// Mutates the map in one pass; signal routing depends on how
+    /// many entries actually changed (insert or recolour):
+    /// - exactly one mutation -> `anchorChanged(key)`, so the
+    ///   model overlay can use its cheap per-row repaint path;
+    /// - two or more mutations -> a single `anchorsReset()`,
+    ///   collapsing N targeted emits into one full refresh.
+    ///
+    /// This makes `Ctrl+1` over a thousand-row selection cheap
+    /// while keeping the single-row case (e.g. a re-colour where
+    /// every other selected row was already on that slot) on the
+    /// scoped repaint. Same clamping rule as `SetAnchor`.
+    /// Returns true iff at least one entry changed; empty
+    /// @p keys is a no-op.
     bool SetAnchors(std::span<const Key> keys, uint8_t colorIndex);
 
     /// Remove an anchor by key. Emits `anchorChanged` when an
@@ -83,9 +89,12 @@ public:
     /// changed.
     bool RemoveAnchor(const Key &key);
 
-    /// Bulk variant of `RemoveAnchor`. Emits `anchorsReset` once
-    /// when at least one anchor was removed. Same rationale as
-    /// `SetAnchors`. Empty @p keys is a no-op.
+    /// Bulk variant of `RemoveAnchor`. Signal routing mirrors
+    /// `SetAnchors`: exactly one removal emits
+    /// `anchorChanged(key)`; two or more collapse into a single
+    /// `anchorsReset()`. Keys that aren't currently anchored are
+    /// silently skipped. Empty @p keys is a no-op. Returns true
+    /// iff at least one entry was removed.
     bool RemoveAnchors(std::span<const Key> keys);
 
     /// Drop every anchor in one shot. Emits `anchorsReset` exactly
@@ -93,10 +102,20 @@ public:
     bool ClearAll();
 
     /// Bulk replace -- used by `ApplyLoadedConfiguration`. Drops
-    /// the current state and rebuilds from @p entries; out-of-range
-    /// `colorIndex` entries are silently skipped. Emits
-    /// `anchorsReset` unconditionally so dependent views refresh
-    /// regardless of whether anything changed.
+    /// the current state and rebuilds from @p entries.
+    ///
+    /// Out-of-range `colorIndex` entries are silently skipped
+    /// (a hand-edited future-schema slot should disappear rather
+    /// than quietly squash into slot `ANCHOR_PALETTE_SIZE - 1`).
+    /// When @p entries contains the same `(locator, lineId)` key
+    /// more than once the last occurrence wins; same rationale
+    /// as `std::unordered_map::insert_or_assign`.
+    ///
+    /// Emits `anchorsReset` only when the rebuilt map differs
+    /// from the previous content. The common live-reload case
+    /// ("the config we just saved is the config we just loaded")
+    /// is therefore silent, sparing every listener a full-table
+    /// refresh.
     void Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries);
 
     /// @returns the anchor colour for @p key, or nullopt if @p key

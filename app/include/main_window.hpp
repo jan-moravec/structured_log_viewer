@@ -295,19 +295,6 @@ public:
     /// `Qt::WA_DeleteOnClose` on the live popup.
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
-private:
-    /// Append the "Anchor" sub-menu to @p menu. Always adds eight
-    /// colour entries plus a "Remove anchor" entry; the latter is
-    /// disabled when the right-clicked row carries no anchor. Each
-    /// colour entry's check state mirrors the right-clicked row's
-    /// existing colour but the triggered action operates on the
-    /// view's current selection -- consistent with the `Ctrl+1..8`
-    /// hotkeys. No-op if any of the three collaborators (model,
-    /// theme, anchor manager) is missing.
-    void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
-
-public:
-
     /// Live filter map; tests inspect it after a reorder.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
     {
@@ -634,6 +621,16 @@ private:
     private:
         MainWindow &mOwner;
     };
+
+    /// Append the "Anchor" sub-menu to @p menu. Always adds eight
+    /// colour entries plus a "Remove anchor" entry; the latter is
+    /// disabled when the right-clicked row carries no anchor. Each
+    /// colour entry's check state mirrors the right-clicked row's
+    /// existing colour but the triggered action operates on the
+    /// view's current selection -- consistent with the `Ctrl+1..8`
+    /// hotkeys. No-op if any of the three collaborators (model,
+    /// theme, anchor manager) is missing.
+    void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
 
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a

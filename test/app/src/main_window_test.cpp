@@ -2937,6 +2937,59 @@ private slots:
         QVERIFY(!manager.ColorFor({.locator = "c:/x.json", .lineId = 2}).has_value());
     }
 
+    // Pins `Replace`'s same-content short-circuit: re-applying the
+    // exact same entries vector must be silent (no `anchorsReset`),
+    // so the common live-reload case ("the config we just saved is
+    // the config we just loaded") doesn't trigger a full-table
+    // refresh in every listener. A subsequent `Replace` with a
+    // mutated colour must still fire the signal -- otherwise we'd
+    // have replaced one optimisation with a bug.
+    void TestAnchorManagerReplaceIsSilentWhenContentUnchanged()
+    {
+        AnchorManager manager;
+        QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
+
+        // Seed two anchors. Picking a stable initial order makes
+        // the colour-flip assertion below deterministic; the
+        // "shuffle on second Replace" line still exercises the
+        // map's order-insensitive comparison.
+        std::vector<loglib::LogConfiguration::AnchorEntry> entries;
+        entries.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
+        );
+        entries.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
+        );
+        manager.Replace(entries);
+        QCOMPARE(resetSpy.count(), 1);
+        QCOMPARE(manager.Count(), std::size_t{2});
+
+        // Same content (order shuffled to confirm the comparison
+        // is by map equality, not vector equality). Must NOT emit.
+        std::vector<loglib::LogConfiguration::AnchorEntry> shuffled;
+        shuffled.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
+        );
+        shuffled.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
+        );
+        manager.Replace(shuffled);
+        QCOMPARE(resetSpy.count(), 1);
+
+        // Same keys, different colour on one entry: content
+        // genuinely changed, so the listeners must be told.
+        std::vector<loglib::LogConfiguration::AnchorEntry> mutated;
+        mutated.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
+        );
+        mutated.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 6}
+        );
+        manager.Replace(mutated);
+        QCOMPARE(resetSpy.count(), 2);
+        QCOMPARE(manager.ColorFor({.locator = "c:/logs/b.json", .lineId = 9}).value_or(255U), uint8_t{6});
+    }
+
     // ThemeControl::AnchorBrushFor's resolver: must produce a paint-
     // ready brush for every valid index, populate from the active
     // theme's palette when present, fall back to the built-in

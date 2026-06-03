@@ -419,6 +419,14 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     }
     if (picked == removeAction)
     {
+        // `menu.exec()` pumped the event loop, so re-check the
+        // QPointer the same way the function entry did -- the
+        // anchor manager could have been torn down while the popup
+        // was up. Matches the stack-local-capture rationale above.
+        if (mAnchors.isNull())
+        {
+            return;
+        }
         mAnchors->RemoveAnchor(key);
     }
 }

@@ -393,7 +393,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | ------------------------------- | -------------------- |
 | Open file(s)                    | `Ctrl+O`             |
 | Open log stream                 | `Ctrl+Shift+O`       |
-| Open network stream             | `Ctrl+Shift+N`       |
+| Open network stream             | `Ctrl+Shift+L`       |
 | Save configuration              | `Ctrl+S`             |
 | Find                            | `Ctrl+F`             |
 | Copy selected rows as JSON      | `Ctrl+C`             |
@@ -406,7 +406,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Jump to previous anchor         | `Shift+F2`           |
 | Pause / Resume stream           | `Ctrl+Shift+P`       |
 | Toggle Follow newest            | `Ctrl+Shift+T`       |
-| Stop stream                     | `Ctrl+Shift+S`       |
+| Stop stream                     | `Ctrl+Shift+X`       |
 
 ## Troubleshooting
 
