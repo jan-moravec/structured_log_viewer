@@ -44,7 +44,14 @@ constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 /// chrome. Eight saturated, hue-distinct entries to match the
 /// `Ctrl+1..8` hotkey block.
 constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_PALETTE = {
-    "#B91C1C", "#C2410C", "#A16207", "#15803D", "#0F766E", "#0369A1", "#7E22CE", "#BE185D",
+    "#B91C1C",
+    "#C2410C",
+    "#A16207",
+    "#15803D",
+    "#0F766E",
+    "#0369A1",
+    "#7E22CE",
+    "#BE185D",
 };
 
 constexpr char BUILTIN_LIGHT_NAME[] = "Light";
@@ -974,7 +981,6 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         // Pick the foreground per-slot so a user theme dropping a
         // pastel into one slot does not force every other anchor
         // to also flip to black.
-        mAnchorForeground[slot] =
-            QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
+        mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
     }
 }

@@ -163,7 +163,14 @@ TEST_CASE("Theme JSON round-trips a fully populated anchorPalette", "[Theme][anc
     original.name = "Anchored";
     original.kind = ThemeKind::Dark;
     original.anchorPalette = {
-        "#B91C1C", "#C2410C", "#A16207", "#15803D", "#0F766E", "#0369A1", "#7E22CE", "#BE185D",
+        "#B91C1C",
+        "#C2410C",
+        "#A16207",
+        "#15803D",
+        "#0F766E",
+        "#0369A1",
+        "#7E22CE",
+        "#BE185D",
     };
     REQUIRE(original.anchorPalette.size() == ANCHOR_PALETTE_SIZE);
 

@@ -181,7 +181,7 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         // model-driven `Reset()` from a non-MainWindow caller
         // (tests, future scripted resets) would otherwise leave
         // anchors pointing at lineIds the next session is free to
-        // re-use. `ClearAll` is idempotent on an already-empty
+        // reuse. `ClearAll` is idempotent on an already-empty
         // manager so the doubled call from MainWindow is harmless.
         if (mAnchors != nullptr)
         {
@@ -1251,8 +1251,7 @@ void LogModel::PrewarmCanonicalLocatorCache()
         {
             continue;
         }
-        std::string canonical =
-            logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+        std::string canonical = logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
         mCanonicalLocatorCache.emplace(source, std::move(canonical));
     }
 }

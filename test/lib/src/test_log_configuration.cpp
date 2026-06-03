@@ -1787,8 +1787,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
 }
 
 TEST_CASE(
-    "LogConfiguration without anchors loads as empty list",
-    "[log_configuration][session][anchors][forward_compat]"
+    "LogConfiguration without anchors loads as empty list", "[log_configuration][session][anchors][forward_compat]"
 )
 {
     // Pre-feature session JSON: no `anchors` key at all. Must load

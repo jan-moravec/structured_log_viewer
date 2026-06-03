@@ -302,9 +302,8 @@ void AnchorsDock::RefreshAlways()
         // SourceRowForAnchorKey lookup.
         const QString displayPath = DisplayPathForLocator(mModel.data(), entry.locator);
         const QString filename = FilenameFromLocator(displayPath.toStdString());
-        const QString label = filename.isEmpty()
-                                  ? QObject::tr("line %1").arg(entry.lineId)
-                                  : QObject::tr("line %1 - %2").arg(entry.lineId).arg(filename);
+        const QString label = filename.isEmpty() ? QObject::tr("line %1").arg(entry.lineId)
+                                                 : QObject::tr("line %1 - %2").arg(entry.lineId).arg(filename);
 
         auto *item = new QListWidgetItem(SwatchIconFor(mTheme.data(), entry.colorIndex, swatchPx), label, mList);
         item->setData(ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
@@ -341,10 +340,9 @@ void AnchorsDock::RefreshAlways()
             }
             const QString itemLocator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString();
             const qulonglong itemLineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
-            const bool itemWasSelected =
-                std::ranges::any_of(selectedKeys, [&](const AnchorKeyCarrier &k) {
-                    return k.locator == itemLocator && k.lineId == itemLineId;
-                });
+            const bool itemWasSelected = std::ranges::any_of(selectedKeys, [&](const AnchorKeyCarrier &k) {
+                return k.locator == itemLocator && k.lineId == itemLineId;
+            });
             if (itemWasSelected)
             {
                 item->setSelected(true);

@@ -63,13 +63,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
-#include <QListWidget>
-#include <QListWidgetItem>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -2927,11 +2927,8 @@ private slots:
         // tell the user; one in-range + one out-of-range entry must
         // yield droppedCount == 1.
         std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
-        incoming.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0}
-        );
-        incoming.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
+        incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0});
+        incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
         );
         QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
@@ -2942,9 +2939,7 @@ private slots:
         // All-valid input returns zero dropped: the count is a
         // strict "schema drift" signal, not a "size of input" one.
         std::vector<loglib::LogConfiguration::AnchorEntry> clean;
-        clean.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1}
-        );
+        clean.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1});
         QCOMPARE(manager.Replace(clean), std::size_t{0});
     }
 
@@ -3070,8 +3065,10 @@ private slots:
         // Two distinct slots must yield two distinct background
         // colours -- otherwise the user can't tell them apart in
         // the UI.
-        QVERIFY(mTheme->AnchorBrushFor(0, Qt::BackgroundRole).color() !=
-                mTheme->AnchorBrushFor(4, Qt::BackgroundRole).color());
+        QVERIFY(
+            mTheme->AnchorBrushFor(0, Qt::BackgroundRole).color() !=
+            mTheme->AnchorBrushFor(4, Qt::BackgroundRole).color()
+        );
 
         // Out-of-range -> invalid brush, which the model treats as
         // "fall through to the level branch".
@@ -6006,7 +6003,9 @@ private slots:
 
         // The Anchor sub-menu lives next to the time-range actions
         // and is always present; verify its menu-action title.
-        QVERIFY2(FindMenuActionByText(menu, MainWindow::tr("Anchor")) != nullptr, "menu must carry the Anchor sub-menu");
+        QVERIFY2(
+            FindMenuActionByText(menu, MainWindow::tr("Anchor")) != nullptr, "menu must carry the Anchor sub-menu"
+        );
     }
 
     // Without a `Type::Time` column the time-range actions are
@@ -12329,7 +12328,8 @@ private slots:
         toggleAction->trigger();
         QVERIFY2(
             !toggleAction->isChecked(),
-            "second trigger must also revert under offscreen QPA -- the action stays unchecked until the host is realised"
+            "second trigger must also revert under offscreen QPA -- the action stays unchecked until the host is "
+            "realised"
         );
     }
 

@@ -233,13 +233,16 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() cons
     }
     // Stable on-disk order so two consecutive saves of an unchanged
     // anchor set produce byte-identical JSON.
-    std::ranges::sort(out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
-        if (lhs.locator != rhs.locator)
-        {
-            return lhs.locator < rhs.locator;
+    std::ranges::sort(
+        out,
+        [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
+            if (lhs.locator != rhs.locator)
+            {
+                return lhs.locator < rhs.locator;
+            }
+            return lhs.lineId < rhs.lineId;
         }
-        return lhs.lineId < rhs.lineId;
-    });
+    );
     return out;
 }
 
@@ -255,13 +258,16 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::EntriesIncludi
             .colorIndex = colorIndex,
         });
     }
-    std::ranges::sort(out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
-        if (lhs.locator != rhs.locator)
-        {
-            return lhs.locator < rhs.locator;
+    std::ranges::sort(
+        out,
+        [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
+            if (lhs.locator != rhs.locator)
+            {
+                return lhs.locator < rhs.locator;
+            }
+            return lhs.lineId < rhs.lineId;
         }
-        return lhs.lineId < rhs.lineId;
-    });
+    );
     return out;
 }
 

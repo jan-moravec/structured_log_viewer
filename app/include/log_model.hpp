@@ -91,10 +91,7 @@ public:
     /// Test-only overload with a custom bounded-queue capacity for the
     /// embedded `QtStreamingLogSink`.
     LogModel(
-        QObject *parent,
-        std::size_t pendingCapacity,
-        ThemeControl *theme = nullptr,
-        AnchorManager *anchors = nullptr
+        QObject *parent, std::size_t pendingCapacity, ThemeControl *theme = nullptr, AnchorManager *anchors = nullptr
     );
     ~LogModel() override;
 

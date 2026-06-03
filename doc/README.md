@@ -389,27 +389,27 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ## Keyboard Shortcuts
 
-| Action                          | Shortcut             |
-| ------------------------------- | -------------------- |
-| New session                     | `Ctrl+N`             |
-| New window                      | `Ctrl+Shift+N`       |
-| Open file(s)                    | `Ctrl+O`             |
-| Open log stream                 | `Ctrl+Shift+O`       |
-| Open network stream             | `Ctrl+Shift+L`       |
-| Save configuration              | `Ctrl+S`             |
-| Save session                    | `Ctrl+Shift+S`       |
-| Find                            | `Ctrl+F`             |
-| Copy selected rows as JSON      | `Ctrl+C`             |
-| Toggle Record Details pane      | `Ctrl+I`             |
-| Toggle Anchors panel            | `Ctrl+K`             |
-| Anchor selection (colour 1..8)  | `Ctrl+1` … `Ctrl+8`  |
-| Remove anchor from selection    | `Ctrl+0`             |
-| Clear every anchor              | `Ctrl+Shift+A`       |
-| Jump to next anchor             | `F2`                 |
-| Jump to previous anchor         | `Shift+F2`           |
-| Pause / Resume stream           | `Ctrl+Shift+P`       |
-| Toggle Follow newest            | `Ctrl+Shift+T`       |
-| Stop stream                     | `Ctrl+Shift+X`       |
+| Action                         | Shortcut            |
+| ------------------------------ | ------------------- |
+| New session                    | `Ctrl+N`            |
+| New window                     | `Ctrl+Shift+N`      |
+| Open file(s)                   | `Ctrl+O`            |
+| Open log stream                | `Ctrl+Shift+O`      |
+| Open network stream            | `Ctrl+Shift+L`      |
+| Save configuration             | `Ctrl+S`            |
+| Save session                   | `Ctrl+Shift+S`      |
+| Find                           | `Ctrl+F`            |
+| Copy selected rows as JSON     | `Ctrl+C`            |
+| Toggle Record Details pane     | `Ctrl+I`            |
+| Toggle Anchors panel           | `Ctrl+K`            |
+| Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8` |
+| Remove anchor from selection   | `Ctrl+0`            |
+| Clear every anchor             | `Ctrl+Shift+A`      |
+| Jump to next anchor            | `F2`                |
+| Jump to previous anchor        | `Shift+F2`          |
+| Pause / Resume stream          | `Ctrl+Shift+P`      |
+| Toggle Follow newest           | `Ctrl+Shift+T`      |
+| Stop stream                    | `Ctrl+Shift+X`      |
 
 ## Troubleshooting
 
