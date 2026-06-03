@@ -1577,9 +1577,23 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // state back into the configuration and would otherwise
         // overwrite the loaded `configuration.anchors` with the
         // empty AnchorManager state).
+        //
+        // Mirror the dropped-count surface from
+        // `TryLoadAsConfiguration`: a non-zero count means at
+        // least one anchor in the file referenced a future-schema
+        // colour slot we couldn't materialise -- tell the user so
+        // they aren't left wondering why an anchor went missing.
         if (mAnchors != nullptr)
         {
-            mAnchors->Replace(mModel->Configuration().anchors);
+            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (droppedAnchorCount > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 anchor(s) from a newer schema were dropped.")
+                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
         }
 
         RebuildFiltersFromConfiguration();
@@ -3179,9 +3193,25 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // when visible) repaint every row. The previous session's
         // anchors are dropped wholesale; a configuration without
         // an `anchors` array yields an empty `Replace`.
+        //
+        // `Replace` returns the count of entries dropped because
+        // their `colorIndex` was out of range -- a hand-edited
+        // future-schema slot, or a config produced by a newer
+        // build that added more palette colours. Surface a
+        // non-zero count to the user so anchors silently lost
+        // to schema drift are visible rather than mysteriously
+        // missing.
         if (mAnchors != nullptr)
         {
-            mAnchors->Replace(mModel->Configuration().anchors);
+            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (droppedAnchorCount > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 anchor(s) from a newer schema were dropped.")
+                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
         }
 
         RebuildFiltersFromConfiguration();
@@ -4809,6 +4839,27 @@ void MainWindow::ShowRowContextMenu(const QPoint &pos)
     {
         return;
     }
+
+    // Right-click adopts the clicked row into the selection when it
+    // sits outside the existing one. Without this the Anchor sub-menu
+    // displays state for the clicked row but its actions run against
+    // the (unrelated) selection -- standard Explorer / Excel idiom
+    // resolves the mismatch by selecting the row on right-click.
+    // Existing in-selection right-clicks keep the multi-row selection
+    // intact so anchor / time-filter actions still operate over every
+    // selected row.
+    if (QItemSelectionModel *selectionModel = mTableView->selectionModel(); selectionModel != nullptr)
+    {
+        if (!selectionModel->isRowSelected(proxyIndex.row(), proxyIndex.parent()))
+        {
+            selectionModel->select(
+                proxyIndex,
+                QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows | QItemSelectionModel::Current
+            );
+            selectionModel->setCurrentIndex(proxyIndex, QItemSelectionModel::NoUpdate);
+        }
+    }
+
     QMenu *menu = BuildRowContextMenu(sourceRow, mTableView);
     if (menu == nullptr)
     {

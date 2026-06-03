@@ -2920,9 +2920,12 @@ private slots:
         QVERIFY(!manager.ClearAll());
         QCOMPARE(resetSpy.count(), 1);
 
-        // Replace skips out-of-range entries silently rather than
-        // clamping them -- a hand-edited session with a stale
+        // Replace skips out-of-range entries rather than clamping
+        // them -- a hand-edited session with a stale
         // `colorIndex: 12` shouldn't quietly squash into slot 7.
+        // The returned count surfaces those drops so the GUI can
+        // tell the user; one in-range + one out-of-range entry must
+        // yield droppedCount == 1.
         std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
         incoming.push_back(
             loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0}
@@ -2930,11 +2933,62 @@ private slots:
         incoming.push_back(
             loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
         );
-        manager.Replace(incoming);
+        QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
         QCOMPARE(manager.Count(), std::size_t{1});
         QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), uint8_t{0});
         QVERIFY(!manager.ColorFor({.locator = "c:/x.json", .lineId = 2}).has_value());
+
+        // All-valid input returns zero dropped: the count is a
+        // strict "schema drift" signal, not a "size of input" one.
+        std::vector<loglib::LogConfiguration::AnchorEntry> clean;
+        clean.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1}
+        );
+        QCOMPARE(manager.Replace(clean), std::size_t{0});
+    }
+
+    // `Entries()` is the snapshot used by the save path. Anchors
+    // whose locator is empty (rows from a sourceless `LineSource`,
+    // i.e. in-memory streams / network sessions whose `Path()` is
+    // empty) must NOT round-trip into the saved configuration --
+    // their `lineId` alone is not stable across sessions, so
+    // persisting them would later collide with arbitrary unrelated
+    // `lineId`s in any other session that also lacks a path.
+    // `EntriesIncludingRuntimeOnly` retains them for diagnostics.
+    void TestAnchorManagerEntriesDropsRuntimeOnlyAnchors()
+    {
+        AnchorManager manager;
+
+        // Two anchors: one carries a real (canonical) locator, the
+        // other an empty one. The empty-locator anchor exists only
+        // for the lifetime of the current session.
+        const AnchorManager::Key persistable{.locator = "c:/logs/persistent.json", .lineId = 7};
+        const AnchorManager::Key runtimeOnly{.locator = "", .lineId = 42};
+        QVERIFY(manager.SetAnchor(persistable, 1));
+        QVERIFY(manager.SetAnchor(runtimeOnly, 5));
+        QCOMPARE(manager.Count(), std::size_t{2});
+
+        // Save path: only the persistable anchor must appear, and
+        // the dropped runtime-only entry must not bleed in through
+        // the sort comparator either.
+        const auto saved = manager.Entries();
+        QCOMPARE(saved.size(), std::size_t{1});
+        QCOMPARE(saved.front().locator, std::string{"c:/logs/persistent.json"});
+        QCOMPARE(saved.front().lineId, std::uint64_t{7});
+        QCOMPARE(saved.front().colorIndex, std::uint8_t{1});
+
+        // Inspection path: both anchors visible, deterministic order.
+        const auto all = manager.EntriesIncludingRuntimeOnly();
+        QCOMPARE(all.size(), std::size_t{2});
+        QCOMPARE(all[0].locator, std::string{""});
+        QCOMPARE(all[1].locator, std::string{"c:/logs/persistent.json"});
+
+        // Sanity: the runtime-only anchor still lives in the
+        // manager (the filter is at the snapshot boundary, not the
+        // mutation boundary). The GUI can still recolour or remove
+        // it via `ColorFor` / `RemoveAnchor`.
+        QCOMPARE(manager.ColorFor(runtimeOnly).value_or(255U), std::uint8_t{5});
     }
 
     // Pins `Replace`'s same-content short-circuit: re-applying the
@@ -2960,7 +3014,7 @@ private slots:
         entries.push_back(
             loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
         );
-        manager.Replace(entries);
+        QCOMPARE(manager.Replace(entries), std::size_t{0});
         QCOMPARE(resetSpy.count(), 1);
         QCOMPARE(manager.Count(), std::size_t{2});
 
@@ -2973,7 +3027,7 @@ private slots:
         shuffled.push_back(
             loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
         );
-        manager.Replace(shuffled);
+        QCOMPARE(manager.Replace(shuffled), std::size_t{0});
         QCOMPARE(resetSpy.count(), 1);
 
         // Same keys, different colour on one entry: content
@@ -2985,7 +3039,7 @@ private slots:
         mutated.push_back(
             loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 6}
         );
-        manager.Replace(mutated);
+        QCOMPARE(manager.Replace(mutated), std::size_t{0});
         QCOMPARE(resetSpy.count(), 2);
         QCOMPARE(manager.ColorFor({.locator = "c:/logs/b.json", .lineId = 9}).value_or(255U), uint8_t{6});
     }
@@ -3307,6 +3361,88 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Right-clicking a row that sits OUTSIDE the existing selection
+    // must adopt that row as the only selected row, so the Anchor
+    // sub-menu's checked state and the action it drives both refer
+    // to the same row the user just clicked on. Right-clicking a
+    // row that's already part of a multi-row selection must leave
+    // the selection alone (the user is acting on the set, e.g.
+    // anchoring every selected row at once).
+    void TestRowContextMenuAdoptsRightClickedRowOutsideSelection()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        QAbstractItemModel *proxy = view->model();
+        QVERIFY(proxy != nullptr);
+        QItemSelectionModel *selection = view->selectionModel();
+        QVERIFY(selection != nullptr);
+
+        // Seed a multi-row selection on rows 0-2 (proxy and source
+        // are 1:1 here -- the proxy chain is untouched). The
+        // right-click adoption must NOT clobber a selection it
+        // already contains.
+        selection->clearSelection();
+        const QModelIndex anchorIdx = proxy->index(0, 0);
+        const QModelIndex middleIdx = proxy->index(1, 0);
+        const QModelIndex tailIdx = proxy->index(2, 0);
+        selection->select(
+            QItemSelection(anchorIdx, tailIdx), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        selection->setCurrentIndex(middleIdx, QItemSelectionModel::NoUpdate);
+        QCOMPARE(selection->selectedRows().count(), 3);
+
+        // Right-click row 1 (inside the existing selection). The
+        // current selection must survive untouched -- otherwise a
+        // multi-row anchor action wouldn't see all three rows.
+        const QPoint insideClick = view->visualRect(middleIdx).center();
+        mWindow->ShowRowContextMenuForTest(insideClick);
+        QCoreApplication::processEvents();
+        QCOMPARE(selection->selectedRows().count(), 3);
+
+        // Close any popup that ShowRowContextMenu opened so the
+        // next case starts from a clean state.
+        if (QWidget *popup = QApplication::activePopupWidget(); popup != nullptr)
+        {
+            popup->close();
+            QCoreApplication::processEvents();
+        }
+
+        // Right-click row 4 (OUTSIDE the existing selection). The
+        // dock-style "adopt the clicked row" behaviour must collapse
+        // the selection to that single row, and the current index
+        // must move with it -- otherwise the Anchor sub-menu would
+        // show the clicked row's colour state but the action would
+        // run against rows 0-2.
+        const QModelIndex outsideIdx = proxy->index(4, 0);
+        const QPoint outsideClick = view->visualRect(outsideIdx).center();
+        mWindow->ShowRowContextMenuForTest(outsideClick);
+        QCoreApplication::processEvents();
+        QCOMPARE(selection->selectedRows().count(), 1);
+        QCOMPARE(selection->selectedRows().first().row(), 4);
+        QCOMPARE(view->currentIndex().row(), 4);
+
+        if (QWidget *popup = QApplication::activePopupWidget(); popup != nullptr)
+        {
+            popup->close();
+            QCoreApplication::processEvents();
+        }
+
+        model->EndStreaming(false);
+    }
+
     // The Anchors dock must list every anchor in `Entries()` order,
     // double-click resolves the AnchorManager::Key back to a source
     // row, and the "Clear all" button drops every anchor. Together
@@ -3344,7 +3480,7 @@ private slots:
         // Offscreen QPA keeps the dock hidden so signal-driven
         // refreshes elide; invoke explicitly to mirror the user
         // opening the dock.
-        dock->Refresh();
+        dock->RefreshForTest();
         QCOMPARE(list->count(), 2);
 
         // The dock emits `jumpToAnchorRequested(sourceRow)` on
@@ -3379,7 +3515,7 @@ private slots:
         emit clearBtn->clicked();
         QCoreApplication::processEvents();
         QVERIFY2(anchors->Empty(), "Clear all button must wipe every anchor");
-        dock->Refresh();
+        dock->RefreshForTest();
         QCOMPARE(list->count(), 0);
 
         model->EndStreaming(false);
@@ -3666,7 +3802,7 @@ private slots:
         anchors->SetAnchor(*key0, 0);
         anchors->SetAnchor(*key1, 1);
         anchors->SetAnchor(*key2, 2);
-        dock->Refresh();
+        dock->RefreshForTest();
         QCOMPARE(list->count(), 3);
 
         // Pick the middle item as both current and selected; then
@@ -3683,11 +3819,11 @@ private slots:
 
         // Touching key0 fires `anchorChanged` -> `Refresh()`. The
         // dock is offscreen on the QPA used in tests, so we call
-        // Refresh directly to mirror what `IsVisibleForRefresh()`
-        // would gate on a real window.
+        // RefreshForTest directly to mirror what
+        // `IsVisibleForRefresh()` would gate on a real window.
         anchors->SetAnchor(*key0, 5);
         QCoreApplication::processEvents();
-        dock->Refresh();
+        dock->RefreshForTest();
 
         // The list count is unchanged (still three anchors); the
         // restored selection must still point at the middle item.

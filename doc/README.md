@@ -391,10 +391,13 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 | Action                          | Shortcut             |
 | ------------------------------- | -------------------- |
+| New session                     | `Ctrl+N`             |
+| New window                      | `Ctrl+Shift+N`       |
 | Open file(s)                    | `Ctrl+O`             |
 | Open log stream                 | `Ctrl+Shift+O`       |
 | Open network stream             | `Ctrl+Shift+L`       |
 | Save configuration              | `Ctrl+S`             |
+| Save session                    | `Ctrl+Shift+S`       |
 | Find                            | `Ctrl+F`             |
 | Copy selected rows as JSON      | `Ctrl+C`             |
 | Toggle Record Details pane      | `Ctrl+I`             |

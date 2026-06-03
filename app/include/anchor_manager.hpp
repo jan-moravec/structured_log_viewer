@@ -104,19 +104,26 @@ public:
     /// Bulk replace -- used by `ApplyLoadedConfiguration`. Drops
     /// the current state and rebuilds from @p entries.
     ///
-    /// Out-of-range `colorIndex` entries are silently skipped
-    /// (a hand-edited future-schema slot should disappear rather
-    /// than quietly squash into slot `ANCHOR_PALETTE_SIZE - 1`).
-    /// When @p entries contains the same `(locator, lineId)` key
-    /// more than once the last occurrence wins; same rationale
-    /// as `std::unordered_map::insert_or_assign`.
+    /// Out-of-range `colorIndex` entries are skipped (a hand-edited
+    /// future-schema slot should disappear rather than quietly
+    /// squash into slot `ANCHOR_PALETTE_SIZE - 1`). When @p entries
+    /// contains the same `(locator, lineId)` key more than once the
+    /// last occurrence wins; same rationale as
+    /// `std::unordered_map::insert_or_assign`.
     ///
     /// Emits `anchorsReset` only when the rebuilt map differs
     /// from the previous content. The common live-reload case
     /// ("the config we just saved is the config we just loaded")
     /// is therefore silent, sparing every listener a full-table
     /// refresh.
-    void Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries);
+    ///
+    /// @returns the number of @p entries that were dropped because
+    /// their `colorIndex` was out of range. Callers (specifically
+    /// `MainWindow::TryLoadAsConfiguration`) surface a non-zero
+    /// count to the user via the status bar so silently lost
+    /// anchors don't go unnoticed after loading a newer-schema
+    /// configuration.
+    [[nodiscard]] std::size_t Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries);
 
     /// @returns the anchor colour for @p key, or nullopt if @p key
     /// is not anchored.
@@ -126,7 +133,22 @@ public:
     /// by `(locator, lineId)` so on-disk JSON diffs are stable
     /// from one save to the next; in-memory order has no meaning
     /// otherwise.
+    ///
+    /// Anchors on rows from a sourceless `LineSource` (in-memory
+    /// streams, network sessions whose `Path()` is empty) carry an
+    /// empty `locator` and are **runtime-only**: they are dropped
+    /// from this snapshot so they cannot persist into a saved
+    /// configuration. The `lineId` alone is not stable across
+    /// sessions for those rows, so persisting them would later
+    /// collide with arbitrary unrelated `lineId`s in any session
+    /// that also lacks a path. Use `EntriesIncludingRuntimeOnly`
+    /// for inspection / tests that need the unfiltered set.
     [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> Entries() const;
+
+    /// Same as `Entries` but does **not** drop empty-locator
+    /// (runtime-only) anchors. Use this only for diagnostics or
+    /// tests; production save paths must go through `Entries`.
+    [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> EntriesIncludingRuntimeOnly() const;
 
     /// Live count.
     [[nodiscard]] std::size_t Count() const noexcept;

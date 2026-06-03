@@ -425,6 +425,18 @@ public:
         return mDiagnosticsButton;
     }
 
+    /// Test-only entry to the row-right-click handler. Drives the
+    /// same code path the live `customContextMenuRequested` signal
+    /// reaches, so the "right-click adopts the clicked row into the
+    /// selection when it sits outside it" rule can be pinned by a
+    /// regression test without synthesising a real mouse event.
+    /// The popup itself is short-circuited (in tests, callers close
+    /// any `QApplication::activePopupWidget()` right after).
+    void ShowRowContextMenuForTest(const QPoint &pos)
+    {
+        ShowRowContextMenu(pos);
+    }
+
     /// Test-only entry to the queued static-files open path,
     /// bypassing the file dialog and modifier sniff.
     void OpenFilesForTest(const QStringList &files, OpenMode mode);

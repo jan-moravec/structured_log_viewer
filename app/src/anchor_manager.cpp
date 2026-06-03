@@ -41,6 +41,15 @@ bool AnchorManager::SetAnchors(std::span<const Key> keys, uint8_t colorIndex)
     }
     const auto clamped = static_cast<uint8_t>(std::min<std::size_t>(colorIndex, loglib::ANCHOR_PALETTE_SIZE - 1));
     int changeCount = 0;
+    // `lastChangedKey` is a pointer into a node already in the map.
+    // Per `[unord.req]` (`std::unordered_map`), rehashing (which
+    // subsequent `try_emplace` calls in this loop may trigger)
+    // invalidates iterators but does NOT invalidate references or
+    // pointers to existing elements -- those only invalidate on
+    // erase. We never erase here, so the pointer remains valid
+    // through the rest of the loop and through the final emit.
+    // Mirrors the by-value capture in `RemoveAnchors`, where erase
+    // *does* invalidate.
     const Key *lastChangedKey = nullptr;
     for (const Key &key : keys)
     {
@@ -147,7 +156,7 @@ bool AnchorManager::ClearAll()
     return true;
 }
 
-void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries)
+std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries)
 {
     // Snapshot the pre-clear map so we can short-circuit the
     // `anchorsReset` emit when the rebuilt state matches what we
@@ -158,6 +167,7 @@ void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEn
     std::unordered_map<Key, uint8_t, KeyHash> previous;
     previous.swap(mAnchors);
 
+    std::size_t droppedCount = 0;
     mAnchors.reserve(entries.size());
     for (const loglib::LogConfiguration::AnchorEntry &entry : entries)
     {
@@ -167,7 +177,10 @@ void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEn
             // schema or a hand-edited session JSON; drop them
             // instead of clamping so the user keeps an obvious
             // "anchor disappeared" signal rather than a silent
-            // re-colouring to slot 7.
+            // re-colouring to slot 7. The dropped count is
+            // surfaced to the caller so the GUI can show a
+            // status-bar note rather than swallowing them silently.
+            ++droppedCount;
             continue;
         }
         mAnchors.insert_or_assign(Key{.locator = entry.locator, .lineId = entry.lineId}, entry.colorIndex);
@@ -182,6 +195,7 @@ void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEn
     {
         emit anchorsReset();
     }
+    return droppedCount;
 }
 
 std::optional<uint8_t> AnchorManager::ColorFor(const Key &key) const noexcept
@@ -200,6 +214,17 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() cons
     out.reserve(mAnchors.size());
     for (const auto &[key, colorIndex] : mAnchors)
     {
+        // Drop runtime-only anchors (rows whose `LineSource` had an
+        // empty `Path()`, e.g. network streams or test fixtures).
+        // The `lineId` alone is not stable across sessions for those
+        // rows, so persisting them would later collide with arbitrary
+        // unrelated `lineId`s in any other session that also lacks a
+        // path. See `EntriesIncludingRuntimeOnly` for the unfiltered
+        // snapshot used by diagnostics.
+        if (key.locator.empty())
+        {
+            continue;
+        }
         out.push_back(loglib::LogConfiguration::AnchorEntry{
             .locator = key.locator,
             .lineId = key.lineId,
@@ -208,6 +233,28 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() cons
     }
     // Stable on-disk order so two consecutive saves of an unchanged
     // anchor set produce byte-identical JSON.
+    std::ranges::sort(out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
+        if (lhs.locator != rhs.locator)
+        {
+            return lhs.locator < rhs.locator;
+        }
+        return lhs.lineId < rhs.lineId;
+    });
+    return out;
+}
+
+std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::EntriesIncludingRuntimeOnly() const
+{
+    std::vector<loglib::LogConfiguration::AnchorEntry> out;
+    out.reserve(mAnchors.size());
+    for (const auto &[key, colorIndex] : mAnchors)
+    {
+        out.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = key.locator,
+            .lineId = key.lineId,
+            .colorIndex = colorIndex,
+        });
+    }
     std::ranges::sort(out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
         if (lhs.locator != rhs.locator)
         {

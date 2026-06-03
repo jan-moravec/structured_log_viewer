@@ -105,22 +105,23 @@ public:
     /// table view's right-click anchor menu can address the row
     /// without re-walking `LogTable`.
     ///
-    /// Not marked `noexcept`: canonicalising the locator goes
-    /// through `QFileInfo::absoluteFilePath` and a handful of
-    /// `QString` / `std::string` allocations, any of which can
-    /// throw `std::bad_alloc`. The cache hot path is allocation-
-    /// free after the first hit per `LineSource`, but the cold
-    /// path is not.
-    [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const;
+    /// `noexcept`: the canonical-locator cache is pre-warmed by
+    /// `PrewarmCanonicalLocatorCache` whenever the source set
+    /// changes, so this function only ever performs a hash lookup.
+    /// A cache miss (a `LineSource` that wasn't pre-warmed --
+    /// possible only if `PrewarmCanonicalLocatorCache` is skipped
+    /// somewhere on the source-add path) returns an empty
+    /// locator rather than allocating, keeping the GUI paint
+    /// stack exception-safe.
+    [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const noexcept;
 
     /// Inverse lookup. Linear scan over the visible rows -- same
     /// O(n) tradeoff as `RefreshRowsForAnchor`. Returns the first
     /// matching source-model row index, or -1 if @p key has no live
     /// row in the current model (e.g. the anchored line was evicted
     /// or the session was reopened with a different source file).
-    /// Fans out into `AnchorKeyForRow`, so it inherits the same
-    /// `std::bad_alloc` exit window.
-    [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const;
+    /// Fans out into `AnchorKeyForRow` (noexcept lookup path).
+    [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
@@ -393,6 +394,21 @@ private:
     /// `anchorsReset`.
     void RefreshAllAnchorRows();
 
+    /// Pre-warm `mCanonicalLocatorCache` for every `LineSource`
+    /// currently in `mLogTable.Data().Sources()`. The hot
+    /// `data()` Background/Foreground path goes through
+    /// `AnchorKeyForRow`, which falls back to canonicalising the
+    /// source's path (a `QFileInfo::absoluteFilePath` call that
+    /// allocates a `std::string` and can in principle throw
+    /// `std::bad_alloc`). Calling this after every source
+    /// mutation (BeginStreaming, AppendStreaming, AppendBatch)
+    /// guarantees the cache holds an entry for every live source
+    /// before the GUI paints a row from it -- the lookup path in
+    /// `AnchorKeyForRow` is then noexcept and the paint stack
+    /// can't accidentally tear down on a low-memory frame.
+    /// Idempotent and O(unique sources) per call (typically 1-3).
+    void PrewarmCanonicalLocatorCache();
+
     /// Per-`LineSource` cache of canonical locator strings.
     /// `CanonicalLocator` is a `QFileInfo::absoluteFilePath`-class
     /// call (a `stat`-grade syscall on Windows), and the model's
@@ -402,10 +418,13 @@ private:
     /// that share a `LineSource`. The cache turns those into a
     /// single canonicalisation per file per session.
     ///
-    /// Keyed on the raw pointer, which is stable for the lifetime
-    /// of the source store; cleared in `BeginStreamingShared` and
-    /// in the reset path of `TeardownStreamingSessionInternal` so
-    /// dangling pointers can't survive a session swap.
+    /// Pre-populated by `PrewarmCanonicalLocatorCache` whenever
+    /// the source set changes; `AnchorKeyForRow` reads it via a
+    /// noexcept hash lookup. Keyed on the raw pointer, which is
+    /// stable for the lifetime of the source store; cleared in
+    /// `BeginStreamingShared` and in the reset path of
+    /// `TeardownStreamingSessionInternal` so dangling pointers
+    /// can't survive a session swap.
     mutable std::unordered_map<const loglib::LineSource *, std::string> mCanonicalLocatorCache;
 };
 

@@ -165,54 +165,36 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
 
     setWidget(host);
 
+    // Lambdas call the gated `Refresh()` directly. The early-bail in
+    // `Refresh()` (against `IsVisibleForRefresh()`) short-circuits
+    // buried-dock cases without each call site repeating the check.
     if (mAnchors != nullptr)
     {
-        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &) {
-            if (IsVisibleForRefresh())
-            {
-                Refresh();
-            }
-        });
-        connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
-            if (IsVisibleForRefresh())
-            {
-                Refresh();
-            }
-        });
+        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &) { Refresh(); });
+        connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
     }
 
     // Repopulate when the underlying model's row set changes -- the
     // resolved "filename" column may flip on a streamed batch that
-    // promotes a previously-empty locator. Gated on visibility so a
-    // buried dock doesn't pay for every `modelReset` (which fires on
-    // every `BeginStreaming`, `Reset`, `NotifyConfigurationReplaced`
-    // and reloaded config -- bursts that target the table, not us).
-    // Re-shown docks pick up the latest state through the
-    // `visibilityChanged` -> `Refresh()` path below.
+    // promotes a previously-empty locator. The gate inside
+    // `Refresh()` ensures a buried dock doesn't pay for every
+    // `modelReset` (which fires on every `BeginStreaming`, `Reset`,
+    // `NotifyConfigurationReplaced` and reloaded config -- bursts
+    // that target the table, not us). Re-shown docks pick up the
+    // latest state through the `visibilityChanged` handler below.
     if (mModel != nullptr)
     {
-        connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
-            if (IsVisibleForRefresh())
-            {
-                Refresh();
-            }
-        });
+        connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { Refresh(); });
     }
 
     // Theme switch (`Preferences -> Theme` or OS dark-mode flip in
     // Auto): anchor swatches read from `ThemeControl::AnchorBrushFor`,
     // so without this connect the dock keeps painting the previous
     // theme's palette until the next anchor mutation triggers a
-    // refresh. Gated on `IsVisibleForRefresh` so a buried dock still
-    // skips work.
+    // refresh. Gated through `Refresh()` so a buried dock skips work.
     if (mTheme != nullptr)
     {
-        connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
-            if (IsVisibleForRefresh())
-            {
-                Refresh();
-            }
-        });
+        connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
     }
 
     // `itemActivated` fires on Enter/Return on the focused item *and*
@@ -226,18 +208,40 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     connect(mList, &QWidget::customContextMenuRequested, this, &AnchorsDock::OnContextMenuRequested);
     connect(mClearAllButton, &QPushButton::clicked, this, &AnchorsDock::OnClearAllClicked);
 
+    // The first `visibilityChanged(true)` flips `mPerceivedVisible`
+    // from its false default (see header) and drives the very first
+    // population via `RefreshAlways` -- bypassing the gate is safe
+    // here because the visibility just opened. Subsequent visibility
+    // flips go back through the gated path. We do NOT call
+    // `Refresh()` at the end of the constructor: the dock starts
+    // hidden so the gate would reject it; an explicit no-op call
+    // would just be misleading.
     connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         mPerceivedVisible = visible;
         if (visible)
         {
-            Refresh();
+            RefreshAlways();
         }
     });
-
-    Refresh();
 }
 
 void AnchorsDock::Refresh()
+{
+    // Gate: buried docks (hidden window, tabified-but-buried,
+    // bare-shell offscreen QPA) skip the full snapshot + repopulate
+    // pass. `visibilityChanged(true)` calls `RefreshAlways` directly
+    // so the user sees fresh content the moment they re-open the
+    // dock. Tests that need to inspect the dock under offscreen QPA
+    // (where `visibilityChanged` never fires) go through
+    // `RefreshForTest`.
+    if (!IsVisibleForRefresh())
+    {
+        return;
+    }
+    RefreshAlways();
+}
+
+void AnchorsDock::RefreshAlways()
 {
     if (mList == nullptr)
     {
@@ -392,17 +396,18 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
         return;
     }
 
-    // Capture the anchor key (and the resolved source row) BEFORE
-    // `menu.exec()` pumps the event loop. While the popup is up any
-    // queued anchor signal can land on this thread, fire `Refresh()`,
-    // and tear down `item` -- accessing it after `exec()` returns
-    // would be a use-after-free. Stack-local copies survive that
-    // re-entry.
+    // Capture the anchor key BEFORE `menu.exec()` pumps the event
+    // loop. While the popup is up any queued anchor signal can land
+    // on this thread, fire `Refresh()`, and tear down `item` --
+    // accessing it after `exec()` returns would be a use-after-free.
+    // The stack-local key survives that re-entry. The source row is
+    // intentionally NOT captured here: a FIFO eviction mid-popup
+    // would shift every surviving row's index, so we re-resolve from
+    // the (stable) key after `exec()` returns.
     AnchorManager::Key key{
         .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
         .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
     };
-    const int sourceRow = SourceRowForItem(item);
 
     QMenu menu(this);
     QAction *jumpAction = menu.addAction(QObject::tr("Jump to anchor"));
@@ -414,7 +419,18 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     }
     if (picked == jumpAction)
     {
-        emit jumpToAnchorRequested(sourceRow);
+        // `menu.exec()` pumped the event loop, so re-check the
+        // QPointer the same way the function entry did. Re-resolve
+        // the source row from the key here: a streaming eviction
+        // between menu-open and click would have shifted every row,
+        // and `SourceRowForAnchorKey` returns -1 for an anchor that
+        // no longer has a live row -- `MainWindow::SelectSourceRow`
+        // handles that case by surfacing a status-bar note.
+        if (mModel.isNull())
+        {
+            return;
+        }
+        emit jumpToAnchorRequested(mModel->SourceRowForAnchorKey(key));
         return;
     }
     if (picked == removeAction)

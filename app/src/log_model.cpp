@@ -221,6 +221,13 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
         mLogTable.ReserveLineOffsets(*reserveCount);
     }
 
+    // Pre-warm the canonical-locator cache so `data()` and
+    // `AnchorKeyForRow` never have to canonicalise on the GUI
+    // thread. The newly-added source has a `Path()` we can
+    // canonicalise once now; subsequent batches just append rows
+    // that already see the cached entry.
+    PrewarmCanonicalLocatorCache();
+
     mErrorCount = 0;
     mStreamingErrors.clear();
     mLastReportedShutdownDropCount = 0;
@@ -322,6 +329,11 @@ loglib::StopToken LogModel::AppendStreaming(
     const size_t reserveCount = source->File().Size() / 100;
     mLogTable.AppendStreaming(std::move(source));
     mLogTable.ReserveLineOffsets(reserveCount);
+
+    // Same rationale as in `BeginStreamingShared`: pre-canonicalise
+    // the just-added source so the GUI hot path is allocation-free
+    // when the first batch arrives.
+    PrewarmCanonicalLocatorCache();
 
     // Re-arm the sink for the new worker without resetting counters or
     // wiping rows; `Arm()` bumps the generation.
@@ -581,6 +593,16 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     mLogTable.AppendBatch(std::move(batch));
+
+    // Defensive pre-warm: today every source is registered up
+    // front via `BeginStreaming` / `AppendStreaming` and batches
+    // only contribute rows. If a future code path introduces a
+    // source via the batch path instead (e.g. a multi-source
+    // stream consumer), this keeps the `data()` noexcept-lookup
+    // contract intact without re-introducing the `bad_alloc`
+    // swallow there. Idempotent and O(unique sources) -- typically
+    // a no-op.
+    PrewarmCanonicalLocatorCache();
 
     // Restore the cache when the post-batch index didn't change;
     // otherwise leave it invalidated for lazy rebuild.
@@ -1144,7 +1166,7 @@ int LogModel::ComputeFirstLevelColumnIndex() const noexcept
     return LEVEL_COLUMN_NONE;
 }
 
-std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const
+std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexcept
 {
     if (row < 0)
     {
@@ -1164,47 +1186,37 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const
     };
     if (source != nullptr && !source->Path().empty())
     {
-        // Canonicalise the same way `LogConfiguration::Source::
-        // locatorDedupKeys` does (forward-slashed, lowercase on
-        // Windows) so anchor lookups stay byte-equal across the
-        // GUI / save / load round-trip.
-        //
-        // Cache by `LineSource *` because the canonicalisation
-        // calls `QFileInfo::absoluteFilePath()` (a `stat`-grade
-        // syscall on Windows) and is invoked on hot paths --
-        // every `data()` Background/Foreground role on every
-        // visible row, and once per row in `RefreshRowsForAnchor`
-        // / `SourceRowForAnchorKey`. Without this cache, scrolling
-        // a multi-thousand-row table with anchors enabled visibly
-        // stutters; the cache holds at most one entry per file in
-        // the session.
+        // Cache lookup only -- the canonicalisation pass is run
+        // up front by `PrewarmCanonicalLocatorCache` whenever the
+        // source set changes (`BeginStreamingShared`,
+        // `AppendStreaming`, post-`AppendBatch`). That keeps this
+        // function noexcept, which matters because Qt's paint
+        // stack invokes `data()` directly and can't unwind cleanly
+        // through a `std::bad_alloc` from a `QFileInfo` call on
+        // a low-memory frame. A cache miss (only possible if a
+        // future code path adds a `LineSource` without
+        // pre-warming) falls through to an empty locator -- the
+        // anchor simply won't match, which is the same behaviour
+        // we had previously on a swallowed `bad_alloc`.
         const auto it = mCanonicalLocatorCache.find(source);
         if (it != mCanonicalLocatorCache.end())
         {
             key.locator = it->second;
         }
-        else
-        {
-            std::string canonical =
-                logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
-            const auto [insertedIt, inserted] = mCanonicalLocatorCache.emplace(source, std::move(canonical));
-            key.locator = insertedIt->second;
-        }
     }
     return key;
 }
 
-int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const
+int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept
 {
     const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
     for (std::size_t i = 0; i < lines.size(); ++i)
     {
         // `lineId` is unique within a `LineSource` and ints compare
-        // O(1); skip the canonical-locator build (which can hit
-        // `QFileInfo::absoluteFilePath` on a cache miss) when the
-        // cheap field already disagrees. Multi-file sessions can
-        // collide on `lineId` across sources, so the locator check
-        // below is still required for an actual match.
+        // O(1); skip the canonical-locator lookup when the cheap
+        // field already disagrees. Multi-file sessions can collide
+        // on `lineId` across sources, so the locator check below
+        // is still required for an actual match.
         if (static_cast<uint64_t>(lines[i].LineId()) != key.lineId)
         {
             continue;
@@ -1216,6 +1228,33 @@ int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const
         }
     }
     return -1;
+}
+
+void LogModel::PrewarmCanonicalLocatorCache()
+{
+    // Walk the table's owning vector of `LineSource`s directly --
+    // it is the source-of-truth set of distinct sources the model
+    // can hand to `AnchorKeyForRow`. Idempotent: existing cache
+    // entries are skipped; only newly-registered sources pay the
+    // `CanonicalLocator` canonicalisation. The pointer is stable
+    // for the lifetime of the source store (the table never moves
+    // a source between slots, only appends), so caching by
+    // `LineSource *` is safe across the rest of the session.
+    for (const auto &sourcePtr : mLogTable.Data().Sources())
+    {
+        const loglib::LineSource *source = sourcePtr.get();
+        if (source == nullptr || source->Path().empty())
+        {
+            continue;
+        }
+        if (mCanonicalLocatorCache.contains(source))
+        {
+            continue;
+        }
+        std::string canonical =
+            logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+        mCanonicalLocatorCache.emplace(source, std::move(canonical));
+    }
 }
 
 void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
@@ -1332,34 +1371,24 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         // `Empty()` so the no-anchor case (the common one) skips
         // the per-row `AnchorKeyForRow` walk.
         //
-        // `AnchorKeyForRow` may throw `std::bad_alloc` from its
-        // cold-path locator canonicalisation. Qt's painters call
-        // `data()` directly during a paint event and can't
-        // unwind cleanly through it, so swallow the exception
-        // and fall through to the level brush rather than tear
-        // down the view mid-frame.
+        // `AnchorKeyForRow` is noexcept by contract: the canonical
+        // locator is pre-warmed for every live source on
+        // `BeginStreaming` / `AppendStreaming` / post-`AppendBatch`,
+        // so the lookup is a hash-map probe without any
+        // allocations.
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
-            try
+            const auto key = AnchorKeyForRow(index.row());
+            if (key.has_value())
             {
-                const auto key = AnchorKeyForRow(index.row());
-                if (key.has_value())
+                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
                 {
-                    if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::BackgroundRole);
+                    if (brush.style() != Qt::NoBrush)
                     {
-                        const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::BackgroundRole);
-                        if (brush.style() != Qt::NoBrush)
-                        {
-                            return QVariant(brush);
-                        }
+                        return QVariant(brush);
                     }
                 }
-            }
-            catch (const std::bad_alloc &) // NOLINT(bugprone-empty-catch)
-            {
-                // Intentionally empty: fall through to the
-                // level brush below. See the contract comment
-                // above.
             }
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
@@ -1377,30 +1406,23 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
-        // Same `std::bad_alloc` swallow as the BackgroundRole
+        // Same noexcept-lookup contract as the BackgroundRole
         // branch -- the paint stack above us is not
-        // exception-safe.
+        // exception-safe, and the canonical-locator cache is
+        // pre-warmed so we never hit the allocation path here.
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
-            try
+            const auto key = AnchorKeyForRow(index.row());
+            if (key.has_value())
             {
-                const auto key = AnchorKeyForRow(index.row());
-                if (key.has_value())
+                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
                 {
-                    if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::ForegroundRole);
+                    if (brush.style() != Qt::NoBrush)
                     {
-                        const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::ForegroundRole);
-                        if (brush.style() != Qt::NoBrush)
-                        {
-                            return QVariant(brush);
-                        }
+                        return QVariant(brush);
                     }
                 }
-            }
-            catch (const std::bad_alloc &) // NOLINT(bugprone-empty-catch)
-            {
-                // Intentionally empty: fall through to the
-                // level brush below.
             }
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
