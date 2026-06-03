@@ -174,6 +174,19 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
 
         emit lineCountChanged(0);
         emit errorCountChanged(0);
+
+        // Belt-and-braces: `MainWindow` already calls
+        // `mAnchors->ClearAll()` at every destructive open
+        // (`StartStreamingOpenQueue`, `NewSession`, etc.), but a
+        // model-driven `Reset()` from a non-MainWindow caller
+        // (tests, future scripted resets) would otherwise leave
+        // anchors pointing at lineIds the next session is free to
+        // re-use. `ClearAll` is idempotent on an already-empty
+        // manager so the doubled call from MainWindow is harmless.
+        if (mAnchors != nullptr)
+        {
+            mAnchors->ClearAll();
+        }
     }
 
     // Compensate for the worker's now generation-stale `OnFinished`
@@ -452,6 +465,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     if (dropCount > 0)
     {
+        // Drop anchor entries on the soon-to-be-evicted rows before
+        // the table mutates: `AnchorKeyForRow` reads `Lines()[row]`,
+        // which becomes stale the instant `EvictPrefixRows` runs.
+        DropAnchorsForEvictionPrefix(dropCount);
         beginRemoveRows(QModelIndex(), 0, dropCount - 1);
         mLogTable.EvictPrefixRows(static_cast<size_t>(dropCount));
         endRemoveRows();
@@ -1127,7 +1144,7 @@ int LogModel::ComputeFirstLevelColumnIndex() const noexcept
     return LEVEL_COLUMN_NONE;
 }
 
-std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexcept
+std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const
 {
     if (row < 0)
     {
@@ -1170,18 +1187,28 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexc
         {
             std::string canonical =
                 logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
-            const auto [inserted, _] = mCanonicalLocatorCache.emplace(source, std::move(canonical));
-            key.locator = inserted->second;
+            const auto [insertedIt, inserted] = mCanonicalLocatorCache.emplace(source, std::move(canonical));
+            key.locator = insertedIt->second;
         }
     }
     return key;
 }
 
-int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept
+int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const
 {
     const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
     for (std::size_t i = 0; i < lines.size(); ++i)
     {
+        // `lineId` is unique within a `LineSource` and ints compare
+        // O(1); skip the canonical-locator build (which can hit
+        // `QFileInfo::absoluteFilePath` on a cache miss) when the
+        // cheap field already disagrees. Multi-file sessions can
+        // collide on `lineId` across sources, so the locator check
+        // below is still required for an actual match.
+        if (static_cast<uint64_t>(lines[i].LineId()) != key.lineId)
+        {
+            continue;
+        }
         const auto rowKey = AnchorKeyForRow(static_cast<int>(i));
         if (rowKey.has_value() && *rowKey == key)
         {
@@ -1204,10 +1231,16 @@ void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
     // keeping it in sync with batch appends / FIFO eviction.
     // Typical hit count is 1 (a `lineId` is unique within a
     // `LineSource`), but the loop covers the multi-file case where
-    // two sources share an id namespace.
+    // two sources share an id namespace. Cheap `lineId` mismatch is
+    // checked first so we skip the canonical-locator build on every
+    // non-match row (which dominates the iteration cost).
     const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
     for (size_t i = 0; i < lines.size(); ++i)
     {
+        if (static_cast<uint64_t>(lines[i].LineId()) != key.lineId)
+        {
+            continue;
+        }
         const auto rowKey = AnchorKeyForRow(static_cast<int>(i));
         if (!rowKey.has_value() || *rowKey != key)
         {
@@ -1228,6 +1261,34 @@ void LogModel::RefreshAllAnchorRows()
         return;
     }
     emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole});
+}
+
+void LogModel::DropAnchorsForEvictionPrefix(int dropCount)
+{
+    if (mAnchors == nullptr || dropCount <= 0 || mAnchors->Empty())
+    {
+        return;
+    }
+    // Collect first, mutate second: `RemoveAnchors` emits
+    // `anchorsReset`, which (via the model's own connection) reaches
+    // back into `RefreshAllAnchorRows` -- we must therefore finish
+    // walking the soon-to-be-evicted rows before that signal fires.
+    std::vector<AnchorManager::Key> evictedKeys;
+    evictedKeys.reserve(static_cast<std::size_t>(dropCount));
+    for (int row = 0; row < dropCount; ++row)
+    {
+        if (auto key = AnchorKeyForRow(row); key.has_value())
+        {
+            evictedKeys.push_back(std::move(*key));
+        }
+    }
+    if (!evictedKeys.empty())
+    {
+        // Bulk path so we collapse the GUI refresh to a single
+        // `anchorsReset` instead of fanning out one signal per
+        // evicted row.
+        mAnchors->RemoveAnchors(evictedKeys);
+    }
 }
 
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
@@ -1536,6 +1597,10 @@ void LogModel::SetRetentionCap(size_t cap)
         if (visible > cap)
         {
             const size_t dropCount = visible - cap;
+            // Same eviction cleanup as `AppendBatch`: drop anchors on
+            // the prefix we're about to retire so they don't linger
+            // in the manager / dock / saved configuration.
+            DropAnchorsForEvictionPrefix(static_cast<int>(dropCount));
             beginRemoveRows(QModelIndex(), 0, static_cast<int>(dropCount) - 1);
             mLogTable.EvictPrefixRows(dropCount);
             endRemoveRows();

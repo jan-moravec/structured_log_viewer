@@ -4,6 +4,7 @@
 #include "theme_control.hpp"
 
 #include <QAction>
+#include <QApplication>
 #include <QBrush>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -17,19 +18,39 @@
 #include <QPushButton>
 #include <QRectF>
 #include <QStringBuilder>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWidget>
 
+#include <algorithm>
+#include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace
 {
 
-constexpr int SWATCH_ICON_PX = 14;
 constexpr qreal SWATCH_PAINT_INSET = 0.5;
 constexpr qreal SWATCH_CORNER_RADIUS = 3.0;
+/// Fallback swatch edge length in device-independent pixels for the
+/// rare case where no `QStyle` is available (headless test harness,
+/// `QApplication` torn down). Matches the previous hard-coded value.
+constexpr int SWATCH_ICON_FALLBACK_PX = 14;
+
+[[nodiscard]] int SwatchIconPixels(const QWidget *widget)
+{
+    if (const QStyle *style = (widget != nullptr) ? widget->style() : QApplication::style(); style != nullptr)
+    {
+        const int metric = style->pixelMetric(QStyle::PM_SmallIconSize, nullptr, widget);
+        if (metric > 0)
+        {
+            return metric;
+        }
+    }
+    return SWATCH_ICON_FALLBACK_PX;
+}
 
 /// User-role payload carried by every `QListWidgetItem`: the
 /// `(locator, lineId)` key that uniquely identifies the anchored
@@ -38,7 +59,7 @@ constexpr qreal SWATCH_CORNER_RADIUS = 3.0;
 constexpr int ANCHOR_KEY_LOCATOR_ROLE = Qt::UserRole + 1;
 constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
 
-[[nodiscard]] QIcon SwatchIconFor(ThemeControl *theme, std::uint8_t colorIndex)
+[[nodiscard]] QIcon SwatchIconFor(ThemeControl *theme, std::uint8_t colorIndex, int sizePx)
 {
     if (theme == nullptr)
     {
@@ -46,14 +67,14 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     }
     const QBrush bg = theme->AnchorBrushFor(colorIndex, Qt::BackgroundRole);
     const QBrush fg = theme->AnchorBrushFor(colorIndex, Qt::ForegroundRole);
-    QPixmap pix(SWATCH_ICON_PX, SWATCH_ICON_PX);
+    QPixmap pix(sizePx, sizePx);
     pix.fill(Qt::transparent);
     QPainter painter(&pix);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setBrush(bg);
     painter.setPen(QPen(fg.color(), 1));
     painter.drawRoundedRect(
-        QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, SWATCH_ICON_PX - 1, SWATCH_ICON_PX - 1),
+        QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, sizePx - 1, sizePx - 1),
         SWATCH_CORNER_RADIUS,
         SWATCH_CORNER_RADIUS
     );
@@ -78,6 +99,39 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     }
 }
 
+/// Resolve @p locator (a `locatorDedupKey`, lowercased on Windows)
+/// back to the display-case path the user opened, by consulting the
+/// model's `Source::locators` / `locatorDedupKeys` parallel arrays.
+/// Falls back to @p locator on a miss -- a multi-file session can
+/// carry anchors from a previously-saved source whose locator list
+/// the current session no longer mirrors.
+[[nodiscard]] QString DisplayPathForLocator(const LogModel *model, const std::string &locator)
+{
+    if (model == nullptr || locator.empty())
+    {
+        return QString::fromStdString(locator);
+    }
+    const auto &configurationSource = model->Configuration().source;
+    if (!configurationSource.has_value())
+    {
+        return QString::fromStdString(locator);
+    }
+    const auto &dedupKeys = configurationSource->locatorDedupKeys;
+    const auto &displayPaths = configurationSource->locators;
+    // `AppendLocator` keeps these arrays in lockstep; if they ever
+    // desync we still fall back to the dedup key rather than
+    // indexing out of `displayPaths`.
+    const std::size_t count = std::min(dedupKeys.size(), displayPaths.size());
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (dedupKeys[i] == locator)
+        {
+            return QString::fromStdString(displayPaths[i]);
+        }
+    }
+    return QString::fromStdString(locator);
+}
+
 } // namespace
 
 AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *theme, QWidget *parent)
@@ -93,6 +147,11 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     auto *header = new QHBoxLayout();
     mClearAllButton = new QPushButton(QObject::tr("Clear all"), host);
     mClearAllButton->setObjectName(QStringLiteral("anchorsClearAll"));
+    // Disabled by default -- `Refresh()` flips it on when at least
+    // one anchor exists. Without this initial state the empty-dock
+    // case would offer a button that, on click, would be a no-op
+    // (AnchorManager::ClearAll bails on an empty map).
+    mClearAllButton->setEnabled(false);
     header->addStretch(1);
     header->addWidget(mClearAllButton);
     layout->addLayout(header);
@@ -124,11 +183,20 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
 
     // Repopulate when the underlying model's row set changes -- the
     // resolved "filename" column may flip on a streamed batch that
-    // promotes a previously-empty locator. Cheap because Refresh
-    // bails on an empty manager.
+    // promotes a previously-empty locator. Gated on visibility so a
+    // buried dock doesn't pay for every `modelReset` (which fires on
+    // every `BeginStreaming`, `Reset`, `NotifyConfigurationReplaced`
+    // and reloaded config -- bursts that target the table, not us).
+    // Re-shown docks pick up the latest state through the
+    // `visibilityChanged` -> `Refresh()` path below.
     if (mModel != nullptr)
     {
-        connect(mModel, &QAbstractItemModel::modelReset, this, &AnchorsDock::Refresh);
+        connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
+            if (IsVisibleForRefresh())
+            {
+                Refresh();
+            }
+        });
     }
 
     // Theme switch (`Preferences -> Theme` or OS dark-mode flip in
@@ -175,31 +243,113 @@ void AnchorsDock::Refresh()
     {
         return;
     }
+    // Snapshot the user's focus + selection BEFORE `clear()` wipes
+    // the list's selection model. Without this, even cheap refreshes
+    // (right-click + remove an anchor, theme switch, anchor recolour)
+    // pull the highlight off the entry the user was just touching.
+    // We snapshot by anchor key rather than by row index because the
+    // refresh below recreates every row in a possibly-different
+    // order (`Entries()` is sorted, but the previous order is gone
+    // by the time we rebuild).
+    struct AnchorKeyCarrier
+    {
+        QString locator;
+        qulonglong lineId = 0;
+    };
+    AnchorKeyCarrier focusedKey;
+    bool hadFocus = false;
+    if (const QListWidgetItem *focused = mList->currentItem(); focused != nullptr)
+    {
+        focusedKey.locator = focused->data(ANCHOR_KEY_LOCATOR_ROLE).toString();
+        focusedKey.lineId = focused->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+        hadFocus = true;
+    }
+    std::vector<AnchorKeyCarrier> selectedKeys;
+    const auto selectedItems = mList->selectedItems();
+    selectedKeys.reserve(static_cast<std::size_t>(selectedItems.size()));
+    for (const QListWidgetItem *selected : selectedItems)
+    {
+        selectedKeys.push_back(AnchorKeyCarrier{
+            .locator = selected->data(ANCHOR_KEY_LOCATOR_ROLE).toString(),
+            .lineId = selected->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+        });
+    }
+
     mList->clear();
     if (mAnchors == nullptr)
     {
         return;
     }
 
+    // Resolve the swatch size once per refresh from the active
+    // style so the swatches scale with HiDPI / Fusion vs Windows
+    // vs macOS look-and-feel. Falls back to a hard-coded value in
+    // the unusual case where no `QStyle` is reachable.
+    const int swatchPx = SwatchIconPixels(this);
+
     const auto entries = mAnchors->Entries();
     for (const auto &entry : entries)
     {
-        const QString filename = FilenameFromLocator(entry.locator);
+        // Prefer the display-case path (`Source::locators[i]`) over
+        // the canonicalised locator (`locatorDedupKeys[i]`, lower-
+        // cased on Windows) so the dock label matches what the user
+        // sees in the title bar / open-recents menu. The dedup key
+        // still flows through `ANCHOR_KEY_LOCATOR_ROLE` for the
+        // SourceRowForAnchorKey lookup.
+        const QString displayPath = DisplayPathForLocator(mModel.data(), entry.locator);
+        const QString filename = FilenameFromLocator(displayPath.toStdString());
         const QString label = filename.isEmpty()
                                   ? QObject::tr("line %1").arg(entry.lineId)
                                   : QObject::tr("line %1 - %2").arg(entry.lineId).arg(filename);
 
-        auto *item = new QListWidgetItem(SwatchIconFor(mTheme.data(), entry.colorIndex), label, mList);
+        auto *item = new QListWidgetItem(SwatchIconFor(mTheme.data(), entry.colorIndex, swatchPx), label, mList);
         item->setData(ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
         item->setData(ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
         item->setToolTip(
-            QString::fromStdString(entry.locator).isEmpty()
+            displayPath.isEmpty()
                 ? QObject::tr("Anchor #%1, line %2").arg(entry.colorIndex + 1).arg(entry.lineId)
-                : QObject::tr("Anchor #%1, line %2\n%3")
-                      .arg(entry.colorIndex + 1)
-                      .arg(entry.lineId)
-                      .arg(QString::fromStdString(entry.locator))
+                : QObject::tr("Anchor #%1, line %2\n%3").arg(entry.colorIndex + 1).arg(entry.lineId).arg(displayPath)
         );
+    }
+
+    // Keep the Clear-all button enabled iff there is something to
+    // clear. Mirrors the constructor's "disabled by default" state.
+    if (mClearAllButton != nullptr)
+    {
+        mClearAllButton->setEnabled(!mAnchors->Empty());
+    }
+
+    // Restore selection + focus. We do this in a single pass after
+    // the items exist so the selection-changed signals fire once
+    // (matters for downstream observers that recompute "is the
+    // remove-anchor menu enabled" off the dock selection). Items
+    // that disappeared in the refresh (e.g. the entry the user
+    // just removed) are silently dropped.
+    if (hadFocus || !selectedKeys.empty())
+    {
+        const QSignalBlocker selectionBlocker(mList);
+        for (int row = 0; row < mList->count(); ++row)
+        {
+            QListWidgetItem *item = mList->item(row);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            const QString itemLocator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString();
+            const qulonglong itemLineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+            const bool itemWasSelected =
+                std::ranges::any_of(selectedKeys, [&](const AnchorKeyCarrier &k) {
+                    return k.locator == itemLocator && k.lineId == itemLineId;
+                });
+            if (itemWasSelected)
+            {
+                item->setSelected(true);
+            }
+            if (hadFocus && itemLocator == focusedKey.locator && itemLineId == focusedKey.lineId)
+            {
+                mList->setCurrentItem(item, QItemSelectionModel::NoUpdate);
+            }
+        }
     }
 }
 

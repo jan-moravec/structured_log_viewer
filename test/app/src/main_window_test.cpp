@@ -3516,6 +3516,139 @@ private slots:
         model.EndStreaming(false);
     }
 
+    // FIFO eviction must drop anchors that pointed at the now-
+    // evicted rows. Without the model-level cleanup, the anchor
+    // would linger in the manager (visible in the dock, persisted
+    // in the saved configuration) with no live row to resolve to.
+    // Anchors on rows that survive the eviction must stay put.
+    void TestAnchorsAreDroppedOnFifoEviction()
+    {
+        ThemeControl theme;
+        AnchorManager anchors;
+        LogModel model(nullptr, &theme, &anchors);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Cap of 4 with a partial-eviction second batch keeps lineId
+        // 4 alive while flushing 1..3 out. We need at least one
+        // survivor in the original batch so the test distinguishes
+        // "evicted anchors are dropped" from "all anchors are
+        // dropped on any append".
+        constexpr size_t cap = 4;
+        model.SetRetentionCap(cap);
+
+        // Initial batch of 4 lines (lineIds 1..4) fills the cap.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, /*declareNewKey=*/true));
+        QCOMPARE(model.rowCount(), 4);
+
+        // Anchor lineIds 1 (row 0, will be evicted), 3 (row 2, will
+        // be evicted), and 4 (row 3, will survive the next batch).
+        // Without the cleanup, anchors 1 and 3 would survive in the
+        // manager as ghosts.
+        const auto keyL1 = model.AnchorKeyForRow(0);
+        const auto keyL3 = model.AnchorKeyForRow(2);
+        const auto keyL4 = model.AnchorKeyForRow(3);
+        QVERIFY(keyL1.has_value());
+        QVERIFY(keyL3.has_value());
+        QVERIFY(keyL4.has_value());
+        anchors.SetAnchor(*keyL1, 0);
+        anchors.SetAnchor(*keyL3, 1);
+        anchors.SetAnchor(*keyL4, 2);
+        QCOMPARE(anchors.Count(), static_cast<std::size_t>(3));
+
+        // Second batch of 3 lines (lineIds 5..7) brings the total to
+        // 7. With cap=4 we evict 3 (rows 0..2 -> lineIds 1, 2, 3),
+        // leaving lineId 4 at the new row 0 and the new lines at
+        // rows 1..3.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 5, 3, /*declareNewKey=*/false));
+        QCOMPARE(model.rowCount(), 4);
+
+        QCOMPARE(anchors.Count(), static_cast<std::size_t>(1));
+        QVERIFY2(!anchors.ColorFor(*keyL1).has_value(), "anchor on evicted lineId 1 must be dropped");
+        QVERIFY2(!anchors.ColorFor(*keyL3).has_value(), "anchor on evicted lineId 3 must be dropped");
+        const auto survivedColor = anchors.ColorFor(*keyL4);
+        QVERIFY2(survivedColor.has_value(), "anchor on surviving lineId 4 must persist");
+        QCOMPARE(*survivedColor, uint8_t{2});
+
+        model.EndStreaming(false);
+    }
+
+    // AnchorsDock::Refresh must preserve the user's list selection
+    // and current item. Otherwise the dock's own right-click +
+    // remove flow (which triggers a refresh) yanks the highlight
+    // off the entry the user was just acting on.
+    void TestAnchorsDockPreservesSelectionAcrossRefresh()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *list = dock->ListForTest();
+        QVERIFY(list != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        // Anchor three rows so the dock has three items to choose
+        // from -- "selection survives" is only meaningful when
+        // there's a non-empty selection that doesn't collapse to
+        // every item.
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key1 = model->AnchorKeyForRow(1);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key1.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key1, 1);
+        anchors->SetAnchor(*key2, 2);
+        dock->Refresh();
+        QCOMPARE(list->count(), 3);
+
+        // Pick the middle item as both current and selected; then
+        // trigger a refresh that doesn't change the set (a no-op
+        // recolour on key0 still re-runs Refresh through the
+        // anchorChanged signal). Without the snapshot/restore, the
+        // selection would be wiped by `mList->clear()`.
+        QListWidgetItem *middle = list->item(1);
+        QVERIFY(middle != nullptr);
+        list->setCurrentItem(middle);
+        middle->setSelected(true);
+        QCOMPARE(list->selectedItems().count(), 1);
+        QVERIFY(list->currentItem() == middle);
+
+        // Touching key0 fires `anchorChanged` -> `Refresh()`. The
+        // dock is offscreen on the QPA used in tests, so we call
+        // Refresh directly to mirror what `IsVisibleForRefresh()`
+        // would gate on a real window.
+        anchors->SetAnchor(*key0, 5);
+        QCoreApplication::processEvents();
+        dock->Refresh();
+
+        // The list count is unchanged (still three anchors); the
+        // restored selection must still point at the middle item.
+        QCOMPARE(list->count(), 3);
+        QCOMPARE(list->selectedItems().count(), 1);
+        QListWidgetItem *restoredCurrent = list->currentItem();
+        QVERIFY2(restoredCurrent != nullptr, "current item must survive Refresh");
+        QCOMPARE(restoredCurrent->data(Qt::UserRole + 2).toULongLong(), static_cast<qulonglong>(key1->lineId));
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
     // Static-mode parallel of `testAlternatingRowColoursDisabledInNewestFirstMode`:
     // when the active session is static the apply path must read the
     // **static** preference (`StreamingControl::IsStaticNewestFirst`),
@@ -11342,11 +11475,18 @@ private slots:
         QVERIFY2(dock->isHidden(), "dock starts hidden");
         QVERIFY(!toggleAction->isChecked());
 
-        // Action -> dock direction: the production handler skips the
-        // actual `setVisible(true)` under offscreen QPA (host isn't
-        // realised), so we only assert the action's own state moves.
+        // Action -> dock direction: the production handler reverts
+        // the action's own state when the host window is not
+        // realised (offscreen QPA reports `isVisible() == false`),
+        // so the action ends up unchecked rather than the previously
+        // observable "checked while dock hidden" state. This matches
+        // the live app's invariant: a checked toggle means the dock
+        // is showing.
         toggleAction->setChecked(true);
-        QVERIFY2(toggleAction->isChecked(), "setChecked(true) must update the action's own state");
+        QVERIFY2(
+            !toggleAction->isChecked(),
+            "setChecked(true) must be reverted when host window is not realised (offscreen QPA)"
+        );
 
         // Dock -> action direction: drive `visibilityChanged`
         // synthetically (see the namespace note above for why).
@@ -11984,16 +12124,24 @@ private slots:
         QVERIFY(!toggleAction->isChecked());
 
         // `trigger()` flips checked state and emits `toggled`. The
-        // production handler guards the visible transition behind a
-        // realised host window, so offscreen-QPA tests can only
-        // observe the action's own state changing. The end-to-end
-        // visibility behaviour is covered by manual QA and the live
-        // app.
+        // production handler now reverts the action when the host
+        // window is not realised (offscreen QPA), so the action
+        // stays unchecked across triggers. End-to-end visibility
+        // behaviour is covered by manual QA and the live app; this
+        // pins the offscreen-safe state machine so a regression
+        // that lets the action settle "checked while dock hidden"
+        // fails fast.
         toggleAction->trigger();
-        QVERIFY2(toggleAction->isChecked(), "first trigger must check the action");
+        QVERIFY2(
+            !toggleAction->isChecked(),
+            "trigger() must auto-revert under offscreen QPA: action cannot settle checked while dock cannot show"
+        );
 
         toggleAction->trigger();
-        QVERIFY2(!toggleAction->isChecked(), "second trigger must un-check the action");
+        QVERIFY2(
+            !toggleAction->isChecked(),
+            "second trigger must also revert under offscreen QPA -- the action stays unchecked until the host is realised"
+        );
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`

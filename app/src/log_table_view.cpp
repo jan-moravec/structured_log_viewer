@@ -327,18 +327,15 @@ void LogTableView::AnchorSelection(int colorIndex)
     {
         return;
     }
-    // Single-row hotkey hits the targeted-emit path so the model
-    // only repaints one row; multi-row selections (`Ctrl+A` + `Ctrl+1`,
-    // shift-range select + colour) flip to the bulk path so we don't
-    // run an O(rows) walk per anchored row.
-    if (keys.size() == 1)
-    {
-        mAnchors->SetAnchor(keys.front(), static_cast<uint8_t>(colorIndex));
-    }
-    else
-    {
-        mAnchors->SetAnchors(keys, static_cast<uint8_t>(colorIndex));
-    }
+    // The bulk API picks the right signal internally: a single
+    // actual mutation degenerates into `anchorChanged(key)` (per-
+    // row repaint in the model), two-or-more collapse into one
+    // `anchorsReset` (cheaper than N targeted emits). We don't
+    // need to branch on `keys.size()` ourselves -- it would only
+    // get the "no-change subset" case wrong (e.g. recolouring
+    // 50 rows where 49 are already on that slot still wants a
+    // single-key signal).
+    mAnchors->SetAnchors(keys, static_cast<uint8_t>(colorIndex));
 }
 
 void LogTableView::ClearAnchorOnSelection()
@@ -352,12 +349,7 @@ void LogTableView::ClearAnchorOnSelection()
     {
         return;
     }
-    if (keys.size() == 1)
-    {
-        mAnchors->RemoveAnchor(keys.front());
-    }
-    else
-    {
-        mAnchors->RemoveAnchors(keys);
-    }
+    // See `AnchorSelection`: the bulk API already routes the right
+    // signal based on actual mutation count.
+    mAnchors->RemoveAnchors(keys);
 }

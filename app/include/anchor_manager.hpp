@@ -148,3 +148,12 @@ private:
 
     std::unordered_map<Key, uint8_t, KeyHash> mAnchors;
 };
+
+// Register the composite key with Qt's metatype system so that the
+// `anchorChanged(const AnchorManager::Key &)` signal can be safely
+// dispatched over `Qt::QueuedConnection` -- Qt copies the argument
+// into the event queue, which requires the type be registered.
+// Direct connections work without this declaration, but a future
+// queued listener (e.g. a worker-thread driven sink) would silently
+// fail at runtime without it.
+Q_DECLARE_METATYPE(AnchorManager::Key)

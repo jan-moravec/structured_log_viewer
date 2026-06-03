@@ -9,6 +9,11 @@
 AnchorManager::AnchorManager(QObject *parent)
     : QObject(parent)
 {
+    // Idempotent; Qt guards the underlying registration with a
+    // mutex. Without it, a future `Qt::QueuedConnection` to
+    // `anchorChanged` would fail with a runtime warning because Qt
+    // can't copy the unregistered user type into the event queue.
+    qRegisterMetaType<AnchorManager::Key>("AnchorManager::Key");
 }
 
 bool AnchorManager::SetAnchor(const Key &key, uint8_t colorIndex)
@@ -35,30 +40,44 @@ bool AnchorManager::SetAnchors(std::span<const Key> keys, uint8_t colorIndex)
         return false;
     }
     const auto clamped = static_cast<uint8_t>(std::min<std::size_t>(colorIndex, loglib::ANCHOR_PALETTE_SIZE - 1));
-    bool anyChange = false;
+    int changeCount = 0;
+    const Key *lastChangedKey = nullptr;
     for (const Key &key : keys)
     {
         const auto [it, inserted] = mAnchors.try_emplace(key, clamped);
         if (inserted)
         {
-            anyChange = true;
+            ++changeCount;
+            lastChangedKey = &it->first;
             continue;
         }
         if (it->second != clamped)
         {
             it->second = clamped;
-            anyChange = true;
+            ++changeCount;
+            lastChangedKey = &it->first;
         }
     }
-    if (anyChange)
+    if (changeCount == 0)
     {
-        // One bulk signal regardless of how many keys changed: each
-        // listener does one full refresh instead of N targeted
-        // repaints. Cheaper for typical selection sizes (a handful
-        // of rows up through "Ctrl+A then Ctrl+1").
+        return false;
+    }
+    // Pick the right signal based on actual mutation count: a single
+    // mutation gets the targeted `anchorChanged(key)` so the model
+    // overlay only repaints one row, while two-or-more mutations
+    // collapse into one `anchorsReset` (cheaper than fanning out
+    // N targeted emits to the model + dock). Callers can therefore
+    // unconditionally route every selection-driven anchor change
+    // through this bulk API and stop branching on `keys.size()`.
+    if (changeCount == 1)
+    {
+        emit anchorChanged(*lastChangedKey);
+    }
+    else
+    {
         emit anchorsReset();
     }
-    return anyChange;
+    return true;
 }
 
 bool AnchorManager::RemoveAnchor(const Key &key)
@@ -84,19 +103,37 @@ bool AnchorManager::RemoveAnchors(std::span<const Key> keys)
     {
         return false;
     }
-    bool anyChange = false;
+    int removedCount = 0;
+    // Capture the surviving copy of the removed key so the single-
+    // mutation signal carries a stable string view -- iterators are
+    // invalidated by erase, and the input span may itself be a view
+    // onto storage the caller frees after the call returns.
+    std::optional<Key> lastRemovedKey;
     for (const Key &key : keys)
     {
         if (mAnchors.erase(key) > 0)
         {
-            anyChange = true;
+            ++removedCount;
+            lastRemovedKey = key;
         }
     }
-    if (anyChange)
+    if (removedCount == 0)
+    {
+        return false;
+    }
+    // Same rationale as `SetAnchors`: collapse to `anchorChanged`
+    // on exactly one mutation so the model can use its cheap per-
+    // row repaint path; fan out as `anchorsReset` only when two-
+    // or-more rows actually changed.
+    if (removedCount == 1)
+    {
+        emit anchorChanged(*lastRemovedKey);
+    }
+    else
     {
         emit anchorsReset();
     }
-    return anyChange;
+    return true;
 }
 
 bool AnchorManager::ClearAll()
@@ -112,7 +149,15 @@ bool AnchorManager::ClearAll()
 
 void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries)
 {
-    mAnchors.clear();
+    // Snapshot the pre-clear map so we can short-circuit the
+    // `anchorsReset` emit when the rebuilt state matches what we
+    // had. Configuration loads (live + autosave) replay this every
+    // time, and the common case is "the config we just saved is the
+    // config we just loaded" -- no point asking every listener to
+    // refresh a thousand rows for that.
+    std::unordered_map<Key, uint8_t, KeyHash> previous;
+    previous.swap(mAnchors);
+
     mAnchors.reserve(entries.size());
     for (const loglib::LogConfiguration::AnchorEntry &entry : entries)
     {
@@ -127,7 +172,16 @@ void AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEn
         }
         mAnchors[Key{.locator = entry.locator, .lineId = entry.lineId}] = entry.colorIndex;
     }
-    emit anchorsReset();
+
+    // Compare by content, not by identity. `==` on unordered_map is
+    // O(N) but `N` here is "number of anchors the user has set"
+    // (typically a handful, capped at a few dozen); the saved
+    // `dataChanged` fan-out we avoid is O(rows * cols) over the
+    // entire table.
+    if (mAnchors != previous)
+    {
+        emit anchorsReset();
+    }
 }
 
 std::optional<uint8_t> AnchorManager::ColorFor(const Key &key) const noexcept

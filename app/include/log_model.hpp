@@ -104,14 +104,23 @@ public:
     /// `LogConfiguration::Source::locatorDedupKeys`. Public so the
     /// table view's right-click anchor menu can address the row
     /// without re-walking `LogTable`.
-    [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const noexcept;
+    ///
+    /// Not marked `noexcept`: canonicalising the locator goes
+    /// through `QFileInfo::absoluteFilePath` and a handful of
+    /// `QString` / `std::string` allocations, any of which can
+    /// throw `std::bad_alloc`. The cache hot path is allocation-
+    /// free after the first hit per `LineSource`, but the cold
+    /// path is not.
+    [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const;
 
     /// Inverse lookup. Linear scan over the visible rows -- same
     /// O(n) tradeoff as `RefreshRowsForAnchor`. Returns the first
     /// matching source-model row index, or -1 if @p key has no live
     /// row in the current model (e.g. the anchored line was evicted
     /// or the session was reopened with a different source file).
-    [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept;
+    /// Fans out into `AnchorKeyForRow`, so it inherits the same
+    /// `std::bad_alloc` exit window.
+    [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
@@ -368,6 +377,16 @@ private:
     /// file session could in principle have lineId collisions).
     /// Background + Foreground roles only.
     void RefreshRowsForAnchor(const AnchorManager::Key &key);
+
+    /// Drop anchor entries that point at rows `[0, dropCount)` of
+    /// the source table. Called immediately before the table's
+    /// `EvictPrefixRows` so dangling anchors can't survive FIFO
+    /// retention pressure (they would otherwise linger in the
+    /// dock + the saved configuration with no resolvable row).
+    /// No-op when `mAnchors == nullptr`, `dropCount <= 0`, or the
+    /// manager is empty -- all three are cheap checks compared to
+    /// walking `[0, dropCount)`.
+    void DropAnchorsForEvictionPrefix(int dropCount);
 
     /// Helper: re-emit `dataChanged` across the entire visible
     /// table, Background + Foreground roles only. Used by

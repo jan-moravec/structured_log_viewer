@@ -471,6 +471,14 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mActionToggleAnchors, &QAction::toggled, this, [this](bool on) {
         if (on && !isVisible())
         {
+            // The window isn't realised yet (Ctrl+K dispatched before
+            // `show()` returned, or auto-restore is replaying a saved
+            // checked state). Without re-syncing, the action would
+            // settle as "checked" while the dock stays hidden -- the
+            // next user click would then toggle it to "unchecked"
+            // without ever showing the dock.
+            const QSignalBlocker blocker(mActionToggleAnchors);
+            mActionToggleAnchors->setChecked(false);
             return;
         }
         mAnchorsDock->setVisible(on);
@@ -657,9 +665,13 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
         // Gate hidden->visible on a realised host window; see the
         // comment on `ShowRecordDetailsForProxyIndex`. The hide path
-        // is always safe.
+        // is always safe. Re-sync the checked state in the gated
+        // branch so the action doesn't settle as "checked" with a
+        // hidden dock (which would invert the next user toggle).
         if (on && !isVisible())
         {
+            const QSignalBlocker blocker(ui->actionToggleRecordDetails);
+            ui->actionToggleRecordDetails->setChecked(false);
             return;
         }
         mRecordDetailDock->setVisible(on);
@@ -3251,13 +3263,19 @@ void MainWindow::Find()
 
 void MainWindow::SelectSourceRow(int sourceRow)
 {
-    if (sourceRow < 0 || mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
+    if (mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
         mSortFilterProxyModel == nullptr)
     {
         return;
     }
-    if (sourceRow >= mModel->rowCount())
+    if (sourceRow < 0 || sourceRow >= mModel->rowCount())
     {
+        // The caller (e.g. `AnchorsDock::OnItemActivated` double-
+        // click) handed us a stale row -- the anchor outlived its
+        // backing line (evicted, session swap). Tell the user via
+        // the status bar instead of silently no-oping so a double-
+        // click that goes nowhere has a visible explanation.
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
     const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
@@ -3275,7 +3293,11 @@ void MainWindow::SelectSourceRow(int sourceRow)
     }
 
     mTableView->clearSelection();
-    mTableView->scrollTo(proxyIdx);
+    // Centre the target row rather than landing it at the closest
+    // edge -- anchor jumps benefit from context above and below the
+    // hit (the user is typically triaging a region of the log, not
+    // reading top-to-bottom).
+    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
     mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
     mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
 }
@@ -3293,12 +3315,6 @@ void MainWindow::JumpToAnchor(bool forward)
         return;
     }
 
-    // Walk in proxy (visible) row order so "next anchor" matches what
-    // the user sees: the proxy chain handles newest-first display
-    // (`RowOrderProxyModel`) and column-driven sorts / filtering
-    // (`LogFilterModel`) for us. Walking source rows would jump in
-    // `lineId` insertion order, which inverts F2's direction whenever
-    // the table is sorted differently from insertion order.
     QAbstractItemModel *proxyModel = mTableView->model();
     if (proxyModel == nullptr)
     {
@@ -3311,11 +3327,69 @@ void MainWindow::JumpToAnchor(bool forward)
         return;
     }
 
+    // Enumerate anchors directly instead of walking every proxy row:
+    // the anchor count is bounded by user clicks (typically a handful,
+    // capped well below the proxy row count) while the proxy chain
+    // can be tens of thousands of rows deep on a streaming session.
+    // `SourceRowForAnchorKey` + `mapFromSource` over each anchor is
+    // O(anchors * row-scan); the previous proxy-walk was O(proxy rows
+    // * canonical-locator-build). Even on a sparse anchor set the
+    // bounded outer loop is the cheaper of the two.
+    const auto anchorEntries = mAnchors->Entries();
+    std::vector<int> anchoredProxyRows;
+    anchoredProxyRows.reserve(anchorEntries.size());
+    for (const auto &entry : anchorEntries)
+    {
+        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        const int sourceRow = mModel->SourceRowForAnchorKey(key);
+        if (sourceRow < 0)
+        {
+            // Anchor outlived its row (evicted or session swap).
+            continue;
+        }
+        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+        if (!midIdx.isValid())
+        {
+            continue;
+        }
+        const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
+        if (!proxyIdx.isValid())
+        {
+            // Anchor exists but is filtered out of the visible proxy.
+            continue;
+        }
+        anchoredProxyRows.push_back(proxyIdx.row());
+    }
+
+    if (anchoredProxyRows.empty())
+    {
+        // Some anchors exist (`Empty()` is false above) but every one
+        // is filtered out of the visible proxy. Tell the user via the
+        // status bar rather than absorbing F2 silently.
+        statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    // The visible-anchor list must be in proxy-row order before we
+    // can pick the "next" / "previous" entry by the user's
+    // current-row cursor. Anchor insertion order has nothing to do
+    // with proxy order (anchors land in `(locator, lineId)` order
+    // from `Entries()`, and the proxy applies its own sort + filter
+    // on top of `RowOrderProxyModel`'s newest-first flip).
+    std::ranges::sort(anchoredProxyRows);
+    // De-duplicate -- `SourceRowForAnchorKey` returns the first
+    // matching source row, but in a multi-file session with
+    // `lineId` collisions across files a single proxy row could
+    // pick up multiple anchor hits. The user perceives that as one
+    // row, so it should count as one stop in the cycle.
+    anchoredProxyRows.erase(std::ranges::unique(anchoredProxyRows).begin(), anchoredProxyRows.end());
+
     // Cursor in proxy coords. The current proxy index (last-clicked
     // row) takes precedence over the selection because it survives
     // a Ctrl-click that extended the selection elsewhere. With no
-    // current index, start one before / past the visible range so
-    // the first step lands on the first / last visible row.
+    // current index, start before / past the visible range so the
+    // first step lands on the first / last visible anchored row.
     int currentProxyRow = -1;
     if (const QModelIndex curProxy = mTableView->currentIndex(); curProxy.isValid())
     {
@@ -3326,47 +3400,30 @@ void MainWindow::JumpToAnchor(bool forward)
         currentProxyRow = forward ? -1 : proxyRowCount;
     }
 
-    const int step = forward ? 1 : -1;
-    int candidate = currentProxyRow;
-    for (int hops = 0; hops < proxyRowCount; ++hops)
+    int targetProxyRow = -1;
+    if (forward)
     {
-        candidate += step;
-        if (candidate >= proxyRowCount)
-        {
-            candidate -= proxyRowCount;
-        }
-        else if (candidate < 0)
-        {
-            candidate += proxyRowCount;
-        }
+        // First anchor strictly past the cursor.
+        const auto it = std::ranges::upper_bound(anchoredProxyRows, currentProxyRow);
+        targetProxyRow = (it != anchoredProxyRows.end()) ? *it : anchoredProxyRows.front();
+    }
+    else
+    {
+        // Last anchor strictly before the cursor.
+        const auto it = std::ranges::lower_bound(anchoredProxyRows, currentProxyRow);
+        targetProxyRow = (it != anchoredProxyRows.begin()) ? *(it - 1) : anchoredProxyRows.back();
+    }
 
-        const QModelIndex proxyIdx = proxyModel->index(candidate, 0);
-        if (!proxyIdx.isValid())
-        {
-            continue;
-        }
-        const int sourceRow = MapProxyIndexToSourceRow(proxyIdx, mSortFilterProxyModel, mRowOrderProxyModel);
-        if (sourceRow < 0)
-        {
-            continue;
-        }
-        const auto key = mModel->AnchorKeyForRow(sourceRow);
-        if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
-        {
-            continue;
-        }
-
-        mTableView->clearSelection();
-        mTableView->scrollTo(proxyIdx);
-        mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
-        mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+    const QModelIndex proxyIdx = proxyModel->index(targetProxyRow, 0);
+    if (!proxyIdx.isValid())
+    {
         return;
     }
 
-    // Some anchors exist (`Empty()` is false above) but every one
-    // is filtered out of the visible proxy. Tell the user via the
-    // status bar rather than absorbing the F2 silently.
-    statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+    mTableView->clearSelection();
+    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
+    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
 }
 
 void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions)
@@ -4832,11 +4889,10 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         addRangeAction(tr("Show only older logs (%1)").arg(colLabel), std::nullopt, boundary);
     }
 
-    if (menu->isEmpty())
-    {
-        delete menu;
-        return nullptr;
-    }
+    // `AppendAnchorActionsToRowMenu` unconditionally adds the
+    // Anchor sub-menu, so `menu` is never empty here. The early
+    // `nullptr` return at the top of the function is the only way
+    // to get a null result (out-of-range row, empty model).
     return menu;
 }
 
@@ -4856,31 +4912,50 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     const auto rightClickedKey = mModel->AnchorKeyForRow(sourceRow);
     const auto currentColour = rightClickedKey.has_value() ? mAnchors->ColorFor(*rightClickedKey) : std::nullopt;
 
-    constexpr int SWATCH_ICON_PX = 16;
-    auto makeSwatchIcon = [this](int colorIndex) -> QIcon {
+    // Swatch size driven by the active style's `PM_SmallIconSize`
+    // so anchor icons scale with HiDPI + theme. Fallback covers the
+    // unusual case where the style query fails.
+    constexpr int SWATCH_ICON_FALLBACK_PX = 16;
+    int swatchPx = SWATCH_ICON_FALLBACK_PX;
+    if (const QStyle *windowStyle = style(); windowStyle != nullptr)
+    {
+        const int metric = windowStyle->pixelMetric(QStyle::PM_SmallIconSize, nullptr, this);
+        if (metric > 0)
+        {
+            swatchPx = metric;
+        }
+    }
+    auto makeSwatchIcon = [this, swatchPx](int colorIndex) -> QIcon {
         const QBrush bg = mTheme->AnchorBrushFor(static_cast<std::uint8_t>(colorIndex), Qt::BackgroundRole);
         const QBrush fg = mTheme->AnchorBrushFor(static_cast<std::uint8_t>(colorIndex), Qt::ForegroundRole);
-        QPixmap pix(SWATCH_ICON_PX, SWATCH_ICON_PX);
+        QPixmap pix(swatchPx, swatchPx);
         pix.fill(Qt::transparent);
         QPainter painter(&pix);
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.setBrush(bg);
         painter.setPen(QPen(fg.color(), 1));
-        painter.drawRoundedRect(QRectF(0.5, 0.5, SWATCH_ICON_PX - 1, SWATCH_ICON_PX - 1), 3.0, 3.0);
+        painter.drawRoundedRect(QRectF(0.5, 0.5, swatchPx - 1, swatchPx - 1), 3.0, 3.0);
         return QIcon(pix);
     };
 
+    // No `setShortcut` here: the popup is parented to the active
+    // window, so a real shortcut would register a second window-
+    // shortcut overload alongside the `mAnchorColorActions[i]`
+    // block, which can trigger `QAction::ambiguousShortcut`
+    // warnings while the menu is mapped. The chord is documented
+    // in the user guide ("Anchors" section) and is also visible
+    // in the View menu's anchor entries that own the real
+    // shortcut. The visible-text contract stays a clean
+    // `tr("Colour N")` so the test seam can match by exact label.
     for (int i = 0; i < static_cast<int>(loglib::ANCHOR_PALETTE_SIZE); ++i)
     {
         QAction *action = anchorMenu->addAction(makeSwatchIcon(i), tr("Colour %1").arg(i + 1));
-        action->setShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + i)));
         action->setCheckable(true);
         action->setChecked(currentColour.has_value() && static_cast<int>(*currentColour) == i);
         connect(action, &QAction::triggered, mTableView, [view = mTableView, i]() { view->AnchorSelection(i); });
     }
     anchorMenu->addSeparator();
     QAction *clearAction = anchorMenu->addAction(tr("Remove anchor"));
-    clearAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     clearAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
     connect(clearAction, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
 }
