@@ -28,6 +28,39 @@ bool AnchorManager::SetAnchor(const Key &key, uint8_t colorIndex)
     return true;
 }
 
+bool AnchorManager::SetAnchors(std::span<const Key> keys, uint8_t colorIndex)
+{
+    if (keys.empty())
+    {
+        return false;
+    }
+    const auto clamped = static_cast<uint8_t>(std::min<std::size_t>(colorIndex, loglib::ANCHOR_PALETTE_SIZE - 1));
+    bool anyChange = false;
+    for (const Key &key : keys)
+    {
+        const auto [it, inserted] = mAnchors.try_emplace(key, clamped);
+        if (inserted)
+        {
+            anyChange = true;
+            continue;
+        }
+        if (it->second != clamped)
+        {
+            it->second = clamped;
+            anyChange = true;
+        }
+    }
+    if (anyChange)
+    {
+        // One bulk signal regardless of how many keys changed: each
+        // listener does one full refresh instead of N targeted
+        // repaints. Cheaper for typical selection sizes (a handful
+        // of rows up through "Ctrl+A then Ctrl+1").
+        emit anchorsReset();
+    }
+    return anyChange;
+}
+
 bool AnchorManager::RemoveAnchor(const Key &key)
 {
     const auto it = mAnchors.find(key);
@@ -43,6 +76,27 @@ bool AnchorManager::RemoveAnchor(const Key &key)
     mAnchors.erase(it);
     emit anchorChanged(removed);
     return true;
+}
+
+bool AnchorManager::RemoveAnchors(std::span<const Key> keys)
+{
+    if (keys.empty())
+    {
+        return false;
+    }
+    bool anyChange = false;
+    for (const Key &key : keys)
+    {
+        if (mAnchors.erase(key) > 0)
+        {
+            anyChange = true;
+        }
+    }
+    if (anyChange)
+    {
+        emit anchorsReset();
+    }
+    return anyChange;
 }
 
 bool AnchorManager::ClearAll()

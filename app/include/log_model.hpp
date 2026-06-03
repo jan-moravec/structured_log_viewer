@@ -373,6 +373,21 @@ private:
     /// table, Background + Foreground roles only. Used by
     /// `anchorsReset`.
     void RefreshAllAnchorRows();
+
+    /// Per-`LineSource` cache of canonical locator strings.
+    /// `CanonicalLocator` is a `QFileInfo::absoluteFilePath`-class
+    /// call (a `stat`-grade syscall on Windows), and the model's
+    /// hot paths -- `data()` Background/Foreground, repeated
+    /// `RefreshRowsForAnchor`, `SourceRowForAnchorKey`'s linear
+    /// scan -- ask for the same locator over and over for rows
+    /// that share a `LineSource`. The cache turns those into a
+    /// single canonicalisation per file per session.
+    ///
+    /// Keyed on the raw pointer, which is stable for the lifetime
+    /// of the source store; cleared in `BeginStreamingShared` and
+    /// in the reset path of `TeardownStreamingSessionInternal` so
+    /// dangling pointers can't survive a session swap.
+    mutable std::unordered_map<const loglib::LineSource *, std::string> mCanonicalLocatorCache;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

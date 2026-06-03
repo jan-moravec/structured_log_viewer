@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -67,10 +68,25 @@ public:
     /// @p colorIndex).
     bool SetAnchor(const Key &key, uint8_t colorIndex);
 
+    /// Bulk variant of `SetAnchor` for a multi-row selection.
+    /// Mutates the map in one pass and emits `anchorsReset` once
+    /// when anything changed -- listeners (the model overlay,
+    /// the dock) handle the bulk signal with one full refresh
+    /// instead of `keys.size()` per-row repaints, which makes
+    /// `Ctrl+1` over a thousand-row selection cheap. Same
+    /// clamping rule as `SetAnchor`. Returns true iff something
+    /// changed; empty @p keys is a no-op.
+    bool SetAnchors(std::span<const Key> keys, uint8_t colorIndex);
+
     /// Remove an anchor by key. Emits `anchorChanged` when an
     /// entry was actually removed. Returns true iff something
     /// changed.
     bool RemoveAnchor(const Key &key);
+
+    /// Bulk variant of `RemoveAnchor`. Emits `anchorsReset` once
+    /// when at least one anchor was removed. Same rationale as
+    /// `SetAnchors`. Empty @p keys is a no-op.
+    bool RemoveAnchors(std::span<const Key> keys);
 
     /// Drop every anchor in one shot. Emits `anchorsReset` exactly
     /// when the map was non-empty.

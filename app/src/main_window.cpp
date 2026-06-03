@@ -3292,61 +3292,66 @@ void MainWindow::JumpToAnchor(bool forward)
         statusBar()->showMessage(tr("No anchors set."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
-    const int sourceRowCount = mModel->rowCount();
-    if (sourceRowCount <= 0)
+
+    // Walk in proxy (visible) row order so "next anchor" matches what
+    // the user sees: the proxy chain handles newest-first display
+    // (`RowOrderProxyModel`) and column-driven sorts / filtering
+    // (`LogFilterModel`) for us. Walking source rows would jump in
+    // `lineId` insertion order, which inverts F2's direction whenever
+    // the table is sorted differently from insertion order.
+    QAbstractItemModel *proxyModel = mTableView->model();
+    if (proxyModel == nullptr)
     {
         return;
     }
+    const int proxyRowCount = proxyModel->rowCount();
+    if (proxyRowCount <= 0)
+    {
+        statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
 
-    // Resolve the "where am I" cursor in source-row coords. The
-    // current proxy index (last-clicked row) takes precedence over
-    // the selection because it survives a Ctrl-click that extended
-    // the selection elsewhere. With no current index, start one
-    // before the first row so the first forward step lands on row 0.
-    int currentSourceRow = -1;
+    // Cursor in proxy coords. The current proxy index (last-clicked
+    // row) takes precedence over the selection because it survives
+    // a Ctrl-click that extended the selection elsewhere. With no
+    // current index, start one before / past the visible range so
+    // the first step lands on the first / last visible row.
+    int currentProxyRow = -1;
     if (const QModelIndex curProxy = mTableView->currentIndex(); curProxy.isValid())
     {
-        currentSourceRow = MapProxyIndexToSourceRow(curProxy, mSortFilterProxyModel, mRowOrderProxyModel);
+        currentProxyRow = curProxy.row();
     }
-    if (currentSourceRow < 0)
+    if (currentProxyRow < 0)
     {
-        currentSourceRow = forward ? -1 : sourceRowCount;
+        currentProxyRow = forward ? -1 : proxyRowCount;
     }
 
-    // Source-row walk with wrap. The bound `sourceRowCount` covers
-    // the wraparound case where the only anchored row is the
-    // currently selected row -- we still want to scroll to it.
     const int step = forward ? 1 : -1;
-    int candidate = currentSourceRow;
-    for (int hops = 0; hops < sourceRowCount; ++hops)
+    int candidate = currentProxyRow;
+    for (int hops = 0; hops < proxyRowCount; ++hops)
     {
         candidate += step;
-        if (candidate >= sourceRowCount)
+        if (candidate >= proxyRowCount)
         {
-            candidate -= sourceRowCount;
+            candidate -= proxyRowCount;
         }
         else if (candidate < 0)
         {
-            candidate += sourceRowCount;
+            candidate += proxyRowCount;
         }
 
-        const auto key = mModel->AnchorKeyForRow(candidate);
-        if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
-        {
-            continue;
-        }
-
-        // Re-map back through the proxy chain. An anchored row may
-        // be filtered out of the visible proxy; skip it and keep
-        // walking so F2 doesn't silently dead-end on the user.
-        const QModelIndex sourceIdx = mModel->index(candidate, 0);
-        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
-        if (!midIdx.isValid())
-        {
-            continue;
-        }
-        const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
+        const QModelIndex proxyIdx = proxyModel->index(candidate, 0);
         if (!proxyIdx.isValid())
+        {
+            continue;
+        }
+        const int sourceRow = MapProxyIndexToSourceRow(proxyIdx, mSortFilterProxyModel, mRowOrderProxyModel);
+        if (sourceRow < 0)
+        {
+            continue;
+        }
+        const auto key = mModel->AnchorKeyForRow(sourceRow);
+        if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
         {
             continue;
         }
@@ -3358,7 +3363,8 @@ void MainWindow::JumpToAnchor(bool forward)
         return;
     }
 
-    // Every anchored row is filtered out. Tell the user via the
+    // Some anchors exist (`Empty()` is false above) but every one
+    // is filtered out of the visible proxy. Tell the user via the
     // status bar rather than absorbing the F2 silently.
     statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
 }

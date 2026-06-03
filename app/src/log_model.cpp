@@ -161,6 +161,11 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         // Drop the per-batch capture alongside the table's rank cache
         // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
+        // The reset frees every `LineSource` the cache keyed on; drop
+        // the cached locators here so a fresh session can't see a
+        // dangling pointer should the allocator hand the same address
+        // back for a new source.
+        mCanonicalLocatorCache.clear();
         // Drop stale mismatch badges before the reset settles.
         RefreshColumnHealth();
         mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
@@ -192,6 +197,10 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     {
         reserveCount = fileSource->File().Size() / BYTES_PER_LINE_RESERVE_HINT;
     }
+
+    // Old `LineSource`s go away here; drop their cache entries so we
+    // can't hand back stale (or worse, dangling) locator strings.
+    mCanonicalLocatorCache.clear();
 
     mLogTable.BeginStreaming(std::move(source));
     if (reserveCount.has_value())
@@ -1142,7 +1151,28 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexc
         // locatorDedupKeys` does (forward-slashed, lowercase on
         // Windows) so anchor lookups stay byte-equal across the
         // GUI / save / load round-trip.
-        key.locator = logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+        //
+        // Cache by `LineSource *` because the canonicalisation
+        // calls `QFileInfo::absoluteFilePath()` (a `stat`-grade
+        // syscall on Windows) and is invoked on hot paths --
+        // every `data()` Background/Foreground role on every
+        // visible row, and once per row in `RefreshRowsForAnchor`
+        // / `SourceRowForAnchorKey`. Without this cache, scrolling
+        // a multi-thousand-row table with anchors enabled visibly
+        // stutters; the cache holds at most one entry per file in
+        // the session.
+        const auto it = mCanonicalLocatorCache.find(source);
+        if (it != mCanonicalLocatorCache.end())
+        {
+            key.locator = it->second;
+        }
+        else
+        {
+            std::string canonical =
+                logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+            const auto [inserted, _] = mCanonicalLocatorCache.emplace(source, std::move(canonical));
+            key.locator = inserted->second;
+        }
     }
     return key;
 }

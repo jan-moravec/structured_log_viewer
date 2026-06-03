@@ -13,16 +13,18 @@ class QPushButton;
 
 /// Dockable list of every anchored row in the active session. Each
 /// entry shows the anchor's colour swatch, the row's stable lineId,
-/// the source path's filename, and -- when readily available -- a
-/// short summary of the first non-empty column value. Double-click
-/// emits `jumpToAnchorRequested(sourceRow)`; right-click offers
-/// "Remove anchor". A header button wipes every anchor via the
-/// owning `AnchorManager`.
+/// and (when the anchor carries a non-empty locator) the source
+/// path's filename. Double-click emits
+/// `jumpToAnchorRequested(sourceRow)`; right-click offers
+/// "Jump to anchor" / "Remove anchor". A header button wipes every
+/// anchor via the owning `AnchorManager`.
 ///
 /// The dock listens to `AnchorManager::anchorChanged` and
 /// `anchorsReset` so the list stays in lockstep with the model
-/// without polling. Refresh work is gated on `IsVisibleForRefresh()`
-/// so a hidden / buried-tab dock does no list rebuilding.
+/// without polling, and to `ThemeControl::themeChanged` so swatch
+/// icons re-render with the new theme's `anchorPalette`. Refresh
+/// work is gated on `IsVisibleForRefresh()` so a hidden /
+/// buried-tab dock does no list rebuilding.
 ///
 /// Ownership: the `AnchorManager`, `LogModel`, and `ThemeControl`
 /// are borrowed; all three must outlive the dock. The dock parents

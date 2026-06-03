@@ -131,8 +131,30 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
         connect(mModel, &QAbstractItemModel::modelReset, this, &AnchorsDock::Refresh);
     }
 
+    // Theme switch (`Preferences -> Theme` or OS dark-mode flip in
+    // Auto): anchor swatches read from `ThemeControl::AnchorBrushFor`,
+    // so without this connect the dock keeps painting the previous
+    // theme's palette until the next anchor mutation triggers a
+    // refresh. Gated on `IsVisibleForRefresh` so a buried dock still
+    // skips work.
+    if (mTheme != nullptr)
+    {
+        connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
+            if (IsVisibleForRefresh())
+            {
+                Refresh();
+            }
+        });
+    }
+
+    // `itemActivated` fires on Enter/Return on the focused item *and*
+    // on double-click for default-styled item views (the
+    // `SH_ItemView_ActivateItemOnSingleClick` style hint is off on
+    // every desktop platform we ship for). Wiring `itemDoubleClicked`
+    // alongside it would emit `jumpToAnchorRequested` twice for one
+    // user double-click and re-run `MainWindow::SelectSourceRow`
+    // (which re-clears + re-selects + re-scrolls) twice in a row.
     connect(mList, &QListWidget::itemActivated, this, &AnchorsDock::OnItemActivated);
-    connect(mList, &QListWidget::itemDoubleClicked, this, &AnchorsDock::OnItemActivated);
     connect(mList, &QWidget::customContextMenuRequested, this, &AnchorsDock::OnContextMenuRequested);
     connect(mClearAllButton, &QPushButton::clicked, this, &AnchorsDock::OnClearAllClicked);
 
@@ -220,6 +242,18 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
         return;
     }
 
+    // Capture the anchor key (and the resolved source row) BEFORE
+    // `menu.exec()` pumps the event loop. While the popup is up any
+    // queued anchor signal can land on this thread, fire `Refresh()`,
+    // and tear down `item` -- accessing it after `exec()` returns
+    // would be a use-after-free. Stack-local copies survive that
+    // re-entry.
+    AnchorManager::Key key{
+        .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
+        .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+    };
+    const int sourceRow = SourceRowForItem(item);
+
     QMenu menu(this);
     QAction *jumpAction = menu.addAction(QObject::tr("Jump to anchor"));
     QAction *removeAction = menu.addAction(QObject::tr("Remove anchor"));
@@ -230,15 +264,11 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     }
     if (picked == jumpAction)
     {
-        emit jumpToAnchorRequested(SourceRowForItem(item));
+        emit jumpToAnchorRequested(sourceRow);
         return;
     }
     if (picked == removeAction)
     {
-        AnchorManager::Key key{
-            .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
-            .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
-        };
         mAnchors->RemoveAnchor(key);
     }
 }

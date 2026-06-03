@@ -340,12 +340,16 @@ public:
     }
 
     /// Move the table view's selection to the next or previous
-    /// visible anchored row in `lineId` order. Wraps at the model
-    /// bounds (so the user always gets *some* feedback if at least
-    /// one anchor exists). Filters-out rows are skipped; if every
-    /// anchored row is currently filtered, the status bar carries
-    /// the explanation rather than a silent no-op. Wired to the
-    /// `F2` / `Shift+F2` shortcuts and the Anchors dock.
+    /// anchored row in proxy (visible) row order. Walking through
+    /// the proxy means F2 honours the user's display orientation
+    /// (newest-first vs oldest-first) and any active column sort,
+    /// so "next anchor" always matches the visible direction --
+    /// not insertion / `lineId` order. Wraps at the visible-row
+    /// bounds. Filtered-out rows are skipped automatically (they
+    /// don't appear in the proxy); if every anchored row is
+    /// currently filtered, the status bar carries the explanation
+    /// rather than a silent no-op. Wired to the `F2` / `Shift+F2`
+    /// shortcuts and the Anchors dock.
     void JumpToAnchor(bool forward);
 
     /// Scroll the table view to source-model row @p sourceRow and

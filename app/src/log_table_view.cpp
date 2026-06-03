@@ -323,9 +323,21 @@ void LogTableView::AnchorSelection(int colorIndex)
         return;
     }
     const auto keys = AnchorKeysForSelection();
-    for (const auto &key : keys)
+    if (keys.empty())
     {
-        mAnchors->SetAnchor(key, static_cast<uint8_t>(colorIndex));
+        return;
+    }
+    // Single-row hotkey hits the targeted-emit path so the model
+    // only repaints one row; multi-row selections (`Ctrl+A` + `Ctrl+1`,
+    // shift-range select + colour) flip to the bulk path so we don't
+    // run an O(rows) walk per anchored row.
+    if (keys.size() == 1)
+    {
+        mAnchors->SetAnchor(keys.front(), static_cast<uint8_t>(colorIndex));
+    }
+    else
+    {
+        mAnchors->SetAnchors(keys, static_cast<uint8_t>(colorIndex));
     }
 }
 
@@ -336,8 +348,16 @@ void LogTableView::ClearAnchorOnSelection()
         return;
     }
     const auto keys = AnchorKeysForSelection();
-    for (const auto &key : keys)
+    if (keys.empty())
     {
-        mAnchors->RemoveAnchor(key);
+        return;
+    }
+    if (keys.size() == 1)
+    {
+        mAnchors->RemoveAnchor(keys.front());
+    }
+    else
+    {
+        mAnchors->RemoveAnchors(keys);
     }
 }
