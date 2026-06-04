@@ -70,7 +70,7 @@ QList<Group> Build(const QMainWindow *root)
         // the shortcuts dialog.
         for (const QAction *menuAction : bar->actions())
         {
-            QMenu *menu = menuAction->menu();
+            const QMenu *menu = menuAction->menu();
             if (menu == nullptr)
             {
                 continue;

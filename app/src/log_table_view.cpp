@@ -170,7 +170,7 @@ void LogTableView::paintEvent(QPaintEvent *event)
     groupFont.setPointSize(groupFont.pointSize() + CARD_GROUP_POINT_BUMP);
     groupFont.setBold(true);
 
-    QFont bodyFont = font();
+    const QFont bodyFont = font();
     QFont shortcutFont = font();
     shortcutFont.setStyleHint(QFont::Monospace);
 

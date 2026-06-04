@@ -783,8 +783,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // stopped on `streamingFinished`. Also refreshes the title's
     // "<n> lines" suffix at the same cadence so the user sees the
     // count tick without the OS title bar being rewritten per batch.
+    constexpr int LIVE_TAIL_TICK_INTERVAL_MS = 1000;
     mLiveTailTickTimer = new QTimer(this);
-    mLiveTailTickTimer->setInterval(1000);
+    mLiveTailTickTimer->setInterval(LIVE_TAIL_TICK_INTERVAL_MS);
     connect(mLiveTailTickTimer, &QTimer::timeout, this, [this]() {
         UpdateStreamingStatus();
         UpdateWindowTitle();
@@ -2316,8 +2317,8 @@ void MainWindow::ShowShortcutsDialog()
 
 namespace
 {
-constexpr auto kSettingsGeometryKey = "ui/mainWindow/geometry";
-constexpr auto kSettingsStateKey = "ui/mainWindow/state";
+constexpr auto SETTINGS_GEOMETRY_KEY = "ui/mainWindow/geometry";
+constexpr auto SETTINGS_STATE_KEY = "ui/mainWindow/state";
 
 /// Best-effort display name for the active source. Returns an empty
 /// string when no session is loaded. File sources surface as the
@@ -2325,37 +2326,39 @@ constexpr auto kSettingsStateKey = "ui/mainWindow/state";
 /// streams surface as the producer-supplied label (already friendly).
 QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source> &source, const QString &streamingName)
 {
-    if (source.has_value() && !source->locators.empty())
+    if (!source.has_value() || source->locators.empty())
     {
-        const QString first = QString::fromStdString(source->locators.front());
-        if (source->kind == loglib::LogConfiguration::Source::Kind::File)
-        {
-            const QString basename = QFileInfo(first).fileName();
-            if (!basename.isEmpty())
-            {
-                return basename;
-            }
-        }
-        return first;
+        // Streaming-but-not-yet-pinned-source: rare race window between
+        // `mStreamingFileName = ...` and `mCurrentSource = ...`.
+        return streamingName;
     }
-    // Streaming-but-not-yet-pinned-source: rare race window between
-    // `mStreamingFileName = ...` and `mCurrentSource = ...`.
-    return streamingName;
+    // `first` is intentionally non-const so the trailing `return first`
+    // can move it out (see clang-tidy `performance-no-automatic-move`).
+    QString first = QString::fromStdString(source->locators.front());
+    if (source->kind == loglib::LogConfiguration::Source::Kind::File)
+    {
+        QString basename = QFileInfo(first).fileName();
+        if (!basename.isEmpty())
+        {
+            return basename;
+        }
+    }
+    return first;
 }
 } // namespace
 
 void MainWindow::SaveWindowChrome() const
 {
     QSettings settings;
-    settings.setValue(QString::fromLatin1(kSettingsGeometryKey), saveGeometry());
-    settings.setValue(QString::fromLatin1(kSettingsStateKey), saveState());
+    settings.setValue(QString::fromLatin1(SETTINGS_GEOMETRY_KEY), saveGeometry());
+    settings.setValue(QString::fromLatin1(SETTINGS_STATE_KEY), saveState());
 }
 
 void MainWindow::RestoreWindowChrome()
 {
     const QSettings settings;
-    const QByteArray geometry = settings.value(QString::fromLatin1(kSettingsGeometryKey)).toByteArray();
-    const QByteArray state = settings.value(QString::fromLatin1(kSettingsStateKey)).toByteArray();
+    const QByteArray geometry = settings.value(QString::fromLatin1(SETTINGS_GEOMETRY_KEY)).toByteArray();
+    const QByteArray state = settings.value(QString::fromLatin1(SETTINGS_STATE_KEY)).toByteArray();
     // Both are no-ops on empty input, so first-launch falls through
     // to Qt's default geometry without special-casing.
     if (!geometry.isEmpty())
@@ -2383,9 +2386,13 @@ void MainWindow::UpdateWindowTitle()
         // Build a per-session suffix that reads "<count> lines" with
         // grouped digits, optionally prefixed by the live-tail badge.
         // Falls back to the model's row count once streaming has
-        // finished and `mStreamingLineCount` was reset.
-        const qsizetype lines =
-            (mStreamingLineCount > 0) ? mStreamingLineCount : (mModel != nullptr ? mModel->rowCount() : 0);
+        // finished and `mStreamingLineCount` was reset (the latter
+        // happens in `NewSession` / discard paths, never mid-stream).
+        qsizetype lines = mStreamingLineCount;
+        if (lines == 0 && mModel != nullptr)
+        {
+            lines = mModel->rowCount();
+        }
         const QString lineCount = QLocale::system().toString(static_cast<qlonglong>(lines));
         QString suffix;
         if (IsLiveTailSession())
@@ -2448,8 +2455,10 @@ void MainWindow::MarkFiltersDirty()
 
 QString MainWindow::DefaultOpenDir() const
 {
-    QSettings settings;
-    const QString remembered = settings.value(QStringLiteral("ui/lastOpenDir")).toString();
+    const QSettings settings;
+    // Non-const so the early `return remembered` can move it; see
+    // clang-tidy `performance-no-automatic-move`.
+    QString remembered = settings.value(QStringLiteral("ui/lastOpenDir")).toString();
     if (!remembered.isEmpty() && QFileInfo(remembered).isDir())
     {
         return remembered;
@@ -2523,18 +2532,28 @@ namespace
 /// fixture can grow a unit test for it later.
 QString FormatElapsed(qint64 ms)
 {
-    const qint64 totalSec = ms / 1000;
-    const qint64 hours = totalSec / 3600;
-    const qint64 minutes = (totalSec % 3600) / 60;
-    const qint64 seconds = totalSec % 60;
+    constexpr qint64 MS_PER_SEC = 1000;
+    constexpr qint64 SEC_PER_MIN = 60;
+    constexpr qint64 SEC_PER_HOUR = 60 * SEC_PER_MIN;
+    constexpr int FIELD_WIDTH = 2;
+    // Radix for `QString::arg(int, fieldWidth, base, fillChar)` -- the
+    // `10` slot in `arg(...)` is documented as the numeric base.
+    constexpr int DECIMAL_BASE = 10;
+
+    const qint64 totalSec = ms / MS_PER_SEC;
+    const qint64 hours = totalSec / SEC_PER_HOUR;
+    const qint64 minutes = (totalSec % SEC_PER_HOUR) / SEC_PER_MIN;
+    const qint64 seconds = totalSec % SEC_PER_MIN;
     if (hours > 0)
     {
         return QStringLiteral("%1:%2:%3")
-            .arg(hours, 2, 10, QLatin1Char('0'))
-            .arg(minutes, 2, 10, QLatin1Char('0'))
-            .arg(seconds, 2, 10, QLatin1Char('0'));
+            .arg(hours, FIELD_WIDTH, DECIMAL_BASE, QLatin1Char('0'))
+            .arg(minutes, FIELD_WIDTH, DECIMAL_BASE, QLatin1Char('0'))
+            .arg(seconds, FIELD_WIDTH, DECIMAL_BASE, QLatin1Char('0'));
     }
-    return QStringLiteral("%1:%2").arg(minutes, 2, 10, QLatin1Char('0')).arg(seconds, 2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2")
+        .arg(minutes, FIELD_WIDTH, DECIMAL_BASE, QLatin1Char('0'))
+        .arg(seconds, FIELD_WIDTH, DECIMAL_BASE, QLatin1Char('0'));
 }
 } // namespace
 
