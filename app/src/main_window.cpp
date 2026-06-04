@@ -718,9 +718,7 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     {
         auto *action = new QAction(this);
         action->setText(tr("Anchor selection in colour %1").arg(i + 1));
-        action->setShortcut(
-            QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i)))
-        );
+        action->setShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i))));
         addAction(action);
         const int colourIndex = static_cast<int>(i);
         connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
@@ -4925,13 +4923,11 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     // No `setShortcut` here: `mAnchorColorActions[i]` already owns
     // the window-level chord, and duplicating it would trip Qt's
     // `ambiguousShortcut` warning while the popup is mapped.
-    const int currentColourIndex =
-        currentColour.has_value() ? static_cast<int>(*currentColour) : -1;
+    const int currentColourIndex = currentColour.has_value() ? static_cast<int>(*currentColour) : -1;
     for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
     {
         const int colourIndex = static_cast<int>(i);
-        QAction *action =
-            anchorMenu->addAction(makeSwatchIcon(colourIndex), tr("Colour %1").arg(colourIndex + 1));
+        QAction *action = anchorMenu->addAction(makeSwatchIcon(colourIndex), tr("Colour %1").arg(colourIndex + 1));
         action->setCheckable(true);
         action->setChecked(currentColourIndex == colourIndex);
         connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {

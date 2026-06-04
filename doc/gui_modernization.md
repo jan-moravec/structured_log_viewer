@@ -14,7 +14,7 @@ item is a rough triage:
 
 Tick items off as they land.
 
----
+______________________________________________________________________
 
 ## Snapshot of the current layout
 
@@ -34,7 +34,7 @@ Tick items off as they land.
 - Reading-position preservation for newest-first streaming is implemented in
   `LogTableView` but invisible to users (`app/src/log_table_view.cpp:173-234`).
 
----
+______________________________________________________________________
 
 ## 1. Persistent top toolbar (not just `Stream`) — P1
 
@@ -110,16 +110,16 @@ Implementation outline:
 (`app/src/main_window.cpp:2098-2154`). Each component is a separate concern;
 split into permanent widgets via `QStatusBar::addPermanentWidget`:
 
-| Slot                          | Widget                                          |
-|-------------------------------|-------------------------------------------------|
-| Mode badge                    | `QLabel` with bg color (Static / Live / Net)    |
-| Source                        | `QLabel` with elided file path                  |
-| Line count                    | `QLabel`, right-aligned, fixed width            |
-| "*n* shown of *m*"            | `QLabel` driven by `mSortFilterProxyModel->rowCount()` (see item 5) |
-| Error count                   | `QPushButton` opening the diagnostics dialog    |
-| Streaming throughput          | small sparkline widget                          |
-| Indeterminate `QProgressBar`  | during initial static parse                     |
-| Pulse dot                     | live-tail heartbeat                             |
+| Slot                         | Widget                                                              |
+| ---------------------------- | ------------------------------------------------------------------- |
+| Mode badge                   | `QLabel` with bg color (Static / Live / Net)                        |
+| Source                       | `QLabel` with elided file path                                      |
+| Line count                   | `QLabel`, right-aligned, fixed width                                |
+| "*n* shown of *m*"           | `QLabel` driven by `mSortFilterProxyModel->rowCount()` (see item 5) |
+| Error count                  | `QPushButton` opening the diagnostics dialog                        |
+| Streaming throughput         | small sparkline widget                                              |
+| Indeterminate `QProgressBar` | during initial static parse                                         |
+| Pulse dot                    | live-tail heartbeat                                                 |
 
 You already use this pattern for `mDiagnosticsButton`
 (`app/src/main_window.cpp:682-689`); extend it.
@@ -312,8 +312,7 @@ designer is involved.
 
 ## 19. Monospace font for log content — P3
 
-Log content reads better monospaced. `QFontDatabase::systemFont
-(QFontDatabase::FixedFont)` resolves to `Cascadia Mono` / `SF Mono` /
+Log content reads better monospaced. `QFontDatabase::systemFont (QFontDatabase::FixedFont)` resolves to `Cascadia Mono` / `SF Mono` /
 `Monospace` per platform.
 
 Apply via a delegate `data()` override that returns a fixed-pitch `QFont`
@@ -322,8 +321,7 @@ for `Qt::FontRole` on chosen columns (message, raw JSON).
 ## 20. Platform integration polish — P3
 
 - `QStandardPaths::DocumentsLocation` as default for the `Open…` dialog.
-- Keep native dialogs (`QFileDialog::setOption(DontUseNativeDialog,
-  false)` is the default; mention so it doesn't regress).
+- Keep native dialogs (`QFileDialog::setOption(DontUseNativeDialog, false)` is the default; mention so it doesn't regress).
 - Tighten `dragEnterEvent` (`app/include/main_window.hpp:138`) to only
   accept proposed actions when `urls().first().isLocalFile()`, so the
   cursor turns red on bad drops.
@@ -343,7 +341,7 @@ for `Qt::FontRole` on chosen columns (message, raw JSON).
   look across platforms; the dark theme composes more predictably on
   Windows than under the default `windowsvista` style.
 
----
+______________________________________________________________________
 
 ## Suggested first wave
 
@@ -351,12 +349,12 @@ If you tackle these five first, the rest compounds nicely on top:
 
 1. **Filter chips above the table** (item 3) — turns invisible state into
    visible state, biggest UX gain.
-2. **Modern incremental find bar** with match counter (item 2).
-3. **Structured status bar** instead of one concatenated string (item 4)
+1. **Modern incremental find bar** with match counter (item 2).
+1. **Structured status bar** instead of one concatenated string (item 4)
    plus the "*n* shown of *m*" indicator (item 5).
-4. **Mini-map scrollbar** or at least error ticks (item 13) — log viewers
+1. **Mini-map scrollbar** or at least error ticks (item 13) — log viewers
    live or die on this.
-5. **Level pill delegate** + decoration icons (items 7, 17) — instant
+1. **Level pill delegate** + decoration icons (items 7, 17) — instant
    modern feel.
 
 Backed up by item 16 (persist window state) so the user's customizations

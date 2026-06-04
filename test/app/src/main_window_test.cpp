@@ -3240,8 +3240,7 @@ private slots:
         for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
         {
             const int colourIndex = static_cast<int>(i);
-            const QAction *entry =
-                FindMenuActionByText(anchorMenu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
+            const QAction *entry = FindMenuActionByText(anchorMenu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
             QVERIFY2(entry != nullptr, "every palette slot must have a sub-menu entry");
             QVERIFY(entry->isCheckable());
             if (colourIndex == 4)
@@ -3274,8 +3273,7 @@ private slots:
         for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
         {
             const int colourIndex = static_cast<int>(i);
-            const QAction *entry =
-                FindMenuActionByText(anchor0Menu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
+            const QAction *entry = FindMenuActionByText(anchor0Menu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
             QVERIFY(entry != nullptr);
             QVERIFY2(!entry->isChecked(), "unanchored row must have no checked colour");
         }
