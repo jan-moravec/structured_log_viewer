@@ -37,6 +37,20 @@ namespace
 
 constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 
+/// Fallback anchor palette used when the active theme's slot is
+/// empty. Eight saturated, hue-distinct entries; readable on both
+/// light and dark chrome.
+constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_PALETTE = {
+    "#B91C1C",
+    "#C2410C",
+    "#A16207",
+    "#15803D",
+    "#0F766E",
+    "#0369A1",
+    "#7E22CE",
+    "#BE185D",
+};
+
 constexpr char BUILTIN_LIGHT_NAME[] = "Light";
 constexpr char BUILTIN_DARK_NAME[] = "Dark";
 
@@ -273,6 +287,25 @@ bool ThemeControl::HasFontStyle(loglib::LogLevel level) const noexcept
 bool ThemeControl::HasAnyFontStyle() const noexcept
 {
     return mHasAnyFontStyle;
+}
+
+QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noexcept
+{
+    if (colorIndex >= loglib::ANCHOR_PALETTE_SIZE)
+    {
+        return {};
+    }
+    switch (role)
+    {
+    case Qt::BackgroundRole:
+        return mAnchorBackground[colorIndex];
+    case Qt::ForegroundRole:
+        return mAnchorForeground[colorIndex];
+    default:
+        // Other roles have no anchor meaning; invalid brush lets
+        // the caller fall through to its normal handling.
+        return {};
+    }
 }
 
 QString ThemeControl::ActiveSelection() const
@@ -922,5 +955,23 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
             mFonts[idx].setItalic(true);
         }
         mHasAnyFontStyle = mHasAnyFontStyle || style.bold || style.italic;
+    }
+
+    // Cache anchor brushes: theme override first, then fallback.
+    // Foreground is chosen per-slot from background luma so pastel
+    // user slots still get legible text.
+    for (size_t slot = 0; slot < loglib::ANCHOR_PALETTE_SIZE; ++slot)
+    {
+        QColor background;
+        if (slot < theme.anchorPalette.size() && !theme.anchorPalette[slot].empty())
+        {
+            background = QColor(QString::fromStdString(theme.anchorPalette[slot]));
+        }
+        if (!background.isValid())
+        {
+            background = QColor(QString::fromLatin1(ANCHOR_FALLBACK_PALETTE[slot]));
+        }
+        mAnchorBackground[slot] = QBrush{background};
+        mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
     }
 }

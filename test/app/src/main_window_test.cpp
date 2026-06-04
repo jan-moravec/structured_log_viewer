@@ -1,3 +1,5 @@
+#include "anchor_manager.hpp"
+#include "anchors_dock.hpp"
 #include "cli_parser.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
@@ -61,6 +63,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QMenu>
@@ -467,6 +471,31 @@ QAction *FindActionByObjectName(QMainWindow *window, const QString &name)
 // `QMainWindowLayout`'s dock-area state, which is only wired up by
 // the host's first paint cycle.
 
+/// Returns the first action in @p menu whose visible text (mnemonic
+/// stripped) equals @p text, or null. Lookup by label avoids
+/// hard-coded indices in the row-context-menu tests.
+[[nodiscard]] inline QAction *FindMenuActionByText(const QMenu *menu, const QString &text)
+{
+    if (menu == nullptr)
+    {
+        return nullptr;
+    }
+    for (QAction *action : menu->actions())
+    {
+        if (action == nullptr)
+        {
+            continue;
+        }
+        QString visible = action->text();
+        visible.remove(QChar('&'));
+        if (visible == text)
+        {
+            return action;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture; moc expects this declaration shape.
@@ -543,7 +572,11 @@ private slots:
 
     void TestWindowTitle()
     {
-        QCOMPARE(mWindow->windowTitle(), QString("Structured Log Viewer"));
+        // Idle title carries the `[*]` modified-marker placeholder. Qt
+        // strips it from the rendered title when `isWindowModified()` is
+        // false, but the getter returns the raw string verbatim.
+        QCOMPARE(mWindow->windowTitle(), QString("Structured Log Viewer[*]"));
+        QVERIFY(!mWindow->isWindowModified());
     }
 
     void TestWindowIcon()
@@ -2708,6 +2741,946 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Pins the table's Explorer/Excel selection idiom (plain click
+    // replaces, Ctrl-click toggles, Shift-click extends) at whole-row
+    // granularity. Driven through `selectionCommand()` directly to
+    // avoid the offscreen-QPA realisation issues.
+    void TestTableExtendedSelectionRowClickSemantics()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+
+        QCOMPARE(tableView->selectionMode(), QAbstractItemView::ExtendedSelection);
+        QCOMPARE(tableView->selectionBehavior(), QAbstractItemView::SelectRows);
+
+        // Populate a few rows so `selectionCommand` runs against a
+        // valid proxy index.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QVERIFY(tableView->model()->rowCount() >= 1);
+
+        const QModelIndex clickedIndex = tableView->model()->index(0, 0);
+        QVERIFY(clickedIndex.isValid());
+
+        // Left-button press with the given modifiers; position is
+        // irrelevant for `selectionCommand`.
+        auto makePress = [](Qt::KeyboardModifiers mods) {
+            return QMouseEvent(
+                QEvent::MouseButtonPress, QPointF(0, 0), QPointF(0, 0), Qt::LeftButton, Qt::LeftButton, mods
+            );
+        };
+
+        // Plain click replaces the current selection (row granularity).
+        {
+            const QMouseEvent ev = makePress(Qt::NoModifier);
+            const QItemSelectionModel::SelectionFlags flags = tableView->SelectionCommandForTest(clickedIndex, &ev);
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::ClearAndSelect),
+                "Plain click on a row must replace the existing selection (ClearAndSelect)."
+            );
+            QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Plain click must operate on whole rows (Rows flag).");
+            QVERIFY2(
+                !flags.testFlag(QItemSelectionModel::Toggle),
+                "Plain click must NOT merely toggle the row -- that is the MultiSelection regression."
+            );
+        }
+
+        // Ctrl-click toggles one row in/out of the selection.
+        {
+            const QMouseEvent ev = makePress(Qt::ControlModifier);
+            const QItemSelectionModel::SelectionFlags flags = tableView->SelectionCommandForTest(clickedIndex, &ev);
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::Toggle),
+                "Ctrl-click must toggle the clicked row in or out of the selection."
+            );
+            QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Ctrl-click must operate on whole rows (Rows flag).");
+            QVERIFY2(!flags.testFlag(QItemSelectionModel::Clear), "Ctrl-click must NOT clear the existing selection.");
+            QVERIFY2(
+                !flags.testFlag(QItemSelectionModel::ClearAndSelect),
+                "Ctrl-click must NOT replace the existing selection."
+            );
+        }
+
+        // Shift-click extends from the selection anchor.
+        {
+            const QMouseEvent ev = makePress(Qt::ShiftModifier);
+            const QItemSelectionModel::SelectionFlags flags = tableView->SelectionCommandForTest(clickedIndex, &ev);
+            QVERIFY2(
+                flags.testFlag(QItemSelectionModel::SelectCurrent),
+                "Shift-click must extend the current selection (SelectCurrent)."
+            );
+            QVERIFY2(flags.testFlag(QItemSelectionModel::Rows), "Shift-click must operate on whole rows (Rows flag).");
+            QVERIFY2(!flags.testFlag(QItemSelectionModel::Toggle), "Shift-click is a range extension, not a toggle.");
+        }
+
+        model->EndStreaming(false);
+    }
+
+    // AnchorManager mutation contract: idempotent SetAnchor,
+    // RemoveAnchor's "did anything change" return, ClearAll's bulk
+    // signal, Replace's drop-of-bad-slots policy, and the stable
+    // `Entries()` ordering used by the byte-stable save path.
+    void TestAnchorManagerCoreContract()
+    {
+        AnchorManager manager;
+        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        const QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
+
+        const AnchorManager::Key keyA{.locator = "c:/logs/a.json", .lineId = 7};
+        const AnchorManager::Key keyB{.locator = "c:/logs/b.json", .lineId = 3};
+
+        QVERIFY(manager.Empty());
+        QCOMPARE(manager.Count(), std::size_t{0});
+
+        // First add: changes state, fires `anchorChanged` once.
+        QVERIFY(manager.SetAnchor(keyA, 2));
+        QCOMPARE(changedSpy.count(), 1);
+        QCOMPARE(manager.ColorFor(keyA).value_or(255U), uint8_t{2});
+
+        // Same key + colour: idempotent (no signal, returns false).
+        QVERIFY(!manager.SetAnchor(keyA, 2));
+        QCOMPARE(changedSpy.count(), 1);
+
+        // Same key, new colour: re-emits once.
+        QVERIFY(manager.SetAnchor(keyA, 5));
+        QCOMPARE(changedSpy.count(), 2);
+        QCOMPARE(manager.ColorFor(keyA).value_or(255U), uint8_t{5});
+
+        // Out-of-range colour clamps rather than rejecting.
+        QVERIFY(manager.SetAnchor(keyB, 99));
+        QCOMPARE(manager.ColorFor(keyB).value_or(255U), uint8_t{loglib::ANCHOR_PALETTE_SIZE - 1});
+        QCOMPARE(changedSpy.count(), 3);
+
+        // Stable sort order: locator-first, then lineId.
+        const auto entries = manager.Entries();
+        QCOMPARE(entries.size(), std::size_t{2});
+        QCOMPARE(entries[0].locator, std::string{"c:/logs/a.json"});
+        QCOMPARE(entries[1].locator, std::string{"c:/logs/b.json"});
+
+        // RemoveAnchor: emits exactly once when the key existed,
+        // no-ops + returns false otherwise.
+        QVERIFY(manager.RemoveAnchor(keyA));
+        QCOMPARE(changedSpy.count(), 4);
+        QVERIFY(!manager.RemoveAnchor(keyA));
+        QCOMPARE(changedSpy.count(), 4);
+
+        // ClearAll: bulk signal, only when the map was non-empty.
+        QVERIFY(manager.ClearAll());
+        QCOMPARE(resetSpy.count(), 1);
+        QVERIFY(!manager.ClearAll());
+        QCOMPARE(resetSpy.count(), 1);
+
+        // Replace drops out-of-range entries (rather than clamping)
+        // and returns the drop count so the GUI can surface it.
+        std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
+        incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0});
+        incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
+        );
+        QCOMPARE(manager.Replace(incoming), std::size_t{1});
+        QCOMPARE(resetSpy.count(), 2);
+        QCOMPARE(manager.Count(), std::size_t{1});
+        QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), uint8_t{0});
+        QVERIFY(!manager.ColorFor({.locator = "c:/x.json", .lineId = 2}).has_value());
+
+        // All-valid input returns 0 dropped (it is a schema-drift
+        // signal, not an input size).
+        std::vector<loglib::LogConfiguration::AnchorEntry> clean;
+        clean.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1});
+        QCOMPARE(manager.Replace(clean), std::size_t{0});
+    }
+
+    // `Entries()` (the save snapshot) drops empty-locator anchors:
+    // their `lineId` is not stable across sessions, so persisting
+    // them would later collide with unrelated rows.
+    // `EntriesIncludingRuntimeOnly` keeps them for diagnostics.
+    void TestAnchorManagerEntriesDropsRuntimeOnlyAnchors()
+    {
+        AnchorManager manager;
+
+        // One canonical-locator anchor, one runtime-only.
+        const AnchorManager::Key persistable{.locator = "c:/logs/persistent.json", .lineId = 7};
+        const AnchorManager::Key runtimeOnly{.locator = "", .lineId = 42};
+        QVERIFY(manager.SetAnchor(persistable, 1));
+        QVERIFY(manager.SetAnchor(runtimeOnly, 5));
+        QCOMPARE(manager.Count(), std::size_t{2});
+
+        // Save path keeps only the persistable anchor.
+        const auto saved = manager.Entries();
+        QCOMPARE(saved.size(), std::size_t{1});
+        QCOMPARE(saved.front().locator, std::string{"c:/logs/persistent.json"});
+        QCOMPARE(saved.front().lineId, std::uint64_t{7});
+        QCOMPARE(saved.front().colorIndex, std::uint8_t{1});
+
+        // Diagnostics path keeps both, deterministic order.
+        const auto all = manager.EntriesIncludingRuntimeOnly();
+        QCOMPARE(all.size(), std::size_t{2});
+        QCOMPARE(all[0].locator, std::string{""});
+        QCOMPARE(all[1].locator, std::string{"c:/logs/persistent.json"});
+
+        // The runtime-only anchor still lives in the manager
+        // (the filter is at the snapshot, not the mutation).
+        QCOMPARE(manager.ColorFor(runtimeOnly).value_or(255U), std::uint8_t{5});
+    }
+
+    // Replace's same-content short-circuit: re-applying the same
+    // entries (in any order) must be silent; a colour change must
+    // still fire `anchorsReset`.
+    void TestAnchorManagerReplaceIsSilentWhenContentUnchanged()
+    {
+        AnchorManager manager;
+        const QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
+
+        // Seed two anchors.
+        std::vector<loglib::LogConfiguration::AnchorEntry> entries;
+        entries.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
+        );
+        entries.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
+        );
+        QCOMPARE(manager.Replace(entries), std::size_t{0});
+        QCOMPARE(resetSpy.count(), 1);
+        QCOMPARE(manager.Count(), std::size_t{2});
+
+        // Same content, shuffled order: comparison is map-equality,
+        // so this must NOT emit.
+        std::vector<loglib::LogConfiguration::AnchorEntry> shuffled;
+        shuffled.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 5}
+        );
+        shuffled.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
+        );
+        QCOMPARE(manager.Replace(shuffled), std::size_t{0});
+        QCOMPARE(resetSpy.count(), 1);
+
+        // Same keys, different colour: content changed, listeners
+        // must be told.
+        std::vector<loglib::LogConfiguration::AnchorEntry> mutated;
+        mutated.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/a.json", .lineId = 1, .colorIndex = 2}
+        );
+        mutated.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/logs/b.json", .lineId = 9, .colorIndex = 6}
+        );
+        QCOMPARE(manager.Replace(mutated), std::size_t{0});
+        QCOMPARE(resetSpy.count(), 2);
+        QCOMPARE(manager.ColorFor({.locator = "c:/logs/b.json", .lineId = 9}).value_or(255U), uint8_t{6});
+    }
+
+    // ThemeControl::AnchorBrushFor: paint-ready brush for every
+    // valid slot, invalid brush for out-of-range / unknown roles.
+    void TestThemeControlAnchorBrushResolver()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Every slot yields paint-ready brushes for BG and FG.
+        for (uint8_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
+        {
+            const QBrush bg = mTheme->AnchorBrushFor(i, Qt::BackgroundRole);
+            const QBrush fg = mTheme->AnchorBrushFor(i, Qt::ForegroundRole);
+            QVERIFY2(bg.style() != Qt::NoBrush, qPrintable(QStringLiteral("anchor slot %1 BG was invalid").arg(i)));
+            QVERIFY2(fg.style() != Qt::NoBrush, qPrintable(QStringLiteral("anchor slot %1 FG was invalid").arg(i)));
+            QVERIFY(bg.color().isValid());
+            QVERIFY(fg.color().isValid());
+        }
+
+        // Distinct slots must paint distinct backgrounds.
+        QVERIFY(
+            mTheme->AnchorBrushFor(0, Qt::BackgroundRole).color() !=
+            mTheme->AnchorBrushFor(4, Qt::BackgroundRole).color()
+        );
+
+        // Out-of-range -> invalid brush (model falls through to
+        // the level branch).
+        const QBrush oob = mTheme->AnchorBrushFor(loglib::ANCHOR_PALETTE_SIZE, Qt::BackgroundRole);
+        QVERIFY(oob.style() == Qt::NoBrush);
+
+        // Unhandled role -> invalid brush.
+        QVERIFY(mTheme->AnchorBrushFor(0, Qt::DisplayRole).style() == Qt::NoBrush);
+    }
+
+    // LogModel anchor overlay: anchored rows resolve to the anchor
+    // brush (BG + FG), removing reverts to the level brush, and
+    // `anchorChanged` fires a scoped `dataChanged` so the view
+    // repaints that row.
+    void TestLogModelAnchorOverlay()
+    {
+        ThemeControl theme;
+        AnchorManager anchors;
+        LogModel model(nullptr, &theme, &anchors);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, /*firstLineId=*/1, /*count=*/3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), 3);
+
+        // Snapshot row 0's pre-anchor brush so we can confirm the
+        // anchor overlay differs (and reverts later).
+        const QModelIndex row0 = model.index(0, 0);
+        const QVariant preAnchorBg = model.data(row0, Qt::BackgroundRole);
+
+        // Resolve through the model's helper to exercise the same
+        // canonicalisation path production uses.
+        const auto key = model.AnchorKeyForRow(0);
+        QVERIFY(key.has_value());
+        QCOMPARE(key->lineId, uint64_t{1});
+
+        QSignalSpy dataSpy(&model, &LogModel::dataChanged);
+        anchors.SetAnchor(*key, /*colorIndex=*/3);
+        QCoreApplication::processEvents();
+
+        // Scoped `dataChanged` covering Background + Foreground.
+        QVERIFY(dataSpy.count() >= 1);
+        bool sawBackgroundRoleEmit = false;
+        for (const QList<QVariant> &args : dataSpy)
+        {
+            const auto roles = args.at(2).value<QList<int>>();
+            if (roles.contains(Qt::BackgroundRole) && roles.contains(Qt::ForegroundRole))
+            {
+                sawBackgroundRoleEmit = true;
+                break;
+            }
+        }
+        QVERIFY2(sawBackgroundRoleEmit, "anchor change must emit dataChanged with Background+Foreground roles");
+
+        const QVariant anchoredBg = model.data(row0, Qt::BackgroundRole);
+        const QVariant anchoredFg = model.data(row0, Qt::ForegroundRole);
+        QVERIFY(anchoredBg.canConvert<QBrush>());
+        QVERIFY(anchoredFg.canConvert<QBrush>());
+        const auto bgBrush = anchoredBg.value<QBrush>();
+        const auto fgBrush = anchoredFg.value<QBrush>();
+        QCOMPARE(bgBrush.color(), theme.AnchorBrushFor(3, Qt::BackgroundRole).color());
+        QCOMPARE(fgBrush.color(), theme.AnchorBrushFor(3, Qt::ForegroundRole).color());
+
+        // Other rows keep their pre-anchor brush.
+        QVERIFY(model.data(model.index(1, 0), Qt::BackgroundRole) == preAnchorBg);
+
+        // RemoveAnchor reverts row 0 to the pre-anchor brush.
+        dataSpy.clear();
+        anchors.RemoveAnchor(*key);
+        QCoreApplication::processEvents();
+        QVERIFY(dataSpy.count() >= 1);
+        QCOMPARE(model.data(row0, Qt::BackgroundRole), preAnchorBg);
+
+        model.EndStreaming(false);
+    }
+
+    // End-to-end: `AnchorSelection` routes through the proxy chain,
+    // sets the requested colour on each selected row, and ignores
+    // unselected rows. Stand-in for the right-click menu and
+    // Ctrl+1..8 hotkey, both wired to this slot.
+    void TestLogTableViewAnchorSelectionDrivesAnchorManager()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY2(anchors != nullptr, "MainWindow must own an AnchorManager after construction");
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        // Four rows.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        // Select rows 0 and 2.
+        QItemSelectionModel *sel = view->selectionModel();
+        QVERIFY(sel != nullptr);
+        sel->clearSelection();
+        const QModelIndex idx0 = view->model()->index(0, 0);
+        const QModelIndex idx2 = view->model()->index(2, 0);
+        sel->select(idx0, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        sel->select(idx2, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+
+        view->AnchorSelection(/*colorIndex=*/3);
+        QCoreApplication::processEvents();
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key1 = model->AnchorKeyForRow(1);
+        const auto key2 = model->AnchorKeyForRow(2);
+        const auto key3 = model->AnchorKeyForRow(3);
+        QVERIFY(key0.has_value());
+        QVERIFY(key1.has_value());
+        QVERIFY(key2.has_value());
+        QVERIFY(key3.has_value());
+        QCOMPARE(anchors->ColorFor(*key0).value_or(255), static_cast<std::uint8_t>(3));
+        QCOMPARE(anchors->ColorFor(*key2).value_or(255), static_cast<std::uint8_t>(3));
+        QVERIFY2(!anchors->ColorFor(*key1).has_value(), "unselected row 1 must not be anchored");
+        QVERIFY2(!anchors->ColorFor(*key3).has_value(), "unselected row 3 must not be anchored");
+
+        // Clear, then verify both anchors are gone.
+        view->ClearAnchorOnSelection();
+        QCoreApplication::processEvents();
+        QVERIFY(!anchors->ColorFor(*key0).has_value());
+        QVERIFY(!anchors->ColorFor(*key2).has_value());
+
+        model->EndStreaming(false);
+    }
+
+    // JumpToAnchor visits anchored rows in ascending visible order
+    // and wraps. With anchors on rows 0 and 2, the forward sequence
+    // is 0 -> 2 -> 0; one step back from the wrap lands on 2.
+    void TestMainWindowJumpToAnchorVisits()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key2, 1);
+        QCoreApplication::processEvents();
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        mWindow->JumpToAnchor(/*forward=*/true);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 0);
+
+        mWindow->JumpToAnchor(/*forward=*/true);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 2);
+
+        // Wrap to row 0.
+        mWindow->JumpToAnchor(/*forward=*/true);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 0);
+
+        // Step back to row 2.
+        mWindow->JumpToAnchor(/*forward=*/false);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 2);
+
+        model->EndStreaming(false);
+    }
+
+    // Anchor sub-menu reflects the right-clicked row: the matching
+    // colour entry is checked (others aren't), and "Remove anchor"
+    // is enabled iff the row carries a colour.
+    void TestRowContextMenuAnchorSubMenuReflectsRowState()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto key1 = model->AnchorKeyForRow(1);
+        QVERIFY(key1.has_value());
+        anchors->SetAnchor(*key1, 4);
+        QCoreApplication::processEvents();
+
+        // Right-click row 1 (anchored at colour 4).
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY(menu != nullptr);
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+        const QAction *anchorMenuAction = FindMenuActionByText(menu, MainWindow::tr("Anchor"));
+        QVERIFY2(anchorMenuAction != nullptr, "Anchor sub-menu must be present");
+        const QMenu *anchorMenu = anchorMenuAction->menu();
+        QVERIFY(anchorMenu != nullptr);
+
+        int colour4ChecksSeen = 0;
+        int otherColourChecksSeen = 0;
+        for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
+        {
+            const int colourIndex = static_cast<int>(i);
+            const QAction *entry = FindMenuActionByText(anchorMenu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
+            QVERIFY2(entry != nullptr, "every palette slot must have a sub-menu entry");
+            QVERIFY(entry->isCheckable());
+            if (colourIndex == 4)
+            {
+                if (entry->isChecked())
+                {
+                    ++colour4ChecksSeen;
+                }
+            }
+            else if (entry->isChecked())
+            {
+                ++otherColourChecksSeen;
+            }
+        }
+        QCOMPARE(colour4ChecksSeen, 1);
+        QCOMPARE(otherColourChecksSeen, 0);
+
+        const QAction *clear = FindMenuActionByText(anchorMenu, MainWindow::tr("Remove anchor"));
+        QVERIFY2(clear != nullptr, "remove-anchor entry must be present");
+        QVERIFY2(clear->isEnabled(), "remove-anchor must be enabled when the right-clicked row carries a colour");
+
+        // Unanchored row: no checked colour, Remove disabled.
+        QMenu *menu0 = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY(menu0 != nullptr);
+        const QScopeGuard menu0Deleter([&menu0]() { menu0->deleteLater(); });
+        const QAction *anchor0 = FindMenuActionByText(menu0, MainWindow::tr("Anchor"));
+        QVERIFY(anchor0 != nullptr);
+        const QMenu *anchor0Menu = anchor0->menu();
+        QVERIFY(anchor0Menu != nullptr);
+        for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
+        {
+            const int colourIndex = static_cast<int>(i);
+            const QAction *entry = FindMenuActionByText(anchor0Menu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
+            QVERIFY(entry != nullptr);
+            QVERIFY2(!entry->isChecked(), "unanchored row must have no checked colour");
+        }
+        const QAction *clear0 = FindMenuActionByText(anchor0Menu, MainWindow::tr("Remove anchor"));
+        QVERIFY(clear0 != nullptr);
+        QVERIFY2(!clear0->isEnabled(), "remove-anchor must be disabled when the row carries no colour");
+
+        model->EndStreaming(false);
+    }
+
+    // Right-clicking outside an existing selection collapses to
+    // the clicked row (Explorer idiom); clicking inside the
+    // selection keeps the set intact for multi-row actions.
+    void TestRowContextMenuAdoptsRightClickedRowOutsideSelection()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        const QAbstractItemModel *proxy = view->model();
+        QVERIFY(proxy != nullptr);
+        QItemSelectionModel *selection = view->selectionModel();
+        QVERIFY(selection != nullptr);
+
+        // Seed a multi-row selection on rows 0-2.
+        selection->clearSelection();
+        const QModelIndex anchorIdx = proxy->index(0, 0);
+        const QModelIndex middleIdx = proxy->index(1, 0);
+        const QModelIndex tailIdx = proxy->index(2, 0);
+        selection->select(
+            QItemSelection(anchorIdx, tailIdx), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        selection->setCurrentIndex(middleIdx, QItemSelectionModel::NoUpdate);
+        QCOMPARE(selection->selectedRows().count(), 3);
+
+        // Right-click inside the selection leaves it alone.
+        const QPoint insideClick = view->visualRect(middleIdx).center();
+        mWindow->ShowRowContextMenuForTest(insideClick);
+        QCoreApplication::processEvents();
+        QCOMPARE(selection->selectedRows().count(), 3);
+
+        // Close the popup before the next case.
+        if (QWidget *popup = QApplication::activePopupWidget(); popup != nullptr)
+        {
+            popup->close();
+            QCoreApplication::processEvents();
+        }
+
+        // Right-click outside the selection collapses to that row.
+        const QModelIndex outsideIdx = proxy->index(4, 0);
+        const QPoint outsideClick = view->visualRect(outsideIdx).center();
+        mWindow->ShowRowContextMenuForTest(outsideClick);
+        QCoreApplication::processEvents();
+        QCOMPARE(selection->selectedRows().count(), 1);
+        QCOMPARE(selection->selectedRows().first().row(), 4);
+        QCOMPARE(view->currentIndex().row(), 4);
+
+        if (QWidget *popup = QApplication::activePopupWidget(); popup != nullptr)
+        {
+            popup->close();
+            QCoreApplication::processEvents();
+        }
+
+        model->EndStreaming(false);
+    }
+
+    // AnchorsDock end-to-end: lists anchors in `Entries()` order,
+    // double-click resolves a key back to a source row, and "Clear
+    // all" wipes everything.
+    void TestAnchorsDockListsAndJumpsAndClearsAll()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own an AnchorsDock");
+        auto *list = dock->ListForTest();
+        QVERIFY(list != nullptr);
+        auto *clearBtn = dock->ClearAllButtonForTest();
+        QVERIFY(clearBtn != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key2, 5);
+        QCoreApplication::processEvents();
+
+        // Offscreen QPA keeps the dock hidden so refresh signals
+        // elide; invoke explicitly.
+        dock->RefreshForTest();
+        QCOMPARE(list->count(), 2);
+
+        // `itemActivated` -> `jumpToAnchorRequested(sourceRow)`.
+        QSignalSpy jumpSpy(dock, &AnchorsDock::jumpToAnchorRequested);
+        QVERIFY(jumpSpy.isValid());
+
+        QListWidgetItem *firstItem = list->item(0);
+        QVERIFY(firstItem != nullptr);
+        emit list->itemActivated(firstItem);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), 1);
+        // Both keys resolve back to a non-negative source row.
+        QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
+
+        QListWidgetItem *secondItem = list->item(1);
+        QVERIFY(secondItem != nullptr);
+        emit list->itemActivated(secondItem);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), 2);
+        QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
+
+        // Two distinct source rows (Entries() sorts by lineId,
+        // so item 0 -> lineId 1 / row 0, item 1 -> lineId 3 / row 2).
+        QVERIFY(jumpSpy.at(0).at(0).toInt() != jumpSpy.at(1).at(0).toInt());
+
+        emit clearBtn->clicked();
+        QCoreApplication::processEvents();
+        QVERIFY2(anchors->Empty(), "Clear all button must wipe every anchor");
+        dock->RefreshForTest();
+        QCOMPARE(list->count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // SelectSourceRow scrolls + selects the source row through the
+    // proxy chain and moves the current index there. Negative rows
+    // no-op.
+    void TestMainWindowSelectSourceRowScrollsAndSelects()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        mWindow->SelectSourceRow(/*sourceRow=*/3);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 3);
+        QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
+        QCOMPARE(view->selectionModel()->selectedRows().first().row(), 3);
+
+        // Negative rows no-op.
+        mWindow->SelectSourceRow(/*sourceRow=*/-1);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 3);
+
+        model->EndStreaming(false);
+    }
+
+    // Anchors round-trip: live AnchorManager -> saved JSON ->
+    // loaded JSON -> AnchorManager. Covers the mirror, save, load,
+    // and Replace plumbing.
+    void TestAnchorPersistenceRoundTripsThroughSavedConfiguration()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+
+        // Three real rows so the model has real (locator, lineId)
+        // keys to anchor on.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+        model->EndStreaming(false);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 2);
+        anchors->SetAnchor(*key2, 6);
+        QCOMPARE(anchors->Count(), static_cast<std::size_t>(2));
+
+        // Save via the test seam (mirror -> serialise).
+        const QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QString cfgPath = tmp.filePath(QStringLiteral("anchors-roundtrip.json"));
+        mWindow->SaveConfigurationToPathForTest(cfgPath);
+        QCoreApplication::processEvents();
+
+        // On-disk JSON must contain an `anchors` key.
+        QFile saved(cfgPath);
+        QVERIFY(saved.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString savedJson = QString::fromUtf8(saved.readAll());
+        saved.close();
+        QVERIFY2(savedJson.contains(QStringLiteral("\"anchors\"")), "saved JSON must carry an anchors key");
+
+        // Wipe live state so the load is observable.
+        auto *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        QVERIFY(newSessionAction != nullptr);
+        newSessionAction->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY(anchors->Empty());
+
+        // Load through the same path the menu uses; anchors come
+        // back.
+        QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(anchors->Count(), static_cast<std::size_t>(2));
+        QCOMPARE(anchors->ColorFor(*key0).value_or(255U), uint8_t{2});
+        QCOMPARE(anchors->ColorFor(*key2).value_or(255U), uint8_t{6});
+    }
+
+    // NewSession drops every anchor (rows are gone).
+    void TestNewSessionClearsAnchors()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 1);
+        QVERIFY(!anchors->Empty());
+
+        auto *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        QVERIFY(newSessionAction != nullptr);
+        newSessionAction->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(anchors->Empty(), "NewSession must clear every anchor");
+    }
+
+    // `anchorsReset` (the bulk path) emits a single whole-table
+    // `dataChanged` so the view repaints every visible row.
+    void TestLogModelAnchorBulkRefresh()
+    {
+        ThemeControl theme;
+        AnchorManager anchors;
+        LogModel model(nullptr, &theme, &anchors);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model.rowCount(), 4);
+
+        const auto key0 = model.AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors.SetAnchor(*key0, 1);
+        QCoreApplication::processEvents();
+
+        const QSignalSpy dataSpy(&model, &LogModel::dataChanged);
+        anchors.ClearAll();
+        QCoreApplication::processEvents();
+
+        // ClearAll -> `RefreshAllAnchorRows` -> one `dataChanged`
+        // spanning the whole table (row 0 to rowCount-1).
+        QVERIFY(dataSpy.count() >= 1);
+        bool sawWholeTableEmit = false;
+        for (const QList<QVariant> &args : dataSpy)
+        {
+            const QModelIndex topLeft = args.at(0).toModelIndex();
+            const QModelIndex bottomRight = args.at(1).toModelIndex();
+            if (topLeft.row() == 0 && bottomRight.row() == model.rowCount() - 1)
+            {
+                sawWholeTableEmit = true;
+                break;
+            }
+        }
+        QVERIFY2(sawWholeTableEmit, "anchorsReset must emit a whole-table dataChanged so cached rows refresh");
+
+        model.EndStreaming(false);
+    }
+
+    // FIFO eviction drops anchors on evicted rows; anchors on
+    // survivors stay put.
+    void TestAnchorsAreDroppedOnFifoEviction()
+    {
+        ThemeControl theme;
+        AnchorManager anchors;
+        LogModel model(nullptr, &theme, &anchors);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(model);
+        QtStreamingLogSink *sink = model.Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Cap=4 fills with lineIds 1..4; the next batch evicts
+        // 1..3 and keeps 4.
+        constexpr size_t CAP = 4;
+        model.SetRetentionCap(CAP);
+
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, /*declareNewKey=*/true));
+        QCOMPARE(model.rowCount(), 4);
+
+        // Anchor lineIds 1 (evicted), 3 (evicted), 4 (survives).
+        const auto keyL1 = model.AnchorKeyForRow(0);
+        const auto keyL3 = model.AnchorKeyForRow(2);
+        const auto keyL4 = model.AnchorKeyForRow(3);
+        QVERIFY(keyL1.has_value());
+        QVERIFY(keyL3.has_value());
+        QVERIFY(keyL4.has_value());
+        anchors.SetAnchor(*keyL1, 0);
+        anchors.SetAnchor(*keyL3, 1);
+        anchors.SetAnchor(*keyL4, 2);
+        QCOMPARE(anchors.Count(), static_cast<std::size_t>(3));
+
+        // Append lineIds 5..7; evicts 1..3, keeps 4..7.
+        model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 5, 3, /*declareNewKey=*/false));
+        QCOMPARE(model.rowCount(), 4);
+
+        QCOMPARE(anchors.Count(), static_cast<std::size_t>(1));
+        QVERIFY2(!anchors.ColorFor(*keyL1).has_value(), "anchor on evicted lineId 1 must be dropped");
+        QVERIFY2(!anchors.ColorFor(*keyL3).has_value(), "anchor on evicted lineId 3 must be dropped");
+        const auto survivedColor = anchors.ColorFor(*keyL4);
+        QVERIFY2(survivedColor.has_value(), "anchor on surviving lineId 4 must persist");
+        QCOMPARE(*survivedColor, uint8_t{2});
+
+        model.EndStreaming(false);
+    }
+
+    // AnchorsDock::Refresh preserves list selection + current item
+    // so the dock's own right-click flow doesn't yank focus off the
+    // entry the user is acting on.
+    void TestAnchorsDockPreservesSelectionAcrossRefresh()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *list = dock->ListForTest();
+        QVERIFY(list != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 4);
+
+        // Three anchors so the surviving-selection check is
+        // non-trivial.
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key1 = model->AnchorKeyForRow(1);
+        const auto key2 = model->AnchorKeyForRow(2);
+        QVERIFY(key0.has_value());
+        QVERIFY(key1.has_value());
+        QVERIFY(key2.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key1, 1);
+        anchors->SetAnchor(*key2, 2);
+        dock->RefreshForTest();
+        QCOMPARE(list->count(), 3);
+
+        // Middle item current + selected; then re-run Refresh.
+        // Without snapshot/restore, `mList->clear()` would wipe it.
+        QListWidgetItem *middle = list->item(1);
+        QVERIFY(middle != nullptr);
+        list->setCurrentItem(middle);
+        middle->setSelected(true);
+        QCOMPARE(list->selectedItems().count(), 1);
+        QVERIFY(list->currentItem() == middle);
+
+        // Touch key0 -> `anchorChanged` -> `Refresh()`. Offscreen
+        // QPA gates Refresh, so call the test seam directly.
+        anchors->SetAnchor(*key0, 5);
+        QCoreApplication::processEvents();
+        dock->RefreshForTest();
+
+        // Three anchors, middle still selected + current.
+        QCOMPARE(list->count(), 3);
+        QCOMPARE(list->selectedItems().count(), 1);
+        const QListWidgetItem *restoredCurrent = list->currentItem();
+        QVERIFY2(restoredCurrent != nullptr, "current item must survive Refresh");
+        QCOMPARE(restoredCurrent->data(Qt::UserRole + 2).toULongLong(), static_cast<qulonglong>(key1->lineId));
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
     // Static-mode parallel of `testAlternatingRowColoursDisabledInNewestFirstMode`:
     // when the active session is static the apply path must read the
     // **static** preference (`StreamingControl::IsStaticNewestFirst`),
@@ -4848,8 +5821,8 @@ private slots:
         return ColumnByHeader(*model, QStringLiteral("timestamp"));
     }
 
-    // The row menu must offer exactly the two "newer"/"older" actions
-    // labelled with the time column's header.
+    // Row menu carries the newer/older time-range actions plus the
+    // always-present Anchor sub-menu.
     void TestRowContextMenuOffersAtOrAfterAndAtOrBefore()
     {
         const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
@@ -4859,28 +5832,43 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        const QList<QAction *> actions = menu->actions();
-        QCOMPARE(actions.size(), 2);
         // Build labels via `tr` so the test survives a future
         // `QTranslator` install.
         const QString newerLabel = MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp"));
         const QString olderLabel = MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp"));
-        QCOMPARE(actions[0]->text(), newerLabel);
-        QCOMPARE(actions[1]->text(), olderLabel);
+        QVERIFY2(FindMenuActionByText(menu, newerLabel) != nullptr, "menu must offer the newer-logs action");
+        QVERIFY2(FindMenuActionByText(menu, olderLabel) != nullptr, "menu must offer the older-logs action");
+
+        QVERIFY2(
+            FindMenuActionByText(menu, MainWindow::tr("Anchor")) != nullptr, "menu must carry the Anchor sub-menu"
+        );
     }
 
-    // Without a `Type::Time` column the menu has nothing to bind to and
-    // must return null. The `category`+`msg` fixture has no time column.
-    void TestRowContextMenuReturnsNullWithoutTimeColumn()
+    // Without a `Type::Time` column the time-range actions drop out
+    // but the Anchor sub-menu still keeps the row menu alive.
+    void TestRowContextMenuOffersAnchorOnlyWithoutTimeColumn()
     {
         // The returned index is for `category`; used only as a
         // streaming-completed sentinel.
         const int streamedColumn = StreamFixtureForColumnTests();
         QVERIFY2(streamedColumn >= 0, "streaming must complete before the row-menu probe");
 
-        const QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
-        QVERIFY2(menu == nullptr, "BuildRowContextMenu must return null when the model has no Type::Time column");
+        QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
+        QVERIFY2(menu != nullptr, "BuildRowContextMenu must return the anchor-only menu when no time column exists");
+        const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
+
+        QVERIFY2(
+            FindMenuActionByText(menu, MainWindow::tr("Anchor")) != nullptr,
+            "anchor-only menu must still expose the Anchor sub-menu"
+        );
+        // No "Show only ..." entries when there is no time column.
+        for (const QAction *action : menu->actions())
+        {
+            QVERIFY2(
+                !action->text().startsWith(MainWindow::tr("Show only")),
+                "menu must not expose time-range actions without a Type::Time column"
+            );
+        }
     }
 
     // Empty model: nothing to bind to, menu must be null.
@@ -4910,10 +5898,10 @@ private slots:
         );
     }
 
-    // A row with a `Type::Time` column but a `monostate` slot (source
-    // JSON omitted the key) must suppress the menu, otherwise the
-    // action would install a degenerate `(nullopt, nullopt)` filter.
-    void TestRowContextMenuReturnsNullForMonostateTimeSlot()
+    // Row with a Time column but a monostate slot: suppress the
+    // time-range entries (would install a `(nullopt, nullopt)`
+    // filter) but keep the anchor sub-menu live.
+    void TestRowContextMenuOffersAnchorOnlyForMonostateTimeSlot()
     {
         auto *model = mWindow->Model();
         Q_ASSERT(model != nullptr);
@@ -4952,10 +5940,27 @@ private slots:
 
         QMenu *first = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY2(first != nullptr, "row 0 has a timestamp slot, menu must be offered");
-        first->deleteLater();
+        const QScopeGuard firstDeleter([&first]() { first->deleteLater(); });
+        QVERIFY2(
+            FindMenuActionByText(first, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp"))) !=
+                nullptr,
+            "row 0's populated time slot must keep the time-range action"
+        );
 
-        const QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
-        QVERIFY2(middle == nullptr, "row 1's monostate time slot must suppress the menu");
+        QMenu *middle = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
+        QVERIFY2(middle != nullptr, "row 1's anchor sub-menu must keep the row menu alive");
+        const QScopeGuard middleDeleter([&middle]() { middle->deleteLater(); });
+        QVERIFY2(
+            FindMenuActionByText(middle, MainWindow::tr("Anchor")) != nullptr,
+            "row 1's anchor sub-menu must still be present"
+        );
+        for (const QAction *action : middle->actions())
+        {
+            QVERIFY2(
+                !action->text().startsWith(MainWindow::tr("Show only")),
+                "row 1's monostate time slot must suppress time-range actions"
+            );
+        }
     }
 
     // Triggering "newer" installs an inclusive time filter with the
@@ -4975,12 +5980,11 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *newerAction = menu->actions().at(0);
-        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
+        QAction *newerAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "menu must carry the newer-logs action");
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         newerAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5009,11 +6013,10 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *olderAction = menu->actions().at(1);
-        QVERIFY2(olderAction != nullptr, "menu must carry an `older` action at index 1");
+        QAction *olderAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(olderAction != nullptr, "menu must carry the older-logs action");
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         olderAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5063,11 +6066,10 @@ private slots:
         const int timeColAfter = ColumnByHeader(*model, QStringLiteral("timestamp"));
         QCOMPARE(timeColAfter, dest);
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *newerAction = menu->actions().at(0);
-        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
+        QAction *newerAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "menu must carry the newer-logs action");
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         newerAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5110,11 +6112,10 @@ private slots:
         QVERIFY2(menu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        QAction *newerAction = menu->actions().at(0);
-        QVERIFY2(newerAction != nullptr, "menu must carry a `newer` action at index 0");
+        QAction *newerAction =
+            FindMenuActionByText(menu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "menu must carry the newer-logs action");
 
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         newerAction->trigger();
         QCoreApplication::processEvents();
 
@@ -5148,8 +6149,10 @@ private slots:
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        rowMenu->actions().at(0)->trigger();
+        QAction *newerAction =
+            FindMenuActionByText(rowMenu, MainWindow::tr("Show only newer logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(newerAction != nullptr, "row menu must carry the newer-logs action");
+        newerAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -5237,8 +6240,10 @@ private slots:
         QMenu *rowMenu = mWindow->BuildRowContextMenu(/*sourceRow=*/2, nullptr);
         QVERIFY2(rowMenu != nullptr, "BuildRowContextMenu must return a menu for a row with a timestamp");
         const QScopeGuard rowMenuDeleter([&rowMenu]() { rowMenu->deleteLater(); });
-        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
-        rowMenu->actions().at(1)->trigger(); // "older" (index 1)
+        QAction *olderAction =
+            FindMenuActionByText(rowMenu, MainWindow::tr("Show only older logs (%1)").arg(QStringLiteral("timestamp")));
+        QVERIFY2(olderAction != nullptr, "row menu must carry the older-logs action");
+        olderAction->trigger();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
@@ -10462,11 +11467,14 @@ private slots:
         QVERIFY2(dock->isHidden(), "dock starts hidden");
         QVERIFY(!toggleAction->isChecked());
 
-        // Action -> dock direction: the production handler skips the
-        // actual `setVisible(true)` under offscreen QPA (host isn't
-        // realised), so we only assert the action's own state moves.
+        // Action -> dock: when the host window is not realised
+        // (offscreen QPA), the handler reverts the action so a
+        // checked toggle always means a visible dock.
         toggleAction->setChecked(true);
-        QVERIFY2(toggleAction->isChecked(), "setChecked(true) must update the action's own state");
+        QVERIFY2(
+            !toggleAction->isChecked(),
+            "setChecked(true) must be reverted when host window is not realised (offscreen QPA)"
+        );
 
         // Dock -> action direction: drive `visibilityChanged`
         // synthetically (see the namespace note above for why).
@@ -11103,17 +12111,22 @@ private slots:
         QVERIFY2(dock->isHidden(), "dock starts hidden");
         QVERIFY(!toggleAction->isChecked());
 
-        // `trigger()` flips checked state and emits `toggled`. The
-        // production handler guards the visible transition behind a
-        // realised host window, so offscreen-QPA tests can only
-        // observe the action's own state changing. The end-to-end
-        // visibility behaviour is covered by manual QA and the live
-        // app.
+        // The handler reverts under offscreen QPA, so the action
+        // stays unchecked across triggers. Live visibility is
+        // covered by manual QA; this guards against the action
+        // settling "checked while dock hidden".
         toggleAction->trigger();
-        QVERIFY2(toggleAction->isChecked(), "first trigger must check the action");
+        QVERIFY2(
+            !toggleAction->isChecked(),
+            "trigger() must auto-revert under offscreen QPA: action cannot settle checked while dock cannot show"
+        );
 
         toggleAction->trigger();
-        QVERIFY2(!toggleAction->isChecked(), "second trigger must un-check the action");
+        QVERIFY2(
+            !toggleAction->isChecked(),
+            "second trigger must also revert under offscreen QPA -- the action stays unchecked until the host is "
+            "realised"
+        );
     }
 
     // Shared helper for the ISO/timestamp fixtures. Outside `private slots:`

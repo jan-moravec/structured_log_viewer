@@ -237,6 +237,8 @@ Duplicate header names are disambiguated as `header [key]` in both menus so colu
 - Click a row to select it. Hold `Ctrl`/`Shift` to extend the selection.
 - **Edit → Copy** (`Ctrl+C`) copies the selected rows as the **original JSON text** (one line per row), so you can paste them back into another tool. Cell-level copy is not performed — rows are always copied whole.
 
+See [Anchors](#anchors) for marking and navigating between specific rows.
+
 ### Inspecting a Record
 
 For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field on its own row plus the pretty-printed original JSON. Open it any of three ways:
@@ -258,6 +260,45 @@ Inside the pane:
 - Inside the Field/Value table, `Ctrl+C` copies the selected cells as tab-separated values. Selection is extended (Ctrl-click to toggle individual cells, Shift-click for a range), matching standard spreadsheet behaviour.
 
 To pin a record for side-by-side comparison, click **Open in new window** inside the pane. That spawns a top-level snapshot window with a frozen copy of the displayed content — you can open as many as you like, and each one survives streaming-mode FIFO eviction, sort, filter, or even a full `File → Open…` reset because its strings are deep-copied at creation. Close each snapshot with the window's normal close button when you're done.
+
+## Anchors
+
+Anchors let you mark notable rows with one of eight colours and jump between them with the keyboard. Useful when triaging a long log: pin the request that started the incident, the first error, and the final recovery, then cycle through them with `F2`.
+
+### Marking a row
+
+- Right-click a row → **Anchor** → "Colour N" to colour it.
+- Or press `Ctrl+1` … `Ctrl+8` with one or more rows selected to apply that slot to every selected row.
+- The same chord on an already-anchored row re-colours it.
+
+### Clearing
+
+- Right-click a row → **Anchor** → **Remove anchor**, or `Ctrl+0` on the selection.
+- **View → Anchors** panel → **Clear all**, or `Ctrl+Shift+A` from anywhere.
+
+### Navigating between anchors
+
+- `F2` jumps to the next anchored row in the current visible order (sort + filter + [newest-first](#newest-lines-first) orientation are honoured).
+- `Shift+F2` jumps to the previous one. Both wrap at the visible bounds.
+- Anchors filtered out of the visible table are skipped; the status bar shows an explanation if every anchor is currently filtered.
+
+### Anchors panel
+
+- **View → Anchors** (`Ctrl+K`) toggles a dock listing every anchored row with its colour swatch, line id, and source filename.
+- Double-click an entry (or press `Enter` on it) to jump to it.
+- Right-click for **Jump to anchor** / **Remove anchor**.
+- The header **Clear all** button drops every anchor at once. It is disabled while no anchors exist.
+- The panel is a regular Qt dock — drag the title bar to redock it to another edge, or drop it outside the window to float it.
+
+### Anchor colours and themes
+
+The eight slots index into the active theme's `anchorPalette`. A theme that omits the field (or leaves a slot empty) falls back to a built-in palette with eight saturated, hue-distinct entries. The foreground text colour for each swatch is picked from the slot's luma so the label stays legible on custom user themes.
+
+### Persistence
+
+The anchor list is persisted as part of the [configuration](#configurations), so re-opening the same session restores its colours. Anchors are keyed by `(canonical file path, lineId)`; switching to a different log source loses their resolution even when the configuration is loaded.
+
+> Anchored rows that are FIFO-evicted from a [streaming session](#retention-cap) are dropped from the anchor list automatically — they would otherwise linger in the panel and in the saved configuration with no resolvable row to point at.
 
 ## Searching
 
@@ -314,7 +355,7 @@ Filters are live: the table updates immediately when a filter is added, edited, 
 
 ## Configurations
 
-A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / `level` / …), per-column log-level alias overrides (`levelMapping`), **column order**, **per-column visibility** — and the **active filter set**. Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
+A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / `level` / …), per-column log-level alias overrides (`levelMapping`), **column order**, **per-column visibility** — the **active filter set**, and the current [anchors](#anchors). Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
 
 - **File → Save Configuration…** (`Ctrl+S`) — writes the current layout and filters to a `.json` file.
 - **File → Load Configuration…** — loads a configuration file and clears any open logs. Open logs again afterwards to apply the layout.
@@ -348,18 +389,27 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ## Keyboard Shortcuts
 
-| Action                     | Shortcut       |
-| -------------------------- | -------------- |
-| Open file(s)               | `Ctrl+O`       |
-| Open log stream            | `Ctrl+Shift+O` |
-| Open network stream        | `Ctrl+Shift+N` |
-| Save configuration         | `Ctrl+S`       |
-| Find                       | `Ctrl+F`       |
-| Copy selected rows as JSON | `Ctrl+C`       |
-| Toggle Record Details pane | `Ctrl+I`       |
-| Pause / Resume stream      | `Ctrl+Shift+P` |
-| Toggle Follow newest       | `Ctrl+Shift+T` |
-| Stop stream                | `Ctrl+Shift+S` |
+| Action                         | Shortcut            |
+| ------------------------------ | ------------------- |
+| New session                    | `Ctrl+N`            |
+| New window                     | `Ctrl+Shift+N`      |
+| Open file(s)                   | `Ctrl+O`            |
+| Open log stream                | `Ctrl+Shift+O`      |
+| Open network stream            | `Ctrl+Shift+L`      |
+| Save configuration             | `Ctrl+S`            |
+| Save session                   | `Ctrl+Shift+S`      |
+| Find                           | `Ctrl+F`            |
+| Copy selected rows as JSON     | `Ctrl+C`            |
+| Toggle Record Details pane     | `Ctrl+I`            |
+| Toggle Anchors panel           | `Ctrl+K`            |
+| Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8` |
+| Remove anchor from selection   | `Ctrl+0`            |
+| Clear every anchor             | `Ctrl+Shift+A`      |
+| Jump to next anchor            | `F2`                |
+| Jump to previous anchor        | `Shift+F2`          |
+| Pause / Resume stream          | `Ctrl+Shift+P`      |
+| Toggle Follow newest           | `Ctrl+Shift+T`      |
+| Stop stream                    | `Ctrl+Shift+X`      |
 
 ## Troubleshooting
 

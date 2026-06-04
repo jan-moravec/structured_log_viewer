@@ -1,9 +1,15 @@
 #pragma once
 
+#include "anchor_manager.hpp"
+
+#include <QItemSelectionModel>
 #include <QList>
 #include <QMetaObject>
 #include <QPersistentModelIndex>
 #include <QTableView>
+
+#include <cstdint>
+#include <vector>
 
 class LogTableView : public QTableView
 {
@@ -34,8 +40,38 @@ public:
 
     [[nodiscard]] TailEdge GetTailEdge() const noexcept;
 
+    /// Non-owning. Required for the anchor slots and helpers to do
+    /// anything; without it they're inert (keeps legacy two-arg test
+    /// fixtures working).
+    void SetAnchorManager(AnchorManager *anchors) noexcept;
+
+    /// `(locator, lineId)` for every selected row. Walks the proxy
+    /// chain down to `LogModel`; empty when no `LogModel` is reachable.
+    [[nodiscard]] std::vector<AnchorManager::Key> AnchorKeysForSelection() const;
+
 public slots:
     void CopySelectedRowsToClipboard();
+
+    /// Anchor every selected row at slot @p colorIndex (adds or
+    /// recolours). No-op when nothing is wired or selected.
+    void AnchorSelection(int colorIndex);
+
+    /// Remove the anchor from every selected row. Silently skips
+    /// rows that aren't anchored.
+    void ClearAnchorOnSelection();
+
+#ifdef LOGAPP_BUILD_TESTING
+public:
+    /// Test seam over the protected `selectionCommand`; lets the
+    /// row-click-semantics regression test inspect selection flags
+    /// without synthesising real mouse events.
+    [[nodiscard]] QItemSelectionModel::SelectionFlags SelectionCommandForTest(
+        const QModelIndex &index, const QEvent *event = nullptr
+    ) const
+    {
+        return selectionCommand(index, event);
+    }
+#endif
 
 signals:
     /// User manually scrolled away from the configured tail edge.
@@ -51,6 +87,9 @@ signals:
     void userScrolledToTail();
 
 protected:
+    /// Draws the empty-state shortcuts card when the model has no rows.
+    void paintEvent(QPaintEvent *event) override;
+
     /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
 
@@ -100,4 +139,8 @@ private:
     /// Connections to the currently-attached model; dropped on
     /// `setModel` before re-wiring.
     QList<QMetaObject::Connection> mModelConnections;
+
+    /// Non-owning. Wired by `MainWindow`; null on standalone test
+    /// fixtures. Anchor slots null-check before dereferencing.
+    AnchorManager *mAnchors = nullptr;
 };

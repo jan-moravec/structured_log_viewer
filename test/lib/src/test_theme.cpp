@@ -156,3 +156,72 @@ TEST_CASE("Theme defaulted equality distinguishes one differing field", "[Theme]
     other.table.background = "#FEFEFE";
     CHECK_FALSE(baseline == other);
 }
+
+TEST_CASE("Theme JSON round-trips a fully populated anchorPalette", "[Theme][anchor]")
+{
+    Theme original;
+    original.name = "Anchored";
+    original.kind = ThemeKind::Dark;
+    original.anchorPalette = {
+        "#B91C1C",
+        "#C2410C",
+        "#A16207",
+        "#15803D",
+        "#0F766E",
+        "#0369A1",
+        "#7E22CE",
+        "#BE185D",
+    };
+    REQUIRE(original.anchorPalette.size() == ANCHOR_PALETTE_SIZE);
+
+    const std::string json = SerializeTheme(original);
+    // Wire-format sanity check so a future field rename surfaces here.
+    CHECK(json.contains("\"anchorPalette\""));
+    CHECK(json.contains("\"#B91C1C\""));
+
+    const Theme reloaded = ParseTheme(json);
+    CHECK(reloaded.anchorPalette == original.anchorPalette);
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme without anchorPalette decodes as an empty vector", "[Theme][anchor]")
+{
+    // Pre-feature theme JSONs must continue to parse cleanly; the app
+    // layer falls back to its built-in palette when this is empty.
+    constexpr std::string_view JSON = R"({
+        "name": "Pre-anchor",
+        "kind": "dark",
+        "levels": {},
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    CHECK(parsed.name == "Pre-anchor");
+    CHECK(parsed.anchorPalette.empty());
+}
+
+TEST_CASE("Theme tolerates a sparse anchorPalette with empty slots", "[Theme][anchor]")
+{
+    // Empty strings let a theme override only a couple of slots and
+    // delegate the rest to the app's built-in palette. The parse path
+    // round-trips them verbatim; the app layer interprets empty as
+    // "use fallback for this index".
+    constexpr std::string_view JSON = R"({
+        "name": "Sparse",
+        "kind": "light",
+        "levels": {},
+        "table": {},
+        "chrome": {},
+        "app": {},
+        "anchorPalette": ["", "#EA580C", "", "", "#0D9488", "", "", ""]
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    REQUIRE(parsed.anchorPalette.size() == 8);
+    CHECK(parsed.anchorPalette[0].empty());
+    CHECK(parsed.anchorPalette[1] == "#EA580C");
+    CHECK(parsed.anchorPalette[4] == "#0D9488");
+    CHECK(parsed.anchorPalette[7].empty());
+}

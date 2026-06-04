@@ -16,6 +16,10 @@ set(PROJECT_SOURCES
     include/main_window.hpp
     src/log_model.cpp
     include/log_model.hpp
+    src/anchor_manager.cpp
+    include/anchor_manager.hpp
+    src/anchors_dock.cpp
+    include/anchors_dock.hpp
     src/qt_streaming_log_sink.cpp
     include/qt_streaming_log_sink.hpp
     include/bounded_batch_queue.hpp
@@ -53,6 +57,10 @@ set(PROJECT_SOURCES
     include/session_history_manager.hpp
     src/single_instance_guard.cpp
     include/single_instance_guard.hpp
+    src/shortcut_catalog.cpp
+    include/shortcut_catalog.hpp
+    src/shortcuts_dialog.cpp
+    include/shortcuts_dialog.hpp
     include/uuid_utils.hpp
     include/log_warning.hpp
     include/cli_parser.hpp

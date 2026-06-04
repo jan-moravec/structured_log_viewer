@@ -1,16 +1,31 @@
 #include "log_table_view.hpp"
 
+#include "anchor_manager.hpp"
+#include "shortcut_catalog.hpp"
+
 #include <log_model.hpp>
 
 #include <QAbstractItemModel>
+#include <QAbstractProxyModel>
 #include <QApplication>
 #include <QClipboard>
+#include <QFont>
+#include <QFontMetrics>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QMainWindow>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPalette>
+#include <QPen>
 #include <QPoint>
 #include <QRect>
 #include <QScrollBar>
+#include <QString>
 #include <QWheelEvent>
+
+#include <algorithm>
+#include <utility>
 
 LogTableView::LogTableView(QWidget *parent)
     : QTableView(parent)
@@ -100,6 +115,154 @@ void LogTableView::wheelEvent(QWheelEvent *event)
     mNextValueChangeIsUser = true;
     QTableView::wheelEvent(event);
     mNextValueChangeIsUser = false;
+}
+
+namespace
+{
+/// Spacing constants for the empty-state shortcuts card.
+constexpr int CARD_PADDING_PX = 24;
+constexpr int CARD_TITLE_GAP_PX = 16;
+constexpr int CARD_GROUP_GAP_PX = 14;
+constexpr int CARD_ROW_GAP_PX = 4;
+constexpr int CARD_GUTTER_PX = 32;
+constexpr int CARD_TITLE_POINT_BUMP = 4;
+constexpr int CARD_GROUP_POINT_BUMP = 1;
+constexpr qreal CARD_HEADING_OPACITY = 0.85;
+constexpr qreal CARD_BODY_OPACITY = 0.65;
+
+} // namespace
+
+void LogTableView::paintEvent(QPaintEvent *event)
+{
+    QTableView::paintEvent(event);
+
+    // Only draw on an empty grid; a populated session paints rows over us.
+    if (model() != nullptr && model()->rowCount() > 0)
+    {
+        return;
+    }
+
+    const auto *mainWindow = qobject_cast<const QMainWindow *>(window());
+    if (mainWindow == nullptr)
+    {
+        return;
+    }
+
+    const QList<shortcut_catalog::Group> groups = shortcut_catalog::Build(mainWindow);
+    if (groups.isEmpty())
+    {
+        return;
+    }
+
+    QPainter painter(viewport());
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const QPalette pal = palette();
+    const QColor headingColor = pal.color(QPalette::WindowText);
+    const QColor bodyColor = pal.color(QPalette::PlaceholderText);
+
+    QFont titleFont = font();
+    titleFont.setPointSize(titleFont.pointSize() + CARD_TITLE_POINT_BUMP);
+    titleFont.setBold(true);
+
+    QFont groupFont = font();
+    groupFont.setPointSize(groupFont.pointSize() + CARD_GROUP_POINT_BUMP);
+    groupFont.setBold(true);
+
+    const QFont bodyFont = font();
+    QFont shortcutFont = font();
+    shortcutFont.setStyleHint(QFont::Monospace);
+
+    const QFontMetrics titleFm(titleFont);
+    const QFontMetrics groupFm(groupFont);
+    const QFontMetrics bodyFm(bodyFont);
+    const QFontMetrics shortcutFm(shortcutFont);
+
+    const QString title = tr("Drop a JSON Lines log here, or use a shortcut below");
+
+    // Measure widest label and shortcut so the two columns align across groups.
+    int maxLabelWidth = 0;
+    int maxShortcutWidth = 0;
+    for (const auto &group : groups)
+    {
+        for (const auto &entry : group.entries)
+        {
+            maxLabelWidth = std::max(maxLabelWidth, bodyFm.horizontalAdvance(entry.text));
+            maxShortcutWidth = std::max(maxShortcutWidth, shortcutFm.horizontalAdvance(entry.shortcut));
+        }
+    }
+
+    const int rowHeight = std::max(bodyFm.height(), shortcutFm.height()) + CARD_ROW_GAP_PX;
+    const int contentWidth = maxLabelWidth + CARD_GUTTER_PX + maxShortcutWidth;
+
+    int contentHeight = titleFm.height() + CARD_TITLE_GAP_PX;
+    for (qsizetype i = 0; i < groups.size(); ++i)
+    {
+        if (i > 0)
+        {
+            contentHeight += CARD_GROUP_GAP_PX;
+        }
+        contentHeight += groupFm.height() + CARD_ROW_GAP_PX;
+        contentHeight += rowHeight * static_cast<int>(groups[i].entries.size());
+    }
+
+    const QRect viewportRect = viewport()->rect();
+    const int cardWidth = std::min(viewportRect.width() - (2 * CARD_PADDING_PX), contentWidth);
+    if (cardWidth <= 0)
+    {
+        return;
+    }
+
+    const int cardX = viewportRect.left() + ((viewportRect.width() - cardWidth) / 2);
+    int y = viewportRect.top() + std::max(CARD_PADDING_PX, (viewportRect.height() - contentHeight) / 2);
+
+    // Title
+    painter.setOpacity(CARD_HEADING_OPACITY);
+    painter.setPen(QPen(headingColor));
+    painter.setFont(titleFont);
+    painter.drawText(
+        QRect(cardX, y, cardWidth, titleFm.height()),
+        Qt::AlignHCenter | Qt::AlignTop,
+        titleFm.elidedText(title, Qt::ElideRight, cardWidth)
+    );
+    y += titleFm.height() + CARD_TITLE_GAP_PX;
+
+    const int labelColumnRight = cardX + maxLabelWidth;
+    const int shortcutColumnLeft = labelColumnRight + CARD_GUTTER_PX;
+
+    for (qsizetype i = 0; i < groups.size(); ++i)
+    {
+        if (i > 0)
+        {
+            y += CARD_GROUP_GAP_PX;
+        }
+        const auto &group = groups[i];
+
+        painter.setOpacity(CARD_HEADING_OPACITY);
+        painter.setPen(QPen(headingColor));
+        painter.setFont(groupFont);
+        painter.drawText(QRect(cardX, y, cardWidth, groupFm.height()), Qt::AlignLeft | Qt::AlignTop, group.title);
+        y += groupFm.height() + CARD_ROW_GAP_PX;
+
+        painter.setOpacity(CARD_BODY_OPACITY);
+        painter.setPen(QPen(bodyColor));
+        for (const auto &entry : group.entries)
+        {
+            painter.setFont(bodyFont);
+            painter.drawText(
+                QRect(cardX, y, maxLabelWidth, rowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                bodyFm.elidedText(entry.text, Qt::ElideRight, maxLabelWidth)
+            );
+            painter.setFont(shortcutFont);
+            painter.drawText(
+                QRect(shortcutColumnLeft, y, maxShortcutWidth, rowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                entry.shortcut
+            );
+            y += rowHeight;
+        }
+    }
 }
 
 bool LogTableView::ComputeAtTailEdge(int value) const
@@ -251,4 +414,88 @@ void LogTableView::CopySelectedRowsToClipboard()
 
     QClipboard *clipboard = QApplication::clipboard();
     clipboard->setText(text);
+}
+
+void LogTableView::SetAnchorManager(AnchorManager *anchors) noexcept
+{
+    mAnchors = anchors;
+}
+
+std::vector<AnchorManager::Key> LogTableView::AnchorKeysForSelection() const
+{
+    std::vector<AnchorManager::Key> out;
+    if (selectionModel() == nullptr || model() == nullptr)
+    {
+        return out;
+    }
+    const QModelIndexList selected = selectionModel()->selectedRows();
+    if (selected.isEmpty())
+    {
+        return out;
+    }
+
+    // Walk the proxy chain down to the source `LogModel` so we can
+    // ask for anchor keys.
+    QAbstractItemModel *current = model();
+    QModelIndexList resolvedIndices = selected;
+    while (auto *proxy = qobject_cast<QAbstractProxyModel *>(current))
+    {
+        for (QModelIndex &idx : resolvedIndices)
+        {
+            idx = proxy->mapToSource(idx);
+        }
+        current = proxy->sourceModel();
+        if (current == nullptr)
+        {
+            return out;
+        }
+    }
+    const auto *logModel = qobject_cast<const LogModel *>(current);
+    if (logModel == nullptr)
+    {
+        return out;
+    }
+
+    out.reserve(static_cast<std::size_t>(resolvedIndices.size()));
+    for (const QModelIndex &sourceIndex : resolvedIndices)
+    {
+        if (!sourceIndex.isValid())
+        {
+            continue;
+        }
+        if (auto key = logModel->AnchorKeyForRow(sourceIndex.row()); key.has_value())
+        {
+            out.push_back(std::move(*key));
+        }
+    }
+    return out;
+}
+
+void LogTableView::AnchorSelection(int colorIndex)
+{
+    if (mAnchors == nullptr || colorIndex < 0)
+    {
+        return;
+    }
+    const auto keys = AnchorKeysForSelection();
+    if (keys.empty())
+    {
+        return;
+    }
+    // The bulk API routes signals based on actual mutation count.
+    mAnchors->SetAnchors(keys, static_cast<uint8_t>(colorIndex));
+}
+
+void LogTableView::ClearAnchorOnSelection()
+{
+    if (mAnchors == nullptr)
+    {
+        return;
+    }
+    const auto keys = AnchorKeysForSelection();
+    if (keys.empty())
+    {
+        return;
+    }
+    mAnchors->RemoveAnchors(keys);
 }

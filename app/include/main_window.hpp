@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anchor_manager.hpp"
+#include "anchors_dock.hpp"
 #include "find_record_widget.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -10,6 +12,7 @@
 #include "row_order_proxy_model.hpp"
 
 #include <loglib/log_configuration.hpp>
+#include <loglib/theme.hpp>
 
 // `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
 // the full type comes in transitively through `log_filter_model.hpp`.
@@ -17,6 +20,7 @@
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QLabel>
 #include <QList>
@@ -26,9 +30,11 @@
 #include <QPushButton>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -254,18 +260,14 @@ public:
     /// @p logicalColumn is out of range.
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
-    /// Build the row right-click menu for source-model row @p sourceRow:
-    /// inclusive "newer than" / "older than" actions pinned to the first
-    /// `Type::Time` column, using the row's timestamp as the boundary.
-    /// Returns null when there is no time column, the row's time slot is
-    /// `std::monostate`, the model is empty, or @p sourceRow is out of
-    /// range. Split out of `ShowRowContextMenu` so tests can inspect the
-    /// actions without spawning a popup.
+    /// Build the row right-click menu for source-model row @p sourceRow.
+    /// Always includes the "Anchor" sub-menu; adds "Show only newer/
+    /// older logs" actions when the row has a non-`monostate` timestamp
+    /// in the first `Type::Time` column.
     ///
-    /// Ownership: parented to @p parent (or `mTableView` if null). Tests
-    /// that take the menu without showing it should `deleteLater()` via
-    /// a `QScopeGuard`; `ShowRowContextMenu` instead sets
-    /// `Qt::WA_DeleteOnClose` on the live popup.
+    /// Returns null when the model is empty or @p sourceRow is out of
+    /// range. Caller owns the result; parented to @p parent (or
+    /// `mTableView` if null).
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.
@@ -279,6 +281,24 @@ public:
     {
         return mModel;
     }
+
+    /// Owned `AnchorManager`; non-null after construction.
+    [[nodiscard]] AnchorManager *Anchors() const noexcept
+    {
+        return mAnchors;
+    }
+
+    /// Select the next (forward=true) or previous anchored row in
+    /// visible (proxy) order, honouring sort + filter + newest-first
+    /// orientation. Wraps at the visible bounds. Surfaces a status-bar
+    /// note when no anchored row is visible. Wired to F2 / Shift+F2.
+    void JumpToAnchor(bool forward);
+
+    /// Scroll to source row @p sourceRow and make it the sole
+    /// selection. No-op on a negative row, unready model, or a row
+    /// that is currently filtered out (the latter shows a status bar
+    /// note). Used by the Anchors dock for jump targets.
+    void SelectSourceRow(int sourceRow);
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only session-mode override so display-order tests can
@@ -321,6 +341,14 @@ public:
     /// tests assert the descriptor round-trips through Save Session
     /// without running a real open path.
     void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
+
+    /// Test-only entry to `ShowRowContextMenu` so tests can pin
+    /// right-click selection-adoption rules without a real mouse
+    /// event. Callers should close any popup that opens.
+    void ShowRowContextMenuForTest(const QPoint &pos)
+    {
+        ShowRowContextMenu(pos);
+    }
 
     /// Test-only entry to the queued static-files open path,
     /// bypassing the file dialog and modifier sniff.
@@ -519,6 +547,13 @@ private:
         MainWindow &mOwner;
     };
 
+    /// Append the "Anchor" sub-menu (eight colour swatches +
+    /// "Remove anchor") to @p menu. Check state reflects the right-
+    /// clicked row's existing colour, but triggered actions operate
+    /// on the current selection (same as the `Ctrl+1..8` hotkeys).
+    /// No-op if model, theme, or anchor manager is missing.
+    void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
+
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a
     /// reorder; menu lambdas use it to re-resolve the target column
@@ -679,6 +714,43 @@ private:
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
+    /// Starts the elapsed-time timer and 1 Hz refresh tick for live tail.
+    void StartLiveTailTicker();
+
+    /// Stops the 1 Hz tick but keeps the elapsed value for the final status.
+    void StopLiveTailTicker();
+
+    /// Opens (or raises) the modeless shortcuts dialog, building it lazily.
+    void ShowShortcutsDialog();
+
+    /// Persists window geometry and dock layout to `QSettings`.
+    void SaveWindowChrome() const;
+
+    /// Restores window geometry and dock layout from `QSettings`.
+    /// Must run after every dock/toolbar widget has its `objectName`
+    /// so `restoreState` can resolve them.
+    void RestoreWindowChrome();
+
+    /// Rebuilds the window title from the current session state.
+    void UpdateWindowTitle();
+
+    /// Marks filters as having unsaved edits and refreshes the title.
+    /// No-op while `mLoadingConfiguration` is true so a config reload
+    /// doesn't transiently flash `[*]`.
+    void MarkFiltersDirty();
+
+    /// Last-used dialog directory, or the platform `Documents` location
+    /// on first run. Persisted in `QSettings` under `ui/lastOpenDir`.
+    [[nodiscard]] QString DefaultOpenDir() const;
+
+    /// Persists the directory of @p path as the last-used dialog dir.
+    void RememberLastOpenDir(const QString &path);
+
+    /// Appends shortcut text to each action's tooltip and mirrors the
+    /// tooltip into `statusTip()`. Skips actions whose tooltip already
+    /// names the shortcut, so it's safe to re-run.
+    void FinaliseActionMetadata();
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();
@@ -708,6 +780,27 @@ private:
     /// `nullptr` for legacy no-args construction; theme code paths
     /// in this class check before dereferencing.
     ThemeControl *mTheme;
+
+    /// Owned. Brackets the lifetime of `mModel` and `mTableView`,
+    /// both of which read from it. Non-null after construction.
+    AnchorManager *mAnchors = nullptr;
+
+    /// Owned. Hidden by default; toggled via View -> Anchors.
+    AnchorsDock *mAnchorsDock = nullptr;
+
+    /// Toggle action for the Anchors dock. Re-added to View on every
+    /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
+    QAction *mActionToggleAnchors = nullptr;
+
+    /// Anchor hotkey actions: index N maps to `Ctrl+(N+1)`.
+    /// `mActionClearRowAnchor` is `Ctrl+0`; jumps are `F2` /
+    /// `Shift+F2`; clear-all is `Ctrl+Shift+A`. Registered via
+    /// `addAction` so they fire even without menu placement.
+    std::array<QAction *, loglib::ANCHOR_PALETTE_SIZE> mAnchorColorActions{};
+    QAction *mActionClearRowAnchor = nullptr;
+    QAction *mActionJumpNextAnchor = nullptr;
+    QAction *mActionJumpPrevAnchor = nullptr;
+    QAction *mActionClearAllAnchors = nullptr;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 
     /// Status-bar label shown while a streaming session is active.
@@ -759,6 +852,25 @@ private:
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
+
+    /// Ctrl+/ action that opens the shortcuts reference dialog.
+    QAction *mActionShowShortcuts = nullptr;
+
+    /// Lazy-built shortcuts dialog; kept alive so reopening preserves geometry.
+    QPointer<class ShortcutsDialog> mShortcutsDialog;
+
+    /// Wall-clock since the active live-tail session started.
+    QElapsedTimer mLiveTailTimer;
+
+    /// 1 Hz timer that refreshes the live-tail elapsed-time display.
+    QTimer *mLiveTailTickTimer = nullptr;
+
+    /// True when filters have unsaved user edits; drives the `[*]` title marker.
+    bool mFiltersDirty = false;
+
+    /// Re-entrancy guard set while loading a config, so per-filter
+    /// `AddLogFilter` calls don't mark the session dirty.
+    bool mLoadingConfiguration = false;
 
     /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;
