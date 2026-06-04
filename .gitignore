@@ -94,3 +94,6 @@ CMakeUserPresets.json
 # Benchmark scratch dirs (one per investigation, freely named).
 # Pattern keeps `.bench-results/`, `.bench-results-prefix/`, etc. out.
 .bench-results*/
+
+# Local working plans / scratch design docs that should stay out of the repo.
+/doc/gui_modernization.md
