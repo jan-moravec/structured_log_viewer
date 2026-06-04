@@ -658,7 +658,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mFindRecord = mFindDock->Widget();
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
     connect(
-        mFindRecord, &FindRecordWidget::MatchCountRequested, this,
+        mFindRecord,
+        &FindRecordWidget::MatchCountRequested,
+        this,
         [this](const QString &text, bool wildcards, bool regularExpressions) {
             UpdateFindMatchCount(text, wildcards, regularExpressions);
         }
