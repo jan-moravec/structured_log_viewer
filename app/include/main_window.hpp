@@ -20,6 +20,7 @@
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QLabel>
 #include <QList>
@@ -29,6 +30,7 @@
 #include <QPushButton>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -712,6 +714,38 @@ private:
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
+    /// Start `mLiveTailTimer` and arm the 1 Hz refresh tick so the
+    /// status-bar elapsed-time string updates while the user watches.
+    /// Idempotent; safe to re-call mid-session (e.g. on re-open).
+    void StartLiveTailTicker();
+
+    /// Stop the 1 Hz tick. The elapsed value is left intact so the
+    /// final status snapshot still names the session length.
+    void StopLiveTailTicker();
+
+    /// Open (or raise) the modeless `ShortcutsDialog`. Constructed
+    /// lazily; subsequent calls re-show the existing instance.
+    void ShowShortcutsDialog();
+
+    /// Last directory used by `Open...` / `Save...` dialogs, or the
+    /// platform `Documents` location when nothing has been picked
+    /// yet. Persisted in `QSettings` under `ui/lastOpenDir`.
+    [[nodiscard]] QString DefaultOpenDir() const;
+
+    /// Persist @p path's directory as the last-used dir so the next
+    /// dialog opens there. Accepts a file path; the directory is
+    /// extracted with `QFileInfo`.
+    void RememberLastOpenDir(const QString &path);
+
+    /// Suffix every `QAction`'s tool tip with its shortcut text and
+    /// copy the tool tip into `statusTip()` when empty so toolbar
+    /// buttons surface the shortcut and `QMainWindow` auto-shows
+    /// hover hints in the status bar. Idempotent; safe to re-run.
+    /// Skips actions whose tool tip already contains the shortcut
+    /// literal so the .ui-defined tooltips that already include
+    /// "(Ctrl+...)" are not double-suffixed.
+    void FinaliseActionMetadata();
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();
@@ -813,6 +847,28 @@ private:
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
+
+    /// "Show keyboard shortcuts" action (Ctrl+/). Lazily opens
+    /// `mShortcutsDialog`, which mines the live action tree on every
+    /// `show()` so newly registered shortcuts appear automatically.
+    QAction *mActionShowShortcuts = nullptr;
+
+    /// Lazy-owned shortcuts reference dialog; survives close so
+    /// reopening preserves position/size.
+    QPointer<class ShortcutsDialog> mShortcutsDialog;
+
+    /// Wall-clock since the active live-tail session started.
+    /// Started in `OpenLogStreamFromPath` / `OpenNetworkStream` /
+    /// the live-tail branch of `StreamFromCurrentSourceOrSkip`.
+    /// Read by `UpdateStreamingStatus` to render the
+    /// "00:00:32 since start" suffix.
+    QElapsedTimer mLiveTailTimer;
+
+    /// 1 Hz tick that drives the live-tail elapsed-time refresh.
+    /// Started alongside `mLiveTailTimer`; stopped in
+    /// `OnStreamingFinished`. Owned via parent-child (parent =
+    /// `MainWindow`).
+    QTimer *mLiveTailTickTimer = nullptr;
 
     /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;

@@ -9,6 +9,7 @@
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "session_history_manager.hpp"
+#include "shortcuts_dialog.hpp"
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
@@ -37,17 +38,24 @@
 #include <QDateTime>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
@@ -419,9 +427,11 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
         lines << QStringLiteral("  - %1").arg(QString::fromStdString(p.string()));
     }
     lines << QString();
-    lines << QStringLiteral("Run the binary from a directory that has a sibling `tzdata/` "
-                            "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
-                            "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds).");
+    lines << QStringLiteral(
+        "Run the binary from a directory that has a sibling `tzdata/` "
+        "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
+        "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds)."
+    );
     return lines.join(QLatin1Char('\n'));
 }
 
@@ -540,6 +550,10 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     mTableView->horizontalHeader()->setSectionsMovable(true);
     mTableView->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
+    // One-click cycle Asc -> Desc -> none. "No sort" is meaningful
+    // here because chronological order ships rows in their original
+    // arrival order. Requires Qt 6.1+, gated by the find_package above.
+    mTableView->horizontalHeader()->setSortIndicatorClearable(true);
     connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
     connect(
         mTableView->horizontalHeader(),
@@ -751,9 +765,27 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
+    // Ctrl+/ opens the keyboard-shortcut reference, also rendered
+    // on the empty-state placeholder. Programmatic so the action is
+    // available without polluting any menu.
+    mActionShowShortcuts = new QAction(tr("Keyboard Shortcuts"), this);
+    mActionShowShortcuts->setObjectName(QStringLiteral("actionShowShortcuts"));
+    mActionShowShortcuts->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Slash));
+    mActionShowShortcuts->setToolTip(tr("Show every keyboard shortcut available in this window."));
+    addAction(mActionShowShortcuts);
+    connect(mActionShowShortcuts, &QAction::triggered, this, &MainWindow::ShowShortcutsDialog);
+
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
+
+    // 1 Hz tick that refreshes the live-tail elapsed-time string
+    // (`UpdateStreamingStatus` reads `mLiveTailTimer.elapsed()`).
+    // Started by `StartLiveTailTicker` on the live-tail open paths;
+    // stopped on `streamingFinished`.
+    mLiveTailTickTimer = new QTimer(this);
+    mLiveTailTickTimer->setInterval(1000);
+    connect(mLiveTailTickTimer, &QTimer::timeout, this, &MainWindow::UpdateStreamingStatus);
 
     mDiagnosticsButton = new QPushButton(this);
     mDiagnosticsButton->setObjectName(QStringLiteral("diagnosticsButton"));
@@ -934,6 +966,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     ApplyStreamingRetention();
     ApplyDisplayOrder();
 
+    // Last so every action (menu-bar, toolbar, programmatic) is
+    // already wired and can be enriched with shortcut suffixes /
+    // status tips in one pass.
+    FinaliseActionMetadata();
+
     // Timezone database initialisation lives in
     // `MainWindow::InitializeTimezoneDatabase`, called synchronously
     // from `main()` (and the QtTest fixture) before any window is
@@ -997,9 +1034,29 @@ bool MainWindow::InitializeTimezoneDatabase()
     return true;
 }
 
+namespace
+{
+/// Drop is acceptable iff the payload carries at least one local
+/// file URL. Refusing remote / non-file payloads turns the cursor
+/// into the no-drop indicator, matching Explorer / Finder UX.
+bool MimeHasLocalFileUrl(const QMimeData *mime)
+{
+    if (mime == nullptr || !mime->hasUrls())
+    {
+        return false;
+    }
+    const QList<QUrl> urls = mime->urls();
+    if (urls.isEmpty())
+    {
+        return false;
+    }
+    return urls.first().isLocalFile();
+}
+} // namespace
+
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
-    if (event->mimeData()->hasUrls())
+    if (MimeHasLocalFileUrl(event->mimeData()))
     {
         event->acceptProposedAction();
     }
@@ -1007,7 +1064,7 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dragMoveEvent(QDragMoveEvent *event)
 {
-    if (event->mimeData()->hasUrls())
+    if (MimeHasLocalFileUrl(event->mimeData()))
     {
         event->acceptProposedAction();
     }
@@ -1406,8 +1463,10 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                 QMessageBox::information(
                     this,
                     QStringLiteral("Network Stream Session"),
-                    QStringLiteral("This recent session was a network stream; the columns and filters have been "
-                                   "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
+                    QStringLiteral(
+                        "This recent session was a network stream; the columns and filters have been "
+                        "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
+                    )
                 );
             }
         }
@@ -1485,11 +1544,15 @@ void MainWindow::OpenFiles()
     // what the user held on menu activation.
     const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
 
-    const QStringList files = QFileDialog::getOpenFileNames(this, "Select Log Files", QString(), "All Files (*.*)");
+    // Native dialog (`DontUseNativeDialog` stays unset) so users get
+    // their platform's file picker.
+    const QStringList files =
+        QFileDialog::getOpenFileNames(this, tr("Select Log Files"), DefaultOpenDir(), tr("All Files (*.*)"));
     if (files.isEmpty())
     {
         return;
     }
+    RememberLastOpenDir(files.first());
 
     DispatchMixedOpenInput(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
 }
@@ -1755,6 +1818,11 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     mLastTerminalSessionMode = mSessionMode;
     mSessionMode = SessionMode::Idle;
 
+    // Stop the 1 Hz refresh; the elapsed value stays so the final
+    // status line still names the session length until the user
+    // discards the rows.
+    StopLiveTailTicker();
+
     // Reset Pause / Follow-tail to defaults for the next session.
     if (ui->actionPauseStream->isChecked())
     {
@@ -1894,12 +1962,12 @@ void MainWindow::StreamNextPendingFile()
         // False positive: `parseCallable` is moved into the model and invoked;
         // `cfg` is consumed by `options`.
         // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-        auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken
-                             ) mutable {
-            options.stopToken = stopToken;
-            const loglib::JsonParser parser;
-            parser.ParseStreaming(*fileSourcePtr, *sink, options);
-        };
+        auto parseCallable =
+            [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken) mutable {
+                options.stopToken = stopToken;
+                const loglib::JsonParser parser;
+                parser.ParseStreaming(*fileSourcePtr, *sink, options);
+            };
 
         if (isFirstFileInSession)
         {
@@ -1923,11 +1991,13 @@ void MainWindow::StreamNextPendingFile()
 
 void MainWindow::OpenLogStream()
 {
-    const QString file = QFileDialog::getOpenFileName(this, "Open Log Stream...", QString(), "All Files (*.*)");
+    const QString file =
+        QFileDialog::getOpenFileName(this, tr("Open Log Stream..."), DefaultOpenDir(), tr("All Files (*.*)"));
     if (file.isEmpty())
     {
         return;
     }
+    RememberLastOpenDir(file);
     OpenLogStreamFromPath(file);
 }
 
@@ -2015,6 +2085,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
     SetConfigurationUiEnabled(false);
+    StartLiveTailTicker();
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
     ApplyDisplayOrder();
@@ -2125,6 +2196,7 @@ void MainWindow::OpenNetworkStream()
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
     SetConfigurationUiEnabled(false);
+    StartLiveTailTicker();
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
     ApplyDisplayOrder();
@@ -2209,6 +2281,110 @@ void MainWindow::SetConfigurationUiEnabled(bool enabled)
     }
 }
 
+void MainWindow::ShowShortcutsDialog()
+{
+    if (mShortcutsDialog.isNull())
+    {
+        mShortcutsDialog = new ShortcutsDialog(this, this);
+        mShortcutsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
+    }
+    mShortcutsDialog->show();
+    mShortcutsDialog->raise();
+    mShortcutsDialog->activateWindow();
+}
+
+QString MainWindow::DefaultOpenDir() const
+{
+    QSettings settings;
+    const QString remembered = settings.value(QStringLiteral("ui/lastOpenDir")).toString();
+    if (!remembered.isEmpty() && QFileInfo(remembered).isDir())
+    {
+        return remembered;
+    }
+    // Documents is the platform's idiomatic landing zone for ad-hoc
+    // file opens; matches Notepad / Console.app / VS Code defaults.
+    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+}
+
+void MainWindow::RememberLastOpenDir(const QString &path)
+{
+    if (path.isEmpty())
+    {
+        return;
+    }
+    const QString dir = QFileInfo(path).absolutePath();
+    if (dir.isEmpty())
+    {
+        return;
+    }
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/lastOpenDir"), dir);
+}
+
+void MainWindow::FinaliseActionMetadata()
+{
+    // Iterate every action attached to the window (menus, toolbars,
+    // and `addAction()` orphans). Touching only actions whose tool
+    // tip does not already mention the shortcut keeps the .ui-defined
+    // tooltips that already include "(Ctrl+X)" untouched.
+    const QList<QAction *> actions = findChildren<QAction *>();
+    for (QAction *action : actions)
+    {
+        if (action == nullptr || action->isSeparator())
+        {
+            continue;
+        }
+        const QString shortcut = action->shortcut().toString(QKeySequence::NativeText);
+        const bool hasShortcut = !shortcut.isEmpty();
+
+        QString tooltip = action->toolTip();
+        const QString text = action->text();
+        if (hasShortcut && !tooltip.contains(shortcut, Qt::CaseInsensitive))
+        {
+            // No tool tip yet -> derive one from the action's text
+            // (without `&` accelerators); else just suffix.
+            if (tooltip.isEmpty() || tooltip == text)
+            {
+                tooltip = text;
+                tooltip.replace(QStringLiteral("&&"), QStringLiteral("\x1F"));
+                tooltip.remove(QLatin1Char('&'));
+                tooltip.replace(QStringLiteral("\x1F"), QStringLiteral("&"));
+            }
+            tooltip = tooltip + QStringLiteral(" (") + shortcut + QStringLiteral(")");
+            action->setToolTip(tooltip);
+        }
+
+        // Status tip: copy the (possibly just-suffixed) tool tip when
+        // none is set so `QMainWindow` shows it on hover for free.
+        if (action->statusTip().isEmpty() && !tooltip.isEmpty())
+        {
+            action->setStatusTip(tooltip);
+        }
+    }
+}
+
+namespace
+{
+/// Format @p ms as `HH:MM:SS` (or `MM:SS` for short sessions). Used
+/// by the live-tail status suffix; centralised here so the test
+/// fixture can grow a unit test for it later.
+QString FormatElapsed(qint64 ms)
+{
+    const qint64 totalSec = ms / 1000;
+    const qint64 hours = totalSec / 3600;
+    const qint64 minutes = (totalSec % 3600) / 60;
+    const qint64 seconds = totalSec % 60;
+    if (hours > 0)
+    {
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours, 2, 10, QLatin1Char('0'))
+            .arg(minutes, 2, 10, QLatin1Char('0'))
+            .arg(seconds, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2").arg(minutes, 2, 10, QLatin1Char('0')).arg(seconds, 2, 10, QLatin1Char('0'));
+}
+} // namespace
+
 void MainWindow::UpdateStreamingStatus()
 {
     if (!IsSessionActive())
@@ -2218,53 +2394,77 @@ void MainWindow::UpdateStreamingStatus()
         return;
     }
 
+    // Locale-grouped digit formatting so big counts read as
+    // "12,345 lines" instead of "12345 lines".
+    const QLocale loc = QLocale::system();
+    const QString lineCount = loc.toString(static_cast<qlonglong>(mStreamingLineCount));
+    const QString errorCount = loc.toString(static_cast<qlonglong>(mStreamingErrorCount));
+
     QString text;
     if (!IsLiveTailSession())
     {
-        text = QString("Parsing %1 - %2 lines, %3 errors")
-                   .arg(mStreamingFileName)
-                   .arg(mStreamingLineCount)
-                   .arg(mStreamingErrorCount);
+        text = tr("Parsing %1 - %2 lines, %3 errors").arg(mStreamingFileName, lineCount, errorCount);
     }
     else if (mSourceWaiting)
     {
         // Source unavailable takes precedence over Paused.
-        text = QString("Source unavailable - last seen %1 - %2 lines, %3 errors")
-                   .arg(mStreamingFileName)
-                   .arg(mStreamingLineCount)
-                   .arg(mStreamingErrorCount);
+        text = tr("Source unavailable - last seen %1 - %2 lines, %3 errors")
+                   .arg(mStreamingFileName, lineCount, errorCount);
     }
     else if (mModel->Sink() && mModel->Sink()->IsPaused())
     {
-        const auto buffered = static_cast<qsizetype>(mModel->Sink()->PausedLineCount());
-        text = QString("Paused - %1 lines, %2 buffered").arg(mStreamingLineCount).arg(buffered);
+        const auto buffered = static_cast<qlonglong>(mModel->Sink()->PausedLineCount());
+        text = tr("Paused - %1 lines, %2 buffered").arg(lineCount, loc.toString(buffered));
     }
     else
     {
-        text = QString("Streaming %1 - %2 lines, %3 errors")
-                   .arg(mStreamingFileName)
-                   .arg(mStreamingLineCount)
-                   .arg(mStreamingErrorCount);
+        text = tr("Streaming %1 - %2 lines, %3 errors").arg(mStreamingFileName, lineCount, errorCount);
     }
 
     // Paused-drop telemetry stays non-zero across Resume so the user
     // keeps seeing "lines were lost" until Stop.
     if (IsLiveTailSession() && mModel->Sink())
     {
-        const auto dropped = static_cast<qsizetype>(mModel->Sink()->PausedDropCount());
+        const auto dropped = static_cast<qlonglong>(mModel->Sink()->PausedDropCount());
         if (dropped > 0)
         {
-            text += QString(", %1 dropped while paused").arg(dropped);
+            text += tr(", %1 dropped while paused").arg(loc.toString(dropped));
         }
+    }
+
+    if (IsLiveTailSession() && mLiveTailTimer.isValid())
+    {
+        text += tr(" - %1 since start").arg(FormatElapsed(mLiveTailTimer.elapsed()));
     }
 
     if (IsLiveTailSession() && mRotationFlashActive)
     {
-        text += " - rotated";
+        text += tr(" - rotated");
     }
 
     mStatusLabel->setText(text);
     mStatusLabel->show();
+}
+
+void MainWindow::StartLiveTailTicker()
+{
+    mLiveTailTimer.start();
+    if (mLiveTailTickTimer != nullptr)
+    {
+        mLiveTailTickTimer->start();
+    }
+}
+
+void MainWindow::StopLiveTailTicker()
+{
+    if (mLiveTailTickTimer != nullptr)
+    {
+        mLiveTailTickTimer->stop();
+    }
+    // Leave `mLiveTailTimer` armed: `UpdateStreamingStatus` reads
+    // the final elapsed value on the very next paint so the user
+    // sees the full session length in the closing status line. The
+    // timer is restarted from scratch on the next live-tail open.
 }
 
 void MainWindow::UpdateStreamToolbarVisibility()
@@ -2709,12 +2909,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::SaveConfiguration()
 {
-    const QString file =
-        QFileDialog::getSaveFileName(this, "Save Configuration", QString(), "JSON (*.json);;All Files (*)");
+    const QString file = QFileDialog::getSaveFileName(
+        this, tr("Save Configuration"), DefaultOpenDir(), tr("JSON (*.json);;All Files (*)")
+    );
     if (file.isEmpty())
     {
         return;
     }
+    RememberLastOpenDir(file);
     try
     {
         DoSaveConfiguration(file, loglib::SaveScope::ColumnsOnly);
@@ -2727,11 +2929,13 @@ void MainWindow::SaveConfiguration()
 
 void MainWindow::SaveSession()
 {
-    const QString file = QFileDialog::getSaveFileName(this, "Save Session", QString(), "JSON (*.json);;All Files (*)");
+    const QString file =
+        QFileDialog::getSaveFileName(this, tr("Save Session"), DefaultOpenDir(), tr("JSON (*.json);;All Files (*)"));
     if (file.isEmpty())
     {
         return;
     }
+    RememberLastOpenDir(file);
     try
     {
         DoSaveConfiguration(file, loglib::SaveScope::Full);
@@ -2755,12 +2959,14 @@ void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scop
 
 void MainWindow::LoadConfiguration()
 {
-    const QString file =
-        QFileDialog::getOpenFileName(this, "Load Configuration", QString(), "JSON (*.json);;All Files (*)");
+    const QString file = QFileDialog::getOpenFileName(
+        this, tr("Load Configuration"), DefaultOpenDir(), tr("JSON (*.json);;All Files (*)")
+    );
     if (file.isEmpty())
     {
         return;
     }
+    RememberLastOpenDir(file);
     DoLoadConfiguration(file);
 }
 
@@ -3856,7 +4062,9 @@ void MainWindow::OnThemeChanged()
 
     // Repaint just the viewport -- Qt will re-query `data()` for
     // visible cells. Avoids the proxy-chain walk that a full
-    // `dataChanged` emit would force.
+    // `dataChanged` emit would force. `ApplyTableStyleSheet` above
+    // already re-resolves the monospaced cell rule against the
+    // (possibly theme-overridden) `app.fontFamily`.
     if (mTableView != nullptr)
     {
         mTableView->viewport()->update();
@@ -3896,10 +4104,37 @@ void MainWindow::ApplyThemedWindowIcon()
 void MainWindow::ApplyTableStyleSheet()
 {
     // Body chrome comes from the palette pushed by
-    // `ThemeControl::ApplyTheme`, so the body QSS is empty. We
-    // only need QSS for the header (padding + bold + optional
-    // theme colours) since Qt has no palette role for those.
-    const QString bodyRule;
+    // `ThemeControl::ApplyTheme`. The only body rule we need is a
+    // monospace family on the cells so log content reads as fixed-
+    // pitch by default. Scoped to `QTableView::item` (not the widget
+    // itself) so the table's font metrics — which Qt uses to size
+    // the scrollbar / row / header geometry — stay on the system
+    // default. Pinning the metrics keeps the
+    // `TestTailEdgeTopFollowsScrollbarMinimum` regression scenario
+    // intact and matches the family already used by the raw-JSON
+    // pane (record_detail_widget.cpp:328). Skipped when a theme
+    // pins `app.fontFamily` so the user's chosen family wins
+    // end-to-end.
+    QString bodyRule;
+    const bool themeOverridesFont =
+        mTheme != nullptr && mTheme->Active().app.fontFamily.has_value() && !mTheme->Active().app.fontFamily->empty();
+    if (!themeOverridesFont)
+    {
+        const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        const QStringList families = mono.families();
+        if (!families.isEmpty())
+        {
+            // Quote each family so names with spaces (e.g. "Cascadia
+            // Mono") parse correctly inside the QSS list.
+            QStringList quoted;
+            quoted.reserve(families.size());
+            for (const QString &fam : families)
+            {
+                quoted.append(QStringLiteral("\"%1\"").arg(fam));
+            }
+            bodyRule = QStringLiteral("QTableView::item { font-family: %1; }").arg(quoted.join(QStringLiteral(", ")));
+        }
+    }
 
     QString headerRule = QStringLiteral("QHeaderView::section { padding: 8px; font-weight: bold;");
     if (mTheme != nullptr)

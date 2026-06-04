@@ -29,6 +29,11 @@ public:
 
     void keyPressEvent(QKeyEvent *event) override;
 
+    /// Paint hook overlays the auto-discovered shortcuts card on top
+    /// of the empty grid when no rows are present. Falls through to
+    /// the base implementation otherwise.
+    void paintEvent(QPaintEvent *event) override;
+
     /// Override so the view can wire its own structural-change hooks
     /// onto whichever model is attached (used by the reading-position
     /// preservation path -- see `userScrolledAwayFromTail`).

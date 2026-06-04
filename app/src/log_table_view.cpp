@@ -1,6 +1,7 @@
 #include "log_table_view.hpp"
 
 #include "anchor_manager.hpp"
+#include "shortcut_catalog.hpp"
 
 #include <log_model.hpp>
 
@@ -8,13 +9,22 @@
 #include <QAbstractProxyModel>
 #include <QApplication>
 #include <QClipboard>
+#include <QFont>
+#include <QFontMetrics>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QMainWindow>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPalette>
+#include <QPen>
 #include <QPoint>
 #include <QRect>
 #include <QScrollBar>
+#include <QString>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <utility>
 
 LogTableView::LogTableView(QWidget *parent)
@@ -105,6 +115,155 @@ void LogTableView::wheelEvent(QWheelEvent *event)
     mNextValueChangeIsUser = true;
     QTableView::wheelEvent(event);
     mNextValueChangeIsUser = false;
+}
+
+namespace
+{
+/// Card geometry / spacing constants. Centralised so a future
+/// designer can tweak them without grepping across `paintEvent`.
+constexpr int CARD_PADDING_PX = 24;
+constexpr int CARD_TITLE_GAP_PX = 16;
+constexpr int CARD_GROUP_GAP_PX = 14;
+constexpr int CARD_ROW_GAP_PX = 4;
+constexpr int CARD_GUTTER_PX = 32;
+constexpr int CARD_TITLE_POINT_BUMP = 4;
+constexpr int CARD_GROUP_POINT_BUMP = 1;
+constexpr qreal CARD_HEADING_OPACITY = 0.85;
+constexpr qreal CARD_BODY_OPACITY = 0.65;
+
+} // namespace
+
+void LogTableView::paintEvent(QPaintEvent *event)
+{
+    QTableView::paintEvent(event);
+
+    // Only fill the void: a real session paints rows over us.
+    if (model() != nullptr && model()->rowCount() > 0)
+    {
+        return;
+    }
+
+    const auto *mainWindow = qobject_cast<const QMainWindow *>(window());
+    if (mainWindow == nullptr)
+    {
+        return;
+    }
+
+    const QList<ShortcutCatalog::Group> groups = ShortcutCatalog::Build(mainWindow);
+    if (groups.isEmpty())
+    {
+        return;
+    }
+
+    QPainter painter(viewport());
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const QPalette pal = palette();
+    const QColor headingColor = pal.color(QPalette::WindowText);
+    const QColor bodyColor = pal.color(QPalette::PlaceholderText);
+
+    QFont titleFont = font();
+    titleFont.setPointSize(titleFont.pointSize() + CARD_TITLE_POINT_BUMP);
+    titleFont.setBold(true);
+
+    QFont groupFont = font();
+    groupFont.setPointSize(groupFont.pointSize() + CARD_GROUP_POINT_BUMP);
+    groupFont.setBold(true);
+
+    QFont bodyFont = font();
+    QFont shortcutFont = font();
+    shortcutFont.setStyleHint(QFont::Monospace);
+
+    const QFontMetrics titleFm(titleFont);
+    const QFontMetrics groupFm(groupFont);
+    const QFontMetrics bodyFm(bodyFont);
+    const QFontMetrics shortcutFm(shortcutFont);
+
+    const QString title = tr("Drop a JSON Lines log here, or use a shortcut below");
+
+    // First pass: pick column widths so every group renders flush.
+    int maxLabelWidth = 0;
+    int maxShortcutWidth = 0;
+    for (const auto &group : groups)
+    {
+        for (const auto &entry : group.entries)
+        {
+            maxLabelWidth = std::max(maxLabelWidth, bodyFm.horizontalAdvance(entry.text));
+            maxShortcutWidth = std::max(maxShortcutWidth, shortcutFm.horizontalAdvance(entry.shortcut));
+        }
+    }
+
+    const int rowHeight = std::max(bodyFm.height(), shortcutFm.height()) + CARD_ROW_GAP_PX;
+    const int contentWidth = maxLabelWidth + CARD_GUTTER_PX + maxShortcutWidth;
+
+    int contentHeight = titleFm.height() + CARD_TITLE_GAP_PX;
+    for (qsizetype i = 0; i < groups.size(); ++i)
+    {
+        if (i > 0)
+        {
+            contentHeight += CARD_GROUP_GAP_PX;
+        }
+        contentHeight += groupFm.height() + CARD_ROW_GAP_PX;
+        contentHeight += rowHeight * static_cast<int>(groups[i].entries.size());
+    }
+
+    const QRect viewportRect = viewport()->rect();
+    const int cardWidth = std::min(viewportRect.width() - (2 * CARD_PADDING_PX), contentWidth);
+    if (cardWidth <= 0)
+    {
+        return;
+    }
+
+    const int cardX = viewportRect.left() + ((viewportRect.width() - cardWidth) / 2);
+    int y = viewportRect.top() + std::max(CARD_PADDING_PX, (viewportRect.height() - contentHeight) / 2);
+
+    // Title
+    painter.setOpacity(CARD_HEADING_OPACITY);
+    painter.setPen(QPen(headingColor));
+    painter.setFont(titleFont);
+    painter.drawText(
+        QRect(cardX, y, cardWidth, titleFm.height()),
+        Qt::AlignHCenter | Qt::AlignTop,
+        titleFm.elidedText(title, Qt::ElideRight, cardWidth)
+    );
+    y += titleFm.height() + CARD_TITLE_GAP_PX;
+
+    const int labelColumnRight = cardX + maxLabelWidth;
+    const int shortcutColumnLeft = labelColumnRight + CARD_GUTTER_PX;
+
+    for (qsizetype i = 0; i < groups.size(); ++i)
+    {
+        if (i > 0)
+        {
+            y += CARD_GROUP_GAP_PX;
+        }
+        const auto &group = groups[i];
+
+        painter.setOpacity(CARD_HEADING_OPACITY);
+        painter.setPen(QPen(headingColor));
+        painter.setFont(groupFont);
+        painter.drawText(QRect(cardX, y, cardWidth, groupFm.height()), Qt::AlignLeft | Qt::AlignTop, group.title);
+        y += groupFm.height() + CARD_ROW_GAP_PX;
+
+        painter.setOpacity(CARD_BODY_OPACITY);
+        painter.setPen(QPen(bodyColor));
+        for (const auto &entry : group.entries)
+        {
+            painter.setFont(bodyFont);
+            painter.drawText(
+                QRect(cardX, y, maxLabelWidth, rowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                bodyFm.elidedText(entry.text, Qt::ElideRight, maxLabelWidth)
+            );
+            painter.setFont(shortcutFont);
+            painter.drawText(
+                QRect(shortcutColumnLeft, y, maxShortcutWidth, rowHeight),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                entry.shortcut
+            );
+            y += rowHeight;
+        }
+    }
 }
 
 bool LogTableView::ComputeAtTailEdge(int value) const
