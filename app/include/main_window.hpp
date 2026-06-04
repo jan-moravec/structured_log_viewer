@@ -2,10 +2,12 @@
 
 #include "anchor_manager.hpp"
 #include "anchors_dock.hpp"
+#include "find_dock.hpp"
 #include "find_record_widget.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
+#include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
 #include "record_detail_dock.hpp"
 #include "record_detail_window.hpp"
@@ -431,6 +433,18 @@ private slots:
     /// mismatches are present.
     void UpdateDiagnosticsStatus();
 
+    /// Refresh the status-bar parse-errors indicator. Wired to
+    /// `ParseErrorsDock::countChanged`; hides the button when the
+    /// dock is empty.
+    void UpdateParseErrorsStatus(int count);
+
+    /// Recount matches for the current find query and push the
+    /// result back into the find bar. Hooked up to
+    /// `FindRecordWidget::MatchCountRequested`. Skips work when
+    /// the bar is hidden / the proxy model is unset / the needle
+    /// is empty.
+    void UpdateFindMatchCount(const QString &text, bool wildcards, bool regularExpressions);
+
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
@@ -774,7 +788,26 @@ private:
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
-    FindRecordWidget *mFindRecord;
+    /// Dockable find bar. Owned via `QMainWindow` parentage.
+    /// `mFindRecord` is the `FindRecordWidget` it hosts; both
+    /// pointers stay valid for the window's lifetime.
+    FindDock *mFindDock = nullptr;
+    FindRecordWidget *mFindRecord = nullptr;
+    /// Dockable replacement for the old `QMessageBox::warning`
+    /// parse-error popups. Hidden by default; auto-raised on the
+    /// first error of a session.
+    ParseErrorsDock *mParseErrorsDock = nullptr;
+    /// Toggle action for `mFindDock`, mirrored onto the View menu.
+    /// Programmatic because the .ui has no entry; re-added on
+    /// every `RebuildViewMenu`.
+    QAction *mActionToggleFind = nullptr;
+    /// Toggle action for `mParseErrorsDock`. Same lifecycle as
+    /// `mActionToggleFind`.
+    QAction *mActionToggleParseErrors = nullptr;
+    /// Status-bar indicator that surfaces when the parse-errors
+    /// dock has entries; clicking it opens the dock. Mirrors the
+    /// pattern used by `mDiagnosticsButton`.
+    QPushButton *mParseErrorsStatusButton = nullptr;
     PreferencesEditor *mPreferencesEditor;
     /// Non-owning. Lives in `main()` (or the test fixture).
     /// `nullptr` for legacy no-args construction; theme code paths

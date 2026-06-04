@@ -647,10 +647,80 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
-    mFindRecord = new FindRecordWidget(this);
+    // Find bar lives in a dockable host so users can float it,
+    // dock it bottom (IDE convention) or top, and the layout
+    // round-trips through `saveState` / `restoreState`. The
+    // hosted `FindRecordWidget` keeps the same slots so existing
+    // wiring (see `FindRecords` below) is unchanged.
+    mFindDock = new FindDock(this);
+    addDockWidget(Qt::BottomDockWidgetArea, mFindDock);
+    mFindDock->hide();
+    mFindRecord = mFindDock->Widget();
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
-    mLayout->addWidget(mFindRecord);
-    mFindRecord->hide();
+    connect(
+        mFindRecord, &FindRecordWidget::MatchCountRequested, this,
+        [this](const QString &text, bool wildcards, bool regularExpressions) {
+            UpdateFindMatchCount(text, wildcards, regularExpressions);
+        }
+    );
+
+    mActionToggleFind = new QAction(tr("Find"), this);
+    mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
+    mActionToggleFind->setCheckable(true);
+    addAction(mActionToggleFind);
+    connect(mActionToggleFind, &QAction::toggled, this, [this](bool on) {
+        if (on && !isVisible())
+        {
+            // Host not realised (early toggle from a test driver).
+            // Revert so the action can't sit checked while the
+            // dock stays hidden.
+            const QSignalBlocker blocker(mActionToggleFind);
+            mActionToggleFind->setChecked(false);
+            return;
+        }
+        if (on)
+        {
+            mFindDock->RevealAndFocus();
+        }
+        else
+        {
+            mFindDock->hide();
+        }
+    });
+    connect(mFindDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        const QSignalBlocker blocker(mActionToggleFind);
+        mActionToggleFind->setChecked(visible);
+    });
+
+    // Parse-errors dock replaces the old `QMessageBox::warning`
+    // popups for streaming / open errors. Hidden until the first
+    // error of a session; `ShowParseErrors` auto-raises.
+    mParseErrorsDock = new ParseErrorsDock(this);
+    addDockWidget(Qt::BottomDockWidgetArea, mParseErrorsDock);
+    mParseErrorsDock->hide();
+
+    mActionToggleParseErrors = new QAction(tr("Parse Errors"), this);
+    mActionToggleParseErrors->setObjectName(QStringLiteral("actionToggleParseErrors"));
+    mActionToggleParseErrors->setCheckable(true);
+    addAction(mActionToggleParseErrors);
+    connect(mActionToggleParseErrors, &QAction::toggled, this, [this](bool on) {
+        if (on && !isVisible())
+        {
+            const QSignalBlocker blocker(mActionToggleParseErrors);
+            mActionToggleParseErrors->setChecked(false);
+            return;
+        }
+        mParseErrorsDock->setVisible(on);
+        if (on)
+        {
+            mParseErrorsDock->raise();
+        }
+    });
+    connect(mParseErrorsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        const QSignalBlocker blocker(mActionToggleParseErrors);
+        mActionToggleParseErrors->setChecked(visible);
+    });
+    connect(mParseErrorsDock, &ParseErrorsDock::countChanged, this, &MainWindow::UpdateParseErrorsStatus);
 
     // Record-detail dock: hidden by default; the View menu's Ctrl+I
     // toggle and row double-click both surface it.
@@ -794,6 +864,29 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     statusBar()->addPermanentWidget(mDiagnosticsButton);
     connect(mDiagnosticsButton, &QPushButton::clicked, this, &MainWindow::ShowConfigurationDiagnostics);
     connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+
+    // Status-bar indicator for the parse-errors dock. Same UX as
+    // `mDiagnosticsButton`: a permanent widget that hides itself
+    // when the dock is empty and opens / raises the dock on
+    // click.
+    mParseErrorsStatusButton = new QPushButton(this);
+    mParseErrorsStatusButton->setObjectName(QStringLiteral("parseErrorsStatusButton"));
+    mParseErrorsStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_MessageBoxCritical));
+    mParseErrorsStatusButton->setFlat(true);
+    mParseErrorsStatusButton->setCursor(Qt::PointingHandCursor);
+    mParseErrorsStatusButton->hide();
+    statusBar()->addPermanentWidget(mParseErrorsStatusButton);
+    connect(mParseErrorsStatusButton, &QPushButton::clicked, this, [this]() {
+        if (mParseErrorsDock == nullptr)
+        {
+            return;
+        }
+        if (!mParseErrorsDock->isVisible())
+        {
+            mParseErrorsDock->show();
+        }
+        mParseErrorsDock->raise();
+    });
 
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
@@ -2755,20 +2848,15 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
     {
         return;
     }
-
-    constexpr size_t MAX_ERRORS_SHOWN = 20;
-    QString message;
-    const size_t shown = std::min(errors.size(), MAX_ERRORS_SHOWN);
-    for (size_t i = 0; i < shown; ++i)
+    if (mParseErrorsDock == nullptr)
     {
-        message += QString::fromStdString(errors[i]) + QLatin1Char('\n');
+        // Defensive fallback. Should never hit in production
+        // (the dock is built in the constructor before any open
+        // path can run), but keep the prior behaviour for tests
+        // that bypass the GUI shell.
+        return;
     }
-    if (errors.size() > MAX_ERRORS_SHOWN)
-    {
-        message += QString("... and %1 more error(s).").arg(errors.size() - MAX_ERRORS_SHOWN);
-    }
-
-    QMessageBox::warning(this, title, message);
+    mParseErrorsDock->AppendErrors(title, errors);
 }
 
 void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &message)
@@ -3329,6 +3417,79 @@ void MainWindow::UpdateDiagnosticsStatus()
     mDiagnosticsButton->show();
 }
 
+void MainWindow::UpdateParseErrorsStatus(int count)
+{
+    if (mParseErrorsStatusButton == nullptr)
+    {
+        return;
+    }
+    if (count <= 0)
+    {
+        mParseErrorsStatusButton->hide();
+        mParseErrorsStatusButton->setText(QString());
+        mParseErrorsStatusButton->setToolTip(QString());
+        return;
+    }
+    const QString text = tr("%n parse error(s)", nullptr, count);
+    mParseErrorsStatusButton->setText(text);
+    mParseErrorsStatusButton->setToolTip(
+        tr("%1 parse error(s) recorded in this session. Click to open the Parse Errors panel.").arg(count)
+    );
+    mParseErrorsStatusButton->show();
+}
+
+void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool regularExpressions)
+{
+    if (mFindRecord == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    if (text.isEmpty())
+    {
+        mFindRecord->SetMatchInfo(0, 0);
+        return;
+    }
+    Qt::MatchFlags flags = Qt::MatchContains | Qt::MatchWrap | Qt::MatchRecursive;
+    if (wildcards)
+    {
+        flags |= Qt::MatchWildcard;
+    }
+    if (regularExpressions)
+    {
+        flags |= Qt::MatchRegularExpression;
+    }
+    const QModelIndex start = mSortFilterProxyModel->index(0, 0);
+    if (!start.isValid())
+    {
+        mFindRecord->SetMatchInfo(0, 0);
+        return;
+    }
+    const QVariant value = QVariant::fromValue(text);
+    const QModelIndexList matches =
+        mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, LogFilterModel::UNLIMITED_HITS, flags, true, 0);
+    const int total = static_cast<int>(matches.size());
+
+    int currentOneBased = 0;
+    if (total > 0)
+    {
+        // Locate the current selection within the match list so
+        // the bar can render "i of N" instead of just "N matches".
+        const QModelIndex currentIdx = mTableView != nullptr ? mTableView->currentIndex() : QModelIndex();
+        if (currentIdx.isValid())
+        {
+            for (int i = 0; i < matches.size(); ++i)
+            {
+                if (matches[i].row() == currentIdx.row())
+                {
+                    currentOneBased = i + 1;
+                    break;
+                }
+            }
+        }
+    }
+    mFindRecord->SetMatchInfo(currentOneBased, total);
+}
+
 bool MainWindow::DoLoadConfiguration(const QString &path)
 {
     // Parse into a temporary first so a parse failure cannot
@@ -3490,9 +3651,11 @@ void MainWindow::RebuildFiltersFromConfiguration()
 
 void MainWindow::Find()
 {
-    mFindRecord->show();
-    mFindRecord->setFocus();
-    mFindRecord->SetEditFocus();
+    if (mFindDock == nullptr)
+    {
+        return;
+    }
+    mFindDock->RevealAndFocus();
 }
 
 void MainWindow::SelectSourceRow(int sourceRow)
@@ -3676,6 +3839,15 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
         mTableView->scrollTo(matches[0]);
         mTableView->selectionModel()->select(matches[0], QItemSelectionModel::Select | QItemSelectionModel::Rows);
         mTableView->selectionModel()->setCurrentIndex(matches[0], QItemSelectionModel::NoUpdate);
+    }
+
+    // Refresh the find bar's "i of N" indicator now that the
+    // current index has moved. Gated on the bar actually being
+    // visible so a programmatic `FindRecords` call from a test
+    // path does not pay for the full-table count scan.
+    if (mFindDock != nullptr && mFindDock->isVisible())
+    {
+        UpdateFindMatchCount(text, wildcards, regularExpressions);
     }
 }
 
@@ -5268,6 +5440,20 @@ void MainWindow::RebuildViewMenu()
     if (mActionToggleAnchors != nullptr)
     {
         viewMenu->addAction(mActionToggleAnchors);
+    }
+
+    // Find dock toggle. Same programmatic-action pattern as
+    // `mActionToggleAnchors`: re-added on every menu rebuild so
+    // the View menu always lists every dockable surface.
+    if (mActionToggleFind != nullptr)
+    {
+        viewMenu->addAction(mActionToggleFind);
+    }
+
+    // Parse-errors dock toggle.
+    if (mActionToggleParseErrors != nullptr)
+    {
+        viewMenu->addAction(mActionToggleParseErrors);
     }
 
     const auto &columns = mModel->Configuration().columns;
