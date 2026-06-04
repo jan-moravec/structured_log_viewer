@@ -3477,7 +3477,7 @@ private slots:
         QVERIFY2(savedJson.contains(QStringLiteral("\"anchors\"")), "saved JSON must carry an anchors key");
 
         // Wipe live state so the load is observable.
-        QAction *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        auto *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
         QVERIFY(newSessionAction != nullptr);
         newSessionAction->trigger();
         QCoreApplication::processEvents();
@@ -3514,7 +3514,7 @@ private slots:
         anchors->SetAnchor(*key0, 1);
         QVERIFY(!anchors->Empty());
 
-        QAction *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        auto *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
         QVERIFY(newSessionAction != nullptr);
         newSessionAction->trigger();
         QCoreApplication::processEvents();

@@ -96,8 +96,11 @@ bool AnchorManager::RemoveAnchors(std::span<const Key> keys)
     }
     int removedCount = 0;
     // Own a copy so the single-change signal survives the caller's
-    // span going out of scope.
-    std::optional<Key> lastRemovedKey;
+    // span going out of scope. Default-constructed; only read when
+    // `removedCount == 1`, which only the same `if` that updates it
+    // makes possible -- bypassing `std::optional` keeps clang-tidy's
+    // `bugprone-unchecked-optional-access` quiet without an assertion.
+    Key lastRemovedKey;
     for (const Key &key : keys)
     {
         if (mAnchors.erase(key) > 0)
@@ -113,7 +116,7 @@ bool AnchorManager::RemoveAnchors(std::span<const Key> keys)
     // Same routing as `SetAnchors`.
     if (removedCount == 1)
     {
-        emit anchorChanged(*lastRemovedKey);
+        emit anchorChanged(lastRemovedKey);
     }
     else
     {
