@@ -1,8 +1,10 @@
 #include "log_model.hpp"
 
+#include "anchor_manager.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
+#include "uuid_utils.hpp"
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
@@ -38,13 +40,13 @@
 #include <utility>
 #include <vector>
 
-LogModel::LogModel(QObject *parent, ThemeControl *theme)
-    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme)
+LogModel::LogModel(QObject *parent, ThemeControl *theme, AnchorManager *anchors)
+    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme, anchors)
 {
 }
 
-LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme)
-    : QAbstractTableModel{parent}, mTheme(theme)
+LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme, AnchorManager *anchors)
+    : QAbstractTableModel{parent}, mTheme(theme), mAnchors(anchors)
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
@@ -53,6 +55,13 @@ LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *t
 
     mSink = new QtStreamingLogSink(this, this, pendingCapacity);
     mStreamingWatcher = new QFutureWatcher<void>(this);
+
+    if (mAnchors != nullptr)
+    {
+        // Anchor mutations -> scoped row repaints.
+        connect(mAnchors, &AnchorManager::anchorChanged, this, &LogModel::RefreshRowsForAnchor);
+        connect(mAnchors, &AnchorManager::anchorsReset, this, &LogModel::RefreshAllAnchorRows);
+    }
 }
 
 LogModel::~LogModel()
@@ -148,6 +157,9 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         // Drop the per-batch capture alongside the table's rank cache
         // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
+        // The cache is keyed on `LineSource*`; drop entries now so
+        // recycled addresses can't masquerade as old sources.
+        mCanonicalLocatorCache.clear();
         // Drop stale mismatch badges before the reset settles.
         RefreshColumnHealth();
         mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
@@ -156,6 +168,14 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
 
         emit lineCountChanged(0);
         emit errorCountChanged(0);
+
+        // Belt-and-braces for non-`MainWindow` callers (tests, future
+        // scripted resets): `MainWindow` already clears anchors on
+        // destructive opens, and `ClearAll` is idempotent.
+        if (mAnchors != nullptr)
+        {
+            mAnchors->ClearAll();
+        }
     }
 
     // Compensate for the worker's now generation-stale `OnFinished`
@@ -180,11 +200,18 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
         reserveCount = fileSource->File().Size() / BYTES_PER_LINE_RESERVE_HINT;
     }
 
+    // Drop cache entries for the about-to-be-released sources.
+    mCanonicalLocatorCache.clear();
+
     mLogTable.BeginStreaming(std::move(source));
     if (reserveCount.has_value())
     {
         mLogTable.ReserveLineOffsets(*reserveCount);
     }
+
+    // Cache the new source's canonical locator so the GUI hot
+    // path stays allocation-free.
+    PrewarmCanonicalLocatorCache();
 
     mErrorCount = 0;
     mStreamingErrors.clear();
@@ -287,6 +314,9 @@ loglib::StopToken LogModel::AppendStreaming(
     const size_t reserveCount = source->File().Size() / 100;
     mLogTable.AppendStreaming(std::move(source));
     mLogTable.ReserveLineOffsets(reserveCount);
+
+    // Cache the new source's locator (see `BeginStreamingShared`).
+    PrewarmCanonicalLocatorCache();
 
     // Re-arm the sink for the new worker without resetting counters or
     // wiping rows; `Arm()` bumps the generation.
@@ -430,6 +460,8 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     if (dropCount > 0)
     {
+        // Resolve evicted anchors while their rows still exist.
+        DropAnchorsForEvictionPrefix(dropCount);
         beginRemoveRows(QModelIndex(), 0, dropCount - 1);
         mLogTable.EvictPrefixRows(static_cast<size_t>(dropCount));
         endRemoveRows();
@@ -542,6 +574,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     mLogTable.AppendBatch(std::move(batch));
+
+    // Defensive: today batches only add rows, but a future source-
+    // bearing batch path must still see a warm cache.
+    PrewarmCanonicalLocatorCache();
 
     // Restore the cache when the post-batch index didn't change;
     // otherwise leave it invalidated for lazy rebuild.
@@ -1105,6 +1141,152 @@ int LogModel::ComputeFirstLevelColumnIndex() const noexcept
     return LEVEL_COLUMN_NONE;
 }
 
+std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexcept
+{
+    if (row < 0)
+    {
+        return std::nullopt;
+    }
+    const auto unsignedRow = static_cast<std::size_t>(row);
+    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    if (unsignedRow >= lines.size())
+    {
+        return std::nullopt;
+    }
+    const loglib::LogLine &line = lines[unsignedRow];
+    const loglib::LineSource *source = line.Source();
+    // Qt's paint stack invokes `data()` and can't unwind through
+    // `bad_alloc`. Swallow alloc failures and report no anchor.
+    try
+    {
+        AnchorManager::Key key;
+        key.lineId = static_cast<uint64_t>(line.LineId());
+        if (source != nullptr && !source->Path().empty())
+        {
+            // Lookup only; `PrewarmCanonicalLocatorCache` fills the
+            // cache on every source mutation. Misses produce an
+            // empty locator (anchor simply won't match).
+            const auto it = mCanonicalLocatorCache.find(source);
+            if (it != mCanonicalLocatorCache.end())
+            {
+                key.locator = it->second;
+            }
+        }
+        return key;
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
+}
+
+int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept
+{
+    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+        // Cheap `lineId` filter first; multi-file sessions still
+        // need the locator check below because ids can collide
+        // across sources.
+        if (static_cast<uint64_t>(lines[i].LineId()) != key.lineId)
+        {
+            continue;
+        }
+        const auto rowKey = AnchorKeyForRow(static_cast<int>(i));
+        if (rowKey.has_value() && *rowKey == key)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void LogModel::PrewarmCanonicalLocatorCache()
+{
+    // Idempotent: existing entries are skipped, only new sources
+    // pay the canonicalisation. The table never relocates a source
+    // pointer, so `LineSource *` is a stable key.
+    for (const auto &sourcePtr : mLogTable.Data().Sources())
+    {
+        const loglib::LineSource *source = sourcePtr.get();
+        if (source == nullptr || source->Path().empty())
+        {
+            continue;
+        }
+        if (mCanonicalLocatorCache.contains(source))
+        {
+            continue;
+        }
+        std::string canonical = logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+        mCanonicalLocatorCache.emplace(source, std::move(canonical));
+    }
+}
+
+void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
+{
+    const int cols = columnCount();
+    if (cols <= 0)
+    {
+        return;
+    }
+    // Anchor toggles are user-paced; a linear scan beats keeping a
+    // reverse map in sync across batch appends and FIFO eviction.
+    // Cheap `lineId` filter first to skip the cache lookup on
+    // misses (the bulk of the iterations).
+    const std::vector<loglib::LogLine> &lines = mLogTable.Data().Lines();
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        if (static_cast<uint64_t>(lines[i].LineId()) != key.lineId)
+        {
+            continue;
+        }
+        const auto rowKey = AnchorKeyForRow(static_cast<int>(i));
+        if (!rowKey.has_value() || *rowKey != key)
+        {
+            continue;
+        }
+        const QModelIndex topLeft = index(static_cast<int>(i), 0);
+        const QModelIndex bottomRight = index(static_cast<int>(i), cols - 1);
+        emit dataChanged(topLeft, bottomRight, {Qt::BackgroundRole, Qt::ForegroundRole});
+    }
+}
+
+void LogModel::RefreshAllAnchorRows()
+{
+    const int rows = rowCount();
+    const int cols = columnCount();
+    if (rows <= 0 || cols <= 0)
+    {
+        return;
+    }
+    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole});
+}
+
+void LogModel::DropAnchorsForEvictionPrefix(int dropCount)
+{
+    if (mAnchors == nullptr || dropCount <= 0 || mAnchors->Empty())
+    {
+        return;
+    }
+    // Collect first, mutate second: `RemoveAnchors` re-enters
+    // `RefreshAllAnchorRows`, so we must finish walking the rows
+    // before they're evicted.
+    std::vector<AnchorManager::Key> evictedKeys;
+    evictedKeys.reserve(static_cast<std::size_t>(dropCount));
+    for (int row = 0; row < dropCount; ++row)
+    {
+        if (auto key = AnchorKeyForRow(row); key.has_value())
+        {
+            evictedKeys.push_back(std::move(*key));
+        }
+    }
+    if (!evictedKeys.empty())
+    {
+        // Bulk path collapses to a single `anchorsReset`.
+        mAnchors->RemoveAnchors(evictedKeys);
+    }
+}
+
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
 {
     if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
@@ -1142,6 +1324,23 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
+        // Anchor overlay wins over the level brush. `Empty()` keeps
+        // the common no-anchor case cheap.
+        if (mAnchors != nullptr && !mAnchors->Empty())
+        {
+            const auto key = AnchorKeyForRow(index.row());
+            if (key.has_value())
+            {
+                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                {
+                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::BackgroundRole);
+                    if (brush.style() != Qt::NoBrush)
+                    {
+                        return QVariant(brush);
+                    }
+                }
+            }
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
@@ -1156,6 +1355,22 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         if (mTheme == nullptr)
         {
             return {};
+        }
+        // Mirrors the BackgroundRole anchor overlay.
+        if (mAnchors != nullptr && !mAnchors->Empty())
+        {
+            const auto key = AnchorKeyForRow(index.row());
+            if (key.has_value())
+            {
+                if (const auto colorIndex = mAnchors->ColorFor(*key); colorIndex.has_value())
+                {
+                    const QBrush brush = mTheme->AnchorBrushFor(*colorIndex, Qt::ForegroundRole);
+                    if (brush.style() != Qt::NoBrush)
+                    {
+                        return QVariant(brush);
+                    }
+                }
+            }
         }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
@@ -1378,6 +1593,8 @@ void LogModel::SetRetentionCap(size_t cap)
         if (visible > cap)
         {
             const size_t dropCount = visible - cap;
+            // Resolve evicted anchors before the rows go away.
+            DropAnchorsForEvictionPrefix(static_cast<int>(dropCount));
             beginRemoveRows(QModelIndex(), 0, static_cast<int>(dropCount) - 1);
             mLogTable.EvictPrefixRows(dropCount);
             endRemoveRows();

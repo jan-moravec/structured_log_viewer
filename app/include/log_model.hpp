@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anchor_manager.hpp"
+
 #include <loglib/bytes_producer.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_level.hpp>
@@ -72,15 +74,32 @@ class LogModel : public QAbstractTableModel
     Q_OBJECT
 
 public:
-    /// @p theme drives the per-`LogLevel` background / foreground /
-    /// font lookups in `data()`. `nullptr` is supported for plain
-    /// `LogModel model;` test sites that don't exercise per-level
-    /// styling; the colour / font roles return `{}` in that case.
-    explicit LogModel(QObject *parent = nullptr, ThemeControl *theme = nullptr);
+    /// @p theme drives per-`LogLevel` styling in `data()`; `nullptr`
+    /// disables it (colour / font roles return `{}`).
+    ///
+    /// @p anchors, when non-null, paints anchored rows with the
+    /// anchor brush regardless of level style. The model is a
+    /// non-owning observer and listens for `anchorChanged` /
+    /// `anchorsReset` to scope its `dataChanged` emits.
+    explicit LogModel(QObject *parent = nullptr, ThemeControl *theme = nullptr, AnchorManager *anchors = nullptr);
     /// Test-only overload with a custom bounded-queue capacity for the
     /// embedded `QtStreamingLogSink`.
-    LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme = nullptr);
+    LogModel(
+        QObject *parent, std::size_t pendingCapacity, ThemeControl *theme = nullptr, AnchorManager *anchors = nullptr
+    );
     ~LogModel() override;
+
+    /// `(canonical locator, lineId)` for @p row, or nullopt if @p row
+    /// is out of range or its `LogLine` has no source.
+    ///
+    /// `noexcept` because the canonical-locator cache is pre-warmed
+    /// on every source change; a stray cache miss returns an empty
+    /// locator rather than allocating in the paint stack.
+    [[nodiscard]] std::optional<AnchorManager::Key> AnchorKeyForRow(int row) const noexcept;
+
+    /// Linear scan for @p key over visible rows. Returns the first
+    /// matching source-row index, or -1 if no live row matches.
+    [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
@@ -325,6 +344,34 @@ private:
     /// fixtures that don't exercise theming); `data()` gates its
     /// theme-derived branches on a null check.
     ThemeControl *mTheme = nullptr;
+
+    /// Non-owning anchor manager; null for legacy test fixtures.
+    /// The `data()` anchor branch and signal wiring null-check first.
+    AnchorManager *mAnchors = nullptr;
+
+    /// Emit `dataChanged` (Background + Foreground) on every row
+    /// matching @p key. Usually one row; multi-file sessions may
+    /// have id collisions across sources.
+    void RefreshRowsForAnchor(const AnchorManager::Key &key);
+
+    /// Drop anchors on rows `[0, dropCount)` before the table's
+    /// `EvictPrefixRows` runs, so anchors can't dangle past FIFO
+    /// retention.
+    void DropAnchorsForEvictionPrefix(int dropCount);
+
+    /// Emit `dataChanged` (Background + Foreground) across the whole
+    /// visible table. Used on `anchorsReset`.
+    void RefreshAllAnchorRows();
+
+    /// Cache the canonical locator for every live `LineSource`.
+    /// Called after each source mutation so `AnchorKeyForRow` stays
+    /// noexcept on the paint path. Idempotent; O(unique sources).
+    void PrewarmCanonicalLocatorCache();
+
+    /// Per-`LineSource` cache of canonical locators. Keyed by raw
+    /// pointer (stable for the source store's lifetime). Cleared on
+    /// session swap to avoid dangling keys.
+    mutable std::unordered_map<const loglib::LineSource *, std::string> mCanonicalLocatorCache;
 };
 
 Q_DECLARE_METATYPE(StreamingResult)

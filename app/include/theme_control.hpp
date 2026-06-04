@@ -91,6 +91,13 @@ public:
     /// changes the font.
     [[nodiscard]] bool HasAnyFontStyle() const noexcept;
 
+    /// Cached anchor brush for @p colorIndex. @p role must be
+    /// `Qt::BackgroundRole` or `Qt::ForegroundRole`; foregrounds
+    /// are picked per slot for legible contrast. Out-of-range
+    /// returns an invalid brush so callers fall through to default
+    /// styling.
+    [[nodiscard]] QBrush AnchorBrushFor(std::uint8_t colorIndex, int role) const noexcept;
+
     /// In-memory active selection (empty = Auto).
     [[nodiscard]] QString ActiveSelection() const;
 
@@ -201,6 +208,11 @@ private:
     std::array<QFont, LEVEL_SLOTS> mFonts;
     std::array<bool, LEVEL_SLOTS> mBold{};
     std::array<bool, LEVEL_SLOTS> mItalic{};
+
+    /// Per-anchor-slot brush cache. Built by `BuildStyleCache` from
+    /// `theme.anchorPalette`, with the built-in palette filling gaps.
+    std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorBackground;
+    std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorForeground;
 
     /// Any-level bold-or-italic flag for the `HasAnyFontStyle`
     /// fast-path. Refreshed by `BuildStyleCache`.

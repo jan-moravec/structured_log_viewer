@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace loglib
 {
@@ -109,8 +110,17 @@ struct Theme
     ChromeStyle chrome;
     AppStyle app;
 
+    /// Up to `ANCHOR_PALETTE_SIZE` `#RRGGBB` entries for anchor
+    /// rows. Missing slots fall back to the app's built-in palette
+    /// in `ThemeControl::AnchorBrushFor`.
+    std::vector<std::string> anchorPalette;
+
     friend bool operator==(const Theme &, const Theme &) = default;
 };
+
+/// Number of anchor colour slots (matches the `Ctrl+1..8` hotkey
+/// block). Lives here so `loglib_test` can use it without Qt.
+inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 
 /// Returns the style for @p level, or a default-constructed
 /// `LevelStyle` when the theme has no entry for it.

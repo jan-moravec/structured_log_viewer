@@ -482,6 +482,11 @@ void LogConfigurationManager::SetSource(std::optional<LogConfiguration::Source> 
     mConfiguration.source = std::move(source);
 }
 
+void LogConfigurationManager::SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors)
+{
+    mConfiguration.anchors = std::move(anchors);
+}
+
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
 {
     if (newKeys.empty())

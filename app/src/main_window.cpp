@@ -43,6 +43,8 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QScopeGuard>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
@@ -447,14 +449,49 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mLayout->addWidget(mTableView, 1);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-    mModel = new LogModel(mTableView, mTheme);
+    // Build before the model so it can wire anchor listeners.
+    mAnchors = new AnchorManager(this);
+    mModel = new LogModel(mTableView, mTheme, mAnchors);
     mTableView->setModel(mModel);
+    mTableView->SetAnchorManager(mAnchors);
+
+    mAnchorsDock = new AnchorsDock(mAnchors, mModel, mTheme, this);
+    addDockWidget(Qt::RightDockWidgetArea, mAnchorsDock);
+    mAnchorsDock->hide();
+    connect(mAnchorsDock, &AnchorsDock::jumpToAnchorRequested, this, &MainWindow::SelectSourceRow);
+
+    mActionToggleAnchors = new QAction(tr("Anchors"), this);
+    mActionToggleAnchors->setObjectName(QStringLiteral("actionToggleAnchors"));
+    mActionToggleAnchors->setCheckable(true);
+    mActionToggleAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
+    addAction(mActionToggleAnchors);
+    connect(mActionToggleAnchors, &QAction::toggled, this, [this](bool on) {
+        if (on && !isVisible())
+        {
+            // Host not realised (early Ctrl+K). Revert so the
+            // action can't sit checked while the dock stays hidden.
+            const QSignalBlocker blocker(mActionToggleAnchors);
+            mActionToggleAnchors->setChecked(false);
+            return;
+        }
+        mAnchorsDock->setVisible(on);
+        if (on)
+        {
+            mAnchorsDock->raise();
+        }
+    });
+    connect(mAnchorsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        const QSignalBlocker blocker(mActionToggleAnchors);
+        mActionToggleAnchors->setChecked(visible);
+    });
     // `modelReset` clears the header's hidden flags, but
     // `Column::visible` survives. Re-apply on every reset so load /
     // re-stream / teardown all stay consistent with the saved config.
     connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
     mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    mTableView->setSelectionMode(QAbstractItemView::MultiSelection);
+    // ExtendedSelection: plain click replaces, Ctrl toggles, Shift
+    // extends a range, drag is contiguous (Explorer/Excel idiom).
+    mTableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     // Per-level theme colours already partition rows; an extra
     // alternation stripe would make two rows of the same level
@@ -616,11 +653,13 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // from a cold launch, before the View menu is ever opened.
     addAction(ui->actionToggleRecordDetails);
     connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
-        // Gate hidden->visible on a realised host window; see the
-        // comment on `ShowRecordDetailsForProxyIndex`. The hide path
-        // is always safe.
+        // Gate hidden->visible on a realised host window (see
+        // `ShowRecordDetailsForProxyIndex`). Revert the check so a
+        // hidden dock can't be paired with a checked toggle.
         if (on && !isVisible())
         {
+            const QSignalBlocker blocker(ui->actionToggleRecordDetails);
+            ui->actionToggleRecordDetails->setChecked(false);
             return;
         }
         mRecordDetailDock->setVisible(on);
@@ -668,6 +707,48 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     });
     connect(mPreferencesEditor, &PreferencesEditor::staticDisplayOrderChanged, this, [this](bool) {
         ApplyDisplayOrder();
+    });
+
+    // Anchor hotkeys (programmatic so the .ui isn't bloated):
+    //   Ctrl+1..8     anchor selection at colour N
+    //   Ctrl+0        clear anchor on selection
+    //   Ctrl+Shift+A  clear every anchor
+    //   F2 / Shift+F2 jump to next / previous visible anchor
+    for (std::size_t i = 0; i < mAnchorColorActions.size(); ++i)
+    {
+        auto *action = new QAction(this);
+        action->setText(tr("Anchor selection in colour %1").arg(i + 1));
+        action->setShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i))));
+        addAction(action);
+        const int colourIndex = static_cast<int>(i);
+        connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
+            view->AnchorSelection(colourIndex);
+        });
+        mAnchorColorActions[i] = action;
+    }
+    mActionClearRowAnchor = new QAction(tr("Remove anchor from selection"), this);
+    mActionClearRowAnchor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    addAction(mActionClearRowAnchor);
+    connect(mActionClearRowAnchor, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+
+    mActionJumpNextAnchor = new QAction(tr("Jump to next anchor"), this);
+    mActionJumpNextAnchor->setShortcut(QKeySequence(Qt::Key_F2));
+    addAction(mActionJumpNextAnchor);
+    connect(mActionJumpNextAnchor, &QAction::triggered, this, [this]() { JumpToAnchor(true); });
+
+    mActionJumpPrevAnchor = new QAction(tr("Jump to previous anchor"), this);
+    mActionJumpPrevAnchor->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F2));
+    addAction(mActionJumpPrevAnchor);
+    connect(mActionJumpPrevAnchor, &QAction::triggered, this, [this]() { JumpToAnchor(false); });
+
+    mActionClearAllAnchors = new QAction(tr("Clear all anchors"), this);
+    mActionClearAllAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
+    addAction(mActionClearAllAnchors);
+    connect(mActionClearAllAnchors, &QAction::triggered, this, [this]() {
+        if (mAnchors != nullptr)
+        {
+            mAnchors->ClearAll();
+        }
     });
 
     mStatusLabel = new QLabel(this);
@@ -1372,6 +1453,13 @@ void MainWindow::NewSession()
     mModel->ConfigurationManager().Reset();
     mModel->NotifyConfigurationReplaced();
 
+    // Anchors are session-scoped. Clear after the model reset so
+    // the resulting refresh runs against the empty row set.
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
+
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
     mLastTerminalSessionMode = SessionMode::Idle;
@@ -1466,6 +1554,22 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // pre-dates the parallel-array schema split.
         mCurrentSource = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
+
+        // Bulk-replace anchors before RebuildFiltersFromConfiguration
+        // mirrors the now-empty `AnchorManager` back onto disk. Any
+        // dropped (future-schema) entries are surfaced to the user.
+        if (mAnchors != nullptr)
+        {
+            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (droppedAnchorCount > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 anchor(s) from a newer schema were dropped.")
+                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
+        }
 
         RebuildFiltersFromConfiguration();
         return true;
@@ -1575,6 +1679,11 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
         ClearAllFilters();
+        // Anchors are session-scoped; preserved on append.
+        if (mAnchors != nullptr)
+        {
+            mAnchors->ClearAll();
+        }
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
@@ -1878,6 +1987,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
     mModel->Reset();
     ClearAllFilters();
+    // Anchors are session-scoped.
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -1990,6 +2104,11 @@ void MainWindow::OpenNetworkStream()
 
     mModel->Reset();
     ClearAllFilters();
+    // Anchors are session-scoped.
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
     DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
@@ -2433,6 +2552,13 @@ void MainWindow::MirrorSessionStateToConfiguration()
     {
         const auto &mirrored = mModel->ConfigurationManager().Configuration().source;
         Q_ASSERT(!mirrored.has_value() || loglib::HasLocators(mirrored));
+    }
+
+    // Mirror anchors into `configuration.anchors` for both autosave
+    // and manual SaveSession.
+    if (mAnchors != nullptr)
+    {
+        mModel->ConfigurationManager().SetAnchors(mAnchors->Entries());
     }
 }
 
@@ -2912,6 +3038,22 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mCurrentSource = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
+        // Bulk-replace anchors from the loaded vector. Future-schema
+        // colour slots are reported back so the user knows about
+        // anchors that didn't survive.
+        if (mAnchors != nullptr)
+        {
+            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (droppedAnchorCount > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 anchor(s) from a newer schema were dropped.")
+                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
+        }
+
         RebuildFiltersFromConfiguration();
         return true;
     }
@@ -2987,6 +3129,148 @@ void MainWindow::Find()
     mFindRecord->show();
     mFindRecord->setFocus();
     mFindRecord->SetEditFocus();
+}
+
+void MainWindow::SelectSourceRow(int sourceRow)
+{
+    if (mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
+        mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    if (sourceRow < 0 || sourceRow >= mModel->rowCount())
+    {
+        // Caller's row is stale (evicted or session swap). Surface
+        // it instead of silently no-oping.
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+    const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+    if (!midIdx.isValid())
+    {
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
+    if (!proxyIdx.isValid())
+    {
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    mTableView->clearSelection();
+    // Centre so the user sees context around the anchor.
+    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
+    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+}
+
+void MainWindow::JumpToAnchor(bool forward)
+{
+    if (mAnchors == nullptr || mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
+        mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    if (mAnchors->Empty())
+    {
+        statusBar()->showMessage(tr("No anchors set."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    const QAbstractItemModel *proxyModel = mTableView->model();
+    if (proxyModel == nullptr)
+    {
+        return;
+    }
+    const int proxyRowCount = proxyModel->rowCount();
+    if (proxyRowCount <= 0)
+    {
+        statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    // Enumerate anchors rather than walking every proxy row: the
+    // anchor count is bounded by user clicks while the proxy can
+    // be tens of thousands of rows deep on a streaming session.
+    const auto anchorEntries = mAnchors->Entries();
+    std::vector<int> anchoredProxyRows;
+    anchoredProxyRows.reserve(anchorEntries.size());
+    for (const auto &entry : anchorEntries)
+    {
+        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        const int sourceRow = mModel->SourceRowForAnchorKey(key);
+        if (sourceRow < 0)
+        {
+            // Anchor outlived its row.
+            continue;
+        }
+        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+        if (!midIdx.isValid())
+        {
+            continue;
+        }
+        const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
+        if (!proxyIdx.isValid())
+        {
+            // Anchor is filtered out.
+            continue;
+        }
+        anchoredProxyRows.push_back(proxyIdx.row());
+    }
+
+    if (anchoredProxyRows.empty())
+    {
+        // Anchors exist but every one is filtered out.
+        statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    // Sort into proxy-row order so next/previous match what the
+    // user sees, not insertion / lineId order.
+    std::ranges::sort(anchoredProxyRows);
+    // Dedup so cross-file lineId collisions count as one stop.
+    anchoredProxyRows.erase(std::ranges::unique(anchoredProxyRows).begin(), anchoredProxyRows.end());
+
+    // Use the current index (survives Ctrl-click selection moves);
+    // with no current index, start before / past the visible range
+    // so the first step lands on the first / last anchored row.
+    int currentProxyRow = -1;
+    if (const QModelIndex curProxy = mTableView->currentIndex(); curProxy.isValid())
+    {
+        currentProxyRow = curProxy.row();
+    }
+    if (currentProxyRow < 0)
+    {
+        currentProxyRow = forward ? -1 : proxyRowCount;
+    }
+
+    int targetProxyRow = -1;
+    if (forward)
+    {
+        // First anchor strictly past the cursor.
+        const auto it = std::ranges::upper_bound(anchoredProxyRows, currentProxyRow);
+        targetProxyRow = (it != anchoredProxyRows.end()) ? *it : anchoredProxyRows.front();
+    }
+    else
+    {
+        // Last anchor strictly before the cursor.
+        const auto it = std::ranges::lower_bound(anchoredProxyRows, currentProxyRow);
+        targetProxyRow = (it != anchoredProxyRows.begin()) ? *(it - 1) : anchoredProxyRows.back();
+    }
+
+    const QModelIndex proxyIdx = proxyModel->index(targetProxyRow, 0);
+    if (!proxyIdx.isValid())
+    {
+        return;
+    }
+
+    mTableView->clearSelection();
+    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
+    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
 }
 
 void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions)
@@ -4367,6 +4651,23 @@ void MainWindow::ShowRowContextMenu(const QPoint &pos)
     {
         return;
     }
+
+    // Right-click on a row outside the selection collapses to that
+    // row (Explorer / Excel idiom) so the Anchor sub-menu's state
+    // and actions agree. Right-click inside the selection keeps the
+    // multi-row set intact.
+    if (QItemSelectionModel *selectionModel = mTableView->selectionModel(); selectionModel != nullptr)
+    {
+        if (!selectionModel->isRowSelected(proxyIndex.row(), proxyIndex.parent()))
+        {
+            selectionModel->select(
+                proxyIndex,
+                QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows | QItemSelectionModel::Current
+            );
+            selectionModel->setCurrentIndex(proxyIndex, QItemSelectionModel::NoUpdate);
+        }
+    }
+
     QMenu *menu = BuildRowContextMenu(sourceRow, mTableView);
     if (menu == nullptr)
     {
@@ -4387,65 +4688,131 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         return nullptr;
     }
 
+    auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+
+    // Anchor section is always present and always first.
+    AppendAnchorActionsToRowMenu(menu, sourceRow);
+
     // Pin to the first time column (shared with the Record Details
     // summary via `FirstTimeColumnIndex`).
     const auto &config = mModel->Configuration();
     const auto &columns = config.columns;
     const int timeCol = loglib::FirstTimeColumnIndex(config);
-    if (timeCol < 0)
+    const std::optional<int64_t> micros =
+        timeCol >= 0 ? loglib::AsEpochMicroseconds(
+                           mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
+                       )
+                     : std::nullopt;
+    if (micros.has_value())
     {
-        return nullptr;
+        if (!menu->isEmpty())
+        {
+            menu->addSeparator();
+        }
+
+        // Capture the stable column keys (not the index) so the action
+        // still targets the right column if a streaming reorder fires
+        // between menu build and click.
+        const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
+        // `ColumnMenuLabel` appends `[key]` to disambiguate duplicate
+        // headers, matching `BuildHeaderContextMenu`.
+        const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
+        const qint64 boundary = *micros;
+
+        // Each action re-resolves the column by its captured keys at
+        // trigger time, then dispatches a fresh-uuid time filter. Only
+        // which side carries the bound varies; the open side uses
+        // `nullopt` so the title shows "any" and the editor round-trips
+        // it faithfully.
+        //
+        // `timeKeys` is captured by reference here (the local outlives
+        // every synchronous call below), then copied into the connect
+        // lambda which is invoked asynchronously.
+        auto addRangeAction = [this, menu, &timeKeys, boundary](
+                                  const QString &label, std::optional<qint64> begin, std::optional<qint64> end
+                              ) {
+            const QAction *action = menu->addAction(label);
+            // NOLINTNEXTLINE(bugprone-exception-escape)
+            connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
+                const int col = FindColumnIndexByKeys(timeKeys);
+                if (col < 0)
+                {
+                    return;
+                }
+                FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, begin, end);
+            });
+        };
+
+        addRangeAction(tr("Show only newer logs (%1)").arg(colLabel), boundary, std::nullopt);
+        addRangeAction(tr("Show only older logs (%1)").arg(colLabel), std::nullopt, boundary);
     }
 
-    // `nullopt` for `monostate` and non-time-shaped slots: skip the
-    // menu rather than advertise a no-op action.
-    const std::optional<int64_t> micros = loglib::AsEpochMicroseconds(
-        mModel->Table().GetValue(static_cast<size_t>(sourceRow), static_cast<size_t>(timeCol))
-    );
-    if (!micros.has_value())
+    // The anchor sub-menu is always added, so `menu` is non-empty.
+    return menu;
+}
+
+void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
+{
+    if (menu == nullptr || mAnchors == nullptr || mTheme == nullptr || mModel == nullptr)
     {
-        return nullptr;
+        return;
     }
 
-    auto *menu = new QMenu(parent != nullptr ? parent : mTableView);
+    auto *anchorMenu = menu->addMenu(tr("Anchor"));
 
-    // Capture the stable column keys (not the index) so the action
-    // still targets the right column if a streaming reorder fires
-    // between menu build and click.
-    const std::vector<std::string> timeKeys = columns[static_cast<size_t>(timeCol)].keys;
-    // `ColumnMenuLabel` appends `[key]` to disambiguate duplicate
-    // headers, matching `BuildHeaderContextMenu`.
-    const QString colLabel = ColumnMenuLabel(static_cast<size_t>(timeCol));
-    const qint64 boundary = *micros;
+    // Check state reflects the right-clicked row; triggered actions
+    // operate on the current selection (same path as Ctrl+1..8).
+    const auto rightClickedKey = mModel->AnchorKeyForRow(sourceRow);
+    const auto currentColour = rightClickedKey.has_value() ? mAnchors->ColorFor(*rightClickedKey) : std::nullopt;
 
-    // Each action re-resolves the column by its captured keys at
-    // trigger time, then dispatches a fresh-uuid time filter. Only
-    // which side carries the bound varies; the open side uses
-    // `nullopt` so the title shows "any" and the editor round-trips
-    // it faithfully.
-    //
-    // `timeKeys` is captured by reference here (the local outlives
-    // every synchronous call below), then copied into the connect
-    // lambda which is invoked asynchronously.
-    auto addRangeAction = [this, menu, &timeKeys, boundary](
-                              const QString &label, std::optional<qint64> begin, std::optional<qint64> end
-                          ) {
-        const QAction *action = menu->addAction(label);
-        // NOLINTNEXTLINE(bugprone-exception-escape)
-        connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
-            const int col = FindColumnIndexByKeys(timeKeys);
-            if (col < 0)
-            {
-                return;
-            }
-            FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, begin, end);
-        });
+    // Swatch size from the active style so icons scale with HiDPI.
+    constexpr int SWATCH_ICON_FALLBACK_PX = 16;
+    int swatchPx = SWATCH_ICON_FALLBACK_PX;
+    if (const QStyle *windowStyle = style(); windowStyle != nullptr)
+    {
+        const int metric = windowStyle->pixelMetric(QStyle::PM_SmallIconSize, nullptr, this);
+        if (metric > 0)
+        {
+            swatchPx = metric;
+        }
+    }
+    constexpr qreal SWATCH_PAINT_INSET = 0.5;
+    constexpr qreal SWATCH_CORNER_RADIUS = 3.0;
+    auto makeSwatchIcon = [this, swatchPx](int colorIndex) -> QIcon {
+        const QBrush bg = mTheme->AnchorBrushFor(static_cast<std::uint8_t>(colorIndex), Qt::BackgroundRole);
+        const QBrush fg = mTheme->AnchorBrushFor(static_cast<std::uint8_t>(colorIndex), Qt::ForegroundRole);
+        QPixmap pix(swatchPx, swatchPx);
+        pix.fill(Qt::transparent);
+        QPainter painter(&pix);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setBrush(bg);
+        painter.setPen(QPen(fg.color(), 1));
+        painter.drawRoundedRect(
+            QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, swatchPx - 1, swatchPx - 1),
+            SWATCH_CORNER_RADIUS,
+            SWATCH_CORNER_RADIUS
+        );
+        return QIcon{pix};
     };
 
-    addRangeAction(tr("Show only newer logs (%1)").arg(colLabel), boundary, std::nullopt);
-    addRangeAction(tr("Show only older logs (%1)").arg(colLabel), std::nullopt, boundary);
-
-    return menu;
+    // No `setShortcut` here: `mAnchorColorActions[i]` already owns
+    // the window-level chord, and duplicating it would trip Qt's
+    // `ambiguousShortcut` warning while the popup is mapped.
+    const int currentColourIndex = currentColour.has_value() ? static_cast<int>(*currentColour) : -1;
+    for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
+    {
+        const int colourIndex = static_cast<int>(i);
+        QAction *action = anchorMenu->addAction(makeSwatchIcon(colourIndex), tr("Colour %1").arg(colourIndex + 1));
+        action->setCheckable(true);
+        action->setChecked(currentColourIndex == colourIndex);
+        connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
+            view->AnchorSelection(colourIndex);
+        });
+    }
+    anchorMenu->addSeparator();
+    QAction *clearAction = anchorMenu->addAction(tr("Remove anchor"));
+    clearAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
+    connect(clearAction, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
@@ -4503,6 +4870,14 @@ void MainWindow::RebuildViewMenu()
     // Always reachable: opens the dock from cold and re-opens it
     // after the user dismissed it via the title-bar X.
     viewMenu->addAction(ui->actionToggleRecordDetails);
+
+    // Anchors dock toggle. Programmatic action (not in main_window.ui)
+    // so it has to be re-added on every rebuild -- the menu is cleared
+    // above.
+    if (mActionToggleAnchors != nullptr)
+    {
+        viewMenu->addAction(mActionToggleAnchors);
+    }
 
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())

@@ -162,6 +162,22 @@ struct LogConfiguration
         std::vector<std::string> locatorDedupKeys;
     };
 
+    /// A persisted bookmark on one log line.
+    ///
+    /// Identified by `(locator, lineId)`: `lineId` is the parser's
+    /// monotonic per-`LineSource` id; `locator` disambiguates files
+    /// in a multi-file session (empty for single-file / network).
+    /// `colorIndex` indexes `Theme::anchorPalette`; out-of-range
+    /// values are dropped on load.
+    struct AnchorEntry
+    {
+        std::string locator;
+        uint64_t lineId = 0;
+        uint8_t colorIndex = 0;
+
+        friend bool operator==(const AnchorEntry &, const AnchorEntry &) = default;
+    };
+
     /// Required: drives the column layout for every consumer.
     std::vector<Column> columns;
 
@@ -170,6 +186,10 @@ struct LogConfiguration
     std::vector<LogFilter> filters;
     Sort sort;
     std::optional<Source> source;
+
+    /// Persisted anchors. Sorted by `(locator, lineId)` on save
+    /// for stable diffs; no ordering guarantee on read.
+    std::vector<AnchorEntry> anchors;
 };
 
 /// Case-insensitive match against known log-level field names (`level`,
@@ -313,6 +333,9 @@ public:
 
     /// Replace `LogConfiguration::source`. `nullopt` clears the binding.
     void SetSource(std::optional<LogConfiguration::Source> source);
+
+    /// Replace `LogConfiguration::anchors`. Empty clears them all.
+    void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
 
     /// Apply `(srcIndex -> destIndex)` to a stored column index.
     /// Out-of-range inputs (including negative sentinels like
