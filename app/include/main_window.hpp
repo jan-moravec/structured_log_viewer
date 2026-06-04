@@ -727,6 +727,33 @@ private:
     /// lazily; subsequent calls re-show the existing instance.
     void ShowShortcutsDialog();
 
+    /// Persist `saveGeometry()` and `saveState()` blobs in `QSettings`
+    /// so the next window starts with the user's last-used size,
+    /// position, and dock layout. Called from `closeEvent`.
+    void SaveWindowChrome() const;
+
+    /// Restore the geometry / dock layout written by
+    /// `SaveWindowChrome`. No-op when nothing has been persisted yet
+    /// (first launch). Called once at the end of the constructor,
+    /// after every dock / toolbar widget is wired up so
+    /// `restoreState` finds them by `objectName`.
+    void RestoreWindowChrome();
+
+    /// Recompute the window title from the current session state and
+    /// the `mFiltersDirty` flag, then call `setWindowTitle` /
+    /// `setWindowFilePath` / `setWindowModified` accordingly.
+    /// Idempotent and cheap; safe to call from any state-mutation
+    /// callback.
+    void UpdateWindowTitle();
+
+    /// Mark the runtime filter set as having unsaved edits relative
+    /// to the last load / save. Suppressed while
+    /// `mLoadingConfiguration` is true so a load that flushes and
+    /// re-adds filters via `AddLogFilter` does not mint a stray
+    /// dirty bit. Refreshes the title afterwards so `[*]` flips
+    /// immediately.
+    void MarkFiltersDirty();
+
     /// Last directory used by `Open...` / `Save...` dialogs, or the
     /// platform `Documents` location when nothing has been picked
     /// yet. Persisted in `QSettings` under `ui/lastOpenDir`.
@@ -869,6 +896,20 @@ private:
     /// `OnStreamingFinished`. Owned via parent-child (parent =
     /// `MainWindow`).
     QTimer *mLiveTailTickTimer = nullptr;
+
+    /// True when the runtime filter set has been mutated by the user
+    /// since the last load/save. Drives the `[*]` modified marker
+    /// in the window title via `setWindowModified`. Cleared on
+    /// successful `DoSaveConfiguration` and after
+    /// `RebuildFiltersFromConfiguration`.
+    bool mFiltersDirty = false;
+
+    /// Re-entrancy guard: true only while
+    /// `RebuildFiltersFromConfiguration` is iterating loaded
+    /// filters through `AddLogFilter`. Suppresses the dirty-bit /
+    /// title-refresh side-effects so a config load does not
+    /// transiently flash `[*]` at the user.
+    bool mLoadingConfiguration = false;
 
     /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;

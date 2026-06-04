@@ -251,36 +251,46 @@ Frequent feature in modern viewers — worth the custom-widget investment.
 - Tabified docks (drag one onto the other) — Qt does this automatically
 - Lets `Find` move to the bottom area where it belongs by IDE convention
 
-## 15. Title bar + window-state polish — P3
+## 15. Title bar + window-state polish — P3 — DONE
 
-Today:
+`MainWindow::UpdateWindowTitle` builds the title from the live session
+state and is wired into every state-mutation path (open, close,
+streaming-finished, live-tail tick, filter add / remove, config
+load / save). The title resolves to:
 
-```cpp
-this->setWindowTitle("Structured Log Viewer");      // main_window.cpp:442
-ApplyThemedWindowIcon();                            // main_window.cpp:443
-```
+- Idle: `Structured Log Viewer[*]`.
+- Static session: `<basename> — Structured Log Viewer (12,345 lines)[*]`.
+- Live tail: `<basename> — Structured Log Viewer (Live tail · 12,345 lines)[*]`.
 
-Improvements:
+Implementation notes:
 
-- `setWindowFilePath(mStreamingFileName)` — Qt auto-integrates with the
-  platform's proxy-icon affordance (small file icon next to the title on
-  macOS / Windows).
-- Update title per session change to e.g.
-  `"<filename> — Structured Log Viewer [Live tail · 12k lines]"`.
-- Use `[*]` placeholder + `setWindowModified(true)` when the session has
-  unsaved filter edits.
+- `[*]` is Qt's modified-marker placeholder. It is always appended to the
+  title; `setWindowModified(mFiltersDirty)` decides whether the OS title
+  bar renders the asterisk.
+- `setWindowFilePath` is set for `Source::Kind::File` sources so macOS
+  shows the proxy icon and recent Windows builds use it for jumplist
+  grouping. Network streams clear the path (no real file).
+- `mFiltersDirty` is flipped on every `AddLogFilter` / `ClearFilter` /
+  `ClearAllFilters` via `MarkFiltersDirty`, with an
+  `mLoadingConfiguration` re-entrancy guard so a config load does not
+  flash `[*]`. Successful `DoSaveConfiguration` and the trailing
+  `RebuildFiltersFromConfiguration` block both clear the bit.
+- The live-tail line count refreshes on the existing 1 Hz tick
+  (`mLiveTailTickTimer`), not per batch — keeps the OS title bar from
+  being rewritten thousands of times a second on hot streams.
+- Locale-aware grouped digits via `QLocale::system().toString(qint64)`
+  match the status bar.
 
-## 16. Persist window / dock geometry properly — P1
+## 16. Persist window / dock geometry properly — P1 — DONE
 
-`QMainWindow::saveState()` / `saveGeometry()`, round-tripped through
-`QSettings(QSettings::UserScope, ...)`, give you "remember where the user
-put everything" for free.
-
-`SessionHistoryManager`
-(`app/include/session_history_manager.hpp`) persists sessions, but
-per-window chrome state appears unaddressed. One `restoreState(...)` line
-in the constructor and a matching save in `closeEvent` is the entire
-change.
+`MainWindow::SaveWindowChrome` writes `saveGeometry()` /
+`saveState()` to `QSettings` under `ui/mainWindow/geometry` and
+`ui/mainWindow/state` from `closeEvent`.
+`MainWindow::RestoreWindowChrome` reads them back at the end of the
+constructor — after every dock and toolbar has an `objectName` so
+`restoreState` can resolve them. First launch is a clean no-op (empty
+QByteArrays). Tests stay isolated because the fixture sets a different
+`QCoreApplication::organizationName`.
 
 ## 17. Per-level / per-column icons via `Qt::DecorationRole` — P2
 

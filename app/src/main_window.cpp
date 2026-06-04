@@ -451,7 +451,7 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager), mTheme(theme)
 {
     ui->setupUi(this);
-    this->setWindowTitle("Structured Log Viewer");
+    UpdateWindowTitle();
     ApplyThemedWindowIcon();
 
     mTableView = new LogTableView(this);
@@ -782,10 +782,15 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // 1 Hz tick that refreshes the live-tail elapsed-time string
     // (`UpdateStreamingStatus` reads `mLiveTailTimer.elapsed()`).
     // Started by `StartLiveTailTicker` on the live-tail open paths;
-    // stopped on `streamingFinished`.
+    // stopped on `streamingFinished`. Also refreshes the title's
+    // "<n> lines" suffix at the same cadence so the user sees the
+    // count tick without the OS title bar being rewritten per batch.
     mLiveTailTickTimer = new QTimer(this);
     mLiveTailTickTimer->setInterval(1000);
-    connect(mLiveTailTickTimer, &QTimer::timeout, this, &MainWindow::UpdateStreamingStatus);
+    connect(mLiveTailTickTimer, &QTimer::timeout, this, [this]() {
+        UpdateStreamingStatus();
+        UpdateWindowTitle();
+    });
 
     mDiagnosticsButton = new QPushButton(this);
     mDiagnosticsButton->setObjectName(QStringLiteral("diagnosticsButton"));
@@ -805,6 +810,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         {
             mFirstStreamingBatchSeen = true;
             UpdateUi();
+            // Reflect the just-pinned source name in the title now.
+            // Mid-batch updates after this go through the 1 Hz live-
+            // tail tick (see `mLiveTailTickTimer`) so the title bar
+            // is not retitled per batch.
+            UpdateWindowTitle();
         }
         // Auto-follow is live-tail only.
         if (IsLiveTailSession())
@@ -970,6 +980,13 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // already wired and can be enriched with shortcut suffixes /
     // status tips in one pass.
     FinaliseActionMetadata();
+
+    // Run after every dock / toolbar widget has been wired up and
+    // assigned an `objectName`, so `restoreState` can resolve them
+    // by name. The matching `SaveWindowChrome` runs from
+    // `closeEvent`. Skipped silently when nothing has been
+    // persisted (first launch).
+    RestoreWindowChrome();
 
     // Timezone database initialisation lives in
     // `MainWindow::InitializeTimezoneDatabase`, called synchronously
@@ -1534,6 +1551,7 @@ void MainWindow::NewSession()
     SetConfigurationUiEnabled(true);
     UpdateStreamToolbarVisibility();
     UpdateStreamingStatus();
+    UpdateWindowTitle();
     UpdateUi();
 }
 
@@ -1838,6 +1856,10 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     UpdateStreamToolbarVisibility();
     UpdateUi();
     UpdateStreamingStatus();
+    // Title's "(<n> lines)" suffix is rebuilt now that streaming
+    // is over; the live-tail tick timer that was driving the
+    // running count has just been stopped above.
+    UpdateWindowTitle();
     // Refresh the column-health snapshot now that parsing has
     // settled. Drives the header warning glyph and the status-bar
     // mismatch summary via `columnHealthChanged`.
@@ -1951,6 +1973,7 @@ void MainWindow::StreamNextPendingFile()
             ApplyDisplayOrder();
         }
         UpdateStreamingStatus();
+        UpdateWindowTitle();
 
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
@@ -2088,6 +2111,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     StartLiveTailTicker();
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
+    UpdateWindowTitle();
     ApplyDisplayOrder();
 
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
@@ -2199,6 +2223,7 @@ void MainWindow::OpenNetworkStream()
     StartLiveTailTicker();
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
+    UpdateWindowTitle();
     ApplyDisplayOrder();
 
     auto config = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
@@ -2291,6 +2316,138 @@ void MainWindow::ShowShortcutsDialog()
     mShortcutsDialog->show();
     mShortcutsDialog->raise();
     mShortcutsDialog->activateWindow();
+}
+
+namespace
+{
+constexpr auto kSettingsGeometryKey = "ui/mainWindow/geometry";
+constexpr auto kSettingsStateKey = "ui/mainWindow/state";
+
+/// Best-effort display name for the active source. Returns an empty
+/// string when no session is loaded. File sources surface as the
+/// basename so the title fits a typical title-bar width; network
+/// streams surface as the producer-supplied label (already friendly).
+QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source> &source, const QString &streamingName)
+{
+    if (source.has_value() && !source->locators.empty())
+    {
+        const QString first = QString::fromStdString(source->locators.front());
+        if (source->kind == loglib::LogConfiguration::Source::Kind::File)
+        {
+            const QString basename = QFileInfo(first).fileName();
+            if (!basename.isEmpty())
+            {
+                return basename;
+            }
+        }
+        return first;
+    }
+    // Streaming-but-not-yet-pinned-source: rare race window between
+    // `mStreamingFileName = ...` and `mCurrentSource = ...`.
+    return streamingName;
+}
+} // namespace
+
+void MainWindow::SaveWindowChrome() const
+{
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(kSettingsGeometryKey), saveGeometry());
+    settings.setValue(QString::fromLatin1(kSettingsStateKey), saveState());
+}
+
+void MainWindow::RestoreWindowChrome()
+{
+    const QSettings settings;
+    const QByteArray geometry = settings.value(QString::fromLatin1(kSettingsGeometryKey)).toByteArray();
+    const QByteArray state = settings.value(QString::fromLatin1(kSettingsStateKey)).toByteArray();
+    // Both are no-ops on empty input, so first-launch falls through
+    // to Qt's default geometry without special-casing.
+    if (!geometry.isEmpty())
+    {
+        restoreGeometry(geometry);
+    }
+    if (!state.isEmpty())
+    {
+        restoreState(state);
+    }
+}
+
+void MainWindow::UpdateWindowTitle()
+{
+    const QString appName = tr("Structured Log Viewer");
+    const QString sourceLabel = CurrentSourceLabel(mCurrentSource, mStreamingFileName);
+
+    QString title;
+    if (sourceLabel.isEmpty())
+    {
+        title = appName;
+    }
+    else
+    {
+        // Build a per-session suffix that reads "<count> lines" with
+        // grouped digits, optionally prefixed by the live-tail badge.
+        // Falls back to the model's row count once streaming has
+        // finished and `mStreamingLineCount` was reset.
+        const qsizetype lines =
+            (mStreamingLineCount > 0) ? mStreamingLineCount : (mModel != nullptr ? mModel->rowCount() : 0);
+        const QString lineCount = QLocale::system().toString(static_cast<qlonglong>(lines));
+        QString suffix;
+        if (IsLiveTailSession())
+        {
+            // U+00B7 MIDDLE DOT separates the badge from the count.
+            suffix = tr("Live tail \u00B7 %1 lines").arg(lineCount);
+        }
+        else if (lines > 0)
+        {
+            suffix = tr("%1 lines").arg(lineCount);
+        }
+        // U+2014 EM DASH between the source name and the app name -
+        // matches the macOS / GNOME proxy-title convention.
+        if (suffix.isEmpty())
+        {
+            title = QStringLiteral("%1 \u2014 %2").arg(sourceLabel, appName);
+        }
+        else
+        {
+            title = tr("%1 \u2014 %2 (%3)").arg(sourceLabel, appName, suffix);
+        }
+    }
+
+    // `[*]` is Qt's documented placeholder: rendered as an asterisk
+    // when `isWindowModified()` is true, stripped otherwise. Always
+    // appended so the asterisk can flicker in / out without
+    // re-running the whole title-build path.
+    title += QStringLiteral("[*]");
+    setWindowTitle(title);
+    setWindowModified(mFiltersDirty);
+
+    // Proxy-icon hint for OS title bars (macOS shows a small file
+    // glyph; recent Windows builds use it for jumplist grouping).
+    // Skipped for non-file sources (no real path) and for empty
+    // sessions (clears any stale value).
+    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
+        !mCurrentSource->locators.empty())
+    {
+        setWindowFilePath(QString::fromStdString(mCurrentSource->locators.front()));
+    }
+    else
+    {
+        setWindowFilePath(QString());
+    }
+}
+
+void MainWindow::MarkFiltersDirty()
+{
+    if (mLoadingConfiguration)
+    {
+        return;
+    }
+    if (mFiltersDirty)
+    {
+        return;
+    }
+    mFiltersDirty = true;
+    UpdateWindowTitle();
 }
 
 QString MainWindow::DefaultOpenDir() const
@@ -2888,6 +3045,12 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
+    // Persist geometry / dock layout before we tear the rest of
+    // the window state down. Cheap (~1 KiB QSettings write) and
+    // best-effort: a write failure here is silently swallowed
+    // alongside the auto-save failures below.
+    SaveWindowChrome();
+
     // Final flush so the restore-on-launch loop captures user
     // edits made after the last `streamingFinished`. Best-effort:
     // I/O failures inside the manager are silenced.
@@ -2955,6 +3118,12 @@ void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scop
     // I/O failure (callers catch).
     MirrorSessionStateToConfiguration();
     mModel->ConfigurationManager().Save(path.toStdString(), scope);
+    // Save succeeded: the runtime filter set now matches disk, so
+    // drop the modified marker. Any throw above skips this on the
+    // way out -- correct, the title should keep `[*]` if save
+    // failed.
+    mFiltersDirty = false;
+    UpdateWindowTitle();
 }
 
 void MainWindow::LoadConfiguration()
@@ -3281,6 +3450,18 @@ void MainWindow::RebuildFiltersFromConfiguration()
     // the Filters menu, and the wire-format vector. UUIDs are GUI-
     // only and regenerated here.
     const std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
+
+    // Suppress the dirty / title-refresh side-effects on every
+    // `AddLogFilter` and `ClearAllFilters` below. The trailing
+    // refresh after the loop emits one consolidated state.
+    mLoadingConfiguration = true;
+    const auto guard = qScopeGuard([this]() {
+        mLoadingConfiguration = false;
+        // Reset to "clean" -- the filter set now matches what was
+        // just loaded from disk.
+        mFiltersDirty = false;
+        UpdateWindowTitle();
+    });
 
     ClearAllFilters();
 #ifdef LOGAPP_BUILD_TESTING
@@ -3742,6 +3923,7 @@ void MainWindow::ClearAllFilters()
     }
 
     ui->actionClearAllFilters->setDisabled(true);
+    MarkFiltersDirty();
 }
 
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
@@ -3752,6 +3934,7 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
         MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
+    MarkFiltersDirty();
 
     unsigned filters = 0;
     for (QAction *action : ui->menuFilters->actions())
@@ -4021,6 +4204,11 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
+    // Add / Edit / Add-from-column / Add-from-row all funnel here, so
+    // marking dirty in one place covers every user-driven mutation.
+    // The `mLoadingConfiguration` re-entrancy guard keeps a config
+    // reload silent.
+    MarkFiltersDirty();
 
     const QString title = BuildFilterTitle(filter);
 
