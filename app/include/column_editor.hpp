@@ -38,26 +38,6 @@ public:
         return mColumnIndex;
     }
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Test-only direct widget accessors. `findChild<>` lookups by
-    /// object name are unreliable on the GitHub-hosted Linux runner
-    /// with Qt 6.8 + offscreen QPA, so tests reach the form widgets
-    /// through these bypasses (mirrors the QAction workaround in
-    /// `FindActionByObjectName`).
-    [[nodiscard]] QLineEdit *HeaderEditForTest() const noexcept
-    {
-        return mHeaderEdit;
-    }
-    [[nodiscard]] QComboBox *TypeComboForTest() const noexcept
-    {
-        return mTypeCombo;
-    }
-    [[nodiscard]] QCheckBox *VisibleCheckForTest() const noexcept
-    {
-        return mVisibleCheck;
-    }
-#endif
-
 private:
     void Populate();
     void WriteBack();

@@ -53,17 +53,6 @@ public:
     /// Idempotent.
     void RefreshPalette();
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Test-only direct accessor for the columns table widget.
-    /// `findChild<QTableWidget*>("columnsTable")` is unreliable on
-    /// the GitHub-hosted Linux runner with Qt 6.8 + offscreen QPA,
-    /// so tests reach the table through this bypass.
-    [[nodiscard]] QTableWidget *TableForTest() const noexcept
-    {
-        return mTable;
-    }
-#endif
-
 private slots:
     /// Slot for the in-row visibility checkbox; everything else on
     /// the row is read-only.

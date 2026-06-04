@@ -30,16 +30,6 @@ public:
     /// data. Shared between the status-bar summary and the dialog.
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
-#ifdef LOGAPP_BUILD_TESTING
-    /// Test-only direct accessor. `findChild<QTableWidget*>` is
-    /// unreliable on the GitHub-hosted Linux runner with Qt 6.8 +
-    /// offscreen QPA, so tests reach the table through this bypass.
-    [[nodiscard]] QTableWidget *TableForTest() const noexcept
-    {
-        return mTable;
-    }
-#endif
-
 signals:
     /// Emitted when the user double-clicks a row. `MainWindow` opens
     /// the column editor in response.

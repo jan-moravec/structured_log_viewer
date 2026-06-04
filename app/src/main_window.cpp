@@ -2322,128 +2322,7 @@ void MainWindow::ApplyStreamingRetention()
     mModel->SetRetentionCap(StreamingControl::RetentionLines());
 }
 
-QAction *MainWindow::FindUiAction(const QString &name) const
-{
-    // Must stay in sync with `main_window.ui`.
-    if (name == QStringLiteral("actionNewSession"))
-    {
-        return ui->actionNewSession;
-    }
-    if (name == QStringLiteral("actionNewWindow"))
-    {
-        return ui->actionNewWindow;
-    }
-    if (name == QStringLiteral("actionOpen"))
-    {
-        return ui->actionOpen;
-    }
-    if (name == QStringLiteral("actionOpenLogStream"))
-    {
-        return ui->actionOpenLogStream;
-    }
-    if (name == QStringLiteral("actionOpenNetworkStream"))
-    {
-        return ui->actionOpenNetworkStream;
-    }
-    if (name == QStringLiteral("actionSaveConfiguration"))
-    {
-        return ui->actionSaveConfiguration;
-    }
-    if (name == QStringLiteral("actionSaveSession"))
-    {
-        return ui->actionSaveSession;
-    }
-    if (name == QStringLiteral("actionLoadConfiguration"))
-    {
-        return ui->actionLoadConfiguration;
-    }
-    if (name == QStringLiteral("actionExit"))
-    {
-        return ui->actionExit;
-    }
-    if (name == QStringLiteral("actionCopy"))
-    {
-        return ui->actionCopy;
-    }
-    if (name == QStringLiteral("actionFind"))
-    {
-        return ui->actionFind;
-    }
-    if (name == QStringLiteral("actionAddFilter"))
-    {
-        return ui->actionAddFilter;
-    }
-    if (name == QStringLiteral("actionClearAllFilters"))
-    {
-        return ui->actionClearAllFilters;
-    }
-    if (name == QStringLiteral("actionPauseStream"))
-    {
-        return ui->actionPauseStream;
-    }
-    if (name == QStringLiteral("actionFollowTail"))
-    {
-        return ui->actionFollowTail;
-    }
-    if (name == QStringLiteral("actionStopStream"))
-    {
-        return ui->actionStopStream;
-    }
-    if (name == QStringLiteral("actionPreferences"))
-    {
-        return ui->actionPreferences;
-    }
-    if (name == QStringLiteral("actionToggleRecordDetails"))
-    {
-        return ui->actionToggleRecordDetails;
-    }
-    return nullptr;
-}
-
-QMenu *MainWindow::FiltersMenu() const
-{
-    return ui->menuFilters;
-}
-
-QMenu *MainWindow::ViewMenu() const
-{
-    return ui->menuView;
-}
-
-QMenu *MainWindow::RecentSessionsMenu() const
-{
-    return ui->menuRecentSessions;
-}
-
-QMenu *MainWindow::FilterSubMenu(const QString &filterID) const
-{
-    const auto it = mFilterSubMenus.find(filterID.toStdString());
-    if (it == mFilterSubMenus.end())
-    {
-        return nullptr;
-    }
-    return it->second;
-}
-
 #ifdef LOGAPP_BUILD_TESTING
-QList<RecordDetailWindow *> MainWindow::RecordDetailWindowsForTest() const
-{
-    // Materialise the live snapshot-window set out of the heap-keyed
-    // tracker. The tracker is keyed on the original heap address (a
-    // `quintptr`) but iteration order isn't stable across runs; tests
-    // only assert on count and per-window state, never on identity.
-    QList<RecordDetailWindow *> windows;
-    windows.reserve(mRecordDetailWindows.size());
-    for (const auto &entry : std::as_const(mRecordDetailWindows))
-    {
-        if (!entry.window.isNull())
-        {
-            windows.append(entry.window.data());
-        }
-    }
-    return windows;
-}
-
 void MainWindow::SetSessionModeForTest(TestSessionMode mode)
 {
     switch (mode)
@@ -2976,13 +2855,14 @@ void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
         return;
     }
     mRecordDetailDock->ShowSourceRow(sourceRow);
-    // `isHidden()` probes the dock's own explicit-hide flag (the
+    // `isHidden()` probes the dock's own explicit-hide flag; the
     // ancestor `isVisible()` is also false until `show()` has been
-    // called on the main window). The `isVisible()` guard on `this`
-    // avoids a Qt 6.8.3 + offscreen-QPA crash where
-    // `QDockWidget::setVisible(true)` dereferences uninitialised
-    // QMainWindowLayout dock-area state when the host has never been
-    // shown. Production callers always see a visible main window.
+    // called on the host. The `isVisible()` guard on `this` is
+    // defense-in-depth for unit tests that drive this slot without
+    // realising the main window: `QDockWidget::setVisible(true)`
+    // walks `QMainWindowLayout`'s dock-area state, which is only
+    // wired up by the host's first paint cycle. Production callers
+    // always see a visible main window.
     if (mRecordDetailDock->isHidden() && isVisible())
     {
         mRecordDetailDock->setVisible(true);
@@ -3643,7 +3523,6 @@ void MainWindow::AddFilter(
 void MainWindow::ClearAllFilters()
 {
     mFilters.clear();
-    mFilterSubMenus.clear();
     MirrorSessionStateToConfiguration();
     mSortFilterProxyModel->SetFilterRules({});
 
@@ -3662,7 +3541,6 @@ void MainWindow::ClearAllFilters()
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 {
     mFilters.erase(filterID.toStdString());
-    mFilterSubMenus.erase(filterID.toStdString());
     if (!deferSync)
     {
         MirrorSessionStateToConfiguration();
@@ -3941,11 +3819,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     const QString title = BuildFilterTitle(filter);
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
+    menuItem->setObjectName(id);
     menuItem->menuAction()->setData(QVariant(id));
-    // Track the submenu pointer so tests can find it without going
-    // through `QAction::menu()` or `qobject_cast<QMenu*>(child)` --
-    // both fail under the Linux Release offscreen-QPA toolchain.
-    mFilterSubMenus[id.toStdString()] = menuItem;
 
     const QAction *editAction = menuItem->addAction(tr("Edit"));
     // Capture only the id and re-resolve the live filter at trigger
@@ -4734,7 +4609,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     {
         const QString filterId = QString::fromStdString(entry.id);
         QMenu *filterSubMenu = menu->addMenu(entry.title);
-        result.filterSubMenus[entry.id] = filterSubMenu;
+        filterSubMenu->setObjectName(filterId);
         QAction *editAction = filterSubMenu->addAction(tr("Edit"));
         editAction->setEnabled(modelHasRows);
         // Same id-resolve-on-trigger pattern as the Filters-menu

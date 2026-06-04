@@ -67,58 +67,6 @@ public:
     bool GetBooleanIncludeTrue() const;
     bool GetBooleanIncludeFalse() const;
 
-    /// Test-only accessors for the enum-picker page widgets. Tests cannot
-    /// rely on `findChildren<...>()` to locate them: on the Linux runner
-    /// with Qt 6.8 + offscreen QPA, QObject-tree traversal returns empty
-    /// for QDialog descendants the same way it does for `QAction`s in the
-    /// `MainWindow` `.ui` (see `MainWindow::FindUiAction`).
-    [[nodiscard]] QListView *EnumPickerView() const
-    {
-        return mEnumValuesView;
-    }
-    [[nodiscard]] QSortFilterProxyModel *EnumPickerProxy() const
-    {
-        return mEnumValuesProxy;
-    }
-    [[nodiscard]] QLineEdit *EnumSearchEdit() const
-    {
-        return mEnumSearchEdit;
-    }
-    [[nodiscard]] QLabel *EnumEmptyPlaceholder() const
-    {
-        return mEnumEmptyPlaceholder;
-    }
-    [[nodiscard]] QPushButton *OkButton() const
-    {
-        return mOkButton;
-    }
-    /// Test-only accessors for the time page widgets. Same offscreen-QPA
-    /// caveat as the enum-picker accessors above.
-    [[nodiscard]] QDateEdit *BeginDateEdit() const
-    {
-        return mBeginDateEdit;
-    }
-    [[nodiscard]] QTimeEdit *BeginTimeEdit() const
-    {
-        return mBeginTimeEdit;
-    }
-    [[nodiscard]] QDateEdit *EndDateEdit() const
-    {
-        return mEndDateEdit;
-    }
-    [[nodiscard]] QTimeEdit *EndTimeEdit() const
-    {
-        return mEndTimeEdit;
-    }
-    [[nodiscard]] QCheckBox *BeginUnboundedCheckBox() const
-    {
-        return mBeginUnboundedCheckBox;
-    }
-    [[nodiscard]] QCheckBox *EndUnboundedCheckBox() const
-    {
-        return mEndUnboundedCheckBox;
-    }
-
 signals:
     void FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType);
     /// Time-range filter. `std::nullopt` bounds are unbounded; the slot

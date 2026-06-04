@@ -85,12 +85,18 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl
     mMatchTypeComboBox = new QComboBox(this);
 
     mBeginDateEdit = new QDateEdit(this);
+    mBeginDateEdit->setObjectName(QStringLiteral("beginDateEdit"));
     mBeginTimeEdit = new QTimeEdit(this);
+    mBeginTimeEdit->setObjectName(QStringLiteral("beginTimeEdit"));
     mEndDateEdit = new QDateEdit(this);
+    mEndDateEdit->setObjectName(QStringLiteral("endDateEdit"));
     mEndTimeEdit = new QTimeEdit(this);
+    mEndTimeEdit->setObjectName(QStringLiteral("endTimeEdit"));
 
     mBeginUnboundedCheckBox = new QCheckBox("No begin limit", this);
+    mBeginUnboundedCheckBox->setObjectName(QStringLiteral("beginUnboundedCheckBox"));
     mEndUnboundedCheckBox = new QCheckBox("No end limit", this);
+    mEndUnboundedCheckBox->setObjectName(QStringLiteral("endUnboundedCheckBox"));
 
     mStackedWidget = new QStackedWidget(this);
 
@@ -110,6 +116,7 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl
     mEnumValuesView->setMaximumHeight(ENUM_PICKER_MAX_HEIGHT_PX);
 
     mEnumSearchEdit = new QLineEdit(this);
+    mEnumSearchEdit->setObjectName(QStringLiteral("enumSearchEdit"));
     mEnumSearchEdit->setPlaceholderText("Filter values...");
     mEnumSearchEdit->setClearButtonEnabled(true);
 
@@ -117,6 +124,7 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl
     mEnumClearAllButton = new QPushButton("Clear All", this);
     mEnumSelectionCount = new QLabel("0 of 0 selected", this);
     mEnumEmptyPlaceholder = new QLabel("No values observed for this column yet.", this);
+    mEnumEmptyPlaceholder->setObjectName(QStringLiteral("enumEmptyPlaceholder"));
     mEnumEmptyPlaceholder->setAlignment(Qt::AlignCenter);
     mEnumEmptyPlaceholder->setWordWrap(true);
     mEnumEmptyPlaceholder->hide();
@@ -141,6 +149,7 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl
     mBoolIncludeFalse = new QCheckBox("Include false", this);
 
     mOkButton = new QPushButton("Ok", this);
+    mOkButton->setObjectName(QStringLiteral("okButton"));
     mCancelButton = new QPushButton("Cancel", this);
 
     for (const auto &column : mModel.Configuration().columns)
