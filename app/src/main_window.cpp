@@ -732,14 +732,19 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // the anchor on the selection; `Ctrl+Shift+A` wipes every
     // anchor in the session. `F2` / `Shift+F2` step the selection
     // through the visible-anchored rows in `lineId` order.
-    for (int i = 0; i < static_cast<int>(mAnchorColorActions.size()); ++i)
+    for (std::size_t i = 0; i < mAnchorColorActions.size(); ++i)
     {
-        QAction *action = new QAction(this);
+        auto *action = new QAction(this);
         action->setText(tr("Anchor selection in colour %1").arg(i + 1));
-        action->setShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + i)));
+        action->setShortcut(
+            QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i)))
+        );
         addAction(action);
-        connect(action, &QAction::triggered, mTableView, [view = mTableView, i]() { view->AnchorSelection(i); });
-        mAnchorColorActions[static_cast<std::size_t>(i)] = action;
+        const int colourIndex = static_cast<int>(i);
+        connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
+            view->AnchorSelection(colourIndex);
+        });
+        mAnchorColorActions[i] = action;
     }
     mActionClearRowAnchor = new QAction(tr("Remove anchor from selection"), this);
     mActionClearRowAnchor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
@@ -3345,7 +3350,7 @@ void MainWindow::JumpToAnchor(bool forward)
         return;
     }
 
-    QAbstractItemModel *proxyModel = mTableView->model();
+    const QAbstractItemModel *proxyModel = mTableView->model();
     if (proxyModel == nullptr)
     {
         return;
@@ -4976,6 +4981,8 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
             swatchPx = metric;
         }
     }
+    constexpr qreal SWATCH_PAINT_INSET = 0.5;
+    constexpr qreal SWATCH_CORNER_RADIUS = 3.0;
     auto makeSwatchIcon = [this, swatchPx](int colorIndex) -> QIcon {
         const QBrush bg = mTheme->AnchorBrushFor(static_cast<std::uint8_t>(colorIndex), Qt::BackgroundRole);
         const QBrush fg = mTheme->AnchorBrushFor(static_cast<std::uint8_t>(colorIndex), Qt::ForegroundRole);
@@ -4985,8 +4992,12 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.setBrush(bg);
         painter.setPen(QPen(fg.color(), 1));
-        painter.drawRoundedRect(QRectF(0.5, 0.5, swatchPx - 1, swatchPx - 1), 3.0, 3.0);
-        return QIcon(pix);
+        painter.drawRoundedRect(
+            QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, swatchPx - 1, swatchPx - 1),
+            SWATCH_CORNER_RADIUS,
+            SWATCH_CORNER_RADIUS
+        );
+        return QIcon{pix};
     };
 
     // No `setShortcut` here: the popup is parented to the active
@@ -4998,12 +5009,18 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     // in the View menu's anchor entries that own the real
     // shortcut. The visible-text contract stays a clean
     // `tr("Colour N")` so the test seam can match by exact label.
-    for (int i = 0; i < static_cast<int>(loglib::ANCHOR_PALETTE_SIZE); ++i)
+    const int currentColourIndex =
+        currentColour.has_value() ? static_cast<int>(*currentColour) : -1;
+    for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
     {
-        QAction *action = anchorMenu->addAction(makeSwatchIcon(i), tr("Colour %1").arg(i + 1));
+        const int colourIndex = static_cast<int>(i);
+        QAction *action =
+            anchorMenu->addAction(makeSwatchIcon(colourIndex), tr("Colour %1").arg(colourIndex + 1));
         action->setCheckable(true);
-        action->setChecked(currentColour.has_value() && static_cast<int>(*currentColour) == i);
-        connect(action, &QAction::triggered, mTableView, [view = mTableView, i]() { view->AnchorSelection(i); });
+        action->setChecked(currentColourIndex == colourIndex);
+        connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
+            view->AnchorSelection(colourIndex);
+        });
     }
     anchorMenu->addSeparator();
     QAction *clearAction = anchorMenu->addAction(tr("Remove anchor"));

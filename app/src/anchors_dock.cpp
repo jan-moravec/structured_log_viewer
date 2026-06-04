@@ -78,7 +78,7 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
         SWATCH_CORNER_RADIUS,
         SWATCH_CORNER_RADIUS
     );
-    return QIcon(pix);
+    return QIcon{pix};
 }
 
 [[nodiscard]] QString FilenameFromLocator(const std::string &locator)
@@ -370,7 +370,7 @@ int AnchorsDock::SourceRowForItem(const QListWidgetItem *item) const
     {
         return -1;
     }
-    AnchorManager::Key key{
+    const AnchorManager::Key key{
         .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
         .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
     };
@@ -388,7 +388,7 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     {
         return;
     }
-    QListWidgetItem *item = mList->itemAt(pos);
+    const QListWidgetItem *item = mList->itemAt(pos);
     if (item == nullptr)
     {
         return;
@@ -402,15 +402,15 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     // intentionally NOT captured here: a FIFO eviction mid-popup
     // would shift every surviving row's index, so we re-resolve from
     // the (stable) key after `exec()` returns.
-    AnchorManager::Key key{
+    const AnchorManager::Key key{
         .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
         .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
     };
 
     QMenu menu(this);
-    QAction *jumpAction = menu.addAction(QObject::tr("Jump to anchor"));
-    QAction *removeAction = menu.addAction(QObject::tr("Remove anchor"));
-    QAction *picked = menu.exec(mList->viewport()->mapToGlobal(pos));
+    const QAction *jumpAction = menu.addAction(QObject::tr("Jump to anchor"));
+    const QAction *removeAction = menu.addAction(QObject::tr("Remove anchor"));
+    const QAction *picked = menu.exec(mList->viewport()->mapToGlobal(pos));
     if (picked == nullptr)
     {
         return;

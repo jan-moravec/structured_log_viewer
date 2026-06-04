@@ -260,7 +260,7 @@ private slots:
         const auto &predicate = rules.front();
         size_t predicateHits = 0;
         const auto predicateStart = std::chrono::steady_clock::now();
-        for (size_t row = 0, n = static_cast<size_t>(table.RowCount()); row < n; ++row)
+        for (size_t row = 0, n = table.RowCount(); row < n; ++row)
         {
             if (loglib::MatchesRow(predicate, table, row))
             {

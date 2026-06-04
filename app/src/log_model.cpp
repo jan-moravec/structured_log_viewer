@@ -1180,31 +1180,37 @@ std::optional<AnchorManager::Key> LogModel::AnchorKeyForRow(int row) const noexc
     }
     const loglib::LogLine &line = lines[unsignedRow];
     const loglib::LineSource *source = line.Source();
-    AnchorManager::Key key{
-        .locator = "",
-        .lineId = static_cast<uint64_t>(line.LineId()),
-    };
-    if (source != nullptr && !source->Path().empty())
+    // The std::string copy below (and the optional<Key> return-by-value)
+    // can technically throw `bad_alloc`. We must remain noexcept because
+    // Qt's paint stack invokes `data()` directly and can't unwind cleanly
+    // through a `std::bad_alloc` from a low-memory frame. Swallow any
+    // allocation failure and surface it as `std::nullopt` -- the anchor
+    // simply won't match, which is the same behaviour we had previously
+    // on a swallowed `bad_alloc`.
+    try
     {
-        // Cache lookup only -- the canonicalisation pass is run
-        // up front by `PrewarmCanonicalLocatorCache` whenever the
-        // source set changes (`BeginStreamingShared`,
-        // `AppendStreaming`, post-`AppendBatch`). That keeps this
-        // function noexcept, which matters because Qt's paint
-        // stack invokes `data()` directly and can't unwind cleanly
-        // through a `std::bad_alloc` from a `QFileInfo` call on
-        // a low-memory frame. A cache miss (only possible if a
-        // future code path adds a `LineSource` without
-        // pre-warming) falls through to an empty locator -- the
-        // anchor simply won't match, which is the same behaviour
-        // we had previously on a swallowed `bad_alloc`.
-        const auto it = mCanonicalLocatorCache.find(source);
-        if (it != mCanonicalLocatorCache.end())
+        AnchorManager::Key key;
+        key.lineId = static_cast<uint64_t>(line.LineId());
+        if (source != nullptr && !source->Path().empty())
         {
-            key.locator = it->second;
+            // Cache lookup only -- the canonicalisation pass is run
+            // up front by `PrewarmCanonicalLocatorCache` whenever the
+            // source set changes (`BeginStreamingShared`,
+            // `AppendStreaming`, post-`AppendBatch`). A cache miss (only
+            // possible if a future code path adds a `LineSource` without
+            // pre-warming) falls through to an empty locator.
+            const auto it = mCanonicalLocatorCache.find(source);
+            if (it != mCanonicalLocatorCache.end())
+            {
+                key.locator = it->second;
+            }
         }
+        return key;
     }
-    return key;
+    catch (...)
+    {
+        return std::nullopt;
+    }
 }
 
 int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept

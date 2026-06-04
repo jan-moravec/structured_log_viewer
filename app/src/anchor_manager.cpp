@@ -100,7 +100,7 @@ bool AnchorManager::RemoveAnchor(const Key &key)
     // erase, and `emit anchorChanged(key)` callers (e.g. the table
     // model) rely on the locator being live for the duration of
     // the signal dispatch.
-    Key removed = it->first;
+    const Key removed = it->first;
     mAnchors.erase(it);
     emit anchorChanged(removed);
     return true;

@@ -2869,8 +2869,8 @@ private slots:
     void TestAnchorManagerCoreContract()
     {
         AnchorManager manager;
-        QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
-        QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
+        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        const QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
 
         const AnchorManager::Key keyA{.locator = "c:/logs/a.json", .lineId = 7};
         const AnchorManager::Key keyB{.locator = "c:/logs/b.json", .lineId = 3};
@@ -2996,7 +2996,7 @@ private slots:
     void TestAnchorManagerReplaceIsSilentWhenContentUnchanged()
     {
         AnchorManager manager;
-        QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
+        const QSignalSpy resetSpy(&manager, &AnchorManager::anchorsReset);
 
         // Seed two anchors. Picking a stable initial order makes
         // the colour-flip assertion below deterministic; the
@@ -3127,7 +3127,7 @@ private slots:
         bool sawBackgroundRoleEmit = false;
         for (const QList<QVariant> &args : dataSpy)
         {
-            const QList<int> roles = args.at(2).value<QList<int>>();
+            const auto roles = args.at(2).value<QList<int>>();
             if (roles.contains(Qt::BackgroundRole) && roles.contains(Qt::ForegroundRole))
             {
                 sawBackgroundRoleEmit = true;
@@ -3140,8 +3140,8 @@ private slots:
         const QVariant anchoredFg = model.data(row0, Qt::ForegroundRole);
         QVERIFY(anchoredBg.canConvert<QBrush>());
         QVERIFY(anchoredFg.canConvert<QBrush>());
-        const QBrush bgBrush = anchoredBg.value<QBrush>();
-        const QBrush fgBrush = anchoredFg.value<QBrush>();
+        const auto bgBrush = anchoredBg.value<QBrush>();
+        const auto fgBrush = anchoredFg.value<QBrush>();
         QCOMPARE(bgBrush.color(), theme.AnchorBrushFor(3, Qt::BackgroundRole).color());
         QCOMPARE(fgBrush.color(), theme.AnchorBrushFor(3, Qt::ForegroundRole).color());
 
@@ -3305,19 +3305,21 @@ private slots:
         QMenu *menu = mWindow->BuildRowContextMenu(/*sourceRow=*/1, nullptr);
         QVERIFY(menu != nullptr);
         const QScopeGuard menuDeleter([&menu]() { menu->deleteLater(); });
-        QAction *anchorMenuAction = FindMenuActionByText(menu, MainWindow::tr("Anchor"));
+        const QAction *anchorMenuAction = FindMenuActionByText(menu, MainWindow::tr("Anchor"));
         QVERIFY2(anchorMenuAction != nullptr, "Anchor sub-menu must be present");
-        QMenu *anchorMenu = anchorMenuAction->menu();
+        const QMenu *anchorMenu = anchorMenuAction->menu();
         QVERIFY(anchorMenu != nullptr);
 
         int colour4ChecksSeen = 0;
         int otherColourChecksSeen = 0;
-        for (int i = 0; i < static_cast<int>(loglib::ANCHOR_PALETTE_SIZE); ++i)
+        for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
         {
-            QAction *entry = FindMenuActionByText(anchorMenu, MainWindow::tr("Colour %1").arg(i + 1));
+            const int colourIndex = static_cast<int>(i);
+            const QAction *entry =
+                FindMenuActionByText(anchorMenu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
             QVERIFY2(entry != nullptr, "every palette slot must have a sub-menu entry");
             QVERIFY(entry->isCheckable());
-            if (i == 4)
+            if (colourIndex == 4)
             {
                 if (entry->isChecked())
                 {
@@ -3332,7 +3334,7 @@ private slots:
         QCOMPARE(colour4ChecksSeen, 1);
         QCOMPARE(otherColourChecksSeen, 0);
 
-        QAction *clear = FindMenuActionByText(anchorMenu, MainWindow::tr("Remove anchor"));
+        const QAction *clear = FindMenuActionByText(anchorMenu, MainWindow::tr("Remove anchor"));
         QVERIFY2(clear != nullptr, "remove-anchor entry must be present");
         QVERIFY2(clear->isEnabled(), "remove-anchor must be enabled when the right-clicked row carries a colour");
 
@@ -3341,17 +3343,19 @@ private slots:
         QMenu *menu0 = mWindow->BuildRowContextMenu(/*sourceRow=*/0, nullptr);
         QVERIFY(menu0 != nullptr);
         const QScopeGuard menu0Deleter([&menu0]() { menu0->deleteLater(); });
-        QAction *anchor0 = FindMenuActionByText(menu0, MainWindow::tr("Anchor"));
+        const QAction *anchor0 = FindMenuActionByText(menu0, MainWindow::tr("Anchor"));
         QVERIFY(anchor0 != nullptr);
-        QMenu *anchor0Menu = anchor0->menu();
+        const QMenu *anchor0Menu = anchor0->menu();
         QVERIFY(anchor0Menu != nullptr);
-        for (int i = 0; i < static_cast<int>(loglib::ANCHOR_PALETTE_SIZE); ++i)
+        for (std::size_t i = 0; i < loglib::ANCHOR_PALETTE_SIZE; ++i)
         {
-            QAction *entry = FindMenuActionByText(anchor0Menu, MainWindow::tr("Colour %1").arg(i + 1));
+            const int colourIndex = static_cast<int>(i);
+            const QAction *entry =
+                FindMenuActionByText(anchor0Menu, MainWindow::tr("Colour %1").arg(colourIndex + 1));
             QVERIFY(entry != nullptr);
             QVERIFY2(!entry->isChecked(), "unanchored row must have no checked colour");
         }
-        QAction *clear0 = FindMenuActionByText(anchor0Menu, MainWindow::tr("Remove anchor"));
+        const QAction *clear0 = FindMenuActionByText(anchor0Menu, MainWindow::tr("Remove anchor"));
         QVERIFY(clear0 != nullptr);
         QVERIFY2(!clear0->isEnabled(), "remove-anchor must be disabled when the row carries no colour");
 
@@ -3382,7 +3386,7 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 5);
 
-        QAbstractItemModel *proxy = view->model();
+        const QAbstractItemModel *proxy = view->model();
         QVERIFY(proxy != nullptr);
         QItemSelectionModel *selection = view->selectionModel();
         QVERIFY(selection != nullptr);
@@ -3589,7 +3593,7 @@ private slots:
         // Save to a temp file via the test seam. The save path
         // mirrors session state into the wire format first; the
         // mirror must include `configuration.anchors`.
-        QTemporaryDir tmp;
+        const QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const QString cfgPath = tmp.filePath(QStringLiteral("anchors-roundtrip.json"));
         mWindow->SaveConfigurationToPathForTest(cfgPath);
@@ -3677,7 +3681,7 @@ private slots:
         anchors.SetAnchor(*key0, 1);
         QCoreApplication::processEvents();
 
-        QSignalSpy dataSpy(&model, &LogModel::dataChanged);
+        const QSignalSpy dataSpy(&model, &LogModel::dataChanged);
         anchors.ClearAll();
         QCoreApplication::processEvents();
 
@@ -3724,8 +3728,8 @@ private slots:
         // survivor in the original batch so the test distinguishes
         // "evicted anchors are dropped" from "all anchors are
         // dropped on any append".
-        constexpr size_t cap = 4;
-        model.SetRetentionCap(cap);
+        constexpr size_t CAP = 4;
+        model.SetRetentionCap(CAP);
 
         // Initial batch of 4 lines (lineIds 1..4) fills the cap.
         model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 4, /*declareNewKey=*/true));
@@ -3826,7 +3830,7 @@ private slots:
         // restored selection must still point at the middle item.
         QCOMPARE(list->count(), 3);
         QCOMPARE(list->selectedItems().count(), 1);
-        QListWidgetItem *restoredCurrent = list->currentItem();
+        const QListWidgetItem *restoredCurrent = list->currentItem();
         QVERIFY2(restoredCurrent != nullptr, "current item must survive Refresh");
         QCOMPARE(restoredCurrent->data(Qt::UserRole + 2).toULongLong(), static_cast<qulonglong>(key1->lineId));
 
