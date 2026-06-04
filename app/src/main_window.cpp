@@ -427,11 +427,9 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
         lines << QStringLiteral("  - %1").arg(QString::fromStdString(p.string()));
     }
     lines << QString();
-    lines << QStringLiteral(
-        "Run the binary from a directory that has a sibling `tzdata/` "
-        "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
-        "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds)."
-    );
+    lines << QStringLiteral("Run the binary from a directory that has a sibling `tzdata/` "
+                            "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
+                            "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds).");
     return lines.join(QLatin1Char('\n'));
 }
 
@@ -1480,10 +1478,8 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                 QMessageBox::information(
                     this,
                     QStringLiteral("Network Stream Session"),
-                    QStringLiteral(
-                        "This recent session was a network stream; the columns and filters have been "
-                        "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
-                    )
+                    QStringLiteral("This recent session was a network stream; the columns and filters have been "
+                                   "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
                 );
             }
         }
@@ -1985,12 +1981,12 @@ void MainWindow::StreamNextPendingFile()
         // False positive: `parseCallable` is moved into the model and invoked;
         // `cfg` is consumed by `options`.
         // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-        auto parseCallable =
-            [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken) mutable {
-                options.stopToken = stopToken;
-                const loglib::JsonParser parser;
-                parser.ParseStreaming(*fileSourcePtr, *sink, options);
-            };
+        auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken
+                             ) mutable {
+            options.stopToken = stopToken;
+            const loglib::JsonParser parser;
+            parser.ParseStreaming(*fileSourcePtr, *sink, options);
+        };
 
         if (isFirstFileInSession)
         {
