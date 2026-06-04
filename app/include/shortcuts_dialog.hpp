@@ -6,24 +6,21 @@ QT_BEGIN_NAMESPACE
 class QMainWindow;
 QT_END_NAMESPACE
 
-/// Modeless dialog listing every shortcut on the host main window,
-/// grouped by `ShortcutCatalog::Build`. Refreshes the rendered
-/// content on every `show()` so newly registered actions appear
-/// without a restart.
+/// Modeless dialog listing every shortcut on the host main window.
+/// Refreshes content on every `show()` so new actions appear automatically.
 class ShortcutsDialog : public QDialog
 {
     Q_OBJECT
 public:
-    /// @p host is the main window whose menu bar / actions are mined.
-    /// The dialog parents to it so it tracks the host's lifetime.
+    /// @p host supplies the actions to list; the dialog falls back to
+    /// parenting on @p host when @p parent is null.
     explicit ShortcutsDialog(QMainWindow *host, QWidget *parent = nullptr);
 
 protected:
     void showEvent(QShowEvent *event) override;
 
 private:
-    /// Rebuild the rendered HTML from the live action tree. Cheap
-    /// (one walk of the menu bar / action list).
+    /// Rebuilds the rendered HTML from the host's current action tree.
     void RefreshContent();
 
     QMainWindow *mHost;

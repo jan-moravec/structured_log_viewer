@@ -714,63 +714,41 @@ private:
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
-    /// Start `mLiveTailTimer` and arm the 1 Hz refresh tick so the
-    /// status-bar elapsed-time string updates while the user watches.
-    /// Idempotent; safe to re-call mid-session (e.g. on re-open).
+    /// Starts the elapsed-time timer and 1 Hz refresh tick for live tail.
     void StartLiveTailTicker();
 
-    /// Stop the 1 Hz tick. The elapsed value is left intact so the
-    /// final status snapshot still names the session length.
+    /// Stops the 1 Hz tick but keeps the elapsed value for the final status.
     void StopLiveTailTicker();
 
-    /// Open (or raise) the modeless `ShortcutsDialog`. Constructed
-    /// lazily; subsequent calls re-show the existing instance.
+    /// Opens (or raises) the modeless shortcuts dialog, building it lazily.
     void ShowShortcutsDialog();
 
-    /// Persist `saveGeometry()` and `saveState()` blobs in `QSettings`
-    /// so the next window starts with the user's last-used size,
-    /// position, and dock layout. Called from `closeEvent`.
+    /// Persists window geometry and dock layout to `QSettings`.
     void SaveWindowChrome() const;
 
-    /// Restore the geometry / dock layout written by
-    /// `SaveWindowChrome`. No-op when nothing has been persisted yet
-    /// (first launch). Called once at the end of the constructor,
-    /// after every dock / toolbar widget is wired up so
-    /// `restoreState` finds them by `objectName`.
+    /// Restores window geometry and dock layout from `QSettings`.
+    /// Must run after every dock/toolbar widget has its `objectName`
+    /// so `restoreState` can resolve them.
     void RestoreWindowChrome();
 
-    /// Recompute the window title from the current session state and
-    /// the `mFiltersDirty` flag, then call `setWindowTitle` /
-    /// `setWindowFilePath` / `setWindowModified` accordingly.
-    /// Idempotent and cheap; safe to call from any state-mutation
-    /// callback.
+    /// Rebuilds the window title from the current session state.
     void UpdateWindowTitle();
 
-    /// Mark the runtime filter set as having unsaved edits relative
-    /// to the last load / save. Suppressed while
-    /// `mLoadingConfiguration` is true so a load that flushes and
-    /// re-adds filters via `AddLogFilter` does not mint a stray
-    /// dirty bit. Refreshes the title afterwards so `[*]` flips
-    /// immediately.
+    /// Marks filters as having unsaved edits and refreshes the title.
+    /// No-op while `mLoadingConfiguration` is true so a config reload
+    /// doesn't transiently flash `[*]`.
     void MarkFiltersDirty();
 
-    /// Last directory used by `Open...` / `Save...` dialogs, or the
-    /// platform `Documents` location when nothing has been picked
-    /// yet. Persisted in `QSettings` under `ui/lastOpenDir`.
+    /// Last-used dialog directory, or the platform `Documents` location
+    /// on first run. Persisted in `QSettings` under `ui/lastOpenDir`.
     [[nodiscard]] QString DefaultOpenDir() const;
 
-    /// Persist @p path's directory as the last-used dir so the next
-    /// dialog opens there. Accepts a file path; the directory is
-    /// extracted with `QFileInfo`.
+    /// Persists the directory of @p path as the last-used dialog dir.
     void RememberLastOpenDir(const QString &path);
 
-    /// Suffix every `QAction`'s tool tip with its shortcut text and
-    /// copy the tool tip into `statusTip()` when empty so toolbar
-    /// buttons surface the shortcut and `QMainWindow` auto-shows
-    /// hover hints in the status bar. Idempotent; safe to re-run.
-    /// Skips actions whose tool tip already contains the shortcut
-    /// literal so the .ui-defined tooltips that already include
-    /// "(Ctrl+...)" are not double-suffixed.
+    /// Appends shortcut text to each action's tooltip and mirrors the
+    /// tooltip into `statusTip()`. Skips actions whose tooltip already
+    /// names the shortcut, so it's safe to re-run.
     void FinaliseActionMetadata();
 
     /// Re-evaluate the stream toolbar's visibility against the current
@@ -875,40 +853,23 @@ private:
     /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
 
-    /// "Show keyboard shortcuts" action (Ctrl+/). Lazily opens
-    /// `mShortcutsDialog`, which mines the live action tree on every
-    /// `show()` so newly registered shortcuts appear automatically.
+    /// Ctrl+/ action that opens the shortcuts reference dialog.
     QAction *mActionShowShortcuts = nullptr;
 
-    /// Lazy-owned shortcuts reference dialog; survives close so
-    /// reopening preserves position/size.
+    /// Lazy-built shortcuts dialog; kept alive so reopening preserves geometry.
     QPointer<class ShortcutsDialog> mShortcutsDialog;
 
     /// Wall-clock since the active live-tail session started.
-    /// Started in `OpenLogStreamFromPath` / `OpenNetworkStream` /
-    /// the live-tail branch of `StreamFromCurrentSourceOrSkip`.
-    /// Read by `UpdateStreamingStatus` to render the
-    /// "00:00:32 since start" suffix.
     QElapsedTimer mLiveTailTimer;
 
-    /// 1 Hz tick that drives the live-tail elapsed-time refresh.
-    /// Started alongside `mLiveTailTimer`; stopped in
-    /// `OnStreamingFinished`. Owned via parent-child (parent =
-    /// `MainWindow`).
+    /// 1 Hz timer that refreshes the live-tail elapsed-time display.
     QTimer *mLiveTailTickTimer = nullptr;
 
-    /// True when the runtime filter set has been mutated by the user
-    /// since the last load/save. Drives the `[*]` modified marker
-    /// in the window title via `setWindowModified`. Cleared on
-    /// successful `DoSaveConfiguration` and after
-    /// `RebuildFiltersFromConfiguration`.
+    /// True when filters have unsaved user edits; drives the `[*]` title marker.
     bool mFiltersDirty = false;
 
-    /// Re-entrancy guard: true only while
-    /// `RebuildFiltersFromConfiguration` is iterating loaded
-    /// filters through `AddLogFilter`. Suppresses the dirty-bit /
-    /// title-refresh side-effects so a config load does not
-    /// transiently flash `[*]` at the user.
+    /// Re-entrancy guard set while loading a config, so per-filter
+    /// `AddLogFilter` calls don't mark the session dirty.
     bool mLoadingConfiguration = false;
 
     /// Filename of the active stream; empty when idle.

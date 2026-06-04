@@ -119,8 +119,7 @@ void LogTableView::wheelEvent(QWheelEvent *event)
 
 namespace
 {
-/// Card geometry / spacing constants. Centralised so a future
-/// designer can tweak them without grepping across `paintEvent`.
+/// Spacing constants for the empty-state shortcuts card.
 constexpr int CARD_PADDING_PX = 24;
 constexpr int CARD_TITLE_GAP_PX = 16;
 constexpr int CARD_GROUP_GAP_PX = 14;
@@ -137,7 +136,7 @@ void LogTableView::paintEvent(QPaintEvent *event)
 {
     QTableView::paintEvent(event);
 
-    // Only fill the void: a real session paints rows over us.
+    // Only draw on an empty grid; a populated session paints rows over us.
     if (model() != nullptr && model()->rowCount() > 0)
     {
         return;
@@ -181,7 +180,7 @@ void LogTableView::paintEvent(QPaintEvent *event)
 
     const QString title = tr("Drop a JSON Lines log here, or use a shortcut below");
 
-    // First pass: pick column widths so every group renders flush.
+    // Measure widest label and shortcut so the two columns align across groups.
     int maxLabelWidth = 0;
     int maxShortcutWidth = 0;
     for (const auto &group : groups)

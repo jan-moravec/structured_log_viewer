@@ -11,9 +11,7 @@ namespace ShortcutCatalog
 {
 namespace
 {
-/// Strip single `&` accelerator markers while preserving literal
-/// `&&` (which Qt renders as a literal `&` in menus). No-op on
-/// strings without accelerators.
+/// Strips `&` accelerator markers while preserving `&&` (literal `&`).
 QString CleanAccelerators(const QString &raw)
 {
     if (!raw.contains(QLatin1Char('&')))
@@ -42,8 +40,7 @@ bool IsListable(const QAction *action)
     return !action->text().isEmpty();
 }
 
-/// Push @p action onto @p group, recording the cleaned label and
-/// native-text shortcut. Idempotent on a per-Group basis.
+/// Appends an entry for @p action with its cleaned label and shortcut.
 void AppendEntry(Group &group, const QAction *action)
 {
     Entry entry;
@@ -65,9 +62,7 @@ QList<Group> Build(const QMainWindow *root)
 
     if (const auto *bar = root->menuBar(); bar != nullptr)
     {
-        // Menu-bar order is the user-facing order (File, Edit, View,
-        // ...). Drives the visual ordering of the empty-state card and
-        // the shortcuts dialog.
+        // Menu-bar order is the user-facing order (File, Edit, View, ...).
         for (const QAction *menuAction : bar->actions())
         {
             const QMenu *menu = menuAction->menu();
@@ -93,12 +88,9 @@ QList<Group> Build(const QMainWindow *root)
         }
     }
 
-    // Orphan actions registered via `QWidget::addAction()` directly on
-    // the main window — e.g. the anchor hotkeys (Ctrl+0..8, F2,
-    // Shift+F2) and the Record Details toggle. `findChildren<QAction*>`
-    // would also drag in actions owned by child dialogs (Preferences,
-    // Filter editor, ...) which are not user-invocable from the main
-    // window, so we walk the window's own action list instead.
+    // Orphan actions added directly via `addAction()` (anchor hotkeys,
+    // Record Details toggle, ...). We walk `root->actions()` instead of
+    // `findChildren` to skip actions owned by child dialogs.
     Group other;
     other.title = QCoreApplication::translate("ShortcutCatalog", "Other");
     for (const QAction *action : root->actions())

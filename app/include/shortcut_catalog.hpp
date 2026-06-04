@@ -11,29 +11,22 @@ QT_END_NAMESPACE
 
 namespace ShortcutCatalog
 {
-/// One row in a `ShortcutGroup`: pre-cleaned text plus the native
-/// shortcut string. Captured eagerly so the empty-state painter
-/// does not have to mutate `QAction` text on every frame.
+/// One row in a `Group`: cleaned action text and its native shortcut.
 struct Entry
 {
     QString text;
     QString shortcut;
 };
 
-/// Group of shortcut rows under a heading (typically the owning
-/// `QMenu` title; falls back to "Other" for actions added directly
-/// to the window with `addAction()`).
+/// A heading (usually a menu title, or "Other") and its shortcut rows.
 struct Group
 {
     QString title;
     QList<Entry> entries;
 };
 
-/// Walk @p root's menu bar in declaration order, then the orphan
-/// actions, and produce one `Group` per heading. Skips actions
-/// without a shortcut, separators, and actions whose `text()` is
-/// empty. `&` accelerator markers are stripped from both the
-/// menu title and each action label so the rendered card reads
-/// cleanly.
+/// Builds one `Group` per menu in declaration order, plus a trailing
+/// "Other" group for window-level orphan actions. Skips separators
+/// and actions without a shortcut, and strips `&` accelerator markers.
 [[nodiscard]] QList<Group> Build(const QMainWindow *root);
 } // namespace ShortcutCatalog

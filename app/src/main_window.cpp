@@ -548,9 +548,8 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     mTableView->horizontalHeader()->setSectionsMovable(true);
     mTableView->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-    // One-click cycle Asc -> Desc -> none. "No sort" is meaningful
-    // here because chronological order ships rows in their original
-    // arrival order. Requires Qt 6.1+, gated by the find_package above.
+    // Cycle Asc -> Desc -> none. The "no sort" state restores arrival order.
+    // Requires Qt 6.1+, gated by the find_package above.
     mTableView->horizontalHeader()->setSortIndicatorClearable(true);
     connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
     connect(
@@ -763,9 +762,8 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
-    // Ctrl+/ opens the keyboard-shortcut reference, also rendered
-    // on the empty-state placeholder. Programmatic so the action is
-    // available without polluting any menu.
+    // Ctrl+/ opens the shortcuts reference. Registered programmatically so it
+    // works without taking a slot in any menu.
     mActionShowShortcuts = new QAction(tr("Keyboard Shortcuts"), this);
     mActionShowShortcuts->setObjectName(QStringLiteral("actionShowShortcuts"));
     mActionShowShortcuts->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Slash));
@@ -777,12 +775,8 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
 
-    // 1 Hz tick that refreshes the live-tail elapsed-time string
-    // (`UpdateStreamingStatus` reads `mLiveTailTimer.elapsed()`).
-    // Started by `StartLiveTailTicker` on the live-tail open paths;
-    // stopped on `streamingFinished`. Also refreshes the title's
-    // "<n> lines" suffix at the same cadence so the user sees the
-    // count tick without the OS title bar being rewritten per batch.
+    // 1 Hz tick that refreshes the live-tail elapsed time and the title's
+    // running line count, so neither has to be rewritten per batch.
     constexpr int LIVE_TAIL_TICK_INTERVAL_MS = 1000;
     mLiveTailTickTimer = new QTimer(this);
     mLiveTailTickTimer->setInterval(LIVE_TAIL_TICK_INTERVAL_MS);
@@ -809,10 +803,8 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         {
             mFirstStreamingBatchSeen = true;
             UpdateUi();
-            // Reflect the just-pinned source name in the title now.
-            // Mid-batch updates after this go through the 1 Hz live-
-            // tail tick (see `mLiveTailTickTimer`) so the title bar
-            // is not retitled per batch.
+            // Reflect the just-pinned source name once; subsequent batches
+            // are picked up by the 1 Hz live-tail tick.
             UpdateWindowTitle();
         }
         // Auto-follow is live-tail only.
@@ -975,16 +967,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     ApplyStreamingRetention();
     ApplyDisplayOrder();
 
-    // Last so every action (menu-bar, toolbar, programmatic) is
-    // already wired and can be enriched with shortcut suffixes /
-    // status tips in one pass.
+    // Run after every action is wired so they can all be decorated in one pass.
     FinaliseActionMetadata();
 
-    // Run after every dock / toolbar widget has been wired up and
-    // assigned an `objectName`, so `restoreState` can resolve them
-    // by name. The matching `SaveWindowChrome` runs from
-    // `closeEvent`. Skipped silently when nothing has been
-    // persisted (first launch).
+    // Run after every dock/toolbar has its `objectName` so `restoreState`
+    // can resolve them. No-op on first launch.
     RestoreWindowChrome();
 
     // Timezone database initialisation lives in
@@ -1052,9 +1039,9 @@ bool MainWindow::InitializeTimezoneDatabase()
 
 namespace
 {
-/// Drop is acceptable iff the payload carries at least one local
-/// file URL. Refusing remote / non-file payloads turns the cursor
-/// into the no-drop indicator, matching Explorer / Finder UX.
+/// True iff the payload carries at least one local file URL.
+/// Refusing remote URLs flips the cursor to the no-drop indicator,
+/// matching Explorer/Finder UX.
 bool MimeHasLocalFileUrl(const QMimeData *mime)
 {
     if (mime == nullptr || !mime->hasUrls())
@@ -1559,8 +1546,6 @@ void MainWindow::OpenFiles()
     // what the user held on menu activation.
     const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
 
-    // Native dialog (`DontUseNativeDialog` stays unset) so users get
-    // their platform's file picker.
     const QStringList files =
         QFileDialog::getOpenFileNames(this, tr("Select Log Files"), DefaultOpenDir(), tr("All Files (*.*)"));
     if (files.isEmpty())
@@ -1833,9 +1818,8 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     mLastTerminalSessionMode = mSessionMode;
     mSessionMode = SessionMode::Idle;
 
-    // Stop the 1 Hz refresh; the elapsed value stays so the final
-    // status line still names the session length until the user
-    // discards the rows.
+    // Stop the 1 Hz refresh; the elapsed value is kept so the final
+    // status line still names the session length.
     StopLiveTailTicker();
 
     // Reset Pause / Follow-tail to defaults for the next session.
@@ -1853,9 +1837,8 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     UpdateStreamToolbarVisibility();
     UpdateUi();
     UpdateStreamingStatus();
-    // Title's "(<n> lines)" suffix is rebuilt now that streaming
-    // is over; the live-tail tick timer that was driving the
-    // running count has just been stopped above.
+    // Rebuild the title's "(<n> lines)" suffix now that streaming is over
+    // and the tick timer that was driving it has stopped.
     UpdateWindowTitle();
     // Refresh the column-health snapshot now that parsing has
     // settled. Drives the header warning glyph and the status-bar
@@ -2320,20 +2303,18 @@ namespace
 constexpr auto SETTINGS_GEOMETRY_KEY = "ui/mainWindow/geometry";
 constexpr auto SETTINGS_STATE_KEY = "ui/mainWindow/state";
 
-/// Best-effort display name for the active source. Returns an empty
-/// string when no session is loaded. File sources surface as the
-/// basename so the title fits a typical title-bar width; network
-/// streams surface as the producer-supplied label (already friendly).
+/// Display name for the active source, or empty when idle.
+/// File sources become a basename so they fit a typical title bar;
+/// network streams keep their producer-supplied label.
 QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source> &source, const QString &streamingName)
 {
     if (!source.has_value() || source->locators.empty())
     {
-        // Streaming-but-not-yet-pinned-source: rare race window between
-        // `mStreamingFileName = ...` and `mCurrentSource = ...`.
+        // Streaming has named the file but the source isn't pinned yet.
         return streamingName;
     }
-    // `first` is intentionally non-const so the trailing `return first`
-    // can move it out (see clang-tidy `performance-no-automatic-move`).
+    // Non-const so the trailing `return first` can move; see
+    // clang-tidy `performance-no-automatic-move`.
     QString first = QString::fromStdString(source->locators.front());
     if (source->kind == loglib::LogConfiguration::Source::Kind::File)
     {
@@ -2359,8 +2340,8 @@ void MainWindow::RestoreWindowChrome()
     const QSettings settings;
     const QByteArray geometry = settings.value(QString::fromLatin1(SETTINGS_GEOMETRY_KEY)).toByteArray();
     const QByteArray state = settings.value(QString::fromLatin1(SETTINGS_STATE_KEY)).toByteArray();
-    // Both are no-ops on empty input, so first-launch falls through
-    // to Qt's default geometry without special-casing.
+    // Both calls are no-ops on empty input, so first launch falls through
+    // to Qt's default geometry.
     if (!geometry.isEmpty())
     {
         restoreGeometry(geometry);
@@ -2383,11 +2364,9 @@ void MainWindow::UpdateWindowTitle()
     }
     else
     {
-        // Build a per-session suffix that reads "<count> lines" with
-        // grouped digits, optionally prefixed by the live-tail badge.
-        // Falls back to the model's row count once streaming has
-        // finished and `mStreamingLineCount` was reset (the latter
-        // happens in `NewSession` / discard paths, never mid-stream).
+        // Build the "<count> lines" suffix, falling back to the model's row
+        // count once streaming has reset `mStreamingLineCount` (which only
+        // happens on `NewSession` / discard paths, never mid-stream).
         qsizetype lines = mStreamingLineCount;
         if (lines == 0 && mModel != nullptr)
         {
@@ -2397,15 +2376,15 @@ void MainWindow::UpdateWindowTitle()
         QString suffix;
         if (IsLiveTailSession())
         {
-            // U+00B7 MIDDLE DOT separates the badge from the count.
+            // U+00B7 MIDDLE DOT between the badge and the count.
             suffix = tr("Live tail \u00B7 %1 lines").arg(lineCount);
         }
         else if (lines > 0)
         {
             suffix = tr("%1 lines").arg(lineCount);
         }
-        // U+2014 EM DASH between the source name and the app name -
-        // matches the macOS / GNOME proxy-title convention.
+        // U+2014 EM DASH between the source and app names, matching the
+        // macOS/GNOME proxy-title convention.
         if (suffix.isEmpty())
         {
             title = QStringLiteral("%1 \u2014 %2").arg(sourceLabel, appName);
@@ -2416,18 +2395,16 @@ void MainWindow::UpdateWindowTitle()
         }
     }
 
-    // `[*]` is Qt's documented placeholder: rendered as an asterisk
-    // when `isWindowModified()` is true, stripped otherwise. Always
-    // appended so the asterisk can flicker in / out without
-    // re-running the whole title-build path.
+    // `[*]` is Qt's modified-marker placeholder; it's rendered iff
+    // `isWindowModified()` is true. Always appended so the asterisk can
+    // toggle without rebuilding the whole title.
     title += QStringLiteral("[*]");
     setWindowTitle(title);
     setWindowModified(mFiltersDirty);
 
-    // Proxy-icon hint for OS title bars (macOS shows a small file
-    // glyph; recent Windows builds use it for jumplist grouping).
-    // Skipped for non-file sources (no real path) and for empty
-    // sessions (clears any stale value).
+    // Proxy-icon hint for OS title bars (macOS shows the file glyph;
+    // recent Windows uses it for jumplist grouping). Only meaningful
+    // for file sources; cleared otherwise.
     if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
         !mCurrentSource->locators.empty())
     {
@@ -2456,15 +2433,15 @@ void MainWindow::MarkFiltersDirty()
 QString MainWindow::DefaultOpenDir() const
 {
     const QSettings settings;
-    // Non-const so the early `return remembered` can move it; see
-    // clang-tidy `performance-no-automatic-move`.
+    // Non-const so the early return can move; see clang-tidy
+    // `performance-no-automatic-move`.
     QString remembered = settings.value(QStringLiteral("ui/lastOpenDir")).toString();
     if (!remembered.isEmpty() && QFileInfo(remembered).isDir())
     {
         return remembered;
     }
-    // Documents is the platform's idiomatic landing zone for ad-hoc
-    // file opens; matches Notepad / Console.app / VS Code defaults.
+    // Documents is the platform's idiomatic landing zone for ad-hoc opens,
+    // matching Notepad / Console.app / VS Code defaults.
     return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
 }
 
@@ -2485,10 +2462,8 @@ void MainWindow::RememberLastOpenDir(const QString &path)
 
 void MainWindow::FinaliseActionMetadata()
 {
-    // Iterate every action attached to the window (menus, toolbars,
-    // and `addAction()` orphans). Touching only actions whose tool
-    // tip does not already mention the shortcut keeps the .ui-defined
-    // tooltips that already include "(Ctrl+X)" untouched.
+    // Walk every action on the window. Skipping tooltips that already
+    // mention the shortcut leaves .ui-defined "(Ctrl+X)" tooltips alone.
     const QList<QAction *> actions = findChildren<QAction *>();
     for (QAction *action : actions)
     {
@@ -2503,8 +2478,7 @@ void MainWindow::FinaliseActionMetadata()
         const QString text = action->text();
         if (hasShortcut && !tooltip.contains(shortcut, Qt::CaseInsensitive))
         {
-            // No tool tip yet -> derive one from the action's text
-            // (without `&` accelerators); else just suffix.
+            // No tooltip yet — derive one from the action text (sans `&` accelerators).
             if (tooltip.isEmpty() || tooltip == text)
             {
                 tooltip = text;
@@ -2516,8 +2490,8 @@ void MainWindow::FinaliseActionMetadata()
             action->setToolTip(tooltip);
         }
 
-        // Status tip: copy the (possibly just-suffixed) tool tip when
-        // none is set so `QMainWindow` shows it on hover for free.
+        // Mirror the (possibly just-suffixed) tooltip into statusTip so
+        // QMainWindow shows it on hover for free.
         if (action->statusTip().isEmpty() && !tooltip.isEmpty())
         {
             action->setStatusTip(tooltip);
@@ -2527,17 +2501,13 @@ void MainWindow::FinaliseActionMetadata()
 
 namespace
 {
-/// Format @p ms as `HH:MM:SS` (or `MM:SS` for short sessions). Used
-/// by the live-tail status suffix; centralised here so the test
-/// fixture can grow a unit test for it later.
+/// Formats @p ms as `HH:MM:SS`, or `MM:SS` for sub-hour sessions.
 QString FormatElapsed(qint64 ms)
 {
     constexpr qint64 MS_PER_SEC = 1000;
     constexpr qint64 SEC_PER_MIN = 60;
     constexpr qint64 SEC_PER_HOUR = 60 * SEC_PER_MIN;
     constexpr int FIELD_WIDTH = 2;
-    // Radix for `QString::arg(int, fieldWidth, base, fillChar)` -- the
-    // `10` slot in `arg(...)` is documented as the numeric base.
     constexpr int DECIMAL_BASE = 10;
 
     const qint64 totalSec = ms / MS_PER_SEC;
@@ -2566,8 +2536,7 @@ void MainWindow::UpdateStreamingStatus()
         return;
     }
 
-    // Locale-grouped digit formatting so big counts read as
-    // "12,345 lines" instead of "12345 lines".
+    // Locale-grouped digits so big counts read as "12,345 lines".
     const QLocale loc = QLocale::system();
     const QString lineCount = loc.toString(static_cast<qlonglong>(mStreamingLineCount));
     const QString errorCount = loc.toString(static_cast<qlonglong>(mStreamingErrorCount));
@@ -2633,10 +2602,8 @@ void MainWindow::StopLiveTailTicker()
     {
         mLiveTailTickTimer->stop();
     }
-    // Leave `mLiveTailTimer` armed: `UpdateStreamingStatus` reads
-    // the final elapsed value on the very next paint so the user
-    // sees the full session length in the closing status line. The
-    // timer is restarted from scratch on the next live-tail open.
+    // Leave `mLiveTailTimer` armed so the final status line can still report
+    // the session length. It's restarted on the next live-tail open.
 }
 
 void MainWindow::UpdateStreamToolbarVisibility()
@@ -3060,10 +3027,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
-    // Persist geometry / dock layout before we tear the rest of
-    // the window state down. Cheap (~1 KiB QSettings write) and
-    // best-effort: a write failure here is silently swallowed
-    // alongside the auto-save failures below.
+    // Persist geometry/dock layout before tear-down. Best-effort: a
+    // QSettings write failure is silently swallowed alongside the
+    // auto-save failures below.
     SaveWindowChrome();
 
     // Final flush so the restore-on-launch loop captures user
@@ -3133,10 +3099,8 @@ void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scop
     // I/O failure (callers catch).
     MirrorSessionStateToConfiguration();
     mModel->ConfigurationManager().Save(path.toStdString(), scope);
-    // Save succeeded: the runtime filter set now matches disk, so
-    // drop the modified marker. Any throw above skips this on the
-    // way out -- correct, the title should keep `[*]` if save
-    // failed.
+    // Save succeeded — runtime now matches disk, so drop `[*]`.
+    // A throw above (correctly) skips this and leaves the marker set.
     mFiltersDirty = false;
     UpdateWindowTitle();
 }
@@ -3466,14 +3430,12 @@ void MainWindow::RebuildFiltersFromConfiguration()
     // only and regenerated here.
     const std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
 
-    // Suppress the dirty / title-refresh side-effects on every
-    // `AddLogFilter` and `ClearAllFilters` below. The trailing
-    // refresh after the loop emits one consolidated state.
+    // Suppress per-filter dirty/title updates; emit one consolidated state
+    // on scope exit.
     mLoadingConfiguration = true;
     const auto guard = qScopeGuard([this]() {
         mLoadingConfiguration = false;
-        // Reset to "clean" -- the filter set now matches what was
-        // just loaded from disk.
+        // Loaded set matches disk, so start clean.
         mFiltersDirty = false;
         UpdateWindowTitle();
     });
@@ -4219,10 +4181,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
         MirrorSessionStateToConfiguration();
         UpdateFilters();
     }
-    // Add / Edit / Add-from-column / Add-from-row all funnel here, so
-    // marking dirty in one place covers every user-driven mutation.
-    // The `mLoadingConfiguration` re-entrancy guard keeps a config
-    // reload silent.
+    // Every user-driven filter mutation funnels through here, so one
+    // mark-dirty covers them all. Config reloads are silenced by the guard.
     MarkFiltersDirty();
 
     const QString title = BuildFilterTitle(filter);
@@ -4263,11 +4223,9 @@ void MainWindow::OnThemeChanged()
     ApplyTableStyleSheet();
     ApplyThemedWindowIcon();
 
-    // Repaint just the viewport -- Qt will re-query `data()` for
-    // visible cells. Avoids the proxy-chain walk that a full
-    // `dataChanged` emit would force. `ApplyTableStyleSheet` above
-    // already re-resolves the monospaced cell rule against the
-    // (possibly theme-overridden) `app.fontFamily`.
+    // Repaint just the viewport — Qt re-queries `data()` for visible cells.
+    // Avoids the proxy-chain walk that a full `dataChanged` would force.
+    // (`ApplyTableStyleSheet` above already re-resolved the monospace rule.)
     if (mTableView != nullptr)
     {
         mTableView->viewport()->update();
@@ -4306,18 +4264,13 @@ void MainWindow::ApplyThemedWindowIcon()
 
 void MainWindow::ApplyTableStyleSheet()
 {
-    // Body chrome comes from the palette pushed by
-    // `ThemeControl::ApplyTheme`. The only body rule we need is a
-    // monospace family on the cells so log content reads as fixed-
-    // pitch by default. Scoped to `QTableView::item` (not the widget
-    // itself) so the table's font metrics — which Qt uses to size
-    // the scrollbar / row / header geometry — stay on the system
-    // default. Pinning the metrics keeps the
-    // `TestTailEdgeTopFollowsScrollbarMinimum` regression scenario
-    // intact and matches the family already used by the raw-JSON
-    // pane (record_detail_widget.cpp:328). Skipped when a theme
-    // pins `app.fontFamily` so the user's chosen family wins
-    // end-to-end.
+    // Body chrome comes from `ThemeControl::ApplyTheme`'s palette. The only
+    // body rule we need is a monospace family for log cells, scoped to
+    // `QTableView::item` so the widget's font metrics — which Qt uses to
+    // size scrollbars/rows/headers — stay on the system default. Keeps the
+    // `TestTailEdgeTopFollowsScrollbarMinimum` scenario intact and matches
+    // the family used by the raw-JSON pane. Skipped when the theme pins
+    // `app.fontFamily` so the user's choice wins end-to-end.
     QString bodyRule;
     const bool themeOverridesFont =
         mTheme != nullptr && mTheme->Active().app.fontFamily.has_value() && !mTheme->Active().app.fontFamily->empty();
@@ -4327,8 +4280,8 @@ void MainWindow::ApplyTableStyleSheet()
         const QStringList families = mono.families();
         if (!families.isEmpty())
         {
-            // Quote each family so names with spaces (e.g. "Cascadia
-            // Mono") parse correctly inside the QSS list.
+            // Quote each family so names with spaces (e.g. "Cascadia Mono")
+            // parse correctly inside the QSS list.
             QStringList quoted;
             quoted.reserve(families.size());
             for (const QString &fam : families)

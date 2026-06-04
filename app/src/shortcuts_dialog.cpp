@@ -12,19 +12,14 @@
 
 namespace
 {
-/// Pre-allocated buffer roughly sized to fit the catalog of a real
-/// session (file + edit + view + filters + stream + settings + other)
-/// without realloc.
+/// Rough size of a typical catalog's HTML so the buffer rarely reallocs.
 constexpr int HTML_RESERVE_BYTES = 2048;
 
-/// Default dialog dimensions: tall enough to show the entire menu
-/// bar's worth of shortcuts on a 1080p display without scrolling.
+/// Default dialog size — fits a full menu bar's shortcuts on a 1080p display.
 constexpr int DIALOG_DEFAULT_WIDTH = 420;
 constexpr int DIALOG_DEFAULT_HEIGHT = 520;
 
-/// Render the whole catalog as a single HTML document. Tables keep
-/// the action label and the shortcut on the same baseline without
-/// requiring custom widgets per row.
+/// Renders the catalog as a single HTML document, one table per group.
 QString BuildHtml(const QList<ShortcutCatalog::Group> &groups)
 {
     QString html;
@@ -53,8 +48,7 @@ ShortcutsDialog::ShortcutsDialog(QMainWindow *host, QWidget *parent)
     : QDialog(parent != nullptr ? parent : host), mHost(host)
 {
     setWindowTitle(tr("Keyboard Shortcuts"));
-    // Modeless so the user can keep using the window while the
-    // reference is open.
+    // Modeless so the user can keep working while the reference is open.
     setModal(false);
     resize(DIALOG_DEFAULT_WIDTH, DIALOG_DEFAULT_HEIGHT);
 
