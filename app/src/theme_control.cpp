@@ -37,12 +37,9 @@ namespace
 
 constexpr char SETTINGS_KEY_ACTIVE[] = "theme/active";
 
-/// Built-in fallback for `ThemeControl::AnchorBrushFor` when the
-/// active theme has no `anchorPalette` (or its slot is empty).
-/// Matches the Default Dark palette so a sparse user theme still
-/// produces well-distinguished anchors on either light or dark
-/// chrome. Eight saturated, hue-distinct entries to match the
-/// `Ctrl+1..8` hotkey block.
+/// Fallback anchor palette used when the active theme's slot is
+/// empty. Eight saturated, hue-distinct entries; readable on both
+/// light and dark chrome.
 constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_PALETTE = {
     "#B91C1C",
     "#C2410C",
@@ -305,10 +302,8 @@ QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noe
     case Qt::ForegroundRole:
         return mAnchorForeground[colorIndex];
     default:
-        // Any other role -- including the model's `EditRole` /
-        // sort fallbacks -- is meaningless for an anchor swatch.
-        // Returning an invalid brush lets the caller fall through
-        // to its normal handling without a special case.
+        // Other roles have no anchor meaning; invalid brush lets
+        // the caller fall through to its normal handling.
         return {};
     }
 }
@@ -962,10 +957,9 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         mHasAnyFontStyle = mHasAnyFontStyle || style.bold || style.italic;
     }
 
-    // Anchor palette cache: theme override per slot first, then
-    // the hard-coded fallback. Foreground is white on dark slots /
-    // black on light slots; chosen by ITU-R BT.601 luma so a user
-    // theme with pastel anchors still produces legible text.
+    // Cache anchor brushes: theme override first, then fallback.
+    // Foreground is chosen per-slot from background luma so pastel
+    // user slots still get legible text.
     for (size_t slot = 0; slot < loglib::ANCHOR_PALETTE_SIZE; ++slot)
     {
         QColor background;
@@ -978,9 +972,6 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
             background = QColor(QString::fromLatin1(ANCHOR_FALLBACK_PALETTE[slot]));
         }
         mAnchorBackground[slot] = QBrush{background};
-        // Pick the foreground per-slot so a user theme dropping a
-        // pastel into one slot does not force every other anchor
-        // to also flip to black.
         mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
     }
 }

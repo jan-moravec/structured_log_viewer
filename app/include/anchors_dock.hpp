@@ -11,24 +11,17 @@ class QListWidget;
 class QListWidgetItem;
 class QPushButton;
 
-/// Dockable list of every anchored row in the active session. Each
-/// entry shows the anchor's colour swatch, the row's stable lineId,
-/// and (when the anchor carries a non-empty locator) the source
-/// path's filename. Double-click emits
-/// `jumpToAnchorRequested(sourceRow)`; right-click offers
-/// "Jump to anchor" / "Remove anchor". A header button wipes every
-/// anchor via the owning `AnchorManager`.
+/// Dockable list of every anchored row. Each entry shows a colour
+/// swatch, the row's `lineId`, and the source filename (when known).
+/// Double-click jumps to the row via `jumpToAnchorRequested`;
+/// right-click offers Jump / Remove. A header button clears everything.
 ///
-/// The dock listens to `AnchorManager::anchorChanged` and
-/// `anchorsReset` so the list stays in lockstep with the model
-/// without polling, and to `ThemeControl::themeChanged` so swatch
-/// icons re-render with the new theme's `anchorPalette`. Refresh
-/// work is gated on `IsVisibleForRefresh()` so a hidden /
-/// buried-tab dock does no list rebuilding.
+/// Stays in sync with `AnchorManager` and `ThemeControl` through
+/// signals. Refresh work is gated on visibility so a buried dock pays
+/// nothing.
 ///
-/// Ownership: the `AnchorManager`, `LogModel`, and `ThemeControl`
-/// are borrowed; all three must outlive the dock. The dock parents
-/// itself to its owning `MainWindow` and is destroyed with it.
+/// All three collaborators are borrowed (non-owning) and must outlive
+/// the dock.
 class AnchorsDock : public QDockWidget
 {
     Q_OBJECT
@@ -36,27 +29,16 @@ class AnchorsDock : public QDockWidget
 public:
     AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *theme, QWidget *parent = nullptr);
 
-    /// Refresh from `AnchorManager::Entries()` if the dock is
-    /// actually visible -- buried docks short-circuit immediately
-    /// so signal-driven refreshes pay nothing when the user can't
-    /// see them. `RefreshForTest` exposes the unconditional path
-    /// for the offscreen QPA fixtures that can't drive
-    /// `visibilityChanged`.
+    /// Refresh from `AnchorManager::Entries()` if visible; no-op otherwise.
     void Refresh();
 
-    /// Mirrors `RecordDetailDock::IsVisibleForRefresh`: combines
-    /// `isHidden()` with the tracked `visibilityChanged` state so
-    /// a tabified-but-buried dock also skips work. Offscreen-QPA
-    /// fixtures (where `visibilityChanged` never fires) default to
-    /// the `isHidden()` answer.
+    /// True when the dock should actually rebuild on a signal. Offscreen
+    /// QPA fixtures never get a `visibilityChanged` and default to false.
     [[nodiscard]] bool IsVisibleForRefresh() const noexcept;
 
 signals:
-    /// User asked to navigate to the anchored row whose source-model
-    /// row index is @p sourceRow. Resolved at emit time by walking
-    /// the `LogModel` for a matching `AnchorKey`. Argument is -1
-    /// when the lookup fails (anchor key has no live row, e.g. the
-    /// session was reopened with a different source file).
+    /// User asked to navigate to source-model row @p sourceRow.
+    /// Argument is -1 when the anchor key has no live row.
     void jumpToAnchorRequested(int sourceRow);
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -71,10 +53,8 @@ public:
         return mClearAllButton;
     }
 
-    /// Unconditional refresh: bypasses `IsVisibleForRefresh()` so
-    /// offscreen QPA tests can inspect dock content without first
-    /// driving a real `visibilityChanged(true)`. Production callers
-    /// must always go through `Refresh()` which respects the gate.
+    /// Unconditional refresh for offscreen-QPA tests that can't drive
+    /// real `visibilityChanged` events.
     void RefreshForTest()
     {
         RefreshAlways();
@@ -82,20 +62,13 @@ public:
 #endif
 
 private:
-    /// Resolve the `AnchorManager::Key` carried by @p item back to a
-    /// `LogModel` source-row index. -1 when no row in the live model
-    /// matches the key (e.g. the anchor outlived its source line).
+    /// Resolve @p item's key back to a `LogModel` source-row index, or
+    /// -1 if the anchor outlived its row.
     [[nodiscard]] int SourceRowForItem(const QListWidgetItem *item) const;
 
-    /// Unconditional refresh-from-anchors-and-theme. Called by
-    /// `Refresh()` after the visibility gate passes, by the
-    /// `visibilityChanged(true)` handler (the moment the gate
-    /// opens), and by `RefreshForTest()` under offscreen QPA.
+    /// Rebuild from `AnchorManager::Entries()` unconditionally.
     void RefreshAlways();
 
-    /// Build the row label "lineId - filename" (with the colour
-    /// swatch attached as the icon). Skips the filename portion
-    /// when the canonical locator is empty.
     void OnItemActivated(QListWidgetItem *item);
     void OnContextMenuRequested(const QPoint &pos);
     void OnClearAllClicked();
@@ -107,12 +80,8 @@ private:
     QListWidget *mList = nullptr;
     QPushButton *mClearAllButton = nullptr;
 
-    /// Mirrors `RecordDetailDock::mPerceivedVisible`; flips false
-    /// when the user buries the dock tab so signal-driven refreshes
-    /// elide until the dock is visible again. Default is `false`
-    /// because `MainWindow` always adds the dock hidden -- the first
-    /// real `visibilityChanged(true)` flips this back on. A `true`
-    /// default would let signal-driven refreshes run between
-    /// construction and the explicit `hide()` call.
+    /// Tracks `visibilityChanged` so a buried tabified dock also skips
+    /// signal-driven refreshes. Starts false because the dock is added
+    /// hidden; flipped by the first `visibilityChanged(true)`.
     bool mPerceivedVisible = false;
 };

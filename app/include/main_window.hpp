@@ -280,19 +280,13 @@ public:
     [[nodiscard]] HeaderContextMenu BuildHeaderContextMenu(int logicalColumn, QWidget *parent = nullptr);
 
     /// Build the row right-click menu for source-model row @p sourceRow.
-    /// Always includes the "Anchor" sub-menu (eight colour swatches +
-    /// "Remove anchor"). Additionally includes "Show only newer/older
-    /// logs" actions pinned to the first `Type::Time` column when the
-    /// row carries a non-`monostate` timestamp slot.
+    /// Always includes the "Anchor" sub-menu; adds "Show only newer/
+    /// older logs" actions when the row has a non-`monostate` timestamp
+    /// in the first `Type::Time` column.
     ///
     /// Returns null when the model is empty or @p sourceRow is out of
-    /// range. Split out of `ShowRowContextMenu` so tests can inspect the
-    /// actions without spawning a popup.
-    ///
-    /// Ownership: parented to @p parent (or `mTableView` if null). Tests
-    /// that take the menu without showing it should `deleteLater()` via
-    /// a `QScopeGuard`; `ShowRowContextMenu` instead sets
-    /// `Qt::WA_DeleteOnClose` on the live popup.
+    /// range. Caller owns the result; parented to @p parent (or
+    /// `mTableView` if null).
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
     /// Live filter map; tests inspect it after a reorder.
@@ -317,34 +311,22 @@ public:
         return mModel;
     }
 
-    /// Owned `AnchorManager`; non-null after construction. Public
-    /// so the right-click row menu and the (forthcoming) Anchors
-    /// dock can hand it the source of truth for the per-row colour
-    /// state without going through the model.
+    /// Owned `AnchorManager`; non-null after construction.
     [[nodiscard]] AnchorManager *Anchors() const noexcept
     {
         return mAnchors;
     }
 
-    /// Move the table view's selection to the next or previous
-    /// anchored row in proxy (visible) row order. Walking through
-    /// the proxy means F2 honours the user's display orientation
-    /// (newest-first vs oldest-first) and any active column sort,
-    /// so "next anchor" always matches the visible direction --
-    /// not insertion / `lineId` order. Wraps at the visible-row
-    /// bounds. Filtered-out rows are skipped automatically (they
-    /// don't appear in the proxy); if every anchored row is
-    /// currently filtered, the status bar carries the explanation
-    /// rather than a silent no-op. Wired to the `F2` / `Shift+F2`
-    /// shortcuts and the Anchors dock.
+    /// Select the next (forward=true) or previous anchored row in
+    /// visible (proxy) order, honouring sort + filter + newest-first
+    /// orientation. Wraps at the visible bounds. Surfaces a status-bar
+    /// note when no anchored row is visible. Wired to F2 / Shift+F2.
     void JumpToAnchor(bool forward);
 
-    /// Scroll the table view to source-model row @p sourceRow and
-    /// make it the sole selected row. No-op when @p sourceRow is
-    /// negative, the model isn't ready, or the row is currently
-    /// filtered out (in the last case the status bar carries the
-    /// explanation). Public because the Anchors dock dispatches
-    /// jumps through this slot.
+    /// Scroll to source row @p sourceRow and make it the sole
+    /// selection. No-op on a negative row, unready model, or a row
+    /// that is currently filtered out (the latter shows a status bar
+    /// note). Used by the Anchors dock for jump targets.
     void SelectSourceRow(int sourceRow);
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -425,13 +407,9 @@ public:
         return mDiagnosticsButton;
     }
 
-    /// Test-only entry to the row-right-click handler. Drives the
-    /// same code path the live `customContextMenuRequested` signal
-    /// reaches, so the "right-click adopts the clicked row into the
-    /// selection when it sits outside it" rule can be pinned by a
-    /// regression test without synthesising a real mouse event.
-    /// The popup itself is short-circuited (in tests, callers close
-    /// any `QApplication::activePopupWidget()` right after).
+    /// Test-only entry to `ShowRowContextMenu` so tests can pin
+    /// right-click selection-adoption rules without a real mouse
+    /// event. Callers should close any popup that opens.
     void ShowRowContextMenuForTest(const QPoint &pos)
     {
         ShowRowContextMenu(pos);
@@ -634,14 +612,11 @@ private:
         MainWindow &mOwner;
     };
 
-    /// Append the "Anchor" sub-menu to @p menu. Always adds eight
-    /// colour entries plus a "Remove anchor" entry; the latter is
-    /// disabled when the right-clicked row carries no anchor. Each
-    /// colour entry's check state mirrors the right-clicked row's
-    /// existing colour but the triggered action operates on the
-    /// view's current selection -- consistent with the `Ctrl+1..8`
-    /// hotkeys. No-op if any of the three collaborators (model,
-    /// theme, anchor manager) is missing.
+    /// Append the "Anchor" sub-menu (eight colour swatches +
+    /// "Remove anchor") to @p menu. Check state reflects the right-
+    /// clicked row's existing colour, but triggered actions operate
+    /// on the current selection (same as the `Ctrl+1..8` hotkeys).
+    /// No-op if model, theme, or anchor manager is missing.
     void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
 
     /// Logical index of the column whose `keys` match @p keys, or
@@ -834,32 +809,21 @@ private:
     /// in this class check before dereferencing.
     ThemeControl *mTheme;
 
-    /// Owned by the window so its lifetime brackets the model and
-    /// table view that read from it. Non-null after construction.
-    /// Threaded into `mModel` (for the data() overlay) and
-    /// `mTableView` (for the selection-driven `AnchorSelection`
-    /// slots and the row right-click menu).
+    /// Owned. Brackets the lifetime of `mModel` and `mTableView`,
+    /// both of which read from it. Non-null after construction.
     AnchorManager *mAnchors = nullptr;
 
-    /// Owned `AnchorsDock` displaying the list of anchored rows.
-    /// Hidden on construction; toggled via the View menu's
-    /// "Anchors" entry. Lives in the right dock area next to the
-    /// Record Details dock.
+    /// Owned. Hidden by default; toggled via View -> Anchors.
     AnchorsDock *mAnchorsDock = nullptr;
 
-    /// Toggle action for the Anchors dock. Owned by the window;
-    /// re-added to the `View` menu on every `RebuildViewMenu`.
-    /// Constructed programmatically because there's no entry for
-    /// it in `main_window.ui`.
+    /// Toggle action for the Anchors dock. Re-added to View on every
+    /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
     QAction *mActionToggleAnchors = nullptr;
 
-    /// Programmatic shortcut actions for the anchor feature; live
-    /// on the window via `addAction(...)` so the key combos fire
-    /// without the actions being placed in a menu. Indices match
-    /// `Ctrl+1..8` (so index 0 is colour 0). `mActionClearRowAnchor`
-    /// is `Ctrl+0`, `mActionJumpNextAnchor` is `F2`,
-    /// `mActionJumpPrevAnchor` is `Shift+F2`, and
-    /// `mActionClearAllAnchors` is `Ctrl+Shift+A`.
+    /// Anchor hotkey actions: index N maps to `Ctrl+(N+1)`.
+    /// `mActionClearRowAnchor` is `Ctrl+0`; jumps are `F2` /
+    /// `Shift+F2`; clear-all is `Ctrl+Shift+A`. Registered via
+    /// `addAction` so they fire even without menu placement.
     std::array<QAction *, loglib::ANCHOR_PALETTE_SIZE> mAnchorColorActions{};
     QAction *mActionClearRowAnchor = nullptr;
     QAction *mActionJumpNextAnchor = nullptr;

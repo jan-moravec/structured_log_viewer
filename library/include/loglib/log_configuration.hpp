@@ -162,19 +162,13 @@ struct LogConfiguration
         std::vector<std::string> locatorDedupKeys;
     };
 
-    /// One persisted user "anchor" (bookmark + colour) on a log line.
+    /// A persisted bookmark on one log line.
     ///
-    /// Anchors are addressed by the pair `(locator, lineId)`:
-    /// - `lineId` is the monotonic per-`LineSource` id assigned by
-    ///   the parser; survives FIFO eviction within a session but
-    ///   resets when the model is fully re-streamed.
-    /// - `locator` is a `Source::locatorDedupKeys` entry that
-    ///   disambiguates lines coming from different files in a
-    ///   multi-file session; empty for single-file / network
-    ///   streams.
-    /// `colorIndex` indexes into `Theme::anchorPalette`. Valid range
-    /// is `[0, ANCHOR_PALETTE_SIZE)`; out-of-range entries should
-    /// be dropped on load.
+    /// Identified by `(locator, lineId)`: `lineId` is the parser's
+    /// monotonic per-`LineSource` id; `locator` disambiguates files
+    /// in a multi-file session (empty for single-file / network).
+    /// `colorIndex` indexes `Theme::anchorPalette`; out-of-range
+    /// values are dropped on load.
     struct AnchorEntry
     {
         std::string locator;
@@ -193,10 +187,8 @@ struct LogConfiguration
     Sort sort;
     std::optional<Source> source;
 
-    /// Per-session anchor list (user-marked rows + colour). Sorted
-    /// by `(locator, lineId)` on save so JSON diffs are stable;
-    /// no ordering guarantee on read (the app rebuilds its hash
-    /// map regardless).
+    /// Persisted anchors. Sorted by `(locator, lineId)` on save
+    /// for stable diffs; no ordering guarantee on read.
     std::vector<AnchorEntry> anchors;
 };
 
@@ -342,9 +334,7 @@ public:
     /// Replace `LogConfiguration::source`. `nullopt` clears the binding.
     void SetSource(std::optional<LogConfiguration::Source> source);
 
-    /// Replace `LogConfiguration::anchors`. The app mirrors its
-    /// runtime `AnchorManager` state through this before `Save`.
-    /// Pass an empty vector to drop every anchor.
+    /// Replace `LogConfiguration::anchors`. Empty clears them all.
     void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
 
     /// Apply `(srcIndex -> destIndex)` to a stored column index.

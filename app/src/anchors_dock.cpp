@@ -34,9 +34,7 @@ namespace
 
 constexpr qreal SWATCH_PAINT_INSET = 0.5;
 constexpr qreal SWATCH_CORNER_RADIUS = 3.0;
-/// Fallback swatch edge length in device-independent pixels for the
-/// rare case where no `QStyle` is available (headless test harness,
-/// `QApplication` torn down). Matches the previous hard-coded value.
+/// Swatch edge length when no `QStyle` is reachable (headless tests).
 constexpr int SWATCH_ICON_FALLBACK_PX = 14;
 
 [[nodiscard]] int SwatchIconPixels(const QWidget *widget)
@@ -52,10 +50,7 @@ constexpr int SWATCH_ICON_FALLBACK_PX = 14;
     return SWATCH_ICON_FALLBACK_PX;
 }
 
-/// User-role payload carried by every `QListWidgetItem`: the
-/// `(locator, lineId)` key that uniquely identifies the anchored
-/// row in the live `LogModel`. Stored as a `QVariantMap` for
-/// QVariant round-tripping.
+/// User-role slots carrying the `(locator, lineId)` key for each item.
 constexpr int ANCHOR_KEY_LOCATOR_ROLE = Qt::UserRole + 1;
 constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
 
@@ -99,12 +94,8 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     }
 }
 
-/// Resolve @p locator (a `locatorDedupKey`, lowercased on Windows)
-/// back to the display-case path the user opened, by consulting the
-/// model's `Source::locators` / `locatorDedupKeys` parallel arrays.
-/// Falls back to @p locator on a miss -- a multi-file session can
-/// carry anchors from a previously-saved source whose locator list
-/// the current session no longer mirrors.
+/// Map @p locator (a canonical `locatorDedupKey`) back to the
+/// display-case path. Falls back to @p locator on a miss.
 [[nodiscard]] QString DisplayPathForLocator(const LogModel *model, const std::string &locator)
 {
     if (model == nullptr || locator.empty())
@@ -118,9 +109,7 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     }
     const auto &dedupKeys = configurationSource->locatorDedupKeys;
     const auto &displayPaths = configurationSource->locators;
-    // `AppendLocator` keeps these arrays in lockstep; if they ever
-    // desync we still fall back to the dedup key rather than
-    // indexing out of `displayPaths`.
+    // `min` guards against the two arrays desyncing.
     const std::size_t count = std::min(dedupKeys.size(), displayPaths.size());
     for (std::size_t i = 0; i < count; ++i)
     {
@@ -147,10 +136,7 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     auto *header = new QHBoxLayout();
     mClearAllButton = new QPushButton(QObject::tr("Clear all"), host);
     mClearAllButton->setObjectName(QStringLiteral("anchorsClearAll"));
-    // Disabled by default -- `Refresh()` flips it on when at least
-    // one anchor exists. Without this initial state the empty-dock
-    // case would offer a button that, on click, would be a no-op
-    // (AnchorManager::ClearAll bails on an empty map).
+    // `Refresh()` enables this once there is something to clear.
     mClearAllButton->setEnabled(false);
     header->addStretch(1);
     header->addWidget(mClearAllButton);
@@ -165,57 +151,36 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
 
     setWidget(host);
 
-    // Lambdas call the gated `Refresh()` directly. The early-bail in
-    // `Refresh()` (against `IsVisibleForRefresh()`) short-circuits
-    // buried-dock cases without each call site repeating the check.
+    // `Refresh()` itself gates on visibility, so every wired path
+    // short-circuits cheaply when the dock is buried.
     if (mAnchors != nullptr)
     {
         connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &) { Refresh(); });
         connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
     }
 
-    // Repopulate when the underlying model's row set changes -- the
-    // resolved "filename" column may flip on a streamed batch that
-    // promotes a previously-empty locator. The gate inside
-    // `Refresh()` ensures a buried dock doesn't pay for every
-    // `modelReset` (which fires on every `BeginStreaming`, `Reset`,
-    // `NotifyConfigurationReplaced` and reloaded config -- bursts
-    // that target the table, not us). Re-shown docks pick up the
-    // latest state through the `visibilityChanged` handler below.
+    // `modelReset` matters: a streamed batch can promote a previously
+    // empty locator and change the resolved filename column.
     if (mModel != nullptr)
     {
         connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { Refresh(); });
     }
 
-    // Theme switch (`Preferences -> Theme` or OS dark-mode flip in
-    // Auto): anchor swatches read from `ThemeControl::AnchorBrushFor`,
-    // so without this connect the dock keeps painting the previous
-    // theme's palette until the next anchor mutation triggers a
-    // refresh. Gated through `Refresh()` so a buried dock skips work.
+    // Theme switch repaints all swatches.
     if (mTheme != nullptr)
     {
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
     }
 
-    // `itemActivated` fires on Enter/Return on the focused item *and*
-    // on double-click for default-styled item views (the
-    // `SH_ItemView_ActivateItemOnSingleClick` style hint is off on
-    // every desktop platform we ship for). Wiring `itemDoubleClicked`
-    // alongside it would emit `jumpToAnchorRequested` twice for one
-    // user double-click and re-run `MainWindow::SelectSourceRow`
-    // (which re-clears + re-selects + re-scrolls) twice in a row.
+    // `itemActivated` covers both Enter and double-click. Wiring
+    // `itemDoubleClicked` too would fire jumps twice per click.
     connect(mList, &QListWidget::itemActivated, this, &AnchorsDock::OnItemActivated);
     connect(mList, &QWidget::customContextMenuRequested, this, &AnchorsDock::OnContextMenuRequested);
     connect(mClearAllButton, &QPushButton::clicked, this, &AnchorsDock::OnClearAllClicked);
 
-    // The first `visibilityChanged(true)` flips `mPerceivedVisible`
-    // from its false default (see header) and drives the very first
-    // population via `RefreshAlways` -- bypassing the gate is safe
-    // here because the visibility just opened. Subsequent visibility
-    // flips go back through the gated path. We do NOT call
-    // `Refresh()` at the end of the constructor: the dock starts
-    // hidden so the gate would reject it; an explicit no-op call
-    // would just be misleading.
+    // `RefreshAlways` is safe to bypass the gate here because
+    // visibility just opened. Don't call `Refresh()` at construction:
+    // the dock starts hidden and the gate would reject it anyway.
     connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         mPerceivedVisible = visible;
         if (visible)
@@ -227,13 +192,8 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
 
 void AnchorsDock::Refresh()
 {
-    // Gate: buried docks (hidden window, tabified-but-buried,
-    // bare-shell offscreen QPA) skip the full snapshot + repopulate
-    // pass. `visibilityChanged(true)` calls `RefreshAlways` directly
-    // so the user sees fresh content the moment they re-open the
-    // dock. Tests that need to inspect the dock under offscreen QPA
-    // (where `visibilityChanged` never fires) go through
-    // `RefreshForTest`.
+    // Buried docks skip the rebuild; `visibilityChanged(true)` will
+    // drive `RefreshAlways` directly when the user re-opens it.
     if (!IsVisibleForRefresh())
     {
         return;
@@ -247,14 +207,8 @@ void AnchorsDock::RefreshAlways()
     {
         return;
     }
-    // Snapshot the user's focus + selection BEFORE `clear()` wipes
-    // the list's selection model. Without this, even cheap refreshes
-    // (right-click + remove an anchor, theme switch, anchor recolour)
-    // pull the highlight off the entry the user was just touching.
-    // We snapshot by anchor key rather than by row index because the
-    // refresh below recreates every row in a possibly-different
-    // order (`Entries()` is sorted, but the previous order is gone
-    // by the time we rebuild).
+    // Snapshot focus + selection by key so the user's highlight
+    // survives the `clear()` + repopulate below (row order may shift).
     struct AnchorKeyCarrier
     {
         QString locator;
@@ -285,21 +239,14 @@ void AnchorsDock::RefreshAlways()
         return;
     }
 
-    // Resolve the swatch size once per refresh from the active
-    // style so the swatches scale with HiDPI / Fusion vs Windows
-    // vs macOS look-and-feel. Falls back to a hard-coded value in
-    // the unusual case where no `QStyle` is reachable.
+    // Resolve once so swatches scale with HiDPI / native style.
     const int swatchPx = SwatchIconPixels(this);
 
     const auto entries = mAnchors->Entries();
     for (const auto &entry : entries)
     {
-        // Prefer the display-case path (`Source::locators[i]`) over
-        // the canonicalised locator (`locatorDedupKeys[i]`, lower-
-        // cased on Windows) so the dock label matches what the user
-        // sees in the title bar / open-recents menu. The dedup key
-        // still flows through `ANCHOR_KEY_LOCATOR_ROLE` for the
-        // SourceRowForAnchorKey lookup.
+        // Show the display-case path; keep the canonical locator in
+        // the user-role data for the SourceRowForAnchorKey lookup.
         const QString displayPath = DisplayPathForLocator(mModel.data(), entry.locator);
         const QString filename = FilenameFromLocator(displayPath.toStdString());
         const QString label = filename.isEmpty() ? QObject::tr("line %1").arg(entry.lineId)
@@ -315,19 +262,13 @@ void AnchorsDock::RefreshAlways()
         );
     }
 
-    // Keep the Clear-all button enabled iff there is something to
-    // clear. Mirrors the constructor's "disabled by default" state.
     if (mClearAllButton != nullptr)
     {
         mClearAllButton->setEnabled(!mAnchors->Empty());
     }
 
-    // Restore selection + focus. We do this in a single pass after
-    // the items exist so the selection-changed signals fire once
-    // (matters for downstream observers that recompute "is the
-    // remove-anchor menu enabled" off the dock selection). Items
-    // that disappeared in the refresh (e.g. the entry the user
-    // just removed) are silently dropped.
+    // Restore selection + focus in one pass so observers see a
+    // single selection-changed signal. Vanished items are dropped.
     if (hadFocus || !selectedKeys.empty())
     {
         const QSignalBlocker selectionBlocker(mList);
@@ -394,14 +335,10 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
         return;
     }
 
-    // Capture the anchor key BEFORE `menu.exec()` pumps the event
-    // loop. While the popup is up any queued anchor signal can land
-    // on this thread, fire `Refresh()`, and tear down `item` --
-    // accessing it after `exec()` returns would be a use-after-free.
-    // The stack-local key survives that re-entry. The source row is
-    // intentionally NOT captured here: a FIFO eviction mid-popup
-    // would shift every surviving row's index, so we re-resolve from
-    // the (stable) key after `exec()` returns.
+    // Copy the key out before `exec()` pumps events: a queued anchor
+    // signal could `Refresh()` and tear `item` down underneath us.
+    // The source row is intentionally resolved *after* `exec()`
+    // since a mid-popup eviction would have shifted indices.
     const AnchorManager::Key key{
         .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
         .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
@@ -417,13 +354,7 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     }
     if (picked == jumpAction)
     {
-        // `menu.exec()` pumped the event loop, so re-check the
-        // QPointer the same way the function entry did. Re-resolve
-        // the source row from the key here: a streaming eviction
-        // between menu-open and click would have shifted every row,
-        // and `SourceRowForAnchorKey` returns -1 for an anchor that
-        // no longer has a live row -- `MainWindow::SelectSourceRow`
-        // handles that case by surfacing a status-bar note.
+        // Re-check QPointers after the event-loop re-entry.
         if (mModel.isNull())
         {
             return;
@@ -433,10 +364,6 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     }
     if (picked == removeAction)
     {
-        // `menu.exec()` pumped the event loop, so re-check the
-        // QPointer the same way the function entry did -- the
-        // anchor manager could have been torn down while the popup
-        // was up. Matches the stack-local-capture rationale above.
         if (mAnchors.isNull())
         {
             return;

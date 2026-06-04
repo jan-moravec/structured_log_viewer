@@ -276,11 +276,8 @@ std::vector<AnchorManager::Key> LogTableView::AnchorKeysForSelection() const
         return out;
     }
 
-    // Walk the proxy chain down to the source model so we can ask
-    // the LogModel for an AnchorKey. The view's `model()` is the
-    // topmost proxy (filter, possibly above a row-order reverse).
-    // Each hop runs through `mapToSource` until we hit a model that
-    // is not a proxy; at the bottom we expect a `LogModel*`.
+    // Walk the proxy chain down to the source `LogModel` so we can
+    // ask for anchor keys.
     QAbstractItemModel *current = model();
     QModelIndexList resolvedIndices = selected;
     while (auto *proxy = qobject_cast<QAbstractProxyModel *>(current))
@@ -327,14 +324,7 @@ void LogTableView::AnchorSelection(int colorIndex)
     {
         return;
     }
-    // The bulk API picks the right signal internally: a single
-    // actual mutation degenerates into `anchorChanged(key)` (per-
-    // row repaint in the model), two-or-more collapse into one
-    // `anchorsReset` (cheaper than N targeted emits). We don't
-    // need to branch on `keys.size()` ourselves -- it would only
-    // get the "no-change subset" case wrong (e.g. recolouring
-    // 50 rows where 49 are already on that slot still wants a
-    // single-key signal).
+    // The bulk API routes signals based on actual mutation count.
     mAnchors->SetAnchors(keys, static_cast<uint8_t>(colorIndex));
 }
 
@@ -349,7 +339,5 @@ void LogTableView::ClearAnchorOnSelection()
     {
         return;
     }
-    // See `AnchorSelection`: the bulk API already routes the right
-    // signal based on actual mutation count.
     mAnchors->RemoveAnchors(keys);
 }

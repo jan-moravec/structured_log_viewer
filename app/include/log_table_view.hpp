@@ -40,48 +40,31 @@ public:
 
     [[nodiscard]] TailEdge GetTailEdge() const noexcept;
 
-    /// Non-owning hookup for the anchor pipeline. Without this call
-    /// the anchor slots and the resolved-keys helpers all no-op,
-    /// which keeps legacy two-arg test fixtures working. Pair with
-    /// `LogModel(theme, anchors)` so the model + view see the same
-    /// manager and the right-click menu's "is this row already
-    /// anchored?" check matches what the model painted.
+    /// Non-owning. Required for the anchor slots and helpers to do
+    /// anything; without it they're inert (keeps legacy two-arg test
+    /// fixtures working).
     void SetAnchorManager(AnchorManager *anchors) noexcept;
 
-    /// Anchor-key snapshot for every currently selected row. Walks
-    /// the proxy chain to the source-side `LogModel` and asks it
-    /// for the `(locator, lineId)` key. Returns an empty vector
-    /// when the selection is empty, no `LogModel` is reachable, or
-    /// the proxy chain doesn't resolve. Pure helper; exposed so the
-    /// right-click menu builder can read the selection's current
-    /// anchor state to label entries appropriately.
+    /// `(locator, lineId)` for every selected row. Walks the proxy
+    /// chain down to `LogModel`; empty when no `LogModel` is reachable.
     [[nodiscard]] std::vector<AnchorManager::Key> AnchorKeysForSelection() const;
 
 public slots:
     void CopySelectedRowsToClipboard();
 
-    /// Drop every row in the current selection into anchor slot
-    /// @p colorIndex. Adds new anchors and re-colours existing
-    /// ones in one pass. No-op when no `AnchorManager` is wired
-    /// or the selection is empty. @p colorIndex is forwarded as-
-    /// is to the manager, which clamps out-of-range values.
+    /// Anchor every selected row at slot @p colorIndex (adds or
+    /// recolours). No-op when nothing is wired or selected.
     void AnchorSelection(int colorIndex);
 
-    /// Remove the anchor from every currently selected row. No-op
-    /// when the selection is empty or no `AnchorManager` is wired.
-    /// Rows that aren't anchored are silently skipped.
+    /// Remove the anchor from every selected row. Silently skips
+    /// rows that aren't anchored.
     void ClearAnchorOnSelection();
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
-    /// Test seam over the protected `QAbstractItemView::selectionCommand`,
-    /// which is the function `QTableView`'s mouse handlers consult to
-    /// translate `(button, modifiers, index)` into selection-model
-    /// flags. The row-click-semantics regression test in `apptest`
-    /// reads it for synthetic press events under the three modifier
-    /// combinations the file-explorer idiom relies on (no modifier /
-    /// Ctrl / Shift). Gated behind `LOGAPP_BUILD_TESTING` so the
-    /// surface is only present in the test build.
+    /// Test seam over the protected `selectionCommand`; lets the
+    /// row-click-semantics regression test inspect selection flags
+    /// without synthesising real mouse events.
     [[nodiscard]] QItemSelectionModel::SelectionFlags SelectionCommandForTest(
         const QModelIndex &index, const QEvent *event = nullptr
     ) const
@@ -154,9 +137,7 @@ private:
     /// `setModel` before re-wiring.
     QList<QMetaObject::Connection> mModelConnections;
 
-    /// Non-owning. Provided by `MainWindow` via `SetAnchorManager`
-    /// when the anchor feature is in play; null on legacy test
-    /// fixtures that drive the view standalone. Every anchor-
-    /// related slot null-checks before dereferencing.
+    /// Non-owning. Wired by `MainWindow`; null on standalone test
+    /// fixtures. Anchor slots null-check before dereferencing.
     AnchorManager *mAnchors = nullptr;
 };
