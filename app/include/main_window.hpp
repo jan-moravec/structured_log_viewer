@@ -20,6 +20,7 @@
 #include <QAction>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QLabel>
 #include <QList>
@@ -29,6 +30,7 @@
 #include <QPushButton>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -712,6 +714,43 @@ private:
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
+    /// Starts the elapsed-time timer and 1 Hz refresh tick for live tail.
+    void StartLiveTailTicker();
+
+    /// Stops the 1 Hz tick but keeps the elapsed value for the final status.
+    void StopLiveTailTicker();
+
+    /// Opens (or raises) the modeless shortcuts dialog, building it lazily.
+    void ShowShortcutsDialog();
+
+    /// Persists window geometry and dock layout to `QSettings`.
+    void SaveWindowChrome() const;
+
+    /// Restores window geometry and dock layout from `QSettings`.
+    /// Must run after every dock/toolbar widget has its `objectName`
+    /// so `restoreState` can resolve them.
+    void RestoreWindowChrome();
+
+    /// Rebuilds the window title from the current session state.
+    void UpdateWindowTitle();
+
+    /// Marks filters as having unsaved edits and refreshes the title.
+    /// No-op while `mLoadingConfiguration` is true so a config reload
+    /// doesn't transiently flash `[*]`.
+    void MarkFiltersDirty();
+
+    /// Last-used dialog directory, or the platform `Documents` location
+    /// on first run. Persisted in `QSettings` under `ui/lastOpenDir`.
+    [[nodiscard]] QString DefaultOpenDir() const;
+
+    /// Persists the directory of @p path as the last-used dialog dir.
+    void RememberLastOpenDir(const QString &path);
+
+    /// Appends shortcut text to each action's tooltip and mirrors the
+    /// tooltip into `statusTip()`. Skips actions whose tooltip already
+    /// names the shortcut, so it's safe to re-run.
+    void FinaliseActionMetadata();
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();
@@ -813,6 +852,25 @@ private:
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
+
+    /// Ctrl+/ action that opens the shortcuts reference dialog.
+    QAction *mActionShowShortcuts = nullptr;
+
+    /// Lazy-built shortcuts dialog; kept alive so reopening preserves geometry.
+    QPointer<class ShortcutsDialog> mShortcutsDialog;
+
+    /// Wall-clock since the active live-tail session started.
+    QElapsedTimer mLiveTailTimer;
+
+    /// 1 Hz timer that refreshes the live-tail elapsed-time display.
+    QTimer *mLiveTailTickTimer = nullptr;
+
+    /// True when filters have unsaved user edits; drives the `[*]` title marker.
+    bool mFiltersDirty = false;
+
+    /// Re-entrancy guard set while loading a config, so per-filter
+    /// `AddLogFilter` calls don't mark the session dirty.
+    bool mLoadingConfiguration = false;
 
     /// Filename of the active stream; empty when idle.
     QString mStreamingFileName;

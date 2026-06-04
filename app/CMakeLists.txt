@@ -57,6 +57,10 @@ set(PROJECT_SOURCES
     include/session_history_manager.hpp
     src/single_instance_guard.cpp
     include/single_instance_guard.hpp
+    src/shortcut_catalog.cpp
+    include/shortcut_catalog.hpp
+    src/shortcuts_dialog.cpp
+    include/shortcuts_dialog.hpp
     include/uuid_utils.hpp
     include/log_warning.hpp
     include/cli_parser.hpp

@@ -87,6 +87,9 @@ signals:
     void userScrolledToTail();
 
 protected:
+    /// Draws the empty-state shortcuts card when the model has no rows.
+    void paintEvent(QPaintEvent *event) override;
+
     /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
 

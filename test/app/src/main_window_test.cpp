@@ -572,7 +572,11 @@ private slots:
 
     void TestWindowTitle()
     {
-        QCOMPARE(mWindow->windowTitle(), QString("Structured Log Viewer"));
+        // Idle title carries the `[*]` modified-marker placeholder. Qt
+        // strips it from the rendered title when `isWindowModified()` is
+        // false, but the getter returns the raw string verbatim.
+        QCOMPARE(mWindow->windowTitle(), QString("Structured Log Viewer[*]"));
+        QVERIFY(!mWindow->isWindowModified());
     }
 
     void TestWindowIcon()
