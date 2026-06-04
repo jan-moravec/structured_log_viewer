@@ -7,7 +7,7 @@
 #include <QMenuBar>
 #include <QSet>
 
-namespace ShortcutCatalog
+namespace shortcut_catalog
 {
 namespace
 {
@@ -92,7 +92,7 @@ QList<Group> Build(const QMainWindow *root)
     // Record Details toggle, ...). We walk `root->actions()` instead of
     // `findChildren` to skip actions owned by child dialogs.
     Group other;
-    other.title = QCoreApplication::translate("ShortcutCatalog", "Other");
+    other.title = QCoreApplication::translate("shortcut_catalog", "Other");
     for (const QAction *action : root->actions())
     {
         if (!IsListable(action) || claimed.contains(action))
@@ -108,4 +108,4 @@ QList<Group> Build(const QMainWindow *root)
 
     return result;
 }
-} // namespace ShortcutCatalog
+} // namespace shortcut_catalog

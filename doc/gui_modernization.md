@@ -138,7 +138,7 @@ This removes a frequent "where did my rows go?" confusion.
 
 `LogTableView::paintEvent` (`app/src/log_table_view.cpp`) overlays a
 shortcut card on top of the empty grid. The catalog is auto-discovered
-via `ShortcutCatalog::Build` (`app/src/shortcut_catalog.cpp`), so any
+via `shortcut_catalog::Build` (`app/src/shortcut_catalog.cpp`), so any
 new shortcut surfaces in the placeholder with no further work. Colors
 read from `QPalette::WindowText` / `QPalette::PlaceholderText` so the
 card adapts to light / dark themes automatically. The same catalog
@@ -307,7 +307,7 @@ designer is involved.
 
 - `actionShowShortcuts` (`Ctrl+/`) opens `ShortcutsDialog`
   (`app/src/shortcuts_dialog.cpp`), which renders the auto-discovered
-  catalog from `ShortcutCatalog::Build`. The dialog refreshes on every
+  catalog from `shortcut_catalog::Build`. The dialog refreshes on every
   `show()` so newly registered shortcuts appear without a restart.
 - `MainWindow::FinaliseActionMetadata` (called once at the end of the
   constructor) suffixes every `QAction` tool tip with its shortcut text

@@ -9,7 +9,7 @@ class QAction;
 class QMainWindow;
 QT_END_NAMESPACE
 
-namespace ShortcutCatalog
+namespace shortcut_catalog
 {
 /// One row in a `Group`: cleaned action text and its native shortcut.
 struct Entry
@@ -29,4 +29,4 @@ struct Group
 /// "Other" group for window-level orphan actions. Skips separators
 /// and actions without a shortcut, and strips `&` accelerator markers.
 [[nodiscard]] QList<Group> Build(const QMainWindow *root);
-} // namespace ShortcutCatalog
+} // namespace shortcut_catalog

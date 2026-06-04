@@ -148,7 +148,7 @@ void LogTableView::paintEvent(QPaintEvent *event)
         return;
     }
 
-    const QList<ShortcutCatalog::Group> groups = ShortcutCatalog::Build(mainWindow);
+    const QList<shortcut_catalog::Group> groups = shortcut_catalog::Build(mainWindow);
     if (groups.isEmpty())
     {
         return;

@@ -29,9 +29,6 @@ public:
 
     void keyPressEvent(QKeyEvent *event) override;
 
-    /// Draws the empty-state shortcuts card when the model has no rows.
-    void paintEvent(QPaintEvent *event) override;
-
     /// Override so the view can wire its own structural-change hooks
     /// onto whichever model is attached (used by the reading-position
     /// preservation path -- see `userScrolledAwayFromTail`).
@@ -90,6 +87,9 @@ signals:
     void userScrolledToTail();
 
 protected:
+    /// Draws the empty-state shortcuts card when the model has no rows.
+    void paintEvent(QPaintEvent *event) override;
+
     /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
 

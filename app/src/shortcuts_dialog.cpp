@@ -20,7 +20,7 @@ constexpr int DIALOG_DEFAULT_WIDTH = 420;
 constexpr int DIALOG_DEFAULT_HEIGHT = 520;
 
 /// Renders the catalog as a single HTML document, one table per group.
-QString BuildHtml(const QList<ShortcutCatalog::Group> &groups)
+QString BuildHtml(const QList<shortcut_catalog::Group> &groups)
 {
     QString html;
     html.reserve(HTML_RESERVE_BYTES);
@@ -75,6 +75,6 @@ void ShortcutsDialog::RefreshContent()
     {
         return;
     }
-    const auto groups = ShortcutCatalog::Build(mHost);
+    const auto groups = shortcut_catalog::Build(mHost);
     mBrowser->setHtml(BuildHtml(groups));
 }
