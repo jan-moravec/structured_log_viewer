@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+class QCloseEvent;
 class QListWidget;
 class QPushButton;
 class QLabel;
@@ -68,10 +69,31 @@ public:
     }
 
 signals:
-    /// Emitted whenever `Count()` changes. The status-bar
-    /// indicator listens here so it can hide itself when the
-    /// dock empties.
-    void countChanged(int count);
+    /// Emitted whenever the displayed-error count or the dropped
+    /// count changes. The status-bar indicator listens here so it
+    /// can hide itself when the dock empties and surface both
+    /// figures in its tooltip.
+    void countChanged(int count, int droppedCount);
+
+    /// Emitted on the first batch appended after a `ClearErrors()`
+    /// (or since construction). `MainWindow` listens so it can
+    /// decide whether to raise / show the dock, factoring in
+    /// whether the user is currently doing something the auto-raise
+    /// would interrupt (e.g. typing in the find bar). Moving the
+    /// raise decision out of the dock keeps the dock unaware of
+    /// the rest of the chrome.
+    void firstBatchArrived();
+
+    /// Emitted when the user actually dismisses the dock. Not
+    /// emitted on tab inactivation -- see `FindDock::closed` for
+    /// the same idiom and rationale.
+    void closed();
+
+protected:
+    /// Emit `closed` once the base class has accepted the close so
+    /// the View-menu checkmark can drop without false-firing on
+    /// tab switches.
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     /// Refresh the header summary (e.g. "12 entries") and emit
@@ -86,7 +108,24 @@ private:
     /// Keep `mList` under the cap by evicting oldest entries
     /// (and any group header that becomes orphaned). Increments
     /// `mDroppedCount` per evicted error row.
+    ///
+    /// Does *not* manage the overflow footer -- that's
+    /// `RebuildOverflowFooter`'s job. Splitting them matters
+    /// because a single batch larger than the cap reaches
+    /// `mErrorCount == MAX_DISPLAYED_ERRORS` exactly (the
+    /// pre-trim in `AppendErrors` lops the surplus off the
+    /// *input* before items are minted), so this method has no
+    /// eviction work to do but the dock still owes the user a
+    /// footer reflecting the pre-trimmed drops.
     void TrimToCap();
+
+    /// Ensure the trailing overflow footer is present iff
+    /// `mDroppedCount > 0`, with text reflecting the current
+    /// count. Idempotent. The caller is responsible for having
+    /// removed any prior footer (`AppendErrors` does this at the
+    /// top of the function) so this method only ever *adds* a
+    /// footer; it never has to compare-and-replace.
+    void RebuildOverflowFooter();
 
     QListWidget *mList = nullptr;
     QLabel *mSummary = nullptr;

@@ -5,10 +5,13 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "find_dock.hpp"
+#include "find_record_widget.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "main_window.hpp"
+#include "parse_errors_dock.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "record_detail_dock.hpp"
 #include "record_detail_widget.hpp"
@@ -76,6 +79,7 @@
 #include <QScopedPointer>
 #include <QScrollBar>
 #include <QSettings>
+#include <QShortcut>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QStandardItem>
@@ -9251,6 +9255,509 @@ private slots:
         }
 
         model->EndStreaming(false);
+    }
+
+    // Regression: `FindRecords` and `UpdateFindMatchCount` previously
+    // OR-ed `Qt::MatchContains` with the (optional) `MatchWildcard` /
+    // `MatchRegularExpression` flags. `LogFilterModel::Matches`
+    // short-circuits on `MatchContains`, so the regex / wildcard
+    // toggles were silently no-ops -- the bar said "regex on" but
+    // the search ran as plain substring.
+    //
+    // Driver: stream lines whose substring would match plainly but
+    // whose regex / wildcard pattern must reject some of them. Then
+    // assert that find with the right flag lands on a matching row
+    // and that find without the flag still finds the broader set.
+    void TestFindUsesRegexFlagAndIgnoresContainsShadow()
+    {
+        const QStringList lines{
+            QStringLiteral(R"({"msg": "abc-123"})"),
+            QStringLiteral(R"({"msg": "abc-xyz"})"),
+            QStringLiteral(R"({"msg": "zzz-123"})"),
+            QStringLiteral(R"({"msg": "abc-456"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QCOMPARE(model->rowCount(), lines.size());
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        auto *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
+
+        // Anchor selection at row 0 so `FindRecords` walks forward
+        // from row 1 and lands on the first row whose digits match.
+        tableView->selectionModel()->setCurrentIndex(
+            filterModel->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+
+        // Regex needle `abc-\d+` matches rows 0 and 3 ("abc-123",
+        // "abc-456") but rejects row 1 ("abc-xyz") and row 2
+        // ("zzz-123"). With the old contains-wins bug this would
+        // have matched all four (substring "abc-\d+" is in none of
+        // them, so it would have *failed* the find entirely and
+        // left the selection at row 0). The fix routes purely
+        // through `MatchRegularExpression`, so we expect a hit at
+        // row 3 (skipping the selected start row 0).
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("abc-\\d+")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false),
+                Q_ARG(bool, true)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        QModelIndex selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "regex find must advance to a match");
+        QVERIFY2(selected.row() != 0, "regex find must not stall on the start row");
+        const QString cell = filterModel->index(selected.row(), 0).data(Qt::DisplayRole).toString();
+        QVERIFY2(
+            cell.contains(QStringLiteral("abc-")) && cell != QStringLiteral("abc-xyz"),
+            qPrintable(QStringLiteral("regex find landed on unexpected row text: %1").arg(cell))
+        );
+
+        // Wildcard branch: drive the proxy's `MatchRow` directly
+        // with `MatchWildcard` and confirm the wildcard semantics
+        // bind, independently of `FindRecords`'s start-index and
+        // skip-first-N bookkeeping.
+        //
+        // `*xyz*` (anchored to `\A.*xyz.*\z`) must match only the
+        // "abc-xyz" row. The old shadow-by-contains bug would have
+        // returned zero matches (no cell contains a literal `*`),
+        // so testing match-count alone discriminates the two
+        // implementations cleanly.
+        // Drive `MatchRow` directly with `MatchWildcard`. The
+        // bug used to lurk in two layers:
+        //   1. `MainWindow` OR-ed `MatchContains` into the flags
+        //      alongside `MatchWildcard`; and
+        //   2. `Qt::MatchFlag` values are *not* disjoint bit
+        //      flags -- `MatchWildcard = 5` already has the
+        //      `MatchContains = 1` bit set, so the old testFlag
+        //      ladder in `LogFilterModel::Matches` would short
+        //      circuit into `text.contains(needle)` even when
+        //      callers passed `MatchWildcard` alone.
+        // `*xyz*` against a literal substring of `*xyz*` matches
+        // no row, so a hit here proves the wildcard branch took
+        // effect rather than the contains branch.
+        const QModelIndex wildcardStart = filterModel->index(0, 0);
+        QVERIFY(wildcardStart.isValid());
+        const QModelIndexList wildcardHits = filterModel->MatchRow(
+            wildcardStart,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("*xyz*")),
+            LogFilterModel::UNLIMITED_HITS,
+            Qt::MatchWildcard | Qt::MatchWrap | Qt::MatchRecursive,
+            true,
+            0
+        );
+        QCOMPARE(wildcardHits.size(), 1);
+        const QString wildcardCell = filterModel->index(wildcardHits[0].row(), 0).data(Qt::DisplayRole).toString();
+        QVERIFY2(
+            wildcardCell.contains(QStringLiteral("xyz")),
+            qPrintable(QStringLiteral("wildcard hit landed on a non-xyz row: %1").arg(wildcardCell))
+        );
+
+        // And once more via the public `FindRecords` slot to
+        // pin that `MainWindow`'s flag composition is also right.
+        // Anchor selection at row 0 so wrap-around forward search
+        // lands on the only matching row (row 1, `abc-xyz`).
+        tableView->selectionModel()->setCurrentIndex(
+            filterModel->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("*xyz*")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "FindRecords with wildcards must advance to a match");
+        QCOMPARE(filterModel->index(selected.row(), 0).data(Qt::DisplayRole).toString(), QStringLiteral("abc-xyz"));
+
+        // Contains needle `abc`: should reach every "abc-..." row;
+        // unchanged behaviour from before the fix, but pin it so a
+        // future refactor of the flag composition can't silently
+        // demote contains too.
+        tableView->selectionModel()->setCurrentIndex(
+            filterModel->index(2, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("abc")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "contains find must advance to a match");
+        QVERIFY2(
+            filterModel->index(selected.row(), 0).data(Qt::DisplayRole).toString().startsWith(QStringLiteral("abc-")),
+            "contains find must land on an `abc-...` row"
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Toggling the regex action in the find bar must un-check
+    // wildcards (and vice versa). They are mutually exclusive in
+    // `LogFilterModel::Matches`, so leaving both checked makes the
+    // bar look like it's running two modes when only one applies.
+    void TestFindBarRegexAndWildcardsAreMutuallyExclusive()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *regex = findRecord->findChild<QAction *>(QStringLiteral("regexToggle"));
+        auto *wildcards = findRecord->findChild<QAction *>(QStringLiteral("wildcardsToggle"));
+        QVERIFY2(regex != nullptr && wildcards != nullptr, "Find bar must expose regex + wildcards toggles");
+
+        regex->setChecked(true);
+        QVERIFY2(regex->isChecked(), "regex toggle must accept setChecked(true)");
+        QVERIFY2(!wildcards->isChecked(), "regex setChecked(true) must leave wildcards off");
+
+        wildcards->setChecked(true);
+        QVERIFY2(wildcards->isChecked(), "wildcards toggle must accept setChecked(true)");
+        QVERIFY2(!regex->isChecked(), "enabling wildcards must auto-un-check regex");
+
+        regex->setChecked(true);
+        QVERIFY2(regex->isChecked(), "regex toggle must re-engage after wildcards turn off");
+        QVERIFY2(!wildcards->isChecked(), "re-enabling regex must auto-un-check wildcards");
+    }
+
+    // `ParseErrorsDock::AppendErrors` must:
+    //   - track Count() / DroppedCount() correctly across batches,
+    //   - emit `countChanged(count, droppedCount)` on every change,
+    //   - emit `firstBatchArrived()` exactly once per session (i.e.
+    //     not on subsequent batches after the first).
+    void TestParseErrorsDockTracksCountsAndFirstBatchSignal()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        QSignalSpy countSpy(dock, &ParseErrorsDock::countChanged);
+        QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
+        QVERIFY(countSpy.isValid());
+        QVERIFY(firstBatchSpy.isValid());
+
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+
+        dock->AppendErrors(QStringLiteral("First batch"), {"a", "b", "c"});
+        QCOMPARE(dock->Count(), 3);
+        QCOMPARE(dock->DroppedCount(), 0);
+        QCOMPARE(firstBatchSpy.count(), 1);
+        // countChanged carries (count, droppedCount) -- two ints.
+        QVERIFY2(countSpy.count() >= 1, "countChanged must fire on append");
+        QCOMPARE(countSpy.last().at(0).toInt(), 3);
+        QCOMPARE(countSpy.last().at(1).toInt(), 0);
+
+        dock->AppendErrors(QStringLiteral("Second batch"), {"d", "e"});
+        QCOMPARE(dock->Count(), 5);
+        QCOMPARE(dock->DroppedCount(), 0);
+        QCOMPARE(
+            firstBatchSpy.count(),
+            1
+        ); // No second emit until ClearErrors resets the session.
+        QCOMPARE(countSpy.last().at(0).toInt(), 5);
+
+        // Clear resets both counters and arms `firstBatchArrived`
+        // for the next session.
+        dock->ClearErrors();
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+        QCOMPARE(countSpy.last().at(0).toInt(), 0);
+        QCOMPARE(countSpy.last().at(1).toInt(), 0);
+
+        dock->AppendErrors(QStringLiteral("After clear"), {"x"});
+        QCOMPARE(dock->Count(), 1);
+        QCOMPARE(firstBatchSpy.count(), 2); // New session -> second emit.
+    }
+
+    // Pathologically large batches must evict the leading slice up
+    // front (rather than letting `TrimToCap` walk from the top
+    // after construction). After cap-trimming, `DroppedCount()`
+    // reflects the eviction count, and the overflow footer is the
+    // single tail row marked with `OVERFLOW_FOOTER_ROLE`.
+    //
+    // Regression: a single batch sized just past the cap (cap + N)
+    // pre-trims `N` entries off the input *before* items are
+    // minted, so `mErrorCount` lands exactly at `MAX_DISPLAYED_ERRORS`
+    // after the loop. The old `TrimToCap` short-circuited at that
+    // point and never appended the in-list overflow footer, leaving
+    // the summary header ("N earlier dropped") and the list view
+    // out of sync.
+    void TestParseErrorsDockTrimsToCapAndAddsOverflowFooter()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        std::vector<std::string> huge;
+        huge.reserve(static_cast<size_t>(cap + 25));
+        for (int i = 0; i < cap + 25; ++i)
+        {
+            huge.emplace_back(std::string("err ") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Huge"), huge);
+        QCOMPARE(dock->Count(), cap);
+        QCOMPARE(dock->DroppedCount(), 25);
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        // The footer must be the *last* item (so it floats below
+        // the surviving rows) and must be the only item flagged
+        // with `Qt::UserRole + 1`. Searching from the tail also
+        // guarantees we don't accidentally find a stale footer
+        // sitting somewhere in the middle.
+        QListWidgetItem *footer = nullptr;
+        int footerIndex = -1;
+        int footerHits = 0;
+        const int footerRole = Qt::UserRole + 1;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->data(footerRole).toBool())
+            {
+                ++footerHits;
+                footer = item;
+                footerIndex = i;
+            }
+        }
+        QCOMPARE(footerHits, 1);
+        QCOMPARE(footerIndex, list->count() - 1);
+        QVERIFY2(footer != nullptr, "footer item lookup must succeed");
+        QVERIFY2(
+            footer->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("footer must read like an overflow notice; got: %1").arg(footer->text()))
+        );
+        // Footer must be non-selectable so arrow-key navigation
+        // and Ctrl+A don't pull it into the user's selection.
+        QVERIFY2(
+            !footer->flags().testFlag(Qt::ItemIsSelectable),
+            "overflow footer must not be user-selectable"
+        );
+    }
+
+    // Streaming-style: many smaller batches that collectively
+    // overflow the cap. `TrimToCap`'s walk-from-the-top path
+    // handles the eviction here (different code path from the
+    // pathological single-batch case above), so the in-list
+    // footer needs to appear on this path too and stay
+    // monotonic with `mDroppedCount`.
+    void TestParseErrorsDockOverflowFooterTracksMultipleBatches()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+        const int footerRole = Qt::UserRole + 1;
+
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        // Fill exactly to the cap with one moderate batch -- no
+        // overflow yet, so no footer expected.
+        std::vector<std::string> first;
+        first.reserve(static_cast<size_t>(cap));
+        for (int i = 0; i < cap; ++i)
+        {
+            first.emplace_back(std::string("a-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("A"), first);
+        QCOMPARE(dock->DroppedCount(), 0);
+        for (int i = 0; i < list->count(); ++i)
+        {
+            QListWidgetItem *item = list->item(i);
+            QVERIFY2(
+                item == nullptr || !item->data(footerRole).toBool(),
+                "no footer when nothing has been dropped"
+            );
+        }
+
+        // Second small batch tips the dock over the cap. Walk
+        // eviction kicks in. Footer must surface.
+        const int overflow = 50;
+        std::vector<std::string> second;
+        second.reserve(static_cast<size_t>(overflow));
+        for (int i = 0; i < overflow; ++i)
+        {
+            second.emplace_back(std::string("b-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("B"), second);
+        QCOMPARE(dock->Count(), cap);
+        QCOMPARE(dock->DroppedCount(), overflow);
+        QListWidgetItem *tail = list->item(list->count() - 1);
+        QVERIFY2(tail != nullptr && tail->data(footerRole).toBool(),
+                 "overflow footer must be the trailing item after eviction");
+
+        // Third batch grows `mDroppedCount` further; footer text
+        // must update to the new total, and the dock must not
+        // accumulate stale footers.
+        std::vector<std::string> third;
+        third.reserve(static_cast<size_t>(overflow));
+        for (int i = 0; i < overflow; ++i)
+        {
+            third.emplace_back(std::string("c-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("C"), third);
+        QCOMPARE(dock->DroppedCount(), overflow * 2);
+        int footerHits = 0;
+        QListWidgetItem *latestFooter = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->data(footerRole).toBool())
+            {
+                ++footerHits;
+                latestFooter = item;
+            }
+        }
+        QCOMPARE(footerHits, 1);
+        QVERIFY2(latestFooter != nullptr, "footer lookup must succeed after third batch");
+        QVERIFY2(
+            latestFooter->text().contains(QString::number(overflow * 2)) ||
+                latestFooter->text().contains(QLocale::system().toString(static_cast<qlonglong>(overflow * 2))),
+            qPrintable(QStringLiteral("footer must surface the running drop count; got: %1").arg(latestFooter->text()))
+        );
+    }
+
+    // `CopySelection` documents that group headers + overflow
+    // footer are pasted alongside the user's selection so the
+    // copied block reads coherently. Headers and the footer are
+    // non-selectable items, so the implementation has to
+    // synthesise them around the selection rather than rely on
+    // `isSelected()`.
+    void TestParseErrorsDockCopySelectionIncludesHeaderAndFooter()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        // Two batches so we have two headers; cap-overflow forces
+        // the footer.
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        std::vector<std::string> batchA;
+        batchA.reserve(static_cast<size_t>(cap - 5));
+        for (int i = 0; i < cap - 5; ++i)
+        {
+            batchA.emplace_back("A-" + std::to_string(i));
+        }
+        std::vector<std::string> batchB{"B-0", "B-1", "B-2", "B-3", "B-4", "B-5", "B-6"};
+
+        dock->AppendErrors(QStringLiteral("Batch A"), batchA);
+        dock->AppendErrors(QStringLiteral("Batch B"), batchB);
+        QVERIFY2(dock->DroppedCount() > 0, "cap overflow must mint an overflow footer");
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        // Locate the "Batch B" header + one of its error rows; the
+        // header sits between A's last row and B's first.
+        int batchBHeaderRow = -1;
+        int firstBRow = -1;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            QListWidgetItem *item = list->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            if (item->text() == QStringLiteral("Batch B") && !item->flags().testFlag(Qt::ItemIsSelectable))
+            {
+                batchBHeaderRow = i;
+            }
+            if (item->text().startsWith(QStringLiteral("B-")) && item->flags().testFlag(Qt::ItemIsSelectable))
+            {
+                if (firstBRow < 0)
+                {
+                    firstBRow = i;
+                }
+            }
+        }
+        QVERIFY2(batchBHeaderRow >= 0, "Batch B header must survive trimming (its rows did)");
+        QVERIFY2(firstBRow > batchBHeaderRow, "Batch B's first error row must follow its header");
+
+        list->clearSelection();
+        list->item(firstBRow)->setSelected(true);
+
+        auto *clipboard = QGuiApplication::clipboard();
+        clipboard->clear();
+        QMetaObject::invokeMethod(dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList")), [list]() {
+            Q_UNUSED(list);
+        });
+
+        // `CopySelection` is private; invoke via the Ctrl+C
+        // shortcut so we exercise the same path the user sees.
+        // Build a key event and post it via QTest.
+        QShortcut *copyShortcut = nullptr;
+        const QList<QShortcut *> shortcuts = list->findChildren<QShortcut *>();
+        for (QShortcut *s : shortcuts)
+        {
+            if (s->key() == QKeySequence(QKeySequence::Copy))
+            {
+                copyShortcut = s;
+                break;
+            }
+        }
+        QVERIFY2(copyShortcut != nullptr, "ParseErrorsDock must wire Ctrl+C on its list");
+        emit copyShortcut->activated();
+        QCoreApplication::processEvents();
+
+        const QString clip = clipboard->text();
+        QVERIFY2(!clip.isEmpty(), "CopySelection must populate the clipboard");
+        QVERIFY2(
+            clip.contains(QStringLiteral("Batch B")),
+            qPrintable(QStringLiteral("clipboard must include the group header; got:\n%1").arg(clip))
+        );
+        QVERIFY2(
+            clip.contains(QStringLiteral("B-0")),
+            qPrintable(QStringLiteral("clipboard must include the selected error row; got:\n%1").arg(clip))
+        );
+        // The overflow footer is rendered by `tr()` so the exact
+        // text is locale-dependent; look for the parenthesised
+        // "dropped" hint instead.
+        QVERIFY2(
+            clip.contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("clipboard must include the overflow footer; got:\n%1").arg(clip))
+        );
     }
 
     // An enum column with an empty dictionary must show the placeholder

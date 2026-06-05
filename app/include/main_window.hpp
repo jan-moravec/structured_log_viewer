@@ -435,8 +435,9 @@ private slots:
 
     /// Refresh the status-bar parse-errors indicator. Wired to
     /// `ParseErrorsDock::countChanged`; hides the button when the
-    /// dock is empty.
-    void UpdateParseErrorsStatus(int count);
+    /// dock is empty. @p droppedCount surfaces in the tooltip so
+    /// the user can tell when the dock has truncated.
+    void UpdateParseErrorsStatus(int count, int droppedCount);
 
     /// Recount matches for the current find query and push the
     /// result back into the find bar. Hooked up to
@@ -456,6 +457,15 @@ private slots:
     /// proxy layout changes so a stale cache cannot survive a
     /// filter add / remove or a streaming append.
     void InvalidateFindMatchCache();
+
+    /// Centralised invalidation + debounced re-request. Wired to
+    /// every model / proxy signal that can change the match set
+    /// (`rowsInserted`, `rowsRemoved`, `layoutChanged`, model
+    /// resets, `dataChanged`). Doing a synchronous re-scan per
+    /// signal would melt under streaming, so the cache is dropped
+    /// eagerly and the visible find bar's debounce timer is
+    /// nudged so a single recount runs after activity settles.
+    void OnFindCacheInvalidated();
 
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);

@@ -1223,31 +1223,41 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
 
 bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::MatchFlags flags)
 {
-    if (flags.testFlag(Qt::MatchExactly))
+    // `Qt::MatchFlag`'s match-type values are *not* disjoint bit
+    // flags: `MatchWildcard = 5` overlaps `MatchContains = 1` and
+    // `MatchRegularExpression = 4`; `MatchEndsWith = 3` overlaps
+    // `MatchContains = 1` and `MatchStartsWith = 2`. A naive
+    // `testFlag` ladder therefore picks the *first* check whose
+    // bit subset is present, which is silently the *least*
+    // specific match -- so `MatchWildcard` would fall into the
+    // `MatchContains` branch and the wildcard search would run
+    // as a plain substring scan with the literal `*` / `?`. Mask
+    // the match-type field and compare for exact equality so the
+    // semantics line up with how Qt's own item-view searches
+    // interpret these constants.
+    constexpr int MATCH_TYPE_MASK = 0x000F;
+    const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
+    switch (matchType)
     {
+    case Qt::MatchExactly:
         return text == needle;
-    }
-    if (flags.testFlag(Qt::MatchStartsWith))
-    {
+    case Qt::MatchStartsWith:
         return text.startsWith(needle);
-    }
-    if (flags.testFlag(Qt::MatchEndsWith))
-    {
+    case Qt::MatchEndsWith:
         return text.endsWith(needle);
-    }
-    if (flags.testFlag(Qt::MatchContains))
-    {
+    case Qt::MatchContains:
         return text.contains(needle);
-    }
-    if (flags.testFlag(Qt::MatchRegularExpression))
+    case Qt::MatchRegularExpression:
     {
         const QRegularExpression regex(needle);
         return regex.match(text).hasMatch();
     }
-    if (flags.testFlag(Qt::MatchWildcard))
+    case Qt::MatchWildcard:
     {
         const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(needle));
         return regex.match(text).hasMatch();
     }
-    return false;
+    default:
+        return false;
+    }
 }

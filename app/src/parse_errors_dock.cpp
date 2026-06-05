@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QBrush>
 #include <QClipboard>
+#include <QCloseEvent>
 #include <QFont>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -78,8 +79,11 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
     mList->setAlternatingRowColors(true);
     layout->addWidget(mList, /*stretch=*/1);
 
+    // Minimum on the content widget, not the dock: setting it on
+    // the dock propagates a 320 px floor onto the entire
+    // QMainWindow even while the dock itself is hidden.
+    body->setMinimumWidth(DOCK_MIN_WIDTH);
     setWidget(body);
-    setMinimumWidth(DOCK_MIN_WIDTH);
 
     connect(mClearButton, &QPushButton::clicked, this, &ParseErrorsDock::ClearErrors);
 
@@ -112,15 +116,16 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     const bool firstBatchOfSession = mErrorCount == 0 && mDroppedCount == 0;
 
     // The trailing overflow footer (if any) must move to the
-    // bottom after the new entries land. Drop it before the
-    // append so we can re-mint it once cap-trimming settles.
-    for (int i = mList->count() - 1; i >= 0; --i)
+    // bottom after the new entries land. It is always the last
+    // item by construction (`TrimToCap` appends it after every
+    // trim), so we only need to inspect the tail rather than walk
+    // the list.
+    if (const int last = mList->count() - 1; last >= 0)
     {
-        QListWidgetItem *item = mList->item(i);
-        if (item != nullptr && item->data(OVERFLOW_FOOTER_ROLE).toBool())
+        QListWidgetItem *tail = mList->item(last);
+        if (tail != nullptr && tail->data(OVERFLOW_FOOTER_ROLE).toBool())
         {
-            delete mList->takeItem(i);
-            break;
+            delete mList->takeItem(last);
         }
     }
 
@@ -160,18 +165,24 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     }
 
     TrimToCap();
+    // Footer rebuild is intentionally separate from `TrimToCap`:
+    // a single batch sized exactly at the cap pre-trims (bumping
+    // `mDroppedCount`) without ever pushing `mErrorCount` past
+    // `MAX_DISPLAYED_ERRORS`, so `TrimToCap` has no eviction work
+    // and would skip its tail block. The footer must reflect
+    // `mDroppedCount` regardless of which path got us there.
+    RebuildOverflowFooter();
 
     mList->scrollToBottom();
+    RefreshSummary();
     if (firstBatchOfSession)
     {
-        if (!isVisible())
-        {
-            show();
-        }
-        raise();
+        // Let `MainWindow` decide whether to actually raise the
+        // dock -- the dock itself does not know about the rest of
+        // the GUI chrome and shouldn't yank focus off the find
+        // bar (or any future tabified neighbour).
+        emit firstBatchArrived();
     }
-
-    RefreshSummary();
 }
 
 void ParseErrorsDock::ClearErrors()
@@ -184,6 +195,15 @@ void ParseErrorsDock::ClearErrors()
     mErrorCount = 0;
     mDroppedCount = 0;
     RefreshSummary();
+}
+
+void ParseErrorsDock::closeEvent(QCloseEvent *event)
+{
+    QDockWidget::closeEvent(event);
+    if (event->isAccepted())
+    {
+        emit closed();
+    }
 }
 
 void ParseErrorsDock::TrimToCap()
@@ -235,22 +255,26 @@ void ParseErrorsDock::TrimToCap()
         }
         delete mList->takeItem(0);
     }
+}
 
-    if (mDroppedCount > 0)
+void ParseErrorsDock::RebuildOverflowFooter()
+{
+    if (mDroppedCount <= 0)
     {
-        // Single overflow footer at the tail; re-minted on each
-        // call (we removed the prior one in `AppendErrors` before
-        // adding the new batch) so the count stays current. `%Ln`
-        // matches the locale-grouped digits used in the summary
-        // header above (no jitter when counts cross 1k / 1M).
-        auto *footer = new QListWidgetItem(tr("(\u2026 %Ln earlier error(s) dropped)", nullptr, mDroppedCount));
-        QFont footerFont = footer->font();
-        footerFont.setItalic(true);
-        footer->setFont(footerFont);
-        footer->setFlags(Qt::ItemIsEnabled);
-        footer->setData(OVERFLOW_FOOTER_ROLE, true);
-        mList->addItem(footer);
+        return;
     }
+    // Single overflow footer at the tail. `AppendErrors` strips
+    // any prior footer at the top of the call, so this method
+    // only ever appends -- never compares-and-replaces. `%Ln`
+    // matches the locale-grouped digits used in the summary
+    // header (no jitter when counts cross 1k / 1M).
+    auto *footer = new QListWidgetItem(tr("(\u2026 %Ln earlier error(s) dropped)", nullptr, mDroppedCount));
+    QFont footerFont = footer->font();
+    footerFont.setItalic(true);
+    footer->setFont(footerFont);
+    footer->setFlags(Qt::ItemIsEnabled);
+    footer->setData(OVERFLOW_FOOTER_ROLE, true);
+    mList->addItem(footer);
 }
 
 void ParseErrorsDock::CopySelection() const
@@ -259,22 +283,72 @@ void ParseErrorsDock::CopySelection() const
     {
         return;
     }
-    const QList<QListWidgetItem *> selected = mList->selectedItems();
-    if (selected.isEmpty())
+    if (mList->selectedItems().isEmpty())
     {
         return;
     }
-    // Preserve list order; `selectedItems` returns selection
-    // order which can confuse readers expecting top-to-bottom.
+
+    // Group headers and the overflow footer have `Qt::ItemIsEnabled`
+    // only (no `ItemIsSelectable`), so the user can never select
+    // them directly. Walk the list once and synthesise the header
+    // above the first selected row in each group plus the overflow
+    // footer at the bottom, so the pasted block reads as
+    // self-contained text rather than orphaned messages.
     QStringList lines;
-    lines.reserve(selected.size());
-    for (int i = 0; i < mList->count(); ++i)
+    const int count = mList->count();
+    QListWidgetItem *currentHeader = nullptr;
+    bool currentHeaderEmitted = false;
+    bool sawAnyError = false;
+    for (int i = 0; i < count; ++i)
     {
         QListWidgetItem *item = mList->item(i);
-        if (item != nullptr && item->isSelected())
+        if (item == nullptr)
         {
-            lines.append(item->text());
+            continue;
         }
+        const bool isSelectable = item->flags().testFlag(Qt::ItemIsSelectable);
+        if (!isSelectable)
+        {
+            // Either a group header or the overflow footer; neither
+            // is user-selectable. Headers reset the per-group
+            // tracking; the footer is handled after the main loop.
+            if (!item->data(OVERFLOW_FOOTER_ROLE).toBool())
+            {
+                currentHeader = item;
+                currentHeaderEmitted = false;
+            }
+            continue;
+        }
+        if (!item->isSelected())
+        {
+            continue;
+        }
+        if (currentHeader != nullptr && !currentHeaderEmitted)
+        {
+            lines.append(currentHeader->text());
+            currentHeaderEmitted = true;
+        }
+        lines.append(item->text());
+        sawAnyError = true;
+    }
+    if (sawAnyError)
+    {
+        // Append the overflow footer (if any) so the dropped count
+        // travels with the copied excerpt. Mirrors the dock's own
+        // header summary.
+        for (int i = count - 1; i >= 0; --i)
+        {
+            QListWidgetItem *item = mList->item(i);
+            if (item != nullptr && item->data(OVERFLOW_FOOTER_ROLE).toBool())
+            {
+                lines.append(item->text());
+                break;
+            }
+        }
+    }
+    if (lines.isEmpty())
+    {
+        return;
     }
     QGuiApplication::clipboard()->setText(lines.join(QChar::fromLatin1('\n')));
 }
@@ -301,5 +375,5 @@ void ParseErrorsDock::RefreshSummary()
         mSummary->setText(tr("%Ln error(s).", nullptr, mErrorCount));
     }
     mClearButton->setEnabled(mErrorCount > 0 || mDroppedCount > 0);
-    emit countChanged(mErrorCount);
+    emit countChanged(mErrorCount, mDroppedCount);
 }

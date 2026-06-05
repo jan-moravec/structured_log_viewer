@@ -51,34 +51,45 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mEdit->setPlaceholderText(tr("Find in logs\u2026"));
     mEdit->setClearButtonEnabled(true);
     mEdit->setMinimumWidth(EDIT_MIN_WIDTH);
-    // Leading magnifying-glass affordance. Decorative only -- the
-    // leading-position icon in `QLineEdit` does not emit
-    // `triggered` on click, so wiring a slot is dead code.
-    mEdit->addAction(
-        QApplication::style()->standardIcon(QStyle::SP_FileDialogContentsView), QLineEdit::LeadingPosition
-    );
 
-    // Trailing toggle "buttons" embedded in the line edit. `addAction`
-    // with `TrailingPosition` renders them as small icon buttons
-    // inside the field, before the clear button (Qt orders them in
-    // insertion order from the inner edge outward).
+    hLayout->addWidget(mEdit, /*stretch=*/1);
+
+    // Regex / wildcard toggles. Rendered as small flat `QToolButton`s
+    // beside the line edit (not `QLineEdit::addAction` icons) because:
+    //   - we want the glyphs ".*" and "*?" visible, but
+    //     `QLineEdit::addAction` only renders the action's icon and
+    //     hides the text; and
+    //   - Qt's `QStyle::SP_*` icon catalogue has no recognisable
+    //     regex / wildcard glyph, so falling back to file-dialog
+    //     icons (as the previous version did) reads as a file-view
+    //     toggle and misleads users about what the toggle does.
+    // `setAutoRaise(true)` matches the find-next / find-prev
+    // buttons' flat look.
     mRegexAction = new QAction(this);
     mRegexAction->setObjectName(QStringLiteral("regexToggle"));
     mRegexAction->setCheckable(true);
     mRegexAction->setText(QStringLiteral(".*"));
-    mRegexAction->setIcon(QApplication::style()->standardIcon(QStyle::SP_FileDialogDetailedView));
     mRegexAction->setToolTip(tr("Match using regular expressions"));
-    mEdit->addAction(mRegexAction, QLineEdit::TrailingPosition);
+
+    auto *regexButton = new QToolButton(this);
+    regexButton->setObjectName(QStringLiteral("regexToggleButton"));
+    regexButton->setDefaultAction(mRegexAction);
+    regexButton->setAutoRaise(true);
+    regexButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    hLayout->addWidget(regexButton);
 
     mWildcardsAction = new QAction(this);
     mWildcardsAction->setObjectName(QStringLiteral("wildcardsToggle"));
     mWildcardsAction->setCheckable(true);
     mWildcardsAction->setText(QStringLiteral("*?"));
-    mWildcardsAction->setIcon(QApplication::style()->standardIcon(QStyle::SP_FileDialogListView));
     mWildcardsAction->setToolTip(tr("Match using wildcards (* and ?)"));
-    mEdit->addAction(mWildcardsAction, QLineEdit::TrailingPosition);
 
-    hLayout->addWidget(mEdit, /*stretch=*/1);
+    auto *wildcardsButton = new QToolButton(this);
+    wildcardsButton->setObjectName(QStringLiteral("wildcardsToggleButton"));
+    wildcardsButton->setDefaultAction(mWildcardsAction);
+    wildcardsButton->setAutoRaise(true);
+    wildcardsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    hLayout->addWidget(wildcardsButton);
 
     mMatchCountLabel = new QLabel(this);
     mMatchCountLabel->setObjectName(QStringLiteral("findMatchCount"));
@@ -136,6 +147,27 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     connect(mEdit, &QLineEdit::textChanged, this, &FindRecordWidget::RequestMatchCountSoon);
     connect(mWildcardsAction, &QAction::toggled, this, &FindRecordWidget::RequestMatchCountSoon);
     connect(mRegexAction, &QAction::toggled, this, &FindRecordWidget::RequestMatchCountSoon);
+
+    // Regex and wildcards are mutually exclusive match modes in the
+    // backend (`LogFilterModel::Matches` treats them as alternatives,
+    // not modifiers). Mirror that in the UI so toggling one
+    // automatically untoggles the other instead of leaving the user
+    // with two enabled-looking toggles where only one actually takes
+    // effect.
+    connect(mRegexAction, &QAction::toggled, this, [this](bool on) {
+        if (on && mWildcardsAction->isChecked())
+        {
+            const QSignalBlocker blocker(mWildcardsAction);
+            mWildcardsAction->setChecked(false);
+        }
+    });
+    connect(mWildcardsAction, &QAction::toggled, this, [this](bool on) {
+        if (on && mRegexAction->isChecked())
+        {
+            const QSignalBlocker blocker(mRegexAction);
+            mRegexAction->setChecked(false);
+        }
+    });
 
     // Escape dismisses the bar. Scope `WidgetWithChildrenShortcut`
     // so the shortcut fires whenever this widget (or any
@@ -208,20 +240,21 @@ void FindRecordWidget::DismissBar()
 
 void FindRecordWidget::keyPressEvent(QKeyEvent *event)
 {
-    // Shift+Return on `mEdit` is handled in `eventFilter` (the
-    // line edit accepts the event itself, so it never bubbles
-    // here). This override only catches Shift+Return / Return
-    // when focus is on the find bar's buttons or the bar widget
-    // itself -- a rare path, but keep the convention.
+    // Reachable only when focus is on the bar but not on `mEdit`
+    // (the toggle / arrow buttons). For `mEdit`, the line edit
+    // accepts Return for itself and the modifier-bearing variant
+    // is handled in `eventFilter`. Handling it here too keeps the
+    // VS Code / Chromium convention for the rest of the bar.
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
     {
         if (event->modifiers().testFlag(Qt::ShiftModifier))
         {
             FindPrevious();
-            event->accept();
-            return;
         }
-        FindNext();
+        else
+        {
+            FindNext();
+        }
         event->accept();
         return;
     }

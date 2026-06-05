@@ -7,6 +7,7 @@
 
 class LogModel;
 class ThemeControl;
+class QCloseEvent;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
@@ -40,6 +41,20 @@ signals:
     /// User asked to navigate to source-model row @p sourceRow.
     /// Argument is -1 when the anchor key has no live row.
     void jumpToAnchorRequested(int sourceRow);
+
+    /// Emitted when the user actually dismisses the dock (X
+    /// button, system close). Not emitted on tab inactivation,
+    /// so the View-menu toggle keyed off this signal stays
+    /// accurate even when the dock is tabified with another.
+    void closed();
+
+protected:
+    /// Emit `closed` after the base class accepts the close so
+    /// `QDockWidget::visibilityChanged(false)` -- which also
+    /// fires on tab switches -- doesn't have to disambiguate
+    /// "user closed me" from "I'm just buried under a sibling
+    /// tab".
+    void closeEvent(QCloseEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:

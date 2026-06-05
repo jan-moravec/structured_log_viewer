@@ -3,6 +3,7 @@
 #include "find_record_widget.hpp"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QHideEvent>
 #include <QWidget>
 
@@ -55,5 +56,14 @@ void FindDock::hideEvent(QHideEvent *event)
     if (target != nullptr && target->isVisible())
     {
         target->setFocus(Qt::OtherFocusReason);
+    }
+}
+
+void FindDock::closeEvent(QCloseEvent *event)
+{
+    QDockWidget::closeEvent(event);
+    if (event->isAccepted())
+    {
+        emit closed();
     }
 }

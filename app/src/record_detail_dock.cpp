@@ -4,6 +4,7 @@
 #include "record_detail_widget.hpp"
 
 #include <QAbstractItemModel>
+#include <QCloseEvent>
 #include <QList>
 #include <QModelIndex>
 #include <QObject>
@@ -196,4 +197,13 @@ void RecordDetailDock::OnOpenInNewWindowRequested()
     // Read the row through the persistent index so eviction shifts
     // are reflected and the snapshot points at the actual record.
     emit openInNewWindowRequested(CurrentSourceRow());
+}
+
+void RecordDetailDock::closeEvent(QCloseEvent *event)
+{
+    QDockWidget::closeEvent(event);
+    if (event->isAccepted())
+    {
+        emit closed();
+    }
 }

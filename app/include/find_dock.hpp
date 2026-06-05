@@ -4,6 +4,7 @@
 #include <QPointer>
 
 class FindRecordWidget;
+class QCloseEvent;
 class QWidget;
 
 /// Dockable host for `FindRecordWidget`.
@@ -39,6 +40,15 @@ public:
     /// leaves focus dangling on whatever Qt picks next.
     void RevealAndFocus();
 
+signals:
+    /// Emitted whenever the user actually closes the dock (X
+    /// button, `close()` from `DismissBar`, or system close). Not
+    /// emitted when the dock is merely hidden as the inactive tab
+    /// of a tabified group -- `visibilityChanged(false)` fires on
+    /// tab switches too, so the menu toggle uses this signal to
+    /// distinguish "user dismissed me" from "I'm just buried".
+    void closed();
+
 protected:
     /// Restore focus to whatever held it before the bar opened.
     /// Wired to `hideEvent` rather than `closeEvent` so every
@@ -49,6 +59,13 @@ protected:
     /// was deleted while the bar was open (e.g. a config reload
     /// tore down the table view).
     void hideEvent(QHideEvent *event) override;
+
+    /// Emit `closed` after the base class accepts the event so
+    /// the menu toggle can drop the checkmark even when the dock
+    /// is tabified (`visibilityChanged(false)` alone fires on tab
+    /// inactivation, which would otherwise un-check the menu
+    /// entry every time the user switches tabs).
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     FindRecordWidget *mWidget = nullptr;
