@@ -56,8 +56,11 @@ public slots:
 
     /// Update the "*i* of *N*" / "*N* matches" indicator.
     ///
-    /// - `total <= 0`: hides the label entirely (empty needle).
-    /// - `current <= 0`: shows "%n matches" (no current pin yet).
+    /// - `total <= 0`: blanks the label text (empty needle). The
+    ///   label stays in the layout with its reserved minimum
+    ///   width so the trailing arrow buttons don't jitter every
+    ///   time the indicator appears or disappears.
+    /// - `current <= 0`: shows "%Ln matches" (no current pin yet).
     /// - `current > 0`: shows "%1 of %2".
     /// - `overflowed = true`: appends a `+` to the total ("10,000+
     ///   matches", "1 of 10,000+") so the user sees that the

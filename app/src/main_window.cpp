@@ -785,6 +785,15 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // case the label was last updated against a stale dataset.
     // `BumpMatchCountDebounce` no-ops on an empty needle, so the
     // common case (re-show, no prior search) costs nothing.
+    //
+    // We deliberately do *not* gate this on `mFindMatchCache`
+    // existing: a populated cache only saves the full-table scan,
+    // not the binary-search for the new `i` (the current selection
+    // may have moved while the bar was hidden, so the indicator
+    // can be stale on `i` even when the row list is still
+    // correct). Cache-hit recounts in `UpdateFindMatchCount` are
+    // cheap by design, so the worst case here is a binary search
+    // on `revealed`, which is fine.
     connect(mFindDock, &FindDock::revealed, this, [this]() {
         if (mFindRecord != nullptr)
         {
@@ -3039,10 +3048,17 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
     }
     if (mParseErrorsDock == nullptr)
     {
-        // Defensive fallback. Should never hit in production
-        // (the dock is built in the constructor before any open
-        // path can run), but keep the prior behaviour for tests
-        // that bypass the GUI shell.
+        // Defensive fallback. Should never hit in production --
+        // the dock is built in the constructor before any open
+        // path can run -- but a test fixture that pokes
+        // `ShowParseErrors` on a stripped-down window would
+        // otherwise lose the diagnostic silently. Surface to the
+        // log so failures are noticed instead of swallowed; this
+        // is closer in spirit to the prior `QMessageBox::warning`
+        // (which a real user could not have missed) than the
+        // earlier silent return.
+        qWarning() << "ShowParseErrors: parse-errors dock is unavailable; dropping" << errors.size() << "error(s) under"
+                   << title;
         return;
     }
     mParseErrorsDock->AppendErrors(title, errors);
@@ -3472,6 +3488,34 @@ namespace
     }
     return sourceIndex.row();
 }
+
+/// Build the `Qt::MatchFlags` for a find query. The match-type
+/// values in `Qt::MatchFlag` are *alternatives*, not bit-mask
+/// modifiers (`LogFilterModel::Matches` masks the type field and
+/// dispatches with a switch), so OR-ing `MatchContains` alongside
+/// `MatchWildcard` / `MatchRegularExpression` silently demotes
+/// the search to plain substring -- the regex / wildcard toggles
+/// would look enabled but match like they're off. The two find
+/// call sites (`MainWindow::FindRecords` and the cache rebuild in
+/// `UpdateFindMatchCount`) share this helper so a future refactor
+/// can't desync them.
+[[nodiscard]] Qt::MatchFlags ComposeFindFlags(bool wildcards, bool regularExpressions)
+{
+    Qt::MatchFlags flags = Qt::MatchWrap | Qt::MatchRecursive;
+    if (regularExpressions)
+    {
+        flags |= Qt::MatchRegularExpression;
+    }
+    else if (wildcards)
+    {
+        flags |= Qt::MatchWildcard;
+    }
+    else
+    {
+        flags |= Qt::MatchContains;
+    }
+    return flags;
+}
 } // namespace
 
 void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
@@ -3676,23 +3720,7 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
                           mFindMatchCache->regularExpressions == regularExpressions;
     if (!cacheHit)
     {
-        // Same exclusivity discipline as `FindRecords`: contains /
-        // wildcard / regex are mutually exclusive match modes in
-        // `LogFilterModel::Matches`; mixing them silently downgrades
-        // to contains.
-        Qt::MatchFlags flags = Qt::MatchWrap | Qt::MatchRecursive;
-        if (regularExpressions)
-        {
-            flags |= Qt::MatchRegularExpression;
-        }
-        else if (wildcards)
-        {
-            flags |= Qt::MatchWildcard;
-        }
-        else
-        {
-            flags |= Qt::MatchContains;
-        }
+        const Qt::MatchFlags flags = ComposeFindFlags(wildcards, regularExpressions);
         const QModelIndex start = mSortFilterProxyModel->index(0, 0);
         if (!start.isValid())
         {
@@ -3726,12 +3754,18 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
         {
             rows.push_back(m.row());
         }
+        // The sort assertion has to come before the adjacent_find
+        // assertion: `adjacent_find` only spots adjacent dupes,
+        // so on an unsorted vector with non-adjacent duplicates
+        // it would silently pass and let the dedup contract drift
+        // unnoticed. Order: assert sorted, defensively sort if
+        // not, then assert dedup, then defensively unique.
         Q_ASSERT(std::ranges::is_sorted(rows));
-        Q_ASSERT(std::ranges::adjacent_find(rows) == rows.end());
         if (!std::ranges::is_sorted(rows))
         {
             std::ranges::sort(rows);
         }
+        Q_ASSERT(std::ranges::adjacent_find(rows) == rows.end());
         rows.erase(std::ranges::unique(rows).begin(), rows.end());
         if (overflowed)
         {
@@ -4133,19 +4167,9 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     // OR-ing `MatchContains` with one of the others therefore silently
     // demotes the search to plain substring matching, so the regex /
     // wildcard toggles look enabled but match like they're off.
-    Qt::MatchFlags flags = Qt::MatchWrap | Qt::MatchRecursive;
-    if (regularExpressions)
-    {
-        flags |= Qt::MatchRegularExpression;
-    }
-    else if (wildcards)
-    {
-        flags |= Qt::MatchWildcard;
-    }
-    else
-    {
-        flags |= Qt::MatchContains;
-    }
+    // `ComposeFindFlags` is the single source of truth shared with
+    // `UpdateFindMatchCount`.
+    const Qt::MatchFlags flags = ComposeFindFlags(wildcards, regularExpressions);
     int skipFirstN = 0;
     if (mTableView->selectionModel()->isRowSelected(searchStartIndex.row()))
     {

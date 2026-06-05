@@ -74,6 +74,7 @@
 #include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QToolButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScopedPointer>
@@ -9457,6 +9458,102 @@ private slots:
         regex->setChecked(true);
         QVERIFY2(regex->isChecked(), "regex toggle must re-engage after wildcards turn off");
         QVERIFY2(!wildcards->isChecked(), "re-enabling regex must auto-un-check wildcards");
+    }
+
+    // Regression: an earlier version of the find bar called
+    // `setTabOrder(mEdit, mButtonPrevious)` directly, which severs
+    // the regex/wildcards toggles from the Tab chain and makes
+    // them keyboard-unreachable. Walk the tab chain forward from
+    // the search field and assert that both toggle buttons are
+    // visited before the arrow buttons.
+    //
+    // We can't reliably drive Qt's `focusNextChild` from a
+    // headless test (the offscreen platform plugin is twitchy
+    // about focus events), so instead we verify the static graph:
+    // chase `nextInFocusChain()` forward from `mEdit` and confirm
+    // the regex / wildcards toggle buttons appear before the
+    // arrow buttons in the chain.
+    void TestFindBarTabOrderIncludesRegexAndWildcardsToggles()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        auto *regexButton = findRecord->findChild<QToolButton *>(QStringLiteral("regexToggleButton"));
+        auto *wildcardsButton = findRecord->findChild<QToolButton *>(QStringLiteral("wildcardsToggleButton"));
+        auto *prevButton = findRecord->findChild<QToolButton *>(QStringLiteral("findPrevious"));
+        auto *nextButton = findRecord->findChild<QToolButton *>(QStringLiteral("findNext"));
+        QVERIFY2(edit != nullptr, "findEdit must exist");
+        QVERIFY2(regexButton != nullptr, "regexToggleButton must exist");
+        QVERIFY2(wildcardsButton != nullptr, "wildcardsToggleButton must exist");
+        QVERIFY2(prevButton != nullptr, "findPrevious must exist");
+        QVERIFY2(nextButton != nullptr, "findNext must exist");
+
+        // Walk forward through the chain a bounded number of
+        // hops; record the first index at which each toggle and
+        // arrow button is seen. Use a generous hop budget so
+        // unrelated children of `findRecord` (or its container)
+        // can't starve us before we encounter the targets.
+        constexpr int MAX_HOPS = 64;
+        int regexIdx = -1;
+        int wildcardsIdx = -1;
+        int prevIdx = -1;
+        int nextIdx = -1;
+        QWidget *cursor = edit;
+        for (int hop = 0; hop < MAX_HOPS && cursor != nullptr; ++hop)
+        {
+            cursor = cursor->nextInFocusChain();
+            if (cursor == regexButton && regexIdx < 0)
+            {
+                regexIdx = hop;
+            }
+            if (cursor == wildcardsButton && wildcardsIdx < 0)
+            {
+                wildcardsIdx = hop;
+            }
+            if (cursor == prevButton && prevIdx < 0)
+            {
+                prevIdx = hop;
+            }
+            if (cursor == nextButton && nextIdx < 0)
+            {
+                nextIdx = hop;
+            }
+            if (regexIdx >= 0 && wildcardsIdx >= 0 && prevIdx >= 0 && nextIdx >= 0)
+            {
+                break;
+            }
+            if (cursor == edit)
+            {
+                // Wrapped without finding a target -- bail.
+                break;
+            }
+        }
+        QVERIFY2(
+            regexIdx >= 0 && wildcardsIdx >= 0,
+            qPrintable(QStringLiteral("regex/wildcards toggles must be on the tab chain (regex=%1 wildcards=%2)")
+                           .arg(regexIdx)
+                           .arg(wildcardsIdx))
+        );
+        QVERIFY2(
+            prevIdx >= 0 && nextIdx >= 0,
+            qPrintable(QStringLiteral("arrow buttons must be on the tab chain (prev=%1 next=%2)")
+                           .arg(prevIdx)
+                           .arg(nextIdx))
+        );
+        // Order: edit -> regex -> wildcards -> prev -> next.
+        // Strict ordering on the toggles vs the arrow buttons is
+        // the actual regression guard; the toggles falling out
+        // of the chain made `regexIdx` either unset or pinned
+        // *after* the arrow buttons.
+        QVERIFY2(
+            regexIdx < prevIdx && wildcardsIdx < prevIdx,
+            qPrintable(QStringLiteral("regex/wildcards toggles must precede the arrow buttons in the tab chain "
+                                      "(regex=%1 wildcards=%2 prev=%3)")
+                           .arg(regexIdx)
+                           .arg(wildcardsIdx)
+                           .arg(prevIdx))
+        );
+        QVERIFY2(prevIdx < nextIdx, "previous-arrow must come before next-arrow in the tab chain");
     }
 
     // `ParseErrorsDock::AppendErrors` must:

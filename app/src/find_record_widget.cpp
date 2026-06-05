@@ -36,6 +36,14 @@ constexpr int MATCH_COUNT_MAX_AGE_MS = 750;
 /// when the bar is squeezed.
 constexpr int EDIT_MIN_WIDTH = 220;
 
+/// Floor for the find bar as a whole. Drives `setMinimumWidth` on
+/// the widget so a floating `FindDock` can't collapse below this
+/// (the line edit's own minimum protects only the inner layout,
+/// not the dock's outer frame). Sized to fit the line edit, both
+/// toggles, the count label, and both arrow buttons without
+/// truncation.
+constexpr int WIDGET_MIN_WIDTH = 360;
+
 /// Outer margins / spacing for the find bar's horizontal layout.
 /// Matches the densities of the other docks (`anchors_dock`,
 /// `record_detail_widget`).
@@ -114,7 +122,12 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mMatchCountLabel->setObjectName(QStringLiteral("findMatchCount"));
     mMatchCountLabel->setAlignment(Qt::AlignCenter);
     mMatchCountLabel->setMinimumWidth(MATCH_LABEL_MIN_WIDTH);
-    mMatchCountLabel->setVisible(false);
+    // Always present in the layout (just empty) so the arrow
+    // buttons keep their horizontal position when the indicator
+    // toggles between "no needle" and "12 matches"; otherwise
+    // they jump left/right on every keystroke that crosses the
+    // empty boundary.
+    mMatchCountLabel->setText(QString());
     hLayout->addWidget(mMatchCountLabel);
 
     mButtonPrevious = new QToolButton(this);
@@ -132,9 +145,24 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     hLayout->addWidget(mButtonNext);
 
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
-    // Focus order: line edit first; toggles + arrow buttons stay
-    // reachable via Tab once focus is in the bar.
-    setTabOrder(mEdit, mButtonPrevious);
+    // Width floor so a floating `FindDock` (the dock has no
+    // minimum of its own) can't be dragged narrow enough to
+    // truncate the toggles or the count label. The line edit's
+    // `EDIT_MIN_WIDTH` covers the layout's inner shrinking, not
+    // the outer frame.
+    setMinimumWidth(WIDGET_MIN_WIDTH);
+    // Focus order: line edit -> regex toggle -> wildcards toggle ->
+    // previous -> next. Each `setTabOrder(a, b)` re-inserts `b`
+    // immediately after `a` and detaches it from its prior slot --
+    // so the chain has to name *every* focusable widget, not just
+    // the endpoints, otherwise the unnamed siblings get severed
+    // from the chain and become unreachable via Tab. (Earlier
+    // versions of this widget chained only `mEdit -> previous ->
+    // next`, which made the regex/wildcards toggles keyboard-
+    // unreachable.)
+    setTabOrder(mEdit, regexButton);
+    setTabOrder(regexButton, wildcardsButton);
+    setTabOrder(wildcardsButton, mButtonPrevious);
     setTabOrder(mButtonPrevious, mButtonNext);
     // No constructor `setFocus`: the host (dock or layout) is not
     // realised yet, so the call is a no-op. Real focus is granted
@@ -220,8 +248,13 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
 {
     if (total <= 0)
     {
+        // Keep the label slot in the layout but blank, so the
+        // arrow buttons don't shift left/right as the indicator
+        // appears and disappears around each keystroke that
+        // empties or refills the search field. The reserved
+        // `MATCH_LABEL_MIN_WIDTH` continues to hold the slot
+        // open.
         mMatchCountLabel->clear();
-        mMatchCountLabel->setVisible(false);
         return;
     }
     // Locale-grouped digits matching the rest of the GUI; the "+"
@@ -237,12 +270,16 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
     }
     else
     {
-        // Two formatters because `%n` only handles one number;
-        // we already formatted `totalText` above.
-        text = overflowed ? tr("%1 matches").arg(totalText) : tr("%n matches", nullptr, total);
+        // Two formatters because `%n` / `%Ln` only handles one
+        // number; we already formatted `totalText` above.
+        // `%Ln` (not `%n`) keeps digit grouping consistent with
+        // the "%1 of %2" branch above and with
+        // `ParseErrorsDock::RefreshSummary` -- otherwise a count
+        // of 10000 would render unstyled while the next-click
+        // refresh would render `1 of 10,000`.
+        text = overflowed ? tr("%1 matches").arg(totalText) : tr("%Ln matches", nullptr, total);
     }
     mMatchCountLabel->setText(text);
-    mMatchCountLabel->setVisible(true);
 }
 
 void FindRecordWidget::BumpMatchCountDebounce()
