@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QLocale>
 #include <QPushButton>
 #include <QShortcut>
 #include <QStringList>
@@ -123,6 +124,21 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
         }
     }
 
+    // Pre-trim a pathologically large batch before constructing
+    // list items. If we instead let `TrimToCap` walk the list
+    // from the top, it would evict prior batches *and* the new
+    // batch's own group header before reaching the rows that
+    // outgrew the cap, leaving the surviving rows visually
+    // headerless. Skipping the leading slice up front keeps the
+    // header pinned to the rows it labels and avoids minting
+    // QListWidgetItem objects we'll only delete a moment later.
+    size_t errorsBegin = 0;
+    if (errors.size() > static_cast<size_t>(MAX_DISPLAYED_ERRORS))
+    {
+        errorsBegin = errors.size() - static_cast<size_t>(MAX_DISPLAYED_ERRORS);
+        mDroppedCount += static_cast<int>(errorsBegin);
+    }
+
     // Group header so consecutive batches stay visually grouped
     // even after the user scrolls into them. The header is
     // disabled (non-selectable in keyboard nav) so arrow keys
@@ -134,10 +150,10 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     headerItem->setFlags(Qt::ItemIsEnabled);
     mList->addItem(headerItem);
 
-    for (const std::string &error : errors)
+    for (size_t i = errorsBegin; i < errors.size(); ++i)
     {
-        auto *item = new QListWidgetItem(warningIcon, QString::fromStdString(error));
-        item->setToolTip(QString::fromStdString(error));
+        auto *item = new QListWidgetItem(warningIcon, QString::fromStdString(errors[i]));
+        item->setToolTip(QString::fromStdString(errors[i]));
         item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         mList->addItem(item);
         ++mErrorCount;
@@ -224,8 +240,10 @@ void ParseErrorsDock::TrimToCap()
     {
         // Single overflow footer at the tail; re-minted on each
         // call (we removed the prior one in `AppendErrors` before
-        // adding the new batch) so the count stays current.
-        auto *footer = new QListWidgetItem(tr("(\u2026 %n earlier error(s) dropped)", nullptr, mDroppedCount));
+        // adding the new batch) so the count stays current. `%Ln`
+        // matches the locale-grouped digits used in the summary
+        // header above (no jitter when counts cross 1k / 1M).
+        auto *footer = new QListWidgetItem(tr("(\u2026 %Ln earlier error(s) dropped)", nullptr, mDroppedCount));
         QFont footerFont = footer->font();
         footerFont.setItalic(true);
         footer->setFont(footerFont);
@@ -269,11 +287,18 @@ void ParseErrorsDock::RefreshSummary()
     }
     else if (mDroppedCount > 0)
     {
-        mSummary->setText(tr("%1 error(s); %2 earlier dropped.").arg(mErrorCount).arg(mDroppedCount));
+        // Two independent counts -> can't use a single `%Ln`
+        // plural form; format both via QLocale so digit grouping
+        // matches the rest of the GUI ("12,345 errors; 1,000
+        // earlier dropped").
+        const QLocale locale = QLocale::system();
+        mSummary->setText(tr("%1 error(s); %2 earlier dropped.")
+                              .arg(locale.toString(static_cast<qlonglong>(mErrorCount)))
+                              .arg(locale.toString(static_cast<qlonglong>(mDroppedCount))));
     }
     else
     {
-        mSummary->setText(tr("%n error(s).", nullptr, mErrorCount));
+        mSummary->setText(tr("%Ln error(s).", nullptr, mErrorCount));
     }
     mClearButton->setEnabled(mErrorCount > 0 || mDroppedCount > 0);
     emit countChanged(mErrorCount);

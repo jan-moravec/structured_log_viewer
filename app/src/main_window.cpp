@@ -607,6 +607,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(ui->actionExit, &QAction::triggered, this, [] { QApplication::closeAllWindows(); });
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    // `MainWindow::Find` is a smart toggle: open + focus, focus
+    // if open-but-unfocused, or close if open + focused. Tooltip
+    // reflects that so the menu / toolbar surface doesn't claim
+    // an "always reveal" behaviour.
+    ui->actionFind->setToolTip(tr("Find in logs. Press again to close."));
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
 
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() { AddFilter(QUuid::createUuid().toString()); });
@@ -684,11 +689,24 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, refreshFindCount);
     connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, refreshFindCount);
     connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, refreshFindCount);
+    // `dataChanged` covers in-place cell updates that don't shift
+    // the row set: enum dictionary growth re-formats existing
+    // cells, and a column rename is published this way too. Both
+    // can flip whether a row matches the current needle, so the
+    // cached match list has to invalidate. Wired on the proxy
+    // (not the source) so Qt's row-mapping is already applied
+    // by the time the slot runs.
+    connect(
+        mSortFilterProxyModel,
+        &QAbstractItemModel::dataChanged,
+        this,
+        [refreshFindCount](const QModelIndex &, const QModelIndex &, const QList<int> &) { refreshFindCount(); }
+    );
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
     mActionToggleFind->setCheckable(true);
-    mActionToggleFind->setToolTip(tr("Show or hide the find bar (Ctrl+F to focus)."));
+    mActionToggleFind->setToolTip(tr("Show or hide the find bar. Ctrl+F focuses it; Ctrl+F again or Esc closes it."));
     addAction(mActionToggleFind);
     connect(mActionToggleFind, &QAction::toggled, this, [this](bool on) {
         if (on && !isVisible())
@@ -3490,10 +3508,13 @@ void MainWindow::UpdateParseErrorsStatus(int count)
         mParseErrorsStatusButton->setToolTip(QString());
         return;
     }
-    const QString text = tr("%n parse error(s)", nullptr, count);
-    mParseErrorsStatusButton->setText(text);
+    // `%Ln` -> locale-grouped digits (1,234 / 1.234) matching the
+    // streaming-status text. Plain `%n` would print "1234" and
+    // jitter the button width as counts grew across a streaming
+    // session.
+    mParseErrorsStatusButton->setText(tr("%Ln parse error(s)", nullptr, count));
     mParseErrorsStatusButton->setToolTip(
-        tr("%1 parse error(s) recorded in this session. Click to open the Parse Errors panel.").arg(count)
+        tr("%Ln parse error(s) recorded in this session. Click to open the Parse Errors panel.", nullptr, count)
     );
     mParseErrorsStatusButton->show();
 }
@@ -3540,19 +3561,21 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
         const QModelIndexList matches = mSortFilterProxyModel->MatchRow(
             start, Qt::DisplayRole, value, LogFilterModel::UNLIMITED_HITS, flags, true, 0
         );
-        // Dedupe to row level: a row matching in N visible
-        // columns yields N entries from `MatchRow`, but the user
-        // navigates and counts in row order. Sorting + uniquing
-        // also unlocks the binary-search lookup below.
+        // `MatchRow` returns at most one entry per row (it
+        // `break`s on the first matching column) and walks rows
+        // in ascending order from `start` (row 0), so the result
+        // is already row-deduplicated and sorted -- exactly what
+        // the binary-search lookup below needs. Asserting the
+        // invariant in debug builds keeps us honest if MatchRow's
+        // contract ever changes.
         std::vector<int> rows;
         rows.reserve(matches.size());
         for (const QModelIndex &m : matches)
         {
             rows.push_back(m.row());
         }
-        std::ranges::sort(rows);
-        const auto last = std::ranges::unique(rows);
-        rows.erase(last.begin(), last.end());
+        Q_ASSERT(std::ranges::is_sorted(rows));
+        Q_ASSERT(std::ranges::adjacent_find(rows) == rows.end());
         mFindMatchCache = FindMatchCache{
             .needle = text,
             .wildcards = wildcards,
@@ -3754,6 +3777,17 @@ void MainWindow::Find()
 {
     if (mFindDock == nullptr)
     {
+        return;
+    }
+    // Smart toggle (VS Code / Chrome convention):
+    //   - bar hidden          -> open + focus the search field.
+    //   - bar visible but not focused -> focus the search field.
+    //   - bar visible AND focused     -> close (so Ctrl+F twice
+    //                                    dismisses it, no need
+    //                                    to chase Esc).
+    if (mFindDock->isVisible() && mFindDock->isAncestorOf(QApplication::focusWidget()))
+    {
+        mFindDock->close();
         return;
     }
     mFindDock->RevealAndFocus();

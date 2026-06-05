@@ -3,27 +3,19 @@
 #include <QAction>
 #include <QApplication>
 #include <QDockWidget>
-#include <QEasingCurve>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPropertyAnimation>
 #include <QShortcut>
-#include <QShowEvent>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
 
-#include <algorithm>
-
 namespace
 {
-/// Slide-in / slide-out duration. Slow enough to read, fast
-/// enough not to feel sluggish; matches VS Code's find bar.
-constexpr int FIND_REVEAL_ANIMATION_MS = 120;
-
 /// Debounce window after a key press before we ask the parent to
 /// recount matches. Avoids a full-table scan on every keystroke
 /// of a long word.
@@ -121,10 +113,13 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     connect(mButtonNext, &QToolButton::clicked, this, &FindRecordWidget::FindNext);
     connect(mButtonPrevious, &QToolButton::clicked, this, &FindRecordWidget::FindPrevious);
 
-    // Return triggers find-next; Shift+Return is wired through
-    // `keyPressEvent` because `returnPressed` does not carry
-    // modifier state.
+    // Plain Return -> find-next via `returnPressed`. Shift+Return
+    // -> find-previous is wired through `eventFilter` below;
+    // `QLineEdit::keyPressEvent` accepts Return for itself, so the
+    // event never bubbles to our `keyPressEvent`, and
+    // `returnPressed` carries no modifier state.
     connect(mEdit, &QLineEdit::returnPressed, this, &FindRecordWidget::FindNext);
+    mEdit->installEventFilter(this);
 
     // Owned single-shot timer; `start()` restarts it on each
     // keystroke so multi-keystroke edits coalesce into one
@@ -144,11 +139,10 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
 
     // Escape dismisses the bar. Scope `WidgetWithChildrenShortcut`
     // so the shortcut fires whenever this widget (or any
-    // descendant focusable) has focus. When hosted in a
-    // `QDockWidget`, close the dock so its `visibilityChanged`
-    // mirrors the toggle action and a subsequent `RevealAndFocus`
-    // properly re-shows everything. The legacy in-layout fallback
-    // (no dock parent) keeps the slide-out animation.
+    // descendant focusable) has focus. `DismissBar` closes the
+    // host `QDockWidget` so its `visibilityChanged` mirrors the
+    // toggle action and a subsequent `RevealAndFocus` properly
+    // re-shows everything.
     auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(escapeShortcut, &QShortcut::activated, this, &FindRecordWidget::DismissBar);
@@ -181,31 +175,6 @@ void FindRecordWidget::SetMatchInfo(int current, int total)
     mMatchCountLabel->setVisible(true);
 }
 
-void FindRecordWidget::RevealAnimated()
-{
-    if (mNaturalHeight == 0)
-    {
-        // `sizeHint` is the best estimate before the first paint
-        // delivers a real geometry; tracked in `showEvent` once
-        // we know.
-        mNaturalHeight = sizeHint().height();
-    }
-    setMaximumHeight(mNaturalHeight);
-    show();
-
-    if (mAnimation && mAnimation->state() == QAbstractAnimation::Running)
-    {
-        mAnimation->stop();
-    }
-    auto *animation = new QPropertyAnimation(this, "maximumHeight", this);
-    animation->setDuration(FIND_REVEAL_ANIMATION_MS);
-    animation->setStartValue(0);
-    animation->setEndValue(mNaturalHeight);
-    animation->setEasingCurve(QEasingCurve::OutCubic);
-    animation->start(QAbstractAnimation::DeleteWhenStopped);
-    mAnimation = animation;
-}
-
 void FindRecordWidget::BumpMatchCountDebounce()
 {
     if (mEdit == nullptr || mEdit->text().isEmpty())
@@ -220,11 +189,13 @@ void FindRecordWidget::BumpMatchCountDebounce()
 
 void FindRecordWidget::DismissBar()
 {
-    // Walk up the parent chain to a `QDockWidget` host (the
-    // typical layout). Closing the dock is the only correct
-    // dismiss: hiding only the inner widget leaves the dock title
-    // bar floating over an empty body, and a later `show()` on
-    // the dock will not un-hide an explicitly-hidden child.
+    // Walk up to the host `QDockWidget` and close it. Closing the
+    // dock is the only correct dismiss: hiding only the inner
+    // widget leaves the dock title bar floating over an empty
+    // body, and a later `show()` on the dock will not un-hide an
+    // explicitly-hidden child. Walking the parent chain (instead
+    // of asserting a single hop) keeps this resilient to any
+    // future intermediate container the dock framework introduces.
     for (QWidget *p = parentWidget(); p != nullptr; p = p->parentWidget())
     {
         if (auto *dock = qobject_cast<QDockWidget *>(p))
@@ -233,40 +204,15 @@ void FindRecordWidget::DismissBar()
             return;
         }
     }
-    // No dock host (legacy in-layout call site): fall back to the
-    // slide-out animation so the bar collapses gracefully.
-    HideAnimated();
-}
-
-void FindRecordWidget::HideAnimated()
-{
-    if (!isVisible())
-    {
-        return;
-    }
-    const int from = height();
-    if (mAnimation && mAnimation->state() == QAbstractAnimation::Running)
-    {
-        mAnimation->stop();
-    }
-    auto *animation = new QPropertyAnimation(this, "maximumHeight", this);
-    animation->setDuration(FIND_REVEAL_ANIMATION_MS);
-    animation->setStartValue(from);
-    animation->setEndValue(0);
-    animation->setEasingCurve(QEasingCurve::OutCubic);
-    connect(animation, &QPropertyAnimation::finished, this, [this]() {
-        hide();
-        // Reset the cap so a subsequent `show()` (e.g. parent
-        // calls `show()` directly instead of `RevealAnimated`)
-        // does not stay collapsed.
-        setMaximumHeight(QWIDGETSIZE_MAX);
-    });
-    animation->start(QAbstractAnimation::DeleteWhenStopped);
-    mAnimation = animation;
 }
 
 void FindRecordWidget::keyPressEvent(QKeyEvent *event)
 {
+    // Shift+Return on `mEdit` is handled in `eventFilter` (the
+    // line edit accepts the event itself, so it never bubbles
+    // here). This override only catches Shift+Return / Return
+    // when focus is on the find bar's buttons or the bar widget
+    // itself -- a rare path, but keep the convention.
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
     {
         if (event->modifiers().testFlag(Qt::ShiftModifier))
@@ -275,20 +221,33 @@ void FindRecordWidget::keyPressEvent(QKeyEvent *event)
             event->accept();
             return;
         }
-        // Plain Return is already wired through `returnPressed`
-        // on the line edit; fall through so the default still
-        // works for buttons that have focus.
+        FindNext();
+        event->accept();
+        return;
     }
     QWidget::keyPressEvent(event);
 }
 
-void FindRecordWidget::showEvent(QShowEvent *event)
+bool FindRecordWidget::eventFilter(QObject *watched, QEvent *event)
 {
-    QWidget::showEvent(event);
-    // Capture the real expanded height the first time we are
-    // realized so `RevealAnimated` has a sane target on later
-    // toggles.
-    mNaturalHeight = std::max(mNaturalHeight, sizeHint().height());
+    if (watched == mEdit && event->type() == QEvent::KeyPress)
+    {
+        // `QEvent::KeyPress` guarantees the dynamic type; Qt does
+        // not enable RTTI on `QEvent`. Same idiom as the
+        // `QFileOpenEvent` cast in `main.cpp`.
+        auto *ke = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
+            ke->modifiers().testFlag(Qt::ShiftModifier))
+        {
+            // Intercept before `QLineEdit::keyPressEvent` runs.
+            // Otherwise it would emit `returnPressed` (wired to
+            // `FindNext`) and accept the event, swallowing the
+            // shift-modified variant.
+            FindPrevious();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void FindRecordWidget::FindNext()

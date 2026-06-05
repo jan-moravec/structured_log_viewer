@@ -2,6 +2,10 @@
 
 #include "find_record_widget.hpp"
 
+#include <QApplication>
+#include <QHideEvent>
+#include <QWidget>
+
 FindDock::FindDock(QWidget *parent)
     : QDockWidget(tr("Find"), parent)
 {
@@ -18,10 +22,38 @@ FindDock::FindDock(QWidget *parent)
 
 void FindDock::RevealAndFocus()
 {
+    // Capture the pre-reveal focus only on a real reveal: a second
+    // call while the bar is already open should not overwrite the
+    // saved target with the find edit itself.
     if (!isVisible())
     {
+        QWidget *current = QApplication::focusWidget();
+        // Don't re-stash a pointer into our own subtree -- if the
+        // bar was hidden but somehow holds focus (test path), the
+        // restore would just bounce back into the find edit.
+        if (current != nullptr && !isAncestorOf(current))
+        {
+            mFocusBeforeReveal = current;
+        }
         show();
     }
     raise();
     mWidget->SetEditFocus();
+}
+
+void FindDock::hideEvent(QHideEvent *event)
+{
+    // Snapshot + clear before forwarding so a re-entrant hide
+    // (e.g. inside a focusOut handler that triggers another
+    // close) can't double-fire the restore.
+    QWidget *target = mFocusBeforeReveal.data();
+    mFocusBeforeReveal.clear();
+    QDockWidget::hideEvent(event);
+    // Skip the restore for the construction-time `hide()` (no
+    // saved target) and for restores that race a teardown of the
+    // previously-focused widget.
+    if (target != nullptr && target->isVisible())
+    {
+        target->setFocus(Qt::OtherFocusReason);
+    }
 }

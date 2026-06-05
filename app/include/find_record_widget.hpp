@@ -1,15 +1,15 @@
 #pragma once
 
-#include <QPointer>
 #include <QString>
 #include <QWidget>
 
 class QAction;
+class QEvent;
 class QKeyEvent;
 class QLabel;
 class QLineEdit;
-class QPropertyAnimation;
-class QShowEvent;
+class QObject;
+class QTimer;
 class QToolButton;
 
 /// Modern incremental find bar.
@@ -23,11 +23,9 @@ class QToolButton;
 ///     TrailingPosition)`,
 ///   - Up / Down arrow `QToolButton`s for find-prev / find-next,
 ///   - `QLabel` showing "*i* of *N*" or "*N* matches" live,
-///   - `Escape` hides the bar (no literal "X" button),
+///   - `Escape` closes the host dock (no literal "X" button),
 ///   - `Return` triggers find-next, `Shift+Return` find-prev
-///     (Chromium / VS Code convention),
-///   - slide-in / slide-out animated via `QPropertyAnimation` on
-///     `maximumHeight`.
+///     (Chromium / VS Code convention).
 ///
 /// Live match counts are driven by the parent: the widget emits
 /// `MatchCountRequested` whenever the search text or its toggles
@@ -54,29 +52,11 @@ public slots:
     /// - `current > 0`: shows "%1 of %2".
     void SetMatchInfo(int current, int total);
 
-    /// Animated reveal. Use this from the parent instead of
-    /// `show()` so the slide-in transition runs.
-    void RevealAnimated();
-
-    /// Animated hide. The widget remains in the layout but its
-    /// `maximumHeight` is driven to 0 before `hide()`.
-    ///
-    /// Only safe for the legacy in-layout host. When hosted in a
-    /// `QDockWidget`, prefer `DismissBar` (or close the dock
-    /// directly): hiding the inner widget while the dock stays
-    /// visible leaves the dock title bar floating above an empty
-    /// body, and a later `show()` on the dock won't un-hide an
-    /// explicitly-hidden child.
-    void HideAnimated();
-
-    /// Close the bar in a host-aware way.
-    ///
-    /// - When parented to a `QDockWidget`, calls `close()` on the
-    ///   dock so `visibilityChanged` mirrors the toggle action and
-    ///   subsequent reveals properly re-show the inner widget.
-    /// - Otherwise falls back to `HideAnimated` (in-layout host).
-    ///
-    /// Idempotent: a no-op when the bar is already hidden.
+    /// Close the host `QDockWidget` so `visibilityChanged`
+    /// mirrors the View-menu toggle and a subsequent
+    /// `RevealAndFocus` properly re-shows everything. No-op when
+    /// the bar isn't in a dock or the dock is already hidden.
+    /// Wired to the Escape shortcut.
     void DismissBar();
 
     /// Re-arm the debounce timer so a `MatchCountRequested` fires
@@ -98,7 +78,15 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
-    void showEvent(QShowEvent *event) override;
+
+    /// Intercept `Shift+Return` / `Shift+Enter` on `mEdit` before
+    /// `QLineEdit` swallows it. Plain `QLineEdit::returnPressed`
+    /// fires modifier-agnostic, and `QLineEdit::keyPressEvent`
+    /// accepts the event without bubbling, so the parent's
+    /// `keyPressEvent` never sees Shift+Return. The filter is the
+    /// only reliable point to wire find-previous (Chromium /
+    /// VS Code convention).
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void FindNext();
@@ -120,11 +108,6 @@ private:
     QToolButton *mButtonNext = nullptr;
     QToolButton *mButtonPrevious = nullptr;
     QLabel *mMatchCountLabel = nullptr;
-
-    /// Last expanded height captured in `showEvent`, used as the
-    /// target for `RevealAnimated`.
-    int mNaturalHeight = 0;
-    QPointer<QPropertyAnimation> mAnimation;
 
     /// Real debounce timer for `MatchCountRequested`. A single
     /// owned `QTimer::start()` per keystroke restarts the
