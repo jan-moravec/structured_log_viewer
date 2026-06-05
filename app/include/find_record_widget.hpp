@@ -59,7 +59,12 @@ public slots:
     /// - `total <= 0`: hides the label entirely (empty needle).
     /// - `current <= 0`: shows "%n matches" (no current pin yet).
     /// - `current > 0`: shows "%1 of %2".
-    void SetMatchInfo(int current, int total);
+    /// - `overflowed = true`: appends a `+` to the total ("10,000+
+    ///   matches", "1 of 10,000+") so the user sees that the
+    ///   parent capped the scan rather than that they happened to
+    ///   land at exactly the cap. The cap lives on the parent;
+    ///   this widget only renders the flag.
+    void SetMatchInfo(int current, int total, bool overflowed = false);
 
     /// Close the host `QDockWidget` so `visibilityChanged`
     /// mirrors the View-menu toggle and a subsequent
@@ -124,4 +129,16 @@ private:
     /// scan instead of N. Plain `QTimer::singleShot` does not
     /// coalesce (each call schedules a fresh fire).
     QTimer *mMatchCountTimer = nullptr;
+
+    /// Maximum-age timer. `mMatchCountTimer` restarts on every
+    /// keystroke / model bump and never fires under continuous
+    /// activity (live-tail streaming, fast typing). This timer
+    /// is started once when the trailing timer first arms and is
+    /// *not* restarted by subsequent bumps -- so it forces an
+    /// emit after at most `MATCH_COUNT_MAX_AGE_MS`, keeping the
+    /// "*i* of *N*" indicator usable during continuous streaming
+    /// instead of stranding the value from before the stream
+    /// started. Both timers' `timeout` route through
+    /// `EmitMatchCountRequest`, which stops both.
+    QTimer *mMatchCountMaxAgeTimer = nullptr;
 };

@@ -21,6 +21,17 @@ namespace
 /// of a long word.
 constexpr int MATCH_COUNT_DEBOUNCE_MS = 120;
 
+/// Hard cap on how long a match-count emit can be deferred. The
+/// trailing-edge debounce restarts on every keystroke / model
+/// bump, which under continuous activity (live-tail streaming,
+/// long words held down) means it would never fire and the "*i*
+/// of *N*" indicator would lag the live data by minutes. The
+/// max-age timer is armed once when the trailing debounce first
+/// starts and is *not* restarted, so it guarantees an emit
+/// within this window even when the trailing timer keeps
+/// resetting.
+constexpr int MATCH_COUNT_MAX_AGE_MS = 750;
+
 /// Visual minimum so the search field doesn't collapse to nothing
 /// when the bar is squeezed.
 constexpr int EDIT_MIN_WIDTH = 220;
@@ -76,6 +87,12 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     regexButton->setDefaultAction(mRegexAction);
     regexButton->setAutoRaise(true);
     regexButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // Defensive: `setDefaultAction` propagates the action's text in
+    // most styles, but a few platform styles only render text when
+    // `QToolButton` has its own. Setting it explicitly pins the
+    // glyph regardless of style; click handling continues to flow
+    // through the action.
+    regexButton->setText(mRegexAction->text());
     hLayout->addWidget(regexButton);
 
     mWildcardsAction = new QAction(this);
@@ -89,6 +106,8 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     wildcardsButton->setDefaultAction(mWildcardsAction);
     wildcardsButton->setAutoRaise(true);
     wildcardsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    // Same rationale as `regexButton` above.
+    wildcardsButton->setText(mWildcardsAction->text());
     hLayout->addWidget(wildcardsButton);
 
     mMatchCountLabel = new QLabel(this);
@@ -141,6 +160,17 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mMatchCountTimer->setInterval(MATCH_COUNT_DEBOUNCE_MS);
     connect(mMatchCountTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
 
+    // Companion max-age timer: armed alongside `mMatchCountTimer`
+    // (only when the trailing timer wasn't already running) and
+    // *never* restarted by subsequent bumps. Forces an emit after
+    // at most `MATCH_COUNT_MAX_AGE_MS`, so live-tail streaming or
+    // a held-down key can't strand the "*i* of *N*" indicator at
+    // its pre-activity value.
+    mMatchCountMaxAgeTimer = new QTimer(this);
+    mMatchCountMaxAgeTimer->setSingleShot(true);
+    mMatchCountMaxAgeTimer->setInterval(MATCH_COUNT_MAX_AGE_MS);
+    connect(mMatchCountMaxAgeTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
+
     // Text + toggle changes drive live match-count requests. We
     // debounce via `mMatchCountTimer` so a fast typist doesn't
     // trigger a full-table scan on every keystroke.
@@ -186,7 +216,7 @@ void FindRecordWidget::SetEditFocus()
     mEdit->selectAll();
 }
 
-void FindRecordWidget::SetMatchInfo(int current, int total)
+void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
 {
     if (total <= 0)
     {
@@ -194,14 +224,22 @@ void FindRecordWidget::SetMatchInfo(int current, int total)
         mMatchCountLabel->setVisible(false);
         return;
     }
+    // Locale-grouped digits matching the rest of the GUI; the "+"
+    // suffix surfaces the parent's hit cap so a million-row log
+    // doesn't pretend the count is exactly at the cap.
+    const QLocale locale = QLocale::system();
+    const QString totalText =
+        locale.toString(static_cast<qlonglong>(total)) + (overflowed ? QStringLiteral("+") : QString());
     QString text;
     if (current > 0)
     {
-        text = tr("%1 of %2").arg(current).arg(total);
+        text = tr("%1 of %2").arg(locale.toString(static_cast<qlonglong>(current)), totalText);
     }
     else
     {
-        text = tr("%n matches", nullptr, total);
+        // Two formatters because `%n` only handles one number;
+        // we already formatted `totalText` above.
+        text = overflowed ? tr("%1 matches").arg(totalText) : tr("%n matches", nullptr, total);
     }
     mMatchCountLabel->setText(text);
     mMatchCountLabel->setVisible(true);
@@ -213,10 +251,19 @@ void FindRecordWidget::BumpMatchCountDebounce()
     {
         return;
     }
-    // Restart the timer; identical mechanism to the textChanged
-    // path. A burst of model signals collapses into one final
-    // recount.
+    // Restart the trailing timer; identical mechanism to the
+    // textChanged path. A burst of model signals collapses into
+    // one final recount.
+    //
+    // Arm the max-age timer only when it isn't already running,
+    // so continuous activity can't keep pushing the deadline
+    // out -- it caps the longest possible delay between an
+    // invalidation and the visible recount.
     mMatchCountTimer->start();
+    if (!mMatchCountMaxAgeTimer->isActive())
+    {
+        mMatchCountMaxAgeTimer->start();
+    }
 }
 
 void FindRecordWidget::DismissBar()
@@ -307,23 +354,36 @@ void FindRecordWidget::RequestMatchCountSoon()
     {
         // Empty needle: clear immediately without bouncing off
         // the debounce timer, so the label can't lag a clear.
-        // Cancel any in-flight tick so a stale needle doesn't
-        // overwrite the cleared state. No signal emitted -- the
-        // parent has nothing to recount, and a per-keystroke
-        // round-trip just to be told "still empty" is wasted
-        // work. The cache the parent holds is keyed by needle,
-        // so the next non-empty query rebuilds it anyway.
+        // Cancel any in-flight tick (trailing + max-age) so a
+        // stale needle doesn't overwrite the cleared state. No
+        // signal emitted -- the parent has nothing to recount,
+        // and a per-keystroke round-trip just to be told "still
+        // empty" is wasted work. The cache the parent holds is
+        // keyed by needle, so the next non-empty query rebuilds
+        // it anyway.
         mMatchCountTimer->stop();
+        mMatchCountMaxAgeTimer->stop();
         SetMatchInfo(0, 0);
         return;
     }
     // `start()` resets the countdown if already running, so a
     // fast typist coalesces N keystrokes into a single trailing
-    // match-count scan.
+    // match-count scan. The max-age timer arms once on the
+    // leading edge so it caps the longest possible delay even
+    // under sustained typing.
     mMatchCountTimer->start();
+    if (!mMatchCountMaxAgeTimer->isActive())
+    {
+        mMatchCountMaxAgeTimer->start();
+    }
 }
 
 void FindRecordWidget::EmitMatchCountRequest()
 {
+    // Stop the *other* timer so a max-age fire doesn't get
+    // followed 50 ms later by a redundant trailing fire (and
+    // vice versa).
+    mMatchCountTimer->stop();
+    mMatchCountMaxAgeTimer->stop();
     emit MatchCountRequested(mEdit->text(), mWildcardsAction->isChecked(), mRegexAction->isChecked());
 }

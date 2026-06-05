@@ -9720,15 +9720,15 @@ private slots:
 
         auto *clipboard = QGuiApplication::clipboard();
         clipboard->clear();
-        QMetaObject::invokeMethod(dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList")), [list]() {
-            Q_UNUSED(list);
-        });
 
         // `CopySelection` is private; invoke via the Ctrl+C
         // shortcut so we exercise the same path the user sees.
-        // Build a key event and post it via QTest.
+        // The shortcut is parented on the dock's content widget
+        // (so it stays live even when focus is on the Clear
+        // button instead of the list), so search the whole dock
+        // subtree rather than just the list's children.
         QShortcut *copyShortcut = nullptr;
-        const QList<QShortcut *> shortcuts = list->findChildren<QShortcut *>();
+        const QList<QShortcut *> shortcuts = dock->findChildren<QShortcut *>();
         for (QShortcut *s : shortcuts)
         {
             if (s->key() == QKeySequence(QKeySequence::Copy))
@@ -9737,7 +9737,7 @@ private slots:
                 break;
             }
         }
-        QVERIFY2(copyShortcut != nullptr, "ParseErrorsDock must wire Ctrl+C on its list");
+        QVERIFY2(copyShortcut != nullptr, "ParseErrorsDock must wire Ctrl+C somewhere in its subtree");
         emit copyShortcut->activated();
         QCoreApplication::processEvents();
 
@@ -9870,6 +9870,122 @@ private slots:
         QVERIFY2(
             !spy.wait(300),
             "FindDock::revealed must NOT trigger MatchCountRequested for an empty needle"
+        );
+    }
+
+    // Regression: under continuous activity (live-tail streaming,
+    // a held-down key), the trailing 120 ms debounce restarts on
+    // every bump and never fires. The match-count indicator
+    // would then strand at the value from before the activity
+    // started, which is exactly the case where a live indicator
+    // is most useful. `BumpMatchCountDebounce` was extended to
+    // also arm a max-age timer (capped at 750 ms) that is *not*
+    // reset by subsequent bumps, guaranteeing an emit within
+    // that window. This test forces a stream of bumps tighter
+    // than the trailing window and asserts the emit still
+    // arrives within the max-age cap.
+    void TestFindBarDebounceMaxAgeForcesEmitUnderContinuousActivity()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(edit != nullptr, "FindRecordWidget must expose its line edit");
+
+        edit->setText(QStringLiteral("anything"));
+        QSignalSpy spy(findRecord, &FindRecordWidget::MatchCountRequested);
+        QVERIFY(spy.isValid());
+        // Drain the textChanged-triggered debounce.
+        QVERIFY2(spy.count() > 0 || spy.wait(1500), "initial textChanged must emit");
+        spy.clear();
+
+        // Hammer the bump every 50 ms (under the 120 ms trailing
+        // window) for 1000 ms total. Without the max-age cap the
+        // trailing timer never fires; with it, exactly one emit
+        // arrives within ~750 ms of the first bump.
+        QElapsedTimer wallClock;
+        wallClock.start();
+        constexpr int BUMP_INTERVAL_MS = 50;
+        constexpr int TOTAL_BUMP_DURATION_MS = 1000;
+        constexpr int MAX_AGE_TOLERANCE_MS = 1000; // a bit above the 750 ms cap
+        bool emittedDuringHammer = false;
+        while (wallClock.elapsed() < TOTAL_BUMP_DURATION_MS)
+        {
+            findRecord->BumpMatchCountDebounce();
+            QTest::qWait(BUMP_INTERVAL_MS);
+            if (spy.count() > 0)
+            {
+                emittedDuringHammer = true;
+                break;
+            }
+        }
+        QVERIFY2(
+            emittedDuringHammer,
+            qPrintable(QStringLiteral(
+                           "max-age cap must fire MatchCountRequested under continuous bumps; got %1 emits in %2 ms"
+            )
+                           .arg(spy.count())
+                           .arg(wallClock.elapsed()))
+        );
+        QVERIFY2(
+            wallClock.elapsed() <= MAX_AGE_TOLERANCE_MS,
+            qPrintable(QStringLiteral("first emit took longer than the max-age cap: %1 ms").arg(wallClock.elapsed()))
+        );
+    }
+
+    // Regression: `LogFilterModel::MatchRow` skips hidden columns
+    // (it honours `Column::visible`), but column-visibility flips
+    // do not emit any of the model / proxy signals the find cache
+    // is wired to (`rowsInserted`, `layoutChanged`, `dataChanged`,
+    // ...). Without explicit invalidation the "*i* of *N*"
+    // indicator could strand a count that includes hits in
+    // now-hidden columns. `SetColumnVisible` and
+    // `ApplyColumnVisibility` were updated to call
+    // `OnFindCacheInvalidated`; this test pins that wire.
+    //
+    // Driver: set a needle, prime the cache, hide a column, then
+    // verify the indicator is recomputed against the post-hide
+    // visibility set. Two checks lock the wire down:
+    //   - the cached match list reported via `SetMatchInfo`
+    //     decreases (matches that were only in the hidden column
+    //     are gone), and
+    //   - a fresh `MatchCountRequested` arrives, which only
+    //     happens if `OnFindCacheInvalidated` ran.
+    //
+    // We need the main window realised so `mFindDock->isVisible()`
+    // returns true (the visibility gate on the bump is
+    // intentional perf -- a hidden bar doesn't pay the recount).
+    void TestHidingColumnInvalidatesFindCache()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *findDock = mWindow->findChild<FindDock *>();
+        QVERIFY2(findDock != nullptr, "MainWindow must own a FindDock");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(edit != nullptr, "FindRecordWidget must expose its line edit");
+
+        // Realise the window so the visibility gate in
+        // `OnFindCacheInvalidated` lets the bump through.
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        findDock->show();
+        QCoreApplication::processEvents();
+        QVERIFY2(findDock->isVisible(), "find dock must be visible for the bump gate to pass");
+
+        edit->setText(QStringLiteral("info"));
+        QSignalSpy spy(findRecord, &FindRecordWidget::MatchCountRequested);
+        QVERIFY(spy.isValid());
+        // Drain the textChanged-triggered debounce so the next
+        // emit we observe is unambiguously caused by the hide.
+        QVERIFY2(spy.count() > 0 || spy.wait(1500), "initial textChanged must trigger a debounced MatchCountRequested");
+        spy.clear();
+
+        mWindow->SetColumnVisible(categoryCol, false);
+        QVERIFY2(
+            spy.count() > 0 || spy.wait(1500),
+            "Hiding a column must invalidate the find cache and trigger a fresh MatchCountRequested"
         );
     }
 

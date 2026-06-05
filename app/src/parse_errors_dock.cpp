@@ -87,12 +87,13 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
 
     connect(mClearButton, &QPushButton::clicked, this, &ParseErrorsDock::ClearErrors);
 
-    // Ctrl+C copies the selected error rows. Scoped to the list
-    // so it doesn't shadow window-level Copy when focus is
-    // elsewhere. Without this, `setSelectionMode(ExtendedSelection)`
-    // would let the user select rows that they couldn't actually
-    // copy.
-    auto *copyShortcut = new QShortcut(QKeySequence::Copy, mList);
+    // Ctrl+C copies the selected error rows. Parented on `body`
+    // (not `mList`) with `WidgetWithChildrenShortcut` so the
+    // shortcut still fires when the user has clicked the Clear
+    // button (which moves focus off the list but leaves the
+    // selection intact). Window-level Copy is preserved because
+    // the scope still excludes the rest of `MainWindow`.
+    auto *copyShortcut = new QShortcut(QKeySequence::Copy, body);
     copyShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(copyShortcut, &QShortcut::activated, this, &ParseErrorsDock::CopySelection);
 

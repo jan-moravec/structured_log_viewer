@@ -3701,28 +3701,50 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             return;
         }
         const QVariant value = QVariant::fromValue(text);
+        // Cap the scan at `MAX_FIND_MATCH_COUNT + 1`: one extra
+        // hit lets us distinguish "exactly at the cap" from "ran
+        // off the end". Bigger needles on huge tables (1 M+ rows,
+        // common needle like " ") used to block the GUI for
+        // hundreds of ms; the cap keeps the recount bounded
+        // regardless of input size.
         const QModelIndexList matches = mSortFilterProxyModel->MatchRow(
-            start, Qt::DisplayRole, value, LogFilterModel::UNLIMITED_HITS, flags, true, 0
+            start, Qt::DisplayRole, value, MAX_FIND_MATCH_COUNT + 1, flags, true, 0
         );
-        // `MatchRow` returns at most one entry per row (it
-        // `break`s on the first matching column) and walks rows
-        // in ascending order from `start` (row 0), so the result
-        // is already row-deduplicated and sorted -- exactly what
-        // the binary-search lookup below needs. Asserting the
-        // invariant in debug builds keeps us honest if MatchRow's
-        // contract ever changes.
+        const bool overflowed = matches.size() > MAX_FIND_MATCH_COUNT;
+        // `MatchRow` is documented to return at most one entry
+        // per row (it `break`s on the first matching column) and
+        // to walk rows ascending from `start` (row 0). That
+        // *should* leave us with sorted, deduplicated rows --
+        // but a future contributor could change either invariant
+        // and the binary-search path below would silently
+        // misreport. Sort + unique defensively so a contract
+        // drift can't corrupt the indicator. Keep the asserts so
+        // debug builds still catch the regression at the source.
         std::vector<int> rows;
-        rows.reserve(matches.size());
+        rows.reserve(static_cast<size_t>(matches.size()));
         for (const QModelIndex &m : matches)
         {
             rows.push_back(m.row());
         }
         Q_ASSERT(std::ranges::is_sorted(rows));
         Q_ASSERT(std::ranges::adjacent_find(rows) == rows.end());
+        if (!std::ranges::is_sorted(rows))
+        {
+            std::ranges::sort(rows);
+        }
+        rows.erase(std::ranges::unique(rows).begin(), rows.end());
+        if (overflowed)
+        {
+            // We requested cap+1 hits to detect overflow; trim
+            // the surplus before storing so `sortedRows.size()`
+            // matches the cap exactly.
+            rows.resize(static_cast<size_t>(MAX_FIND_MATCH_COUNT));
+        }
         mFindMatchCache = FindMatchCache{
             .needle = text,
             .wildcards = wildcards,
             .regularExpressions = regularExpressions,
+            .overflowed = overflowed,
             .sortedRows = std::move(rows),
         };
     }
@@ -3743,7 +3765,7 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             }
         }
     }
-    mFindRecord->SetMatchInfo(currentOneBased, total);
+    mFindRecord->SetMatchInfo(currentOneBased, total, mFindMatchCache->overflowed);
 }
 
 void MainWindow::InvalidateFindMatchCache()
@@ -3932,11 +3954,18 @@ void MainWindow::Find()
         return;
     }
     // Smart toggle (VS Code / Chrome convention):
-    //   - bar hidden          -> open + focus the search field.
-    //   - bar visible but not focused -> focus the search field.
-    //   - bar visible AND focused     -> close (so Ctrl+F twice
-    //                                    dismisses it, no need
-    //                                    to chase Esc).
+    //   - bar hidden / tab-buried        -> reveal + focus the
+    //                                       search field.
+    //   - bar visible, focus outside it  -> just focus the field
+    //                                       (no close).
+    //   - bar visible, focus *inside* it -> close it, so a
+    //                                       second Ctrl+F is the
+    //                                       dismiss verb (no
+    //                                       need to chase Esc).
+    // The `isAncestorOf` check on the focused widget is what
+    // distinguishes the second case from the third: a bare
+    // `isVisible` check would close the bar when the user
+    // pressed Ctrl+F from the table view.
     if (mFindDock->isVisible() && mFindDock->isAncestorOf(QApplication::focusWidget()))
     {
         mFindDock->close();
@@ -5699,6 +5728,14 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
     {
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
     }
+    // `LogFilterModel::MatchRow` skips columns where
+    // `LogConfiguration::columns[i].visible == false`, but column
+    // visibility flips don't emit any of the model / proxy signals
+    // that `OnFindCacheInvalidated` is wired to (rowsInserted,
+    // layoutChanged, dataChanged, ...). Invalidate explicitly so
+    // the find bar's "*i* of *N*" indicator can't strand a stale
+    // count that includes hits in now-hidden columns.
+    OnFindCacheInvalidated();
 }
 
 void MainWindow::ApplyColumnVisibility()
@@ -5714,6 +5751,13 @@ void MainWindow::ApplyColumnVisibility()
     {
         header->setSectionHidden(static_cast<int>(i), !columns[i].visible);
     }
+    // Visibility may have changed without any model / proxy signal
+    // firing -- this method is also called from header-recovery
+    // paths and configuration loads. Drop the find cache for the
+    // same reason `SetColumnVisible` does: `MatchRow` honours
+    // `Column::visible` and a stale cache would lie about the
+    // count.
+    OnFindCacheInvalidated();
 }
 
 void MainWindow::RebuildViewMenu()

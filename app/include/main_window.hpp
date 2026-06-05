@@ -831,6 +831,17 @@ private:
     /// pattern used by `mDiagnosticsButton`.
     QPushButton *mParseErrorsStatusButton = nullptr;
 
+    /// Hard cap on rows the live "*i* of *N*" scan may collect
+    /// before short-circuiting. The scan runs synchronously on
+    /// the GUI thread; an unbounded walk over a million-row
+    /// proxy with a frequent needle ("the", " ", ...) freezes
+    /// the UI for hundreds of ms per recount. Past the cap the
+    /// indicator shows "*N*+" so the user can tell the count is
+    /// truncated; Next / Previous still work via the live
+    /// `FindRecords` path which has its own start position and
+    /// doesn't pay the full-table scan.
+    static constexpr int MAX_FIND_MATCH_COUNT = 10000;
+
     /// Cached match-row list for the find bar's "*i* of *N*"
     /// indicator. Keyed by `(needle, wildcards, regex)` so a
     /// Next / Previous click after the count was last computed
@@ -838,12 +849,15 @@ private:
     /// re-running `MatchRow` over the entire proxy. `sortedRows`
     /// is row-deduplicated (a row matching in N visible columns
     /// counts once) so the indicator agrees with how
-    /// `FindRecords` walks the table.
+    /// `FindRecords` walks the table. `overflowed` is set when
+    /// the scan stopped at `MAX_FIND_MATCH_COUNT` rather than
+    /// running to completion.
     struct FindMatchCache
     {
         QString needle;
         bool wildcards = false;
         bool regularExpressions = false;
+        bool overflowed = false;
         std::vector<int> sortedRows;
     };
     std::optional<FindMatchCache> mFindMatchCache;
