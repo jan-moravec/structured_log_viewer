@@ -308,10 +308,13 @@ void FindRecordWidget::RequestMatchCountSoon()
         // Empty needle: clear immediately without bouncing off
         // the debounce timer, so the label can't lag a clear.
         // Cancel any in-flight tick so a stale needle doesn't
-        // overwrite the cleared state.
+        // overwrite the cleared state. No signal emitted -- the
+        // parent has nothing to recount, and a per-keystroke
+        // round-trip just to be told "still empty" is wasted
+        // work. The cache the parent holds is keyed by needle,
+        // so the next non-empty query rebuilds it anyway.
         mMatchCountTimer->stop();
         SetMatchInfo(0, 0);
-        emit MatchCountRequested(QString(), mWildcardsAction->isChecked(), mRegexAction->isChecked());
         return;
     }
     // `start()` resets the countdown if already running, so a

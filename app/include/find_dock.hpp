@@ -5,6 +5,7 @@
 
 class FindRecordWidget;
 class QCloseEvent;
+class QShowEvent;
 class QWidget;
 
 /// Dockable host for `FindRecordWidget`.
@@ -49,28 +50,42 @@ signals:
     /// distinguish "user dismissed me" from "I'm just buried".
     void closed();
 
-protected:
-    /// Restore focus to whatever held it before the bar opened.
-    /// Wired to `hideEvent` rather than `closeEvent` so every
-    /// dismissal path covers it: the dock's "X" button, Escape
-    /// (via `DismissBar`), the View menu toggle (which calls
-    /// `hide()`, bypassing `closeEvent`), and `restoreState`.
-    /// `QPointer` covers the case where the prior focus widget
-    /// was deleted while the bar was open (e.g. a config reload
-    /// tore down the table view).
-    void hideEvent(QHideEvent *event) override;
+    /// Emitted when the dock becomes visible to the user, whether
+    /// from a cold reveal or a tab activation. Mirrors
+    /// `QDockWidget::visibilityChanged(true)` but is documented as
+    /// the canonical "the user is looking at the find bar now"
+    /// hook so `MainWindow` can refresh the match count after
+    /// model activity that happened while the bar was buried.
+    void revealed();
 
-    /// Emit `closed` after the base class accepts the event so
-    /// the menu toggle can drop the checkmark even when the dock
-    /// is tabified (`visibilityChanged(false)` alone fires on tab
-    /// inactivation, which would otherwise un-check the menu
-    /// entry every time the user switches tabs).
+protected:
+    /// Restore focus to whatever held it before the bar opened,
+    /// then emit `closed`. Both live here (rather than in
+    /// `hideEvent`) so tab inactivation in a tabified group
+    /// does not steal focus from the newly-active sibling tab:
+    /// `hideEvent` fires on every tab switch, `closeEvent` only on
+    /// genuine dismissal (X button, Escape via `DismissBar`, View
+    /// menu toggle off -- all of which route through `close()`).
+    ///
+    /// `QPointer` on `mFocusBeforeReveal` covers the case where
+    /// the prior focus widget was deleted while the bar was open
+    /// (e.g. a config reload tore down the table view).
     void closeEvent(QCloseEvent *event) override;
+
+    /// Emit `revealed` so `MainWindow` can refresh the match
+    /// count if model / proxy activity invalidated it while the
+    /// bar was hidden or tab-buried. Connecting to plain
+    /// `QDockWidget::visibilityChanged(true)` would work too, but
+    /// keeping a named signal keeps the wiring self-documenting
+    /// at the call site.
+    void showEvent(QShowEvent *event) override;
 
 private:
     FindRecordWidget *mWidget = nullptr;
 
     /// Stashed focus target captured by `RevealAndFocus`. Cleared
-    /// on `hideEvent` so a second hide can't re-steal focus.
+    /// when consumed by `closeEvent` so a second close (after a
+    /// second reveal without a fresh focus target) can't restore
+    /// to a stale pointer.
     QPointer<QWidget> mFocusBeforeReveal;
 };

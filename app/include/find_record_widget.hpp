@@ -12,28 +12,37 @@ class QObject;
 class QTimer;
 class QToolButton;
 
-/// Modern incremental find bar.
+/// Modern incremental find bar, in the spirit of VS Code,
+/// QtCreator and Kate. The bar is a horizontal `QLineEdit` flanked
+/// by:
+///   - flat `QToolButton`s for the regex (`.*`) and wildcard
+///     (`*?`) match modes (mutually exclusive -- toggling one
+///     un-toggles the other),
+///   - a `QLabel` showing "*i* of *N*" or "*N* matches" live,
+///   - Up / Down arrow `QToolButton`s for find-prev / find-next.
 ///
-/// Looks and feels like the find bar in VS Code, QtCreator, and
-/// Kate:
-///   - leading magnifying-glass icon and trailing clear button
-///     inside the `QLineEdit`,
-///   - trailing toggle "buttons" (regex / wildcards) embedded in
-///     the line edit via `QLineEdit::addAction(...,
-///     TrailingPosition)`,
-///   - Up / Down arrow `QToolButton`s for find-prev / find-next,
-///   - `QLabel` showing "*i* of *N*" or "*N* matches" live,
-///   - `Escape` closes the host dock (no literal "X" button),
-///   - `Return` triggers find-next, `Shift+Return` find-prev
-///     (Chromium / VS Code convention).
+/// The `QLineEdit` itself provides the trailing clear button via
+/// `setClearButtonEnabled(true)`. The toggles are *not* embedded
+/// in the line edit via `QLineEdit::addAction(..., TrailingPosition)`
+/// because that path renders the action's icon only -- the `.*`
+/// and `*?` glyphs would be invisible and no `QStyle::SP_*` icon
+/// reads unambiguously as regex or wildcard.
+///
+/// Keys (Chromium / VS Code convention):
+///   - `Return`        -> find-next,
+///   - `Shift+Return`  -> find-previous,
+///   - `Escape`        -> dismiss the host dock.
+/// There is no literal "X" button -- the host `QDockWidget`'s
+/// title-bar X is the canonical close affordance.
 ///
 /// Live match counts are driven by the parent: the widget emits
 /// `MatchCountRequested` whenever the search text or its toggles
-/// change, and the parent answers via `SetMatchInfo`. The
-/// `FindRecords` signal still drives the "jump to next / prev"
-/// behaviour, which the parent answers by updating the table view
-/// selection and (optionally) calling `SetMatchInfo` with the new
-/// position.
+/// change, debounced through an owned `QTimer` so a fast typist
+/// doesn't trigger a full-table scan on every keystroke. The
+/// parent answers via `SetMatchInfo`. The `FindRecords` signal
+/// still drives the "jump to next / prev" behaviour, which the
+/// parent answers by updating the table view selection and
+/// (optionally) calling `SetMatchInfo` with the new position.
 class FindRecordWidget : public QWidget
 {
     Q_OBJECT

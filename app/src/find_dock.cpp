@@ -4,7 +4,7 @@
 
 #include <QApplication>
 #include <QCloseEvent>
-#include <QHideEvent>
+#include <QShowEvent>
 #include <QWidget>
 
 FindDock::FindDock(QWidget *parent)
@@ -42,28 +42,35 @@ void FindDock::RevealAndFocus()
     mWidget->SetEditFocus();
 }
 
-void FindDock::hideEvent(QHideEvent *event)
+void FindDock::closeEvent(QCloseEvent *event)
 {
-    // Snapshot + clear before forwarding so a re-entrant hide
+    // Snapshot + clear before forwarding so a re-entrant close
     // (e.g. inside a focusOut handler that triggers another
     // close) can't double-fire the restore.
     QWidget *target = mFocusBeforeReveal.data();
     mFocusBeforeReveal.clear();
-    QDockWidget::hideEvent(event);
-    // Skip the restore for the construction-time `hide()` (no
-    // saved target) and for restores that race a teardown of the
-    // previously-focused widget.
+    QDockWidget::closeEvent(event);
+    if (!event->isAccepted())
+    {
+        return;
+    }
+    // Skip the restore for the construction-time hide (no saved
+    // target) and for races where the previously-focused widget
+    // was torn down while the bar was open.
     if (target != nullptr && target->isVisible())
     {
         target->setFocus(Qt::OtherFocusReason);
     }
+    emit closed();
 }
 
-void FindDock::closeEvent(QCloseEvent *event)
+void FindDock::showEvent(QShowEvent *event)
 {
-    QDockWidget::closeEvent(event);
-    if (event->isAccepted())
-    {
-        emit closed();
-    }
+    QDockWidget::showEvent(event);
+    // `revealed` fires for cold reveals *and* for tab activations
+    // inside a tabified group; both are moments when the user is
+    // about to look at the bar and any stale match count needs to
+    // catch up to model activity that happened while it was
+    // invisible.
+    emit revealed();
 }

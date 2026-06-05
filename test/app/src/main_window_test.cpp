@@ -9760,6 +9760,119 @@ private slots:
         );
     }
 
+    // Regression: trimming a multi-batch overflow used to leave
+    // surviving rows from the first batch *headerless* -- their
+    // group label was the first thing evicted, so the rows that
+    // remained floated above the next batch's title with nothing
+    // labelling them. The fix re-mints the evicted header above
+    // the surviving rows.
+    void TestParseErrorsDockTrimPreservesSurvivingBatchHeader()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        // First batch fills most of the cap. Second batch tips us
+        // over, evicting the first batch's *header* plus a chunk
+        // of its rows but leaving the rest of batch A behind.
+        const int batchAStart = cap - 200;
+        std::vector<std::string> batchA;
+        batchA.reserve(static_cast<size_t>(batchAStart));
+        for (int i = 0; i < batchAStart; ++i)
+        {
+            batchA.emplace_back("A-" + std::to_string(i));
+        }
+        std::vector<std::string> batchB;
+        batchB.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            batchB.emplace_back("B-" + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Batch A"), batchA);
+        dock->AppendErrors(QStringLiteral("Batch B"), batchB);
+
+        QVERIFY2(dock->DroppedCount() > 0, "second batch must have evicted some of batch A");
+
+        // Find the first surviving error row. It must be an
+        // `A-...` entry (since A was the older batch), and the
+        // immediately preceding item must be a non-selectable
+        // group header reading "Batch A" -- not "Batch B" floating
+        // above orphan A rows.
+        int firstSelectableRow = -1;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->flags().testFlag(Qt::ItemIsSelectable))
+            {
+                firstSelectableRow = i;
+                break;
+            }
+        }
+        QVERIFY2(firstSelectableRow > 0, "surviving error rows must follow at least one header");
+        QListWidgetItem *firstError = list->item(firstSelectableRow);
+        QVERIFY2(firstError != nullptr, "first selectable row lookup must succeed");
+        QVERIFY2(
+            firstError->text().startsWith(QStringLiteral("A-")),
+            qPrintable(QStringLiteral("first survivor must be from batch A; got: %1").arg(firstError->text()))
+        );
+        QListWidgetItem *headerAbove = list->item(firstSelectableRow - 1);
+        QVERIFY2(headerAbove != nullptr, "row above first survivor must exist");
+        QVERIFY2(
+            !headerAbove->flags().testFlag(Qt::ItemIsSelectable),
+            "row above first survivor must be a group header (non-selectable)"
+        );
+        QCOMPARE(headerAbove->text(), QStringLiteral("Batch A"));
+    }
+
+    // Regression: re-opening the find bar after a model reset
+    // used to show whatever match count the label held when the
+    // bar was last hidden, even when that count referred to a
+    // completely different dataset. The `FindDock::revealed`
+    // signal is the trigger for a catch-up recount.
+    void TestFindBarRevealedSignalTriggersCatchUpRecount()
+    {
+        auto *dock = mWindow->findChild<FindDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a FindDock");
+        auto *bar = dock->Widget();
+        QVERIFY2(bar != nullptr, "FindDock must host a FindRecordWidget");
+        auto *edit = bar->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(edit != nullptr, "FindRecordWidget must expose its line edit");
+
+        // Drive the signal directly rather than going through Qt's
+        // tab system (which needs a realised main window): the
+        // wiring under test is "revealed -> BumpMatchCountDebounce".
+        // With a non-empty needle, the debounce timer should arm and
+        // eventually emit `MatchCountRequested`.
+        edit->setText(QStringLiteral("anything"));
+        QSignalSpy spy(bar, &FindRecordWidget::MatchCountRequested);
+        QVERIFY(spy.isValid());
+        spy.clear();
+
+        emit dock->revealed();
+
+        // Wait up to a second for the debounce (default 120 ms) to
+        // fire. Using `wait()` rather than `processEvents` so we
+        // don't depend on the test driver's clock to tick.
+        QVERIFY2(
+            spy.count() > 0 || spy.wait(1000),
+            "FindDock::revealed must trigger a debounced MatchCountRequested for a non-empty needle"
+        );
+
+        // Empty-needle reveal must be a no-op: the bar suppresses
+        // the request, so the cache stays untouched.
+        edit->clear();
+        spy.clear();
+        emit dock->revealed();
+        QVERIFY2(
+            !spy.wait(300),
+            "FindDock::revealed must NOT trigger MatchCountRequested for an empty needle"
+        );
+    }
+
     // An enum column with an empty dictionary must show the placeholder
     // and disable OK so a "hide everything" filter cannot be submitted.
     void TestFilterEditorEmptyEnumPickerDisablesOk()

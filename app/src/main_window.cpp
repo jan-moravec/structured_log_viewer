@@ -689,16 +689,45 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // find bar's cached match list. `OnFindCacheInvalidated`
     // drops the cache (cheap) and -- when the bar is visible --
     // bumps the debounce timer so a single recount runs once the
-    // activity settles. `dataChanged` covers in-place cell
-    // updates that don't shift the row set (enum dictionary
-    // growth, column renames); both can still flip whether a row
-    // matches the current needle.
-    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
+    // activity settles.
+    //
+    // `modelReset` is hooked on the proxy only: the source-side
+    // reset chains through the proxy and emits a second time, so
+    // listening to both would fire `OnFindCacheInvalidated` twice
+    // per reset. Same logic for `rowsInserted/Removed` and
+    // `layoutChanged`.
+    //
+    // Column structure changes can flip which columns participate
+    // in the search even when no row text actually changed, so the
+    // column-mutating signals invalidate too.
     connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::OnFindCacheInvalidated);
     connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::OnFindCacheInvalidated);
     connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::OnFindCacheInvalidated);
     connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::dataChanged, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnFindCacheInvalidated);
+    // `dataChanged` covers in-place cell updates that don't shift
+    // the row set (enum dictionary growth, column renames). It
+    // also fires for theme repaints (`{BackgroundRole,
+    // ForegroundRole}` only) which can't affect display-role
+    // matching, so filter those out -- otherwise every level /
+    // theme change during streaming wakes the debounce timer for
+    // no work. An empty `roles` list is Qt's "I don't know what
+    // changed" sentinel; treat it as conservatively dirty.
+    connect(
+        mSortFilterProxyModel,
+        &QAbstractItemModel::dataChanged,
+        this,
+        [this](const QModelIndex & /*topLeft*/, const QModelIndex & /*bottomRight*/, const QList<int> &roles) {
+            if (!roles.isEmpty() && !roles.contains(Qt::DisplayRole) &&
+                !roles.contains(static_cast<int>(LogModelItemDataRole::SortRole)))
+            {
+                return;
+            }
+            OnFindCacheInvalidated();
+        }
+    );
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -749,6 +778,18 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mFindDock, &FindDock::closed, this, [this]() {
         const QSignalBlocker blocker(mActionToggleFind);
         mActionToggleFind->setChecked(false);
+    });
+    // Catch up the match count after a reveal -- the cache may
+    // have been invalidated by streaming / filter activity while
+    // the bar was hidden or buried under a sibling tab, in which
+    // case the label was last updated against a stale dataset.
+    // `BumpMatchCountDebounce` no-ops on an empty needle, so the
+    // common case (re-show, no prior search) costs nothing.
+    connect(mFindDock, &FindDock::revealed, this, [this]() {
+        if (mFindRecord != nullptr)
+        {
+            mFindRecord->BumpMatchCountDebounce();
+        }
     });
 
     // Parse-errors dock replaces the old `QMessageBox::warning`
@@ -3616,6 +3657,11 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
     }
     if (text.isEmpty())
     {
+        // `FindRecordWidget::RequestMatchCountSoon` already
+        // suppresses the signal for an empty needle, so the only
+        // way we land here is a programmatic call (e.g. the
+        // post-`FindRecords` refresh after a Clear). Keep the
+        // label clear in case the cache was previously populated.
         InvalidateFindMatchCache();
         mFindRecord->SetMatchInfo(0, 0);
         return;

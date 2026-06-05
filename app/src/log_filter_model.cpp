@@ -1214,7 +1214,17 @@ QList<QModelIndex> LogFilterModel::MatchRow(
 
 bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags)
 {
-    if (flags.testFlag(Qt::MatchExactly))
+    // `Qt::MatchExactly == 0`, so `flags.testFlag(Qt::MatchExactly)`
+    // returns true only when `flags` is exactly 0 -- every caller in
+    // this codebase OR-s in `MatchWrap | MatchRecursive`, so the
+    // direct-equality branch was historically dead code. Mask the
+    // match-type field (see the QString overload below for the
+    // disjoint-bit rationale) and short-circuit MatchExactly on the
+    // QVariant equality, which is cheaper than stringifying twice and
+    // preserves typed comparisons (numeric, timestamp, enum id).
+    constexpr int MATCH_TYPE_MASK = 0x000F;
+    const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
+    if (matchType == Qt::MatchExactly)
     {
         return data == value;
     }
@@ -1234,7 +1244,8 @@ bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::Mat
     // as a plain substring scan with the literal `*` / `?`. Mask
     // the match-type field and compare for exact equality so the
     // semantics line up with how Qt's own item-view searches
-    // interpret these constants.
+    // interpret these constants. The QVariant overload above uses
+    // the same mask so the two stay in lock-step.
     constexpr int MATCH_TYPE_MASK = 0x000F;
     const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
     switch (matchType)

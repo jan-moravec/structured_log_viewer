@@ -215,11 +215,13 @@ void ParseErrorsDock::TrimToCap()
     // Walk from the top, evicting entries until we are back under
     // the cap. Group headers (`ItemIsEnabled` only) don't count
     // toward `mErrorCount`; they ride along when evicting from
-    // their batch, but we never strand a header above its
-    // surviving rows -- after the loop we sweep front-side
-    // headers only when they are immediately followed by another
-    // header (orphan), preserving any header that still has rows
-    // beneath it.
+    // their batch. Remember the text + font of the most recently
+    // evicted header so that, if its batch survives in part, we
+    // can re-mint a label for the orphaned rows below -- otherwise
+    // they'd float headerless above the next batch's title.
+    QString lastEvictedHeaderText;
+    QFont lastEvictedHeaderFont;
+    bool haveEvictedHeader = false;
     while (mList->count() > 0 && mErrorCount > MAX_DISPLAYED_ERRORS)
     {
         QListWidgetItem *item = mList->takeItem(0);
@@ -232,13 +234,48 @@ void ParseErrorsDock::TrimToCap()
             --mErrorCount;
             ++mDroppedCount;
         }
+        else if (!item->data(OVERFLOW_FOOTER_ROLE).toBool())
+        {
+            // Group header. Stash for possible re-insertion below.
+            // (The overflow footer is removed by `AppendErrors`
+            // before this method runs, so we shouldn't actually
+            // see one here -- but guard anyway.)
+            lastEvictedHeaderText = item->text();
+            lastEvictedHeaderFont = item->font();
+            haveEvictedHeader = true;
+        }
         delete item;
+    }
+
+    // Re-mint the most recently evicted header if its first
+    // surviving row is now stranded at the top of the list (i.e.
+    // a selectable row with no preceding header). Without this,
+    // partial-batch eviction would leave error rows above the
+    // next batch's title with no label of their own -- the user
+    // would see a wall of errors that look like they belong to
+    // the *next* batch's header sitting below them.
+    if (haveEvictedHeader && mList->count() > 0)
+    {
+        QListWidgetItem *first = mList->item(0);
+        if (first != nullptr && first->flags().testFlag(Qt::ItemIsSelectable))
+        {
+            auto *replacement = new QListWidgetItem(lastEvictedHeaderText);
+            replacement->setFont(lastEvictedHeaderFont);
+            // Disable + non-selectable to match the header style
+            // minted in `AppendErrors`. Arrow-key nav steps over
+            // it; Ctrl+A skips it.
+            replacement->setFlags(Qt::ItemIsEnabled);
+            mList->insertItem(0, replacement);
+        }
     }
 
     // Compact orphan headers at the front: a header followed
     // immediately by another header (or by nothing) lost its
     // entire batch and should go. A header followed by an error
-    // row stays put -- it still labels surviving entries.
+    // row stays put -- it still labels surviving entries. This
+    // also catches the (unusual) case where the re-mint above
+    // produced a redundant pair, e.g. the evicted batch had only
+    // its header survive after the eviction-then-reinsert dance.
     while (mList->count() > 0)
     {
         QListWidgetItem *first = mList->item(0);
